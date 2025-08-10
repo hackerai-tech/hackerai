@@ -1,16 +1,20 @@
-import { openai } from "@ai-sdk/openai";
-import { convertToModelMessages, streamText, UIMessage } from "ai";
+import { convertToModelMessages, stepCountIs, streamText, UIMessage } from "ai";
+import { openrouter } from "@openrouter/ai-sdk-provider";
+import { systemPrompt } from "@/lib/system-prompt";
 
-// Allow streaming responses up to 30 seconds
-export const maxDuration = 30;
+// Allow streaming responses up to 300 seconds
+export const maxDuration = 300;
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
 
+  const model = "anthropic/claude-sonnet-4";
+
   const result = streamText({
-    model: openai("gpt-4.1"),
-    system: "You are a helpful assistant.",
+    model: openrouter(model),
+    system: systemPrompt(model),
     messages: convertToModelMessages(messages),
+    stopWhen: stepCountIs(10),
   });
 
   return result.toUIMessageStreamResponse();
