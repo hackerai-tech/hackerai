@@ -49,6 +49,9 @@ importers:
       react-dom:
         specifier: 19.1.0
         version: 19.1.0(react@19.1.1)
+      react-hotkeys-hook:
+        specifier: ^5.1.0
+        version: 5.1.0(react-dom@19.1.0(react@19.1.1))(react@19.1.1)
       tailwind-merge:
         specifier: ^3.3.1
         version: 3.3.1
@@ -3117,6 +3120,15 @@ packages:
     peerDependencies:
       react: ^19.1.0
 
+  react-hotkeys-hook@5.1.0:
+    resolution:
+      {
+        integrity: sha512-GCNGXjBzV9buOS3REoQFmSmE4WTvBhYQ0YrAeeMZI83bhXg3dRWsLHXDutcVDdEjwJqJCxk5iewWYX5LtFUd7g==,
+      }
+    peerDependencies:
+      react: ">=16.8.0"
+      react-dom: ">=16.8.0"
+
   react-is@16.13.1:
     resolution:
       {
@@ -5646,6 +5658,11 @@ snapshots:
     dependencies:
       react: 19.1.1
       scheduler: 0.26.0
+
+  react-hotkeys-hook@5.1.0(react-dom@19.1.0(react@19.1.1))(react@19.1.1):
+    dependencies:
+      react: 19.1.1
+      react-dom: 19.1.0(react@19.1.1)
 
   react-is@16.13.1: {}
 

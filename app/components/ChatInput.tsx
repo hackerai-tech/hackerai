@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { ArrowUp, Square } from "lucide-react";
+import { useHotkeys } from "react-hotkeys-hook";
 
 interface ChatInputProps {
   input: string;
@@ -27,6 +28,23 @@ export const ChatInput = ({
     }
   };
 
+  // Handle keyboard shortcuts for stopping generation
+  useHotkeys(
+    "ctrl+c, meta+c",
+    (e) => {
+      e.preventDefault();
+      onStop();
+    },
+    {
+      enabled: isGenerating,
+      enableOnFormTags: true,
+      enableOnContentEditable: true,
+      preventDefault: true,
+      description: "Stop AI generation",
+    },
+    [isGenerating, onStop],
+  );
+
   return (
     <div className="px-4 mb-4">
       <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
@@ -35,7 +53,7 @@ export const ChatInput = ({
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask me anything..."
+              placeholder="Hack, test, secure anything..."
               className="w-full px-3 py-2 bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none"
               autoFocus
             />
@@ -54,7 +72,7 @@ export const ChatInput = ({
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>Stop</p>
+                    <p>Stop (⌃C)</p>
                   </TooltipContent>
                 </TooltipPrimitive.Root>
               ) : (
@@ -71,7 +89,7 @@ export const ChatInput = ({
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>Send</p>
+                    <p>Send (⏎)</p>
                   </TooltipContent>
                 </TooltipPrimitive.Root>
               )}
