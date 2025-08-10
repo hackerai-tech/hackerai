@@ -1,6 +1,6 @@
 import { UIMessage } from "@ai-sdk/react";
 import { Message } from "./Message";
-import { Spinner } from "../ui";
+import DotsSpinner from "@/components/ui/dots-spinner";
 
 interface MessageListProps {
   messages: UIMessage[];
@@ -57,7 +57,7 @@ export const MessageList = ({
         {status === "submitted" && (
           <div className="flex justify-start">
             <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
-              <Spinner size="sm" variant="primary" />
+              <DotsSpinner size="sm" variant="primary" />
             </div>
           </div>
         )}

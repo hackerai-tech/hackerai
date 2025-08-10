@@ -6,6 +6,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import { MemoizedMarkdown } from "./MemoizedMarkdown";
 
 interface MessageProps {
   message: UIMessage;
@@ -41,59 +42,63 @@ export const Message = ({
   };
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
       <div
-        className={`max-w-[80%] rounded-lg px-3 py-2 ${
+        className={`w-full max-w-full overflow-hidden ${
           isUser
-            ? "bg-primary text-primary-foreground"
-            : "bg-muted text-muted-foreground"
+            ? "bg-secondary rounded-lg px-4 py-3 text-primary-foreground border border-border"
+            : "text-foreground"
         }`}
       >
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            {message.parts.map((part: any, index: number) =>
-              part.type === "text" ? (
-                <span key={index}>{part.text}</span>
-              ) : null,
-            )}
-          </div>
+        <div className="prose space-y-3 prose-sm max-w-none dark:prose-invert min-w-0 overflow-hidden">
+          {message.parts.map((part) => {
+            if (part.type === "text") {
+              return (
+                <MemoizedMarkdown
+                  key={`${message.id}-text`}
+                  id={message.id}
+                  content={part.text}
+                />
+              );
+            }
+          })}
         </div>
+      </div>
 
-        {/* Action buttons below message */}
-        <div className="mt-2 flex items-center justify-start space-x-2">
+      {/* Action buttons outside message bubble */}
+      <div
+        className={`mt-1 flex items-center space-x-2 ${isUser ? "justify-end" : "justify-start"}`}
+      >
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              onClick={handleCopy}
+              className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+              aria-label={copied ? "Copied!" : "Copy message"}
+            >
+              {copied ? <Check size={16} /> : <Copy size={16} />}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent>{copied ? "Copied!" : "Copy message"}</TooltipContent>
+        </Tooltip>
+
+        {/* Show regenerate only for the last assistant message */}
+        {!isUser && isLastAssistantMessage && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={handleCopy}
-                className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-black/5"
-                aria-label={copied ? "Copied!" : "Copy message"}
+                type="button"
+                onClick={onRegenerate}
+                disabled={!canRegenerate}
+                className="p-1.5 opacity-70 hover:opacity-100 disabled:opacity-50 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                aria-label="Regenerate response"
               >
-                {copied ? <Check size={16} /> : <Copy size={16} />}
+                <RotateCcw size={16} />
               </button>
             </TooltipTrigger>
-            <TooltipContent>
-              {copied ? "Copied!" : "Copy message"}
-            </TooltipContent>
+            <TooltipContent>Regenerate response</TooltipContent>
           </Tooltip>
-
-          {/* Show regenerate only for the last assistant message */}
-          {!isUser && isLastAssistantMessage && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={onRegenerate}
-                  disabled={!canRegenerate}
-                  className="p-1.5 opacity-70 hover:opacity-100 disabled:opacity-50 transition-opacity rounded hover:bg-black/5"
-                  aria-label="Regenerate response"
-                >
-                  <RotateCcw size={16} />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Regenerate response</TooltipContent>
-            </Tooltip>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );
