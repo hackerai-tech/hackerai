@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useState } from "react";
-import { ModeToggle } from "@/components/mode-toggle";
+
 import { MessageList } from "./components/MessageList";
 import { ChatInput } from "./components/ChatInput";
 
@@ -51,7 +51,6 @@ export default function Page() {
         <div className="border-b border-border px-4 bg-background">
           <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-[var(--background-gray-main)] flex-shrink-0">
             <h2 className="text-lg font-semibold text-foreground">HackerAI</h2>
-            <ModeToggle />
           </div>
         </div>
 
