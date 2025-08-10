@@ -1,4 +1,3 @@
-export { default as PulseSpinner } from "./spinner";
 export { default as DotsSpinner } from "./dots-spinner";
 
 // Default export for backward compatibility

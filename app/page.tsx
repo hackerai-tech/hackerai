@@ -3,7 +3,9 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useState } from "react";
-import { Spinner } from "./ui";
+import { ModeToggle } from "@/components/mode-toggle";
+import { MessageList } from "./components/MessageList";
+import { ChatInput } from "./components/ChatInput";
 
 export default function Page() {
   const {
@@ -25,62 +27,53 @@ export default function Page() {
     setMessages(messages.filter((message) => message.id !== id));
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (input.trim()) {
+      sendMessage({ text: input });
+      setInput("");
+    }
+  };
+
+  const handleStop = () => {
+    stop();
+  };
+
+  const handleRegenerate = () => {
+    regenerate();
+  };
+
   return (
-    <>
-      {messages.map((message) => (
-        <div key={message.id}>
-          {message.role === "user" ? "User: " : "AI: "}
-          {message.parts.map((part, index) =>
-            part.type === "text" ? <span key={index}>{part.text}</span> : null,
-          )}
-          <button onClick={() => handleDelete(message.id)}>Delete</button>
+    <div className="h-screen bg-background">
+      {/* Full width chat interface */}
+      <div className="w-full bg-card flex flex-col relative h-full">
+        {/* Mode toggle */}
+        <div className="absolute top-4 right-4 z-50">
+          <ModeToggle />
         </div>
-      ))}
-
-      {error && (
-        <>
-          <div>An error occurred.</div>
-          <button type="button" onClick={() => regenerate()}>
-            Retry
-          </button>
-        </>
-      )}
-
-      {(status === "submitted" || status === "streaming") && (
-        <div>
-          {status === "submitted" && <Spinner />}
-          <button type="button" onClick={() => stop()}>
-            Stop
-          </button>
+        {/* Chat header */}
+        <div className="border-b border-border p-4 bg-card">
+          <h2 className="text-lg font-semibold text-card-foreground">HackerAI</h2>
         </div>
-      )}
 
-      <button
-        onClick={() => regenerate()}
-        disabled={!(status === "ready" || status === "error")}
-      >
-        Regenerate
-      </button>
-
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (input.trim()) {
-            sendMessage({ text: input });
-            setInput("");
-          }
-        }}
-      >
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          disabled={status !== "ready"}
-          placeholder="Say something..."
+        {/* Messages container */}
+        <MessageList
+          messages={messages}
+          onDelete={handleDelete}
+          onRegenerate={handleRegenerate}
+          status={status}
+          error={error || null}
         />
-        <button type="submit" disabled={status !== "ready"}>
-          Submit
-        </button>
-      </form>
-    </>
+
+        {/* Input area */}
+        <ChatInput
+          input={input}
+          setInput={setInput}
+          onSubmit={handleSubmit}
+          onStop={handleStop}
+          status={status}
+        />
+      </div>
+    </div>
   );
 }
