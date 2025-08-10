@@ -6,6 +6,8 @@ import { useState } from "react";
 
 import { MessageList } from "./components/MessageList";
 import { ChatInput } from "./components/ChatInput";
+import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
+import { useMessageScroll } from "./hooks/useMessageScroll";
 
 export default function Page() {
   const {
@@ -22,6 +24,7 @@ export default function Page() {
     }),
   });
   const [input, setInput] = useState("");
+  const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useMessageScroll();
 
   const handleDelete = (id: string) => {
     setMessages(messages.filter((message) => message.id !== id));
@@ -43,6 +46,10 @@ export default function Page() {
     regenerate();
   };
 
+  const handleScrollToBottom = () => {
+    scrollToBottom();
+  };
+
   return (
     <div className="h-screen bg-background">
       {/* Full width chat interface */}
@@ -56,6 +63,8 @@ export default function Page() {
 
         {/* Messages container */}
         <MessageList
+          scrollRef={scrollRef}
+          contentRef={contentRef}
           messages={messages}
           onDelete={handleDelete}
           onRegenerate={handleRegenerate}
@@ -70,6 +79,12 @@ export default function Page() {
           onSubmit={handleSubmit}
           onStop={handleStop}
           status={status}
+        />
+
+        {/* Scroll to bottom button - positioned outside the main layout */}
+        <ScrollToBottomButton
+          isVisible={!isAtBottom && messages.length > 0}
+          onClick={handleScrollToBottom}
         />
       </div>
     </div>

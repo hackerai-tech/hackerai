@@ -8,6 +8,8 @@ interface MessageListProps {
   onRegenerate: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
   error: Error | null;
+  scrollRef: any;
+  contentRef: any;
 }
 
 export const MessageList = ({
@@ -16,7 +18,10 @@ export const MessageList = ({
   onRegenerate,
   status,
   error,
+  scrollRef,
+  contentRef,
 }: MessageListProps) => {
+
   // Find the last assistant message
   const lastAssistantMessageIndex = messages
     .map((msg, index) => ({ msg, index }))
@@ -24,8 +29,8 @@ export const MessageList = ({
     .find(({ msg }) => msg.role === "assistant")?.index;
 
   return (
-    <div className="flex-1 overflow-y-auto p-4">
-      <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1 space-y-4">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
+      <div ref={contentRef} className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20">
         {messages.length === 0 ? (
           <div className="text-center text-muted-foreground py-8">
             <p>No messages yet. Start a conversation!</p>
@@ -47,15 +52,10 @@ export const MessageList = ({
         )}
 
         {/* Loading state */}
-        {(status === "submitted" || status === "streaming") && (
+        {status === "submitted" && (
           <div className="flex justify-start">
             <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
-              {status === "submitted" && (
-                <Spinner size="sm" variant="primary" />
-              )}
-              <span className="text-sm">
-                {status === "submitted" ? "Thinking..." : "Typing..."}
-              </span>
+              <Spinner size="sm" variant="primary" />
             </div>
           </div>
         )}
