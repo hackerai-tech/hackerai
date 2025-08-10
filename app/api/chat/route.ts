@@ -7,7 +7,10 @@ import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 export const maxDuration = 300;
 
 export async function POST(req: Request) {
-  const { messages }: { messages: UIMessage[] } = await req.json();
+  const {
+    messages,
+    // mode = "agent",
+  }: { messages: UIMessage[]; mode?: "agent" | "ask" } = await req.json();
 
   const model = "anthropic/claude-sonnet-4";
 

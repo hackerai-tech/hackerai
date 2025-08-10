@@ -1,9 +1,22 @@
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { ArrowUp, Square } from "lucide-react";
+import {
+  ArrowUp,
+  Square,
+  MessageSquare,
+  Infinity,
+  ChevronDown,
+} from "lucide-react";
 import { useHotkeys } from "react-hotkeys-hook";
 import TextareaAutosize from "react-textarea-autosize";
+import { ChatMode } from "../page";
 
 interface ChatInputProps {
   input: string;
@@ -11,6 +24,8 @@ interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
   onStop: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
+  mode: ChatMode;
+  setMode: (mode: ChatMode) => void;
 }
 
 export const ChatInput = ({
@@ -19,6 +34,8 @@ export const ChatInput = ({
   onSubmit,
   onStop,
   status,
+  mode,
+  setMode,
 }: ChatInputProps) => {
   const isGenerating = status === "submitted" || status === "streaming";
 
@@ -54,7 +71,11 @@ export const ChatInput = ({
             <TextareaAutosize
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Hack, test, secure anything..."
+              placeholder={
+                mode === "agent"
+                  ? "Hack, test, secure anything"
+                  : "Ask, learn, brainstorm"
+              }
               className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-[15px] shadow-none resize-none min-h-[28px]"
               rows={1}
               autoFocus
@@ -67,6 +88,59 @@ export const ChatInput = ({
             />
           </div>
           <div className="px-3 flex gap-2 items-center">
+            {/* Mode selector */}
+            <div className="flex items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="bg-muted h-7 px-2 text-xs font-medium rounded-md hover:bg-muted/50 focus-visible:ring-1"
+                  >
+                    {mode === "agent" ? (
+                      <>
+                        <Infinity className="w-3 h-3 mr-1" />
+                        Agent
+                      </>
+                    ) : (
+                      <>
+                        <MessageSquare className="w-3 h-3 mr-1" />
+                        Ask
+                      </>
+                    )}
+                    <ChevronDown className="w-3 h-3 ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-54">
+                  <DropdownMenuItem
+                    onClick={() => setMode("ask")}
+                    className="cursor-pointer"
+                  >
+                    <MessageSquare className="w-4 h-4 mr-2" />
+                    <div className="flex flex-col">
+                      <span className="font-medium">Ask</span>
+                      <span className="text-xs text-muted-foreground">
+                        Ask your hacking questions
+                      </span>
+                    </div>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => setMode("agent")}
+                    className="cursor-pointer"
+                  >
+                    <Infinity className="w-4 h-4 mr-2" />
+                    <div className="flex flex-col">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">Agent</span>
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        Hack, test, secure anything
+                      </span>
+                    </div>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
             <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
               {isGenerating ? (
                 <TooltipPrimitive.Root>
@@ -105,10 +179,10 @@ export const ChatInput = ({
                   </TooltipPrimitive.Root>
                 </form>
               )}
-              </div>
             </div>
           </div>
         </div>
       </div>
+    </div>
   );
 };

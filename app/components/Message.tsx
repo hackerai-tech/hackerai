@@ -57,14 +57,6 @@ export const Message = ({
               ) : null,
             )}
           </div>
-          <button
-            onClick={() => onDelete(message.id)}
-            className="ml-2 text-xs opacity-70 hover:opacity-100 flex-shrink-0"
-            aria-label="Delete message"
-            title="Delete message"
-          >
-            ×
-          </button>
         </div>
 
         {/* Action buttons below message */}

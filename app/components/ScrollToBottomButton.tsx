@@ -5,7 +5,10 @@ interface ScrollToBottomButtonProps {
   onClick: () => void;
 }
 
-export const ScrollToBottomButton = ({ isVisible, onClick }: ScrollToBottomButtonProps) => {
+export const ScrollToBottomButton = ({
+  isVisible,
+  onClick,
+}: ScrollToBottomButtonProps) => {
   if (!isVisible) return null;
 
   return (

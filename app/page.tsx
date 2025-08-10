@@ -9,7 +9,12 @@ import { ChatInput } from "./components/ChatInput";
 import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
 import { useMessageScroll } from "./hooks/useMessageScroll";
 
+export type ChatMode = "agent" | "ask";
+
 export default function Page() {
+  const [input, setInput] = useState("");
+  const [mode, setMode] = useState<ChatMode>("agent");
+
   const {
     messages,
     setMessages,
@@ -21,10 +26,13 @@ export default function Page() {
   } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
+      body: () => ({
+        mode,
+      }),
     }),
   });
-  const [input, setInput] = useState("");
-  const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useMessageScroll();
+  const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
+    useMessageScroll();
 
   const handleDelete = (id: string) => {
     setMessages(messages.filter((message) => message.id !== id));
@@ -33,7 +41,14 @@ export default function Page() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
-      sendMessage({ text: input });
+      sendMessage(
+        { text: input },
+        {
+          body: {
+            mode,
+          },
+        },
+      );
       setInput("");
     }
   };
@@ -79,6 +94,8 @@ export default function Page() {
           onSubmit={handleSubmit}
           onStop={handleStop}
           status={status}
+          mode={mode}
+          setMode={setMode}
         />
 
         {/* Scroll to bottom button - positioned outside the main layout */}
