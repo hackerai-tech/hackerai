@@ -46,14 +46,13 @@ export default function Page() {
   return (
     <div className="h-screen bg-background">
       {/* Full width chat interface */}
-      <div className="w-full bg-card flex flex-col relative h-full">
-        {/* Mode toggle */}
-        <div className="absolute top-4 right-4 z-50">
-          <ModeToggle />
-        </div>
+      <div className="w-full bg-background flex flex-col relative h-full">
         {/* Chat header */}
-        <div className="border-b border-border p-4 bg-card">
-          <h2 className="text-lg font-semibold text-card-foreground">HackerAI</h2>
+        <div className="border-b border-border px-4 bg-background">
+          <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-[var(--background-gray-main)] flex-shrink-0">
+            <h2 className="text-lg font-semibold text-foreground">HackerAI</h2>
+            <ModeToggle />
+          </div>
         </div>
 
         {/* Messages container */}

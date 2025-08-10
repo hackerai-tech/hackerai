@@ -8,15 +8,15 @@ interface MessageProps {
   isLastAssistantMessage: boolean;
 }
 
-export const Message = ({ 
-  message, 
-  onDelete, 
-  onRegenerate, 
+export const Message = ({
+  message,
+  onDelete,
+  onRegenerate,
   canRegenerate,
-  isLastAssistantMessage 
+  isLastAssistantMessage,
 }: MessageProps) => {
   const isUser = message.role === "user";
-  
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
@@ -42,7 +42,7 @@ export const Message = ({
             ×
           </button>
         </div>
-        
+
         {/* Show regenerate only for the last assistant message */}
         {!isUser && isLastAssistantMessage && (
           <div className="mt-2 pt-2 border-t border-border/20">
