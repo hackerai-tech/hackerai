@@ -29,9 +29,9 @@ export const WebsiteCard: FC<WebsiteCardProps> = ({ url, domain }) => {
     try {
       const urlObj = new URL(url);
       return getFaviconUrl(urlObj.hostname);
-    } catch (_e) {
-      return "";
-    }
+            } catch {
+          return "";
+        }
   }, [url]);
 
   return (
@@ -92,7 +92,7 @@ export const CitationDisplay: FC<CitationDisplayProps> = ({
             url,
             domain: urlObj.hostname.replace(/^www\./, ""),
           };
-        } catch (_e) {
+        } catch {
           return null;
         }
       })

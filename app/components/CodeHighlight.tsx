@@ -46,7 +46,7 @@ export const CodeHighlight = ({
     try {
       // Try to use the File System Access API for native save dialog
       if ("showSaveFilePicker" in window) {
-        const fileHandle = await (window as any).showSaveFilePicker({
+        const fileHandle = await (window as Window & { showSaveFilePicker: (options: { suggestedName: string }) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
           suggestedName: defaultFilename,
         });
 
@@ -56,7 +56,7 @@ export const CodeHighlight = ({
         toast.success("File saved successfully");
         return;
       }
-    } catch (error) {
+    } catch {
       toast.error("Failed to save file");
       return;
     }

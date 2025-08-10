@@ -1,20 +1,19 @@
 import { UIMessage } from "@ai-sdk/react";
 import { Message } from "./Message";
 import DotsSpinner from "@/components/ui/dots-spinner";
+import { RefObject } from "react";
 
 interface MessageListProps {
   messages: UIMessage[];
-  onDelete: (id: string) => void;
   onRegenerate: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
   error: Error | null;
-  scrollRef: any;
-  contentRef: any;
+  scrollRef: RefObject<HTMLElement | null>;
+  contentRef: RefObject<HTMLElement | null>;
 }
 
 export const MessageList = ({
   messages,
-  onDelete,
   onRegenerate,
   status,
   error,
@@ -28,9 +27,9 @@ export const MessageList = ({
     .find(({ msg }) => msg.role === "assistant")?.index;
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
+    <div ref={scrollRef as RefObject<HTMLDivElement>} className="flex-1 overflow-y-auto p-4">
       <div
-        ref={contentRef}
+        ref={contentRef as RefObject<HTMLDivElement>}
         className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
       >
         {messages.length === 0 ? (
@@ -42,7 +41,6 @@ export const MessageList = ({
             <Message
               key={message.id}
               message={message}
-              onDelete={onDelete}
               onRegenerate={onRegenerate}
               canRegenerate={status === "ready" || status === "error"}
               isLastAssistantMessage={

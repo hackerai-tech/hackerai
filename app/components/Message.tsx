@@ -10,7 +10,6 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 
 interface MessageProps {
   message: UIMessage;
-  onDelete: (id: string) => void;
   onRegenerate: () => void;
   canRegenerate: boolean;
   isLastAssistantMessage: boolean;
@@ -18,7 +17,6 @@ interface MessageProps {
 
 export const Message = ({
   message,
-  onDelete,
   onRegenerate,
   canRegenerate,
   isLastAssistantMessage,
@@ -28,8 +26,8 @@ export const Message = ({
 
   const handleCopy = async () => {
     const messageText = message.parts
-      .filter((part: any) => part.type === "text")
-      .map((part: any) => part.text)
+      .filter((part: { type: string; text?: string }) => part.type === "text")
+      .map((part: { type: string; text?: string }) => part.text || "")
       .join("");
 
     try {

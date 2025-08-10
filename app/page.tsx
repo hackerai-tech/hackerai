@@ -17,7 +17,6 @@ export default function Page() {
 
   const {
     messages,
-    setMessages,
     sendMessage,
     status,
     stop,
@@ -33,10 +32,6 @@ export default function Page() {
   });
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
-
-  const handleDelete = (id: string) => {
-    setMessages(messages.filter((message) => message.id !== id));
-  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -81,7 +76,6 @@ export default function Page() {
           scrollRef={scrollRef}
           contentRef={contentRef}
           messages={messages}
-          onDelete={handleDelete}
           onRegenerate={handleRegenerate}
           status={status}
           error={error || null}
