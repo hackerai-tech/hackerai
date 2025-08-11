@@ -1,12 +1,9 @@
 import { UIMessage } from "@ai-sdk/react";
-import { Copy, Check, RotateCcw } from "lucide-react";
 import { useState } from "react";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
+import { ShimmerText } from "./ShimmerText";
+import { TerminalCodeBlock } from "./TerminalCodeBlock";
+import { MessageActions } from "./MessageActions";
 
 interface MessageProps {
   message: UIMessage;
@@ -22,84 +19,83 @@ export const Message = ({
   isLastAssistantMessage,
 }: MessageProps) => {
   const isUser = message.role === "user";
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = async () => {
-    const messageText = message.parts
-      .filter((part: { type: string; text?: string }) => part.type === "text")
-      .map((part: { type: string; text?: string }) => part.text || "")
-      .join("");
-
-    try {
-      await navigator.clipboard.writeText(messageText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (error) {
-      console.error("Failed to copy message:", error);
-    }
-  };
+  const [isHovered, setIsHovered] = useState(false);
 
   return (
-    <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
+    <div
+      className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+    >
       <div
-        className={`w-full max-w-full overflow-hidden ${
+        className={`${
           isUser
-            ? "bg-secondary rounded-lg px-4 py-3 text-primary-foreground border border-border"
-            : "text-foreground"
-        }`}
+            ? "max-w-[80%] bg-secondary rounded-lg px-4 py-3 text-primary-foreground border border-border"
+            : "w-full text-foreground"
+        } overflow-hidden`}
       >
         <div className="prose space-y-3 prose-sm max-w-none dark:prose-invert min-w-0 overflow-hidden">
           {message.parts.map((part, partIndex) => {
-            if (part.type !== "text") return null;
+            switch (part.type) {
+              case "text":
+                const partId = `${message.id}-text-${partIndex}`;
+                return (
+                  <MemoizedMarkdown
+                    key={partId}
+                    id={partId}
+                    content={part.text ?? ""}
+                  />
+                );
 
-            const partId = `${message.id}-text-${partIndex}`;
+              case "tool-runTerminalCmd":
+                const callId = part.toolCallId;
+                const input = part.input as {
+                  command: string;
+                  // explanation?: string;
+                  is_background: boolean;
+                };
 
-            return (
-              <MemoizedMarkdown
-                key={partId}
-                id={partId}
-                content={part.text ?? ""}
-              />
-            );
+                switch (part.state) {
+                  case "input-streaming":
+                    return (
+                      <div key={callId} className="text-muted-foreground">
+                        <ShimmerText>Generating command</ShimmerText>
+                      </div>
+                    );
+                  case "input-available":
+                    return (
+                      <TerminalCodeBlock
+                        key={callId}
+                        command={input.command}
+                        isExecuting={true}
+                      />
+                    );
+                  case "output-available":
+                    const output = part.output as { result: string };
+                    return (
+                      <TerminalCodeBlock
+                        key={callId}
+                        command={input.command}
+                        output={output.result}
+                      />
+                    );
+                }
+
+              default:
+                return null;
+            }
           })}
         </div>
       </div>
 
-      {/* Action buttons outside message bubble */}
-      <div
-        className={`mt-1 flex items-center space-x-2 ${isUser ? "justify-end" : "justify-start"}`}
-      >
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              onClick={handleCopy}
-              className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-              aria-label={copied ? "Copied!" : "Copy message"}
-            >
-              {copied ? <Check size={16} /> : <Copy size={16} />}
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>{copied ? "Copied!" : "Copy message"}</TooltipContent>
-        </Tooltip>
-
-        {/* Show regenerate only for the last assistant message */}
-        {!isUser && isLastAssistantMessage && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onRegenerate}
-                disabled={!canRegenerate}
-                className="p-1.5 opacity-70 hover:opacity-100 disabled:opacity-50 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                aria-label="Regenerate response"
-              >
-                <RotateCcw size={16} />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Regenerate response</TooltipContent>
-          </Tooltip>
-        )}
-      </div>
+      <MessageActions
+        messageParts={message.parts}
+        isUser={isUser}
+        isLastAssistantMessage={isLastAssistantMessage}
+        canRegenerate={canRegenerate}
+        onRegenerate={onRegenerate}
+        isHovered={isHovered}
+      />
     </div>
   );
 };
