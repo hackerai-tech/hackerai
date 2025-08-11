@@ -9,7 +9,7 @@ export const maxDuration = 300;
 export async function POST(req: Request) {
   const {
     messages,
-    // mode = "agent",
+    mode = "agent",
   }: { messages: UIMessage[]; mode?: "agent" | "ask" } = await req.json();
 
   const model = "anthropic/claude-sonnet-4";
@@ -19,6 +19,7 @@ export async function POST(req: Request) {
 
   const result = streamText({
     model: openrouter(model),
+    ...(mode === "agent" ? { tools: {} } : {}),
     system: systemPrompt(model),
     messages: convertToModelMessages(truncatedMessages),
     stopWhen: stepCountIs(10),
