@@ -27,7 +27,10 @@ export const MessageList = ({
     .find(({ msg }) => msg.role === "assistant")?.index;
 
   return (
-    <div ref={scrollRef as RefObject<HTMLDivElement>} className="flex-1 overflow-y-auto p-4">
+    <div
+      ref={scrollRef as RefObject<HTMLDivElement>}
+      className="flex-1 overflow-y-auto p-4"
+    >
       <div
         ref={contentRef as RefObject<HTMLDivElement>}
         className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"

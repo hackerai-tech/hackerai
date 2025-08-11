@@ -46,7 +46,13 @@ export const CodeHighlight = ({
     try {
       // Try to use the File System Access API for native save dialog
       if ("showSaveFilePicker" in window) {
-        const fileHandle = await (window as Window & { showSaveFilePicker: (options: { suggestedName: string }) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
+        const fileHandle = await (
+          window as Window & {
+            showSaveFilePicker: (options: {
+              suggestedName: string;
+            }) => Promise<FileSystemFileHandle>;
+          }
+        ).showSaveFilePicker({
           suggestedName: defaultFilename,
         });
 

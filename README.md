@@ -19,6 +19,7 @@ Before running the application, you need to obtain API keys for the following se
 ## Getting Started
 
 1. **Install dependencies:**
+
    ```bash
    pnpm i
    ```
@@ -32,6 +33,7 @@ Before running the application, you need to obtain API keys for the following se
      ```
 
 3. **Run the development server:**
+
    ```bash
    pnpm dev
    ```
