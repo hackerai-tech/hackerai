@@ -49,16 +49,18 @@ export const Message = ({
         }`}
       >
         <div className="prose space-y-3 prose-sm max-w-none dark:prose-invert min-w-0 overflow-hidden">
-          {message.parts.map((part) => {
-            if (part.type === "text") {
-              return (
-                <MemoizedMarkdown
-                  key={`${message.id}-text`}
-                  id={message.id}
-                  content={part.text}
-                />
-              );
-            }
+          {message.parts.map((part, partIndex) => {
+            if (part.type !== "text") return null;
+
+            const partId = `${message.id}-text-${partIndex}`;
+
+            return (
+              <MemoizedMarkdown
+                key={partId}
+                id={partId}
+                content={part.text ?? ""}
+              />
+            );
           })}
         </div>
       </div>
