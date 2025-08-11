@@ -4,6 +4,7 @@ import "./globals.css";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
+import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,10 +31,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <TooltipProvider>
-          {children}
-          <Toaster />
-        </TooltipProvider>
+        <AuthKitProvider>
+          <TooltipProvider>
+            {children}
+            <Toaster />
+          </TooltipProvider>
+        </AuthKitProvider>
       </body>
     </html>
   );
