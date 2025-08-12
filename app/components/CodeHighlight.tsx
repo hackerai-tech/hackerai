@@ -96,11 +96,13 @@ export const CodeHighlight = ({
       {/* Menu bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-muted border-b border-border">
         {/* Left side - Language */}
-        {language && (
-          <span className="text-xs tracking-tighter px-2 py-1 rounded text-secondary-foreground">
-            {language}
-          </span>
-        )}
+        <div className="flex-1">
+          {language && (
+            <span className="text-xs tracking-tighter px-2 py-1 rounded text-secondary-foreground">
+              {language}
+            </span>
+          )}
+        </div>
 
         {/* Right side - Action buttons */}
         <div className="flex items-center space-x-2">
