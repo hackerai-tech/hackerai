@@ -23,9 +23,7 @@ export const ensureSandboxConnection = async (
         SANDBOX_TEMPLATE,
         BASH_SANDBOX_TIMEOUT,
       );
-      if (setSandbox) {
-        setSandbox(sandbox);
-      }
+      setSandbox(sandbox);
     } catch (error) {
       console.error("Error creating persistent sandbox:", error);
       throw new Error(

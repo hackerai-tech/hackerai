@@ -83,7 +83,7 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
             </ShimmerText>
           </div>
         );
-      case "output-available":
+      case "output-available": {
         const readOutput = output as { result: string };
         return (
           <div key={toolCallId} className="space-y-2">
@@ -98,6 +98,7 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
             </CodeHighlight>
           </div>
         );
+      }
       default:
         return null;
     }
