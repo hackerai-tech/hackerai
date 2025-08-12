@@ -18,6 +18,7 @@
     "@radix-ui/react-dropdown-menu": "^2.1.15",
     "@radix-ui/react-slot": "^1.2.3",
     "@radix-ui/react-tooltip": "^1.2.7",
+    "@vercel/functions": "^2.2.8",
     "@workos-inc/authkit-nextjs": "^2.4.6",
     "ai": "^5.0.9",
     "class-variance-authority": "^0.7.1",
