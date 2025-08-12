@@ -8,7 +8,10 @@ const MAX_TOKENS = 32000;
  */
 const getMessageTokenCount = (message: UIMessage): number => {
   const textContent = message.parts
-    .filter((part: { type: string; text?: string }) => part.type === "text" || part.type === "reasoning")
+    .filter(
+      (part: { type: string; text?: string }) =>
+        part.type === "text" || part.type === "reasoning",
+    )
     .map((part: { type: string; text?: string }) => part.text || "")
     .join(" ");
 

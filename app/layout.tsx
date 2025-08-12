@@ -4,6 +4,8 @@ import "./globals.css";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
+import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
+import { isWorkOSConfigured } from "@/lib/auth-utils";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -25,15 +27,23 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const content = (
+    <TooltipProvider>
+      {children}
+      <Toaster />
+    </TooltipProvider>
+  );
+
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <TooltipProvider>
-          {children}
-          <Toaster />
-        </TooltipProvider>
+        {isWorkOSConfigured() ? (
+          <AuthKitProvider>{content}</AuthKitProvider>
+        ) : (
+          content
+        )}
       </body>
     </html>
   );

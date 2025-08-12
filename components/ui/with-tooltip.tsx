@@ -19,7 +19,8 @@ export const WithTooltip: FC<WithTooltipProps> = ({
   delayDuration = 500,
   side = "right",
 }) => {
-  let tooltipSide: "left" | "right" | "top" | "bottom" = (side === "bottomLeft" || side === "bottomRight") ? "bottom" : side;
+  let tooltipSide: "left" | "right" | "top" | "bottom" =
+    side === "bottomLeft" || side === "bottomRight" ? "bottom" : side;
   let align: "start" | "center" | "end" = "center";
 
   if (side === "bottomLeft") {

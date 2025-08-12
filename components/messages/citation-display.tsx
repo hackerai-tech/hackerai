@@ -29,9 +29,9 @@ export const WebsiteCard: FC<WebsiteCardProps> = ({ url, domain }) => {
     try {
       const urlObj = new URL(url);
       return getFaviconUrl(urlObj.hostname);
-            } catch {
-          return "";
-        }
+    } catch {
+      return "";
+    }
   }, [url]);
 
   return (

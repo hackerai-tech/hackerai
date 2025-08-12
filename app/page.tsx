@@ -15,14 +15,7 @@ export default function Page() {
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("agent");
 
-  const {
-    messages,
-    sendMessage,
-    status,
-    stop,
-    error,
-    regenerate,
-  } = useChat({
+  const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       body: () => ({
