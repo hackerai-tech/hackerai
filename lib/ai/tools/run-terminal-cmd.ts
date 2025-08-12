@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { Sandbox, CommandResult } from "@e2b/code-interpreter";
+import { Sandbox, CommandExitError } from "@e2b/code-interpreter";
 
 const SANDBOX_TEMPLATE = "temporary-sandbox";
 const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
@@ -65,7 +65,7 @@ In using these tools, adhere to the following guidelines:
 
       return { result: execution };
     } catch (error) {
-      return error as CommandResult;
+      return error as CommandExitError;
     } finally {
       if (sandbox) {
         await sandbox.kill();
