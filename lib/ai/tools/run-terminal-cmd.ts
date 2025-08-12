@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { Sandbox } from "@e2b/code-interpreter";
+import { Sandbox, CommandResult } from "@e2b/code-interpreter";
 
 const SANDBOX_TEMPLATE = "temporary-sandbox";
 const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
@@ -36,17 +36,40 @@ In using these tools, adhere to the following guidelines:
     command: string;
     is_background: boolean;
   }) => {
-    const sandbox = await Sandbox.create(SANDBOX_TEMPLATE, {
-      timeoutMs: BASH_SANDBOX_TIMEOUT,
-    });
-    const result = await sandbox.commands.run(
-      command,
-      is_background ? { background: true } : undefined,
-    );
-    await sandbox.kill();
+    let sandbox: Sandbox | undefined;
+    // let stdout = "";
+    // let stderr = "";
+    try {
+      sandbox = await Sandbox.create(SANDBOX_TEMPLATE, {
+        timeoutMs: BASH_SANDBOX_TIMEOUT,
+      });
 
-    return {
-      result: result.stdout + result.stderr,
-    };
+      const execution = is_background
+        ? await sandbox.commands.run(command, {
+            background: true,
+            // onStdout: (data: string) => {
+            //   stdout += data;
+            // },
+            // onStderr: (data: string) => {
+            //   stderr += data;
+            // },
+          })
+        : await sandbox.commands.run(command, {
+            // onStdout: (data: string) => {
+            //   stdout += data;
+            // },
+            // onStderr: (data: string) => {
+            //   stderr += data;
+            // },
+          });
+
+      return { result: execution };
+    } catch (error) {
+      return error as CommandResult;
+    } finally {
+      if (sandbox) {
+        await sandbox.kill();
+      }
+    }
   },
 });

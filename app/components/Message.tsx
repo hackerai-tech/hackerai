@@ -4,6 +4,7 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { ShimmerText } from "./ShimmerText";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { MessageActions } from "./MessageActions";
+import { CommandResult } from "@e2b/code-interpreter";
 
 interface MessageProps {
   message: UIMessage;
@@ -37,7 +38,7 @@ export const Message = ({
         <div className="prose space-y-3 prose-sm max-w-none dark:prose-invert min-w-0 overflow-hidden">
           {message.parts.map((part, partIndex) => {
             switch (part.type) {
-              case "text":
+              case "text": {
                 const partId = `${message.id}-text-${partIndex}`;
                 return (
                   <MemoizedMarkdown
@@ -46,23 +47,26 @@ export const Message = ({
                     content={part.text ?? ""}
                   />
                 );
+              }
 
-              case "tool-runTerminalCmd":
+              case "tool-runTerminalCmd": {
                 const callId = part.toolCallId;
                 const input = part.input as {
                   command: string;
                   // explanation?: string;
                   is_background: boolean;
                 };
+                const output = part.output as { result: CommandResult };
 
                 switch (part.state) {
-                  case "input-streaming":
+                  case "input-streaming": {
                     return (
                       <div key={callId} className="text-muted-foreground">
                         <ShimmerText>Generating command</ShimmerText>
                       </div>
                     );
-                  case "input-available":
+                  }
+                  case "input-available": {
                     return (
                       <TerminalCodeBlock
                         key={callId}
@@ -70,19 +74,28 @@ export const Message = ({
                         isExecuting={true}
                       />
                     );
-                  case "output-available":
-                    const output = part.output as { result: string };
+                  }
+                  case "output-available": {
                     return (
                       <TerminalCodeBlock
                         key={callId}
                         command={input.command}
-                        output={output.result}
+                        output={
+                          output.result.stdout + output.result.stderr ||
+                          output.result.error
+                        }
                       />
                     );
+                  }
+                  default: {
+                    return null;
+                  }
                 }
+              }
 
-              default:
+              default: {
                 return null;
+              }
             }
           })}
         </div>
