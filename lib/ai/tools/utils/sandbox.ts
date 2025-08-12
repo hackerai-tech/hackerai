@@ -42,8 +42,10 @@ export async function createOrConnectPersistentTerminal(
         // Step 3a: If running, get sandbox instance first, then pause and resume
         try {
           // First, connect to the running sandbox
-          const runningSandbox = await Sandbox.connect(existingSandbox.sandboxId);
-          
+          const runningSandbox = await Sandbox.connect(
+            existingSandbox.sandboxId,
+          );
+
           // Try to pause with retry logic
           let pauseSuccess = false;
           for (let attempt = 1; attempt <= 3; attempt++) {
@@ -54,17 +56,19 @@ export async function createOrConnectPersistentTerminal(
             } catch (error) {
               console.warn(
                 `[${userID}] Sandbox pause attempt ${attempt}/3 failed:`,
-                error
+                error,
               );
-              
+
               if (attempt < 3) {
                 await new Promise((resolve) => setTimeout(resolve, 5000));
               }
             }
           }
-          
+
           if (!pauseSuccess) {
-            console.error(`[${userID}] Failed to pause sandbox after 3 attempts, creating new one`);
+            console.error(
+              `[${userID}] Failed to pause sandbox after 3 attempts, creating new one`,
+            );
             // Fall through to create new sandbox
           } else {
             // Now resume the paused sandbox
@@ -76,11 +80,10 @@ export async function createOrConnectPersistentTerminal(
         } catch (error) {
           console.error(
             `[${userID}] Error in pause-resume flow for sandbox ${existingSandbox.sandboxId}:`,
-            error
+            error,
           );
           // Fall through to create new sandbox
         }
-        
       } else if (currentState === "paused") {
         // Step 3b: If already paused, resume directly (no retries needed)
         try {
@@ -88,23 +91,28 @@ export async function createOrConnectPersistentTerminal(
             timeoutMs,
           });
           return sandbox;
-          
-        } catch (e: any) {
+        } catch (e) {
           // Handle specific error cases
-          if (e.name === "NotFoundError" || e.message?.includes("not found")) {
+          if (
+            e instanceof Error &&
+            (e.name === "NotFoundError" || e.message?.includes("not found"))
+          ) {
             console.error(
-              `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`
+              `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`,
             );
             // Clean up expired sandbox reference
             try {
               await Sandbox.kill(existingSandbox.sandboxId);
             } catch (killError) {
-              console.warn(`[${userID}] Failed to clean up expired sandbox:`, killError);
+              console.warn(
+                `[${userID}] Failed to clean up expired sandbox:`,
+                killError,
+              );
             }
           } else {
             console.error(
               `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
-              e
+              e,
             );
           }
         }
@@ -147,14 +155,12 @@ export async function pauseSandbox(sandbox: Sandbox): Promise<string | null> {
 
   // Start background pause operation and return immediately
   safeWaitUntil(
-    sandbox
-      .pause()
-      .catch((error) => {
-        console.error(
-          `Background pause failed for sandbox ${sandbox.sandboxId}:`,
-          error
-        );
-      })
+    sandbox.pause().catch((error) => {
+      console.error(
+        `Background pause failed for sandbox ${sandbox.sandboxId}:`,
+        error,
+      );
+    }),
   );
 
   return sandbox.sandboxId;

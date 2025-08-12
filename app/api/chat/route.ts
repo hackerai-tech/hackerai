@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   // Get user ID from authenticated session or fallback to anonymous
   const getUserID = async (): Promise<string> => {
     if (!isWorkOSConfigured()) return "anonymous";
-    
+
     try {
       const { session } = await authkit(req);
       return session?.user?.id || "anonymous";
@@ -34,8 +34,8 @@ export async function POST(req: NextRequest) {
 
   const userID = await getUserID();
 
-  // Create tools with user context
-  const { tools, getSandbox } = createTools(userID);
+  // Create tools with user context and mode
+  const { tools, getSandbox } = createTools(userID, mode);
 
   // Truncate messages to stay within token limit
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     model: openrouter(model),
     system: systemPrompt(model),
     messages: convertToModelMessages(truncatedMessages),
-    ...(mode === "agent" ? { tools } : {}),
+    tools,
     abortSignal: req.signal,
     stopWhen: stepCountIs(5),
     onFinish: async () => {

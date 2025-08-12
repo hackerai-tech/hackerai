@@ -1,10 +1,8 @@
 import { UIMessage } from "@ai-sdk/react";
 import { useState } from "react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
-import { ShimmerText } from "./ShimmerText";
-import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { MessageActions } from "./MessageActions";
-import { CommandResult } from "@e2b/code-interpreter";
+import { ToolHandler } from "./ToolHandler";
 
 interface MessageProps {
   message: UIMessage;
@@ -49,48 +47,17 @@ export const Message = ({
                 );
               }
 
-              case "tool-runTerminalCmd": {
-                const callId = part.toolCallId;
-                const input = part.input as {
-                  command: string;
-                  // explanation?: string;
-                  is_background: boolean;
-                };
-                const output = part.output as { result: CommandResult };
-
-                switch (part.state) {
-                  case "input-streaming": {
-                    return (
-                      <div key={callId} className="text-muted-foreground">
-                        <ShimmerText>Generating command</ShimmerText>
-                      </div>
-                    );
-                  }
-                  case "input-available": {
-                    return (
-                      <TerminalCodeBlock
-                        key={callId}
-                        command={input.command}
-                        isExecuting={true}
-                      />
-                    );
-                  }
-                  case "output-available": {
-                    return (
-                      <TerminalCodeBlock
-                        key={callId}
-                        command={input.command}
-                        output={
-                          output.result.stdout + output.result.stderr ||
-                          output.result.error
-                        }
-                      />
-                    );
-                  }
-                  default: {
-                    return null;
-                  }
-                }
+              case "tool-runTerminalCmd":
+              case "tool-readFile":
+              case "tool-writeFile": {
+                const toolName = part.type.replace("tool-", "");
+                return (
+                  <ToolHandler
+                    key={part.toolCallId}
+                    part={part}
+                    toolName={toolName}
+                  />
+                );
               }
 
               default: {
