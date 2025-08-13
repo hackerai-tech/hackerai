@@ -85,6 +85,11 @@
 
   /* Custom chat input */
   --fill-input-chat: #f5f5f5;
+
+  /* Scrollbar colors */
+  --scrollbar-track: var(--background);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.2);
+  --scrollbar-thumb-hover: rgba(0, 0, 0, 0.3);
 }
 
 .dark {
@@ -127,6 +132,11 @@
 
   /* Custom chat input */
   --fill-input-chat: #1a1a1a;
+
+  /* Scrollbar colors */
+  --scrollbar-track: var(--background);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.3);
 }
 
 @layer base {
@@ -145,4 +155,44 @@
   100% {
     background-position: -200% 0;
   }
+}
+
+/* Scrollbar Styles */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* Chrome, Edge, and Safari */
+*::-webkit-scrollbar {
+  width: 12px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-track:hover {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+}
+
+*::-webkit-scrollbar:hover {
+  background: var(--scrollbar-track);
+}
+
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
 }
