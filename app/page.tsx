@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 
-import { MessageList } from "./components/MessageList";
+import { Messages } from "./components/Messages";
 import { ChatInput } from "./components/ChatInput";
 import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
 import { useMessageScroll } from "./hooks/useMessageScroll";
@@ -81,7 +81,7 @@ export default function Page() {
         {hasMessages ? (
           <>
             {/* Messages container */}
-            <MessageList
+            <Messages
               scrollRef={scrollRef}
               contentRef={contentRef}
               messages={messages}

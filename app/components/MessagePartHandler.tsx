@@ -1,18 +1,38 @@
+import { UIMessage } from "@ai-sdk/react";
+import { MemoizedMarkdown } from "./MemoizedMarkdown";
+import DotsSpinner from "@/components/ui/dots-spinner";
 import { ShimmerText } from "./ShimmerText";
+import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeHighlight } from "./CodeHighlight";
 import { SquarePen } from "lucide-react";
-import { ToolUIPart } from "ai";
+import { CommandResult } from "@e2b/code-interpreter";
 
-interface ToolHandlerProps {
-  part: ToolUIPart;
-  toolName: string;
-  status?: "ready" | "submitted" | "streaming" | "error";
+interface MessagePartHandlerProps {
+  message: UIMessage;
+  part: any;
+  partIndex: number;
+  status: "ready" | "submitted" | "streaming" | "error";
 }
 
-export const ToolHandler = ({ part, toolName, status }: ToolHandlerProps) => {
-  const { toolCallId, state, input, output } = part;
+export const MessagePartHandler = ({
+  message,
+  part,
+  partIndex,
+  status,
+}: MessagePartHandlerProps) => {
+  const renderTextPart = () => {
+    const partId = `${message.id}-text-${partIndex}`;
+    return (
+      <MemoizedMarkdown
+        key={partId}
+        id={partId}
+        content={part.text ?? ""}
+      />
+    );
+  };
 
   const renderReadFileTool = () => {
+    const { toolCallId, state, input, output } = part;
     const readInput = input as {
       target_file: string;
       offset?: number;
@@ -67,6 +87,7 @@ export const ToolHandler = ({ part, toolName, status }: ToolHandlerProps) => {
   };
 
   const renderWriteFileTool = () => {
+    const { toolCallId, state, input, output } = part;
     const writeInput = input as {
       file_path: string;
       contents: string;
@@ -112,11 +133,74 @@ export const ToolHandler = ({ part, toolName, status }: ToolHandlerProps) => {
     }
   };
 
-  switch (toolName) {
-    case "readFile":
+  const renderTerminalTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const terminalInput = input as {
+      command: string;
+      is_background: boolean;
+    };
+    const terminalOutput = output as { result: CommandResult };
+
+    // Get terminal data parts specific to this tool call for streaming output
+    const terminalDataParts = message.parts.filter(
+      (p) =>
+        p.type === "data-terminal" &&
+        (p as any).data?.toolCallId === toolCallId,
+    );
+    const streamingOutput = terminalDataParts
+      .map((p) => (p as any).data?.terminal || "")
+      .join("");
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <div key={toolCallId} className="text-muted-foreground">
+            <ShimmerText>Generating command</ShimmerText>
+          </div>
+        ) : null;
+      case "input-available":
+        return (
+          <TerminalCodeBlock
+            key={toolCallId}
+            command={terminalInput.command}
+            output={streamingOutput}
+            isExecuting={true}
+            status={status}
+          />
+        );
+      case "output-available":
+        const terminalOutputContent =
+          terminalOutput.result.stdout +
+            terminalOutput.result.stderr ||
+          terminalOutput.result.error;
+        return (
+          <TerminalCodeBlock
+            key={toolCallId}
+            command={terminalInput.command}
+            output={terminalOutputContent}
+            status={status}
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
+  // Main switch for different part types
+  switch (part.type) {
+    case "text":
+      return renderTextPart();
+
+    case "tool-readFile":
       return renderReadFileTool();
-    case "writeFile":
+
+    case "tool-writeFile":
       return renderWriteFileTool();
+
+    case "data-terminal":
+    case "tool-runTerminalCmd":
+      return renderTerminalTool();
+
     default:
       return null;
   }
