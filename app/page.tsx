@@ -9,8 +9,6 @@ import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
 import { useMessageScroll } from "./hooks/useMessageScroll";
 import { useGlobalState } from "./contexts/GlobalState";
 
-export type ChatMode = "agent" | "ask";
-
 export default function Page() {
   const { input, mode, chatTitle, setChatTitle, clearInput } = useGlobalState();
 

@@ -4,6 +4,9 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { MessageActions } from "./MessageActions";
 import { ToolHandler } from "./ToolHandler";
 import DotsSpinner from "@/components/ui/dots-spinner";
+import { ShimmerText } from "./ShimmerText";
+import { TerminalCodeBlock } from "./TerminalCodeBlock";
+import { CommandResult } from "@e2b/code-interpreter";
 
 interface MessageProps {
   message: UIMessage;
@@ -59,7 +62,6 @@ export const Message = ({
                 );
               }
 
-              case "tool-runTerminalCmd":
               case "tool-readFile":
               case "tool-writeFile": {
                 const toolName = part.type.replace("tool-", "");
@@ -68,8 +70,63 @@ export const Message = ({
                     key={part.toolCallId}
                     part={part}
                     toolName={toolName}
+                    status={status}
                   />
                 );
+              }
+
+              case "data-terminal":
+              case "tool-runTerminalCmd": {
+                const { toolCallId, state, input, output } = part as any;
+                const terminalInput = input as {
+                  command: string;
+                  is_background: boolean;
+                };
+                const terminalOutput = output as { result: CommandResult };
+
+                // Get terminal data parts specific to this tool call for streaming output
+                const terminalDataParts = message.parts.filter(
+                  (p) =>
+                    p.type === "data-terminal" &&
+                    (p as any).data?.toolCallId === toolCallId,
+                );
+                const streamingOutput = terminalDataParts
+                  .map((p) => (p as any).data?.terminal || "")
+                  .join("");
+
+                switch (state) {
+                  case "input-streaming":
+                    return status === "streaming" ? (
+                      <div key={toolCallId} className="text-muted-foreground">
+                        <ShimmerText>Generating command</ShimmerText>
+                      </div>
+                    ) : null;
+                  case "input-available":
+                    return (
+                      <TerminalCodeBlock
+                        key={toolCallId}
+                        command={terminalInput.command}
+                        output={streamingOutput}
+                        isExecuting={true}
+                        status={status}
+                      />
+                    );
+                  case "output-available":
+                    const terminalOutputContent =
+                      terminalOutput.result.stdout +
+                        terminalOutput.result.stderr ||
+                      terminalOutput.result.error;
+                    return (
+                      <TerminalCodeBlock
+                        key={toolCallId}
+                        command={terminalInput.command}
+                        output={terminalOutputContent}
+                        status={status}
+                      />
+                    );
+                  default:
+                    return null;
+                }
               }
 
               default: {

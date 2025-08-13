@@ -1,54 +1,16 @@
 import { ShimmerText } from "./ShimmerText";
-import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeHighlight } from "./CodeHighlight";
 import { SquarePen } from "lucide-react";
-import { CommandResult } from "@e2b/code-interpreter";
 import { ToolUIPart } from "ai";
 
 interface ToolHandlerProps {
   part: ToolUIPart;
   toolName: string;
+  status?: "ready" | "submitted" | "streaming" | "error";
 }
 
-export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
+export const ToolHandler = ({ part, toolName, status }: ToolHandlerProps) => {
   const { toolCallId, state, input, output } = part;
-  const renderTerminalTool = () => {
-    const terminalInput = input as {
-      command: string;
-      is_background: boolean;
-    };
-    const terminalOutput = output as { result: CommandResult };
-
-    switch (state) {
-      case "input-streaming":
-        return (
-          <div key={toolCallId} className="text-muted-foreground">
-            <ShimmerText>Generating command</ShimmerText>
-          </div>
-        );
-      case "input-available":
-        return (
-          <TerminalCodeBlock
-            key={toolCallId}
-            command={terminalInput.command}
-            isExecuting={true}
-          />
-        );
-      case "output-available":
-        const terminalOutputContent =
-          terminalOutput.result.stdout + terminalOutput.result.stderr ||
-          terminalOutput.result.error;
-        return (
-          <TerminalCodeBlock
-            key={toolCallId}
-            command={terminalInput.command}
-            output={terminalOutputContent}
-          />
-        );
-      default:
-        return null;
-    }
-  };
 
   const renderReadFileTool = () => {
     const readInput = input as {
@@ -69,20 +31,20 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
 
     switch (state) {
       case "input-streaming":
-        return (
+        return status === "streaming" ? (
           <div key={toolCallId} className="text-muted-foreground">
             <ShimmerText>Reading file</ShimmerText>
           </div>
-        );
+        ) : null;
       case "input-available":
-        return (
+        return status === "streaming" ? (
           <div key={toolCallId} className="text-muted-foreground">
             <ShimmerText>
               Reading {readInput.target_file}
               {getFileRange()}
             </ShimmerText>
           </div>
-        );
+        ) : null;
       case "output-available": {
         const readOutput = output as { result: string };
         return (
@@ -112,11 +74,11 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
 
     switch (state) {
       case "input-streaming":
-        return (
+        return status === "streaming" ? (
           <div key={toolCallId} className="text-muted-foreground">
             <ShimmerText>Preparing to write file</ShimmerText>
           </div>
-        );
+        ) : null;
       case "input-available":
         return (
           <div key={toolCallId} className="space-y-2">
@@ -151,8 +113,6 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
   };
 
   switch (toolName) {
-    case "runTerminalCmd":
-      return renderTerminalTool();
     case "readFile":
       return renderReadFileTool();
     case "writeFile":

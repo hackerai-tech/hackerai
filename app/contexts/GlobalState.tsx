@@ -1,8 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, ReactNode } from "react";
-
-export type ChatMode = "agent" | "ask";
+import type { ChatMode } from "@/types/chat";
 
 interface GlobalStateType {
   // Input state

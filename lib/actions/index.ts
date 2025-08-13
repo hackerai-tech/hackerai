@@ -9,8 +9,7 @@ You are a helpful assistant that generates short, concise chat titles based on t
 
 ### Instructions:
 1. Generate a short title (3-5 words) based on the user's first message
-2. Use the chatName tool to generate the title
-3. Use the chat's primary language (default to English if multilingual)
+2. Use the chat's primary language (default to English if multilingual)
 
 ### User Message:
 ${message}`;
@@ -29,12 +28,6 @@ export const generateTitleFromUserMessage = async (
     object: { title },
   } = await generateObject({
     model: myProvider.languageModel("title-generator-model"),
-    providerOptions: {
-      openai: {
-        store: false,
-        parallelToolCalls: false,
-      },
-    },
     schema: z.object({
       title: z.string().describe("The generated title (3-5 words)"),
     }),

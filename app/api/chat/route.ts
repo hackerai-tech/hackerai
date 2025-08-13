@@ -15,15 +15,14 @@ import { isWorkOSConfigured } from "@/lib/auth-utils";
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { generateTitleFromUserMessage } from "@/lib/actions";
 import { NextRequest } from "next/server";
+import type { ChatMode } from "@/types/chat";
 
 // Allow streaming responses up to 300 seconds
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
-  const {
-    messages,
-    mode = "agent",
-  }: { messages: UIMessage[]; mode?: "agent" | "ask" } = await req.json();
+  const { messages, mode }: { messages: UIMessage[]; mode: ChatMode } =
+    await req.json();
 
   const model = "anthropic/claude-sonnet-4";
 
@@ -42,28 +41,33 @@ export async function POST(req: NextRequest) {
 
   const userID = await getUserID();
 
-  // Create tools with user context and mode
-  const { tools, getSandbox } = createTools(userID, mode);
-
   // Truncate messages to stay within token limit
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
+      // Create tools with user context, mode, and writer
+      const { tools, getSandbox } = createTools(userID, writer, mode);
+
       // Generate title in parallel if this is the start of a conversation
       const titlePromise =
         truncatedMessages.length === 1
           ? (async () => {
-              const chatTitle = await generateTitleFromUserMessage(
-                truncatedMessages,
-                req.signal,
-              );
+              try {
+                const chatTitle = await generateTitleFromUserMessage(
+                  truncatedMessages,
+                  req.signal,
+                );
 
-              writer.write({
-                type: "data-title",
-                data: { chatTitle },
-                transient: true,
-              });
+                writer.write({
+                  type: "data-title",
+                  data: { chatTitle },
+                  transient: true,
+                });
+              } catch (error) {
+                // Log error but don't propagate to keep main stream resilient
+                console.error("Failed to generate or write chat title:", error);
+              }
             })()
           : Promise.resolve();
 
