@@ -3,12 +3,14 @@ import { useState } from "react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { MessageActions } from "./MessageActions";
 import { ToolHandler } from "./ToolHandler";
+import DotsSpinner from "@/components/ui/dots-spinner";
 
 interface MessageProps {
   message: UIMessage;
   onRegenerate: () => void;
   canRegenerate: boolean;
   isLastAssistantMessage: boolean;
+  status: "ready" | "submitted" | "streaming" | "error";
 }
 
 export const Message = ({
@@ -16,9 +18,19 @@ export const Message = ({
   onRegenerate,
   canRegenerate,
   isLastAssistantMessage,
+  status,
 }: MessageProps) => {
   const isUser = message.role === "user";
   const [isHovered, setIsHovered] = useState(false);
+
+  // Check if we should show loader for this message
+  const hasTextContent = message.parts?.some(
+    (part: { type: string; text?: string }) =>
+      part.type === "text" && part.text && part.text.trim() !== "",
+  );
+
+  const shouldShowLoader =
+    isLastAssistantMessage && status === "streaming" && !hasTextContent;
 
   return (
     <div
@@ -68,6 +80,15 @@ export const Message = ({
         </div>
       </div>
 
+      {/* Loading state */}
+      {shouldShowLoader && (
+        <div className="mt-1 flex justify-start">
+          <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
+            <DotsSpinner size="sm" variant="primary" />
+          </div>
+        </div>
+      )}
+
       <MessageActions
         messageParts={message.parts}
         isUser={isUser}
@@ -75,6 +96,7 @@ export const Message = ({
         canRegenerate={canRegenerate}
         onRegenerate={onRegenerate}
         isHovered={isHovered}
+        status={status}
       />
     </div>
   );

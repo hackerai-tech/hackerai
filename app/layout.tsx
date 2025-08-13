@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
 import { isWorkOSConfigured } from "@/lib/auth-utils";
+import { GlobalStateProvider } from "./contexts/GlobalState";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -28,10 +29,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   const content = (
-    <TooltipProvider>
-      {children}
-      <Toaster />
-    </TooltipProvider>
+    <GlobalStateProvider>
+      <TooltipProvider>
+        {children}
+        <Toaster />
+      </TooltipProvider>
+    </GlobalStateProvider>
   );
 
   return (

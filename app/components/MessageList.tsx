@@ -1,6 +1,5 @@
 import { UIMessage } from "@ai-sdk/react";
 import { Message } from "./Message";
-import DotsSpinner from "@/components/ui/dots-spinner";
 import { RefObject } from "react";
 
 interface MessageListProps {
@@ -50,17 +49,9 @@ export const MessageList = ({
                 message.role === "assistant" &&
                 index === lastAssistantMessageIndex
               }
+              status={status}
             />
           ))
-        )}
-
-        {/* Loading state */}
-        {status === "submitted" && (
-          <div className="flex justify-start">
-            <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
-              <DotsSpinner size="sm" variant="primary" />
-            </div>
-          </div>
         )}
 
         {/* Error state */}
