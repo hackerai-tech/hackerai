@@ -168,11 +168,12 @@ export const MessagePartHandler = ({
             status={status}
           />
         );
-      case "output-available":
-        const terminalOutputContent =
-          terminalOutput.result.stdout +
-            terminalOutput.result.stderr ||
-          terminalOutput.result.error;
+      case "output-available": {
+        const stdout = terminalOutput.result?.stdout ?? '';
+        const stderr = terminalOutput.result?.stderr ?? '';
+        const combinedOutput = stdout + stderr;
+        const terminalOutputContent = combinedOutput || (terminalOutput.result?.error ?? '');
+        
         return (
           <TerminalCodeBlock
             key={toolCallId}
@@ -181,6 +182,7 @@ export const MessagePartHandler = ({
             status={status}
           />
         );
+      }
       default:
         return null;
     }

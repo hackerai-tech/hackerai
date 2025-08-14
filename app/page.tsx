@@ -2,6 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import { RefObject } from "react";
 
 import { Messages } from "./components/Messages";
 import { ChatInput } from "./components/ChatInput";
@@ -82,8 +83,8 @@ export default function Page() {
           <>
             {/* Messages container */}
             <Messages
-              scrollRef={scrollRef}
-              contentRef={contentRef}
+              scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
+              contentRef={contentRef as RefObject<HTMLDivElement | null>}
               messages={messages}
               onRegenerate={handleRegenerate}
               status={status}

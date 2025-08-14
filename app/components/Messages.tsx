@@ -9,8 +9,8 @@ interface MessagesProps {
   onRegenerate: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
   error: Error | null;
-  scrollRef: RefObject<HTMLElement | null>;
-  contentRef: RefObject<HTMLElement | null>;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  contentRef: RefObject<HTMLDivElement | null>;
 }
 
 export const Messages = ({
@@ -32,11 +32,11 @@ export const Messages = ({
 
   return (
     <div
-      ref={scrollRef as RefObject<HTMLDivElement>}
+      ref={scrollRef}
       className="flex-1 overflow-y-auto p-4"
     >
       <div
-        ref={contentRef as RefObject<HTMLDivElement>}
+        ref={contentRef}
         className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
       >
         {messages.length === 0 ? (

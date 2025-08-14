@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { CommandExitError } from "@e2b/code-interpreter";
+import { randomUUID } from "crypto";
 import type { ToolContext } from "./types";
 
 export const createRunTerminalCmd = (context: ToolContext) => {
@@ -43,46 +44,32 @@ In using these tools, adhere to the following guidelines:
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
-        // Generate unique ID for this terminal session
-        const terminalSessionId = `terminal-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+        // Generate cryptographically strong unique ID for this terminal session
+        const terminalSessionId = `terminal-${randomUUID()}`;
         let outputCounter = 0;
 
-        const execution = is_background
-          ? await sandbox.commands.run(command, {
-              background: true,
-              user: "root",
-              onStdout: (output) => {
-                writer.write({
-                  type: "data-terminal",
-                  id: `${terminalSessionId}-${++outputCounter}`,
-                  data: { terminal: output, toolCallId },
-                });
-              },
-              onStderr: (output) => {
-                writer.write({
-                  type: "data-terminal",
-                  id: `${terminalSessionId}-${++outputCounter}`,
-                  data: { terminal: output, toolCallId },
-                });
-              },
-            })
-          : await sandbox.commands.run(command, {
-              user: "root",
-              onStdout: (output) => {
-                writer.write({
-                  type: "data-terminal",
-                  id: `${terminalSessionId}-${++outputCounter}`,
-                  data: { terminal: output, toolCallId },
-                });
-              },
-              onStderr: (output) => {
-                writer.write({
-                  type: "data-terminal",
-                  id: `${terminalSessionId}-${++outputCounter}`,
-                  data: { terminal: output, toolCallId },
-                });
-              },
+        // Create common handlers
+        const commonOptions = {
+          user: "root" as const,
+          onStdout: (output: string) => {
+            writer.write({
+              type: "data-terminal",
+              id: `${terminalSessionId}-${++outputCounter}`,
+              data: { terminal: output, toolCallId },
             });
+          },
+          onStderr: (output: string) => {
+            writer.write({
+              type: "data-terminal",
+              id: `${terminalSessionId}-${++outputCounter}`,
+              data: { terminal: output, toolCallId },
+            });
+          },
+        };
+
+        const execution = is_background
+          ? await sandbox.commands.run(command, { ...commonOptions, background: true })
+          : await sandbox.commands.run(command, commonOptions);
 
         return { result: execution };
       } catch (error) {
