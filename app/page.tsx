@@ -10,6 +10,7 @@ import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
 import { ComputerSidebar } from "./components/ComputerSidebar";
 import { useMessageScroll } from "./hooks/useMessageScroll";
 import { useGlobalState } from "./contexts/GlobalState";
+import { normalizeMessages } from "@/lib/utils/message-processor";
 
 export default function Page() {
   const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =
@@ -18,9 +19,17 @@ export default function Page() {
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
-      body: () => ({
-        mode,
-      }),
+      prepareSendMessagesRequest: ({ messages }) => {
+        // Normalize messages on the frontend before sending to API
+        const normalizedMessages = normalizeMessages(messages);
+
+        return {
+          body: {
+            messages: normalizedMessages,
+            mode,
+          },
+        };
+      },
     }),
     onData: ({ data, type }) => {
       if (type === "data-title") {

@@ -5,6 +5,7 @@ import {
   stepCountIs,
   streamText,
   UIMessage,
+  smoothStream,
 } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 import { systemPrompt } from "@/lib/system-prompt";
@@ -41,8 +42,12 @@ export async function POST(req: NextRequest) {
 
   const userID = await getUserID();
 
-  // Truncate messages to stay within token limit
+  // Truncate messages to stay within token limit (processing is now done on frontend)
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
+  console.log(
+    "Truncated messages:",
+    JSON.stringify(truncatedMessages, null, 2),
+  );
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
@@ -77,7 +82,11 @@ export async function POST(req: NextRequest) {
         messages: convertToModelMessages(truncatedMessages),
         tools,
         abortSignal: req.signal,
+        experimental_transform: smoothStream({ chunking: "word" }),
         stopWhen: stepCountIs(25),
+        onError: (error) => {
+          console.error("Error:", error);
+        },
         onFinish: async () => {
           const sandbox = getSandbox();
           if (sandbox) {
