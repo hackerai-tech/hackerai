@@ -29,6 +29,7 @@ export async function createOrConnectPersistentTerminal(
       query: {
         metadata: {
           userID,
+          template,
         },
       },
     });
@@ -124,6 +125,7 @@ export async function createOrConnectPersistentTerminal(
       timeoutMs,
       metadata: {
         userID,
+        template,
       },
     });
 

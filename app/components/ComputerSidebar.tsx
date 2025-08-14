@@ -98,6 +98,7 @@ export const ComputerSidebar: React.FC = () => {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button
+                    type="button"
                     onClick={handleClose}
                     className="w-7 h-7 relative rounded-md inline-flex items-center justify-center gap-2.5 cursor-pointer hover:bg-muted/50 transition-colors"
                     aria-label="Minimize sidebar"

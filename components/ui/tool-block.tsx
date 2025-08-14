@@ -28,7 +28,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
 
   return (
     <div className="flex-1 min-w-0">
-      <div
+      <button
         className={`${baseClasses} ${clickableClasses}`}
         onClick={isClickable ? onClick : undefined}
         onKeyDown={isClickable ? onKeyDown : undefined}
@@ -51,7 +51,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
             </span>
           )}
         </div>
-      </div>
+      </button>
     </div>
   );
 };

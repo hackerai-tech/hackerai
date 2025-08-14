@@ -70,7 +70,11 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
         toast.success("File saved successfully");
         return;
       }
-    } catch {
+    } catch (err) {
+      // Don't show toast for user-cancelled save dialogs
+      if (err instanceof DOMException && err.name === "AbortError") {
+        return;
+      }
       toast.error("Failed to save file");
       return;
     }
@@ -92,6 +96,10 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
           : "File downloaded successfully",
       );
     } catch (error) {
+      // Don't show toast for user-cancelled operations
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return;
+      }
       toast.error("Failed to download file", {
         description:
           error instanceof Error ? error.message : "Unknown error occurred",
@@ -127,6 +135,7 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
         <Tooltip>
           <TooltipTrigger asChild>
             <button
+              type="button"
               onClick={handleDownload}
               className={getButtonClasses()}
               aria-label="Download"
@@ -142,6 +151,7 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
         <Tooltip>
           <TooltipTrigger asChild>
             <button
+              type="button"
               onClick={onToggleWrap}
               className={getWrapButtonClasses()}
               aria-label={
@@ -161,6 +171,7 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
         <Tooltip>
           <TooltipTrigger asChild>
             <button
+              type="button"
               onClick={handleCopy}
               className={getButtonClasses()}
               aria-label={copied ? "Copied!" : "Copy"}

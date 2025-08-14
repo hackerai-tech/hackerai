@@ -7,7 +7,6 @@ import {
   UIMessage,
   smoothStream,
 } from "ai";
-import { openrouter } from "@openrouter/ai-sdk-provider";
 import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { createTools } from "@/lib/ai/tools";
@@ -17,6 +16,7 @@ import { authkit } from "@workos-inc/authkit-nextjs";
 import { generateTitleFromUserMessage } from "@/lib/actions";
 import { NextRequest } from "next/server";
 import type { ChatMode } from "@/types/chat";
+import { myProvider } from "@/lib/ai/providers";
 
 // Allow streaming responses up to 300 seconds
 export const maxDuration = 300;
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   const { messages, mode }: { messages: UIMessage[]; mode: ChatMode } =
     await req.json();
 
-  const model = "qwen/qwen3-coder";
+  const model = "agent-model";
 
   // Get user ID from authenticated session or fallback to anonymous
   const getUserID = async (): Promise<string> => {
@@ -73,15 +73,22 @@ export async function POST(req: NextRequest) {
           : Promise.resolve();
 
       const result = streamText({
-        model: openrouter(model),
+        model: myProvider.languageModel("agent-model"),
         system: systemPrompt(model),
         messages: convertToModelMessages(truncatedMessages),
         tools,
         abortSignal: req.signal,
         experimental_transform: smoothStream({ chunking: "word" }),
         stopWhen: stepCountIs(25),
-        onError: (error) => {
+        onError: async (error) => {
           console.error("Error:", error);
+
+          // Perform same cleanup as onFinish to prevent resource leaks
+          const sandbox = getSandbox();
+          if (sandbox) {
+            await pauseSandbox(sandbox);
+          }
+          await titlePromise;
         },
         onFinish: async () => {
           const sandbox = getSandbox();
