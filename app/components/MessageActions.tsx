@@ -56,35 +56,45 @@ export const MessageActions = ({
     <div
       className={`mt-1 flex items-center space-x-2 transition-opacity duration-200 ease-in-out ${isUser ? "justify-end" : "justify-start"} ${shouldShowActions ? "opacity-100" : "opacity-0"}`}
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            onClick={handleCopy}
-            className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-            aria-label={copied ? "Copied!" : "Copy message"}
-          >
-            {copied ? <Check size={16} /> : <Copy size={16} />}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>{copied ? "Copied!" : "Copy message"}</TooltipContent>
-      </Tooltip>
+      {shouldShowActions ? (
+        <>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleCopy}
+                className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                aria-label={copied ? "Copied!" : "Copy message"}
+              >
+                {copied ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{copied ? "Copied!" : "Copy message"}</TooltipContent>
+          </Tooltip>
 
-      {/* Show regenerate only for the last assistant message */}
-      {!isUser && isLastAssistantMessage && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              onClick={onRegenerate}
-              disabled={!canRegenerate}
-              className="p-1.5 opacity-70 hover:opacity-100 disabled:opacity-50 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-              aria-label="Regenerate response"
-            >
-              <RotateCcw size={16} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>Regenerate response</TooltipContent>
-        </Tooltip>
+          {/* Show regenerate only for the last assistant message */}
+          {!isUser && isLastAssistantMessage && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={onRegenerate}
+                  disabled={!canRegenerate}
+                  className="p-1.5 opacity-70 hover:opacity-100 disabled:opacity-50 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                  aria-label="Regenerate response"
+                >
+                  <RotateCcw size={16} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Regenerate response</TooltipContent>
+            </Tooltip>
+          )}
+        </>
+      ) : (
+        <>
+          {/* Invisible spacer buttons to maintain layout */}
+          <div className="p-1.5 w-7 h-7" />
+          {!isUser && isLastAssistantMessage && <div className="p-1.5 w-7 h-7" />}
+        </>
       )}
     </div>
   );
