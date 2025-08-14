@@ -4,6 +4,9 @@ import ReactMarkdown from "react-markdown";
 import { CodeHighlight } from "./CodeHighlight";
 import { Table, Th, Td } from "@/components/ui/table-components";
 import { LinkWithTooltip } from "@/components/ui/link-with-tooltip";
+import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeMathjax from "rehype-mathjax";
 
 const parseMarkdownIntoBlocks = (markdown: string): string[] => {
   const tokens = marked.lexer(markdown);
@@ -14,7 +17,54 @@ const MemoizedMarkdownBlock = memo(
   ({ content }: { content: string }) => {
     return (
       <ReactMarkdown
+        remarkPlugins={[
+          remarkGfm,
+          [remarkMath, { singleDollarTextMath: false }],
+        ]}
+        rehypePlugins={[rehypeMathjax]}
         components={{
+          h1({ children }) {
+            return (
+              <h1 className="text-2xl font-bold mb-4 mt-6 first:mt-0">
+                {children}
+              </h1>
+            );
+          },
+          h2({ children }) {
+            return (
+              <h2 className="text-xl font-semibold mb-3 mt-5 first:mt-0">
+                {children}
+              </h2>
+            );
+          },
+          h3({ children }) {
+            return (
+              <h3 className="text-lg font-semibold mb-2 mt-4 first:mt-0">
+                {children}
+              </h3>
+            );
+          },
+          h4({ children }) {
+            return (
+              <h4 className="text-base font-semibold mb-2 mt-3 first:mt-0">
+                {children}
+              </h4>
+            );
+          },
+          h5({ children }) {
+            return (
+              <h5 className="text-sm font-semibold mb-2 mt-3 first:mt-0">
+                {children}
+              </h5>
+            );
+          },
+          h6({ children }) {
+            return (
+              <h6 className="text-sm font-medium mb-2 mt-3 first:mt-0">
+                {children}
+              </h6>
+            );
+          },
           code: CodeHighlight,
           a({ children, href, ...props }) {
             if (

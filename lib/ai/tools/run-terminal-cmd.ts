@@ -68,7 +68,10 @@ In using these tools, adhere to the following guidelines:
         };
 
         const execution = is_background
-          ? await sandbox.commands.run(command, { ...commonOptions, background: true })
+          ? await sandbox.commands.run(command, {
+              ...commonOptions,
+              background: true,
+            })
           : await sandbox.commands.run(command, commonOptions);
 
         return { result: execution };

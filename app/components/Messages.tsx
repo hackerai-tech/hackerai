@@ -31,10 +31,7 @@ export const Messages = ({
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
 
   return (
-    <div
-      ref={scrollRef}
-      className="flex-1 overflow-y-auto p-4"
-    >
+    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
       <div
         ref={contentRef}
         className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
@@ -47,7 +44,9 @@ export const Messages = ({
           messages.map((message, index) => {
             const isUser = message.role === "user";
             const isHovered = hoveredMessageId === message.id;
-            const isLastAssistantMessage = message.role === "assistant" && index === lastAssistantMessageIndex;
+            const isLastAssistantMessage =
+              message.role === "assistant" &&
+              index === lastAssistantMessageIndex;
             const canRegenerate = status === "ready" || status === "error";
 
             // Check if we should show loader for this message
@@ -56,7 +55,10 @@ export const Messages = ({
                 part.type === "text" && part.text && part.text.trim() !== "",
             );
 
-            const shouldShowLoader = isLastAssistantMessage && status === "streaming" && !hasTextContent;
+            const shouldShowLoader =
+              isLastAssistantMessage &&
+              status === "streaming" &&
+              !hasTextContent;
 
             return (
               <div
@@ -72,7 +74,7 @@ export const Messages = ({
                       : "w-full text-foreground"
                   } overflow-hidden`}
                 >
-                  <div className="prose space-y-3 prose-sm max-w-none dark:prose-invert min-w-0 overflow-hidden">
+                  <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden ">
                     {message.parts.map((part, partIndex) => (
                       <MessagePartHandler
                         key={`${message.id}-${partIndex}`}

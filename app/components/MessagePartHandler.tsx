@@ -23,11 +23,7 @@ export const MessagePartHandler = ({
   const renderTextPart = () => {
     const partId = `${message.id}-text-${partIndex}`;
     return (
-      <MemoizedMarkdown
-        key={partId}
-        id={partId}
-        content={part.text ?? ""}
-      />
+      <MemoizedMarkdown key={partId} id={partId} content={part.text ?? ""} />
     );
   };
 
@@ -169,11 +165,12 @@ export const MessagePartHandler = ({
           />
         );
       case "output-available": {
-        const stdout = terminalOutput.result?.stdout ?? '';
-        const stderr = terminalOutput.result?.stderr ?? '';
+        const stdout = terminalOutput.result?.stdout ?? "";
+        const stderr = terminalOutput.result?.stderr ?? "";
         const combinedOutput = stdout + stderr;
-        const terminalOutputContent = combinedOutput || (terminalOutput.result?.error ?? '');
-        
+        const terminalOutputContent =
+          combinedOutput || (terminalOutput.result?.error ?? "");
+
         return (
           <TerminalCodeBlock
             key={toolCallId}
