@@ -51,6 +51,7 @@ In using these tools, adhere to the following guidelines:
         // Create common handlers
         const commonOptions = {
           user: "root" as const,
+          cwd: "/home/user",
           onStdout: (output: string) => {
             writer.write({
               type: "data-terminal",
