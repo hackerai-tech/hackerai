@@ -16,27 +16,22 @@ import {
 } from "lucide-react";
 import { useHotkeys } from "react-hotkeys-hook";
 import TextareaAutosize from "react-textarea-autosize";
-import { ChatMode } from "../page";
+import { useGlobalState } from "../contexts/GlobalState";
 
 interface ChatInputProps {
-  input: string;
-  setInput: (value: string) => void;
   onSubmit: (e: React.FormEvent) => void;
   onStop: () => void;
   status: "ready" | "submitted" | "streaming" | "error";
-  mode: ChatMode;
-  setMode: (mode: ChatMode) => void;
+  isCentered?: boolean;
 }
 
 export const ChatInput = ({
-  input,
-  setInput,
   onSubmit,
   onStop,
   status,
-  mode,
-  setMode,
+  isCentered = false,
 }: ChatInputProps) => {
+  const { input, setInput, mode, setMode } = useGlobalState();
   const isGenerating = status === "submitted" || status === "streaming";
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -64,7 +59,7 @@ export const ChatInput = ({
   );
 
   return (
-    <div className="pb-3 relative px-4 mb-4">
+    <div className={`relative px-4 ${isCentered ? "" : "pb-3 mb-4"}`}>
       <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
         <div className="flex flex-col gap-3 rounded-[22px] transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border">
           <div className="overflow-y-auto pl-4 pr-2">

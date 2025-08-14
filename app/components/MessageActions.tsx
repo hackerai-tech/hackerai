@@ -13,6 +13,7 @@ interface MessageActionsProps {
   canRegenerate: boolean;
   onRegenerate: () => void;
   isHovered: boolean;
+  status: "ready" | "submitted" | "streaming" | "error";
 }
 
 export const MessageActions = ({
@@ -22,6 +23,7 @@ export const MessageActions = ({
   canRegenerate,
   onRegenerate,
   isHovered,
+  status,
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
 
@@ -43,7 +45,12 @@ export const MessageActions = ({
     }
   };
 
-  const shouldShowActions = isLastAssistantMessage || isHovered;
+  // Don't show actions for last assistant message when it's loading/streaming
+  const isLastAssistantLoading =
+    isLastAssistantMessage &&
+    (status === "submitted" || status === "streaming");
+  const shouldShowActions =
+    !isLastAssistantLoading && (isLastAssistantMessage || isHovered);
 
   return (
     <div

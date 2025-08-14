@@ -1,10 +1,11 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { CommandExitError } from "@e2b/code-interpreter";
+import { randomUUID } from "crypto";
 import type { ToolContext } from "./types";
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager } = context;
+  const { sandboxManager, writer } = context;
 
   return tool({
     description: `PROPOSE a command to run on behalf of the user.
@@ -30,21 +31,48 @@ In using these tools, adhere to the following guidelines:
         .boolean()
         .describe("Whether the command should be run in the background."),
     }),
-    execute: async ({
-      command,
-      is_background,
-    }: {
-      command: string;
-      is_background: boolean;
-    }) => {
+    execute: async (
+      {
+        command,
+        is_background,
+      }: {
+        command: string;
+        is_background: boolean;
+      },
+      { toolCallId }: { toolCallId: string },
+    ) => {
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
+        // Generate cryptographically strong unique ID for this terminal session
+        const terminalSessionId = `terminal-${randomUUID()}`;
+        let outputCounter = 0;
+
+        // Create common handlers
+        const commonOptions = {
+          user: "root" as const,
+          onStdout: (output: string) => {
+            writer.write({
+              type: "data-terminal",
+              id: `${terminalSessionId}-${++outputCounter}`,
+              data: { terminal: output, toolCallId },
+            });
+          },
+          onStderr: (output: string) => {
+            writer.write({
+              type: "data-terminal",
+              id: `${terminalSessionId}-${++outputCounter}`,
+              data: { terminal: output, toolCallId },
+            });
+          },
+        };
+
         const execution = is_background
           ? await sandbox.commands.run(command, {
+              ...commonOptions,
               background: true,
             })
-          : await sandbox.commands.run(command, {});
+          : await sandbox.commands.run(command, commonOptions);
 
         return { result: execution };
       } catch (error) {

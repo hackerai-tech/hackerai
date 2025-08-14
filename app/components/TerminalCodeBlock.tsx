@@ -13,12 +13,14 @@ interface TerminalCodeBlockProps {
   command: string;
   output?: string;
   isExecuting?: boolean;
+  status?: "ready" | "submitted" | "streaming" | "error";
 }
 
 export const TerminalCodeBlock = ({
   command,
   output,
   isExecuting = false,
+  status,
 }: TerminalCodeBlockProps) => {
   const [copied, setCopied] = useState(false);
   const [isWrapped, setIsWrapped] = useState(false);
@@ -163,7 +165,7 @@ export const TerminalCodeBlock = ({
 
           {/* Terminal output */}
           <div className="overflow-hidden">
-            {isExecuting && !output ? (
+            {isExecuting && !output && status === "streaming" ? (
               <div className="px-4 py-4 text-muted-foreground">
                 <ShimmerText>Executing command</ShimmerText>
               </div>

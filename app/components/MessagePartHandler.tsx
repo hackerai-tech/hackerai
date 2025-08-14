@@ -1,56 +1,34 @@
+import { UIMessage } from "@ai-sdk/react";
+import { MemoizedMarkdown } from "./MemoizedMarkdown";
+import DotsSpinner from "@/components/ui/dots-spinner";
 import { ShimmerText } from "./ShimmerText";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeHighlight } from "./CodeHighlight";
 import { SquarePen } from "lucide-react";
 import { CommandResult } from "@e2b/code-interpreter";
-import { ToolUIPart } from "ai";
 
-interface ToolHandlerProps {
-  part: ToolUIPart;
-  toolName: string;
+interface MessagePartHandlerProps {
+  message: UIMessage;
+  part: any;
+  partIndex: number;
+  status: "ready" | "submitted" | "streaming" | "error";
 }
 
-export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
-  const { toolCallId, state, input, output } = part;
-  const renderTerminalTool = () => {
-    const terminalInput = input as {
-      command: string;
-      is_background: boolean;
-    };
-    const terminalOutput = output as { result: CommandResult };
-
-    switch (state) {
-      case "input-streaming":
-        return (
-          <div key={toolCallId} className="text-muted-foreground">
-            <ShimmerText>Generating command</ShimmerText>
-          </div>
-        );
-      case "input-available":
-        return (
-          <TerminalCodeBlock
-            key={toolCallId}
-            command={terminalInput.command}
-            isExecuting={true}
-          />
-        );
-      case "output-available":
-        const terminalOutputContent =
-          terminalOutput.result.stdout + terminalOutput.result.stderr ||
-          terminalOutput.result.error;
-        return (
-          <TerminalCodeBlock
-            key={toolCallId}
-            command={terminalInput.command}
-            output={terminalOutputContent}
-          />
-        );
-      default:
-        return null;
-    }
+export const MessagePartHandler = ({
+  message,
+  part,
+  partIndex,
+  status,
+}: MessagePartHandlerProps) => {
+  const renderTextPart = () => {
+    const partId = `${message.id}-text-${partIndex}`;
+    return (
+      <MemoizedMarkdown key={partId} id={partId} content={part.text ?? ""} />
+    );
   };
 
   const renderReadFileTool = () => {
+    const { toolCallId, state, input, output } = part;
     const readInput = input as {
       target_file: string;
       offset?: number;
@@ -69,20 +47,20 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
 
     switch (state) {
       case "input-streaming":
-        return (
+        return status === "streaming" ? (
           <div key={toolCallId} className="text-muted-foreground">
             <ShimmerText>Reading file</ShimmerText>
           </div>
-        );
+        ) : null;
       case "input-available":
-        return (
+        return status === "streaming" ? (
           <div key={toolCallId} className="text-muted-foreground">
             <ShimmerText>
               Reading {readInput.target_file}
               {getFileRange()}
             </ShimmerText>
           </div>
-        );
+        ) : null;
       case "output-available": {
         const readOutput = output as { result: string };
         return (
@@ -105,6 +83,7 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
   };
 
   const renderWriteFileTool = () => {
+    const { toolCallId, state, input, output } = part;
     const writeInput = input as {
       file_path: string;
       contents: string;
@@ -112,11 +91,11 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
 
     switch (state) {
       case "input-streaming":
-        return (
+        return status === "streaming" ? (
           <div key={toolCallId} className="text-muted-foreground">
             <ShimmerText>Preparing to write file</ShimmerText>
           </div>
-        );
+        ) : null;
       case "input-available":
         return (
           <div key={toolCallId} className="space-y-2">
@@ -150,13 +129,77 @@ export const ToolHandler = ({ part, toolName }: ToolHandlerProps) => {
     }
   };
 
-  switch (toolName) {
-    case "runTerminalCmd":
-      return renderTerminalTool();
-    case "readFile":
+  const renderTerminalTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const terminalInput = input as {
+      command: string;
+      is_background: boolean;
+    };
+    const terminalOutput = output as { result: CommandResult };
+
+    // Get terminal data parts specific to this tool call for streaming output
+    const terminalDataParts = message.parts.filter(
+      (p) =>
+        p.type === "data-terminal" &&
+        (p as any).data?.toolCallId === toolCallId,
+    );
+    const streamingOutput = terminalDataParts
+      .map((p) => (p as any).data?.terminal || "")
+      .join("");
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <div key={toolCallId} className="text-muted-foreground">
+            <ShimmerText>Generating command</ShimmerText>
+          </div>
+        ) : null;
+      case "input-available":
+        return (
+          <TerminalCodeBlock
+            key={toolCallId}
+            command={terminalInput.command}
+            output={streamingOutput}
+            isExecuting={true}
+            status={status}
+          />
+        );
+      case "output-available": {
+        const stdout = terminalOutput.result?.stdout ?? "";
+        const stderr = terminalOutput.result?.stderr ?? "";
+        const combinedOutput = stdout + stderr;
+        const terminalOutputContent =
+          combinedOutput || (terminalOutput.result?.error ?? "");
+
+        return (
+          <TerminalCodeBlock
+            key={toolCallId}
+            command={terminalInput.command}
+            output={terminalOutputContent}
+            status={status}
+          />
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  // Main switch for different part types
+  switch (part.type) {
+    case "text":
+      return renderTextPart();
+
+    case "tool-readFile":
       return renderReadFileTool();
-    case "writeFile":
+
+    case "tool-writeFile":
       return renderWriteFileTool();
+
+    case "data-terminal":
+    case "tool-runTerminalCmd":
+      return renderTerminalTool();
+
     default:
       return null;
   }
