@@ -1,11 +1,11 @@
 import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
-import DotsSpinner from "@/components/ui/dots-spinner";
 import { ShimmerText } from "./ShimmerText";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
-import { CodeHighlight } from "./CodeHighlight";
-import { SquarePen } from "lucide-react";
+import ToolBlock from "@/components/ui/tool-block";
+import { SquarePen, FileText } from "lucide-react";
 import { CommandResult } from "@e2b/code-interpreter";
+import { useGlobalState } from "../contexts/GlobalState";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -20,6 +20,7 @@ export const MessagePartHandler = ({
   partIndex,
   status,
 }: MessagePartHandlerProps) => {
+  const { openFileInSidebar } = useGlobalState();
   const renderTextPart = () => {
     const partId = `${message.id}-text-${partIndex}`;
     return (
@@ -48,33 +49,68 @@ export const MessagePartHandler = ({
     switch (state) {
       case "input-streaming":
         return status === "streaming" ? (
-          <div key={toolCallId} className="text-muted-foreground">
-            <ShimmerText>Reading file</ShimmerText>
-          </div>
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileText className="h-4 w-4" />}
+            action="Reading file"
+            isShimmer={true}
+          />
         ) : null;
       case "input-available":
         return status === "streaming" ? (
-          <div key={toolCallId} className="text-muted-foreground">
-            <ShimmerText>
-              Reading {readInput.target_file}
-              {getFileRange()}
-            </ShimmerText>
-          </div>
-        ) : null;
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileText className="h-4 w-4" />}
+            action="Reading"
+            target={`${readInput.target_file}${getFileRange()}`}
+            isShimmer={true}
+          />
+        ) : (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileText className="h-4 w-4" />}
+            action="Reading"
+            target={`${readInput.target_file}${getFileRange()}`}
+          />
+        );
       case "output-available": {
         const readOutput = output as { result: string };
+
+        const handleOpenInSidebar = () => {
+          const cleanContent = readOutput.result.replace(/^\s*\d+\|/gm, "");
+          const range =
+            readInput.offset && readInput.limit
+              ? {
+                  start: readInput.offset,
+                  end: readInput.offset + readInput.limit - 1,
+                }
+              : undefined;
+
+          openFileInSidebar({
+            path: readInput.target_file,
+            content: cleanContent,
+            range,
+            action: "reading",
+          });
+        };
+
+        const handleKeyDown = (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleOpenInSidebar();
+          }
+        };
+
         return (
-          <div key={toolCallId} className="space-y-2">
-            <div className="text-muted-foreground text-sm">
-              Read {readInput.target_file}
-              {getFileRange()}
-            </div>
-            <CodeHighlight
-              className={`language-${readInput.target_file.split(".").pop() || "text"}`}
-            >
-              {readOutput.result.replace(/^\s*\d+\|/gm, "")}
-            </CodeHighlight>
-          </div>
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileText className="h-4 w-4" />}
+            action="Read"
+            target={`${readInput.target_file}${getFileRange()}`}
+            isClickable={true}
+            onClick={handleOpenInSidebar}
+            onKeyDown={handleKeyDown}
+          />
         );
       }
       default:
@@ -92,37 +128,74 @@ export const MessagePartHandler = ({
     switch (state) {
       case "input-streaming":
         return status === "streaming" ? (
-          <div key={toolCallId} className="text-muted-foreground">
-            <ShimmerText>Preparing to write file</ShimmerText>
-          </div>
+          <ToolBlock
+            key={toolCallId}
+            icon={<SquarePen className="h-4 w-4" />}
+            action="Creating file"
+            isShimmer={true}
+          />
         ) : null;
       case "input-available":
-        return (
-          <div key={toolCallId} className="space-y-2">
-            <div className="flex items-center gap-2 text-muted-foreground text-sm">
-              <SquarePen className="h-4 w-4" />
-              <span>Writing to {writeInput.file_path}</span>
-            </div>
-            <CodeHighlight
-              className={`language-${writeInput.file_path.split(".").pop() || "text"}`}
-            >
-              {writeInput.contents}
-            </CodeHighlight>
-          </div>
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<SquarePen className="h-4 w-4" />}
+            action="Writing to"
+            target={writeInput.file_path}
+            isShimmer={true}
+          />
+        ) : (
+          <ToolBlock
+            key={toolCallId}
+            icon={<SquarePen className="h-4 w-4" />}
+            action="Writing to"
+            target={writeInput.file_path}
+            isClickable={true}
+            onClick={() => {
+              openFileInSidebar({
+                path: writeInput.file_path,
+                content: writeInput.contents,
+                action: "writing",
+              });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openFileInSidebar({
+                  path: writeInput.file_path,
+                  content: writeInput.contents,
+                  action: "writing",
+                });
+              }
+            }}
+          />
         );
       case "output-available":
         return (
-          <div key={toolCallId} className="space-y-2">
-            <div className="flex items-center gap-2 text-muted-foreground text-sm">
-              <SquarePen className="h-4 w-4" />
-              <span>Successfully wrote {writeInput.file_path}</span>
-            </div>
-            <CodeHighlight
-              className={`language-${writeInput.file_path.split(".").pop() || "text"}`}
-            >
-              {writeInput.contents}
-            </CodeHighlight>
-          </div>
+          <ToolBlock
+            key={toolCallId}
+            icon={<SquarePen className="h-4 w-4" />}
+            action="Successfully wrote"
+            target={writeInput.file_path}
+            isClickable={true}
+            onClick={() => {
+              openFileInSidebar({
+                path: writeInput.file_path,
+                content: writeInput.contents,
+                action: "writing",
+              });
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openFileInSidebar({
+                  path: writeInput.file_path,
+                  content: writeInput.contents,
+                  action: "writing",
+                });
+              }
+            }}
+          />
         );
       default:
         return null;

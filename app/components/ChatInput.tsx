@@ -43,7 +43,7 @@ export const ChatInput = ({
 
   // Handle keyboard shortcuts for stopping generation
   useHotkeys(
-    "ctrl+c, meta+c",
+    "ctrl+c",
     (e) => {
       e.preventDefault();
       onStop();

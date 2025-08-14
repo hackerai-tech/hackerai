@@ -57,4 +57,21 @@ Specific markdown rules:
 - When mentioning files, directories, classes, or functions by name, use backticks to format them. Ex. \`app/components/Card.tsx\`
 - When mentioning URLs, do NOT paste bare URLs. Always use backticks or markdown links. Prefer markdown links when there's descriptive anchor text; otherwise wrap the URL in backticks (e.g., \`https://example.com\`).
 - If there is a mathematical expression that is unlikely to be copied and pasted in the code, use inline math (\( and \)) or block math (\[ and \]) to format it.
-</markdown_spec>`;
+</markdown_spec>
+
+<sandbox_environment>
+System Environment:
+- OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
+- User: \`root\` (with sudo privileges)
+- Home directory: /home/user
+- VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
+
+Development Environment:
+- Python 3.12.10 (commands: python3, pip3)
+- Node.js 20.19.2 (commands: node, npm)
+- Golang 1.24.2 (commands: go)
+
+Pre-installed Tools:
+- curl, wget, nmap, iputils-ping, whois, traceroute, dnsutils, whatweb, wafw00f, subfinder, gobuster
+- SecLists is pre-installed in /home/user and should be used by default for any fuzzing or wordlist needs
+</sandbox_environment>`;
