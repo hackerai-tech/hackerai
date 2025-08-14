@@ -3,7 +3,7 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { ShimmerText } from "./ShimmerText";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import ToolBlock from "@/components/ui/tool-block";
-import { SquarePen, FileText, Trash2 } from "lucide-react";
+import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { CommandResult } from "@e2b/code-interpreter";
 import { useGlobalState } from "../contexts/GlobalState";
 
@@ -51,7 +51,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
+            icon={<FileText />}
             action="Reading file"
             isShimmer={true}
           />
@@ -60,7 +60,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
+            icon={<FileText />}
             action="Reading"
             target={`${readInput.target_file}${getFileRange()}`}
             isShimmer={true}
@@ -97,7 +97,7 @@ export const MessagePartHandler = ({
         return (
           <ToolBlock
             key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
+            icon={<FileText />}
             action="Read"
             target={`${readInput.target_file}${getFileRange()}`}
             isClickable={true}
@@ -123,7 +123,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
+            icon={<FilePlus />}
             action="Creating file"
             isShimmer={true}
           />
@@ -132,7 +132,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
+            icon={<FilePlus />}
             action="Writing to"
             target={writeInput.file_path}
             isShimmer={true}
@@ -142,7 +142,7 @@ export const MessagePartHandler = ({
         return (
           <ToolBlock
             key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
+            icon={<FilePlus />}
             action="Successfully wrote"
             target={writeInput.file_path}
             isClickable={true}
@@ -182,7 +182,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<Trash2 className="h-4 w-4" />}
+            icon={<FileMinus />}
             action="Deleting file"
             isShimmer={true}
           />
@@ -191,7 +191,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<Trash2 className="h-4 w-4" />}
+            icon={<FileMinus />}
             action="Deleting"
             target={deleteInput.target_file}
             isShimmer={true}
@@ -204,9 +204,56 @@ export const MessagePartHandler = ({
         return (
           <ToolBlock
             key={toolCallId}
-            icon={<Trash2 className="h-4 w-4" />}
+            icon={<FileMinus />}
             action={isSuccess ? "Successfully deleted" : "Failed to delete"}
             target={deleteInput.target_file}
+          />
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  const renderSearchReplaceTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const searchReplaceInput = input as {
+      file_path: string;
+      old_string: string;
+      new_string: string;
+      replace_all?: boolean;
+    };
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action="Editing file"
+            isShimmer={true}
+          />
+        ) : null;
+      case "input-available":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={searchReplaceInput.replace_all ? "Replacing all in" : "Editing"}
+            target={searchReplaceInput.file_path}
+            isShimmer={true}
+          />
+        ) : null;
+      case "output-available": {
+        const searchReplaceOutput = output as { result: string };
+        const isSuccess = searchReplaceOutput.result.includes("Successfully made");
+        
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={isSuccess ? "Successfully edited" : "Failed to edit"}
+            target={searchReplaceInput.file_path}
           />
         );
       }
@@ -284,6 +331,9 @@ export const MessagePartHandler = ({
 
     case "tool-deleteFile":
       return renderDeleteFileTool();
+
+    case "tool-searchReplace":
+      return renderSearchReplaceTool();
 
     case "data-terminal":
     case "tool-runTerminalCmd":

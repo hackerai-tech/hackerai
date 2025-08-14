@@ -4,6 +4,7 @@ import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 import { createDeleteFile } from "./delete-file";
+import { createSearchReplace } from "./search-replace";
 import type { ToolContext } from "./types";
 import type { UIMessageStreamWriter } from "ai";
 import type { ExecutionMode } from "./execution-types";
@@ -37,6 +38,7 @@ export const createTools = (
     readFile: createReadFile(context),
     writeFile: createWriteFile(context),
     deleteFile: createDeleteFile(context),
+    searchReplace: createSearchReplace(context),
   };
 
   // Filter tools based on mode

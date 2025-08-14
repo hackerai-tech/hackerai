@@ -119,3 +119,66 @@ export const deleteLocalFile = async (filePath: string): Promise<string> => {
     }
   }
 };
+
+export const searchReplaceLocalFile = async (
+  filePath: string,
+  oldString: string,
+  newString: string,
+  replaceAll: boolean = false,
+): Promise<string> => {
+  try {
+    // Resolve the file path to handle both relative and absolute paths
+    const resolvedPath = resolve(filePath);
+
+    // Check if file exists first
+    const fileExists = await checkLocalFileExists(filePath);
+    if (!fileExists) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+
+    // Validate that old_string and new_string are different
+    if (oldString === newString) {
+      throw new Error("old_string and new_string must be different");
+    }
+
+    // Read the file content
+    const fileContent = await readFile(resolvedPath, "utf-8");
+
+    // Check if old_string exists in the file
+    if (!fileContent.includes(oldString)) {
+      throw new Error(`String not found in file: "${oldString}"`);
+    }
+
+    let updatedContent: string;
+    let replacementCount: number;
+
+    if (replaceAll) {
+      // Replace all occurrences
+      const regex = new RegExp(oldString.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+      updatedContent = fileContent.replace(regex, newString);
+      replacementCount = (fileContent.match(regex) || []).length;
+    } else {
+      // Replace only the first occurrence
+      const occurrences = fileContent.split(oldString).length - 1;
+      if (occurrences > 1) {
+        throw new Error(`String "${oldString}" appears ${occurrences} times in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.`);
+      }
+      updatedContent = fileContent.replace(oldString, newString);
+      replacementCount = 1;
+    }
+
+    // Write the updated content back to the file
+    await writeFile(resolvedPath, updatedContent, "utf-8");
+
+    const action = replaceAll ? "replacements" : "replacement";
+    return `Successfully made ${replacementCount} ${action} in ${filePath}`;
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      throw new Error(`File not found: ${filePath}`);
+    } else if (error.code === "EACCES") {
+      throw new Error(`Permission denied: ${filePath}`);
+    } else {
+      throw error;
+    }
+  }
+};
