@@ -3,6 +3,7 @@ import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
+import { createDeleteFile } from "./delete-file";
 import type { ToolContext } from "./types";
 import type { UIMessageStreamWriter } from "ai";
 import type { ExecutionMode } from "./execution-types";
@@ -35,6 +36,7 @@ export const createTools = (
     runTerminalCmd: createRunTerminalCmd(context),
     readFile: createReadFile(context),
     writeFile: createWriteFile(context),
+    deleteFile: createDeleteFile(context),
   };
 
   // Filter tools based on mode

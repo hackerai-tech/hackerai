@@ -1,4 +1,4 @@
-import { readFile, writeFile, access } from "fs/promises";
+import { readFile, writeFile, access, unlink } from "fs/promises";
 import { constants } from "fs";
 import { resolve } from "path";
 
@@ -89,5 +89,33 @@ export const checkLocalFileExists = async (
     return true;
   } catch {
     return false;
+  }
+};
+
+export const deleteLocalFile = async (filePath: string): Promise<string> => {
+  try {
+    // Resolve the file path to handle both relative and absolute paths
+    const resolvedPath = resolve(filePath);
+
+    // Check if file exists first
+    const fileExists = await checkLocalFileExists(filePath);
+    if (!fileExists) {
+      return `File not found: ${filePath}`;
+    }
+
+    // Delete the file
+    await unlink(resolvedPath);
+
+    return `Successfully deleted file: ${filePath}`;
+  } catch (error: any) {
+    if (error.code === "ENOENT") {
+      return `File not found: ${filePath}`;
+    } else if (error.code === "EACCES") {
+      throw new Error(`Permission denied: ${filePath}`);
+    } else if (error.code === "EISDIR") {
+      throw new Error(`Cannot delete directory with delete_file: ${filePath}`);
+    } else {
+      throw new Error(`Error deleting file: ${error.message}`);
+    }
   }
 };

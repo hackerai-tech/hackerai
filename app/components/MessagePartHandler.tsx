@@ -3,7 +3,7 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { ShimmerText } from "./ShimmerText";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import ToolBlock from "@/components/ui/tool-block";
-import { SquarePen, FileText } from "lucide-react";
+import { SquarePen, FileText, Trash2 } from "lucide-react";
 import { CommandResult } from "@e2b/code-interpreter";
 import { useGlobalState } from "../contexts/GlobalState";
 
@@ -65,14 +65,7 @@ export const MessagePartHandler = ({
             target={`${readInput.target_file}${getFileRange()}`}
             isShimmer={true}
           />
-        ) : (
-          <ToolBlock
-            key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
-            action="Reading"
-            target={`${readInput.target_file}${getFileRange()}`}
-          />
-        );
+        ) : null;
       case "output-available": {
         const readOutput = output as { result: string };
 
@@ -144,32 +137,7 @@ export const MessagePartHandler = ({
             target={writeInput.file_path}
             isShimmer={true}
           />
-        ) : (
-          <ToolBlock
-            key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
-            action="Writing to"
-            target={writeInput.file_path}
-            isClickable={true}
-            onClick={() => {
-              openFileInSidebar({
-                path: writeInput.file_path,
-                content: writeInput.contents,
-                action: "writing",
-              });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                openFileInSidebar({
-                  path: writeInput.file_path,
-                  content: writeInput.contents,
-                  action: "writing",
-                });
-              }
-            }}
-          />
-        );
+        ) : null;
       case "output-available":
         return (
           <ToolBlock
@@ -197,6 +165,51 @@ export const MessagePartHandler = ({
             }}
           />
         );
+      default:
+        return null;
+    }
+  };
+
+  const renderDeleteFileTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const deleteInput = input as {
+      target_file: string;
+      explanation: string;
+    };
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<Trash2 className="h-4 w-4" />}
+            action="Deleting file"
+            isShimmer={true}
+          />
+        ) : null;
+      case "input-available":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<Trash2 className="h-4 w-4" />}
+            action="Deleting"
+            target={deleteInput.target_file}
+            isShimmer={true}
+          />
+        ) : null;
+      case "output-available": {
+        const deleteOutput = output as { result: string };
+        const isSuccess = deleteOutput.result.includes("Successfully deleted");
+        
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<Trash2 className="h-4 w-4" />}
+            action={isSuccess ? "Successfully deleted" : "Failed to delete"}
+            target={deleteInput.target_file}
+          />
+        );
+      }
       default:
         return null;
     }
@@ -268,6 +281,9 @@ export const MessagePartHandler = ({
 
     case "tool-writeFile":
       return renderWriteFileTool();
+
+    case "tool-deleteFile":
+      return renderDeleteFileTool();
 
     case "data-terminal":
     case "tool-runTerminalCmd":
