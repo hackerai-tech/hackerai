@@ -17,6 +17,7 @@ import { generateTitleFromUserMessage } from "@/lib/actions";
 import { NextRequest } from "next/server";
 import type { ChatMode } from "@/types/chat";
 import { myProvider } from "@/lib/ai/providers";
+import type { ExecutionMode } from "@/lib/ai/tools/execution-types";
 
 // Allow streaming responses up to 300 seconds
 export const maxDuration = 300;
@@ -42,13 +43,22 @@ export async function POST(req: NextRequest) {
 
   const userID = await getUserID();
 
+  // Determine execution mode from environment variable
+  const executionMode: ExecutionMode =
+    (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
+
   // Truncate messages to stay within token limit (processing is now done on frontend)
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
       // Create tools with user context, mode, and writer
-      const { tools, getSandbox } = createTools(userID, writer, mode);
+      const { tools, getSandbox } = createTools(
+        userID,
+        writer,
+        mode,
+        executionMode,
+      );
 
       // Generate title in parallel if this is the start of a conversation
       const titlePromise =
@@ -74,7 +84,7 @@ export async function POST(req: NextRequest) {
 
       const result = streamText({
         model: myProvider.languageModel("agent-model"),
-        system: systemPrompt(model),
+        system: systemPrompt(model, executionMode),
         messages: convertToModelMessages(truncatedMessages),
         tools,
         abortSignal: req.signal,

@@ -5,12 +5,14 @@ import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 import type { ToolContext } from "./types";
 import type { UIMessageStreamWriter } from "ai";
+import type { ExecutionMode } from "./execution-types";
 
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
   writer: UIMessageStreamWriter,
   mode: "agent" | "ask" = "agent",
+  executionMode: ExecutionMode = "local",
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -25,6 +27,7 @@ export const createTools = (
   const context: ToolContext = {
     sandboxManager,
     writer,
+    executionMode,
   };
 
   // Create all available tools

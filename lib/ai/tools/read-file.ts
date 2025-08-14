@@ -1,12 +1,13 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "./types";
+import { readLocalFile } from "./utils/local-file-operations";
 
 export const createReadFile = (context: ToolContext) => {
-  const { sandboxManager } = context;
+  const { sandboxManager, executionMode } = context;
 
   return tool({
-    description: `Reads a file from the local filesystem. You can access any file directly by using this tool.
+    description: `Reads a file from the filesystem. You can access any file directly by using this tool.
 If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
@@ -43,33 +44,40 @@ Usage:
       limit?: number;
     }) => {
       try {
-        const { sandbox } = await sandboxManager.getSandbox();
+        if (executionMode === "local") {
+          // Read file locally using Node.js fs
+          const result = await readLocalFile(target_file, { offset, limit });
+          return { result };
+        } else {
+          // Read file from sandbox (existing behavior)
+          const { sandbox } = await sandboxManager.getSandbox();
 
-        const fileContent = await sandbox.files.read(target_file);
+          const fileContent = await sandbox.files.read(target_file);
 
-        if (!fileContent || fileContent.trim() === "") {
-          return { result: "File is empty." };
+          if (!fileContent || fileContent.trim() === "") {
+            return { result: "File is empty." };
+          }
+
+          const lines = fileContent.split("\n");
+
+          // Apply offset and limit if provided
+          let processedLines = lines;
+          if (offset !== undefined) {
+            processedLines = lines.slice(offset - 1); // Convert to 0-based index
+          }
+          if (limit !== undefined) {
+            processedLines = processedLines.slice(0, limit);
+          }
+
+          // Add line numbers (starting from the offset if provided, otherwise from 1)
+          const startLineNumber = offset || 1;
+          const numberedLines = processedLines.map((line, index) => {
+            const lineNumber = startLineNumber + index;
+            return `${lineNumber.toString().padStart(6)}|${line}`;
+          });
+
+          return { result: numberedLines.join("\n") };
         }
-
-        const lines = fileContent.split("\n");
-
-        // Apply offset and limit if provided
-        let processedLines = lines;
-        if (offset !== undefined) {
-          processedLines = lines.slice(offset - 1); // Convert to 0-based index
-        }
-        if (limit !== undefined) {
-          processedLines = processedLines.slice(0, limit);
-        }
-
-        // Add line numbers (starting from the offset if provided, otherwise from 1)
-        const startLineNumber = offset || 1;
-        const numberedLines = processedLines.map((line, index) => {
-          const lineNumber = startLineNumber + index;
-          return `${lineNumber.toString().padStart(6)}|${line}`;
-        });
-
-        return { result: numberedLines.join("\n") };
       } catch (error) {
         return {
           result: `Error reading file: ${error instanceof Error ? error.message : String(error)}`,

@@ -1,5 +1,6 @@
 import type { Sandbox } from "@e2b/code-interpreter";
 import type { UIMessageStreamWriter } from "ai";
+import type { ExecutionMode } from "./execution-types";
 
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: Sandbox }>;
@@ -14,4 +15,5 @@ export interface SandboxContext {
 export interface ToolContext {
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
+  executionMode: ExecutionMode;
 }

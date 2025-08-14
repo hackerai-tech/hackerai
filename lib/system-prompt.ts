@@ -6,7 +6,10 @@ const options: Intl.DateTimeFormatOptions = {
 };
 export const currentDateTime = `${new Date().toLocaleDateString("en-US", options)}`;
 
-export const systemPrompt = (model: string) =>
+export const systemPrompt = (
+  model: string,
+  executionMode?: "sandbox" | "local",
+) =>
   `You are an AI penetration testing assistant, powered by ${model}.
 You are an interactive security assessment tool that helps users with penetration testing, vulnerability assessment, and ethical hacking tasks. Use the instructions below and the tools available to you to assist the user.
 
@@ -57,7 +60,9 @@ Specific markdown rules:
 - When mentioning files, directories, classes, or functions by name, use backticks to format them. Ex. \`app/components/Card.tsx\`
 - When mentioning URLs, do NOT paste bare URLs. Always use backticks or markdown links. Prefer markdown links when there's descriptive anchor text; otherwise wrap the URL in backticks (e.g., \`https://example.com\`).
 - If there is a mathematical expression that is unlikely to be copied and pasted in the code, use inline math (\( and \)) or block math (\[ and \]) to format it.
-</markdown_spec>
+</markdown_spec>${
+    executionMode === "sandbox"
+      ? `
 
 <sandbox_environment>
 System Environment:
@@ -74,4 +79,6 @@ Development Environment:
 Pre-installed Tools:
 - curl, wget, nmap, iputils-ping, whois, traceroute, dnsutils, whatweb, wafw00f, subfinder, gobuster
 - SecLists is pre-installed in /home/user and should be used by default for any fuzzing or wordlist needs
-</sandbox_environment>`;
+</sandbox_environment>`
+      : ""
+  }`;
