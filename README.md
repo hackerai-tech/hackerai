@@ -31,6 +31,11 @@ Before running the application, you need to obtain API keys for the following se
      OPENROUTER_API_KEY=your_openrouter_api_key_here
      E2B_API_KEY=your_e2b_api_key_here
      ```
+   - Optionally customize the AI models:
+     ```
+     NEXT_PUBLIC_AGENT_MODEL=qwen/qwen3-coder
+     NEXT_PUBLIC_TITLE_MODEL=qwen/qwen-turbo
+     ```
 
 3. **Run the development server:**
 
