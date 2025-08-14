@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   const { messages, mode }: { messages: UIMessage[]; mode: ChatMode } =
     await req.json();
 
-  const model = "anthropic/claude-sonnet-4";
+  const model = "qwen/qwen3-coder";
 
   // Get user ID from authenticated session or fallback to anonymous
   const getUserID = async (): Promise<string> => {
@@ -44,10 +44,6 @@ export async function POST(req: NextRequest) {
 
   // Truncate messages to stay within token limit (processing is now done on frontend)
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
-  console.log(
-    "Truncated messages:",
-    JSON.stringify(truncatedMessages, null, 2),
-  );
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {

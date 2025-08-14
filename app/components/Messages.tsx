@@ -52,7 +52,9 @@ export const Messages = ({
             // Check if we should show loader for this message
             const hasTextContent = message.parts?.some(
               (part: { type: string; text?: string }) =>
-                part.type === "text" && part.text && part.text.trim() !== "",
+                (part.type === "text" && part.text && part.text.trim() !== "") ||
+                part.type === "step-start" ||
+                part.type?.startsWith("tool-"),
             );
 
             const shouldShowLoader =
