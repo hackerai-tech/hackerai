@@ -1,8 +1,25 @@
-Copyright 2025 HackerAI, LLC.
+Apache License Version 2.0
+
+Copyright (c) 2025 HackerAI, LLC. All rights reserved.
+
+----------
+
+Additional Conditions:
+
+1. Commercial Usage:
+   a. This software may not be used for any commercial purposes without a separate commercial license from HackerAI, LLC.
+   b. “Commercial purposes” include but are not limited to offering paid services, selling access, or incorporating this software into a product or service that generates revenue.
+   c. To obtain a commercial license, contact contact@hackerai.co.
+
+2. Contributor Agreement:
+   a. By contributing code, you grant HackerAI, LLC the right to use your contribution for commercial purposes under separate licensing terms.
+   b. HackerAI, LLC reserves the right to adjust the open-source agreement as needed.
+
+----------
 
 Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+you may not use this file except in compliance with the License **and the Additional Conditions above**.
+You may obtain a copy of the License at:
 
     http://www.apache.org/licenses/LICENSE-2.0
 
