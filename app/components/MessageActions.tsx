@@ -68,7 +68,9 @@ export const MessageActions = ({
                 {copied ? <Check size={16} /> : <Copy size={16} />}
               </button>
             </TooltipTrigger>
-            <TooltipContent>{copied ? "Copied!" : "Copy message"}</TooltipContent>
+            <TooltipContent>
+              {copied ? "Copied!" : "Copy message"}
+            </TooltipContent>
           </Tooltip>
 
           {/* Show regenerate only for the last assistant message */}
@@ -93,7 +95,9 @@ export const MessageActions = ({
         <>
           {/* Invisible spacer buttons to maintain layout */}
           <div className="p-1.5 w-7 h-7" />
-          {!isUser && isLastAssistantMessage && <div className="p-1.5 w-7 h-7" />}
+          {!isUser && isLastAssistantMessage && (
+            <div className="p-1.5 w-7 h-7" />
+          )}
         </>
       )}
     </div>

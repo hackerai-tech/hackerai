@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, ReactNode } from "react";
-import type { ChatMode } from "@/types/chat";
+import type { ChatMode, SidebarFile } from "@/types/chat";
 
 interface GlobalStateType {
   // Input state
@@ -16,9 +16,17 @@ interface GlobalStateType {
   chatTitle: string | null;
   setChatTitle: (title: string | null) => void;
 
+  // Sidebar state
+  sidebarOpen: boolean;
+  setSidebarOpen: (open: boolean) => void;
+  sidebarFile: SidebarFile | null;
+  setSidebarFile: (file: SidebarFile | null) => void;
+
   // Utility methods
   clearInput: () => void;
   resetChat: () => void;
+  openFileInSidebar: (file: SidebarFile) => void;
+  closeSidebar: () => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
@@ -35,6 +43,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("agent");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarFile, setSidebarFile] = useState<SidebarFile | null>(null);
 
   const clearInput = () => {
     setInput("");
@@ -45,6 +55,16 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle(null);
   };
 
+  const openFileInSidebar = (file: SidebarFile) => {
+    setSidebarFile(file);
+    setSidebarOpen(true);
+  };
+
+  const closeSidebar = () => {
+    setSidebarOpen(false);
+    setSidebarFile(null);
+  };
+
   const value: GlobalStateType = {
     input,
     setInput,
@@ -52,8 +72,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setMode,
     chatTitle,
     setChatTitle,
+    sidebarOpen,
+    setSidebarOpen,
+    sidebarFile,
+    setSidebarFile,
     clearInput,
     resetChat,
+    openFileInSidebar,
+    closeSidebar,
   };
 
   return (
