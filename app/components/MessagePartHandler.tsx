@@ -200,7 +200,7 @@ export const MessagePartHandler = ({
       case "output-available": {
         const deleteOutput = output as { result: string };
         const isSuccess = deleteOutput.result.includes("Successfully deleted");
-        
+
         return (
           <ToolBlock
             key={toolCallId}
@@ -239,21 +239,77 @@ export const MessagePartHandler = ({
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={searchReplaceInput.replace_all ? "Replacing all in" : "Editing"}
+            action={
+              searchReplaceInput.replace_all ? "Replacing all in" : "Editing"
+            }
             target={searchReplaceInput.file_path}
             isShimmer={true}
           />
         ) : null;
       case "output-available": {
         const searchReplaceOutput = output as { result: string };
-        const isSuccess = searchReplaceOutput.result.includes("Successfully made");
-        
+        const isSuccess =
+          searchReplaceOutput.result.includes("Successfully made");
+
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
             action={isSuccess ? "Successfully edited" : "Failed to edit"}
             target={searchReplaceInput.file_path}
+          />
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  const renderMultiEditTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const multiEditInput = input as {
+      file_path: string;
+      edits: Array<{
+        old_string: string;
+        new_string: string;
+        replace_all?: boolean;
+      }>;
+    };
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action="Making multiple edits"
+            isShimmer={true}
+          />
+        ) : null;
+      case "input-available":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={`Making ${multiEditInput.edits.length} edits to`}
+            target={multiEditInput.file_path}
+            isShimmer={true}
+          />
+        ) : null;
+      case "output-available": {
+        const multiEditOutput = output as { result: string };
+        const isSuccess = multiEditOutput.result.includes("Successfully applied");
+
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={
+              isSuccess
+                ? `Successfully applied ${multiEditInput.edits.length} edits`
+                : "Failed to apply edits"
+            }
+            target={multiEditInput.file_path}
           />
         );
       }
@@ -334,6 +390,9 @@ export const MessagePartHandler = ({
 
     case "tool-searchReplace":
       return renderSearchReplaceTool();
+
+    case "tool-multiEdit":
+      return renderMultiEditTool();
 
     case "data-terminal":
     case "tool-runTerminalCmd":

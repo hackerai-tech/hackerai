@@ -32,10 +32,14 @@ export const Messages = ({
 
   // Track hover state for all messages
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
-  
+
   // Handle sidebar auto-opening
-  const { resetSidebarFlag } = useSidebarAutoOpen(messages, lastAssistantMessageIndex, status);
-  
+  const { resetSidebarFlag } = useSidebarAutoOpen(
+    messages,
+    lastAssistantMessageIndex,
+    status,
+  );
+
   // Expose reset function to parent if provided
   useEffect(() => {
     if (resetSidebarAutoOpen) {

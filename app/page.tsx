@@ -39,7 +39,7 @@ export default function Page() {
   });
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
-  
+
   // Ref to reset sidebar auto-open flag
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
 

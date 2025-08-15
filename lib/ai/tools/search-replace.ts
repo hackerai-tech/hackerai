@@ -24,7 +24,9 @@ Usage:
       old_string: z.string().describe("The text to replace"),
       new_string: z
         .string()
-        .describe("The text to replace it with (must be different from old_string)"),
+        .describe(
+          "The text to replace it with (must be different from old_string)",
+        ),
       replace_all: z
         .boolean()
         .optional()
@@ -63,7 +65,8 @@ Usage:
             // Validate that old_string and new_string are different
             if (old_string === new_string) {
               return {
-                result: "Invalid: old_string and new_string are exactly the same",
+                result:
+                  "Invalid: old_string and new_string are exactly the same",
               };
             }
 
@@ -79,7 +82,10 @@ Usage:
 
             if (replace_all) {
               // Replace all occurrences
-              const regex = new RegExp(old_string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+              const regex = new RegExp(
+                old_string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                "g",
+              );
               updatedContent = fileContent.replace(regex, new_string);
               replacementCount = (fileContent.match(regex) || []).length;
             } else {

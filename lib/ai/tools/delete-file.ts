@@ -40,10 +40,13 @@ export const createDeleteFile = (context: ToolContext) => {
 
           try {
             // Use rm command to delete the file
-            const execution = await sandbox.commands.run(`rm "${target_file}"`, {
-              user: "root" as const,
-              cwd: "/home/user",
-            });
+            const execution = await sandbox.commands.run(
+              `rm "${target_file}"`,
+              {
+                user: "root" as const,
+                cwd: "/home/user",
+              },
+            );
 
             if (execution.exitCode === 0) {
               return {

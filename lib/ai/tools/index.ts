@@ -5,6 +5,7 @@ import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 import { createDeleteFile } from "./delete-file";
 import { createSearchReplace } from "./search-replace";
+import { createMultiEdit } from "./multi-edit";
 import type { ToolContext } from "./types";
 import type { UIMessageStreamWriter } from "ai";
 import type { ExecutionMode } from "./execution-types";
@@ -39,6 +40,7 @@ export const createTools = (
     writeFile: createWriteFile(context),
     deleteFile: createDeleteFile(context),
     searchReplace: createSearchReplace(context),
+    multiEdit: createMultiEdit(context),
   };
 
   // Filter tools based on mode

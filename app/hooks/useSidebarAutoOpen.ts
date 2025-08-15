@@ -11,10 +11,14 @@ interface AutoOpenResult {
 const checkForSidebarContent = (
   messages: UIMessage[],
   lastAssistantMessageIndex: number | undefined,
-  status: "ready" | "submitted" | "streaming" | "error"
+  status: "ready" | "submitted" | "streaming" | "error",
 ): AutoOpenResult => {
   // Only check during streaming and when we have messages
-  if (status !== "streaming" || messages.length === 0 || lastAssistantMessageIndex === undefined) {
+  if (
+    status !== "streaming" ||
+    messages.length === 0 ||
+    lastAssistantMessageIndex === undefined
+  ) {
     return { shouldOpen: false };
   }
 
@@ -26,18 +30,25 @@ const checkForSidebarContent = (
   // Check for tools with output-available that should show in sidebar
   for (const part of lastAssistantMessage.parts || []) {
     const toolPart = part as any; // Type assertion for tool parts
-    
+
     if (toolPart.state === "output-available") {
       // Check for readFile tool
       if (toolPart.type === "tool-readFile" && toolPart.output?.result) {
-        const input = toolPart.input as { target_file: string; offset?: number; limit?: number };
+        const input = toolPart.input as {
+          target_file: string;
+          offset?: number;
+          limit?: number;
+        };
         const output = toolPart.output as { result: string };
-        
+
         const cleanContent = output.result.replace(/^\s*\d+\|/gm, "");
-        const range = input.offset && input.limit ? {
-          start: input.offset,
-          end: input.offset + input.limit - 1,
-        } : undefined;
+        const range =
+          input.offset && input.limit
+            ? {
+                start: input.offset,
+                end: input.offset + input.limit - 1,
+              }
+            : undefined;
 
         return {
           shouldOpen: true,
@@ -46,21 +57,21 @@ const checkForSidebarContent = (
             content: cleanContent,
             range,
             action: "reading",
-          }
+          },
         };
       }
-      
+
       // Check for writeFile tool
       if (toolPart.type === "tool-writeFile" && toolPart.input?.file_path) {
         const input = toolPart.input as { file_path: string; contents: string };
-        
+
         return {
           shouldOpen: true,
           file: {
             path: input.file_path,
             content: input.contents,
             action: "writing",
-          }
+          },
         };
       }
     }
@@ -72,7 +83,7 @@ const checkForSidebarContent = (
 export const useSidebarAutoOpen = (
   messages: UIMessage[],
   lastAssistantMessageIndex: number | undefined,
-  status: "ready" | "submitted" | "streaming" | "error"
+  status: "ready" | "submitted" | "streaming" | "error",
 ) => {
   const { openFileInSidebar } = useGlobalState();
   const hasOpenedSidebarRef = useRef<string | null>(null);
@@ -80,15 +91,24 @@ export const useSidebarAutoOpen = (
   // Auto-open sidebar when new assistant messages have content to show
   useEffect(() => {
     const lastAssistantMessage = messages[lastAssistantMessageIndex || -1];
-    
+
     // Skip if already opened for this message
     if (hasOpenedSidebarRef.current === lastAssistantMessage?.id) {
       return;
     }
 
-    const result = checkForSidebarContent(messages, lastAssistantMessageIndex, status);
-    
-    if (result.shouldOpen && result.file && typeof window !== 'undefined' && window.matchMedia('(min-width: 950px)').matches) {
+    const result = checkForSidebarContent(
+      messages,
+      lastAssistantMessageIndex,
+      status,
+    );
+
+    if (
+      result.shouldOpen &&
+      result.file &&
+      typeof window !== "undefined" &&
+      window.matchMedia("(min-width: 950px)").matches
+    ) {
       openFileInSidebar(result.file);
       hasOpenedSidebarRef.current = lastAssistantMessage?.id || null;
     }
