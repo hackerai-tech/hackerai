@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Copy, Check, Download, WrapText, Terminal } from "lucide-react";
-import ShikiHighlighter from "react-shiki";
+import { codeToHtml } from "shiki";
 import {
   Tooltip,
   TooltipTrigger,
@@ -16,6 +16,181 @@ interface TerminalCodeBlockProps {
   status?: "ready" | "submitted" | "streaming" | "error";
   isBackground?: boolean;
 }
+
+interface AnsiCodeBlockProps {
+  code: string;
+  isWrapped?: boolean;
+  isStreaming?: boolean;
+  theme?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  delay?: number;
+}
+
+// Cache for rendered ANSI content to avoid re-rendering identical content
+const ansiCache = new Map<string, string>();
+const MAX_CACHE_SIZE = 100;
+
+// Clean cache when it gets too large
+const cleanCache = () => {
+  if (ansiCache.size > MAX_CACHE_SIZE) {
+    const entries = Array.from(ansiCache.entries());
+    // Remove oldest half of entries (FIFO)
+    const toRemove = Math.floor(MAX_CACHE_SIZE / 2);
+    for (let i = 0; i < toRemove; i++) {
+      ansiCache.delete(entries[i][0]);
+    }
+  }
+};
+
+/**
+ * Optimized ANSI code renderer with streaming support
+ * Uses native Shiki codeToHtml with react-shiki patterns for performance
+ *
+ * Features:
+ * - Debounced rendering for streaming content (150ms delay, same as react-shiki)
+ * - Caching to avoid re-rendering identical content
+ * - Race condition protection for async renders
+ * - Memory management with cache cleanup
+ * - Proper HTML escaping for fallback content
+ * - Follows react-shiki performance patterns
+ */
+const AnsiCodeBlock = ({
+  code,
+  isWrapped,
+  isStreaming = false,
+  theme = "houston",
+  className,
+  style,
+  delay: customDelay,
+}: AnsiCodeBlockProps) => {
+  const [htmlContent, setHtmlContent] = useState<string>("");
+  const [isRendering, setIsRendering] = useState(false);
+  const renderTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastRenderedCodeRef = useRef<string>("");
+  const cacheKeyRef = useRef<string>("");
+
+  // Debounce rendering for streaming content
+  const debouncedRender = useCallback(
+    async (codeToRender: string) => {
+      // Clear any pending render
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current);
+      }
+
+      // For streaming, debounce rapid updates (same as react-shiki default)
+      const delay = customDelay ?? (isStreaming ? 150 : 0);
+
+      renderTimeoutRef.current = setTimeout(async () => {
+        // Skip if we've already rendered this exact content
+        if (lastRenderedCodeRef.current === codeToRender) {
+          return;
+        }
+
+        // Create cache key including theme for proper caching
+        const cacheKey = `${codeToRender}-${isWrapped}-${theme}`;
+        cacheKeyRef.current = cacheKey;
+
+        // Check cache first
+        if (ansiCache.has(cacheKey)) {
+          setHtmlContent(ansiCache.get(cacheKey)!);
+          lastRenderedCodeRef.current = codeToRender;
+          return;
+        }
+
+        setIsRendering(true);
+
+        try {
+          const html = await codeToHtml(codeToRender, {
+            lang: "ansi",
+            theme: theme,
+          });
+
+          // Only update if this is still the current render request
+          if (cacheKeyRef.current === cacheKey) {
+            setHtmlContent(html);
+            ansiCache.set(cacheKey, html);
+            lastRenderedCodeRef.current = codeToRender;
+          }
+        } catch (error) {
+          console.error("Failed to render ANSI code:", error);
+          // Fallback to plain text with proper escaping
+          const escapedCode = codeToRender.replace(/[&<>"']/g, (char) => {
+            const entities: Record<string, string> = {
+              "&": "&amp;",
+              "<": "&lt;",
+              ">": "&gt;",
+              '"': "&quot;",
+              "'": "&#39;",
+            };
+            return entities[char];
+          });
+          const fallbackHtml = `<pre><code>${escapedCode}</code></pre>`;
+
+          if (cacheKeyRef.current === cacheKey) {
+            setHtmlContent(fallbackHtml);
+            cleanCache();
+            ansiCache.set(cacheKey, fallbackHtml);
+            lastRenderedCodeRef.current = codeToRender;
+          }
+        } finally {
+          setIsRendering(false);
+        }
+      }, delay);
+    },
+    [isStreaming, isWrapped, theme, customDelay],
+  );
+
+  useEffect(() => {
+    if (code) {
+      debouncedRender(code);
+    } else {
+      setHtmlContent("");
+      lastRenderedCodeRef.current = "";
+    }
+
+    // Cleanup timeout on unmount or code change
+    return () => {
+      if (renderTimeoutRef.current) {
+        clearTimeout(renderTimeoutRef.current);
+      }
+    };
+  }, [code, debouncedRender]);
+
+  // Memoize the className to prevent unnecessary re-calculations (react-shiki pattern)
+  const containerClassName = useMemo(() => {
+    const baseClasses = `shiki not-prose relative bg-card text-sm font-[450] text-card-foreground [&_pre]:!bg-transparent [&_pre]:px-[1em] [&_pre]:py-[1em] [&_pre]:rounded-none [&_pre]:m-0 ${
+      isWrapped
+        ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible"
+        : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
+    }`;
+    return className ? `${baseClasses} ${className}` : baseClasses;
+  }, [isWrapped, className]);
+
+  // Show loading state for initial render or when switching between very different content
+  if (!htmlContent && (isRendering || code)) {
+    return (
+      <div className="px-4 py-4 text-muted-foreground">
+        <ShimmerText>
+          {isStreaming ? "Processing output..." : "Rendering output..."}
+        </ShimmerText>
+      </div>
+    );
+  }
+
+  // Show empty state
+  if (!htmlContent && !code) {
+    return null;
+  }
+
+  return (
+    <div
+      className={containerClassName}
+      style={style}
+      dangerouslySetInnerHTML={{ __html: htmlContent }}
+    />
+  );
+};
 
 export const TerminalCodeBlock = ({
   command,
@@ -179,20 +354,13 @@ export const TerminalCodeBlock = ({
                 <ShimmerText>Executing command</ShimmerText>
               </div>
             ) : (
-              <ShikiHighlighter
-                language="ansi"
+              <AnsiCodeBlock
+                code={output || ""}
+                isWrapped={isWrapped}
+                isStreaming={status === "streaming" || isExecuting}
                 theme="houston"
                 delay={150}
-                addDefaultStyles={false}
-                showLanguage={false}
-                className={`shiki not-prose relative bg-card text-sm font-mono text-card-foreground [&_pre]:!bg-transparent [&_pre]:px-[1em] [&_pre]:py-[1em] [&_pre]:rounded-none [&_pre]:m-0 ${
-                  isWrapped
-                    ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible"
-                    : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
-                }`}
-              >
-                {output || ""}
-              </ShikiHighlighter>
+              />
             )}
           </div>
         </>
