@@ -8,7 +8,13 @@ const middleware = isWorkOSConfigured()
   ? authkitMiddleware({
       middlewareAuth: {
         enabled: true,
-        unauthenticatedPaths: ["/", "/login", "/callback", "/privacy-policy", "/terms-of-service"],
+        unauthenticatedPaths: [
+          "/",
+          "/login",
+          "/callback",
+          "/privacy-policy",
+          "/terms-of-service",
+        ],
       },
     })
   : (request: NextRequest) => {
@@ -21,5 +27,7 @@ export default middleware;
 // Match against pages that require authentication
 // Leave this out if you want authentication on every page in your application
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|apple-touch-icon.png).*)"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|apple-touch-icon.png).*)",
+  ],
 };
