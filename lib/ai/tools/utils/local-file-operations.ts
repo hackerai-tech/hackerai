@@ -45,13 +45,16 @@ export const readLocalFile = async (
     });
 
     return numberedLines.join("\n");
-  } catch (error: any) {
-    if (error.code === "ENOENT") {
+  } catch (error: unknown) {
+    const fileError = error as NodeJS.ErrnoException;
+    if (fileError.code === "ENOENT") {
       throw new Error(`File not found: ${filePath}`);
-    } else if (error.code === "EACCES") {
+    } else if (fileError.code === "EACCES") {
       throw new Error(`Permission denied: ${filePath}`);
     } else {
-      throw new Error(`Error reading file: ${error.message}`);
+      throw new Error(
+        `Error reading file: ${fileError.message || "Unknown error"}`,
+      );
     }
   }
 };
@@ -69,13 +72,16 @@ export const writeLocalFile = async (
 
     const lineCount = contents.split("\n").length;
     return `Successfully wrote ${lineCount} lines to ${filePath}`;
-  } catch (error: any) {
-    if (error.code === "ENOENT") {
+  } catch (error: unknown) {
+    const fileError = error as NodeJS.ErrnoException;
+    if (fileError.code === "ENOENT") {
       throw new Error(`Directory not found for file: ${filePath}`);
-    } else if (error.code === "EACCES") {
+    } else if (fileError.code === "EACCES") {
       throw new Error(`Permission denied: ${filePath}`);
     } else {
-      throw new Error(`Error writing file: ${error.message}`);
+      throw new Error(
+        `Error writing file: ${fileError.message || "Unknown error"}`,
+      );
     }
   }
 };
@@ -100,22 +106,25 @@ export const deleteLocalFile = async (filePath: string): Promise<string> => {
     // Check if file exists first
     const fileExists = await checkLocalFileExists(filePath);
     if (!fileExists) {
-      return `File not found: ${filePath}`;
+      throw new Error(`File not found: ${filePath}`);
     }
 
     // Delete the file
     await unlink(resolvedPath);
 
     return `Successfully deleted file: ${filePath}`;
-  } catch (error: any) {
-    if (error.code === "ENOENT") {
-      return `File not found: ${filePath}`;
-    } else if (error.code === "EACCES") {
+  } catch (error: unknown) {
+    const fileError = error as NodeJS.ErrnoException;
+    if (fileError.code === "ENOENT") {
+      throw new Error(`File not found: ${filePath}`);
+    } else if (fileError.code === "EACCES") {
       throw new Error(`Permission denied: ${filePath}`);
-    } else if (error.code === "EISDIR") {
+    } else if (fileError.code === "EISDIR") {
       throw new Error(`Cannot delete directory with delete_file: ${filePath}`);
     } else {
-      throw new Error(`Error deleting file: ${error.message}`);
+      throw new Error(
+        `Error deleting file: ${fileError.message || "Unknown error"}`,
+      );
     }
   }
 };
@@ -184,10 +193,11 @@ const performStringReplacement = (
 };
 
 // Helper function to handle file operation errors
-const handleFileError = (error: any, filePath: string): never => {
-  if (error.code === "ENOENT") {
+const handleFileError = (error: unknown, filePath: string): never => {
+  const fileError = error as NodeJS.ErrnoException;
+  if (fileError.code === "ENOENT") {
     throw new Error(`File not found: ${filePath}`);
-  } else if (error.code === "EACCES") {
+  } else if (fileError.code === "EACCES") {
     throw new Error(`Permission denied: ${filePath}`);
   } else {
     throw error;
@@ -223,7 +233,7 @@ export const searchReplaceLocalFile = async (
 
     const action = replaceAll ? "replacements" : "replacement";
     return `Successfully made ${replacementCount} ${action} in ${filePath}`;
-  } catch (error: any) {
+  } catch (error: unknown) {
     return handleFileError(error, filePath);
   }
 };
@@ -279,7 +289,7 @@ export const multiEditLocalFile = async (
     await writeFile(resolvedPath, currentContent, "utf-8");
 
     return `Successfully applied ${edits.length} edits with ${totalReplacements} total replacements in ${filePath}:\n${editResults.join("\n")}`;
-  } catch (error: any) {
+  } catch (error: unknown) {
     return handleFileError(error, filePath);
   }
 };

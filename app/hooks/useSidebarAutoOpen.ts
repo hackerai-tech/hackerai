@@ -90,7 +90,7 @@ export const useSidebarAutoOpen = (
 
   // Auto-open sidebar when new assistant messages have content to show
   useEffect(() => {
-    const lastAssistantMessage = messages[lastAssistantMessageIndex || -1];
+    const lastAssistantMessage = messages[lastAssistantMessageIndex ?? -1];
 
     // Skip if already opened for this message
     if (hasOpenedSidebarRef.current === lastAssistantMessage?.id) {

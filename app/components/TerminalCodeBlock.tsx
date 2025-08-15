@@ -14,6 +14,7 @@ interface TerminalCodeBlockProps {
   output?: string;
   isExecuting?: boolean;
   status?: "ready" | "submitted" | "streaming" | "error";
+  isBackground?: boolean;
 }
 
 export const TerminalCodeBlock = ({
@@ -21,6 +22,7 @@ export const TerminalCodeBlock = ({
   output,
   isExecuting = false,
   status,
+  isBackground = false,
 }: TerminalCodeBlockProps) => {
   const [copied, setCopied] = useState(false);
   const [isWrapped, setIsWrapped] = useState(false);
@@ -100,6 +102,13 @@ export const TerminalCodeBlock = ({
           </code>
         </div>
       </div>
+
+      {/* Background process indicator */}
+      {isBackground && (
+        <div className="px-4 py-3 text-muted-foreground border-b border-border">
+          Running in background
+        </div>
+      )}
 
       {/* Menu bar and output - show if output exists or is executing */}
       {(output || isExecuting) && (

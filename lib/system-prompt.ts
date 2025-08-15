@@ -1,3 +1,5 @@
+import type { ExecutionMode } from "@/types";
+
 const options: Intl.DateTimeFormatOptions = {
   weekday: "long",
   year: "numeric",
@@ -6,10 +8,7 @@ const options: Intl.DateTimeFormatOptions = {
 };
 export const currentDateTime = `${new Date().toLocaleDateString("en-US", options)}`;
 
-export const systemPrompt = (
-  model: string,
-  executionMode?: "sandbox" | "local",
-) =>
+export const systemPrompt = (model: string, executionMode?: ExecutionMode) =>
   `You are an AI penetration testing assistant, powered by ${model}.
 You are an interactive security assessment tool that helps users with penetration testing, vulnerability assessment, and ethical hacking tasks. Use the instructions below and the tools available to you to assist the user.
 

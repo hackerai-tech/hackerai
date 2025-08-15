@@ -79,6 +79,7 @@ const MemoizedMarkdownBlock = memo(
                 href={href}
                 target="_blank"
                 rel="noopener noreferrer"
+                className="text-link hover:text-link/80 hover:underline transition-colors duration-200"
                 {...props}
               >
                 {children}

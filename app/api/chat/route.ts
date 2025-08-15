@@ -15,9 +15,8 @@ import { isWorkOSConfigured } from "@/lib/auth-utils";
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { generateTitleFromUserMessage } from "@/lib/actions";
 import { NextRequest } from "next/server";
-import type { ChatMode } from "@/types/chat";
 import { myProvider } from "@/lib/ai/providers";
-import type { ExecutionMode } from "@/lib/ai/tools/execution-types";
+import type { ChatMode, ExecutionMode } from "@/types";
 
 // Allow streaming responses up to 300 seconds
 export const maxDuration = 300;

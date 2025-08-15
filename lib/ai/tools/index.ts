@@ -6,15 +6,14 @@ import { createWriteFile } from "./write-file";
 import { createDeleteFile } from "./delete-file";
 import { createSearchReplace } from "./search-replace";
 import { createMultiEdit } from "./multi-edit";
-import type { ToolContext } from "./types";
 import type { UIMessageStreamWriter } from "ai";
-import type { ExecutionMode } from "./execution-types";
+import type { ChatMode, ExecutionMode, ToolContext } from "@/types";
 
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
   writer: UIMessageStreamWriter,
-  mode: "agent" | "ask" = "agent",
+  mode: ChatMode = "agent",
   executionMode: ExecutionMode = "local",
 ) => {
   let sandbox: Sandbox | null = null;

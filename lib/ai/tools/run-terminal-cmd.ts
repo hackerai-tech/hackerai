@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
-import type { ToolContext } from "./types";
+import type { ToolContext } from "@/types";
 import {
   executeLocalCommand,
   createLocalTerminalHandlers,

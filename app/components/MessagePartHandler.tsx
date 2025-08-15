@@ -298,7 +298,9 @@ export const MessagePartHandler = ({
         ) : null;
       case "output-available": {
         const multiEditOutput = output as { result: string };
-        const isSuccess = multiEditOutput.result.includes("Successfully applied");
+        const isSuccess = multiEditOutput.result.includes(
+          "Successfully applied",
+        );
 
         return (
           <ToolBlock
@@ -351,6 +353,7 @@ export const MessagePartHandler = ({
             output={streamingOutput}
             isExecuting={true}
             status={status}
+            isBackground={terminalInput.is_background}
           />
         );
       case "output-available": {
@@ -366,6 +369,7 @@ export const MessagePartHandler = ({
             command={terminalInput.command}
             output={terminalOutputContent}
             status={status}
+            isBackground={terminalInput.is_background}
           />
         );
       }

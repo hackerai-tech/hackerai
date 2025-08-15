@@ -1,5 +1,5 @@
 import type { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxContext } from "../types";
+import type { SandboxContext } from "@/types";
 import { createOrConnectPersistentTerminal } from "./sandbox";
 
 const SANDBOX_TEMPLATE = "persistent-sandbox";

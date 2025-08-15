@@ -44,11 +44,18 @@ export const executeLocalCommand = async (
       const { stdout, stderr } = await execAsync(command, { cwd });
       return { stdout, stderr, exitCode: 0 };
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
+    const execError = error as {
+      stdout?: string;
+      stderr?: string;
+      message?: string;
+      code?: number;
+    };
     return {
-      stdout: error.stdout || "",
-      stderr: error.stderr || error.message || "Command execution failed",
-      exitCode: error.code || 1,
+      stdout: execError.stdout || "",
+      stderr:
+        execError.stderr || execError.message || "Command execution failed",
+      exitCode: execError.code || 1,
     };
   }
 };
@@ -116,18 +123,13 @@ const executeBackgroundCommand = (
       detached: true,
     });
 
-    let stdout = "";
-    let stderr = "";
-
     child.stdout?.on("data", (data) => {
       const output = data.toString();
-      stdout += output;
       options.onStdout?.(output);
     });
 
     child.stderr?.on("data", (data) => {
       const output = data.toString();
-      stderr += output;
       options.onStderr?.(output);
     });
 

@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { ToolContext } from "./types";
+import type { ToolContext } from "@/types";
 import { writeLocalFile } from "./utils/local-file-operations";
 
 export const createWriteFile = (context: ToolContext) => {
