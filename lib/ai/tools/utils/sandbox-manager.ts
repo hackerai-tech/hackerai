@@ -1,5 +1,5 @@
 import type { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxManager } from "../types";
+import type { SandboxManager } from "@/types";
 import { ensureSandboxConnection } from "./sandbox-utils";
 
 export class DefaultSandboxManager implements SandboxManager {

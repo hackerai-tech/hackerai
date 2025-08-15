@@ -2,10 +2,14 @@ import { tool } from "ai";
 import { z } from "zod";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
-import type { ToolContext } from "./types";
+import type { ToolContext } from "@/types";
+import {
+  executeLocalCommand,
+  createLocalTerminalHandlers,
+} from "./utils/local-terminal";
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer } = context;
+  const { sandboxManager, writer, executionMode } = context;
 
   return tool({
     description: `PROPOSE a command to run on behalf of the user.
@@ -42,40 +46,58 @@ In using these tools, adhere to the following guidelines:
       { toolCallId }: { toolCallId: string },
     ) => {
       try {
-        const { sandbox } = await sandboxManager.getSandbox();
+        if (executionMode === "local") {
+          // Execute locally using Node.js child_process
+          const { onStdout, onStderr } = createLocalTerminalHandlers(
+            writer,
+            toolCallId,
+          );
 
-        // Generate cryptographically strong unique ID for this terminal session
-        const terminalSessionId = `terminal-${randomUUID()}`;
-        let outputCounter = 0;
+          const result = await executeLocalCommand(command, {
+            cwd: process.cwd(),
+            onStdout,
+            onStderr,
+            background: is_background,
+          });
 
-        // Create common handlers
-        const commonOptions = {
-          user: "root" as const,
-          cwd: "/home/user",
-          onStdout: (output: string) => {
-            writer.write({
-              type: "data-terminal",
-              id: `${terminalSessionId}-${++outputCounter}`,
-              data: { terminal: output, toolCallId },
-            });
-          },
-          onStderr: (output: string) => {
-            writer.write({
-              type: "data-terminal",
-              id: `${terminalSessionId}-${++outputCounter}`,
-              data: { terminal: output, toolCallId },
-            });
-          },
-        };
+          return { result };
+        } else {
+          // Execute in sandbox (existing behavior)
+          const { sandbox } = await sandboxManager.getSandbox();
 
-        const execution = is_background
-          ? await sandbox.commands.run(command, {
-              ...commonOptions,
-              background: true,
-            })
-          : await sandbox.commands.run(command, commonOptions);
+          // Generate cryptographically strong unique ID for this terminal session
+          const terminalSessionId = `terminal-${randomUUID()}`;
+          let outputCounter = 0;
 
-        return { result: execution };
+          // Create common handlers
+          const commonOptions = {
+            user: "root" as const,
+            cwd: "/home/user",
+            onStdout: (output: string) => {
+              writer.write({
+                type: "data-terminal",
+                id: `${terminalSessionId}-${++outputCounter}`,
+                data: { terminal: output, toolCallId },
+              });
+            },
+            onStderr: (output: string) => {
+              writer.write({
+                type: "data-terminal",
+                id: `${terminalSessionId}-${++outputCounter}`,
+                data: { terminal: output, toolCallId },
+              });
+            },
+          };
+
+          const execution = is_background
+            ? await sandbox.commands.run(command, {
+                ...commonOptions,
+                background: true,
+              })
+            : await sandbox.commands.run(command, commonOptions);
+
+          return { result: execution };
+        }
       } catch (error) {
         return error as CommandExitError;
       }

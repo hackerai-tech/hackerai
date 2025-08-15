@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
+@custom-variant desktop (@media (min-width: 950px));
 
 @theme inline {
   --color-background: var(--background);
@@ -25,6 +26,7 @@
   --color-input: var(--input);
   --color-input-chat: var(--fill-input-chat);
   --color-border: var(--border);
+  --color-link: var(--link-color);
   --color-destructive: var(--destructive);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
@@ -86,6 +88,9 @@
   /* Custom chat input */
   --fill-input-chat: #f5f5f5;
 
+  /* Custom link colors */
+  --link-color: #7e9fbe;
+
   /* Scrollbar colors */
   --scrollbar-track: var(--background);
   --scrollbar-thumb: rgba(0, 0, 0, 0.2);
@@ -132,6 +137,9 @@
 
   /* Custom chat input */
   --fill-input-chat: #1a1a1a;
+
+  /* Custom link colors */
+  --link-color: #7e9fbe;
 
   /* Scrollbar colors */
   --scrollbar-track: var(--background);

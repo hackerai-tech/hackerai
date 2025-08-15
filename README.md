@@ -26,16 +26,23 @@ Before running the application, you need to obtain API keys for the following se
 
 2. **Set up environment variables:**
    - Copy `.env.local.example` to `.env.local`
-   - Add your API keys to the `.env.local` file:
+   - Add the following required configuration:
      ```
+     # OpenRouter API key (Required)
+     # Get your API key at: https://openrouter.ai/
      OPENROUTER_API_KEY=your_openrouter_api_key_here
-     E2B_API_KEY=your_e2b_api_key_here
      ```
-   - Optionally customize the AI models:
-     ```
-     NEXT_PUBLIC_AGENT_MODEL=qwen/qwen3-coder
-     NEXT_PUBLIC_TITLE_MODEL=qwen/qwen-turbo
-     ```
+
+   HackerAI can execute terminal commands locally (default) or in sandbox. For sandbox mode, you'll need an E2B API key:
+
+   ```
+   # Switch to sandbox mode (optional)
+   TERMINAL_EXECUTION_MODE=sandbox
+
+   # E2B API key for sandbox execution
+   # Get your API key at: https://e2b.dev/
+   E2B_API_KEY=your_e2b_api_key_here
+   ```
 
 3. **Run the development server:**
 

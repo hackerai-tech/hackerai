@@ -3,14 +3,18 @@ import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
-import type { ToolContext } from "./types";
+import { createDeleteFile } from "./delete-file";
+import { createSearchReplace } from "./search-replace";
+import { createMultiEdit } from "./multi-edit";
 import type { UIMessageStreamWriter } from "ai";
+import type { ChatMode, ExecutionMode, ToolContext } from "@/types";
 
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
   writer: UIMessageStreamWriter,
-  mode: "agent" | "ask" = "agent",
+  mode: ChatMode = "agent",
+  executionMode: ExecutionMode = "local",
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -25,6 +29,7 @@ export const createTools = (
   const context: ToolContext = {
     sandboxManager,
     writer,
+    executionMode,
   };
 
   // Create all available tools
@@ -32,6 +37,9 @@ export const createTools = (
     runTerminalCmd: createRunTerminalCmd(context),
     readFile: createReadFile(context),
     writeFile: createWriteFile(context),
+    deleteFile: createDeleteFile(context),
+    searchReplace: createSearchReplace(context),
+    multiEdit: createMultiEdit(context),
   };
 
   // Filter tools based on mode

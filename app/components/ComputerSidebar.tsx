@@ -86,7 +86,7 @@ export const ComputerSidebar: React.FC = () => {
   };
 
   return (
-    <div className="h-full w-full top-0 left-0 md:top-auto md:left-auto md:right-auto z-50 fixed md:relative md:h-full py-3 md:mr-4 flex-shrink-0">
+    <div className="h-full w-full top-0 left-0 desktop:top-auto desktop:left-auto desktop:right-auto z-50 fixed desktop:relative desktop:h-full py-3 desktop:mr-4 flex-shrink-0">
       <div className="h-full w-full">
         <div className="shadow-[0px_0px_8px_0px_rgba(0,0,0,0.02)] border border-border/20 dark:border-border flex h-full w-full bg-background rounded-[22px]">
           <div className="flex-1 min-w-0 p-4 flex flex-col h-full">

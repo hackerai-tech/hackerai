@@ -38,7 +38,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
           isClickable && target ? `Open ${target} in sidebar` : undefined
         }
       >
-        <div className="w-[21px] inline-flex items-center flex-shrink-0 text-foreground">
+        <div className="w-[21px] inline-flex items-center flex-shrink-0 text-foreground [&>svg]:h-4 [&>svg]:w-4">
           {icon}
         </div>
         <div className="max-w-[100%] truncate text-muted-foreground relative top-[-1px]">

@@ -1,12 +1,13 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { ToolContext } from "./types";
+import type { ToolContext } from "@/types";
+import { writeLocalFile } from "./utils/local-file-operations";
 
 export const createWriteFile = (context: ToolContext) => {
-  const { sandboxManager } = context;
+  const { sandboxManager, executionMode } = context;
 
   return tool({
-    description: `Writes a file to the local filesystem.
+    description: `Writes a file to the filesystem.
 
 Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
@@ -29,13 +30,20 @@ Usage:
       contents: string;
     }) => {
       try {
-        const { sandbox } = await sandboxManager.getSandbox();
+        if (executionMode === "local") {
+          // Write file locally using Node.js fs
+          const result = await writeLocalFile(file_path, contents);
+          return { result };
+        } else {
+          // Write file to sandbox (existing behavior)
+          const { sandbox } = await sandboxManager.getSandbox();
 
-        await sandbox.files.write(file_path, contents);
+          await sandbox.files.write(file_path, contents);
 
-        return {
-          result: `Successfully wrote ${contents.split("\n").length} lines to ${file_path}`,
-        };
+          return {
+            result: `Successfully wrote ${contents.split("\n").length} lines to ${file_path}`,
+          };
+        }
       } catch (error) {
         return {
           result: `Error writing file: ${error instanceof Error ? error.message : String(error)}`,

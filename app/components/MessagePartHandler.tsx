@@ -3,7 +3,7 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { ShimmerText } from "./ShimmerText";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import ToolBlock from "@/components/ui/tool-block";
-import { SquarePen, FileText } from "lucide-react";
+import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { CommandResult } from "@e2b/code-interpreter";
 import { useGlobalState } from "../contexts/GlobalState";
 
@@ -51,7 +51,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
+            icon={<FileText />}
             action="Reading file"
             isShimmer={true}
           />
@@ -60,19 +60,12 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
+            icon={<FileText />}
             action="Reading"
             target={`${readInput.target_file}${getFileRange()}`}
             isShimmer={true}
           />
-        ) : (
-          <ToolBlock
-            key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
-            action="Reading"
-            target={`${readInput.target_file}${getFileRange()}`}
-          />
-        );
+        ) : null;
       case "output-available": {
         const readOutput = output as { result: string };
 
@@ -104,7 +97,7 @@ export const MessagePartHandler = ({
         return (
           <ToolBlock
             key={toolCallId}
-            icon={<FileText className="h-4 w-4" />}
+            icon={<FileText />}
             action="Read"
             target={`${readInput.target_file}${getFileRange()}`}
             isClickable={true}
@@ -130,7 +123,7 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
+            icon={<FilePlus />}
             action="Creating file"
             isShimmer={true}
           />
@@ -139,42 +132,17 @@ export const MessagePartHandler = ({
         return status === "streaming" ? (
           <ToolBlock
             key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
+            icon={<FilePlus />}
             action="Writing to"
             target={writeInput.file_path}
             isShimmer={true}
           />
-        ) : (
-          <ToolBlock
-            key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
-            action="Writing to"
-            target={writeInput.file_path}
-            isClickable={true}
-            onClick={() => {
-              openFileInSidebar({
-                path: writeInput.file_path,
-                content: writeInput.contents,
-                action: "writing",
-              });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                openFileInSidebar({
-                  path: writeInput.file_path,
-                  content: writeInput.contents,
-                  action: "writing",
-                });
-              }
-            }}
-          />
-        );
+        ) : null;
       case "output-available":
         return (
           <ToolBlock
             key={toolCallId}
-            icon={<SquarePen className="h-4 w-4" />}
+            icon={<FilePlus />}
             action="Successfully wrote"
             target={writeInput.file_path}
             isClickable={true}
@@ -197,6 +165,156 @@ export const MessagePartHandler = ({
             }}
           />
         );
+      default:
+        return null;
+    }
+  };
+
+  const renderDeleteFileTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const deleteInput = input as {
+      target_file: string;
+      explanation: string;
+    };
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileMinus />}
+            action="Deleting file"
+            isShimmer={true}
+          />
+        ) : null;
+      case "input-available":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileMinus />}
+            action="Deleting"
+            target={deleteInput.target_file}
+            isShimmer={true}
+          />
+        ) : null;
+      case "output-available": {
+        const deleteOutput = output as { result: string };
+        const isSuccess = deleteOutput.result.includes("Successfully deleted");
+
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FileMinus />}
+            action={isSuccess ? "Successfully deleted" : "Failed to delete"}
+            target={deleteInput.target_file}
+          />
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  const renderSearchReplaceTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const searchReplaceInput = input as {
+      file_path: string;
+      old_string: string;
+      new_string: string;
+      replace_all?: boolean;
+    };
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action="Editing file"
+            isShimmer={true}
+          />
+        ) : null;
+      case "input-available":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={
+              searchReplaceInput.replace_all ? "Replacing all in" : "Editing"
+            }
+            target={searchReplaceInput.file_path}
+            isShimmer={true}
+          />
+        ) : null;
+      case "output-available": {
+        const searchReplaceOutput = output as { result: string };
+        const isSuccess =
+          searchReplaceOutput.result.includes("Successfully made");
+
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={isSuccess ? "Successfully edited" : "Failed to edit"}
+            target={searchReplaceInput.file_path}
+          />
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  const renderMultiEditTool = () => {
+    const { toolCallId, state, input, output } = part;
+    const multiEditInput = input as {
+      file_path: string;
+      edits: Array<{
+        old_string: string;
+        new_string: string;
+        replace_all?: boolean;
+      }>;
+    };
+
+    switch (state) {
+      case "input-streaming":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action="Making multiple edits"
+            isShimmer={true}
+          />
+        ) : null;
+      case "input-available":
+        return status === "streaming" ? (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={`Making ${multiEditInput.edits.length} edits to`}
+            target={multiEditInput.file_path}
+            isShimmer={true}
+          />
+        ) : null;
+      case "output-available": {
+        const multiEditOutput = output as { result: string };
+        const isSuccess = multiEditOutput.result.includes(
+          "Successfully applied",
+        );
+
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<FilePen />}
+            action={
+              isSuccess
+                ? `Successfully applied ${multiEditInput.edits.length} edits`
+                : "Failed to apply edits"
+            }
+            target={multiEditInput.file_path}
+          />
+        );
+      }
       default:
         return null;
     }
@@ -235,6 +353,7 @@ export const MessagePartHandler = ({
             output={streamingOutput}
             isExecuting={true}
             status={status}
+            isBackground={terminalInput.is_background}
           />
         );
       case "output-available": {
@@ -250,6 +369,7 @@ export const MessagePartHandler = ({
             command={terminalInput.command}
             output={terminalOutputContent}
             status={status}
+            isBackground={terminalInput.is_background}
           />
         );
       }
@@ -268,6 +388,15 @@ export const MessagePartHandler = ({
 
     case "tool-writeFile":
       return renderWriteFileTool();
+
+    case "tool-deleteFile":
+      return renderDeleteFileTool();
+
+    case "tool-searchReplace":
+      return renderSearchReplaceTool();
+
+    case "tool-multiEdit":
+      return renderMultiEditTool();
 
     case "data-terminal":
     case "tool-runTerminalCmd":
