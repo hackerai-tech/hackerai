@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { RefObject } from "react";
+import { RefObject, useRef } from "react";
 
 import { Messages } from "./components/Messages";
 import { ChatInput } from "./components/ChatInput";
@@ -39,6 +39,9 @@ export default function Page() {
   });
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
+  
+  // Ref to reset sidebar auto-open flag
+  const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,6 +49,11 @@ export default function Page() {
       // Clear title when starting a new conversation
       if (messages.length === 0) {
         setChatTitle(null);
+      }
+
+      // Reset sidebar auto-open flag for new request
+      if (resetSidebarAutoOpenRef.current) {
+        resetSidebarAutoOpenRef.current();
       }
 
       sendMessage(
@@ -81,7 +89,7 @@ export default function Page() {
         <div
           className={`bg-background flex flex-col relative transition-all duration-300 min-w-0 ${
             sidebarOpen
-              ? "w-full md:w-1/2 md:flex-shrink-0" // Full width on mobile, half on desktop when sidebar is open
+              ? "w-full desktop:w-1/2 desktop:flex-shrink-0" // Full width on mobile/tablet, half on desktop when sidebar is open
               : "w-full"
           }`}
         >
@@ -113,6 +121,7 @@ export default function Page() {
                 onRegenerate={handleRegenerate}
                 status={status}
                 error={error || null}
+                resetSidebarAutoOpen={resetSidebarAutoOpenRef}
               />
 
               {/* Input area */}
@@ -153,7 +162,7 @@ export default function Page() {
           <div
             className={`fixed bottom-34 z-40 transition-all duration-300 ${
               sidebarOpen
-                ? "left-1/2 md:left-1/4 -translate-x-1/2" // Center of full screen on mobile, center of left half on desktop
+                ? "left-1/2 desktop:left-1/4 -translate-x-1/2" // Center of full screen on mobile/tablet, center of left half on desktop
                 : "left-1/2 -translate-x-1/2" // Center of full screen when sidebar is closed
             }`}
           >
@@ -166,19 +175,19 @@ export default function Page() {
 
         {/* Computer Sidebar - responsive behavior */}
         <div
-          className={`hidden md:block transition-all duration-300 min-w-0 ${
+          className={`hidden desktop:block transition-all duration-300 min-w-0 ${
             sidebarOpen
-              ? "md:w-1/2 md:flex-shrink-0"
-              : "md:w-0 md:overflow-hidden"
+              ? "desktop:w-1/2 desktop:flex-shrink-0"
+              : "desktop:w-0 desktop:overflow-hidden"
           }`}
         >
           {sidebarOpen && <ComputerSidebar />}
         </div>
       </div>
 
-      {/* Mobile full-screen sidebar */}
+      {/* Mobile/Tablet full-screen sidebar */}
       {sidebarOpen && (
-        <div className="md:hidden fixed inset-0 z-50 bg-background flex items-center justify-center p-4">
+        <div className="desktop:hidden flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
           <div className="w-full max-w-4xl h-full">
             <ComputerSidebar />
           </div>

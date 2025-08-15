@@ -63,7 +63,7 @@ Usage:
             // Validate that old_string and new_string are different
             if (old_string === new_string) {
               return {
-                result: "old_string and new_string must be different",
+                result: "Invalid: old_string and new_string are exactly the same",
               };
             }
 

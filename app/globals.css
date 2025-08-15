@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
+@custom-variant desktop (@media (min-width: 950px));
 
 @theme inline {
   --color-background: var(--background);

@@ -1,8 +1,9 @@
 import { UIMessage } from "@ai-sdk/react";
-import { useState, RefObject } from "react";
+import { useState, RefObject, useEffect } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import DotsSpinner from "@/components/ui/dots-spinner";
+import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
 
 interface MessagesProps {
   messages: UIMessage[];
@@ -11,6 +12,7 @@ interface MessagesProps {
   error: Error | null;
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
+  resetSidebarAutoOpen?: RefObject<(() => void) | null>;
 }
 
 export const Messages = ({
@@ -20,6 +22,7 @@ export const Messages = ({
   error,
   scrollRef,
   contentRef,
+  resetSidebarAutoOpen,
 }: MessagesProps) => {
   // Find the last assistant message
   const lastAssistantMessageIndex = messages
@@ -29,6 +32,16 @@ export const Messages = ({
 
   // Track hover state for all messages
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
+  
+  // Handle sidebar auto-opening
+  const { resetSidebarFlag } = useSidebarAutoOpen(messages, lastAssistantMessageIndex, status);
+  
+  // Expose reset function to parent if provided
+  useEffect(() => {
+    if (resetSidebarAutoOpen) {
+      resetSidebarAutoOpen.current = resetSidebarFlag;
+    }
+  }, [resetSidebarFlag, resetSidebarAutoOpen]);
 
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
