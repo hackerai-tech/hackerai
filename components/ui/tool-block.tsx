@@ -21,7 +21,7 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
   onKeyDown,
 }) => {
   const baseClasses =
-    "rounded-[15px] px-[10px] py-[3px] border border-border bg-muted/20 inline-flex max-w-full gap-[4px] items-center relative h-[28px] overflow-hidden";
+    "rounded-[15px] px-[10px] py-[6px] border border-border bg-muted/20 inline-flex max-w-full gap-[4px] items-center relative h-[36px] overflow-hidden";
   const clickableClasses = isClickable
     ? "cursor-pointer hover:bg-muted/40 transition-colors"
     : "";
