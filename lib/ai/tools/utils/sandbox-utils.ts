@@ -2,7 +2,7 @@ import type { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxContext } from "@/types";
 import { createOrConnectPersistentTerminal } from "./sandbox";
 
-const SANDBOX_TEMPLATE = "persistent-sandbox";
+const SANDBOX_TEMPLATE = "terminal-agent-sandbox";
 const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
 
 export const ensureSandboxConnection = async (
