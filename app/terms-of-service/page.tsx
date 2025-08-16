@@ -26,7 +26,7 @@ export default function TermsOfServicePage() {
         </h1>
 
         <div className="mt-4 text-lg leading-relaxed text-card-foreground">
-          <ul className="list-inside list-decimal">
+          <ol className="list-inside list-decimal">
             <li className="mb-3">
               <strong>Lawful Use:</strong> Users of products, services, or
               software (&quot;Products&quot;) provided by HackerAI LLC
@@ -80,11 +80,14 @@ export default function TermsOfServicePage() {
               reflected in the provision, and the other provisions of the Terms
               of Service remain in full force and effect.
             </li>
+          </ol>
+          
+          <p className="mt-4">
             By using the Products provided by HackerAI LLC, you indicate your
             understanding and agreement to abide by the terms and conditions set
             forth in these Terms of Service. If you do not agree with these
             terms, please refrain from using the Products.
-          </ul>
+          </p>
         </div>
       </div>
     </div>

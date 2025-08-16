@@ -98,8 +98,24 @@ If you want to create a new file, use:
               };
             }
 
-            // Read the file content
-            let currentContent = await sandbox.files.read(file_path);
+            // Check if file exists and handle file creation
+            let currentContent: string;
+            let fileExists = true;
+            
+            try {
+              currentContent = await sandbox.files.read(file_path);
+            } catch (error) {
+              // File doesn't exist - check if this is a file creation case
+              fileExists = false;
+              const firstEdit = edits[0];
+              if (firstEdit.old_string !== "") {
+                return {
+                  result: `File not found: ${file_path}. For new file creation, the first edit must have an empty old_string and the file contents as new_string.`,
+                };
+              }
+              currentContent = "";
+            }
+            
             let totalReplacements = 0;
             const editResults: string[] = [];
 
@@ -107,6 +123,21 @@ If you want to create a new file, use:
             for (let i = 0; i < edits.length; i++) {
               const edit = edits[i];
               const { old_string, new_string, replace_all = false } = edit;
+
+              // Handle file creation case (empty old_string means insert content)
+              if (old_string === "") {
+                if (i === 0 && !fileExists) {
+                  // First edit for new file creation
+                  currentContent = new_string;
+                  totalReplacements += 1;
+                  editResults.push(`Edit ${i + 1}: Created file with content`);
+                  continue;
+                } else {
+                  return {
+                    result: `Edit ${i + 1}: Empty old_string is only allowed for the first edit when creating a new file`,
+                  };
+                }
+              }
 
               // Validate that old_string and new_string are different
               if (old_string === new_string) {

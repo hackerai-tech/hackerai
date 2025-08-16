@@ -1,3 +1,5 @@
+"use client";
+
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Copy, Check, Download, WrapText, Terminal } from "lucide-react";
 import { codeToHtml } from "shiki";
@@ -33,10 +35,10 @@ const MAX_CACHE_SIZE = 100;
 
 // Clean cache when it gets too large
 const cleanCache = () => {
-  if (ansiCache.size > MAX_CACHE_SIZE) {
+  if (ansiCache.size >= MAX_CACHE_SIZE) {
     const entries = Array.from(ansiCache.entries());
-    // Remove oldest half of entries (FIFO)
-    const toRemove = Math.floor(MAX_CACHE_SIZE / 2);
+    // Remove only the overflow count of oldest entries (FIFO)
+    const toRemove = Math.max(0, ansiCache.size - MAX_CACHE_SIZE + 1);
     for (let i = 0; i < toRemove; i++) {
       ansiCache.delete(entries[i][0]);
     }
@@ -109,6 +111,7 @@ const AnsiCodeBlock = ({
           // Only update if this is still the current render request
           if (cacheKeyRef.current === cacheKey) {
             setHtmlContent(html);
+            cleanCache();
             ansiCache.set(cacheKey, html);
             lastRenderedCodeRef.current = codeToRender;
           }

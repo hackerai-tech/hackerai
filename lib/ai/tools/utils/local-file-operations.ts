@@ -249,16 +249,28 @@ export const multiEditLocalFile = async (
   edits: EditOperation[],
 ): Promise<string> => {
   try {
-    // Validate file access and get resolved path
-    const resolvedPath = await validateFileAccess(filePath);
-
     // Validate edits array
     if (!edits || edits.length === 0) {
       throw new Error("No edits provided");
     }
 
-    // Read the file content
-    let currentContent = await readFile(resolvedPath, "utf-8");
+    const resolvedPath = resolve(filePath);
+    const fileExists = await checkLocalFileExists(filePath);
+    
+    // Handle file creation case
+    if (!fileExists) {
+      // For new file creation, first edit must have empty old_string
+      const firstEdit = edits[0];
+      if (firstEdit.old_string !== "") {
+        throw new Error("File not found. For new file creation, the first edit must have an empty old_string and the file contents as new_string.");
+      }
+    } else {
+      // For existing files, validate file access
+      await validateFileAccess(filePath);
+    }
+
+    // Read the file content (or start with empty string for new files)
+    let currentContent = fileExists ? await readFile(resolvedPath, "utf-8") : "";
     let totalReplacements = 0;
     const editResults: string[] = [];
 
@@ -267,22 +279,34 @@ export const multiEditLocalFile = async (
       const edit = edits[i];
       const { old_string, new_string, replace_all = false } = edit;
 
-      // Validate edit parameters
-      validateEdit(old_string, new_string, i);
+      // Handle file creation case (empty old_string means insert content)
+      if (old_string === "") {
+        if (i === 0 && !fileExists) {
+          // First edit for new file creation
+          currentContent = new_string;
+          totalReplacements += 1;
+          editResults.push(`Edit ${i + 1}: Created file with content`);
+        } else {
+          throw new Error(`Edit ${i + 1}: Empty old_string is only allowed for the first edit when creating a new file`);
+        }
+      } else {
+        // Validate edit parameters (skip validation for empty old_string)
+        validateEdit(old_string, new_string, i);
 
-      // Perform the string replacement
-      const { updatedContent, replacementCount } = performStringReplacement(
-        currentContent,
-        old_string,
-        new_string,
-        replace_all,
-        i,
-      );
+        // Perform the string replacement
+        const { updatedContent, replacementCount } = performStringReplacement(
+          currentContent,
+          old_string,
+          new_string,
+          replace_all,
+          i,
+        );
 
-      currentContent = updatedContent;
-      totalReplacements += replacementCount;
-      const action = replace_all ? "replacements" : "replacement";
-      editResults.push(`Edit ${i + 1}: ${replacementCount} ${action}`);
+        currentContent = updatedContent;
+        totalReplacements += replacementCount;
+        const action = replace_all ? "replacements" : "replacement";
+        editResults.push(`Edit ${i + 1}: ${replacementCount} ${action}`);
+      }
     }
 
     // Write the updated content back to the file
