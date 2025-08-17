@@ -3,30 +3,38 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { RefObject, useRef } from "react";
-
 import { Messages } from "./components/Messages";
 import { ChatInput } from "./components/ChatInput";
 import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
 import { ComputerSidebar } from "./components/ComputerSidebar";
+import Header from "./components/Header";
 import { useMessageScroll } from "./hooks/useMessageScroll";
 import { useGlobalState } from "./contexts/GlobalState";
 import { normalizeMessages } from "@/lib/utils/message-processor";
+import { ChatSDKError } from "@/lib/errors";
+import { fetchWithErrorHandlers } from "@/lib/utils";
+import { toast } from "sonner";
+import { useAppAuth } from "./hooks/useAppAuth";
+import { isWorkOSEnabled } from "@/lib/auth/client";
 
 export default function Page() {
   const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =
     useGlobalState();
 
+  const { user } = useAppAuth();
+
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
-      prepareSendMessagesRequest: ({ messages }) => {
+      fetch: fetchWithErrorHandlers,
+      prepareSendMessagesRequest: ({ messages, body }) => {
         // Normalize messages on the frontend before sending to API
         const normalizedMessages = normalizeMessages(messages);
 
         return {
           body: {
             messages: normalizedMessages,
-            mode,
+            ...body,
           },
         };
       },
@@ -34,6 +42,15 @@ export default function Page() {
     onData: ({ data, type }) => {
       if (type === "data-title") {
         setChatTitle((data as { chatTitle: string }).chatTitle);
+      }
+    },
+    onError: (error) => {
+      if (error instanceof ChatSDKError) {
+        // For rate limit errors, let them flow to the Messages component
+        // For other errors, show toast
+        if (error.type !== "rate_limit") {
+          toast.error(error.message);
+        }
       }
     },
   });
@@ -46,6 +63,12 @@ export default function Page() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
+      // Only require authentication in WorkOS mode
+      if (isWorkOSEnabled() && !user) {
+        window.location.href = "/login";
+        return;
+      }
+
       // Clear title when starting a new conversation
       if (messages.length === 0) {
         setChatTitle(null);
@@ -84,7 +107,12 @@ export default function Page() {
 
   return (
     <div className="h-screen bg-background overflow-hidden">
-      <div className="flex h-full max-w-full">
+      {/* Show header when there are no messages */}
+      {!hasMessages && <Header />}
+
+      <div
+        className={`flex max-w-full ${!hasMessages ? "h-[calc(100vh-58px)]" : "h-full"}`}
+      >
         {/* Chat interface - responsive width based on screen size and sidebar state */}
         <div
           className={`bg-background flex flex-col relative transition-all duration-300 min-w-0 ${

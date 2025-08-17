@@ -256,13 +256,15 @@ export const multiEditLocalFile = async (
 
     const resolvedPath = resolve(filePath);
     const fileExists = await checkLocalFileExists(filePath);
-    
+
     // Handle file creation case
     if (!fileExists) {
       // For new file creation, first edit must have empty old_string
       const firstEdit = edits[0];
       if (firstEdit.old_string !== "") {
-        throw new Error("File not found. For new file creation, the first edit must have an empty old_string and the file contents as new_string.");
+        throw new Error(
+          "File not found. For new file creation, the first edit must have an empty old_string and the file contents as new_string.",
+        );
       }
     } else {
       // For existing files, validate file access
@@ -270,7 +272,9 @@ export const multiEditLocalFile = async (
     }
 
     // Read the file content (or start with empty string for new files)
-    let currentContent = fileExists ? await readFile(resolvedPath, "utf-8") : "";
+    let currentContent = fileExists
+      ? await readFile(resolvedPath, "utf-8")
+      : "";
     let totalReplacements = 0;
     const editResults: string[] = [];
 
@@ -287,7 +291,9 @@ export const multiEditLocalFile = async (
           totalReplacements += 1;
           editResults.push(`Edit ${i + 1}: Created file with content`);
         } else {
-          throw new Error(`Edit ${i + 1}: Empty old_string is only allowed for the first edit when creating a new file`);
+          throw new Error(
+            `Edit ${i + 1}: Empty old_string is only allowed for the first edit when creating a new file`,
+          );
         }
       } else {
         // Validate edit parameters (skip validation for empty old_string)

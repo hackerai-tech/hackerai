@@ -101,7 +101,7 @@ If you want to create a new file, use:
             // Check if file exists and handle file creation
             let currentContent: string;
             let fileExists = true;
-            
+
             try {
               currentContent = await sandbox.files.read(file_path);
             } catch (error) {
@@ -115,7 +115,7 @@ If you want to create a new file, use:
               }
               currentContent = "";
             }
-            
+
             let totalReplacements = 0;
             const editResults: string[] = [];
 

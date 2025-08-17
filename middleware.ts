@@ -1,16 +1,18 @@
 import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
 import { NextRequest, NextResponse } from "next/server";
-import { isWorkOSConfigured } from "@/lib/auth-utils";
+import { isWorkOSEnabled } from "@/lib/auth/client";
 
 // If WorkOS is configured, use authkit middleware
 // Otherwise, just pass through requests
-const middleware = isWorkOSConfigured()
+const middleware = isWorkOSEnabled()
   ? authkitMiddleware({
       middlewareAuth: {
         enabled: true,
         unauthenticatedPaths: [
           "/",
           "/login",
+          "/signup",
+          "/logout",
           "/callback",
           "/privacy-policy",
           "/terms-of-service",

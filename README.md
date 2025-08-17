@@ -1,56 +1,61 @@
-# HackerAI - The AI Pentest Assistant
+# HackerAI
 
-## Prerequisites
+_Your AI-Powered Penetration Testing Assistant_
 
-Before running the application, you need to obtain API keys for the following services:
+---
 
-### Required API Keys
+## 🚀 Quick Start
 
-1. **OpenRouter API Key** - For LLM (Large Language Model) usage
-   - Sign up at [https://openrouter.ai/](https://openrouter.ai/)
-   - Get your API key from the dashboard
-   - This enables the AI to access various models including Claude, GPT, etc.
+### 1. Install Dependencies
 
-2. **E2B API Key** - For secure sandbox environments
-   - Sign up at [https://e2b.dev/](https://e2b.dev/)
-   - Get your API key from the dashboard
-   - This allows the AI to execute terminal commands and Python code safely in isolated containers
+```bash
+pnpm install
+```
 
-## Getting Started
+### 2. Configure Environment
 
-1. **Install dependencies:**
+Create `.env.local` from the example file:
 
-   ```bash
-   pnpm i
-   ```
+```bash
+cp .env.local.example .env.local
+```
 
-2. **Set up environment variables:**
-   - Copy `.env.local.example` to `.env.local`
-   - Add the following required configuration:
-     ```
-     # OpenRouter API key (Required)
-     # Get your API key at: https://openrouter.ai/
-     OPENROUTER_API_KEY=your_openrouter_api_key_here
-     ```
+Add your OpenRouter API key:
 
-   HackerAI can execute terminal commands locally (default) or in sandbox. For sandbox mode, you'll need an E2B API key:
+```env
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+```
 
-   ```
-   # Switch to sandbox mode (optional)
-   TERMINAL_EXECUTION_MODE=sandbox
+### 3. Launch Application
 
-   # E2B API key for sandbox execution
-   # Get your API key at: https://e2b.dev/
-   E2B_API_KEY=your_e2b_api_key_here
-   ```
+```bash
+pnpm dev
+```
 
-3. **Run the development server:**
+Visit **[http://localhost:3000](http://localhost:3000)** and start your penetration testing journey! 🎯
 
-   ```bash
-   pnpm dev
-   ```
+---
 
-4. **Open the application:**
-   - Navigate to [http://localhost:3000](http://localhost:3000) in your browser
+## 🔑 API Configuration
 
-The AI assistant is now ready to help with your penetration testing tasks!
+### Required
+
+| Service        | Purpose                        | Get API Key                             |
+| -------------- | ------------------------------ | --------------------------------------- |
+| **OpenRouter** | LLM access (Claude, GPT, etc.) | [openrouter.ai](https://openrouter.ai/) |
+
+### Optional - Sandbox Mode
+
+| Service | Purpose                   | Get API Key                 |
+| ------- | ------------------------- | --------------------------- |
+| **E2B** | Secure isolated execution | [e2b.dev](https://e2b.dev/) |
+
+> 💡 **Default Behavior**: Terminal commands execute locally on your machine  
+> 🔒 **Sandbox Mode**: Add E2B key for isolated container execution
+
+#### Enable Sandbox Mode
+
+```env
+TERMINAL_EXECUTION_MODE=sandbox
+E2B_API_KEY=your_e2b_api_key_here
+```
