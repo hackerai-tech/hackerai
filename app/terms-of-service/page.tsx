@@ -81,7 +81,7 @@ export default function TermsOfServicePage() {
               of Service remain in full force and effect.
             </li>
           </ol>
-          
+
           <p className="mt-4">
             By using the Products provided by HackerAI LLC, you indicate your
             understanding and agreement to abide by the terms and conditions set

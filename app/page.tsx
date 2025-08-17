@@ -3,7 +3,6 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { RefObject, useRef } from "react";
-
 import { Messages } from "./components/Messages";
 import { ChatInput } from "./components/ChatInput";
 import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
@@ -11,6 +10,9 @@ import { ComputerSidebar } from "./components/ComputerSidebar";
 import { useMessageScroll } from "./hooks/useMessageScroll";
 import { useGlobalState } from "./contexts/GlobalState";
 import { normalizeMessages } from "@/lib/utils/message-processor";
+import { ChatSDKError } from "@/lib/errors";
+import { fetchWithErrorHandlers } from "@/lib/utils";
+import { toast } from "sonner";
 
 export default function Page() {
   const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =
@@ -19,6 +21,7 @@ export default function Page() {
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
+      fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ messages }) => {
         // Normalize messages on the frontend before sending to API
         const normalizedMessages = normalizeMessages(messages);
@@ -34,6 +37,15 @@ export default function Page() {
     onData: ({ data, type }) => {
       if (type === "data-title") {
         setChatTitle((data as { chatTitle: string }).chatTitle);
+      }
+    },
+    onError: (error) => {
+      if (error instanceof ChatSDKError) {
+        // For rate limit errors, let them flow to the Messages component
+        // For other errors, show toast
+        if (error.type !== "rate_limit") {
+          toast.error(error.message);
+        }
       }
     },
   });
