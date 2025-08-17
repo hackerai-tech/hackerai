@@ -1,6 +1,6 @@
 import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
 import { NextRequest, NextResponse } from "next/server";
-import { isWorkOSEnabled } from "@/lib/auth-config";
+import { isWorkOSEnabled } from "@/lib/auth/client";
 
 // If WorkOS is configured, use authkit middleware
 // Otherwise, just pass through requests

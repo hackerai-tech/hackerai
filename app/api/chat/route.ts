@@ -11,7 +11,7 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { createTools } from "@/lib/ai/tools";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
-import { getUserID } from "@/lib/auth-utils";
+import { getUserID } from "@/lib/auth/server";
 import { generateTitleFromUserMessage } from "@/lib/actions";
 import { NextRequest } from "next/server";
 import { myProvider } from "@/lib/ai/providers";

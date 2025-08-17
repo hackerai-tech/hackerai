@@ -5,7 +5,7 @@ import "./globals.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
-import { isWorkOSEnabled } from "@/lib/auth-config";
+import { isWorkOSEnabled } from "@/lib/auth/client";
 import { GlobalStateProvider } from "./contexts/GlobalState";
 
 const geistSans = Geist({

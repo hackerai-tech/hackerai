@@ -1,5 +1,5 @@
 /**
- * Client-safe auth configuration utilities
+ * Client-safe auth utilities
  * This file can be safely imported on both client and server side
  */
 

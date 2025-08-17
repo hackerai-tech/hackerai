@@ -1,5 +1,5 @@
 import { signOut } from "@workos-inc/authkit-nextjs";
-import { isWorkOSEnabled } from "@/lib/auth-config";
+import { isWorkOSEnabled } from "@/lib/auth/client";
 import { redirect } from "next/navigation";
 
 export const GET = async () => {
@@ -8,7 +8,5 @@ export const GET = async () => {
     return redirect("/");
   }
 
-  await signOut();
-
-  return redirect("/");
+  return signOut();
 };

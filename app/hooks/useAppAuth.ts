@@ -1,5 +1,5 @@
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { isWorkOSEnabled } from "@/lib/auth-config";
+import { isWorkOSEnabled } from "@/lib/auth/client";
 
 /**
  * Custom hook that handles authentication for both WorkOS and anonymous modes
