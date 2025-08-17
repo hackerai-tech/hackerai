@@ -2,24 +2,23 @@ import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextRequest } from "next/server";
 
 /**
- * Utility function to check if WorkOS authentication is properly configured
- * by verifying all required environment variables are present
+ * Auth modes supported by the application
  */
-export const isWorkOSConfigured = (): boolean => {
-  return !!(
-    process.env.WORKOS_API_KEY &&
-    process.env.WORKOS_CLIENT_ID &&
-    process.env.WORKOS_COOKIE_PASSWORD &&
-    process.env.NEXT_PUBLIC_WORKOS_REDIRECT_URI
-  );
-};
+export type AuthMode = "workos" | "anonymous";
+
+/**
+ * Check if WorkOS authentication is enabled
+ * Works on both server and client side
+ */
+export const isWorkOSEnabled = () =>
+  process.env.NEXT_PUBLIC_AUTH_MODE === "workos";
 
 /**
  * Get the current user ID from the authenticated session
  * Falls back to "anonymous" if authentication is not configured or fails
  */
 export const getUserID = async (req: NextRequest): Promise<string> => {
-  if (!isWorkOSConfigured()) return "anonymous";
+  if (!isWorkOSEnabled()) return "anonymous";
 
   try {
     const { session } = await authkit(req);

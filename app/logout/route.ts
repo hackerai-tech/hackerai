@@ -1,6 +1,6 @@
-import { getSignInUrl } from "@workos-inc/authkit-nextjs";
-import { redirect } from "next/navigation";
+import { signOut } from "@workos-inc/authkit-nextjs";
 import { isWorkOSEnabled } from "@/lib/auth-utils";
+import { redirect } from "next/navigation";
 
 export const GET = async () => {
   if (!isWorkOSEnabled()) {
@@ -8,7 +8,7 @@ export const GET = async () => {
     return redirect("/");
   }
 
-  const signInUrl = await getSignInUrl();
+  await signOut();
 
-  return redirect(signInUrl);
+  return redirect("/");
 };
