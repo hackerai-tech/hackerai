@@ -8,7 +8,7 @@ import { isWorkOSEnabled } from "@/lib/auth-config";
 export const useAppAuth = () => {
   // Always call useAuth to comply with rules of hooks
   const workosAuth = useAuth();
-  
+
   if (isWorkOSEnabled()) {
     return workosAuth;
   }

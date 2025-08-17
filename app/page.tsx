@@ -27,14 +27,14 @@ export default function Page() {
     transport: new DefaultChatTransport({
       api: "/api/chat",
       fetch: fetchWithErrorHandlers,
-      prepareSendMessagesRequest: ({ messages }) => {
+      prepareSendMessagesRequest: ({ messages, body }) => {
         // Normalize messages on the frontend before sending to API
         const normalizedMessages = normalizeMessages(messages);
 
         return {
           body: {
             messages: normalizedMessages,
-            mode,
+            ...body,
           },
         };
       },

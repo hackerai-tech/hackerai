@@ -18,6 +18,7 @@ import { myProvider } from "@/lib/ai/providers";
 import type { ChatMode, ExecutionMode } from "@/types";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
+import PostHogClient from "@/app/posthog";
 
 export const maxDuration = 300;
 
@@ -40,6 +41,15 @@ export async function POST(req: NextRequest) {
     const truncatedMessages = truncateMessagesToTokenLimit(messages);
 
     const model = myProvider.languageModel("agent-model");
+
+    // Capture analytics event
+    const posthog = PostHogClient();
+    if (posthog) {
+      posthog.capture({
+        distinctId: userID,
+        event: "hackerai-" + mode,
+      });
+    }
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -84,6 +94,16 @@ export async function POST(req: NextRequest) {
           abortSignal: req.signal,
           experimental_transform: smoothStream({ chunking: "word" }),
           stopWhen: stepCountIs(25),
+          onChunk: async (chunk) => {
+            if (chunk.chunk.type === "tool-call") {
+              if (posthog) {
+                posthog.capture({
+                  distinctId: userID,
+                  event: "hackerai-" + chunk.chunk.toolName,
+                });
+              }
+            }
+          },
           onError: async (error) => {
             console.error("Error:", error);
 
