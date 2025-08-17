@@ -15,7 +15,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAppAuth } from "./hooks/useAppAuth";
-import { isWorkOSEnabled } from "@/lib/auth-utils";
+import { isWorkOSEnabled } from "@/lib/auth-config";
 
 export default function Page() {
   const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =

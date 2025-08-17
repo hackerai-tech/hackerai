@@ -1,17 +1,6 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextRequest } from "next/server";
-
-/**
- * Auth modes supported by the application
- */
-export type AuthMode = "workos" | "anonymous";
-
-/**
- * Check if WorkOS authentication is enabled
- * Works on both server and client side
- */
-export const isWorkOSEnabled = () =>
-  process.env.NEXT_PUBLIC_AUTH_MODE === "workos";
+import { isWorkOSEnabled } from "./auth-config";
 
 /**
  * Get the current user ID from the authenticated session

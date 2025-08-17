@@ -4,7 +4,7 @@ import React from "react";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { useAppAuth } from "../hooks/useAppAuth";
-import { isWorkOSEnabled } from "@/lib/auth-utils";
+import { isWorkOSEnabled } from "@/lib/auth-config";
 
 const Header: React.FC = () => {
   const { user, loading } = useAppAuth();
