@@ -18,6 +18,18 @@ export const MessagePartHandler = ({
 }: MessagePartHandlerProps) => {
   const renderTextPart = () => {
     const partId = `${message.id}-text-${partIndex}`;
+    const isUser = message.role === "user";
+
+    // For user messages, render plain text to avoid markdown processing
+    if (isUser) {
+      return (
+        <div key={partId} className="whitespace-pre-wrap">
+          {part.text ?? ""}
+        </div>
+      );
+    }
+
+    // For assistant messages, use markdown rendering
     return (
       <MemoizedMarkdown key={partId} id={partId} content={part.text ?? ""} />
     );
