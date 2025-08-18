@@ -161,28 +161,58 @@ export default function Page() {
             </>
           ) : (
             /* Centered layout for empty state */
-            <div className="flex-1 flex flex-col items-center justify-center px-4">
-              <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
-                {/* Centered title */}
-                <div className="text-center">
-                  <h1 className="text-3xl font-bold text-foreground mb-2">
-                    HackerAI
-                  </h1>
-                  <p className="text-muted-foreground">
-                    Your AI pentest assistant
-                  </p>
-                </div>
+            <div className="flex-1 flex flex-col px-4">
+              {/* Centered content area */}
+              <div className="flex-1 flex flex-col items-center justify-center">
+                <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  {/* Centered title */}
+                  <div className="text-center">
+                    <h1 className="text-3xl font-bold text-foreground mb-2">
+                      HackerAI
+                    </h1>
+                    <p className="text-muted-foreground">
+                      Your AI pentest assistant
+                    </p>
+                  </div>
 
-                {/* Centered input */}
-                <div className="w-full">
-                  <ChatInput
-                    onSubmit={handleSubmit}
-                    onStop={handleStop}
-                    status={status}
-                    isCentered={true}
-                  />
+                  {/* Centered input */}
+                  <div className="w-full">
+                    <ChatInput
+                      onSubmit={handleSubmit}
+                      onStop={handleStop}
+                      status={status}
+                      isCentered={true}
+                    />
+                  </div>
                 </div>
               </div>
+
+              {/* Footer - only show when user is not logged in */}
+              {!user && (
+                <div className="text-muted-foreground relative flex min-h-8 w-full items-center justify-center p-2 text-center text-xs md:px-[60px]">
+                  <span className="text-sm leading-none">
+                    By messaging HackerAI, you agree to our{" "}
+                    <a
+                      href="/terms-of-service"
+                      target="_blank"
+                      className="text-foreground underline decoration-foreground"
+                      rel="noreferrer"
+                    >
+                      Terms
+                    </a>{" "}
+                    and have read our{" "}
+                    <a
+                      href="/privacy-policy"
+                      target="_blank"
+                      className="text-foreground underline decoration-foreground"
+                      rel="noreferrer"
+                    >
+                      Privacy Policy
+                    </a>
+                    .
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
