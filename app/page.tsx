@@ -8,6 +8,7 @@ import { ChatInput } from "./components/ChatInput";
 import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
 import { ComputerSidebar } from "./components/ComputerSidebar";
 import Header from "./components/Header";
+import Footer from "./components/Footer";
 import { useMessageScroll } from "./hooks/useMessageScroll";
 import { useGlobalState } from "./contexts/GlobalState";
 import { normalizeMessages } from "@/lib/utils/message-processor";
@@ -115,7 +116,7 @@ export default function Page() {
       >
         {/* Chat interface - responsive width based on screen size and sidebar state */}
         <div
-          className={`bg-background flex flex-col relative transition-all duration-300 min-w-0 ${
+          className={`bg-background flex flex-col h-full relative transition-all duration-300 min-w-0 ${
             sidebarOpen
               ? "w-full desktop:w-1/2 desktop:flex-shrink-0" // Full width on mobile/tablet, half on desktop when sidebar is open
               : "w-full"
@@ -161,7 +162,7 @@ export default function Page() {
             </>
           ) : (
             /* Centered layout for empty state */
-            <div className="flex-1 flex flex-col px-4">
+            <div className="flex-1 flex flex-col">
               {/* Centered content area */}
               <div className="flex-1 flex flex-col items-center justify-center">
                 <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
@@ -188,31 +189,7 @@ export default function Page() {
               </div>
 
               {/* Footer - only show when user is not logged in */}
-              {!loading && !user && (
-                <div className="text-muted-foreground relative flex min-h-8 w-full items-center justify-center p-2 text-center text-xs md:px-[60px]">
-                  <span className="text-sm leading-none">
-                    By messaging HackerAI, you agree to our{" "}
-                    <a
-                      href="/terms-of-service"
-                      target="_blank"
-                      className="text-foreground underline decoration-foreground"
-                      rel="noreferrer"
-                    >
-                      Terms
-                    </a>{" "}
-                    and have read our{" "}
-                    <a
-                      href="/privacy-policy"
-                      target="_blank"
-                      className="text-foreground underline decoration-foreground"
-                      rel="noreferrer"
-                    >
-                      Privacy Policy
-                    </a>
-                    .
-                  </span>
-                </div>
-              )}
+              <Footer />
             </div>
           )}
 
