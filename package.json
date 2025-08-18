@@ -26,6 +26,7 @@
     "ai": "^5.0.9",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "exa-js": "^1.8.27",
     "gpt-tokenizer": "^3.0.1",
     "lucide-react": "^0.539.0",
     "marked": "^16.1.2",

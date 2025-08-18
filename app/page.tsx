@@ -21,7 +21,7 @@ export default function Page() {
   const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =
     useGlobalState();
 
-  const { user } = useAppAuth();
+  const { user, loading } = useAppAuth();
 
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({
@@ -188,7 +188,7 @@ export default function Page() {
               </div>
 
               {/* Footer - only show when user is not logged in */}
-              {!user && (
+              {!loading && !user && (
                 <div className="text-muted-foreground relative flex min-h-8 w-full items-center justify-center p-2 text-center text-xs md:px-[60px]">
                   <span className="text-sm leading-none">
                     By messaging HackerAI, you agree to our{" "}
