@@ -1,22 +1,27 @@
 import React from "react";
-import { Minimize2, Edit } from "lucide-react";
+import { Minimize2, Edit, Terminal } from "lucide-react";
 import { useState } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
+import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import { isSidebarFile, isSidebarTerminal } from "@/types/chat";
 
 export const ComputerSidebar: React.FC = () => {
-  const { sidebarOpen, sidebarFile, closeSidebar } = useGlobalState();
+  const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
   const [isWrapped, setIsWrapped] = useState(true);
 
-  if (!sidebarOpen || !sidebarFile) {
+  if (!sidebarOpen || !sidebarContent) {
     return null;
   }
+
+  const isFile = isSidebarFile(sidebarContent);
+  const isTerminal = isSidebarTerminal(sidebarContent);
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -62,13 +67,47 @@ export const ComputerSidebar: React.FC = () => {
   };
 
   const getActionText = (): string => {
-    const actionMap = {
-      reading: "Reading file",
-      creating: "Creating file",
-      editing: "Editing file",
-      writing: "Writing file",
-    };
-    return actionMap[sidebarFile.action || "reading"];
+    if (isFile) {
+      const actionMap = {
+        reading: "Reading file",
+        creating: "Creating file",
+        editing: "Editing file",
+        writing: "Writing file",
+      };
+      return actionMap[sidebarContent.action || "reading"];
+    } else if (isTerminal) {
+      return sidebarContent.isExecuting
+        ? "Executing command"
+        : "Command executed";
+    }
+    return "Unknown action";
+  };
+
+  const getIcon = () => {
+    if (isFile) {
+      return <Edit className="w-5 h-5 text-muted-foreground" />;
+    } else if (isTerminal) {
+      return <Terminal className="w-5 h-5 text-muted-foreground" />;
+    }
+    return <Edit className="w-5 h-5 text-muted-foreground" />;
+  };
+
+  const getToolName = (): string => {
+    if (isFile) {
+      return "Editor";
+    } else if (isTerminal) {
+      return "Terminal";
+    }
+    return "Tool";
+  };
+
+  const getDisplayTarget = (): string => {
+    if (isFile) {
+      return sidebarContent.path.split("/").pop() || sidebarContent.path;
+    } else if (isTerminal) {
+      return sidebarContent.command;
+    }
+    return "";
   };
 
   const handleClose = () => {
@@ -115,45 +154,63 @@ export const ComputerSidebar: React.FC = () => {
             {/* Action Status */}
             <div className="flex items-center gap-2 mt-2">
               <div className="w-[40px] h-[40px] bg-muted/50 rounded-lg flex items-center justify-center flex-shrink-0">
-                <Edit className="w-5 h-5 text-muted-foreground" />
+                {getIcon()}
               </div>
               <div className="flex-1 flex flex-col gap-1 min-w-0">
                 <div className="text-[12px] text-muted-foreground">
                   HackerAI is using{" "}
-                  <span className="text-foreground">Editor</span>
+                  <span className="text-foreground">{getToolName()}</span>
                 </div>
                 <div
-                  title={`${getActionText()} ${sidebarFile.path}`}
+                  title={`${getActionText()} ${getDisplayTarget()}`}
                   className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
                 >
                   {getActionText()}
                   <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                    <code>
-                      {sidebarFile.path.split("/").pop() || sidebarFile.path}
-                    </code>
+                    <code>{getDisplayTarget()}</code>
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* Code Container */}
+            {/* Content Container */}
             <div className="flex flex-col rounded-lg overflow-hidden bg-muted/20 border border-border/30 dark:border-black/30 shadow-[0px_4px_32px_0px_rgba(0,0,0,0.04)] flex-1 min-h-0 mt-[16px]">
-              {/* File Header */}
+              {/* Unified Header */}
               <div className="h-[36px] flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)]">
-                {/* Filename - far left */}
-                <div className="flex items-center">
-                  <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                    {sidebarFile.path.split("/").pop() || sidebarFile.path}
-                  </div>
+                {/* Title - far left */}
+                <div className="flex items-center gap-2">
+                  {isTerminal ? (
+                    <Terminal
+                      size={14}
+                      className="text-muted-foreground flex-shrink-0"
+                    />
+                  ) : (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      {sidebarContent.path.split("/").pop() ||
+                        sidebarContent.path}
+                    </div>
+                  )}
                 </div>
 
                 {/* Action buttons - far right */}
                 <CodeActionButtons
-                  content={sidebarFile.content}
-                  filename={sidebarFile.path.split("/").pop() || "code.txt"}
+                  content={
+                    isFile
+                      ? sidebarContent.content
+                      : sidebarContent.output
+                        ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
+                        : `$ ${sidebarContent.command}`
+                  }
+                  filename={
+                    isFile
+                      ? sidebarContent.path.split("/").pop() || "code.txt"
+                      : "terminal-output.txt"
+                  }
                   language={
-                    sidebarFile.language ||
-                    getLanguageFromPath(sidebarFile.path)
+                    isFile
+                      ? sidebarContent.language ||
+                        getLanguageFromPath(sidebarContent.path)
+                      : "ansi"
                   }
                   isWrapped={isWrapped}
                   onToggleWrap={handleToggleWrap}
@@ -161,28 +218,43 @@ export const ComputerSidebar: React.FC = () => {
                 />
               </div>
 
-              {/* Code Content */}
+              {/* Content */}
               <div className="flex-1 min-h-0 w-full overflow-hidden">
                 <div className="flex flex-col min-h-0 h-full relative">
                   <div className="focus-visible:outline-none flex-1 min-h-0 h-full text-sm flex flex-col py-0 outline-none">
                     <div
-                      className="font-mono w-full text-xs leading-[18px] flex-1 min-h-0 h-full"
+                      className="font-mono w-full text-xs leading-[18px] flex-1 min-h-0 h-full min-w-0"
                       style={{
                         overflowWrap: "break-word",
-                        wordBreak: "normal",
+                        wordBreak: "break-word",
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      <ComputerCodeBlock
-                        language={
-                          sidebarFile.language ||
-                          getLanguageFromPath(sidebarFile.path)
-                        }
-                        wrap={isWrapped}
-                        showButtons={false}
-                      >
-                        {sidebarFile.content}
-                      </ComputerCodeBlock>
+                      {isFile && (
+                        <ComputerCodeBlock
+                          language={
+                            sidebarContent.language ||
+                            getLanguageFromPath(sidebarContent.path)
+                          }
+                          wrap={isWrapped}
+                          showButtons={false}
+                        >
+                          {sidebarContent.content}
+                        </ComputerCodeBlock>
+                      )}
+                      {isTerminal && (
+                        <TerminalCodeBlock
+                          command={sidebarContent.command}
+                          output={sidebarContent.output}
+                          isExecuting={sidebarContent.isExecuting}
+                          isBackground={sidebarContent.isBackground}
+                          status={
+                            sidebarContent.isExecuting ? "streaming" : "ready"
+                          }
+                          variant="sidebar"
+                          wrap={isWrapped}
+                        />
+                      )}
                     </div>
                   </div>
                 </div>

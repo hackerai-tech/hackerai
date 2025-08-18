@@ -8,6 +8,7 @@ import { ChatInput } from "./components/ChatInput";
 import { ScrollToBottomButton } from "./components/ScrollToBottomButton";
 import { ComputerSidebar } from "./components/ComputerSidebar";
 import Header from "./components/Header";
+import Footer from "./components/Footer";
 import { useMessageScroll } from "./hooks/useMessageScroll";
 import { useGlobalState } from "./contexts/GlobalState";
 import { normalizeMessages } from "@/lib/utils/message-processor";
@@ -21,7 +22,7 @@ export default function Page() {
   const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =
     useGlobalState();
 
-  const { user } = useAppAuth();
+  const { user, loading } = useAppAuth();
 
   const { messages, sendMessage, status, stop, error, regenerate } = useChat({
     transport: new DefaultChatTransport({
@@ -64,7 +65,7 @@ export default function Page() {
     e.preventDefault();
     if (input.trim()) {
       // Only require authentication in WorkOS mode
-      if (isWorkOSEnabled() && !user) {
+      if (isWorkOSEnabled() && !user && loading === false) {
         window.location.href = "/login";
         return;
       }
@@ -106,16 +107,18 @@ export default function Page() {
   const hasMessages = messages.length > 0;
 
   return (
-    <div className="h-screen bg-background overflow-hidden">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Show header when there are no messages */}
-      {!hasMessages && <Header />}
+      {!hasMessages && (
+        <div className="flex-shrink-0">
+          <Header />
+        </div>
+      )}
 
-      <div
-        className={`flex max-w-full ${!hasMessages ? "h-[calc(100vh-58px)]" : "h-full"}`}
-      >
+      <div className="flex max-w-full flex-1 min-h-0">
         {/* Chat interface - responsive width based on screen size and sidebar state */}
         <div
-          className={`bg-background flex flex-col relative transition-all duration-300 min-w-0 ${
+          className={`bg-background flex flex-col h-full relative transition-all duration-300 min-w-0 ${
             sidebarOpen
               ? "w-full desktop:w-1/2 desktop:flex-shrink-0" // Full width on mobile/tablet, half on desktop when sidebar is open
               : "w-full"
@@ -161,27 +164,35 @@ export default function Page() {
             </>
           ) : (
             /* Centered layout for empty state */
-            <div className="flex-1 flex flex-col items-center justify-center px-4">
-              <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
-                {/* Centered title */}
-                <div className="text-center">
-                  <h1 className="text-3xl font-bold text-foreground mb-2">
-                    HackerAI
-                  </h1>
-                  <p className="text-muted-foreground">
-                    Your AI pentest assistant
-                  </p>
-                </div>
+            <div className="flex-1 flex flex-col min-h-0">
+              {/* Centered content area */}
+              <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
+                <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  {/* Centered title */}
+                  <div className="text-center">
+                    <h1 className="text-3xl font-bold text-foreground mb-2">
+                      HackerAI
+                    </h1>
+                    <p className="text-muted-foreground">
+                      Your AI pentest assistant
+                    </p>
+                  </div>
 
-                {/* Centered input */}
-                <div className="w-full">
-                  <ChatInput
-                    onSubmit={handleSubmit}
-                    onStop={handleStop}
-                    status={status}
-                    isCentered={true}
-                  />
+                  {/* Centered input */}
+                  <div className="w-full">
+                    <ChatInput
+                      onSubmit={handleSubmit}
+                      onStop={handleStop}
+                      status={status}
+                      isCentered={true}
+                    />
+                  </div>
                 </div>
+              </div>
+
+              {/* Footer - only show when user is not logged in */}
+              <div className="flex-shrink-0">
+                <Footer />
               </div>
             </div>
           )}

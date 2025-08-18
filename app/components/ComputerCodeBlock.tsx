@@ -151,9 +151,9 @@ export const ComputerCodeBlock = ({
           delay={150}
           addDefaultStyles={false}
           showLanguage={false}
-          className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full [&_pre]:!bg-transparent [&_pre]:px-[0.5em] [&_pre]:py-[0.5em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:h-full [&_pre]:w-full [&_pre]:min-h-full ${
+          className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full [&_pre]:!bg-transparent [&_pre]:px-[0.5em] [&_pre]:py-[0.5em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:h-full [&_pre]:w-full [&_pre]:min-h-full [&_pre]:min-w-0 ${
             wrap
-              ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible"
+              ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible [&_pre]:word-break-break-word"
               : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
           }`}
         >

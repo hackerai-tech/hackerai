@@ -6,8 +6,10 @@ import { createWriteFile } from "./write-file";
 import { createDeleteFile } from "./delete-file";
 import { createSearchReplace } from "./search-replace";
 import { createMultiEdit } from "./multi-edit";
+import { createWebSearchTool } from "./web-search";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ExecutionMode, ToolContext } from "@/types";
+import type { Geo } from "@vercel/functions";
 
 // Factory function to create tools with context
 export const createTools = (
@@ -15,6 +17,7 @@ export const createTools = (
   writer: UIMessageStreamWriter,
   mode: ChatMode = "agent",
   executionMode: ExecutionMode = "local",
+  userLocation: Geo,
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -30,6 +33,7 @@ export const createTools = (
     sandboxManager,
     writer,
     executionMode,
+    userLocation,
   };
 
   // Create all available tools
@@ -40,10 +44,17 @@ export const createTools = (
     deleteFile: createDeleteFile(context),
     searchReplace: createSearchReplace(context),
     multiEdit: createMultiEdit(context),
+    ...(process.env.EXA_API_KEY && { webSearch: createWebSearchTool(context) }),
   };
 
   // Filter tools based on mode
-  const tools = mode === "ask" ? { readFile: allTools.readFile } : allTools;
+  const tools =
+    mode === "ask"
+      ? {
+          readFile: allTools.readFile,
+          ...(process.env.EXA_API_KEY && { webSearch: allTools.webSearch }),
+        }
+      : allTools;
 
   const getSandbox = () => sandbox;
 

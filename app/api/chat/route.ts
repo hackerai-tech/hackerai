@@ -19,6 +19,8 @@ import type { ChatMode, ExecutionMode } from "@/types";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
+import { geolocation } from "@vercel/functions";
+import { getAIHeaders } from "@/lib/actions";
 
 export const maxDuration = 300;
 
@@ -29,6 +31,7 @@ export async function POST(req: NextRequest) {
 
     // Get user ID from authenticated session or fallback to anonymous
     const userID = await getUserID(req);
+    const userLocation = geolocation(req);
 
     // Check rate limit for the user
     await checkRateLimit(userID);
@@ -59,6 +62,7 @@ export async function POST(req: NextRequest) {
           writer,
           mode,
           executionMode,
+          userLocation,
         );
 
         // Generate title in parallel if this is the start of a conversation
@@ -92,6 +96,7 @@ export async function POST(req: NextRequest) {
           messages: convertToModelMessages(truncatedMessages),
           tools,
           abortSignal: req.signal,
+          headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
           stopWhen: stepCountIs(25),
           onChunk: async (chunk) => {

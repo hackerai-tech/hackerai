@@ -9,7 +9,7 @@ import { isWorkOSEnabled } from "@/lib/auth/client";
 /**
  * Get the current user ID from the authenticated session
  * Falls back to "anonymous" if authentication is not configured or fails
- * 
+ *
  * @param req - NextRequest object (server-side only)
  * @returns Promise<string> - User ID or "anonymous"
  */

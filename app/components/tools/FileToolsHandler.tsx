@@ -1,4 +1,3 @@
-import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
@@ -9,7 +8,7 @@ interface FileToolsHandlerProps {
 }
 
 export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
-  const { openFileInSidebar } = useGlobalState();
+  const { openSidebar } = useGlobalState();
 
   const renderReadFileTool = () => {
     const { toolCallId, state, input, output } = part;
@@ -62,7 +61,7 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
                 }
               : undefined;
 
-          openFileInSidebar({
+          openSidebar({
             path: readInput.target_file,
             content: cleanContent,
             range,
@@ -130,7 +129,7 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
             target={writeInput.file_path}
             isClickable={true}
             onClick={() => {
-              openFileInSidebar({
+              openSidebar({
                 path: writeInput.file_path,
                 content: writeInput.contents,
                 action: "writing",
@@ -139,7 +138,7 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                openFileInSidebar({
+                openSidebar({
                   path: writeInput.file_path,
                   content: writeInput.contents,
                   action: "writing",

@@ -2,17 +2,37 @@ import { generateObject, UIMessage } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
 
+export const getAIHeaders = () => ({
+  "HTTP-Referer":
+    process.env.NODE_ENV === "development"
+      ? "https://test.hackerai.co"
+      : "https://www.hackerai.co",
+  "X-Title":
+    process.env.NODE_ENV === "development" ? "HackerAI-Dev" : "HackerAI",
+});
+
+const truncateMiddle = (text: string, maxLength: number): string => {
+  if (text.length <= maxLength) return text;
+
+  const halfLength = Math.floor((maxLength - 3) / 2); // -3 for "..."
+  const start = text.substring(0, halfLength);
+  const end = text.substring(text.length - halfLength);
+
+  return `${start}...${end}`;
+};
+
 export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (
   message: string,
 ) => `### Task:
-You are a helpful assistant that generates short, concise chat titles based on the first user message.
+You are a helpful assistant that generates short, concise chat titles for an AI penetration testing agent based on the first user message.
 
 ### Instructions:
 1. Generate a short title (3-5 words) based on the user's first message
 2. Use the chat's primary language (default to English if multilingual)
+3. Focus on security testing, hacking, or technical topics when relevant
 
 ### User Message:
-${message}`;
+${truncateMiddle(message, 8000)}`;
 
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
@@ -31,6 +51,7 @@ export const generateTitleFromUserMessage = async (
     schema: z.object({
       title: z.string().describe("The generated title (3-5 words)"),
     }),
+    headers: getAIHeaders(),
     messages: [
       {
         role: "user",

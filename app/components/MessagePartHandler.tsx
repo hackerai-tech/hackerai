@@ -2,6 +2,7 @@ import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
+import { WebSearchToolHandler } from "./tools/WebSearchToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -18,6 +19,18 @@ export const MessagePartHandler = ({
 }: MessagePartHandlerProps) => {
   const renderTextPart = () => {
     const partId = `${message.id}-text-${partIndex}`;
+    const isUser = message.role === "user";
+
+    // For user messages, render plain text to avoid markdown processing
+    if (isUser) {
+      return (
+        <div key={partId} className="whitespace-pre-wrap">
+          {part.text ?? ""}
+        </div>
+      );
+    }
+
+    // For assistant messages, use markdown rendering
     return (
       <MemoizedMarkdown key={partId} id={partId} content={part.text ?? ""} />
     );
@@ -34,6 +47,9 @@ export const MessagePartHandler = ({
     case "tool-searchReplace":
     case "tool-multiEdit":
       return <FileToolsHandler part={part} status={status} />;
+
+    case "tool-webSearch":
+      return <WebSearchToolHandler part={part} status={status} />;
 
     case "data-terminal":
     case "tool-runTerminalCmd":
