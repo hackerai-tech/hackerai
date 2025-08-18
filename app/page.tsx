@@ -65,7 +65,7 @@ export default function Page() {
     e.preventDefault();
     if (input.trim()) {
       // Only require authentication in WorkOS mode
-      if (isWorkOSEnabled() && !user) {
+      if (isWorkOSEnabled() && !user && loading === false) {
         window.location.href = "/login";
         return;
       }

@@ -20,6 +20,7 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
+import { getAIHeaders } from "@/lib/actions";
 
 export const maxDuration = 300;
 
@@ -95,13 +96,7 @@ export async function POST(req: NextRequest) {
           messages: convertToModelMessages(truncatedMessages),
           tools,
           abortSignal: req.signal,
-          headers: {
-            "HTTP-Referer": "https://www.hackerai.co",
-            "X-Title":
-              process.env.NODE_ENV === "development"
-                ? "HackerAI-Dev"
-                : "HackerAI",
-          },
+          headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
           stopWhen: stepCountIs(25),
           onChunk: async (chunk) => {

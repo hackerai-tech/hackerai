@@ -265,7 +265,7 @@ export const TerminalCodeBlock = ({
       <div className="h-full w-full overflow-auto">
         {isExecuting && !output && status === "streaming" ? (
           <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
-            <ShimmerText>Executing command: {command}</ShimmerText>
+            <ShimmerText>Executing command</ShimmerText>
           </div>
         ) : (
           <AnsiCodeBlock

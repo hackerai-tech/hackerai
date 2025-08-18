@@ -173,13 +173,19 @@ export const useSidebarAutoOpen = (
       .map((part: any) => part.data?.terminal || "")
       .join("");
 
-    // Only update if we have new streaming output
-    if (streamingOutput && streamingOutput !== sidebarContent.output) {
+    // Compute current execution state
+    const newIsExecuting = 
+      (terminalToolPart as any).state === "input-available" &&
+      status === "streaming";
+
+    // Update if output changed OR execution state changed
+    if (
+      streamingOutput !== sidebarContent.output ||
+      newIsExecuting !== sidebarContent.isExecuting
+    ) {
       updateSidebarContent({
         output: streamingOutput,
-        isExecuting:
-          (terminalToolPart as any).state === "input-available" &&
-          status === "streaming",
+        isExecuting: newIsExecuting,
       });
     }
   }, [

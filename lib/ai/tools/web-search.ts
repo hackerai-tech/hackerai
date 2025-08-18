@@ -45,29 +45,26 @@ version of a software library or not knowing the date of the next game for a spo
         let result;
 
         try {
-          // First attempt with default parameters
+          // Safely access userLocation country
+          const country = userLocation?.country;
+          const searchOptions = {
+            type: "auto" as const,
+            text: {
+              maxCharacters: 8000,
+            },
+            ...(country && { userLocation: country }),
+          };
+
+          // First attempt with location if available
+          result = await exa.searchAndContents(query, searchOptions);
+        } catch (firstError: any) {
+          // Always retry without userLocation as fallback
           result = await exa.searchAndContents(query, {
             type: "auto",
             text: {
               maxCharacters: 8000,
             },
-            userLocation: userLocation.country,
           });
-        } catch (firstError: any) {
-          // If error mentions userLocation or country code, retry without userLocation
-          if (
-            firstError?.message?.includes("userLocation") ||
-            firstError?.message?.includes("country code")
-          ) {
-            result = await exa.searchAndContents(query, {
-              type: "auto",
-              text: {
-                maxCharacters: 8000,
-              },
-            });
-          } else {
-            throw firstError;
-          }
         }
 
         // const searchCitations = result.results

@@ -97,7 +97,7 @@ export const TerminalToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={hasOutput ? "Executed" : "Command completed"}
+          action="Executed"
           target={terminalInput?.command || ""}
           isClickable={true}
           onClick={handleOpenInSidebar}
