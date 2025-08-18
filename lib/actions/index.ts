@@ -31,6 +31,11 @@ export const generateTitleFromUserMessage = async (
     schema: z.object({
       title: z.string().describe("The generated title (3-5 words)"),
     }),
+    headers: {
+      "HTTP-Referer": "https://www.hackerai.co",
+      "X-Title":
+        process.env.NODE_ENV === "development" ? "HackerAI-Dev" : "HackerAI",
+    },
     messages: [
       {
         role: "user",

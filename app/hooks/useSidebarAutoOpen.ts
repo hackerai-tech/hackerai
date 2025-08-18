@@ -1,11 +1,11 @@
 import { useRef, useEffect } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import { useGlobalState } from "../contexts/GlobalState";
-import type { SidebarFile } from "@/types/chat";
+import { isSidebarFile, SidebarContent } from "@/types/chat";
 
 interface AutoOpenResult {
   shouldOpen: boolean;
-  file?: SidebarFile;
+  content?: SidebarContent;
 }
 
 const checkForSidebarContent = (
@@ -27,9 +27,32 @@ const checkForSidebarContent = (
     return { shouldOpen: false };
   }
 
-  // Check for tools with output-available that should show in sidebar
+  // Check for tools that should show in sidebar
   for (const part of lastAssistantMessage.parts || []) {
     const toolPart = part as any; // Type assertion for tool parts
+
+    // Check for terminal tools when they start executing (input-available state)
+    if (
+      toolPart.state === "input-available" &&
+      toolPart.type === "tool-runTerminalCmd" &&
+      toolPart.input?.command
+    ) {
+      const input = toolPart.input as {
+        command: string;
+        is_background: boolean;
+      };
+
+      return {
+        shouldOpen: true,
+        content: {
+          command: input.command,
+          output: "", // Empty initially, will be populated by streaming
+          isExecuting: true,
+          isBackground: input.is_background,
+          toolCallId: toolPart.toolCallId,
+        },
+      };
+    }
 
     if (toolPart.state === "output-available") {
       // Check for readFile tool
@@ -52,7 +75,7 @@ const checkForSidebarContent = (
 
         return {
           shouldOpen: true,
-          file: {
+          content: {
             path: input.target_file,
             content: cleanContent,
             range,
@@ -67,7 +90,7 @@ const checkForSidebarContent = (
 
         return {
           shouldOpen: true,
-          file: {
+          content: {
             path: input.file_path,
             content: input.contents,
             action: "writing",
@@ -85,7 +108,8 @@ export const useSidebarAutoOpen = (
   lastAssistantMessageIndex: number | undefined,
   status: "ready" | "submitted" | "streaming" | "error",
 ) => {
-  const { openFileInSidebar } = useGlobalState();
+  const { openSidebar, updateSidebarContent, sidebarContent } =
+    useGlobalState();
   const hasOpenedSidebarRef = useRef<string | null>(null);
 
   // Auto-open sidebar when new assistant messages have content to show
@@ -105,14 +129,66 @@ export const useSidebarAutoOpen = (
 
     if (
       result.shouldOpen &&
-      result.file &&
+      result.content &&
       typeof window !== "undefined" &&
       window.matchMedia("(min-width: 950px)").matches
     ) {
-      openFileInSidebar(result.file);
+      openSidebar(result.content);
       hasOpenedSidebarRef.current = lastAssistantMessage?.id || null;
     }
-  }, [messages, status, lastAssistantMessageIndex, openFileInSidebar]);
+  }, [messages, status, lastAssistantMessageIndex, openSidebar]);
+
+  // Update sidebar with streaming terminal data
+  useEffect(() => {
+    if (
+      !sidebarContent ||
+      isSidebarFile(sidebarContent) ||
+      !sidebarContent.isExecuting ||
+      status !== "streaming"
+    ) {
+      return;
+    }
+
+    const lastAssistantMessage = messages[lastAssistantMessageIndex ?? -1];
+    if (!lastAssistantMessage) return;
+
+    // Find the terminal tool call that matches the sidebar content
+    const terminalToolPart = lastAssistantMessage.parts.find(
+      (part: any) =>
+        part.type === "tool-runTerminalCmd" &&
+        part.toolCallId === sidebarContent.toolCallId,
+    );
+
+    if (!terminalToolPart) return;
+
+    // Get all data-terminal parts for this tool call
+    const terminalDataParts = lastAssistantMessage.parts.filter(
+      (part: any) =>
+        part.type === "data-terminal" &&
+        part.data?.toolCallId === sidebarContent.toolCallId,
+    );
+
+    // Combine streaming output
+    const streamingOutput = terminalDataParts
+      .map((part: any) => part.data?.terminal || "")
+      .join("");
+
+    // Only update if we have new streaming output
+    if (streamingOutput && streamingOutput !== sidebarContent.output) {
+      updateSidebarContent({
+        output: streamingOutput,
+        isExecuting:
+          (terminalToolPart as any).state === "input-available" &&
+          status === "streaming",
+      });
+    }
+  }, [
+    messages,
+    sidebarContent,
+    updateSidebarContent,
+    lastAssistantMessageIndex,
+    status,
+  ]);
 
   // Return reset function
   const resetSidebarFlag = () => {

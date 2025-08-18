@@ -95,6 +95,13 @@ export async function POST(req: NextRequest) {
           messages: convertToModelMessages(truncatedMessages),
           tools,
           abortSignal: req.signal,
+          headers: {
+            "HTTP-Referer": "https://www.hackerai.co",
+            "X-Title":
+              process.env.NODE_ENV === "development"
+                ? "HackerAI-Dev"
+                : "HackerAI",
+          },
           experimental_transform: smoothStream({ chunking: "word" }),
           stopWhen: stepCountIs(25),
           onChunk: async (chunk) => {

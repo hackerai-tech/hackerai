@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, ReactNode } from "react";
-import type { ChatMode, SidebarFile } from "@/types/chat";
+import type { ChatMode, SidebarContent } from "@/types/chat";
 
 interface GlobalStateType {
   // Input state
@@ -19,13 +19,14 @@ interface GlobalStateType {
   // Sidebar state
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
-  sidebarFile: SidebarFile | null;
-  setSidebarFile: (file: SidebarFile | null) => void;
+  sidebarContent: SidebarContent | null;
+  setSidebarContent: (content: SidebarContent | null) => void;
 
   // Utility methods
   clearInput: () => void;
   resetChat: () => void;
-  openFileInSidebar: (file: SidebarFile) => void;
+  openSidebar: (content: SidebarContent) => void;
+  updateSidebarContent: (updates: Partial<SidebarContent>) => void;
   closeSidebar: () => void;
 }
 
@@ -44,7 +45,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [mode, setMode] = useState<ChatMode>("agent");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [sidebarFile, setSidebarFile] = useState<SidebarFile | null>(null);
+  const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
+    null,
+  );
 
   const clearInput = () => {
     setInput("");
@@ -55,14 +58,23 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle(null);
   };
 
-  const openFileInSidebar = (file: SidebarFile) => {
-    setSidebarFile(file);
+  const openSidebar = (content: SidebarContent) => {
+    setSidebarContent(content);
     setSidebarOpen(true);
+  };
+
+  const updateSidebarContent = (updates: Partial<SidebarContent>) => {
+    setSidebarContent((current) => {
+      if (current) {
+        return { ...current, ...updates };
+      }
+      return current;
+    });
   };
 
   const closeSidebar = () => {
     setSidebarOpen(false);
-    setSidebarFile(null);
+    setSidebarContent(null);
   };
 
   const value: GlobalStateType = {
@@ -74,11 +86,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle,
     sidebarOpen,
     setSidebarOpen,
-    sidebarFile,
-    setSidebarFile,
+    sidebarContent,
+    setSidebarContent,
     clearInput,
     resetChat,
-    openFileInSidebar,
+    openSidebar,
+    updateSidebarContent,
     closeSidebar,
   };
 
