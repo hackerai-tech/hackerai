@@ -47,10 +47,10 @@ export const MessagePartHandler = ({
     case "tool-searchReplace":
     case "tool-multiEdit":
       return <FileToolsHandler part={part} status={status} />;
-      
+
     case "tool-webSearch":
       return <WebSearchToolHandler part={part} status={status} />;
-      
+
     case "data-terminal":
     case "tool-runTerminalCmd":
       return (

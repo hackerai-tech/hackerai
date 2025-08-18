@@ -49,5 +49,3 @@ export const WebSearchToolHandler = ({
       return null;
   }
 };
-
-

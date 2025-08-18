@@ -22,7 +22,7 @@ const Header: React.FC = () => {
   };
 
   return (
-    <header className="w-full px-6 max-sm:px-4">
+    <header className="w-full px-6 max-sm:px-4 flex-shrink-0">
       {/* Desktop header */}
       <div className="py-[10px] flex gap-10 items-center justify-between max-md:hidden">
         <div className="flex items-center gap-2">
@@ -70,7 +70,7 @@ const Header: React.FC = () => {
       </div>
 
       {/* Mobile header */}
-      <div className="py-2 flex items-center justify-between md:hidden">
+      <div className="py-3 flex items-center justify-between md:hidden">
         <div className="flex items-center gap-2">
           <HackerAISVG theme="dark" scale={0.12} />
           <span className="text-foreground text-lg font-semibold">

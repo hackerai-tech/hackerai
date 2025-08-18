@@ -107,13 +107,15 @@ export default function Page() {
   const hasMessages = messages.length > 0;
 
   return (
-    <div className="h-screen bg-background overflow-hidden">
+    <div className="h-screen bg-background flex flex-col overflow-hidden">
       {/* Show header when there are no messages */}
-      {!hasMessages && <Header />}
+      {!hasMessages && (
+        <div className="flex-shrink-0">
+          <Header />
+        </div>
+      )}
 
-      <div
-        className={`flex max-w-full ${!hasMessages ? "h-[calc(100vh-58px)]" : "h-full"}`}
-      >
+      <div className="flex max-w-full flex-1 min-h-0">
         {/* Chat interface - responsive width based on screen size and sidebar state */}
         <div
           className={`bg-background flex flex-col h-full relative transition-all duration-300 min-w-0 ${
@@ -162,9 +164,9 @@ export default function Page() {
             </>
           ) : (
             /* Centered layout for empty state */
-            <div className="flex-1 flex flex-col">
+            <div className="flex-1 flex flex-col min-h-0">
               {/* Centered content area */}
-              <div className="flex-1 flex flex-col items-center justify-center">
+              <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
                 <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
                   {/* Centered title */}
                   <div className="text-center">
@@ -189,7 +191,9 @@ export default function Page() {
               </div>
 
               {/* Footer - only show when user is not logged in */}
-              <Footer />
+              <div className="flex-shrink-0">
+                <Footer />
+              </div>
             </div>
           )}
 

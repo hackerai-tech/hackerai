@@ -11,7 +11,7 @@ const Footer: React.FC = () => {
   }
 
   return (
-    <div className="text-muted-foreground relative flex min-h-8 w-full items-center justify-center p-2 text-center text-xs md:px-[60px]">
+    <div className="text-muted-foreground relative flex min-h-8 w-full items-center justify-center p-4 text-center text-xs md:px-[60px] flex-shrink-0">
       <span className="text-sm leading-none">
         By messaging HackerAI, you agree to our{" "}
         <a
