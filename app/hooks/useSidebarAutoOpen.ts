@@ -174,7 +174,7 @@ export const useSidebarAutoOpen = (
       .join("");
 
     // Compute current execution state
-    const newIsExecuting = 
+    const newIsExecuting =
       (terminalToolPart as any).state === "input-available" &&
       status === "streaming";
 

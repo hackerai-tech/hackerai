@@ -3,6 +3,7 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { WebSearchToolHandler } from "./tools/WebSearchToolHandler";
+import { TodoToolHandler } from "./tools/TodoToolHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -56,6 +57,10 @@ export const MessagePartHandler = ({
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
       );
+
+    case "data-todo":
+    case "tool-todoWrite":
+      return <TodoToolHandler message={message} part={part} status={status} />;
 
     default:
       return null;
