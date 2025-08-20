@@ -220,7 +220,7 @@ export const TodoBlock = ({
                 {headerContent.text}
               </span>
             </div>
-            {headerContent.showViewAll && isExpanded && (
+            {isExpanded && headerContent.showViewAll && (
               <span
                 onClick={handleToggleViewAll}
                 className="text-[12px] text-muted-foreground/70 hover:text-muted-foreground transition-colors cursor-pointer p-1 ml-2"

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, ReactNode } from "react";
+import React, { createContext, useContext, ReactNode, useMemo } from "react";
 import { useTodoBlockManager } from "@/lib/utils/todo-block-manager";
 
 interface TodoBlockContextType {
@@ -23,11 +23,14 @@ export const TodoBlockProvider: React.FC<TodoBlockProviderProps> = ({
   const { autoOpenTodoBlock, toggleTodoBlock, isBlockExpanded } =
     useTodoBlockManager();
 
-  const value: TodoBlockContextType = {
-    autoOpenTodoBlock,
-    toggleTodoBlock,
-    isBlockExpanded,
-  };
+  const value: TodoBlockContextType = useMemo(
+    () => ({
+      autoOpenTodoBlock,
+      toggleTodoBlock,
+      isBlockExpanded,
+    }),
+    [autoOpenTodoBlock, toggleTodoBlock, isBlockExpanded],
+  );
 
   return (
     <TodoBlockContext.Provider value={value}>

@@ -6,7 +6,7 @@ export const createTodoWrite = (
   context: ToolContext,
   isManagerMode: boolean = false,
 ) => {
-  const { writer, todoManager } = context;
+  const { todoManager } = context;
 
   return tool({
     description: `Use this tool to create and manage a structured task list for your current coding session. This helps track progress, organize complex tasks, and demonstrate thoroughness.
@@ -172,6 +172,16 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
       },
     ) => {
       try {
+        // Runtime validation for non-merge operations
+        if (!merge) {
+          for (let i = 0; i < todos.length; i++) {
+            const todo = todos[i];
+            if (!todo.content || todo.content.trim() === '') {
+              throw new Error(`Todo at index ${i} is missing required content field`);
+            }
+          }
+        }
+
         // Update backend state first
         const updatedTodos = todoManager.setTodos(todos, merge);
 

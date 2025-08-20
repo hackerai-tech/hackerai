@@ -1,8 +1,4 @@
-export interface Todo {
-  id: string;
-  content: string;
-  status: "pending" | "in_progress" | "completed" | "cancelled";
-}
+import type { Todo } from "@/types/chat";
 
 export interface TodoUpdate {
   id: string;
