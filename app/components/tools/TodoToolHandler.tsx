@@ -53,7 +53,7 @@ export const TodoToolHandler = ({
         />
       ) : null;
 
-    case "output-available":
+    case "output-available": {
       const todoOutput = output as {
         result: string;
         counts?: {
@@ -88,6 +88,7 @@ export const TodoToolHandler = ({
           target={outputSummary}
         />
       );
+    }
 
     default:
       return null;

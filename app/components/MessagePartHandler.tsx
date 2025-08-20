@@ -60,6 +60,7 @@ export const MessagePartHandler = ({
 
     case "data-todo":
     case "tool-todoWrite":
+    case "tool-todoManager":
       return <TodoToolHandler message={message} part={part} status={status} />;
 
     default:

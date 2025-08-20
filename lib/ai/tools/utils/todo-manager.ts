@@ -16,11 +16,6 @@ export interface TodoUpdate {
  */
 export class TodoManager {
   private todos: Todo[] = [];
-  private sessionId: string;
-
-  constructor(sessionId: string) {
-    this.sessionId = sessionId;
-  }
 
   /**
    * Get all current todos
@@ -30,35 +25,41 @@ export class TodoManager {
   }
 
   /**
-   * Get a specific todo by ID
-   */
-  getTodo(id: string): Todo | undefined {
-    return this.todos.find((todo) => todo.id === id);
-  }
-
-  /**
    * Add or update todos with merge capability
    */
-  setTodos(newTodos: Partial<Todo>[], merge: boolean = false): Todo[] {
+  setTodos(
+    newTodos: (Partial<Todo> & { id: string })[],
+    merge: boolean = false,
+  ): Todo[] {
     if (!merge) {
       // Replace all todos
       this.todos = [];
     }
 
     for (const todo of newTodos) {
+      // Defensive check - should never happen with proper typing, but provides clear error
+      if (!todo.id) {
+        throw new Error("Todo must have an id");
+      }
+
       const existingIndex = this.todos.findIndex((t) => t.id === todo.id);
 
       if (existingIndex >= 0) {
         // Update existing todo, preserve existing content if not provided
         this.todos[existingIndex] = {
-          id: todo.id!,
+          id: todo.id,
           content: todo.content ?? this.todos[existingIndex].content,
           status: todo.status ?? this.todos[existingIndex].status,
         };
       } else {
         // Add new todo
+        // If it's the first time (not merge) and content is missing, throw error
+        if (!merge && !todo.content) {
+          throw new Error(`Content is required for new todos.`);
+        }
+
         this.todos.push({
-          id: todo.id!,
+          id: todo.id,
           content: todo.content ?? "",
           status: todo.status ?? "pending",
         });
@@ -66,72 +67,6 @@ export class TodoManager {
     }
 
     return this.getAllTodos();
-  }
-
-  /**
-   * Update specific todos by ID
-   */
-  updateTodos(updates: TodoUpdate[]): Todo[] {
-    for (const update of updates) {
-      const existingIndex = this.todos.findIndex((t) => t.id === update.id);
-      if (existingIndex >= 0) {
-        this.todos[existingIndex] = {
-          ...this.todos[existingIndex],
-          ...update,
-        };
-      }
-    }
-
-    return this.getAllTodos();
-  }
-
-  /**
-   * Mark a todo as completed
-   */
-  completeTodo(id: string): Todo | null {
-    const todoIndex = this.todos.findIndex((t) => t.id === id);
-    if (todoIndex >= 0) {
-      this.todos[todoIndex] = {
-        ...this.todos[todoIndex],
-        status: "completed",
-      };
-      return this.todos[todoIndex];
-    }
-    return null;
-  }
-
-  /**
-   * Mark a todo as in progress (and optionally mark others as pending)
-   */
-  startTodo(id: string, exclusiveInProgress: boolean = true): Todo | null {
-    const todoIndex = this.todos.findIndex((t) => t.id === id);
-    if (todoIndex < 0) return null;
-
-    // If exclusive, mark all other in_progress todos as pending
-    if (exclusiveInProgress) {
-      for (let i = 0; i < this.todos.length; i++) {
-        if (i !== todoIndex && this.todos[i].status === "in_progress") {
-          this.todos[i] = {
-            ...this.todos[i],
-            status: "pending",
-          };
-        }
-      }
-    }
-
-    // Mark the target todo as in_progress
-    this.todos[todoIndex] = {
-      ...this.todos[todoIndex],
-      status: "in_progress",
-    };
-    return this.todos[todoIndex];
-  }
-
-  /**
-   * Get todos by status
-   */
-  getTodosByStatus(status: Todo["status"]): Todo[] {
-    return this.getAllTodos().filter((todo) => todo.status === status);
   }
 
   /**
@@ -151,19 +86,5 @@ export class TodoManager {
       // Count both completed and cancelled as "done" for progress tracking
       done: completed + cancelled,
     };
-  }
-
-  /**
-   * Clear all todos (useful for testing or session reset)
-   */
-  clear(): void {
-    this.todos = [];
-  }
-
-  /**
-   * Get the session ID
-   */
-  getSessionId(): string {
-    return this.sessionId;
   }
 }

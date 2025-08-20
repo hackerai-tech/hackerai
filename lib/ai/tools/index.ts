@@ -31,8 +31,7 @@ export const createTools = (
     sandbox,
   );
 
-  // Create TodoManager with session ID based on userID
-  const todoManager = new TodoManager(userID);
+  const todoManager = new TodoManager();
 
   const context: ToolContext = {
     sandboxManager,
@@ -50,7 +49,8 @@ export const createTools = (
     deleteFile: createDeleteFile(context),
     searchReplace: createSearchReplace(context),
     multiEdit: createMultiEdit(context),
-    todoWrite: createTodoWrite(context),
+    todoWrite: createTodoWrite(context, false),
+    todoManager: createTodoWrite(context, true),
     ...(process.env.EXA_API_KEY && { webSearch: createWebSearchTool(context) }),
   };
 
@@ -60,6 +60,7 @@ export const createTools = (
       ? {
           readFile: allTools.readFile,
           todoWrite: allTools.todoWrite,
+          todoManager: allTools.todoManager,
           ...(process.env.EXA_API_KEY && { webSearch: allTools.webSearch }),
         }
       : allTools;
