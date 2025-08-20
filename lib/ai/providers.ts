@@ -7,7 +7,7 @@ export const myProvider = customProvider({
       process.env.NEXT_PUBLIC_AGENT_MODEL || "qwen/qwen3-coder",
     ),
     "title-generator-model": openrouter(
-      process.env.NEXT_PUBLIC_TITLE_MODEL || "qwen/qwen3-30b-a3b",
+      process.env.NEXT_PUBLIC_TITLE_MODEL || "qwen/qwen3-coder",
     ),
   },
 });

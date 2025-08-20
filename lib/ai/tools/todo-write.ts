@@ -170,7 +170,6 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
           status: "pending" | "in_progress" | "completed" | "cancelled";
         }>;
       },
-      { toolCallId }: { toolCallId: string },
     ) => {
       try {
         // Update backend state first
