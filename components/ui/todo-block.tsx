@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   X,
@@ -9,6 +9,7 @@ import {
   ChevronsUpDown,
 } from "lucide-react";
 import type { Todo, TodoBlockProps } from "@/types";
+import { useTodoBlockContext } from "@/app/contexts/TodoBlockContext";
 
 const STATUS_ICONS = {
   completed: <CircleCheck className="w-4 h-4 text-foreground" />,
@@ -45,9 +46,24 @@ const TodoItem = React.memo(({ todo }: { todo: Todo }) => {
 
 TodoItem.displayName = "TodoItem";
 
-export const TodoBlock = ({ todos, inputTodos }: TodoBlockProps) => {
-  const [isExpanded, setIsExpanded] = useState(false);
+export const TodoBlock = ({
+  todos,
+  inputTodos,
+  blockId,
+  messageId,
+}: TodoBlockProps) => {
+  const { autoOpenTodoBlock, toggleTodoBlock, isBlockExpanded } =
+    useTodoBlockContext();
   const [showAllTodos, setShowAllTodos] = useState(false);
+
+  // Determine if this block should be expanded based on todo block state
+  const isExpanded = isBlockExpanded(messageId, blockId);
+
+  // Auto-open this todo block when it's created (closes previous ones in same message)
+  useEffect(() => {
+    autoOpenTodoBlock(messageId, blockId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messageId, blockId]); // Only depend on messageId and blockId to prevent infinite loops
 
   const todoData = useMemo(() => {
     const byStatus = {
@@ -85,7 +101,8 @@ export const TodoBlock = ({ todos, inputTodos }: TodoBlockProps) => {
   const headerContent = useMemo(() => {
     const { currentInProgress, stats } = todoData;
 
-    if (currentInProgress) {
+    // When collapsed, show current in-progress task if available
+    if (!isExpanded && currentInProgress) {
       return {
         text: currentInProgress.content,
         icon: <CircleArrowRight className="text-foreground" />,
@@ -93,19 +110,31 @@ export const TodoBlock = ({ todos, inputTodos }: TodoBlockProps) => {
       };
     }
 
+    // When expanded OR no in-progress task, show list-todo icon with progress text
+    const progressText =
+      stats.done === 0
+        ? `To-dos (${stats.total})`
+        : `${stats.done} of ${stats.total} Done`;
+
     return {
-      text: `${stats.done} of ${stats.total} Done`,
+      text: progressText,
       icon: <ListTodo className="text-foreground" />,
       showViewAll: stats.total > 1 && stats.done > 0,
     };
-  }, [todoData]);
+  }, [todoData, isExpanded]);
 
-  const handleToggleExpanded = () => setIsExpanded((prev) => !prev);
+  const handleToggleExpanded = () => {
+    // Toggle this todo block (manual toggles persist and don't affect auto-opened one)
+    toggleTodoBlock(messageId, blockId);
+  };
 
   const handleToggleViewAll = (e: React.MouseEvent | React.KeyboardEvent) => {
     e.stopPropagation();
     setShowAllTodos((prev) => !prev);
-    if (!showAllTodos) setIsExpanded(true);
+    if (!showAllTodos && !isExpanded) {
+      // Promote to manual open if user wants to view all while collapsed
+      toggleTodoBlock(messageId, blockId);
+    }
   };
 
   const getVisibleTodos = () => {
@@ -172,14 +201,6 @@ export const TodoBlock = ({ todos, inputTodos }: TodoBlockProps) => {
     return visibleTodos;
   };
 
-  const getStatsText = () => {
-    const { stats, allCompleted } = todoData;
-    if (allCompleted) return null;
-    return stats.done === 0
-      ? `${stats.total} to-dos`
-      : `${stats.done} of ${stats.total}`;
-  };
-
   return (
     <div className="flex-1 min-w-0">
       <div className="rounded-[15px] border border-border bg-muted/20 overflow-hidden">
@@ -217,11 +238,6 @@ export const TodoBlock = ({ todos, inputTodos }: TodoBlockProps) => {
             )}
           </div>
           <div className="flex items-center gap-[4px]">
-            {getStatsText() && (
-              <div className="text-[12px] text-muted-foreground">
-                {getStatsText()}
-              </div>
-            )}
             <div className="w-[21px] inline-flex items-center flex-shrink-0 text-muted-foreground [&>svg]:h-4 [&>svg]:w-4">
               <ChevronsUpDown />
             </div>

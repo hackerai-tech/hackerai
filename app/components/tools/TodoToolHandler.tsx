@@ -56,36 +56,19 @@ export const TodoToolHandler = ({
     case "output-available": {
       const todoOutput = output as {
         result: string;
-        counts?: {
+        counts: {
           completed: number;
           total: number;
         };
-        currentTodos?: Todo[];
+        currentTodos: Todo[];
       };
 
-      // If we have currentTodos, show the TodoBlock
-      if (todoOutput?.currentTodos) {
-        return (
-          <TodoBlock
-            todos={todoOutput.currentTodos}
-            inputTodos={todoInput?.todos}
-          />
-        );
-      }
-
-      // Fallback to ToolBlock if no currentTodos
-      const outputSummary = todoOutput?.counts
-        ? todoOutput.counts.completed === 0
-          ? `${todoOutput.counts.total} to-dos`
-          : `${todoInput?.merge ? "Updated to-dos" : "Created to-dos"} ${todoOutput.counts.completed} of ${todoOutput.counts.total} done`
-        : "";
-
       return (
-        <ToolBlock
-          key={toolCallId}
-          icon={<ListTodo />}
-          action=""
-          target={outputSummary}
+        <TodoBlock
+          todos={todoOutput.currentTodos}
+          inputTodos={todoInput?.todos}
+          blockId={toolCallId}
+          messageId={message.id}
         />
       );
     }

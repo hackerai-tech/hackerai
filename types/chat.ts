@@ -42,4 +42,6 @@ export interface Todo {
 export interface TodoBlockProps {
   todos: Todo[];
   inputTodos?: Todo[];
+  blockId: string;
+  messageId: string;
 }

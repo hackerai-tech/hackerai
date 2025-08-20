@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, ReactNode } from "react";
 import type { ChatMode, SidebarContent } from "@/types/chat";
+import { TodoBlockProvider } from "./TodoBlockContext";
 
 interface GlobalStateType {
   // Input state
@@ -88,6 +89,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSidebarOpen,
     sidebarContent,
     setSidebarContent,
+
     clearInput,
     resetChat,
     openSidebar,
@@ -97,7 +99,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   return (
     <GlobalStateContext.Provider value={value}>
-      {children}
+      <TodoBlockProvider>{children}</TodoBlockProvider>
     </GlobalStateContext.Provider>
   );
 };

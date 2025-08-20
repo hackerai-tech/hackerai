@@ -176,17 +176,6 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
         // Update backend state first
         const updatedTodos = todoManager.setTodos(todos, merge);
 
-        // Send the updated todo data to the UI via the writer
-        writer.write({
-          type: "data-todo",
-          id: `todo-${toolCallId}`,
-          data: {
-            merge,
-            todos: updatedTodos,
-            toolCallId,
-          },
-        });
-
         // Get current stats from the manager
         const stats = todoManager.getStats();
         const action = merge ? "updated" : "created";
