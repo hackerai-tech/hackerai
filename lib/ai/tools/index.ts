@@ -1,5 +1,6 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
+import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
@@ -7,6 +8,7 @@ import { createDeleteFile } from "./delete-file";
 import { createSearchReplace } from "./search-replace";
 import { createMultiEdit } from "./multi-edit";
 import { createWebSearchTool } from "./web-search";
+import { createTodoWrite } from "./todo-write";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ExecutionMode, ToolContext } from "@/types";
 import type { Geo } from "@vercel/functions";
@@ -29,11 +31,14 @@ export const createTools = (
     sandbox,
   );
 
+  const todoManager = new TodoManager();
+
   const context: ToolContext = {
     sandboxManager,
     writer,
     executionMode,
     userLocation,
+    todoManager,
   };
 
   // Create all available tools
@@ -44,6 +49,8 @@ export const createTools = (
     deleteFile: createDeleteFile(context),
     searchReplace: createSearchReplace(context),
     multiEdit: createMultiEdit(context),
+    todoWrite: createTodoWrite(context, false),
+    todoManager: createTodoWrite(context, true),
     ...(process.env.EXA_API_KEY && { webSearch: createWebSearchTool(context) }),
   };
 
@@ -52,6 +59,8 @@ export const createTools = (
     mode === "ask"
       ? {
           readFile: allTools.readFile,
+          todoWrite: allTools.todoWrite,
+          todoManager: allTools.todoManager,
           ...(process.env.EXA_API_KEY && { webSearch: allTools.webSearch }),
         }
       : allTools;

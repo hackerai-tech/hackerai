@@ -1,6 +1,7 @@
 import type { Sandbox } from "@e2b/code-interpreter";
 import type { UIMessageStreamWriter } from "ai";
 import type { Geo } from "@vercel/functions";
+import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: Sandbox }>;
@@ -17,6 +18,7 @@ export interface ToolContext {
   writer: UIMessageStreamWriter;
   executionMode: ExecutionMode;
   userLocation: Geo;
+  todoManager: TodoManager;
 }
 
 export type ExecutionMode = "sandbox" | "local";

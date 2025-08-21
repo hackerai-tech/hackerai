@@ -7,6 +7,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
 import { isWorkOSEnabled } from "@/lib/auth/client";
 import { GlobalStateProvider } from "./contexts/GlobalState";
+import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,10 +31,12 @@ export default function RootLayout({
 }>) {
   const content = (
     <GlobalStateProvider>
-      <TooltipProvider>
-        {children}
-        <Toaster />
-      </TooltipProvider>
+      <TodoBlockProvider>
+        <TooltipProvider>
+          {children}
+          <Toaster />
+        </TooltipProvider>
+      </TodoBlockProvider>
     </GlobalStateProvider>
   );
 

@@ -32,3 +32,18 @@ export const isSidebarTerminal = (
 ): content is SidebarTerminal => {
   return "command" in content;
 };
+
+export interface Todo {
+  id: string;
+  content: string;
+  status: "pending" | "in_progress" | "completed" | "cancelled";
+}
+
+export interface TodoBlockProps {
+  todos: Todo[];
+  inputTodos?: Todo[];
+  blockId: string;
+  messageId: string;
+}
+
+export type ChatStatus = "submitted" | "streaming" | "ready" | "error";

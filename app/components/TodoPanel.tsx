@@ -1,0 +1,100 @@
+"use client";
+
+import React, { useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
+import type { ChatStatus, Todo } from "@/types";
+import { useGlobalState } from "@/app/contexts/GlobalState";
+import { SharedTodoItem } from "@/components/ui/shared-todo-item";
+
+interface TodoPanelProps {
+  status: ChatStatus;
+}
+
+const getTodoStats = (todos: Todo[]) => {
+  const completed = todos.filter((t) => t.status === "completed").length;
+  const inProgress = todos.filter((t) => t.status === "in_progress").length;
+  const pending = todos.filter((t) => t.status === "pending").length;
+  const cancelled = todos.filter((t) => t.status === "cancelled").length;
+  const total = todos.length;
+  const done = completed + cancelled;
+
+  return {
+    completed,
+    inProgress,
+    pending,
+    cancelled,
+    total,
+    done,
+  };
+};
+
+export const TodoPanel = ({ status }: TodoPanelProps) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const { todos } = useGlobalState();
+  const stats = getTodoStats(todos);
+
+  // Don't show panel if no todos exist
+  if (todos.length === 0) {
+    return null;
+  }
+
+  // Show panel only when there are active todos (hide when all are finished)
+  const hasActiveTodos = stats.inProgress > 0 || stats.pending > 0;
+
+  if (!hasActiveTodos) {
+    return null;
+  }
+
+  const handleToggleExpand = () => {
+    setIsExpanded(!isExpanded);
+  };
+
+  const getHeaderText = () => {
+    if (stats.done === 0) {
+      return `${stats.total} To-dos`;
+    }
+    return `${stats.done} of ${stats.total} To-dos`;
+  };
+
+  return (
+    <div className="mx-4 rounded-[22px_22px_0px_0px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border border-b-0 bg-input-chat">
+      {/* Header */}
+      <div
+        className={`flex items-center px-4 transition-all duration-300 py-2`}
+      >
+        <button
+          onClick={handleToggleExpand}
+          className="flex items-center gap-2 hover:opacity-80 transition-opacity cursor-pointer focus:outline-none rounded-md p-1 -m-1 flex-1"
+          aria-label={isExpanded ? "Collapse todos" : "Expand todos"}
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              handleToggleExpand();
+            }
+          }}
+        >
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="w-4 h-4 text-muted-foreground" />
+          )}
+          <div className="flex items-center gap-2">
+            <h3 className="text-muted-foreground text-sm font-medium">
+              {getHeaderText()}
+            </h3>
+          </div>
+        </button>
+      </div>
+
+      {/* Todo List - Collapsible */}
+      {isExpanded && (
+        <div className="border-t border-border px-4 py-3 space-y-2">
+          {todos.map((todo) => (
+            <SharedTodoItem key={todo.id} todo={todo} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};

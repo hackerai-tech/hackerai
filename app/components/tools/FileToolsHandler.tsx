@@ -1,10 +1,11 @@
 import ToolBlock from "@/components/ui/tool-block";
 import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
+import type { ChatStatus } from "@/types";
 
 interface FileToolsHandlerProps {
   part: any;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
 }
 
 export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {

@@ -24,13 +24,27 @@ export default function Page() {
 
   const { user, loading } = useAppAuth();
 
-  const { messages, sendMessage, status, stop, error, regenerate } = useChat({
+  const {
+    messages,
+    sendMessage,
+    setMessages,
+    status,
+    stop,
+    error,
+    regenerate,
+  } = useChat({
     transport: new DefaultChatTransport({
       api: "/api/chat",
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ messages, body }) => {
         // Normalize messages on the frontend before sending to API
-        const normalizedMessages = normalizeMessages(messages);
+        const { messages: normalizedMessages, hasChanges } =
+          normalizeMessages(messages);
+
+        // Only update messages if normalization made changes
+        if (hasChanges) {
+          setMessages(normalizedMessages);
+        }
 
         return {
           body: {

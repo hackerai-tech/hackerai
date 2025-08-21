@@ -3,12 +3,14 @@ import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { WebSearchToolHandler } from "./tools/WebSearchToolHandler";
+import { TodoToolHandler } from "./tools/TodoToolHandler";
+import type { ChatStatus } from "@/types";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
   part: any;
   partIndex: number;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
 }
 
 export const MessagePartHandler = ({
@@ -56,6 +58,10 @@ export const MessagePartHandler = ({
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
       );
+
+    case "tool-todoWrite":
+    case "tool-todoManager":
+      return <TodoToolHandler message={message} part={part} status={status} />;
 
     default:
       return null;

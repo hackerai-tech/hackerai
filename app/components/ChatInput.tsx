@@ -17,11 +17,13 @@ import {
 import { useHotkeys } from "react-hotkeys-hook";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "../contexts/GlobalState";
+import { TodoPanel } from "./TodoPanel";
+import type { ChatStatus } from "@/types";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
   onStop: () => void;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
   isCentered?: boolean;
 }
 
@@ -61,6 +63,9 @@ export const ChatInput = ({
   return (
     <div className={`relative px-4 ${isCentered ? "" : "pb-3 mb-4"}`}>
       <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+        {/* Todo Panel */}
+        <TodoPanel status={status} />
+
         <div className="flex flex-col gap-3 rounded-[22px] transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border">
           <div className="overflow-y-auto pl-4 pr-2">
             <TextareaAutosize

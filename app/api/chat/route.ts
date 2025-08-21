@@ -56,6 +56,9 @@ export async function POST(req: NextRequest) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
+        // Track if todoWrite tool has been used (to activate todoManager)
+        let usedTodoWriteTool = false;
+
         // Create tools with user context, mode, and writer
         const { tools, getSandbox } = createTools(
           userID,
@@ -63,6 +66,12 @@ export async function POST(req: NextRequest) {
           mode,
           executionMode,
           userLocation,
+        );
+
+        // Get all tool names except todoManager for initial activeTools
+        const allToolNames = Object.keys(tools) as Array<keyof typeof tools>;
+        const defaultActiveTools = allToolNames.filter(
+          (name) => name !== "todoManager",
         );
 
         // Generate title in parallel if this is the start of a conversation
@@ -95,12 +104,28 @@ export async function POST(req: NextRequest) {
           system: systemPrompt(model.modelId, executionMode),
           messages: convertToModelMessages(truncatedMessages),
           tools,
+          activeTools: defaultActiveTools,
           abortSignal: req.signal,
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
+          prepareStep: async () => {
+            if (usedTodoWriteTool) {
+              return {
+                activeTools: [
+                  ...defaultActiveTools,
+                  "todoManager" as keyof typeof tools,
+                ],
+              };
+            }
+          },
           stopWhen: stepCountIs(25),
           onChunk: async (chunk) => {
             if (chunk.chunk.type === "tool-call") {
+              // Track if todoWrite tool has been used (to activate todoManager)
+              if (chunk.chunk.toolName === "todoWrite") {
+                usedTodoWriteTool = true;
+              }
+
               if (posthog) {
                 posthog.capture({
                   distinctId: userID,
