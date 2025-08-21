@@ -4,12 +4,13 @@ import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { WebSearchToolHandler } from "./tools/WebSearchToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
+import type { ChatStatus } from "@/types";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
   part: any;
   partIndex: number;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
 }
 
 export const MessagePartHandler = ({

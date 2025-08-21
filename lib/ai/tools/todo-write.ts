@@ -158,26 +158,26 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
         .min(isManagerMode ? 1 : 2)
         .describe("Array of todo items to write to the workspace"),
     }),
-    execute: async (
-      {
-        merge,
-        todos,
-      }: {
-        merge: boolean;
-        todos: Array<{
-          id: string;
-          content?: string;
-          status: "pending" | "in_progress" | "completed" | "cancelled";
-        }>;
-      },
-    ) => {
+    execute: async ({
+      merge,
+      todos,
+    }: {
+      merge: boolean;
+      todos: Array<{
+        id: string;
+        content?: string;
+        status: "pending" | "in_progress" | "completed" | "cancelled";
+      }>;
+    }) => {
       try {
         // Runtime validation for non-merge operations
         if (!merge) {
           for (let i = 0; i < todos.length; i++) {
             const todo = todos[i];
-            if (!todo.content || todo.content.trim() === '') {
-              throw new Error(`Todo at index ${i} is missing required content field`);
+            if (!todo.content || todo.content.trim() === "") {
+              throw new Error(
+                `Todo at index ${i} is missing required content field`,
+              );
             }
           }
         }

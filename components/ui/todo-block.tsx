@@ -1,50 +1,9 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import {
-  X,
-  CircleCheck,
-  ListTodo,
-  CircleArrowRight,
-  Circle,
-  ChevronsUpDown,
-} from "lucide-react";
-import type { Todo, TodoBlockProps } from "@/types";
+import { ListTodo, CircleArrowRight, ChevronsUpDown } from "lucide-react";
+import type { TodoBlockProps } from "@/types";
 import { useTodoBlockContext } from "@/app/contexts/TodoBlockContext";
-
-const STATUS_ICONS = {
-  completed: <CircleCheck className="w-4 h-4 text-foreground" />,
-  in_progress: <CircleArrowRight className="w-4 h-4 text-foreground" />,
-  cancelled: <X className="w-4 h-4 text-muted-foreground" />,
-  pending: <Circle className="w-4 h-4 text-muted-foreground" />,
-} as const;
-
-const getStatusIcon = (status: Todo["status"]) =>
-  STATUS_ICONS[status] || STATUS_ICONS.pending;
-
-const TodoItem = React.memo(({ todo }: { todo: Todo }) => {
-  const getTextStyles = () => {
-    if (todo.status === "completed") {
-      return "line-through opacity-75 text-foreground";
-    }
-    if (todo.status === "in_progress") {
-      return "text-foreground font-medium";
-    }
-    return "text-muted-foreground";
-  };
-
-  return (
-    <div className="rounded-[15px] px-[10px] py-[6px] border border-border bg-muted/20 flex w-full gap-[4px] items-center h-[36px]">
-      <div className="w-[21px] flex items-center justify-center flex-shrink-0 text-foreground [&>svg]:h-4 [&>svg]:w-4">
-        {getStatusIcon(todo.status)}
-      </div>
-      <div className="flex-1 truncate relative top-[-1px]">
-        <span className={`text-[13px] ${getTextStyles()}`}>{todo.content}</span>
-      </div>
-    </div>
-  );
-});
-
-TodoItem.displayName = "TodoItem";
+import { SharedTodoItem } from "@/components/ui/shared-todo-item";
 
 export const TodoBlock = ({
   todos,
@@ -248,7 +207,7 @@ export const TodoBlock = ({
         {isExpanded && (
           <div className="border-t border-border p-2 space-y-2">
             {getVisibleTodos().map((todo) => (
-              <TodoItem key={todo.id} todo={todo} />
+              <SharedTodoItem key={todo.id} todo={todo} />
             ))}
           </div>
         )}

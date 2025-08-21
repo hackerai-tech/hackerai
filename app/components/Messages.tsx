@@ -7,11 +7,12 @@ import { Button } from "@/components/ui/button";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
 import { ChatSDKError } from "@/lib/errors";
+import type { ChatStatus } from "@/types";
 
 interface MessagesProps {
   messages: UIMessage[];
   onRegenerate: () => void;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
   error: Error | null;
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;

@@ -2,6 +2,7 @@
 
 import React, { createContext, useContext, useState, ReactNode } from "react";
 import type { ChatMode, SidebarContent } from "@/types/chat";
+import type { Todo } from "@/types";
 
 interface GlobalStateType {
   // Input state
@@ -21,6 +22,10 @@ interface GlobalStateType {
   setSidebarOpen: (open: boolean) => void;
   sidebarContent: SidebarContent | null;
   setSidebarContent: (content: SidebarContent | null) => void;
+
+  // Todos state
+  todos: Todo[];
+  setTodos: (todos: Todo[]) => void;
 
   // Utility methods
   clearInput: () => void;
@@ -48,6 +53,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
+  const [todos, setTodos] = useState<Todo[]>([]);
 
   const clearInput = () => {
     setInput("");
@@ -56,6 +62,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const resetChat = () => {
     setInput("");
     setChatTitle(null);
+    setTodos([]);
   };
 
   const openSidebar = (content: SidebarContent) => {
@@ -88,6 +95,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSidebarOpen,
     sidebarContent,
     setSidebarContent,
+    todos,
+    setTodos,
 
     clearInput,
     resetChat,

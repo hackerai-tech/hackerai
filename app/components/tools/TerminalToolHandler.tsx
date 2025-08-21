@@ -4,12 +4,12 @@ import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import type { SidebarTerminal } from "@/types/chat";
+import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
   part: any;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
 }
 
 export const TerminalToolHandler = ({

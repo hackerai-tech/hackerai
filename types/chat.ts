@@ -45,3 +45,5 @@ export interface TodoBlockProps {
   blockId: string;
   messageId: string;
 }
+
+export type ChatStatus = "submitted" | "streaming" | "ready" | "error";

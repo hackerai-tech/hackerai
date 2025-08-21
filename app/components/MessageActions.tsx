@@ -5,6 +5,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
+import type { ChatStatus } from "@/types";
 
 interface MessageActionsProps {
   messageParts: Array<{ type: string; text?: string }>;
@@ -13,7 +14,7 @@ interface MessageActionsProps {
   canRegenerate: boolean;
   onRegenerate: () => void;
   isHovered: boolean;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
 }
 
 export const MessageActions = ({

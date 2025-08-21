@@ -1,13 +1,15 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { TodoBlock } from "@/components/ui/todo-block";
 import { ListTodo } from "lucide-react";
+import { useGlobalState } from "@/app/contexts/GlobalState";
+import type { ChatStatus } from "@/types";
 
 interface TodoToolHandlerProps {
   message: UIMessage;
   part: any;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
 }
 
 interface Todo {
@@ -22,12 +24,20 @@ export const TodoToolHandler = ({
   status,
 }: TodoToolHandlerProps) => {
   const { toolCallId, state, input, output } = part;
+  const { setTodos } = useGlobalState();
 
   // Handle tool-todoWrite type
   const todoInput = input as {
     merge: boolean;
     todos: Todo[];
   };
+
+  // Update global todos state when output is available
+  useEffect(() => {
+    if (state === "output-available" && output?.currentTodos) {
+      setTodos(output.currentTodos);
+    }
+  }, [state, output, setTodos]);
 
   switch (state) {
     case "input-streaming":

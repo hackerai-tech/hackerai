@@ -1,9 +1,10 @@
 import ToolBlock from "@/components/ui/tool-block";
 import { Search } from "lucide-react";
+import type { ChatStatus } from "@/types";
 
 interface WebSearchToolHandlerProps {
   part: any;
-  status: "ready" | "submitted" | "streaming" | "error";
+  status: ChatStatus;
 }
 
 export const WebSearchToolHandler = ({
