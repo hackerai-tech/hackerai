@@ -19,8 +19,15 @@ import { useAppAuth } from "./hooks/useAppAuth";
 import { isWorkOSEnabled } from "@/lib/auth/client";
 
 export default function Page() {
-  const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =
-    useGlobalState();
+  const {
+    input,
+    mode,
+    chatTitle,
+    setChatTitle,
+    clearInput,
+    sidebarOpen,
+    isTodoPanelExpanded,
+  } = useGlobalState();
 
   const { user, loading } = useAppAuth();
 
@@ -212,18 +219,25 @@ export default function Page() {
           )}
 
           {/* Scroll to bottom button - positioned relative to chat area */}
-          <div
-            className={`fixed bottom-34 z-40 transition-all duration-300 ${
-              sidebarOpen
-                ? "left-1/2 desktop:left-1/4 -translate-x-1/2" // Center of full screen on mobile/tablet, center of left half on desktop
-                : "left-1/2 -translate-x-1/2" // Center of full screen when sidebar is closed
-            }`}
-          >
-            <ScrollToBottomButton
-              isVisible={!isAtBottom && messages.length > 0}
-              onClick={handleScrollToBottom}
-            />
-          </div>
+          {(() => {
+            const shouldShowScrollButton =
+              hasMessages && !isAtBottom && !isTodoPanelExpanded;
+            if (!shouldShowScrollButton) return null;
+            return (
+              <div
+                className={`fixed bottom-42 z-40 transition-all duration-300 ${
+                  sidebarOpen
+                    ? "left-1/2 desktop:left-1/4 -translate-x-1/2"
+                    : "left-1/2 -translate-x-1/2"
+                }`}
+              >
+                <ScrollToBottomButton
+                  isVisible={true}
+                  onClick={handleScrollToBottom}
+                />
+              </div>
+            );
+          })()}
         </div>
 
         {/* Computer Sidebar - responsive behavior */}

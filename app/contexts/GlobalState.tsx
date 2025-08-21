@@ -27,6 +27,10 @@ interface GlobalStateType {
   todos: Todo[];
   setTodos: (todos: Todo[]) => void;
 
+  // UI state
+  isTodoPanelExpanded: boolean;
+  setIsTodoPanelExpanded: (expanded: boolean) => void;
+
   // Utility methods
   clearInput: () => void;
   resetChat: () => void;
@@ -54,6 +58,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     null,
   );
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
 
   const clearInput = () => {
     setInput("");
@@ -63,6 +68,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setInput("");
     setChatTitle(null);
     setTodos([]);
+    setIsTodoPanelExpanded(false);
   };
 
   const openSidebar = (content: SidebarContent) => {
@@ -97,6 +103,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSidebarContent,
     todos,
     setTodos,
+
+    isTodoPanelExpanded,
+    setIsTodoPanelExpanded,
 
     clearInput,
     resetChat,

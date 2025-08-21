@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ChatStatus, Todo } from "@/types";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -30,16 +30,33 @@ const getTodoStats = (todos: Todo[]) => {
 
 export const TodoPanel = ({ status }: TodoPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { todos } = useGlobalState();
+  const { todos, setIsTodoPanelExpanded } = useGlobalState();
   const stats = getTodoStats(todos);
 
   // Don't show panel if no todos exist
-  if (todos.length === 0) {
-    return null;
-  }
+  const hasTodos = todos.length > 0;
+
+  // Reflect expansion to global state
+  useEffect(() => {
+    setIsTodoPanelExpanded(isExpanded);
+    return () => {
+      setIsTodoPanelExpanded(false);
+    };
+  }, [isExpanded, setIsTodoPanelExpanded]);
 
   // Show panel only when there are active todos (hide when all are finished)
   const hasActiveTodos = stats.inProgress > 0 || stats.pending > 0;
+
+  // If panel is not visible, ensure global state is reset
+  useEffect(() => {
+    if (!hasTodos || !hasActiveTodos) {
+      setIsTodoPanelExpanded(false);
+    }
+  }, [hasTodos, hasActiveTodos, setIsTodoPanelExpanded]);
+
+  if (!hasTodos) {
+    return null;
+  }
 
   if (!hasActiveTodos) {
     return null;
