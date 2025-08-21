@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext, Todo } from "@/types";
 
-export const createTodoWrite = (context: ToolContext) => {
+export const createTodoManager = (context: ToolContext) => {
   const { todoManager } = context;
 
   return tool({

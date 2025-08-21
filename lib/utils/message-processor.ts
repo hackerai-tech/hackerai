@@ -11,7 +11,7 @@ interface BaseToolPart {
 
 // Specific interface for terminal tools that have special data handling
 interface TerminalToolPart extends BaseToolPart {
-  type: "tool-runTerminalCmd";
+  type: "tool-run_terminal_cmd";
   input?: {
     command: string;
     explanation: string;
@@ -138,7 +138,7 @@ const transformIncompleteToolPart = (
   terminalDataMap: Map<string, string>,
 ): BaseToolPart => {
   // Handle terminal tools with special terminal output handling
-  if (toolPart.type === "tool-runTerminalCmd") {
+  if (toolPart.type === "tool-run_terminal_cmd") {
     return transformTerminalToolPart(
       toolPart as TerminalToolPart,
       terminalDataMap,
@@ -159,7 +159,7 @@ const transformTerminalToolPart = (
   const stdout = terminalDataMap.get(terminalPart.toolCallId) || "";
 
   return {
-    type: "tool-runTerminalCmd",
+    type: "tool-run_terminal_cmd",
     toolCallId: terminalPart.toolCallId,
     state: "output-available",
     input: terminalPart.input,
@@ -180,8 +180,7 @@ const transformTerminalToolPart = (
 const transformGenericToolPart = (toolPart: BaseToolPart): BaseToolPart => {
   // Handle specific tool types with appropriate default outputs
   switch (toolPart.type) {
-    case "tool-todoWrite":
-    case "tool-todoManager":
+    case "tool-todo_write":
       return {
         ...toolPart,
         state: "output-available",

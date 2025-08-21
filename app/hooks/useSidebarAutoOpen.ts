@@ -34,7 +34,7 @@ const checkForSidebarContent = (
     // Check for terminal tools when they start executing (input-available state)
     if (
       toolPart.state === "input-available" &&
-      toolPart.type === "tool-runTerminalCmd" &&
+      toolPart.type === "tool-run_terminal_cmd" &&
       toolPart.input?.command
     ) {
       const input = toolPart.input as {
@@ -56,7 +56,7 @@ const checkForSidebarContent = (
 
     if (toolPart.state === "output-available") {
       // Check for readFile tool
-      if (toolPart.type === "tool-readFile" && toolPart.output?.result) {
+      if (toolPart.type === "tool-read_file" && toolPart.output?.result) {
         const input = toolPart.input as {
           target_file: string;
           offset?: number;
@@ -85,7 +85,7 @@ const checkForSidebarContent = (
       }
 
       // Check for writeFile tool
-      if (toolPart.type === "tool-writeFile" && toolPart.input?.file_path) {
+      if (toolPart.type === "tool-write_file" && toolPart.input?.file_path) {
         const input = toolPart.input as { file_path: string; contents: string };
 
         return {
@@ -155,7 +155,7 @@ export const useSidebarAutoOpen = (
     // Find the terminal tool call that matches the sidebar content
     const terminalToolPart = lastAssistantMessage.parts.find(
       (part: any) =>
-        part.type === "tool-runTerminalCmd" &&
+        part.type === "tool-run_terminal_cmd" &&
         part.toolCallId === sidebarContent.toolCallId,
     );
 

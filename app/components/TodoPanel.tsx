@@ -2,31 +2,14 @@
 
 import React, { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type { ChatStatus, Todo } from "@/types";
+import type { ChatStatus } from "@/types";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { SharedTodoItem } from "@/components/ui/shared-todo-item";
+import { getTodoStats } from "@/lib/utils/todo-utils";
 
 interface TodoPanelProps {
   status: ChatStatus;
 }
-
-const getTodoStats = (todos: Todo[]) => {
-  const completed = todos.filter((t) => t.status === "completed").length;
-  const inProgress = todos.filter((t) => t.status === "in_progress").length;
-  const pending = todos.filter((t) => t.status === "pending").length;
-  const cancelled = todos.filter((t) => t.status === "cancelled").length;
-  const total = todos.length;
-  const done = completed + cancelled;
-
-  return {
-    completed,
-    inProgress,
-    pending,
-    cancelled,
-    total,
-    done,
-  };
-};
 
 export const TodoPanel = ({ status }: TodoPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(false);

@@ -10,7 +10,7 @@ import { createMultiEdit } from "./multi-edit";
 import { createWebSearchTool } from "./web-search";
 import { createTodoWrite } from "./todo-write";
 import type { UIMessageStreamWriter } from "ai";
-import type { ChatMode, ExecutionMode, ToolContext } from "@/types";
+import type { ChatMode, ExecutionMode, ToolContext, Todo } from "@/types";
 import type { Geo } from "@vercel/functions";
 
 // Factory function to create tools with context
@@ -20,6 +20,7 @@ export const createTools = (
   mode: ChatMode = "agent",
   executionMode: ExecutionMode = "local",
   userLocation: Geo,
+  initialTodos?: Todo[],
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -31,7 +32,7 @@ export const createTools = (
     sandbox,
   );
 
-  const todoManager = new TodoManager();
+  const todoManager = new TodoManager(initialTodos);
 
   const context: ToolContext = {
     sandboxManager,
@@ -43,25 +44,25 @@ export const createTools = (
 
   // Create all available tools
   const allTools = {
-    runTerminalCmd: createRunTerminalCmd(context),
-    readFile: createReadFile(context),
-    writeFile: createWriteFile(context),
-    deleteFile: createDeleteFile(context),
-    searchReplace: createSearchReplace(context),
-    multiEdit: createMultiEdit(context),
-    todoWrite: createTodoWrite(context, false),
-    todoManager: createTodoWrite(context, true),
-    ...(process.env.EXA_API_KEY && { webSearch: createWebSearchTool(context) }),
+    run_terminal_cmd: createRunTerminalCmd(context),
+    read_file: createReadFile(context),
+    write_file: createWriteFile(context),
+    delete_file: createDeleteFile(context),
+    search_replace: createSearchReplace(context),
+    multi_edit: createMultiEdit(context),
+    todo_write: createTodoWrite(context),
+    ...(process.env.EXA_API_KEY && {
+      web_search: createWebSearchTool(context),
+    }),
   };
 
   // Filter tools based on mode
   const tools =
     mode === "ask"
       ? {
-          readFile: allTools.readFile,
-          todoWrite: allTools.todoWrite,
-          todoManager: allTools.todoManager,
-          ...(process.env.EXA_API_KEY && { webSearch: allTools.webSearch }),
+          read_file: allTools.read_file,
+          todo_write: createTodoWrite(context),
+          ...(process.env.EXA_API_KEY && { web_search: allTools.web_search }),
         }
       : allTools;
 

@@ -17,6 +17,7 @@ import { fetchWithErrorHandlers } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAppAuth } from "./hooks/useAppAuth";
 import { isWorkOSEnabled } from "@/lib/auth/client";
+import type { Todo } from "@/types";
 
 export default function Page() {
   const {
@@ -27,6 +28,8 @@ export default function Page() {
     clearInput,
     sidebarOpen,
     isTodoPanelExpanded,
+    mergeTodos,
+    todos,
   } = useGlobalState();
 
   const { user, loading } = useAppAuth();
@@ -64,6 +67,15 @@ export default function Page() {
     onData: ({ data, type }) => {
       if (type === "data-title") {
         setChatTitle((data as { chatTitle: string }).chatTitle);
+      }
+    },
+    onToolCall: ({ toolCall }) => {
+      // Handle todo-write tool calls to update global state
+      if (toolCall.toolName === "todo_write" && toolCall.input) {
+        const todoInput = toolCall.input as { merge: boolean; todos: Todo[] };
+        if (todoInput.todos) {
+          mergeTodos(todoInput.todos);
+        }
       }
     },
     onError: (error) => {
@@ -106,6 +118,7 @@ export default function Page() {
         {
           body: {
             mode,
+            todos,
           },
         },
       );
@@ -118,7 +131,12 @@ export default function Page() {
   };
 
   const handleRegenerate = () => {
-    regenerate();
+    regenerate({
+      body: {
+        mode,
+        todos,
+      },
+    });
   };
 
   const handleScrollToBottom = () => {

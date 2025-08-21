@@ -1,8 +1,15 @@
 "use client";
 
-import React, { createContext, useContext, useState, ReactNode } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  ReactNode,
+} from "react";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
+import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
 
 interface GlobalStateType {
   // Input state
@@ -26,6 +33,7 @@ interface GlobalStateType {
   // Todos state
   todos: Todo[];
   setTodos: (todos: Todo[]) => void;
+  mergeTodos: (todos: Todo[]) => void;
 
   // UI state
   isTodoPanelExpanded: boolean;
@@ -58,6 +66,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     null,
   );
   const [todos, setTodos] = useState<Todo[]>([]);
+
+  const mergeTodos = useCallback((newTodos: Todo[]) => {
+    setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
+  }, []);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
 
   const clearInput = () => {
@@ -103,6 +115,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSidebarContent,
     todos,
     setTodos,
+    mergeTodos,
 
     isTodoPanelExpanded,
     setIsTodoPanelExpanded,

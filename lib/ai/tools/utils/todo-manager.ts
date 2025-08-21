@@ -13,6 +13,12 @@ export interface TodoUpdate {
 export class TodoManager {
   private todos: Todo[] = [];
 
+  constructor(initialTodos?: Todo[]) {
+    if (initialTodos) {
+      this.todos = [...initialTodos];
+    }
+  }
+
   /**
    * Get all current todos
    */

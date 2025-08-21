@@ -43,24 +43,23 @@ export const MessagePartHandler = ({
     case "text":
       return renderTextPart();
 
-    case "tool-readFile":
-    case "tool-writeFile":
-    case "tool-deleteFile":
-    case "tool-searchReplace":
-    case "tool-multiEdit":
+    case "tool-read_file":
+    case "tool-write_file":
+    case "tool-delete_file":
+    case "tool-search_replace":
+    case "tool-multi_edit":
       return <FileToolsHandler part={part} status={status} />;
 
-    case "tool-webSearch":
+    case "tool-web_search":
       return <WebSearchToolHandler part={part} status={status} />;
 
     case "data-terminal":
-    case "tool-runTerminalCmd":
+    case "tool-run_terminal_cmd":
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
       );
 
-    case "tool-todoWrite":
-    case "tool-todoManager":
+    case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
 
     default:
