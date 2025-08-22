@@ -46,4 +46,9 @@ export interface TodoBlockProps {
   messageId: string;
 }
 
+export interface TodoWriteInput {
+  merge?: boolean;
+  todos?: Todo[];
+}
+
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";

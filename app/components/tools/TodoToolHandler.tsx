@@ -3,7 +3,7 @@ import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { TodoBlock } from "@/components/ui/todo-block";
 import { ListTodo } from "lucide-react";
-import type { ChatStatus, Todo } from "@/types";
+import type { ChatStatus, Todo, TodoWriteInput } from "@/types";
 
 interface TodoToolHandlerProps {
   message: UIMessage;
@@ -17,11 +17,8 @@ export const TodoToolHandler = ({
   status,
 }: TodoToolHandlerProps) => {
   const { toolCallId, state, input, output } = part;
-  // Handle tool-todoWrite type
-  const todoInput = input as {
-    merge: boolean;
-    todos: Todo[];
-  };
+  // Handle tool-todo_write type
+  const todoInput = input as TodoWriteInput;
 
   switch (state) {
     case "input-streaming":

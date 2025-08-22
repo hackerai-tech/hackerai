@@ -10,7 +10,6 @@ import {
 import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { createTools } from "@/lib/ai/tools";
-import { createTodoWrite } from "@/lib/ai/tools/todo-write";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
 import { getUserID } from "@/lib/auth/server";
 import { generateTitleFromUserMessage } from "@/lib/actions";
