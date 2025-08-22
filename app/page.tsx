@@ -237,25 +237,11 @@ export default function Page() {
           )}
 
           {/* Scroll to bottom button - positioned relative to chat area */}
-          {(() => {
-            const shouldShowScrollButton =
-              hasMessages && !isAtBottom && !isTodoPanelExpanded;
-            if (!shouldShowScrollButton) return null;
-            return (
-              <div
-                className={`fixed bottom-42 z-40 transition-all duration-300 ${
-                  sidebarOpen
-                    ? "left-1/2 desktop:left-1/4 -translate-x-1/2"
-                    : "left-1/2 -translate-x-1/2"
-                }`}
-              >
-                <ScrollToBottomButton
-                  isVisible={true}
-                  onClick={handleScrollToBottom}
-                />
-              </div>
-            );
-          })()}
+          <ScrollToBottomButton
+            onClick={handleScrollToBottom}
+            hasMessages={hasMessages}
+            isAtBottom={isAtBottom}
+          />
         </div>
 
         {/* Computer Sidebar - responsive behavior */}

@@ -5,6 +5,7 @@ import {
   TRUNCATION_MESSAGE,
   TIMEOUT_MESSAGE,
   truncateContent,
+  sliceByTokens,
 } from "@/lib/token-utils";
 
 export type TerminalResult = {
@@ -63,10 +64,7 @@ export const createTerminalHandler = (
       if (remainingTokens > truncationTokens) {
         // We can fit some content plus the truncation message
         const contentBudget = remainingTokens - truncationTokens;
-        const truncatedOutput = truncateContent(output, "").slice(
-          0,
-          contentBudget,
-        );
+        const truncatedOutput = sliceByTokens(output, contentBudget);
         if (truncatedOutput.trim()) {
           onOutput(truncatedOutput, isStderr);
           totalTokens += countTokens(truncatedOutput);
@@ -144,8 +142,8 @@ export const truncateTerminalOutput = (
     stdoutBudget = budget - stderrBudget;
   }
 
-  const truncatedStdout = truncateContent(stdout, "").slice(0, stdoutBudget);
-  const truncatedStderr = truncateContent(stderr, "").slice(0, stderrBudget);
+  const truncatedStdout = sliceByTokens(stdout, stdoutBudget);
+  const truncatedStderr = sliceByTokens(stderr, stderrBudget);
 
   return {
     stdout: truncatedStdout,

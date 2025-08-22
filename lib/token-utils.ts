@@ -83,6 +83,18 @@ export const truncateContent = (
 };
 
 /**
+ * Slices content to fit within a specific token budget
+ */
+export const sliceByTokens = (content: string, maxTokens: number): string => {
+  if (maxTokens <= 0) return "";
+
+  const tokens = encode(content);
+  if (tokens.length <= maxTokens) return content;
+
+  return decode(tokens.slice(0, maxTokens));
+};
+
+/**
  * Legacy wrapper for backward compatibility
  */
 export function truncateOutput(args: {

@@ -8,9 +8,10 @@ import {
   createLocalTerminalHandlers,
 } from "./utils/local-terminal";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
+import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
-const STREAM_TIMEOUT_SECONDS = 60;
+const STREAM_TIMEOUT_SECONDS = 5;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const { sandboxManager, writer, executionMode } = context;
@@ -120,7 +121,7 @@ In using these tools, adhere to the following guidelines:
             });
           };
 
-          return new Promise(async (resolve) => {
+          return new Promise((resolve, reject) => {
             let resolved = false;
 
             const handler = createTerminalHandler(
@@ -130,6 +131,11 @@ In using these tools, adhere to the following guidelines:
                 onTimeout: () => {
                   if (!resolved) {
                     resolved = true;
+                    // Send timeout message through streaming interface
+                    createTerminalWriter(
+                      TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS),
+                    );
+                    handler.cleanup();
                     const result = handler.getResult();
                     resolve({ result: { ...result, exitCode: null } });
                   }
@@ -145,32 +151,36 @@ In using these tools, adhere to the following guidelines:
               onStderr: handler.stderr,
             };
 
-            try {
-              const execution = is_background
-                ? await sandbox.commands.run(command, {
-                    ...commonOptions,
-                    background: true,
-                  })
-                : await sandbox.commands.run(command, commonOptions);
+            const runPromise = is_background
+              ? sandbox.commands.run(command, {
+                  ...commonOptions,
+                  background: true,
+                })
+              : sandbox.commands.run(command, commonOptions);
 
-              handler.cleanup();
+            runPromise
+              .then((execution) => {
+                handler.cleanup();
 
-              if (!resolved) {
-                const finalResult = handler.getResult();
-                resolve({
-                  result: {
-                    ...execution,
-                    stdout: finalResult.stdout,
-                    stderr: finalResult.stderr,
-                  },
-                });
-              }
-            } catch (error) {
-              handler.cleanup();
-              if (!resolved) {
-                throw error;
-              }
-            }
+                if (!resolved) {
+                  resolved = true;
+                  const finalResult = handler.getResult();
+                  resolve({
+                    result: {
+                      ...execution,
+                      stdout: finalResult.stdout,
+                      stderr: finalResult.stderr,
+                    },
+                  });
+                }
+              })
+              .catch((error) => {
+                handler.cleanup();
+                if (!resolved) {
+                  resolved = true;
+                  reject(error);
+                }
+              });
           });
         }
       } catch (error) {
