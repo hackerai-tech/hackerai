@@ -15,7 +15,7 @@ import { getUserID } from "@/lib/auth/server";
 import { generateTitleFromUserMessage } from "@/lib/actions";
 import { NextRequest } from "next/server";
 import { myProvider } from "@/lib/ai/providers";
-import type { ChatMode, ExecutionMode } from "@/types";
+import type { ChatMode, ExecutionMode, Todo } from "@/types";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
@@ -26,7 +26,11 @@ export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages, mode }: { messages: UIMessage[]; mode: ChatMode } =
+    const {
+      messages,
+      mode,
+      todos,
+    }: { messages: UIMessage[]; mode: ChatMode; todos?: Todo[] } =
       await req.json();
 
     // Get user ID from authenticated session or fallback to anonymous
@@ -56,22 +60,13 @@ export async function POST(req: NextRequest) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        // Track if todoWrite tool has been used (to activate todoManager)
-        let usedTodoWriteTool = false;
-
-        // Create tools with user context, mode, and writer
         const { tools, getSandbox } = createTools(
           userID,
           writer,
           mode,
           executionMode,
           userLocation,
-        );
-
-        // Get all tool names except todoManager for initial activeTools
-        const allToolNames = Object.keys(tools) as Array<keyof typeof tools>;
-        const defaultActiveTools = allToolNames.filter(
-          (name) => name !== "todoManager",
+          todos,
         );
 
         // Generate title in parallel if this is the start of a conversation
@@ -101,31 +96,15 @@ export async function POST(req: NextRequest) {
 
         const result = streamText({
           model: model,
-          system: systemPrompt(model.modelId, executionMode),
+          system: systemPrompt(model.modelId, mode, executionMode),
           messages: convertToModelMessages(truncatedMessages),
           tools,
-          activeTools: defaultActiveTools,
           abortSignal: req.signal,
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
-          prepareStep: async () => {
-            if (usedTodoWriteTool) {
-              return {
-                activeTools: [
-                  ...defaultActiveTools,
-                  "todoManager" as keyof typeof tools,
-                ],
-              };
-            }
-          },
           stopWhen: stepCountIs(25),
           onChunk: async (chunk) => {
             if (chunk.chunk.type === "tool-call") {
-              // Track if todoWrite tool has been used (to activate todoManager)
-              if (chunk.chunk.toolName === "todoWrite") {
-                usedTodoWriteTool = true;
-              }
-
               if (posthog) {
                 posthog.capture({
                   distinctId: userID,

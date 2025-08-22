@@ -1,45 +1,45 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import type { ChatStatus, Todo } from "@/types";
+import type { ChatStatus } from "@/types";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { SharedTodoItem } from "@/components/ui/shared-todo-item";
+import { getTodoStats } from "@/lib/utils/todo-utils";
 
 interface TodoPanelProps {
   status: ChatStatus;
 }
 
-const getTodoStats = (todos: Todo[]) => {
-  const completed = todos.filter((t) => t.status === "completed").length;
-  const inProgress = todos.filter((t) => t.status === "in_progress").length;
-  const pending = todos.filter((t) => t.status === "pending").length;
-  const cancelled = todos.filter((t) => t.status === "cancelled").length;
-  const total = todos.length;
-  const done = completed + cancelled;
-
-  return {
-    completed,
-    inProgress,
-    pending,
-    cancelled,
-    total,
-    done,
-  };
-};
-
 export const TodoPanel = ({ status }: TodoPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { todos } = useGlobalState();
+  const { todos, setIsTodoPanelExpanded } = useGlobalState();
   const stats = getTodoStats(todos);
 
   // Don't show panel if no todos exist
-  if (todos.length === 0) {
-    return null;
-  }
+  const hasTodos = todos.length > 0;
+
+  // Reflect expansion to global state
+  useEffect(() => {
+    setIsTodoPanelExpanded(isExpanded);
+    return () => {
+      setIsTodoPanelExpanded(false);
+    };
+  }, [isExpanded, setIsTodoPanelExpanded]);
 
   // Show panel only when there are active todos (hide when all are finished)
   const hasActiveTodos = stats.inProgress > 0 || stats.pending > 0;
+
+  // If panel is not visible, ensure global state is reset
+  useEffect(() => {
+    if (!hasTodos || !hasActiveTodos) {
+      setIsTodoPanelExpanded(false);
+    }
+  }, [hasTodos, hasActiveTodos, setIsTodoPanelExpanded]);
+
+  if (!hasTodos) {
+    return null;
+  }
 
   if (!hasActiveTodos) {
     return null;

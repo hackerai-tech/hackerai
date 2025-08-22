@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
 import { readLocalFile } from "./utils/local-file-operations";
+import { truncateOutput } from "@/lib/token-utils";
 
 export const createReadFile = (context: ToolContext) => {
   const { sandboxManager, executionMode } = context;
@@ -47,7 +48,14 @@ Usage:
         if (executionMode === "local") {
           // Read file locally using Node.js fs
           const result = await readLocalFile(target_file, { offset, limit });
-          return { result };
+          if (!result || result.trim() === "") {
+            return { result: "File is empty." };
+          }
+          const truncatedResult = truncateOutput({
+            content: result,
+            mode: "read-file",
+          });
+          return { result: truncatedResult };
         } else {
           // Read file from sandbox (existing behavior)
           const { sandbox } = await sandboxManager.getSandbox();
@@ -76,7 +84,12 @@ Usage:
             return `${lineNumber.toString().padStart(6)}|${line}`;
           });
 
-          return { result: numberedLines.join("\n") };
+          const result = numberedLines.join("\n");
+          const truncatedResult = truncateOutput({
+            content: result,
+            mode: "read-file",
+          }) as string;
+          return { result: truncatedResult };
         }
       } catch (error) {
         return {

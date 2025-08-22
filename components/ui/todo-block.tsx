@@ -4,6 +4,7 @@ import { ListTodo, CircleArrowRight, ChevronsUpDown } from "lucide-react";
 import type { TodoBlockProps } from "@/types";
 import { useTodoBlockContext } from "@/app/contexts/TodoBlockContext";
 import { SharedTodoItem } from "@/components/ui/shared-todo-item";
+import { getTodoStats } from "@/lib/utils/todo-utils";
 
 export const TodoBlock = ({
   todos,
@@ -32,15 +33,7 @@ export const TodoBlock = ({
       cancelled: todos.filter((t) => t.status === "cancelled"),
     };
 
-    const stats = {
-      total: todos.length,
-      completed: byStatus.completed.length,
-      inProgress: byStatus.inProgress.length,
-      pending: byStatus.pending.length,
-      cancelled: byStatus.cancelled.length,
-      // Count both completed and cancelled as "done"
-      done: byStatus.completed.length + byStatus.cancelled.length,
-    };
+    const stats = getTodoStats(todos);
 
     const currentInProgress = byStatus.inProgress[0];
     const lastCompleted = byStatus.completed[byStatus.completed.length - 1];

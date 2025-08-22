@@ -26,6 +26,9 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
       if (!readInput.offset && readInput.limit) {
         return ` L1-${readInput.limit}`;
       }
+      if (readInput.offset && !readInput.limit) {
+        return ` L${readInput.offset}+`;
+      }
       return "";
     };
 
@@ -305,15 +308,15 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   // Main switch for file tool types
   switch (part.type) {
-    case "tool-readFile":
+    case "tool-read_file":
       return renderReadFileTool();
-    case "tool-writeFile":
+    case "tool-write_file":
       return renderWriteFileTool();
-    case "tool-deleteFile":
+    case "tool-delete_file":
       return renderDeleteFileTool();
-    case "tool-searchReplace":
+    case "tool-search_replace":
       return renderSearchReplaceTool();
-    case "tool-multiEdit":
+    case "tool-multi_edit":
       return renderMultiEditTool();
     default:
       return null;

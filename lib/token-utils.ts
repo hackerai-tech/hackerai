@@ -1,18 +1,26 @@
 import { UIMessage } from "ai";
-import { countTokens } from "gpt-tokenizer";
+import { countTokens, encode, decode } from "gpt-tokenizer";
 
 const MAX_TOKENS = 32000;
+
+// Token limits for different contexts
+export const STREAM_MAX_TOKENS = 4096;
+export const TOOL_DEFAULT_MAX_TOKENS = 4096;
+
+// Truncation messages
+export const TRUNCATION_MESSAGE = "\n\n[Output truncated because too long]";
+export const FILE_READ_TRUNCATION_MESSAGE =
+  "\n\n[Content truncated due to size limit. Use line ranges to read in chunks]";
+export const TIMEOUT_MESSAGE = (seconds: number) =>
+  `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
 
 /**
  * Extracts and counts tokens from message text and reasoning parts
  */
 const getMessageTokenCount = (message: UIMessage): number => {
   const textContent = message.parts
-    .filter(
-      (part: { type: string; text?: string }) =>
-        part.type === "text" || part.type === "reasoning",
-    )
-    .map((part: { type: string; text?: string }) => part.text || "")
+    .filter((part) => part.type === "text" || part.type === "reasoning")
+    .map((part) => part.text || "")
     .join(" ");
 
   return countTokens(textContent);
@@ -52,3 +60,49 @@ export const countMessagesTokens = (messages: UIMessage[]): number => {
     0,
   );
 };
+
+/**
+ * Truncates content by token count to stay within specified limits
+ */
+export const truncateContent = (
+  content: string,
+  suffix: string = TRUNCATION_MESSAGE,
+): string => {
+  const tokens = encode(content);
+  if (tokens.length <= TOOL_DEFAULT_MAX_TOKENS) return content;
+
+  const suffixTokens = countTokens(suffix);
+  if (TOOL_DEFAULT_MAX_TOKENS <= suffixTokens) {
+    return TOOL_DEFAULT_MAX_TOKENS <= 0
+      ? ""
+      : decode(encode(suffix).slice(-TOOL_DEFAULT_MAX_TOKENS));
+  }
+
+  const budgetForContent = TOOL_DEFAULT_MAX_TOKENS - suffixTokens;
+  return decode(tokens.slice(0, budgetForContent)) + suffix;
+};
+
+/**
+ * Slices content to fit within a specific token budget
+ */
+export const sliceByTokens = (content: string, maxTokens: number): string => {
+  if (maxTokens <= 0) return "";
+
+  const tokens = encode(content);
+  if (tokens.length <= maxTokens) return content;
+
+  return decode(tokens.slice(0, maxTokens));
+};
+
+/**
+ * Legacy wrapper for backward compatibility
+ */
+export function truncateOutput(args: {
+  content: string;
+  mode?: "read-file" | "generic";
+}): string {
+  const { content, mode } = args;
+  const suffix =
+    mode === "read-file" ? FILE_READ_TRUNCATION_MESSAGE : TRUNCATION_MESSAGE;
+  return truncateContent(content, suffix);
+}

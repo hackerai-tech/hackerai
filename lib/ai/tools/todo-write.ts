@@ -1,11 +1,8 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { ToolContext } from "@/types";
+import type { ToolContext, Todo } from "@/types";
 
-export const createTodoWrite = (
-  context: ToolContext,
-  isManagerMode: boolean = false,
-) => {
+export const createTodoWrite = (context: ToolContext) => {
   const { todoManager } = context;
 
   return tool({
@@ -144,18 +141,16 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
         .array(
           z.object({
             id: z.string().describe("Unique identifier for the todo item"),
-            content: isManagerMode
-              ? z
-                  .string()
-                  .optional()
-                  .describe("The description/content of the todo item")
-              : z.string().describe("The description/content of the todo item"),
+            content: z
+              .string()
+              .optional()
+              .describe("The description/content of the todo item"),
             status: z
               .enum(["pending", "in_progress", "completed", "cancelled"])
               .describe("The current status of the todo item"),
           }),
         )
-        .min(isManagerMode ? 1 : 2)
+        .min(1)
         .describe("Array of todo items to write to the workspace"),
     }),
     execute: async ({
@@ -166,7 +161,7 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
       todos: Array<{
         id: string;
         content?: string;
-        status: "pending" | "in_progress" | "completed" | "cancelled";
+        status: Todo["status"];
       }>;
     }) => {
       try {

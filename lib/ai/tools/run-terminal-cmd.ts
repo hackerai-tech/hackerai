@@ -7,6 +7,11 @@ import {
   executeLocalCommand,
   createLocalTerminalHandlers,
 } from "./utils/local-terminal";
+import { createTerminalHandler } from "@/lib/utils/terminal-executor";
+import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
+
+const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
+const STREAM_TIMEOUT_SECONDS = 5;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const { sandboxManager, writer, executionMode } = context;
@@ -23,7 +28,9 @@ In using these tools, adhere to the following guidelines:
 4. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 5. If the command would use a pager, append \` | cat\` to the command.
 6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command.
-7. Dont include any newlines in the command.`,
+7. Dont include any newlines in the command.
+8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation
+9. Avoid commands with excessive output; redirect to files when necessary`,
     inputSchema: z.object({
       command: z.string().describe("The terminal command to execute"),
       explanation: z
@@ -53,14 +60,51 @@ In using these tools, adhere to the following guidelines:
             toolCallId,
           );
 
-          const result = await executeLocalCommand(command, {
-            cwd: process.cwd(),
-            onStdout,
-            onStderr,
-            background: is_background,
-          });
+          return new Promise(async (resolve) => {
+            let resolved = false;
 
-          return { result };
+            const handler = createTerminalHandler(
+              (output, isStderr) =>
+                isStderr ? onStderr(output) : onStdout(output),
+              {
+                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
+                onTimeout: () => {
+                  if (!resolved) {
+                    resolved = true;
+                    const result = handler.getResult();
+                    resolve({ result: { ...result, exitCode: null } });
+                  }
+                },
+              },
+            );
+
+            try {
+              const result = await executeLocalCommand(command, {
+                cwd: process.cwd(),
+                onStdout: handler.stdout,
+                onStderr: handler.stderr,
+                background: is_background,
+              });
+
+              handler.cleanup();
+
+              if (!resolved) {
+                const finalResult = handler.getResult();
+                resolve({
+                  result: {
+                    ...result,
+                    stdout: finalResult.stdout,
+                    stderr: finalResult.stderr,
+                  },
+                });
+              }
+            } catch (error) {
+              handler.cleanup();
+              if (!resolved) {
+                throw error;
+              }
+            }
+          });
         } else {
           // Execute in sandbox (existing behavior)
           const { sandbox } = await sandboxManager.getSandbox();
@@ -69,34 +113,75 @@ In using these tools, adhere to the following guidelines:
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
-          // Create common handlers
-          const commonOptions = {
-            user: "root" as const,
-            cwd: "/home/user",
-            onStdout: (output: string) => {
-              writer.write({
-                type: "data-terminal",
-                id: `${terminalSessionId}-${++outputCounter}`,
-                data: { terminal: output, toolCallId },
-              });
-            },
-            onStderr: (output: string) => {
-              writer.write({
-                type: "data-terminal",
-                id: `${terminalSessionId}-${++outputCounter}`,
-                data: { terminal: output, toolCallId },
-              });
-            },
+          const createTerminalWriter = (output: string) => {
+            writer.write({
+              type: "data-terminal",
+              id: `${terminalSessionId}-${++outputCounter}`,
+              data: { terminal: output, toolCallId },
+            });
           };
 
-          const execution = is_background
-            ? await sandbox.commands.run(command, {
-                ...commonOptions,
-                background: true,
-              })
-            : await sandbox.commands.run(command, commonOptions);
+          return new Promise((resolve, reject) => {
+            let resolved = false;
 
-          return { result: execution };
+            const handler = createTerminalHandler(
+              (output) => createTerminalWriter(output),
+              {
+                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
+                onTimeout: () => {
+                  if (!resolved) {
+                    resolved = true;
+                    // Send timeout message through streaming interface
+                    createTerminalWriter(
+                      TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS),
+                    );
+                    handler.cleanup();
+                    const result = handler.getResult();
+                    resolve({ result: { ...result, exitCode: null } });
+                  }
+                },
+              },
+            );
+
+            const commonOptions = {
+              timeoutMs: MAX_COMMAND_EXECUTION_TIME,
+              user: "root" as const,
+              cwd: "/home/user",
+              onStdout: handler.stdout,
+              onStderr: handler.stderr,
+            };
+
+            const runPromise = is_background
+              ? sandbox.commands.run(command, {
+                  ...commonOptions,
+                  background: true,
+                })
+              : sandbox.commands.run(command, commonOptions);
+
+            runPromise
+              .then((execution) => {
+                handler.cleanup();
+
+                if (!resolved) {
+                  resolved = true;
+                  const finalResult = handler.getResult();
+                  resolve({
+                    result: {
+                      ...execution,
+                      stdout: finalResult.stdout,
+                      stderr: finalResult.stderr,
+                    },
+                  });
+                }
+              })
+              .catch((error) => {
+                handler.cleanup();
+                if (!resolved) {
+                  resolved = true;
+                  reject(error);
+                }
+              });
+          });
         }
       } catch (error) {
         return error as CommandExitError;

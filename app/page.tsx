@@ -17,10 +17,20 @@ import { fetchWithErrorHandlers } from "@/lib/utils";
 import { toast } from "sonner";
 import { useAppAuth } from "./hooks/useAppAuth";
 import { isWorkOSEnabled } from "@/lib/auth/client";
+import type { Todo } from "@/types";
 
 export default function Page() {
-  const { input, mode, chatTitle, setChatTitle, clearInput, sidebarOpen } =
-    useGlobalState();
+  const {
+    input,
+    mode,
+    chatTitle,
+    setChatTitle,
+    clearInput,
+    sidebarOpen,
+    isTodoPanelExpanded,
+    mergeTodos,
+    todos,
+  } = useGlobalState();
 
   const { user, loading } = useAppAuth();
 
@@ -57,6 +67,15 @@ export default function Page() {
     onData: ({ data, type }) => {
       if (type === "data-title") {
         setChatTitle((data as { chatTitle: string }).chatTitle);
+      }
+    },
+    onToolCall: ({ toolCall }) => {
+      // Handle todo-write tool calls to update global state
+      if (toolCall.toolName === "todo_write" && toolCall.input) {
+        const todoInput = toolCall.input as { merge: boolean; todos: Todo[] };
+        if (todoInput.todos) {
+          mergeTodos(todoInput.todos);
+        }
       }
     },
     onError: (error) => {
@@ -99,6 +118,7 @@ export default function Page() {
         {
           body: {
             mode,
+            todos,
           },
         },
       );
@@ -111,7 +131,12 @@ export default function Page() {
   };
 
   const handleRegenerate = () => {
-    regenerate();
+    regenerate({
+      body: {
+        mode,
+        todos,
+      },
+    });
   };
 
   const handleScrollToBottom = () => {
@@ -146,7 +171,7 @@ export default function Page() {
                   <div className="text-foreground text-lg font-medium w-full flex flex-row items-center justify-between flex-1 min-w-0 gap-2">
                     <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0">
                       <span className="whitespace-nowrap text-ellipsis overflow-hidden">
-                        {chatTitle || "HackerAI"}
+                        {chatTitle || "New Chat"}
                       </span>
                     </div>
                   </div>
@@ -212,18 +237,11 @@ export default function Page() {
           )}
 
           {/* Scroll to bottom button - positioned relative to chat area */}
-          <div
-            className={`fixed bottom-34 z-40 transition-all duration-300 ${
-              sidebarOpen
-                ? "left-1/2 desktop:left-1/4 -translate-x-1/2" // Center of full screen on mobile/tablet, center of left half on desktop
-                : "left-1/2 -translate-x-1/2" // Center of full screen when sidebar is closed
-            }`}
-          >
-            <ScrollToBottomButton
-              isVisible={!isAtBottom && messages.length > 0}
-              onClick={handleScrollToBottom}
-            />
-          </div>
+          <ScrollToBottomButton
+            onClick={handleScrollToBottom}
+            hasMessages={hasMessages}
+            isAtBottom={isAtBottom}
+          />
         </div>
 
         {/* Computer Sidebar - responsive behavior */}
