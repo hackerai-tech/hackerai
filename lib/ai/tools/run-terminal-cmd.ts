@@ -7,13 +7,10 @@ import {
   executeLocalCommand,
   createLocalTerminalHandlers,
 } from "./utils/local-terminal";
-import {
-  createSharedTokenAwareHandlers,
-  truncateCombinedOutput,
-} from "@/lib/token-utils";
+import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 
-// 6 minutes
-const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000;
+const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
+const STREAM_TIMEOUT_SECONDS = 5;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const { sandboxManager, writer, executionMode } = context;
@@ -30,7 +27,9 @@ In using these tools, adhere to the following guidelines:
 4. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 5. If the command would use a pager, append \` | cat\` to the command.
 6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command.
-7. Dont include any newlines in the command.`,
+7. Dont include any newlines in the command.
+8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation
+9. Avoid commands with excessive output; redirect to files when necessary`,
     inputSchema: z.object({
       command: z.string().describe("The terminal command to execute"),
       explanation: z
@@ -60,22 +59,51 @@ In using these tools, adhere to the following guidelines:
             toolCallId,
           );
 
-          const { stdoutHandler, stderrHandler } =
-            createSharedTokenAwareHandlers(onStdout, onStderr);
+          return new Promise(async (resolve) => {
+            let resolved = false;
 
-          const result = await executeLocalCommand(command, {
-            cwd: process.cwd(),
-            onStdout: stdoutHandler,
-            onStderr: stderrHandler,
-            background: is_background,
+            const handler = createTerminalHandler(
+              (output, isStderr) =>
+                isStderr ? onStderr(output) : onStdout(output),
+              {
+                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
+                onTimeout: () => {
+                  if (!resolved) {
+                    resolved = true;
+                    const result = handler.getResult();
+                    resolve({ result: { ...result, exitCode: null } });
+                  }
+                },
+              },
+            );
+
+            try {
+              const result = await executeLocalCommand(command, {
+                cwd: process.cwd(),
+                onStdout: handler.stdout,
+                onStderr: handler.stderr,
+                background: is_background,
+              });
+
+              handler.cleanup();
+
+              if (!resolved) {
+                const finalResult = handler.getResult();
+                resolve({
+                  result: {
+                    ...result,
+                    stdout: finalResult.stdout,
+                    stderr: finalResult.stderr,
+                  },
+                });
+              }
+            } catch (error) {
+              handler.cleanup();
+              if (!resolved) {
+                throw error;
+              }
+            }
           });
-
-          const { stdout, stderr } = truncateCombinedOutput(
-            result.stdout || "",
-            result.stderr || "",
-            "run-terminal-cmd",
-          );
-          return { result: { ...result, stdout, stderr } };
         } else {
           // Execute in sandbox (existing behavior)
           const { sandbox } = await sandboxManager.getSandbox();
@@ -92,34 +120,58 @@ In using these tools, adhere to the following guidelines:
             });
           };
 
-          const { stdoutHandler, stderrHandler } =
-            createSharedTokenAwareHandlers(
-              createTerminalWriter,
-              createTerminalWriter,
+          return new Promise(async (resolve) => {
+            let resolved = false;
+
+            const handler = createTerminalHandler(
+              (output) => createTerminalWriter(output),
+              {
+                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
+                onTimeout: () => {
+                  if (!resolved) {
+                    resolved = true;
+                    const result = handler.getResult();
+                    resolve({ result: { ...result, exitCode: null } });
+                  }
+                },
+              },
             );
 
-          // Create common handlers
-          const commonOptions = {
-            timeoutMs: MAX_COMMAND_EXECUTION_TIME,
-            user: "root" as const,
-            cwd: "/home/user",
-            onStdout: stdoutHandler,
-            onStderr: stderrHandler,
-          };
+            const commonOptions = {
+              timeoutMs: MAX_COMMAND_EXECUTION_TIME,
+              user: "root" as const,
+              cwd: "/home/user",
+              onStdout: handler.stdout,
+              onStderr: handler.stderr,
+            };
 
-          const execution = is_background
-            ? await sandbox.commands.run(command, {
-                ...commonOptions,
-                background: true,
-              })
-            : await sandbox.commands.run(command, commonOptions);
+            try {
+              const execution = is_background
+                ? await sandbox.commands.run(command, {
+                    ...commonOptions,
+                    background: true,
+                  })
+                : await sandbox.commands.run(command, commonOptions);
 
-          const { stdout, stderr } = truncateCombinedOutput(
-            execution.stdout,
-            execution.stderr,
-            "run-terminal-cmd",
-          );
-          return { result: { ...execution, stdout, stderr } };
+              handler.cleanup();
+
+              if (!resolved) {
+                const finalResult = handler.getResult();
+                resolve({
+                  result: {
+                    ...execution,
+                    stdout: finalResult.stdout,
+                    stderr: finalResult.stderr,
+                  },
+                });
+              }
+            } catch (error) {
+              handler.cleanup();
+              if (!resolved) {
+                throw error;
+              }
+            }
+          });
         }
       } catch (error) {
         return error as CommandExitError;

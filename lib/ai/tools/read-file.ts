@@ -2,7 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
 import { readLocalFile } from "./utils/local-file-operations";
-import { truncateContentByTokens } from "@/lib/token-utils";
+import { truncateOutput } from "@/lib/token-utils";
 
 export const createReadFile = (context: ToolContext) => {
   const { sandboxManager, executionMode } = context;
@@ -48,7 +48,10 @@ Usage:
         if (executionMode === "local") {
           // Read file locally using Node.js fs
           const result = await readLocalFile(target_file, { offset, limit });
-          const truncatedResult = truncateContentByTokens(result, "read-file");
+          const truncatedResult = truncateOutput({
+            content: result,
+            mode: "read-file",
+          }) as string;
           return { result: truncatedResult };
         } else {
           // Read file from sandbox (existing behavior)
@@ -79,7 +82,10 @@ Usage:
           });
 
           const result = numberedLines.join("\n");
-          const truncatedResult = truncateContentByTokens(result, "read-file");
+          const truncatedResult = truncateOutput({
+            content: result,
+            mode: "read-file",
+          }) as string;
           return { result: truncatedResult };
         }
       } catch (error) {

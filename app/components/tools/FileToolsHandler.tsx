@@ -26,6 +26,9 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
       if (!readInput.offset && readInput.limit) {
         return ` L1-${readInput.limit}`;
       }
+      if (readInput.offset && !readInput.limit) {
+        return ` L${readInput.offset}+`;
+      }
       return "";
     };
 

@@ -171,7 +171,7 @@ export default function Page() {
                   <div className="text-foreground text-lg font-medium w-full flex flex-row items-center justify-between flex-1 min-w-0 gap-2">
                     <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0">
                       <span className="whitespace-nowrap text-ellipsis overflow-hidden">
-                        {chatTitle || "HackerAI"}
+                        {chatTitle || "New Chat"}
                       </span>
                     </div>
                   </div>

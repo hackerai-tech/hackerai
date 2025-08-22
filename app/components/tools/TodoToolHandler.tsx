@@ -17,7 +17,6 @@ export const TodoToolHandler = ({
   status,
 }: TodoToolHandlerProps) => {
   const { toolCallId, state, input, output } = part;
-  // Handle tool-todo_write type
   const todoInput = input as TodoWriteInput;
 
   switch (state) {
