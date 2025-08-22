@@ -7,6 +7,13 @@ import {
   executeLocalCommand,
   createLocalTerminalHandlers,
 } from "./utils/local-terminal";
+import {
+  createSharedTokenAwareHandlers,
+  truncateCombinedOutput,
+} from "@/lib/token-utils";
+
+// 6 minutes
+const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const { sandboxManager, writer, executionMode } = context;
@@ -53,14 +60,22 @@ In using these tools, adhere to the following guidelines:
             toolCallId,
           );
 
+          const { stdoutHandler, stderrHandler } =
+            createSharedTokenAwareHandlers(onStdout, onStderr);
+
           const result = await executeLocalCommand(command, {
             cwd: process.cwd(),
-            onStdout,
-            onStderr,
+            onStdout: stdoutHandler,
+            onStderr: stderrHandler,
             background: is_background,
           });
 
-          return { result };
+          const { stdout, stderr } = truncateCombinedOutput(
+            result.stdout || "",
+            result.stderr || "",
+            "run-terminal-cmd",
+          );
+          return { result: { ...result, stdout, stderr } };
         } else {
           // Execute in sandbox (existing behavior)
           const { sandbox } = await sandboxManager.getSandbox();
@@ -69,24 +84,27 @@ In using these tools, adhere to the following guidelines:
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
+          const createTerminalWriter = (output: string) => {
+            writer.write({
+              type: "data-terminal",
+              id: `${terminalSessionId}-${++outputCounter}`,
+              data: { terminal: output, toolCallId },
+            });
+          };
+
+          const { stdoutHandler, stderrHandler } =
+            createSharedTokenAwareHandlers(
+              createTerminalWriter,
+              createTerminalWriter,
+            );
+
           // Create common handlers
           const commonOptions = {
+            timeoutMs: MAX_COMMAND_EXECUTION_TIME,
             user: "root" as const,
             cwd: "/home/user",
-            onStdout: (output: string) => {
-              writer.write({
-                type: "data-terminal",
-                id: `${terminalSessionId}-${++outputCounter}`,
-                data: { terminal: output, toolCallId },
-              });
-            },
-            onStderr: (output: string) => {
-              writer.write({
-                type: "data-terminal",
-                id: `${terminalSessionId}-${++outputCounter}`,
-                data: { terminal: output, toolCallId },
-              });
-            },
+            onStdout: stdoutHandler,
+            onStderr: stderrHandler,
           };
 
           const execution = is_background
@@ -96,7 +114,12 @@ In using these tools, adhere to the following guidelines:
               })
             : await sandbox.commands.run(command, commonOptions);
 
-          return { result: execution };
+          const { stdout, stderr } = truncateCombinedOutput(
+            execution.stdout,
+            execution.stderr,
+            "run-terminal-cmd",
+          );
+          return { result: { ...execution, stdout, stderr } };
         }
       } catch (error) {
         return error as CommandExitError;
