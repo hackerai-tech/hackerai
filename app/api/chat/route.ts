@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
 
         const result = streamText({
           model: model,
-          system: systemPrompt(model.modelId, executionMode),
+          system: systemPrompt(model.modelId, mode, executionMode),
           messages: convertToModelMessages(truncatedMessages),
           tools,
           abortSignal: req.signal,
