@@ -11,8 +11,8 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { createTools } from "@/lib/ai/tools";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
-import { getUserID } from "@/lib/auth/server";
 import { generateTitleFromUserMessage } from "@/lib/actions";
+import { getUserID } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
 import { myProvider } from "@/lib/ai/providers";
 import type { ChatMode, ExecutionMode, Todo } from "@/types";
@@ -33,7 +33,6 @@ export async function POST(req: NextRequest) {
     }: { messages: UIMessage[]; mode: ChatMode; todos?: Todo[] } =
       await req.json();
 
-    // Get user ID from authenticated session or fallback to anonymous
     const userID = await getUserID(req);
     const userLocation = geolocation(req);
 
@@ -138,7 +137,7 @@ export async function POST(req: NextRequest) {
 
     return createUIMessageStreamResponse({ stream });
   } catch (error) {
-    // Handle rate limiting and other ChatSDKErrors
+    // Handle ChatSDKErrors (including authentication errors)
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }

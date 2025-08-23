@@ -13,6 +13,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^2.0.17",
     "@ai-sdk/react": "^2.0.19",
+    "@convex-dev/workos": "^0.0.1",
     "@e2b/code-interpreter": "1.2.0-beta.4",
     "@openrouter/ai-sdk-provider": "^1.1.2",
     "@radix-ui/react-alert-dialog": "^1.1.15",
@@ -26,6 +27,7 @@
     "ai": "^5.0.19",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "convex": "^1.26.1",
     "exa-js": "^1.8.27",
     "gpt-tokenizer": "^3.0.1",
     "lucide-react": "^0.540.0",

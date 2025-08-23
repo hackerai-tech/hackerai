@@ -12,7 +12,26 @@ _Your AI-Powered Penetration Testing Assistant_
 pnpm install
 ```
 
-### 2. Configure Environment
+### 2. Set Up Authentication & Database
+
+HackerAI uses **Convex** for real-time database and **WorkOS** for authentication to provide persistent conversations and user management.
+
+#### Configure Convex (Required)
+
+1. Create a Convex account at [convex.dev](https://convex.dev/)
+2. Initialize Convex in your project:
+   ```bash
+   npx convex dev
+   ```
+3. Follow the prompts to create a new project
+
+#### Configure WorkOS Authentication (Required)
+
+1. Create a WorkOS account at [workos.com](https://workos.com/)
+2. Create a new project and get your API credentials
+3. Configure redirect URI: `http://localhost:3000/callback`
+
+### 3. Configure Environment
 
 Create `.env.local` from the example file:
 
@@ -20,13 +39,15 @@ Create `.env.local` from the example file:
 cp .env.local.example .env.local
 ```
 
-Add your OpenRouter API key:
+Then fill in your API keys and configuration values in the `.env.local` file.
 
-```env
-OPENROUTER_API_KEY=your_openrouter_api_key_here
+### 4. Deploy Convex Functions
+
+```bash
+npx convex deploy
 ```
 
-### 3. Launch Application
+### 5. Launch Application
 
 ```bash
 pnpm dev
@@ -36,26 +57,43 @@ Visit **[http://localhost:3000](http://localhost:3000)** and start your penetrat
 
 ---
 
-## 🔑 API Configuration
+## 🔑 Required Services
 
-### Required
+| Service        | Purpose                                   | Get Started                             |
+| -------------- | ----------------------------------------- | --------------------------------------- |
+| **Convex**     | Real-time database & conversation storage | [convex.dev](https://convex.dev/)       |
+| **WorkOS**     | User authentication & session management  | [workos.com](https://workos.com/)       |
+| **OpenRouter** | LLM access (Claude, GPT, etc.)            | [openrouter.ai](https://openrouter.ai/) |
 
-| Service        | Purpose                        | Get API Key                             |
-| -------------- | ------------------------------ | --------------------------------------- |
-| **OpenRouter** | LLM access (Claude, GPT, etc.) | [openrouter.ai](https://openrouter.ai/) |
+## 🔧 Optional Enhancements
 
-### Optional - Sandbox Mode
+### Sandbox Mode
+
+Execute terminal commands in isolated containers instead of your local machine:
 
 | Service | Purpose                   | Get API Key                 |
 | ------- | ------------------------- | --------------------------- |
 | **E2B** | Secure isolated execution | [e2b.dev](https://e2b.dev/) |
 
-> 💡 **Default Behavior**: Terminal commands execute locally on your machine  
-> 🔒 **Sandbox Mode**: Add E2B key for isolated container execution
-
-#### Enable Sandbox Mode
-
 ```env
 TERMINAL_EXECUTION_MODE=sandbox
 E2B_API_KEY=your_e2b_api_key_here
+```
+
+### Web Search
+
+Enable AI to search the web for up-to-date information:
+
+```env
+EXA_API_KEY=your_exa_api_key_here
+```
+
+### Rate Limiting
+
+Protect your API with Redis-based rate limiting:
+
+```env
+UPSTASH_REDIS_REST_URL="https://your-redis-url.upstash.io"
+UPSTASH_REDIS_REST_TOKEN="your-redis-token"
+RATE_LIMIT_REQUESTS=10
 ```

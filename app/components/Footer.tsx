@@ -1,10 +1,10 @@
 "use client";
 
 import React from "react";
-import { useAppAuth } from "../hooks/useAppAuth";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 
 const Footer: React.FC = () => {
-  const { user, loading } = useAppAuth();
+  const { user, loading } = useAuth();
 
   if (loading || user) {
     return null;
