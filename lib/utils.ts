@@ -1,6 +1,9 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
 import { ChatSDKError, ErrorCode } from "./errors";
+import { ChatMessage } from "@/types/chat";
+import { UIMessagePart } from "ai";
+import { Doc } from "@/convex/_generated/dataModel";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -26,4 +29,14 @@ export async function fetchWithErrorHandlers(
 
     throw error;
   }
+}
+
+export function convertToUIMessages(
+  messages: Doc<"messages">[],
+): ChatMessage[] {
+  return messages.map((message) => ({
+    id: message._id,
+    role: message.role as "user" | "assistant" | "system",
+    parts: message.parts as UIMessagePart<any, any>[],
+  }));
 }

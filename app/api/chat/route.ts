@@ -11,7 +11,7 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { createTools } from "@/lib/ai/tools";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
-import { generateTitleFromUserMessage } from "@/lib/actions";
+import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
 import { myProvider } from "@/lib/ai/providers";
@@ -21,6 +21,13 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
 import { getAIHeaders } from "@/lib/actions";
+import {
+  handleInitialChatAndUserMessage,
+  saveMessage,
+  updateChat,
+  updateChatTodos,
+} from "@/lib/db/actions";
+import { v4 as uuidv4 } from "uuid";
 
 export const maxDuration = 300;
 
@@ -30,14 +37,29 @@ export async function POST(req: NextRequest) {
       messages,
       mode,
       todos,
-    }: { messages: UIMessage[]; mode: ChatMode; todos?: Todo[] } =
-      await req.json();
+      chatId,
+      regenerate,
+    }: {
+      messages: UIMessage[];
+      mode: ChatMode;
+      chatId: string;
+      todos?: Todo[];
+      regenerate?: boolean;
+    } = await req.json();
 
     const userID = await getUserID(req);
     const userLocation = geolocation(req);
 
     // Check rate limit for the user
     await checkRateLimit(userID);
+
+    // Handle initial chat setup, regeneration, and save user message
+    const { isNewChat } = await handleInitialChatAndUserMessage({
+      chatId,
+      userId: userID,
+      messages,
+      regenerate,
+    });
 
     // Determine execution mode from environment variable
     const executionMode: ExecutionMode =
@@ -59,7 +81,7 @@ export async function POST(req: NextRequest) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        const { tools, getSandbox } = createTools(
+        const { tools, getSandbox, getTodoManager } = createTools(
           userID,
           writer,
           mode,
@@ -68,30 +90,14 @@ export async function POST(req: NextRequest) {
           todos,
         );
 
-        // Generate title in parallel if this is the start of a conversation
-        const titlePromise =
-          truncatedMessages.length === 1
-            ? (async () => {
-                try {
-                  const chatTitle = await generateTitleFromUserMessage(
-                    truncatedMessages,
-                    req.signal,
-                  );
-
-                  writer.write({
-                    type: "data-title",
-                    data: { chatTitle },
-                    transient: true,
-                  });
-                } catch (error) {
-                  // Log error but don't propagate to keep main stream resilient
-                  console.error(
-                    "Failed to generate or write chat title:",
-                    error,
-                  );
-                }
-              })()
-            : Promise.resolve();
+        // Generate title in parallel if this is a new chat
+        const titlePromise = isNewChat
+          ? generateTitleFromUserMessageWithWriter(
+              truncatedMessages,
+              req.signal,
+              writer,
+            )
+          : Promise.resolve(undefined);
 
         const result = streamText({
           model: model,
@@ -122,16 +128,60 @@ export async function POST(req: NextRequest) {
             }
             await titlePromise;
           },
-          onFinish: async () => {
+          onFinish: async ({ finishReason }) => {
+            const generatedTitle = await titlePromise;
+            const currentTodos = getTodoManager().getAllTodos();
+
+            if (generatedTitle || finishReason || currentTodos.length > 0) {
+              await updateChat({
+                chatId,
+                title: generatedTitle,
+                finishReason,
+                todos: currentTodos.length > 0 ? currentTodos : undefined,
+              });
+            }
+          },
+          onAbort: async () => {
+            // Update chat with any generated title or todos
+            const generatedTitle = await titlePromise;
+            const currentTodos = getTodoManager().getAllTodos();
+
+            if (generatedTitle || currentTodos.length > 0) {
+              await updateChat({
+                chatId,
+                title: generatedTitle,
+                finishReason: "abort",
+                todos: currentTodos.length > 0 ? currentTodos : undefined,
+              });
+            }
+
+            // Perform cleanup
             const sandbox = getSandbox();
             if (sandbox) {
               await pauseSandbox(sandbox);
             }
-            await titlePromise;
           },
         });
 
-        writer.merge(result.toUIMessageStream());
+        writer.merge(
+          result.toUIMessageStream({
+            onFinish: async () => {
+              const sandbox = getSandbox();
+              if (sandbox) {
+                await pauseSandbox(sandbox);
+              }
+            },
+          }),
+        );
+      },
+      generateId: () => uuidv4(),
+      onFinish: async ({ messages }) => {
+        for (const message of messages) {
+          await saveMessage({
+            chatId,
+            message,
+          });
+        }
       },
     });
 

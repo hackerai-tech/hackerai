@@ -1,11 +1,11 @@
 "use client";
 
 import { Authenticated, Unauthenticated } from "convex/react";
-import { ChatInterface } from "./components/ChatInterface";
 import { ChatInput } from "./components/ChatInput";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import { useGlobalState } from "./contexts/GlobalState";
+import { Chat } from "./components/chat";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
@@ -61,12 +61,17 @@ const UnauthenticatedContent = () => {
   );
 };
 
+// Authenticated content that shows chat (UUID generated internally)
+const AuthenticatedContent = () => {
+  return <Chat />;
+};
+
 // Main page component with Convex authentication
 export default function Page() {
   return (
     <>
       <Authenticated>
-        <ChatInterface />
+        <AuthenticatedContent />
       </Authenticated>
       <Unauthenticated>
         <UnauthenticatedContent />
