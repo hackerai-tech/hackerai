@@ -3,11 +3,10 @@
 import React from "react";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
-import { useAppAuth } from "../hooks/useAppAuth";
-import { isWorkOSEnabled } from "@/lib/auth/client";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 
 const Header: React.FC = () => {
-  const { user, loading } = useAppAuth();
+  const { user, loading } = useAuth();
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -33,7 +32,7 @@ const Header: React.FC = () => {
         </div>
         <div className="flex flex-1 gap-2 justify-between items-center">
           <div className="flex gap-[40px]"></div>
-          {isWorkOSEnabled() && !loading && (
+          {!loading && (
             <div className="flex gap-2 items-center">
               {user ? (
                 <Button
@@ -77,7 +76,7 @@ const Header: React.FC = () => {
             HackerAI
           </span>
         </div>
-        {isWorkOSEnabled() && !loading && (
+        {!loading && (
           <div className="flex items-center gap-2">
             {user ? (
               <Button

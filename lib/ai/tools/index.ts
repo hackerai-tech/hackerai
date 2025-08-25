@@ -67,6 +67,7 @@ export const createTools = (
       : allTools;
 
   const getSandbox = () => sandbox;
+  const getTodoManager = () => todoManager;
 
-  return { tools, getSandbox };
+  return { tools, getSandbox, getTodoManager };
 };

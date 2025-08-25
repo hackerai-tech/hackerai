@@ -11,7 +11,7 @@ import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
-const STREAM_TIMEOUT_SECONDS = 5;
+const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const { sandboxManager, writer, executionMode } = context;

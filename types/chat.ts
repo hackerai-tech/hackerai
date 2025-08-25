@@ -1,3 +1,5 @@
+import { UIMessage } from "ai";
+
 export type ChatMode = "agent" | "ask";
 
 export interface SidebarFile {
@@ -52,3 +54,5 @@ export interface TodoWriteInput {
 }
 
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
+
+export type ChatMessage = UIMessage;

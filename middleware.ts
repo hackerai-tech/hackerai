@@ -1,35 +1,25 @@
 import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
-import { NextRequest, NextResponse } from "next/server";
-import { isWorkOSEnabled } from "@/lib/auth/client";
 
-// If WorkOS is configured, use authkit middleware
-// Otherwise, just pass through requests
-const middleware = isWorkOSEnabled()
-  ? authkitMiddleware({
-      middlewareAuth: {
-        enabled: true,
-        unauthenticatedPaths: [
-          "/",
-          "/login",
-          "/signup",
-          "/logout",
-          "/callback",
-          "/privacy-policy",
-          "/terms-of-service",
-        ],
-      },
-    })
-  : (request: NextRequest) => {
-      // No authentication required, just pass through
-      return NextResponse.next();
-    };
+export default authkitMiddleware({
+  middlewareAuth: {
+    enabled: true,
+    unauthenticatedPaths: [
+      "/",
+      "/login",
+      "/signup",
+      "/logout",
+      "/callback",
+      "/privacy-policy",
+      "/terms-of-service",
+    ],
+  },
+});
 
-export default middleware;
-
-// Match against pages that require authentication
-// Leave this out if you want authentication on every page in your application
 export const config = {
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|apple-touch-icon.png).*)",
+    // Skip Next.js internals and all static files, unless found in search params
+    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    // Always run for API routes
+    "/(api|trpc)(.*)",
   ],
 };

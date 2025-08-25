@@ -1,4 +1,4 @@
-import { generateObject, UIMessage } from "ai";
+import { generateObject, UIMessage, UIMessageStreamWriter } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
 
@@ -62,4 +62,29 @@ export const generateTitleFromUserMessage = async (
   });
 
   return title;
+};
+
+export const generateTitleFromUserMessageWithWriter = async (
+  truncatedMessages: UIMessage[],
+  abortSignal: AbortSignal,
+  writer: UIMessageStreamWriter,
+): Promise<string | undefined> => {
+  try {
+    const chatTitle = await generateTitleFromUserMessage(
+      truncatedMessages,
+      abortSignal,
+    );
+
+    writer.write({
+      type: "data-title",
+      data: { chatTitle },
+      transient: true,
+    });
+
+    return chatTitle;
+  } catch (error) {
+    // Log error but don't propagate to keep main stream resilient
+    console.error("Failed to generate or write chat title:", error);
+    return undefined;
+  }
 };
