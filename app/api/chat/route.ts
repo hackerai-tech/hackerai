@@ -6,7 +6,6 @@ import {
   streamText,
   UIMessage,
   smoothStream,
-  consumeStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
@@ -14,7 +13,6 @@ import { createTools } from "@/lib/ai/tools";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserID } from "@/lib/auth/get-user-id";
-import { NextRequest } from "next/server";
 import { myProvider } from "@/lib/ai/providers";
 import type { ChatMode, ExecutionMode, Todo } from "@/types";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -22,17 +20,16 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
 import { getAIHeaders } from "@/lib/actions";
+import { NextRequest } from "next/server";
 import {
   handleInitialChatAndUserMessage,
   saveMessage,
   updateChat,
-  updateChatTodos,
 } from "@/lib/db/actions";
-import { v4 as uuidv4 } from "uuid";
 
 export const maxDuration = 300;
 
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
     const {
       messages,
@@ -48,7 +45,7 @@ export async function POST(req: NextRequest) {
       regenerate?: boolean;
     } = await req.json();
 
-    const userID = await getUserID(req);
+    const userID = await getUserID(req as NextRequest);
     const userLocation = geolocation(req);
 
     // Check rate limit for the user
@@ -151,7 +148,7 @@ export async function POST(req: NextRequest) {
 
         writer.merge(
           result.toUIMessageStream({
-            onFinish: async ({ isAborted }) => {
+            onFinish: async ({ isAborted, messages }) => {
               if (isAborted) {
                 console.log("Stream was aborted 3");
                 // Handle abort-specific cleanup
@@ -169,6 +166,12 @@ export async function POST(req: NextRequest) {
               } else {
                 console.log("Stream completed normally");
                 // Handle normal completion
+                for (const message of messages) {
+                  await saveMessage({
+                    chatId,
+                    message,
+                  });
+                }
               }
 
               const sandbox = getSandbox();
@@ -178,15 +181,6 @@ export async function POST(req: NextRequest) {
             },
           }),
         );
-      },
-      generateId: () => uuidv4(),
-      onFinish: async ({ messages }) => {
-        for (const message of messages) {
-          await saveMessage({
-            chatId,
-            message,
-          });
-        }
       },
     });
 
