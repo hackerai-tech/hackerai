@@ -51,7 +51,7 @@ export async function createOrConnectPersistentTerminal(
           let pauseSuccess = false;
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-              await runningSandbox.pause();
+              await runningSandbox.betaPause() 
               pauseSuccess = true;
               break;
             } catch (error) {
@@ -73,7 +73,7 @@ export async function createOrConnectPersistentTerminal(
             // Fall through to create new sandbox
           } else {
             // Now resume the paused sandbox
-            const sandbox = await Sandbox.resume(existingSandbox.sandboxId, {
+            const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
               timeoutMs,
             });
             return sandbox;
@@ -88,7 +88,7 @@ export async function createOrConnectPersistentTerminal(
       } else if (currentState === "paused") {
         // Step 3b: If already paused, resume directly (no retries needed)
         try {
-          const sandbox = await Sandbox.resume(existingSandbox.sandboxId, {
+          const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
             timeoutMs,
           });
           return sandbox;
@@ -157,7 +157,7 @@ export async function pauseSandbox(sandbox: Sandbox): Promise<string | null> {
 
   // Start background pause operation and return immediately
   safeWaitUntil(
-    sandbox.pause().catch((error) => {
+    sandbox.betaPause().catch((error) => {
       console.error(
         `Background pause failed for sandbox ${sandbox.sandboxId}:`,
         error,

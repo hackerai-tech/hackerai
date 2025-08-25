@@ -137,28 +137,3 @@ export async function updateChat({
     throw new ChatSDKError("bad_request:database", "Failed to update chat");
   }
 }
-
-export async function updateChatTodos({
-  chatId,
-  todos,
-}: {
-  chatId: string;
-  todos: Array<{
-    id: string;
-    content: string;
-    status: "pending" | "in_progress" | "completed" | "cancelled";
-  }>;
-}) {
-  try {
-    return await convex.mutation(api.chats.updateChatTodos, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      chatId,
-      todos,
-    });
-  } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      "Failed to update chat todos",
-    );
-  }
-}
