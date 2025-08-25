@@ -51,7 +51,7 @@ export async function createOrConnectPersistentTerminal(
           let pauseSuccess = false;
           for (let attempt = 1; attempt <= 3; attempt++) {
             try {
-              await runningSandbox.betaPause() 
+              await runningSandbox.betaPause();
               pauseSuccess = true;
               break;
             } catch (error) {

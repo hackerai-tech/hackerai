@@ -6,6 +6,7 @@ import {
   streamText,
   UIMessage,
   smoothStream,
+  JsonToSseTransformStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
@@ -26,6 +27,7 @@ import {
   saveMessage,
   updateChat,
 } from "@/lib/db/actions";
+import { v4 as uuidv4 } from "uuid";
 
 export const maxDuration = 300;
 
@@ -152,6 +154,8 @@ export async function POST(req: NextRequest) {
           },
         });
 
+        result.consumeStream();
+
         writer.merge(
           result.toUIMessageStream({
             onFinish: async ({ isAborted, messages }) => {
@@ -169,15 +173,6 @@ export async function POST(req: NextRequest) {
                     todos: currentTodos.length > 0 ? currentTodos : undefined,
                   });
                 }
-              } else {
-                console.log("Stream completed normally");
-                // Handle normal completion
-                for (const message of messages) {
-                  await saveMessage({
-                    chatId,
-                    message,
-                  });
-                }
               }
 
               const sandbox = getSandbox();
@@ -188,9 +183,23 @@ export async function POST(req: NextRequest) {
           }),
         );
       },
+      generateId: uuidv4,
+      onFinish: async ({ messages }) => {
+        console.log("Stream completed normally 3");
+        // Handle normal completion
+        for (const message of messages) {
+          await saveMessage({
+            chatId,
+            message,
+          });
+        }
+      },
+      onError: () => {
+        return "Oops, an error occurred!";
+      },
     });
 
-    return createUIMessageStreamResponse({ stream });
+    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
   } catch (error) {
     // Handle ChatSDKErrors (including authentication errors)
     if (error instanceof ChatSDKError) {
