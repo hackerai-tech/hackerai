@@ -8,6 +8,7 @@ import { Id } from "./_generated/dataModel";
 export const saveMessage = mutation({
   args: {
     serviceKey: v.optional(v.string()),
+    id: v.string(),
     chatId: v.string(),
     role: v.string(),
     parts: v.array(v.any()),
@@ -23,8 +24,22 @@ export const saveMessage = mutation({
     }
 
     try {
+      // Check if a message with the same ID already exists
+      if (args.role === "assistant") {
+        const existingMessage = await ctx.db
+          .query("messages")
+          .withIndex("by_message_id", (q) => q.eq("id", args.id))
+          .first();
+ 
+        // If message already exists, skip saving
+        if (existingMessage) {
+          return null;
+        }
+      }
+
       // Save the message
       await ctx.db.insert("messages", {
+        id: args.id,
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
@@ -48,6 +63,7 @@ export const getMessagesByChatId = query({
     v.object({
       _id: v.id("messages"),
       _creationTime: v.number(),
+      id: v.string(),
       chat_id: v.string(),
       role: v.string(),
       parts: v.array(v.any()),
@@ -106,6 +122,7 @@ export const getMessagesByChatId = query({
  */
 export const saveMessageFromClient = mutation({
   args: {
+    id: v.string(),
     chatId: v.string(),
     role: v.string(),
     parts: v.array(v.any()),
@@ -137,6 +154,7 @@ export const saveMessageFromClient = mutation({
 
       // Save the message
       await ctx.db.insert("messages", {
+        id: args.id,
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,

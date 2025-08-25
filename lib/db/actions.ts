@@ -43,6 +43,7 @@ export async function saveMessage({
 }: {
   chatId: string;
   message: {
+    id: string;
     role: string;
     parts: UIMessagePart<any, any>[];
   };
@@ -50,6 +51,7 @@ export async function saveMessage({
   try {
     return await convex.mutation(api.messages.saveMessage, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      id: message.id,
       chatId,
       role: message.role,
       parts: message.parts,
@@ -67,7 +69,7 @@ export async function handleInitialChatAndUserMessage({
 }: {
   chatId: string;
   userId: string;
-  messages: { parts: UIMessagePart<any, any>[] }[];
+  messages: { id: string; parts: UIMessagePart<any, any>[] }[];
   regenerate?: boolean;
 }): Promise<{ isNewChat: boolean }> {
   const chat = await getChatById({ id: chatId });
@@ -101,6 +103,7 @@ export async function handleInitialChatAndUserMessage({
     await saveMessage({
       chatId,
       message: {
+        id: messages[messages.length - 1].id,
         role: "user",
         parts: messages[messages.length - 1].parts,
       },

@@ -1,7 +1,6 @@
 import {
   convertToModelMessages,
   createUIMessageStream,
-  createUIMessageStreamResponse,
   stepCountIs,
   streamText,
   UIMessage,
@@ -113,7 +112,7 @@ export async function POST(req: NextRequest) {
           abortSignal: controller.signal,
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
-          stopWhen: stepCountIs(25),
+          stopWhen: stepCountIs(10),
           onChunk: async (chunk) => {
             if (chunk.chunk.type === "tool-call") {
               if (posthog) {
@@ -135,6 +134,11 @@ export async function POST(req: NextRequest) {
             await titlePromise;
           },
           onFinish: async ({ finishReason }) => {
+            const sandbox = getSandbox();
+            if (sandbox) {
+              await pauseSandbox(sandbox);
+            }
+
             const generatedTitle = await titlePromise;
             const currentTodos = getTodoManager().getAllTodos();
 
@@ -154,23 +158,17 @@ export async function POST(req: NextRequest) {
 
         writer.merge(
           result.toUIMessageStream({
-            onFinish: async () => {
-              const sandbox = getSandbox();
-              if (sandbox) {
-                await pauseSandbox(sandbox);
+            generateMessageId: uuidv4,
+            onFinish: async ({ messages }) => {
+              for (const message of messages) {
+                await saveMessage({
+                  chatId,
+                  message,
+                });
               }
             },
           }),
         );
-      },
-      generateId: uuidv4,
-      onFinish: async ({ messages }) => {
-        for (const message of messages) {
-          await saveMessage({
-            chatId,
-            message,
-          });
-        }
       },
     });
 

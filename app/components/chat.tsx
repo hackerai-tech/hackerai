@@ -181,6 +181,7 @@ export const Chat = ({ id }: { id?: string }) => {
     ) {
       try {
         await saveMessageFromClient({
+          id: lastMessage.id,
           chatId,
           role: lastMessage.role,
           parts: lastMessage.parts,
