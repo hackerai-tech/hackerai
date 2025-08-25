@@ -141,31 +141,30 @@ export async function POST(req: NextRequest) {
               });
             }
           },
-          onAbort: async () => {
-            // Update chat with any generated title or todos
-            const generatedTitle = await titlePromise;
-            const currentTodos = getTodoManager().getAllTodos();
-
-            if (generatedTitle || currentTodos.length > 0) {
-              await updateChat({
-                chatId,
-                title: generatedTitle,
-                finishReason: "abort",
-                todos: currentTodos.length > 0 ? currentTodos : undefined,
-              });
-            }
-
-            // Perform cleanup
-            const sandbox = getSandbox();
-            if (sandbox) {
-              await pauseSandbox(sandbox);
-            }
-          },
         });
 
         writer.merge(
           result.toUIMessageStream({
-            onFinish: async () => {
+            onFinish: async ({ isAborted }) => {
+              if (isAborted) {
+                console.log("Stream was aborted 1");
+                // Handle abort-specific cleanup
+                const generatedTitle = await titlePromise;
+                const currentTodos = getTodoManager().getAllTodos();
+
+                if (generatedTitle || currentTodos.length > 0) {
+                  await updateChat({
+                    chatId,
+                    title: generatedTitle,
+                    finishReason: "abort",
+                    todos: currentTodos.length > 0 ? currentTodos : undefined,
+                  });
+                }
+              } else {
+                console.log("Stream completed normally");
+                // Handle normal completion
+              }
+
               const sandbox = getSandbox();
               if (sandbox) {
                 await pauseSandbox(sandbox);

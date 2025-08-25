@@ -171,6 +171,8 @@ export const Chat = ({ id }: { id?: string }) => {
 
   const handleStop = async () => {
     // Save the current assistant message before stopping
+    stop();
+
     const lastMessage = messages[messages.length - 1];
     if (
       lastMessage &&
@@ -187,8 +189,6 @@ export const Chat = ({ id }: { id?: string }) => {
         console.error("Failed to save message on stop:", error);
       }
     }
-
-    stop();
   };
 
   const handleRegenerate = async () => {
