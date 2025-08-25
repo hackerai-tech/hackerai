@@ -6,6 +6,7 @@ import {
   streamText,
   UIMessage,
   smoothStream,
+  consumeStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
@@ -121,6 +122,8 @@ export async function POST(req: NextRequest) {
           onError: async (error) => {
             console.error("Error:", error);
 
+            console.log("Stream was aborted 1", error);
+
             // Perform same cleanup as onFinish to prevent resource leaks
             const sandbox = getSandbox();
             if (sandbox) {
@@ -141,13 +144,16 @@ export async function POST(req: NextRequest) {
               });
             }
           },
+          onAbort: async (error) => {
+            console.log("Stream was aborted 2", error);
+          },
         });
 
         writer.merge(
           result.toUIMessageStream({
             onFinish: async ({ isAborted }) => {
               if (isAborted) {
-                console.log("Stream was aborted 1");
+                console.log("Stream was aborted 3");
                 // Handle abort-specific cleanup
                 const generatedTitle = await titlePromise;
                 const currentTodos = getTodoManager().getAllTodos();
