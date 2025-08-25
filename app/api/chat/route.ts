@@ -127,8 +127,6 @@ export async function POST(req: NextRequest) {
           onError: async (error) => {
             console.error("Error:", error);
 
-            console.log("Stream was aborted 1", error);
-
             // Perform same cleanup as onFinish to prevent resource leaks
             const sandbox = getSandbox();
             if (sandbox) {
@@ -150,31 +148,13 @@ export async function POST(req: NextRequest) {
             }
           },
           onAbort: async (error) => {
-            console.log("Stream was aborted 2", error);
+            console.log("Stream was aborted", error);
           },
         });
 
-        result.consumeStream();
-
         writer.merge(
           result.toUIMessageStream({
-            onFinish: async ({ isAborted, messages }) => {
-              if (isAborted) {
-                console.log("Stream was aborted 3");
-                // Handle abort-specific cleanup
-                const generatedTitle = await titlePromise;
-                const currentTodos = getTodoManager().getAllTodos();
-
-                if (generatedTitle || currentTodos.length > 0) {
-                  await updateChat({
-                    chatId,
-                    title: generatedTitle,
-                    finishReason: "abort",
-                    todos: currentTodos.length > 0 ? currentTodos : undefined,
-                  });
-                }
-              }
-
+            onFinish: async () => {
               const sandbox = getSandbox();
               if (sandbox) {
                 await pauseSandbox(sandbox);
@@ -185,17 +165,12 @@ export async function POST(req: NextRequest) {
       },
       generateId: uuidv4,
       onFinish: async ({ messages }) => {
-        console.log("Stream completed normally 3");
-        // Handle normal completion
         for (const message of messages) {
           await saveMessage({
             chatId,
             message,
           });
         }
-      },
-      onError: () => {
-        return "Oops, an error occurred!";
       },
     });
 
