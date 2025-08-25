@@ -29,7 +29,13 @@ import {
 
 export const maxDuration = 300;
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const controller = new AbortController();
+
+  req.signal.addEventListener("abort", () => {
+    console.log("Request aborted");
+  });
+
   try {
     const {
       messages,
@@ -45,7 +51,7 @@ export async function POST(req: Request) {
       regenerate?: boolean;
     } = await req.json();
 
-    const userID = await getUserID(req as NextRequest);
+    const userID = await getUserID(req);
     const userLocation = geolocation(req);
 
     // Check rate limit for the user
@@ -92,7 +98,7 @@ export async function POST(req: Request) {
         const titlePromise = isNewChat
           ? generateTitleFromUserMessageWithWriter(
               truncatedMessages,
-              req.signal,
+              controller.signal,
               writer,
             )
           : Promise.resolve(undefined);
@@ -102,7 +108,7 @@ export async function POST(req: Request) {
           system: systemPrompt(model.modelId, mode, executionMode),
           messages: convertToModelMessages(truncatedMessages),
           tools,
-          abortSignal: req.signal,
+          abortSignal: controller.signal,
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
           stopWhen: stepCountIs(25),
