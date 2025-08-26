@@ -24,11 +24,15 @@ interface GlobalStateType {
   chatTitle: string | null;
   setChatTitle: (title: string | null) => void;
 
-  // Sidebar state
+  // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
   sidebarContent: SidebarContent | null;
   setSidebarContent: (content: SidebarContent | null) => void;
+
+  // Chat sidebar state (left side)
+  chatSidebarOpen: boolean;
+  setChatSidebarOpen: (open: boolean) => void;
 
   // Todos state
   todos: Todo[];
@@ -45,6 +49,7 @@ interface GlobalStateType {
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
   closeSidebar: () => void;
+  toggleChatSidebar: () => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
@@ -65,6 +70,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
   const [todos, setTodos] = useState<Todo[]>([]);
 
   const mergeTodos = useCallback((newTodos: Todo[]) => {
@@ -102,6 +108,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSidebarContent(null);
   };
 
+  const toggleChatSidebar = () => {
+    setChatSidebarOpen((prev) => !prev);
+  };
+
   const value: GlobalStateType = {
     input,
     setInput,
@@ -113,6 +123,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setSidebarOpen,
     sidebarContent,
     setSidebarContent,
+    chatSidebarOpen,
+    setChatSidebarOpen,
     todos,
     setTodos,
     mergeTodos,
@@ -125,6 +137,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     openSidebar,
     updateSidebarContent,
     closeSidebar,
+    toggleChatSidebar,
   };
 
   return (

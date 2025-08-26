@@ -9,8 +9,10 @@ import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { ComputerSidebar } from "./ComputerSidebar";
-import Header from "./Header";
+import ChatHeader from "./ChatHeader";
+import ChatSidebar from "./ChatSidebar";
 import Footer from "./Footer";
+import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useGlobalState } from "../contexts/GlobalState";
 import { normalizeMessages } from "@/lib/utils/message-processor";
@@ -19,6 +21,7 @@ import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage } from "@/types";
 import { v4 as uuidv4 } from "uuid";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 export const Chat = ({ id }: { id?: string }) => {
   // Generate or use provided chat ID
@@ -27,6 +30,7 @@ export const Chat = ({ id }: { id?: string }) => {
   const [shouldFetchMessages, setShouldFetchMessages] = useState(!!id);
   // Track whether the user has started a chat session this run
   const [hasActiveChat, setHasActiveChat] = useState(!!id);
+  const isMobile = useIsMobile();
 
   const {
     input,
@@ -35,6 +39,8 @@ export const Chat = ({ id }: { id?: string }) => {
     setChatTitle,
     clearInput,
     sidebarOpen,
+    chatSidebarOpen,
+    setChatSidebarOpen,
     mergeTodos,
     todos,
   } = useGlobalState();
@@ -212,117 +218,138 @@ export const Chat = ({ id }: { id?: string }) => {
 
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
-      {/* Header for empty state */}
-      {!hasMessages && !hasActiveChat && (
-        <div className="flex-shrink-0">
-          <Header />
-        </div>
-      )}
+      <div className="flex w-full h-full overflow-hidden">
+        {/* Chat Sidebar - Desktop screens only (takes space) */}
+        {!isMobile && (
+          <div
+            className={`transition-all duration-300 ${
+              chatSidebarOpen ? "w-72 flex-shrink-0" : "w-0 overflow-hidden"
+            }`}
+          >
+            {chatSidebarOpen && (
+              <SidebarProvider
+                open={true}
+                onOpenChange={() => {}}
+                defaultOpen={true}
+              >
+                <ChatSidebar />
+              </SidebarProvider>
+            )}
+          </div>
+        )}
 
-      <div className="flex max-w-full flex-1 min-h-0">
-        {/* Chat interface */}
-        <div
-          className={`bg-background flex flex-col h-full relative transition-all duration-300 min-w-0 ${
-            sidebarOpen
-              ? "w-full desktop:w-1/2 desktop:flex-shrink-0"
-              : "w-full"
-          }`}
-        >
-          {/* Chat header */}
-          {(hasMessages || hasActiveChat) && (
-            <div className="px-4 bg-background">
-              <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">
-                <div className="max-w-full sm:max-w-[768px] sm:min-w-[390px] flex w-full flex-col gap-[4px] overflow-hidden">
-                  <div className="text-foreground text-lg font-medium w-full flex flex-row items-center justify-between flex-1 min-w-0 gap-2">
-                    <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0">
-                      <span className="whitespace-nowrap text-ellipsis overflow-hidden">
-                        {chatTitle ||
-                          (id && chatData === undefined ? "" : "New Chat")}
-                      </span>
+        {/* Main Content Area */}
+        <div className="flex flex-1 min-w-0">
+          {/* Left side - Chat content */}
+          <div className="flex flex-col flex-1 min-w-0">
+            {/* Unified Header */}
+            <ChatHeader
+              hasMessages={hasMessages}
+              hasActiveChat={hasActiveChat}
+              chatTitle={chatTitle}
+              id={id}
+              chatData={chatData}
+              chatSidebarOpen={chatSidebarOpen}
+            />
+
+            {/* Chat interface */}
+            <div className="bg-background flex flex-col flex-1 relative min-h-0">
+              {/* Messages area */}
+              {showChatLayout ? (
+                <Messages
+                  scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
+                  contentRef={contentRef as RefObject<HTMLDivElement | null>}
+                  messages={messages}
+                  onRegenerate={handleRegenerate}
+                  status={status}
+                  error={error || null}
+                  resetSidebarAutoOpen={resetSidebarAutoOpenRef}
+                />
+              ) : (
+                <div className="flex-1 flex flex-col min-h-0">
+                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
+                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                      <div className="text-center">
+                        <h1 className="text-3xl font-bold text-foreground mb-2">
+                          HackerAI
+                        </h1>
+                        <p className="text-muted-foreground">
+                          Your AI pentest assistant
+                        </p>
+                      </div>
+
+                      {/* Centered input */}
+                      <div className="w-full">
+                        <ChatInput
+                          onSubmit={handleSubmit}
+                          onStop={handleStop}
+                          status={status}
+                          isCentered={true}
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
-            </div>
-          )}
 
-          {/* Messages area */}
-          {showChatLayout ? (
-            <Messages
-              scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
-              contentRef={contentRef as RefObject<HTMLDivElement | null>}
-              messages={messages}
-              onRegenerate={handleRegenerate}
-              status={status}
-              error={error || null}
-              resetSidebarAutoOpen={resetSidebarAutoOpenRef}
-            />
-          ) : (
-            <div className="flex-1 flex flex-col min-h-0">
-              <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
-                  <div className="text-center">
-                    <h1 className="text-3xl font-bold text-foreground mb-2">
-                      HackerAI
-                    </h1>
-                    <p className="text-muted-foreground">
-                      Your AI pentest assistant
-                    </p>
-                  </div>
-
-                  {/* Centered input */}
-                  <div className="w-full">
-                    <ChatInput
-                      onSubmit={handleSubmit}
-                      onStop={handleStop}
-                      status={status}
-                      isCentered={true}
-                    />
+                  {/* Footer - only show when user is not logged in */}
+                  <div className="flex-shrink-0">
+                    <Footer />
                   </div>
                 </div>
-              </div>
+              )}
 
-              {/* Footer - only show when user is not logged in */}
-              <div className="flex-shrink-0">
-                <Footer />
-              </div>
+              {/* Chat Input - Always show when authenticated */}
+              {(hasMessages || hasActiveChat) && (
+                <ChatInput
+                  onSubmit={handleSubmit}
+                  onStop={handleStop}
+                  status={status}
+                />
+              )}
+
+              <ScrollToBottomButton
+                onClick={handleScrollToBottom}
+                hasMessages={hasMessages}
+                isAtBottom={isAtBottom}
+              />
+            </div>
+          </div>
+
+          {/* Desktop Computer Sidebar */}
+          {!isMobile && (
+            <div
+              className={`transition-all duration-300 min-w-0 ${
+                sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
+              }`}
+            >
+              {sidebarOpen && <ComputerSidebar />}
             </div>
           )}
-
-          {/* Chat Input - Always show when authenticated */}
-          {(hasMessages || hasActiveChat) && (
-            <ChatInput
-              onSubmit={handleSubmit}
-              onStop={handleStop}
-              status={status}
-            />
-          )}
-
-          <ScrollToBottomButton
-            onClick={handleScrollToBottom}
-            hasMessages={hasMessages}
-            isAtBottom={isAtBottom}
-          />
-        </div>
-
-        {/* Desktop Sidebar */}
-        <div
-          className={`hidden desktop:block transition-all duration-300 min-w-0 ${
-            sidebarOpen
-              ? "desktop:w-1/2 desktop:flex-shrink-0"
-              : "desktop:w-0 desktop:overflow-hidden"
-          }`}
-        >
-          {sidebarOpen && <ComputerSidebar />}
         </div>
       </div>
 
-      {/* Mobile Sidebar */}
-      {sidebarOpen && (
-        <div className="desktop:hidden flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
+      {/* Mobile Computer Sidebar */}
+      {isMobile && sidebarOpen && (
+        <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
           <div className="w-full max-w-4xl h-full">
             <ComputerSidebar />
           </div>
+        </div>
+      )}
+
+      {/* Overlay Chat Sidebar - Mobile screens */}
+      {isMobile && chatSidebarOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 flex"
+          onClick={() => setChatSidebarOpen(false)}
+        >
+          <div
+            className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <ChatSidebar isMobileOverlay={true} />
+          </div>
+          {/* Clickable area to close sidebar */}
+          <div className="flex-1" />
         </div>
       )}
     </div>

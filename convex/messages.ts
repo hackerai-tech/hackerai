@@ -30,7 +30,7 @@ export const saveMessage = mutation({
           .query("messages")
           .withIndex("by_message_id", (q) => q.eq("id", args.id))
           .first();
- 
+
         // If message already exists, skip saving
         if (existingMessage) {
           return null;

@@ -176,6 +176,49 @@ export const updateChat = mutation({
 });
 
 /**
+ * Get user's latest chats
+ */
+export const getUserChats = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      _id: v.id("chats"),
+      _creationTime: v.number(),
+      id: v.string(),
+      title: v.string(),
+      user_id: v.string(),
+      update_time: v.number(),
+    }),
+  ),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return [];
+    }
+
+    try {
+      const chats = await ctx.db
+        .query("chats")
+        .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+        .order("desc")
+        .take(28); // Limit to 28 most recent chats
+
+      return chats.map((chat) => ({
+        _id: chat._id,
+        _creationTime: chat._creationTime,
+        id: chat.id,
+        title: chat.title,
+        user_id: chat.user_id,
+        update_time: chat.update_time,
+      }));
+    } catch (error) {
+      console.error("Failed to get user chats:", error);
+      return [];
+    }
+  },
+});
+
+/**
  * Update todos for a chat
  */
 export const updateChatTodos = mutation({
