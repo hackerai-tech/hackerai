@@ -60,8 +60,8 @@ export const createTools = (
   const tools =
     mode === "ask"
       ? {
-          read_file: allTools.read_file,
-          todo_write: createTodoWrite(context),
+          // read_file: allTools.read_file,
+          // todo_write: createTodoWrite(context),
           ...(process.env.EXA_API_KEY && { web_search: allTools.web_search }),
         }
       : allTools;

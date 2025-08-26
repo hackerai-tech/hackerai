@@ -68,7 +68,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<ChatMode>("agent");
+  const [mode, setMode] = useState<ChatMode>("ask");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
