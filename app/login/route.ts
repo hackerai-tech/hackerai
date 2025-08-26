@@ -1,14 +1,7 @@
-import { getSignInUrl } from "@workos-inc/authkit-nextjs";
 import { redirect } from "next/navigation";
-import { isWorkOSEnabled } from "@/lib/auth/client";
+import { getSignInUrl } from "@workos-inc/authkit-nextjs";
 
-export const GET = async () => {
-  if (!isWorkOSEnabled()) {
-    // If WorkOS is not configured, redirect to home page
-    return redirect("/");
-  }
-
-  const signInUrl = await getSignInUrl();
-
-  return redirect(signInUrl);
-};
+export async function GET() {
+  const authorizationUrl = await getSignInUrl();
+  return redirect(authorizationUrl);
+}

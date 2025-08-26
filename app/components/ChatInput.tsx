@@ -61,7 +61,7 @@ export const ChatInput = ({
   );
 
   return (
-    <div className={`relative px-4 ${isCentered ? "" : "pb-3 mb-4"}`}>
+    <div className={`relative px-4 ${isCentered ? "" : "pb-3"}`}>
       <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
         {/* Todo Panel */}
         <TodoPanel status={status} />

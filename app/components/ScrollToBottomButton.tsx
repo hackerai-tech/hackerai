@@ -13,7 +13,7 @@ export const ScrollToBottomButton = ({
   hasMessages,
   isAtBottom,
 }: ScrollToBottomButtonProps) => {
-  const { sidebarOpen, isTodoPanelExpanded, todos } = useGlobalState();
+  const { isTodoPanelExpanded, todos } = useGlobalState();
 
   const shouldShowScrollButton =
     hasMessages && !isAtBottom && !isTodoPanelExpanded;
@@ -27,11 +27,7 @@ export const ScrollToBottomButton = ({
 
   return (
     <div
-      className={`fixed ${bottomPosition} z-40 transition-all duration-300 ${
-        sidebarOpen
-          ? "left-1/2 desktop:left-1/4 -translate-x-1/2"
-          : "left-1/2 -translate-x-1/2"
-      }`}
+      className={`absolute ${bottomPosition} left-1/2 -translate-x-1/2 z-40 transition-all duration-300`}
     >
       <button
         onClick={onClick}

@@ -1,19 +1,18 @@
 import {
   convertToModelMessages,
   createUIMessageStream,
-  createUIMessageStreamResponse,
   stepCountIs,
   streamText,
   UIMessage,
   smoothStream,
+  JsonToSseTransformStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { createTools } from "@/lib/ai/tools";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
-import { getUserID } from "@/lib/auth/server";
-import { generateTitleFromUserMessage } from "@/lib/actions";
-import { NextRequest } from "next/server";
+import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
+import { getUserID } from "@/lib/auth/get-user-id";
 import { myProvider } from "@/lib/ai/providers";
 import type { ChatMode, ExecutionMode, Todo } from "@/types";
 import { checkRateLimit } from "@/lib/rate-limit";
@@ -21,24 +20,51 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
 import { getAIHeaders } from "@/lib/actions";
+import { NextRequest } from "next/server";
+import {
+  handleInitialChatAndUserMessage,
+  saveMessage,
+  updateChat,
+} from "@/lib/db/actions";
+import { v4 as uuidv4 } from "uuid";
 
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  const controller = new AbortController();
+
+  req.signal.addEventListener("abort", () => {
+    console.log("Request aborted");
+  });
+
   try {
     const {
       messages,
       mode,
       todos,
-    }: { messages: UIMessage[]; mode: ChatMode; todos?: Todo[] } =
-      await req.json();
+      chatId,
+      regenerate,
+    }: {
+      messages: UIMessage[];
+      mode: ChatMode;
+      chatId: string;
+      todos?: Todo[];
+      regenerate?: boolean;
+    } = await req.json();
 
-    // Get user ID from authenticated session or fallback to anonymous
     const userID = await getUserID(req);
     const userLocation = geolocation(req);
 
     // Check rate limit for the user
     await checkRateLimit(userID);
+
+    // Handle initial chat setup, regeneration, and save user message
+    const { isNewChat } = await handleInitialChatAndUserMessage({
+      chatId,
+      userId: userID,
+      messages,
+      regenerate,
+    });
 
     // Determine execution mode from environment variable
     const executionMode: ExecutionMode =
@@ -60,7 +86,7 @@ export async function POST(req: NextRequest) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        const { tools, getSandbox } = createTools(
+        const { tools, getSandbox, getTodoManager } = createTools(
           userID,
           writer,
           mode,
@@ -69,40 +95,24 @@ export async function POST(req: NextRequest) {
           todos,
         );
 
-        // Generate title in parallel if this is the start of a conversation
-        const titlePromise =
-          truncatedMessages.length === 1
-            ? (async () => {
-                try {
-                  const chatTitle = await generateTitleFromUserMessage(
-                    truncatedMessages,
-                    req.signal,
-                  );
-
-                  writer.write({
-                    type: "data-title",
-                    data: { chatTitle },
-                    transient: true,
-                  });
-                } catch (error) {
-                  // Log error but don't propagate to keep main stream resilient
-                  console.error(
-                    "Failed to generate or write chat title:",
-                    error,
-                  );
-                }
-              })()
-            : Promise.resolve();
+        // Generate title in parallel if this is a new chat
+        const titlePromise = isNewChat
+          ? generateTitleFromUserMessageWithWriter(
+              truncatedMessages,
+              controller.signal,
+              writer,
+            )
+          : Promise.resolve(undefined);
 
         const result = streamText({
           model: model,
           system: systemPrompt(model.modelId, mode, executionMode),
           messages: convertToModelMessages(truncatedMessages),
           tools,
-          abortSignal: req.signal,
+          abortSignal: controller.signal,
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
-          stopWhen: stepCountIs(25),
+          stopWhen: stepCountIs(10),
           onChunk: async (chunk) => {
             if (chunk.chunk.type === "tool-call") {
               if (posthog) {
@@ -123,22 +133,48 @@ export async function POST(req: NextRequest) {
             }
             await titlePromise;
           },
-          onFinish: async () => {
+          onFinish: async ({ finishReason }) => {
             const sandbox = getSandbox();
             if (sandbox) {
               await pauseSandbox(sandbox);
             }
-            await titlePromise;
+
+            const generatedTitle = await titlePromise;
+            const currentTodos = getTodoManager().getAllTodos();
+
+            if (generatedTitle || finishReason || currentTodos.length > 0) {
+              await updateChat({
+                chatId,
+                title: generatedTitle,
+                finishReason,
+                todos: currentTodos.length > 0 ? currentTodos : undefined,
+              });
+            }
+          },
+          onAbort: async (error) => {
+            console.log("Stream was aborted", error);
           },
         });
 
-        writer.merge(result.toUIMessageStream());
+        writer.merge(
+          result.toUIMessageStream({
+            generateMessageId: uuidv4,
+            onFinish: async ({ messages }) => {
+              for (const message of messages) {
+                await saveMessage({
+                  chatId,
+                  message,
+                });
+              }
+            },
+          }),
+        );
       },
     });
 
-    return createUIMessageStreamResponse({ stream });
+    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
   } catch (error) {
-    // Handle rate limiting and other ChatSDKErrors
+    // Handle ChatSDKErrors (including authentication errors)
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
