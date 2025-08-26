@@ -1,3 +1,5 @@
+import "server-only";
+
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
 import { ConvexHttpClient } from "convex/browser";
@@ -77,11 +79,24 @@ export async function handleInitialChatAndUserMessage({
 
   if (!chat) {
     // Save new chat and get the document _id
-    const lastMessage = messages[messages.length - 1];
-    const firstPart = lastMessage.parts[0];
-    const title = (
-      firstPart.type === "text" ? firstPart.text : "New Chat"
-    )?.substring(0, 100);
+    let title = "New Chat";
+
+    if (messages.length > 0) {
+      const lastMessage = messages[messages.length - 1];
+      if (
+        lastMessage?.parts &&
+        Array.isArray(lastMessage.parts) &&
+        lastMessage.parts.length > 0
+      ) {
+        const firstPart = lastMessage.parts[0];
+        if (firstPart?.type === "text" && firstPart.text) {
+          title = firstPart.text;
+        }
+      }
+    }
+
+    // Ensure title is a string and truncate safely
+    title = (title ?? "New Chat").substring(0, 100);
 
     await saveChat({
       id: chatId,

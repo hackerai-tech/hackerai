@@ -24,6 +24,10 @@ interface GlobalStateType {
   chatTitle: string | null;
   setChatTitle: (title: string | null) => void;
 
+  // Current chat ID state
+  currentChatId: string | null;
+  setCurrentChatId: (chatId: string | null) => void;
+
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -66,6 +70,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("agent");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -119,6 +124,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setMode,
     chatTitle,
     setChatTitle,
+    currentChatId,
+    setCurrentChatId,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,

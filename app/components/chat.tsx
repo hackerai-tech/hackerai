@@ -2,8 +2,8 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { RefObject, useRef, useEffect, useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { RefObject, useRef, useEffect, useState, useCallback } from "react";
+import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
@@ -12,8 +12,9 @@ import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
 import ChatSidebar from "./ChatSidebar";
 import Footer from "./Footer";
-import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
+import { SidebarProvider } from "@/components/ui/sidebar";
 import { useMessageScroll } from "../hooks/useMessageScroll";
+import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
@@ -24,26 +25,65 @@ import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 export const Chat = ({ id }: { id?: string }) => {
-  // Generate or use provided chat ID
-  const [chatId] = useState(() => id || uuidv4());
-  // Track whether we should start fetching messages (after first submit for new chats)
-  const [shouldFetchMessages, setShouldFetchMessages] = useState(!!id);
-  // Track whether the user has started a chat session this run
-  const [hasActiveChat, setHasActiveChat] = useState(!!id);
   const isMobile = useIsMobile();
 
   const {
-    input,
-    mode,
     chatTitle,
     setChatTitle,
-    clearInput,
     sidebarOpen,
     chatSidebarOpen,
     setChatSidebarOpen,
     mergeTodos,
-    todos,
+    setTodos,
+    currentChatId,
+    setCurrentChatId,
   } = useGlobalState();
+
+  // Use ID from route if available, otherwise global currentChatId, or generate new one
+  const [chatId, setChatId] = useState(() => id || currentChatId || uuidv4());
+  // Track whether we should start fetching messages (true for existing chats)
+  const [shouldFetchMessages, setShouldFetchMessages] = useState(
+    !!id || !!currentChatId,
+  );
+  // Track whether the user has started a chat session this run
+  const [hasActiveChat, setHasActiveChat] = useState(!!id || !!currentChatId);
+  // Track if we've already initialized for new chat to prevent infinite loops
+  const hasInitializedNewChat = useRef(false);
+
+  // Handle route changes (when navigating to /c/[id])
+  useEffect(() => {
+    if (id) {
+      setChatId(id);
+      setCurrentChatId(id);
+      setShouldFetchMessages(true);
+      setHasActiveChat(true);
+      setChatTitle(null);
+      hasInitializedNewChat.current = false; // Reset when navigating to existing chat
+    }
+  }, [id, setCurrentChatId, setChatTitle]);
+
+  // Handle sidebar chat selection (when currentChatId changes but no route id)
+  useEffect(() => {
+    if (!id && currentChatId) {
+      setChatId(currentChatId);
+      setShouldFetchMessages(true);
+      setHasActiveChat(true);
+      setChatTitle(null);
+      hasInitializedNewChat.current = false; // Reset when navigating to existing chat
+    }
+  }, [currentChatId, id, setChatTitle]);
+
+  // Handle new chat creation (when both id and currentChatId are null)
+  useEffect(() => {
+    if (!id && !currentChatId && !hasInitializedNewChat.current) {
+      setChatId(uuidv4());
+      setShouldFetchMessages(false);
+      setHasActiveChat(false);
+      setChatTitle(null);
+      setTodos([]); // Clear todos for new chat
+      hasInitializedNewChat.current = true; // Mark as initialized
+    }
+  }, [id, currentChatId, setChatTitle, setTodos]);
 
   // Use "skip" to conditionally disable the query
   const messagesData = useQuery(
@@ -54,14 +94,8 @@ export const Chat = ({ id }: { id?: string }) => {
   // Get chat data to retrieve title when loading existing chat
   const chatData = useQuery(
     api.chats.getChatById,
-    id ? { id: chatId } : "skip",
+    id || currentChatId ? { id: chatId } : "skip",
   );
-
-  // Mutations for message operations
-  const deleteLastAssistantMessage = useMutation(
-    api.messages.deleteLastAssistantMessage,
-  );
-  const saveMessageFromClient = useMutation(api.messages.saveMessageFromClient);
 
   // Convert Convex messages to UI format for useChat
   const initialMessages: ChatMessage[] =
@@ -125,91 +159,53 @@ export const Chat = ({ id }: { id?: string }) => {
       setChatTitle(chatData.title);
     }
 
-    // Load todos from the chat data if they exist
+    // Load todos from the chat data if they exist, replacing existing todos
     if (chatData && chatData.todos && chatData.todos.length > 0) {
-      mergeTodos(chatData.todos);
+      setTodos(chatData.todos);
+    } else if (chatData && (!chatData.todos || chatData.todos.length === 0)) {
+      // If chat has no todos, clear existing todos
+      setTodos([]);
     }
-  }, [chatData, chatTitle, setChatTitle, mergeTodos]);
+  }, [chatData, chatTitle, setChatTitle, setTodos]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
     if (!messagesData || messagesData === null) return;
 
     const uiMessages = convertToUIMessages(messagesData);
-    setMessages(uiMessages);
-  }, [messagesData, setMessages]);
+
+    // Merge strategy: Only sync from Convex if:
+    // 1. We have no local messages (initial load)
+    // 2. Convex has more messages than local (new messages from server)
+    // 3. Message IDs differ (switching chats or real-time updates)
+    const shouldSync =
+      messages.length === 0 ||
+      uiMessages.length > messages.length ||
+      (uiMessages.length > 0 &&
+        messages.length > 0 &&
+        uiMessages[0]?.id !== messages[0]?.id);
+
+    if (shouldSync) {
+      setMessages(uiMessages);
+    }
+  }, [messagesData, setMessages, messages]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (input.trim()) {
-      if (messages.length === 0) {
-        setChatTitle(null);
-        // Update URL to use the actual chatId (whether provided or generated)
-        window.history.replaceState({}, "", `/c/${chatId}`);
-        // Enable message fetching after first submit for new chats
-        if (!shouldFetchMessages) {
-          setShouldFetchMessages(true);
-        }
-        // Ensure we render the chat layout immediately
-        setHasActiveChat(true);
-      }
-
-      if (resetSidebarAutoOpenRef.current) {
-        resetSidebarAutoOpenRef.current();
-      }
-
-      sendMessage(
-        { text: input },
-        {
-          body: {
-            mode,
-            todos,
-          },
-        },
-      );
-      clearInput();
-    }
-  };
-
-  const handleStop = async () => {
-    // Save the current assistant message before stopping
-    stop();
-
-    const lastMessage = messages[messages.length - 1];
-    if (
-      lastMessage &&
-      lastMessage.role === "assistant" &&
-      status === "streaming"
-    ) {
-      try {
-        await saveMessageFromClient({
-          id: lastMessage.id,
-          chatId,
-          role: lastMessage.role,
-          parts: lastMessage.parts,
-        });
-      } catch (error) {
-        console.error("Failed to save message on stop:", error);
-      }
-    }
-  };
-
-  const handleRegenerate = async () => {
-    // Remove the last assistant message from the UI and database
-    await deleteLastAssistantMessage({ chatId });
-
-    regenerate({
-      body: {
-        mode,
-        todos,
-        regenerate: true,
-      },
-    });
-  };
+  // Chat handlers
+  const { handleSubmit, handleStop, handleRegenerate } = useChatHandlers({
+    chatId,
+    messages,
+    shouldFetchMessages,
+    setShouldFetchMessages,
+    setHasActiveChat,
+    resetSidebarAutoOpenRef,
+    sendMessage,
+    stop,
+    regenerate,
+  });
 
   const handleScrollToBottom = () => scrollToBottom();
 

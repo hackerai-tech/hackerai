@@ -22,7 +22,9 @@ export default defineSchema({
       ),
     ),
     update_time: v.number(),
-  }).index("by_user_id", ["user_id"]),
+  })
+    .index("by_chat_id", ["id"])
+    .index("by_user_id", ["user_id"]),
 
   messages: defineTable({
     id: v.string(),

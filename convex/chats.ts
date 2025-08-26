@@ -44,8 +44,7 @@ export const getChatById = query({
     try {
       const chat = await ctx.db
         .query("chats")
-        .withIndex("by_user_id")
-        .filter((q) => q.eq(q.field("id"), args.id))
+        .withIndex("by_chat_id", (q) => q.eq("id", args.id))
         .first();
 
       return chat || null;
@@ -130,8 +129,7 @@ export const updateChat = mutation({
       // Find the chat by chatId
       const chat = await ctx.db
         .query("chats")
-        .withIndex("by_user_id")
-        .filter((q) => q.eq(q.field("id"), args.chatId))
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
         .first();
 
       if (!chat) {
@@ -252,8 +250,7 @@ export const updateChatTodos = mutation({
       // Find the chat by chatId
       const chat = await ctx.db
         .query("chats")
-        .withIndex("by_user_id")
-        .filter((q) => q.eq(q.field("id"), args.chatId))
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
         .first();
 
       if (!chat) {

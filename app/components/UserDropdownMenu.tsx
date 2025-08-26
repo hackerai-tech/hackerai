@@ -29,8 +29,8 @@ const UserDropdownMenu: React.FC<UserDropdownMenuProps> = ({ user }) => {
   };
 
   const getUserInitials = () => {
-    const firstName = user.firstName?.charAt(0)?.toUpperCase() || '';
-    const lastName = user.lastName?.charAt(0)?.toUpperCase() || '';
+    const firstName = user.firstName?.charAt(0)?.toUpperCase() || "";
+    const lastName = user.lastName?.charAt(0)?.toUpperCase() || "";
     if (firstName && lastName) {
       return firstName + lastName;
     }
@@ -40,14 +40,14 @@ const UserDropdownMenu: React.FC<UserDropdownMenuProps> = ({ user }) => {
     if (lastName) {
       return lastName;
     }
-    return user.email?.charAt(0)?.toUpperCase() || 'U';
+    return user.email?.charAt(0)?.toUpperCase() || "U";
   };
 
   const getDisplayName = () => {
     if (user.firstName && user.lastName) {
       return `${user.firstName} ${user.lastName}`;
     }
-    return user.firstName || user.lastName || 'User';
+    return user.firstName || user.lastName || "User";
   };
 
   return (
@@ -55,9 +55,9 @@ const UserDropdownMenu: React.FC<UserDropdownMenuProps> = ({ user }) => {
       <DropdownMenuTrigger asChild>
         <div className="flex items-center gap-3 p-3 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors">
           <Avatar className="h-8 w-8">
-            <AvatarImage 
-              src={user.profilePictureUrl || undefined} 
-              alt={getDisplayName()} 
+            <AvatarImage
+              src={user.profilePictureUrl || undefined}
+              alt={getDisplayName()}
             />
             <AvatarFallback className="text-xs">
               {getUserInitials()}
@@ -73,10 +73,10 @@ const UserDropdownMenu: React.FC<UserDropdownMenuProps> = ({ user }) => {
           </div>
         </div>
       </DropdownMenuTrigger>
-      
-      <DropdownMenuContent 
-        className="w-56" 
-        align="end" 
+
+      <DropdownMenuContent
+        className="w-56"
+        align="end"
         side="top"
         sideOffset={8}
       >
@@ -90,9 +90,9 @@ const UserDropdownMenu: React.FC<UserDropdownMenuProps> = ({ user }) => {
             </p>
           </div>
         </DropdownMenuLabel>
-        
+
         <DropdownMenuSeparator />
-        
+
         <DropdownMenuItem onClick={handleLogout} variant="destructive">
           <LogOut className="mr-2 h-4 w-4" />
           <span>Log out</span>

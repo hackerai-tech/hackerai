@@ -4,11 +4,10 @@ import React from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { useParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import ChatItem from "./ChatItem";
 import { Button } from "@/components/ui/button";
 import { Plus, MessageSquare, PanelLeft } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
@@ -54,7 +53,7 @@ const ChatSidebarHeader: React.FC<{
 
 const ChatSidebarList: React.FC<{
   chats: any;
-  currentChatId: string;
+  currentChatId: string | null;
   handleNewChat: () => void;
 }> = ({ chats, currentChatId, handleNewChat }) => {
   if (chats === undefined) {
@@ -113,15 +112,19 @@ const ChatSidebarFooter: React.FC<{ user: any }> = ({ user }) => (
   </div>
 );
 
-const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({ 
-  isMobileOverlay = false 
+const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
+  isMobileOverlay = false,
 }) => {
   const { user } = useAuth();
-  const router = useRouter();
-  const params = useParams();
-  const currentChatId = params?.id as string;
   const isMobile = useIsMobile();
-  const { resetChat, setChatSidebarOpen, closeSidebar } = useGlobalState();
+  const router = useRouter();
+  const {
+    resetChat,
+    setChatSidebarOpen,
+    closeSidebar,
+    setCurrentChatId,
+    currentChatId,
+  } = useGlobalState();
 
   // Get user's chats
   const chats = useQuery(api.chats.getUserChats, user ? {} : "skip");
@@ -137,7 +140,11 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
       setChatSidebarOpen(false);
     }
 
+    // Reset state first to ensure clean transition
     resetChat();
+    setCurrentChatId(null);
+
+    // Navigate to homepage
     router.push("/");
   };
 

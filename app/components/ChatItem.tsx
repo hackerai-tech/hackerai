@@ -12,14 +12,19 @@ interface ChatItemProps {
   isActive?: boolean;
 }
 
-const ChatItem: React.FC<ChatItemProps> = ({
-  id,
-  title,
-  isActive = false,
-}) => {
+const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
   const router = useRouter();
-  const { closeSidebar, setChatSidebarOpen } = useGlobalState();
+  const {
+    closeSidebar,
+    setChatSidebarOpen,
+    resetChat,
+    setCurrentChatId,
+    currentChatId,
+  } = useGlobalState();
   const isMobile = useIsMobile();
+
+  // Use global currentChatId to determine if this item is active
+  const isCurrentlyActive = currentChatId === id;
 
   const handleClick = () => {
     closeSidebar();
@@ -28,6 +33,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
       setChatSidebarOpen(false);
     }
 
+    resetChat();
+    setCurrentChatId(id);
     router.push(`/c/${id}`);
   };
 
@@ -36,8 +43,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
       variant="ghost"
       onClick={handleClick}
       className={`flex items-center gap-2 p-3 h-auto w-full text-left justify-start ${
-        isActive 
-          ? "bg-sidebar-accent text-sidebar-accent-foreground" 
+        isCurrentlyActive
+          ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : "hover:bg-sidebar-accent/50"
       }`}
       title={title}
@@ -50,4 +57,3 @@ const ChatItem: React.FC<ChatItemProps> = ({
 };
 
 export default ChatItem;
-

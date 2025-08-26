@@ -25,16 +25,14 @@ export const saveMessage = mutation({
 
     try {
       // Check if a message with the same ID already exists
-      if (args.role === "assistant") {
-        const existingMessage = await ctx.db
-          .query("messages")
-          .withIndex("by_message_id", (q) => q.eq("id", args.id))
-          .first();
+      const existingMessage = await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q) => q.eq("id", args.id))
+        .first();
 
-        // If message already exists, skip saving
-        if (existingMessage) {
-          return null;
-        }
+      // If message already exists, skip saving
+      if (existingMessage) {
+        return null;
       }
 
       // Save the message
@@ -81,17 +79,13 @@ export const getMessagesByChatId = query({
       // First check if the chat exists and belongs to the user
       const chat = await ctx.db
         .query("chats")
-        .withIndex("by_user_id")
-        .filter((q) => q.eq(q.field("id"), args.chatId))
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
         .first();
 
       if (!chat) {
         // Chat doesn't exist yet - return empty array (will be created on first message)
         return [];
-      }
-
-      // Check if the chat belongs to the current user
-      if (chat.user_id !== user.subject) {
+      } else if (chat.user_id !== user.subject) {
         throw new Error("Unauthorized: Chat does not belong to user");
       }
 
@@ -139,16 +133,12 @@ export const saveMessageFromClient = mutation({
       // First check if the chat exists and belongs to the user
       const chat = await ctx.db
         .query("chats")
-        .withIndex("by_user_id")
-        .filter((q) => q.eq(q.field("id"), args.chatId))
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
         .first();
 
       if (!chat) {
         throw new Error("Chat not found");
-      }
-
-      // Check if the chat belongs to the current user
-      if (chat.user_id !== user.subject) {
+      } else if (chat.user_id !== user.subject) {
         throw new Error("Unauthorized: Chat does not belong to user");
       }
 
@@ -188,12 +178,13 @@ export const deleteLastAssistantMessage = mutation({
       // Find the chat to verify it exists
       const chat = await ctx.db
         .query("chats")
-        .withIndex("by_user_id")
-        .filter((q) => q.eq(q.field("id"), args.chatId))
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
         .first();
 
       if (!chat) {
         throw new Error("Chat not found");
+      } else if (chat.user_id !== user.subject) {
+        throw new Error("Unauthorized: Chat does not belong to user");
       }
 
       // Get the last assistant message for this chat
