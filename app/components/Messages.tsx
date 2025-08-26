@@ -135,7 +135,6 @@ export const Messages = ({
                       ? error.cause
                       : error.message
                   }
-                  id={`error-${error.type}`}
                 />
               ) : (
                 <p>An error occurred.</p>
