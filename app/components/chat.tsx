@@ -195,17 +195,19 @@ export const Chat = ({ id }: { id?: string }) => {
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
 
   // Chat handlers
-  const { handleSubmit, handleStop, handleRegenerate } = useChatHandlers({
-    chatId,
-    messages,
-    shouldFetchMessages,
-    setShouldFetchMessages,
-    setHasActiveChat,
-    resetSidebarAutoOpenRef,
-    sendMessage,
-    stop,
-    regenerate,
-  });
+  const { handleSubmit, handleStop, handleRegenerate, handleEditMessage } =
+    useChatHandlers({
+      chatId,
+      messages,
+      shouldFetchMessages,
+      setShouldFetchMessages,
+      setHasActiveChat,
+      resetSidebarAutoOpenRef,
+      sendMessage,
+      stop,
+      regenerate,
+      setMessages,
+    });
 
   const handleScrollToBottom = () => scrollToBottom();
 
@@ -257,6 +259,7 @@ export const Chat = ({ id }: { id?: string }) => {
                   contentRef={contentRef as RefObject<HTMLDivElement | null>}
                   messages={messages}
                   onRegenerate={handleRegenerate}
+                  onEditMessage={handleEditMessage}
                   status={status}
                   error={error || null}
                   resetSidebarAutoOpen={resetSidebarAutoOpenRef}

@@ -1,17 +1,18 @@
 import { UIMessage } from "@ai-sdk/react";
-import { useState, RefObject, useEffect } from "react";
+import { useState, RefObject, useEffect, useMemo, useCallback } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
+import { MessageErrorState } from "./MessageErrorState";
+import { MessageEditor } from "./MessageEditor";
 import DotsSpinner from "@/components/ui/dots-spinner";
-import { Button } from "@/components/ui/button";
-import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
-import { ChatSDKError } from "@/lib/errors";
+import { extractMessageText, hasTextContent, findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
 import type { ChatStatus } from "@/types";
 
 interface MessagesProps {
   messages: UIMessage[];
   onRegenerate: () => void;
+  onEditMessage: (messageId: string, newContent: string) => void;
   status: ChatStatus;
   error: Error | null;
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -22,20 +23,23 @@ interface MessagesProps {
 export const Messages = ({
   messages,
   onRegenerate,
+  onEditMessage,
   status,
   error,
   scrollRef,
   contentRef,
   resetSidebarAutoOpen,
 }: MessagesProps) => {
-  // Find the last assistant message
-  const lastAssistantMessageIndex = messages
-    .map((msg, index) => ({ msg, index }))
-    .reverse()
-    .find(({ msg }) => msg.role === "assistant")?.index;
+  // Memoize expensive calculations
+  const lastAssistantMessageIndex = useMemo(() => {
+    return findLastAssistantMessageIndex(messages);
+  }, [messages]);
 
   // Track hover state for all messages
   const [hoveredMessageId, setHoveredMessageId] = useState<string | null>(null);
+
+  // Track edit state for messages
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
 
   // Handle sidebar auto-opening
   const { resetSidebarFlag } = useSidebarAutoOpen(
@@ -51,6 +55,33 @@ export const Messages = ({
     }
   }, [resetSidebarFlag, resetSidebarAutoOpen]);
 
+
+
+  // Memoized edit handlers to prevent unnecessary re-renders
+  const handleStartEdit = useCallback((messageId: string) => {
+    setEditingMessageId(messageId);
+  }, []);
+
+  const handleSaveEdit = useCallback((newContent: string) => {
+    if (editingMessageId) {
+      onEditMessage(editingMessageId, newContent);
+    }
+    setEditingMessageId(null);
+  }, [editingMessageId, onEditMessage]);
+
+  const handleCancelEdit = useCallback(() => {
+    setEditingMessageId(null);
+  }, []);
+
+  // Memoized mouse event handlers
+  const handleMouseEnter = useCallback((messageId: string) => {
+    setHoveredMessageId(messageId);
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    setHoveredMessageId(null);
+  }, []);
+
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
       <div
@@ -63,44 +94,51 @@ export const Messages = ({
           const isLastAssistantMessage =
             message.role === "assistant" && index === lastAssistantMessageIndex;
           const canRegenerate = status === "ready" || status === "error";
+          const isEditing = editingMessageId === message.id;
 
-          // Check if we should show loader for this message
-          const hasTextContent = message.parts?.some(
-            (part: { type: string; text?: string }) =>
-              (part.type === "text" && part.text && part.text.trim() !== "") ||
-              part.type === "step-start" ||
-              part.type?.startsWith("tool-"),
-          );
+          // Get message text content for editing
+          const messageText = extractMessageText(message.parts);
+          const messageHasTextContent = hasTextContent(message.parts);
 
           const shouldShowLoader =
-            isLastAssistantMessage && status === "streaming" && !hasTextContent;
+            isLastAssistantMessage && status === "streaming" && !messageHasTextContent;
 
           return (
             <div
               key={message.id}
               className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
-              onMouseEnter={() => setHoveredMessageId(message.id)}
-              onMouseLeave={() => setHoveredMessageId(null)}
+              onMouseEnter={() => handleMouseEnter(message.id)}
+              onMouseLeave={handleMouseLeave}
             >
-              <div
-                className={`${
-                  isUser
-                    ? "max-w-[80%] bg-secondary rounded-lg px-4 py-3 text-primary-foreground border border-border"
-                    : "w-full text-foreground"
-                } overflow-hidden`}
-              >
-                <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden ">
-                  {message.parts.map((part, partIndex) => (
-                    <MessagePartHandler
-                      key={`${message.id}-${partIndex}`}
-                      message={message}
-                      part={part}
-                      partIndex={partIndex}
-                      status={status}
-                    />
-                  ))}
+              {isEditing && isUser ? (
+                <div className="w-full">
+                  <MessageEditor
+                    initialContent={messageText}
+                    onSave={handleSaveEdit}
+                    onCancel={handleCancelEdit}
+                  />
                 </div>
-              </div>
+              ) : (
+                <div
+                  className={`${
+                    isUser
+                      ? "max-w-[80%] bg-secondary rounded-lg px-4 py-3 text-primary-foreground border border-border"
+                      : "w-full text-foreground"
+                  } overflow-hidden`}
+                >
+                  <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden ">
+                    {message.parts.map((part, partIndex) => (
+                      <MessagePartHandler
+                        key={`${message.id}-${partIndex}`}
+                        message={message}
+                        part={part}
+                        partIndex={partIndex}
+                        status={status}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Loading state */}
               {shouldShowLoader && (
@@ -112,12 +150,14 @@ export const Messages = ({
               )}
 
               <MessageActions
-                messageParts={message.parts}
+                messageText={messageText}
                 isUser={isUser}
                 isLastAssistantMessage={isLastAssistantMessage}
                 canRegenerate={canRegenerate}
                 onRegenerate={onRegenerate}
+                onEdit={() => handleStartEdit(message.id)}
                 isHovered={isHovered}
+                isEditing={isEditing}
                 status={status}
               />
             </div>
@@ -126,42 +166,7 @@ export const Messages = ({
 
         {/* Error state */}
         {error && (
-          <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
-            <div className="text-destructive text-sm mb-2">
-              {error instanceof ChatSDKError && error.type === "rate_limit" ? (
-                <MemoizedMarkdown
-                  content={
-                    typeof error.cause === "string"
-                      ? error.cause
-                      : error.message
-                  }
-                />
-              ) : (
-                <p>An error occurred.</p>
-              )}
-            </div>
-            <div className="flex gap-2">
-              <Button variant="destructive" size="sm" onClick={onRegenerate}>
-                {error instanceof ChatSDKError && error.type === "rate_limit"
-                  ? "Try Again"
-                  : "Retry"}
-              </Button>
-              {error instanceof ChatSDKError && error.type === "rate_limit" && (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() =>
-                    window.open(
-                      "https://github.com/hackerai-tech/hackerai",
-                      "_blank",
-                    )
-                  }
-                >
-                  Self Host
-                </Button>
-              )}
-            </div>
-          </div>
+          <MessageErrorState error={error} onRegenerate={onRegenerate} />
         )}
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
+import { internal } from "./_generated/api";
 
 /**
  * Save a single message to a chat
@@ -24,18 +25,16 @@ export const saveMessage = mutation({
     }
 
     try {
-      // Check if a message with the same ID already exists
+      // Check if message already exists
       const existingMessage = await ctx.db
         .query("messages")
         .withIndex("by_message_id", (q) => q.eq("id", args.id))
         .first();
 
-      // If message already exists, skip saving
       if (existingMessage) {
         return null;
       }
 
-      // Save the message
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
@@ -76,20 +75,17 @@ export const getMessagesByChatId = query({
     }
 
     try {
-      // First check if the chat exists and belongs to the user
-      const chat = await ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-        .first();
-
-      if (!chat) {
+      // Verify chat ownership
+      try {
+        await ctx.runQuery(internal.chats.verifyChatOwnership, {
+          chatId: args.chatId,
+          userId: user.subject,
+        });
+      } catch (error) {
         // Chat doesn't exist yet - return empty array (will be created on first message)
         return [];
-      } else if (chat.user_id !== user.subject) {
-        throw new Error("Unauthorized: Chat does not belong to user");
       }
 
-      // Get messages for this chat
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
@@ -130,19 +126,12 @@ export const saveMessageFromClient = mutation({
     }
 
     try {
-      // First check if the chat exists and belongs to the user
-      const chat = await ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-        .first();
+      // Verify chat ownership
+      await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        chatId: args.chatId,
+        userId: user.subject,
+      });
 
-      if (!chat) {
-        throw new Error("Chat not found");
-      } else if (chat.user_id !== user.subject) {
-        throw new Error("Unauthorized: Chat does not belong to user");
-      }
-
-      // Save the message
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
@@ -175,19 +164,12 @@ export const deleteLastAssistantMessage = mutation({
     }
 
     try {
-      // Find the chat to verify it exists
-      const chat = await ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-        .first();
+      // Verify chat ownership
+      await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        chatId: args.chatId,
+        userId: user.subject,
+      });
 
-      if (!chat) {
-        throw new Error("Chat not found");
-      } else if (chat.user_id !== user.subject) {
-        throw new Error("Unauthorized: Chat does not belong to user");
-      }
-
-      // Get the last assistant message for this chat
       const lastAssistantMessage = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
@@ -202,6 +184,67 @@ export const deleteLastAssistantMessage = mutation({
       return null;
     } catch (error) {
       console.error("Failed to delete last assistant message:", error);
+      throw error;
+    }
+  },
+});
+
+/**
+ * Regenerate with new content by updating a message and deleting subsequent messages
+ */
+export const regenerateWithNewContent = mutation({
+  args: {
+    messageId: v.id("messages"),
+    newContent: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      const message = await ctx.db
+        .query("messages")
+        .withIndex("by_id", (q) =>
+          q.eq("_id", args.messageId as Id<"messages">),
+        )
+        .first();
+
+      if (!message) {
+        throw new Error("Message not found");
+      }
+
+      // Verify chat ownership
+      await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        chatId: message.chat_id,
+        userId: user.subject,
+      });
+
+      await ctx.db.patch(message._id, {
+        parts: [{ type: "text", text: args.newContent }],
+        update_time: Date.now(),
+      });
+
+      // Delete all messages after the given message
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) =>
+          q
+            .eq("chat_id", message.chat_id)
+            .gt("_creationTime", message._creationTime),
+        )
+        .collect();
+
+      for (const msg of messages) {
+        await ctx.db.delete(msg._id);
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Failed to regenerate with new content:", error);
       throw error;
     }
   },

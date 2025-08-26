@@ -1,5 +1,27 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+
+export const verifyChatOwnership = internalQuery({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new Error("Chat not found");
+    } else if (chat.user_id !== args.userId) {
+      throw new Error("Unauthorized: Chat does not belong to user");
+    }
+
+    return null;
+  },
+});
 
 /**
  * Get a chat by its ID
