@@ -6,7 +6,11 @@ import { MessageErrorState } from "./MessageErrorState";
 import { MessageEditor } from "./MessageEditor";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
-import { extractMessageText, hasTextContent, findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
+import {
+  extractMessageText,
+  hasTextContent,
+  findLastAssistantMessageIndex,
+} from "@/lib/utils/message-utils";
 import type { ChatStatus } from "@/types";
 
 interface MessagesProps {
@@ -55,19 +59,20 @@ export const Messages = ({
     }
   }, [resetSidebarFlag, resetSidebarAutoOpen]);
 
-
-
   // Memoized edit handlers to prevent unnecessary re-renders
   const handleStartEdit = useCallback((messageId: string) => {
     setEditingMessageId(messageId);
   }, []);
 
-  const handleSaveEdit = useCallback((newContent: string) => {
-    if (editingMessageId) {
-      onEditMessage(editingMessageId, newContent);
-    }
-    setEditingMessageId(null);
-  }, [editingMessageId, onEditMessage]);
+  const handleSaveEdit = useCallback(
+    (newContent: string) => {
+      if (editingMessageId) {
+        onEditMessage(editingMessageId, newContent);
+      }
+      setEditingMessageId(null);
+    },
+    [editingMessageId, onEditMessage],
+  );
 
   const handleCancelEdit = useCallback(() => {
     setEditingMessageId(null);
@@ -101,7 +106,9 @@ export const Messages = ({
           const messageHasTextContent = hasTextContent(message.parts);
 
           const shouldShowLoader =
-            isLastAssistantMessage && status === "streaming" && !messageHasTextContent;
+            isLastAssistantMessage &&
+            status === "streaming" &&
+            !messageHasTextContent;
 
           return (
             <div

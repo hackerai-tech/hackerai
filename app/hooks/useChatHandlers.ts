@@ -39,7 +39,9 @@ export const useChatHandlers = ({
     api.messages.deleteLastAssistantMessage,
   );
   const saveMessageFromClient = useMutation(api.messages.saveMessageFromClient);
-  const regenerateWithNewContent = useMutation(api.messages.regenerateWithNewContent);
+  const regenerateWithNewContent = useMutation(
+    api.messages.regenerateWithNewContent,
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,11 +104,16 @@ export const useChatHandlers = ({
   };
 
   const handleEditMessage = async (messageId: string, newContent: string) => {
-    await regenerateWithNewContent({ messageId: messageId as Id<"messages">, newContent });
+    await regenerateWithNewContent({
+      messageId: messageId as Id<"messages">,
+      newContent,
+    });
 
     // Update local state to reflect the edit and remove subsequent messages
     setMessages((prevMessages) => {
-      const editedMessageIndex = prevMessages.findIndex(msg => msg.id === messageId);
+      const editedMessageIndex = prevMessages.findIndex(
+        (msg) => msg.id === messageId,
+      );
 
       if (editedMessageIndex === -1) return prevMessages;
 

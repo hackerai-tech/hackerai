@@ -32,7 +32,9 @@ export const hasTextContent = (parts: MessagePart[]): boolean => {
 /**
  * Finds the index of the last assistant message
  */
-export const findLastAssistantMessageIndex = (messages: Array<{ role: string }>): number | undefined => {
+export const findLastAssistantMessageIndex = (
+  messages: Array<{ role: string }>,
+): number | undefined => {
   return messages
     .map((msg, index) => ({ msg, index }))
     .reverse()
