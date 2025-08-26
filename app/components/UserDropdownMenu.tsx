@@ -13,19 +13,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
-interface UserDropdownMenuProps {
-  user: any;
-}
+const UserDropdownMenu = () => {
+  const { user } = useAuth();
 
-const UserDropdownMenu: React.FC<UserDropdownMenuProps> = ({ user }) => {
-  const { signOut } = useAuth();
+  if (!user) return null;
 
-  const handleLogout = async () => {
-    try {
-      await signOut();
-    } catch (error) {
-      console.error("Failed to sign out:", error);
-    }
+  const handleSignOut = async () => {
+    window.location.href = "/logout";
   };
 
   const getUserInitials = () => {
@@ -93,7 +87,7 @@ const UserDropdownMenu: React.FC<UserDropdownMenuProps> = ({ user }) => {
 
         <DropdownMenuSeparator />
 
-        <DropdownMenuItem onClick={handleLogout} variant="destructive">
+        <DropdownMenuItem onClick={handleSignOut} variant="destructive">
           <LogOut className="mr-2 h-4 w-4" />
           <span>Log out</span>
         </DropdownMenuItem>

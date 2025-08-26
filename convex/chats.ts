@@ -197,7 +197,9 @@ export const getUserChats = query({
     try {
       const chats = await ctx.db
         .query("chats")
-        .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+        .withIndex("by_user_and_updated", (q) =>
+          q.eq("user_id", identity.subject),
+        )
         .order("desc")
         .take(28); // Limit to 28 most recent chats
 

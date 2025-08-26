@@ -24,7 +24,7 @@ export default defineSchema({
     update_time: v.number(),
   })
     .index("by_chat_id", ["id"])
-    .index("by_user_id", ["user_id"]),
+    .index("by_user_and_updated", ["user_id", "update_time"]),
 
   messages: defineTable({
     id: v.string(),

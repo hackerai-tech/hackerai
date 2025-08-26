@@ -106,12 +106,6 @@ const ChatSidebarList: React.FC<{
   );
 };
 
-const ChatSidebarFooter: React.FC<{ user: any }> = ({ user }) => (
-  <div className="border-t border-sidebar-border">
-    <UserDropdownMenu user={user} />
-  </div>
-);
-
 const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
   isMobileOverlay = false,
 }) => {
@@ -175,8 +169,8 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
         </div>
 
         {/* Footer */}
-        <div className="border-t">
-          <ChatSidebarFooter user={user} />
+        <div className="border-t border-sidebar-border">
+          <UserDropdownMenu />
         </div>
       </div>
     );
@@ -205,7 +199,9 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
       </SidebarContent>
 
       <SidebarFooter>
-        <ChatSidebarFooter user={user} />
+        <div className="border-t border-sidebar-border">
+          <UserDropdownMenu />
+        </div>{" "}
       </SidebarFooter>
     </Sidebar>
   );
