@@ -28,6 +28,12 @@ export async function getModerationResult(
       input: input,
     });
 
+    // Check if moderation results exist and are not empty
+    if (!moderation?.results || moderation.results.length === 0) {
+      console.log("Moderation API returned no results");
+      return { shouldUncensorResponse: false };
+    }
+
     const result = moderation.results[0];
     const moderationLevel = calculateModerationLevel(result.category_scores);
     const hazardCategories = Object.entries(result.categories)

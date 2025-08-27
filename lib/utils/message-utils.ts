@@ -25,7 +25,7 @@ export const hasTextContent = (parts: MessagePart[]): boolean => {
     (part) =>
       (part.type === "text" && part.text && part.text.trim() !== "") ||
       part.type === "step-start" ||
-      part.type?.startsWith("tool-"),
+      part.type.startsWith("tool-"),
   );
 };
 

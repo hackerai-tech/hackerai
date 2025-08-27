@@ -2,6 +2,7 @@ import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
+import { validateServiceKey } from "./chats";
 
 /**
  * Save a single message to a chat
@@ -17,12 +18,7 @@ export const saveMessage = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     // Verify service role key
-    if (
-      args.serviceKey &&
-      args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
-    ) {
-      throw new Error("Unauthorized: Invalid service key");
-    }
+    validateServiceKey(args.serviceKey);
 
     try {
       // Check if message already exists

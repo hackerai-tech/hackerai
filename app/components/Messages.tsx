@@ -12,11 +12,12 @@ import {
   findLastAssistantMessageIndex,
 } from "@/lib/utils/message-utils";
 import type { ChatStatus } from "@/types";
+import { toast } from "sonner";
 
 interface MessagesProps {
   messages: UIMessage[];
   onRegenerate: () => void;
-  onEditMessage: (messageId: string, newContent: string) => void;
+  onEditMessage: (messageId: string, newContent: string) => Promise<void>;
   status: ChatStatus;
   error: Error | null;
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -65,11 +66,17 @@ export const Messages = ({
   }, []);
 
   const handleSaveEdit = useCallback(
-    (newContent: string) => {
+    async (newContent: string) => {
       if (editingMessageId) {
-        onEditMessage(editingMessageId, newContent);
+        try {
+          await onEditMessage(editingMessageId, newContent);
+        } catch (error) {
+          console.error("Failed to edit message:", error);
+          toast.error("Failed to edit message. Please try again.");
+        } finally {
+          setEditingMessageId(null);
+        }
       }
-      setEditingMessageId(null);
     },
     [editingMessageId, onEditMessage],
   );
