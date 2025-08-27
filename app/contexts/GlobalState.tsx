@@ -28,6 +28,10 @@ interface GlobalStateType {
   currentChatId: string | null;
   setCurrentChatId: (chatId: string | null) => void;
 
+  // Chat switching state
+  isSwitchingChats: boolean;
+  setIsSwitchingChats: (switching: boolean) => void;
+
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -71,6 +75,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [mode, setMode] = useState<ChatMode>("ask");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [isSwitchingChats, setIsSwitchingChats] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -126,6 +131,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle,
     currentChatId,
     setCurrentChatId,
+    isSwitchingChats,
+    setIsSwitchingChats,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,

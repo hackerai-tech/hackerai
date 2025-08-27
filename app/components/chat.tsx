@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { RefObject, useRef, useEffect, useState, useCallback } from "react";
-import { useQuery } from "convex/react";
+import { useQuery, usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
@@ -37,6 +37,8 @@ export const Chat = ({ id }: { id?: string }) => {
     setTodos,
     currentChatId,
     setCurrentChatId,
+    isSwitchingChats,
+    setIsSwitchingChats,
   } = useGlobalState();
 
   // Use ID from route if available, otherwise global currentChatId, or generate new one
@@ -50,28 +52,29 @@ export const Chat = ({ id }: { id?: string }) => {
   // Track if we've already initialized for new chat to prevent infinite loops
   const hasInitializedNewChat = useRef(false);
 
-  // Handle route changes (when navigating to /c/[id])
+  // Handle chat navigation and switching
   useEffect(() => {
-    if (id) {
-      setChatId(id);
-      setCurrentChatId(id);
-      setShouldFetchMessages(true);
-      setHasActiveChat(true);
-      setChatTitle(null);
-      hasInitializedNewChat.current = false; // Reset when navigating to existing chat
-    }
-  }, [id, setCurrentChatId, setChatTitle, setChatId, setShouldFetchMessages, setHasActiveChat]);
+    const newChatId = id || currentChatId;
 
-  // Handle sidebar chat selection (when currentChatId changes but no route id)
-  useEffect(() => {
-    if (!id && currentChatId) {
-      setChatId(currentChatId);
+    if (newChatId && newChatId !== chatId) {
+      // Mark as switching if we're changing to a different chat
+      setIsSwitchingChats(true);
+
+      setChatId(newChatId);
+      if (id) setCurrentChatId(id); // Only update global state if route change
       setShouldFetchMessages(true);
       setHasActiveChat(true);
       setChatTitle(null);
-      hasInitializedNewChat.current = false; // Reset when navigating to existing chat
+      hasInitializedNewChat.current = false;
     }
-  }, [currentChatId, id, setChatTitle, setChatId, setShouldFetchMessages, setHasActiveChat]);
+  }, [
+    id,
+    currentChatId,
+    chatId,
+    setCurrentChatId,
+    setChatTitle,
+    setIsSwitchingChats,
+  ]);
 
   // Handle new chat creation (when both id and currentChatId are null)
   useEffect(() => {
@@ -83,12 +86,21 @@ export const Chat = ({ id }: { id?: string }) => {
       setTodos([]); // Clear todos for new chat
       hasInitializedNewChat.current = true; // Mark as initialized
     }
-  }, [id, currentChatId, setChatTitle, setTodos, setChatId, setShouldFetchMessages, setHasActiveChat]);
+  }, [
+    id,
+    currentChatId,
+    setChatTitle,
+    setTodos,
+    setChatId,
+    setShouldFetchMessages,
+    setHasActiveChat,
+  ]);
 
-  // Use "skip" to conditionally disable the query
-  const messagesData = useQuery(
+  // Use paginated query to load messages in batches of 28
+  const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
     shouldFetchMessages ? { chatId } : "skip",
+    { initialNumItems: 28 },
   );
 
   // Get chat data to retrieve title when loading existing chat
@@ -97,10 +109,12 @@ export const Chat = ({ id }: { id?: string }) => {
     id || currentChatId ? { id: chatId } : "skip",
   );
 
-  // Convert Convex messages to UI format for useChat
+  // Convert paginated Convex messages to UI format for useChat
+  // Messages come from server in descending order (newest first from pagination)
+  // We need to reverse them to show chronological order (oldest first)
   const initialMessages: ChatMessage[] =
-    messagesData && messagesData !== null
-      ? convertToUIMessages(messagesData)
+    paginatedMessages.results && paginatedMessages.results.length > 0
+      ? convertToUIMessages([...paginatedMessages.results].reverse())
       : [];
 
   const {
@@ -170,9 +184,13 @@ export const Chat = ({ id }: { id?: string }) => {
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
-    if (!messagesData || messagesData === null) return;
+    if (!paginatedMessages.results || paginatedMessages.results.length === 0)
+      return;
 
-    const uiMessages = convertToUIMessages(messagesData);
+    // Messages come from server in descending order, reverse for chronological display
+    const uiMessages = convertToUIMessages(
+      [...paginatedMessages.results].reverse(),
+    );
 
     // Merge strategy: Only sync from Convex if:
     // 1. We have no local messages (initial load)
@@ -188,11 +206,19 @@ export const Chat = ({ id }: { id?: string }) => {
     if (shouldSync) {
       setMessages(uiMessages);
     }
-  }, [messagesData, setMessages, messages]);
+  }, [paginatedMessages.results, setMessages, messages]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
+
+  // Handle instant scroll to bottom when switching chats
+  useEffect(() => {
+    if (isSwitchingChats && messages.length > 0) {
+      scrollToBottom({ instant: true, force: true });
+      setIsSwitchingChats(false);
+    }
+  }, [messages, scrollToBottom, isSwitchingChats, setIsSwitchingChats]);
 
   // Chat handlers
   const { handleSubmit, handleStop, handleRegenerate, handleEditMessage } =
@@ -209,7 +235,7 @@ export const Chat = ({ id }: { id?: string }) => {
       setMessages,
     });
 
-  const handleScrollToBottom = () => scrollToBottom();
+  const handleScrollToBottom = () => scrollToBottom({ force: true });
 
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || hasActiveChat;
@@ -263,6 +289,9 @@ export const Chat = ({ id }: { id?: string }) => {
                   status={status}
                   error={error || null}
                   resetSidebarAutoOpen={resetSidebarAutoOpenRef}
+                  paginationStatus={paginatedMessages.status}
+                  loadMore={paginatedMessages.loadMore}
+                  isSwitchingChats={isSwitchingChats}
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">

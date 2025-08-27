@@ -1,11 +1,9 @@
 import { query, mutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 
 export function validateServiceKey(serviceKey?: string): void {
-  if (
-    serviceKey &&
-    serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
-  ) {
+  if (serviceKey && serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
     throw new Error("Unauthorized: Invalid service key");
   }
 }
@@ -189,46 +187,40 @@ export const updateChat = mutation({
 });
 
 /**
- * Get user's latest chats
+ * Get user's latest chats with pagination
  */
 export const getUserChats = query({
-  args: {},
-  returns: v.array(
-    v.object({
-      _id: v.id("chats"),
-      _creationTime: v.number(),
-      id: v.string(),
-      title: v.string(),
-      user_id: v.string(),
-      update_time: v.number(),
-    }),
-  ),
-  handler: async (ctx) => {
+  args: {
+    paginationOpts: paginationOptsValidator,
+  },
+  handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      return [];
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
     }
 
     try {
-      const chats = await ctx.db
+      const result = await ctx.db
         .query("chats")
         .withIndex("by_user_and_updated", (q) =>
           q.eq("user_id", identity.subject),
         )
-        .order("desc")
-        .take(28); // Limit to 28 most recent chats
+        .order("desc") // Most recent first
+        .paginate(args.paginationOpts);
 
-      return chats.map((chat) => ({
-        _id: chat._id,
-        _creationTime: chat._creationTime,
-        id: chat.id,
-        title: chat.title,
-        user_id: chat.user_id,
-        update_time: chat.update_time,
-      }));
+      // Transform the page data to include only needed fields
+      return result;
     } catch (error) {
       console.error("Failed to get user chats:", error);
-      return [];
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
     }
   },
 });

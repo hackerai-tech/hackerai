@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { useQuery } from "convex/react";
+import { usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useRouter } from "next/navigation";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Plus, MessageSquare, PanelLeft } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
+import Loading from "@/components/ui/loading";
 import {
   Sidebar,
   SidebarContent,
@@ -24,8 +25,7 @@ import UserDropdownMenu from "./UserDropdownMenu";
 const ChatSidebarHeader: React.FC<{
   handleNewChat: () => void;
   handleCloseSidebar: () => void;
-  isMobile: boolean;
-}> = ({ handleNewChat, handleCloseSidebar, isMobile }) => (
+}> = ({ handleNewChat, handleCloseSidebar }) => (
   <div className="flex items-center justify-between p-2">
     <div className="flex items-center gap-2">
       <Button
@@ -52,11 +52,51 @@ const ChatSidebarHeader: React.FC<{
 );
 
 const ChatSidebarList: React.FC<{
-  chats: any;
+  chats: any[];
   currentChatId: string | null;
   handleNewChat: () => void;
-}> = ({ chats, currentChatId, handleNewChat }) => {
-  if (chats === undefined) {
+  paginationStatus?:
+    | "LoadingFirstPage"
+    | "CanLoadMore"
+    | "LoadingMore"
+    | "Exhausted";
+  loadMore?: (numItems: number) => void;
+  containerRef?: React.RefObject<HTMLDivElement | null>;
+}> = ({
+  chats,
+  currentChatId,
+  handleNewChat,
+  paginationStatus,
+  loadMore,
+  containerRef,
+}) => {
+  // Handle scroll to load more chats when scrolling to bottom
+  React.useEffect(() => {
+    const handleScroll = () => {
+      if (
+        !containerRef?.current ||
+        !loadMore ||
+        paginationStatus !== "CanLoadMore"
+      ) {
+        return;
+      }
+
+      const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
+
+      // Check if we're near the bottom (within 100px)
+      if (scrollTop + clientHeight >= scrollHeight - 100) {
+        loadMore(28); // Load 28 more chats
+      }
+    };
+
+    const container = containerRef?.current;
+    if (container) {
+      container.addEventListener("scroll", handleScroll);
+      return () => container.removeEventListener("scroll", handleScroll);
+    }
+  }, [containerRef, loadMore, paginationStatus]);
+
+  if (paginationStatus === "LoadingFirstPage") {
     // Loading state
     return (
       <div className="p-2">
@@ -72,7 +112,7 @@ const ChatSidebarList: React.FC<{
     );
   }
 
-  if (chats === null || chats.length === 0) {
+  if (!chats || chats.length === 0) {
     // Empty state
     return (
       <div className="flex flex-col items-center justify-center h-full p-6 text-center">
@@ -102,6 +142,13 @@ const ChatSidebarList: React.FC<{
           isActive={currentChatId === chat.id}
         />
       ))}
+
+      {/* Loading indicator when loading more */}
+      {paginationStatus === "LoadingMore" && (
+        <div className="flex justify-center py-2">
+          <Loading size={6} />
+        </div>
+      )}
     </div>
   );
 };
@@ -120,8 +167,15 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
     currentChatId,
   } = useGlobalState();
 
-  // Get user's chats
-  const chats = useQuery(api.chats.getUserChats, user ? {} : "skip");
+  // Create ref for scroll container
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
+
+  // Get user's chats with pagination
+  const paginatedChats = usePaginatedQuery(
+    api.chats.getUserChats,
+    user ? {} : "skip",
+    { initialNumItems: 28 },
+  );
 
   const handleNewChat = () => {
     // Close computer sidebar when creating new chat
@@ -155,17 +209,19 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
           <ChatSidebarHeader
             handleNewChat={handleNewChat}
             handleCloseSidebar={handleCloseSidebar}
-            isMobile={isMobile}
           />
         </div>
 
         {/* Chat List */}
         <div className="flex-1 overflow-hidden">
-          <div className="h-full overflow-y-auto">
+          <div ref={scrollContainerRef} className="h-full overflow-y-auto">
             <ChatSidebarList
-              chats={chats}
+              chats={paginatedChats.results || []}
               currentChatId={currentChatId}
               handleNewChat={handleNewChat}
+              paginationStatus={paginatedChats.status}
+              loadMore={paginatedChats.loadMore}
+              containerRef={scrollContainerRef}
             />
           </div>
         </div>
@@ -184,18 +240,22 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
         <ChatSidebarHeader
           handleNewChat={handleNewChat}
           handleCloseSidebar={handleCloseSidebar}
-          isMobile={isMobile}
         />
       </SidebarHeader>
 
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
-            <ChatSidebarList
-              chats={chats}
-              currentChatId={currentChatId}
-              handleNewChat={handleNewChat}
-            />
+            <div ref={scrollContainerRef} className="h-full overflow-y-auto">
+              <ChatSidebarList
+                chats={paginatedChats.results || []}
+                currentChatId={currentChatId}
+                handleNewChat={handleNewChat}
+                paginationStatus={paginatedChats.status}
+                loadMore={paginatedChats.loadMore}
+                containerRef={scrollContainerRef}
+              />
+            </div>
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
