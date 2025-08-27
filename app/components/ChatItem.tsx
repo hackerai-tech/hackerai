@@ -1,10 +1,19 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Ellipsis, Trash2 } from "lucide-react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 
 interface ChatItemProps {
   id: string;
@@ -14,6 +23,8 @@ interface ChatItemProps {
 
 const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
   const router = useRouter();
+  const [isHovered, setIsHovered] = useState(false);
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const {
     closeSidebar,
     setChatSidebarOpen,
@@ -22,6 +33,7 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
     currentChatId,
   } = useGlobalState();
   const isMobile = useIsMobile();
+  const deleteChat = useMutation(api.chats.deleteChat);
 
   // Use global currentChatId to determine if this item is active
   const isCurrentlyActive = currentChatId === id;
@@ -38,21 +50,87 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
     router.push(`/c/${id}`);
   };
 
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      await deleteChat({ chatId: id });
+
+      // If we're deleting the currently active chat, navigate to home
+      if (isCurrentlyActive) {
+        resetChat();
+        setCurrentChatId(null);
+        router.push("/");
+      }
+    } catch (error) {
+      console.error("Failed to delete chat:", error);
+    }
+  };
+
   return (
-    <Button
-      variant="ghost"
-      onClick={handleClick}
-      className={`flex items-center gap-2 p-3 h-auto w-full text-left justify-start ${
+    <div
+      className={`group relative flex w-full cursor-pointer items-center rounded-lg p-2 hover:bg-sidebar-accent/50 focus:outline-hidden ${
         isCurrentlyActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
-          : "hover:bg-sidebar-accent/50"
+          : ""
       }`}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      onClick={handleClick}
       title={title}
     >
-      <span className="text-sm font-medium truncate flex-1 min-w-0">
+      <div
+        className={`mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium ${
+          isHovered || isCurrentlyActive || isDropdownOpen || isMobile
+            ? "[-webkit-mask-image:var(--sidebar-mask-active)] [mask-image:var(--sidebar-mask-active)]"
+            : "[-webkit-mask-image:var(--sidebar-mask)] [mask-image:var(--sidebar-mask)]"
+        }`}
+        dir="auto"
+      >
         {title}
-      </span>
-    </Button>
+      </div>
+
+      <div
+        className={`absolute right-2 opacity-0 transition-opacity ${
+          isHovered || isCurrentlyActive || isDropdownOpen || isMobile
+            ? "opacity-100"
+            : ""
+        }`}
+      >
+        <DropdownMenu open={isDropdownOpen} onOpenChange={setIsDropdownOpen}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 w-6 p-0 hover:bg-sidebar-accent"
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+              }}
+              aria-label="Open conversation options"
+            >
+              <Ellipsis className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="start"
+            side="bottom"
+            sideOffset={5}
+            className="z-50 py-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <DropdownMenuItem
+              onClick={handleDelete}
+              className="text-destructive focus:text-destructive"
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
   );
 };
 
