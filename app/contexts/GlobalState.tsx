@@ -32,6 +32,12 @@ interface GlobalStateType {
   isSwitchingChats: boolean;
   setIsSwitchingChats: (switching: boolean) => void;
 
+  // Chat initialization state
+  hasActiveChat: boolean;
+  setHasActiveChat: (active: boolean) => void;
+  shouldFetchMessages: boolean;
+  setShouldFetchMessages: (should: boolean) => void;
+
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -58,6 +64,8 @@ interface GlobalStateType {
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
   closeSidebar: () => void;
   toggleChatSidebar: () => void;
+  initializeChat: (chatId: string, fromRoute?: boolean) => void;
+  initializeNewChat: () => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
@@ -76,6 +84,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [isSwitchingChats, setIsSwitchingChats] = useState(false);
+  const [hasActiveChat, setHasActiveChat] = useState(false);
+  const [shouldFetchMessages, setShouldFetchMessages] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -97,7 +107,29 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle(null);
     setTodos([]);
     setIsTodoPanelExpanded(false);
+    setHasActiveChat(false);
+    setShouldFetchMessages(false);
   };
+
+  const initializeChat = useCallback((chatId: string) => {
+    setIsSwitchingChats(true);
+    setCurrentChatId(chatId);
+    setShouldFetchMessages(true);
+    setHasActiveChat(true);
+    // Clear title first to prevent stale titles when switching
+    setChatTitle(null);
+    setTodos([]);
+    setIsTodoPanelExpanded(false);
+  }, []);
+
+  const initializeNewChat = useCallback(() => {
+    setCurrentChatId(null);
+    setShouldFetchMessages(false);
+    setHasActiveChat(false);
+    setChatTitle(null);
+    setTodos([]);
+    setIsTodoPanelExpanded(false);
+  }, []);
 
   const openSidebar = (content: SidebarContent) => {
     setSidebarContent(content);
@@ -133,6 +165,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setCurrentChatId,
     isSwitchingChats,
     setIsSwitchingChats,
+    hasActiveChat,
+    setHasActiveChat,
+    shouldFetchMessages,
+    setShouldFetchMessages,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
@@ -152,6 +188,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     updateSidebarContent,
     closeSidebar,
     toggleChatSidebar,
+    initializeChat,
+    initializeNewChat,
   };
 
   return (

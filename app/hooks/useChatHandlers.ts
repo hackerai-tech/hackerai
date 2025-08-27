@@ -8,9 +8,6 @@ import { Id } from "@/convex/_generated/dataModel";
 interface UseChatHandlersProps {
   chatId: string;
   messages: ChatMessage[];
-  shouldFetchMessages: boolean;
-  setShouldFetchMessages: (value: boolean) => void;
-  setHasActiveChat: (value: boolean) => void;
   resetSidebarAutoOpenRef: RefObject<(() => void) | null>;
   sendMessage: (message: { text: string }, options?: { body?: any }) => void;
   stop: () => void;
@@ -23,17 +20,23 @@ interface UseChatHandlersProps {
 export const useChatHandlers = ({
   chatId,
   messages,
-  shouldFetchMessages,
-  setShouldFetchMessages,
-  setHasActiveChat,
   resetSidebarAutoOpenRef,
   sendMessage,
   stop,
   regenerate,
   setMessages,
 }: UseChatHandlersProps) => {
-  const { input, mode, setChatTitle, clearInput, todos, setCurrentChatId } =
-    useGlobalState();
+  const { 
+    input, 
+    mode, 
+    setChatTitle, 
+    clearInput, 
+    todos, 
+    setCurrentChatId,
+    shouldFetchMessages,
+    setShouldFetchMessages,
+    setHasActiveChat,
+  } = useGlobalState();
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,

@@ -31,6 +31,8 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
     resetChat,
     setCurrentChatId,
     currentChatId,
+    initializeChat,
+    initializeNewChat,
   } = useGlobalState();
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
@@ -45,8 +47,8 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
       setChatSidebarOpen(false);
     }
 
-    resetChat();
-    setCurrentChatId(id);
+    // Use the new initializeChat function for consistent state management
+    initializeChat(id, true);
     router.push(`/c/${id}`);
   };
 
@@ -59,8 +61,7 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
 
       // If we're deleting the currently active chat, navigate to home
       if (isCurrentlyActive) {
-        resetChat();
-        setCurrentChatId(null);
+        initializeNewChat();
         router.push("/");
       }
     } catch (error) {
