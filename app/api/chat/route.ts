@@ -8,13 +8,11 @@ import {
   JsonToSseTransformStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
-import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { createTools } from "@/lib/ai/tools";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserID } from "@/lib/auth/get-user-id";
-import { myProvider } from "@/lib/ai/providers";
-import type { ChatMode, ExecutionMode, Todo } from "@/types";
+import type { ChatMode, Todo } from "@/types";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
@@ -27,6 +25,8 @@ import {
   updateChat,
 } from "@/lib/db/actions";
 import { v4 as uuidv4 } from "uuid";
+import { processChatMessages } from "@/lib/chat/chat-processor";
+import { myProvider } from "@/lib/ai/providers";
 
 export const maxDuration = 300;
 
@@ -66,23 +66,14 @@ export async function POST(req: NextRequest) {
       regenerate,
     });
 
-    // Determine execution mode from environment variable
-    const executionMode: ExecutionMode =
-      (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
-
-    // Truncate messages to stay within token limit (processing is now done on frontend)
-    const truncatedMessages = truncateMessagesToTokenLimit(messages);
-
-    const model = myProvider.languageModel("agent-model");
-
-    // Capture analytics event
+    // Process chat messages with moderation, truncation, and analytics
     const posthog = PostHogClient();
-    if (posthog) {
-      posthog.capture({
-        distinctId: userID,
-        event: "hackerai-" + mode,
-      });
-    }
+    const { executionMode, truncatedMessages } = await processChatMessages({
+      messages,
+      mode,
+      userID,
+      posthog,
+    });
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -105,8 +96,8 @@ export async function POST(req: NextRequest) {
           : Promise.resolve(undefined);
 
         const result = streamText({
-          model: model,
-          system: systemPrompt(model.modelId, mode, executionMode),
+          model: myProvider.languageModel("agent-model"),
+          system: systemPrompt(mode, executionMode),
           messages: convertToModelMessages(truncatedMessages),
           tools,
           abortSignal: controller.signal,

@@ -3,6 +3,7 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { ChatMessage } from "@/types";
+import { Id } from "@/convex/_generated/dataModel";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -14,6 +15,9 @@ interface UseChatHandlersProps {
   sendMessage: (message: { text: string }, options?: { body?: any }) => void;
   stop: () => void;
   regenerate: (options?: { body?: any }) => void;
+  setMessages: (
+    messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
+  ) => void;
 }
 
 export const useChatHandlers = ({
@@ -26,15 +30,18 @@ export const useChatHandlers = ({
   sendMessage,
   stop,
   regenerate,
+  setMessages,
 }: UseChatHandlersProps) => {
   const { input, mode, setChatTitle, clearInput, todos, setCurrentChatId } =
     useGlobalState();
 
-  // Mutations for message operations
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
   );
   const saveMessageFromClient = useMutation(api.messages.saveMessageFromClient);
+  const regenerateWithNewContent = useMutation(
+    api.messages.regenerateWithNewContent,
+  );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,13 +49,10 @@ export const useChatHandlers = ({
       if (messages.length === 0) {
         setChatTitle(null);
         setCurrentChatId(chatId);
-        // Update URL to use the actual chatId (whether provided or generated)
         window.history.replaceState({}, "", `/c/${chatId}`);
-        // Enable message fetching after first submit for new chats
         if (!shouldFetchMessages) {
           setShouldFetchMessages(true);
         }
-        // Ensure we render the chat layout immediately
         setHasActiveChat(true);
       }
 
@@ -70,7 +74,6 @@ export const useChatHandlers = ({
   };
 
   const handleStop = async () => {
-    // Save the current assistant message before stopping
     stop();
 
     const lastMessage = messages[messages.length - 1];
@@ -89,9 +92,41 @@ export const useChatHandlers = ({
   };
 
   const handleRegenerate = async () => {
-    // Remove the last assistant message from the UI and database
     await deleteLastAssistantMessage({ chatId });
 
+    regenerate({
+      body: {
+        mode,
+        todos,
+        regenerate: true,
+      },
+    });
+  };
+
+  const handleEditMessage = async (messageId: string, newContent: string) => {
+    await regenerateWithNewContent({
+      messageId: messageId as Id<"messages">,
+      newContent,
+    });
+
+    // Update local state to reflect the edit and remove subsequent messages
+    setMessages((prevMessages) => {
+      const editedMessageIndex = prevMessages.findIndex(
+        (msg) => msg.id === messageId,
+      );
+
+      if (editedMessageIndex === -1) return prevMessages;
+
+      const updatedMessages = prevMessages.slice(0, editedMessageIndex + 1);
+      updatedMessages[editedMessageIndex] = {
+        ...updatedMessages[editedMessageIndex],
+        parts: [{ type: "text", text: newContent }],
+      };
+
+      return updatedMessages;
+    });
+
+    // Trigger regeneration of assistant response
     regenerate({
       body: {
         mode,
@@ -105,5 +140,6 @@ export const useChatHandlers = ({
     handleSubmit,
     handleStop,
     handleRegenerate,
+    handleEditMessage,
   };
 };

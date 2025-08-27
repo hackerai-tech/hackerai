@@ -1,42 +1,35 @@
-import { Copy, Check, RotateCcw } from "lucide-react";
+import { Copy, Check, RotateCcw, Pencil } from "lucide-react";
 import { useState } from "react";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
 import type { ChatStatus } from "@/types";
+import { WithTooltip } from "@/components/ui/with-tooltip";
+import { extractMessageText } from "@/lib/utils/message-utils";
 
 interface MessageActionsProps {
-  messageParts: Array<{ type: string; text?: string }>;
+  messageText: string;
   isUser: boolean;
   isLastAssistantMessage: boolean;
   canRegenerate: boolean;
   onRegenerate: () => void;
+  onEdit: () => void;
   isHovered: boolean;
+  isEditing: boolean;
   status: ChatStatus;
 }
 
 export const MessageActions = ({
-  messageParts,
+  messageText,
   isUser,
   isLastAssistantMessage,
   canRegenerate,
   onRegenerate,
+  onEdit,
   isHovered,
+  isEditing,
   status,
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
 
-  const getMessageText = () => {
-    return messageParts
-      .filter((part: { type: string; text?: string }) => part.type === "text")
-      .map((part: { type: string; text?: string }) => part.text || "")
-      .join("");
-  };
-
   const handleCopy = async () => {
-    const messageText = getMessageText();
     try {
       await navigator.clipboard.writeText(messageText);
       setCopied(true);
@@ -51,7 +44,9 @@ export const MessageActions = ({
     isLastAssistantMessage &&
     (status === "submitted" || status === "streaming");
   const shouldShowActions =
-    !isLastAssistantLoading && (isLastAssistantMessage || isHovered);
+    !isLastAssistantLoading &&
+    !isEditing &&
+    (isLastAssistantMessage || isHovered);
 
   return (
     <div
@@ -59,8 +54,9 @@ export const MessageActions = ({
     >
       {shouldShowActions ? (
         <>
-          <Tooltip>
-            <TooltipTrigger asChild>
+          <WithTooltip
+            display={copied ? "Copied!" : "Copy message"}
+            trigger={
               <button
                 onClick={handleCopy}
                 className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
@@ -68,16 +64,34 @@ export const MessageActions = ({
               >
                 {copied ? <Check size={16} /> : <Copy size={16} />}
               </button>
-            </TooltipTrigger>
-            <TooltipContent>
-              {copied ? "Copied!" : "Copy message"}
-            </TooltipContent>
-          </Tooltip>
+            }
+            side="bottom"
+            delayDuration={300}
+          />
+
+          {/* Show edit only for user messages */}
+          {isUser && (
+            <WithTooltip
+              display={"Edit message"}
+              trigger={
+                <button
+                  onClick={onEdit}
+                  className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                  aria-label="Edit message"
+                >
+                  <Pencil size={16} />
+                </button>
+              }
+              side="bottom"
+              delayDuration={300}
+            />
+          )}
 
           {/* Show regenerate only for the last assistant message */}
           {!isUser && isLastAssistantMessage && (
-            <Tooltip>
-              <TooltipTrigger asChild>
+            <WithTooltip
+              display={"Regenerate response"}
+              trigger={
                 <button
                   type="button"
                   onClick={onRegenerate}
@@ -87,18 +101,16 @@ export const MessageActions = ({
                 >
                   <RotateCcw size={16} />
                 </button>
-              </TooltipTrigger>
-              <TooltipContent>Regenerate response</TooltipContent>
-            </Tooltip>
+              }
+              side="bottom"
+              delayDuration={300}
+            />
           )}
         </>
       ) : (
         <>
           {/* Invisible spacer buttons to maintain layout */}
           <div className="p-1.5 w-7 h-7" />
-          {!isUser && isLastAssistantMessage && (
-            <div className="p-1.5 w-7 h-7" />
-          )}
         </>
       )}
     </div>

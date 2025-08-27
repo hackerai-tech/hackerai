@@ -1,5 +1,35 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
+
+export function validateServiceKey(serviceKey?: string): void {
+  if (
+    serviceKey &&
+    serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
+  ) {
+    throw new Error("Unauthorized: Invalid service key");
+  }
+}
+export const verifyChatOwnership = internalQuery({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new Error("Chat not found");
+    } else if (chat.user_id !== args.userId) {
+      throw new Error("Unauthorized: Chat does not belong to user");
+    }
+
+    return null;
+  },
+});
 
 /**
  * Get a chat by its ID
@@ -34,12 +64,7 @@ export const getChatById = query({
   ),
   handler: async (ctx, args) => {
     // Verify service role key
-    if (
-      args.serviceKey &&
-      args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
-    ) {
-      throw new Error("Unauthorized: Invalid service key");
-    }
+    validateServiceKey(args.serviceKey);
 
     try {
       const chat = await ctx.db
@@ -68,12 +93,7 @@ export const saveChat = mutation({
   returns: v.string(),
   handler: async (ctx, args) => {
     // Verify service role key
-    if (
-      args.serviceKey &&
-      args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
-    ) {
-      throw new Error("Unauthorized: Invalid service key");
-    }
+    validateServiceKey(args.serviceKey);
 
     try {
       const chatId = await ctx.db.insert("chats", {
@@ -118,12 +138,7 @@ export const updateChat = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     // Verify service role key
-    if (
-      args.serviceKey &&
-      args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
-    ) {
-      throw new Error("Unauthorized: Invalid service key");
-    }
+    validateServiceKey(args.serviceKey);
 
     try {
       // Find the chat by chatId
@@ -241,12 +256,7 @@ export const updateChatTodos = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     // Verify service role key
-    if (
-      args.serviceKey &&
-      args.serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY
-    ) {
-      throw new Error("Unauthorized: Invalid service key");
-    }
+    validateServiceKey(args.serviceKey);
 
     try {
       // Find the chat by chatId

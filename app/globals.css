@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@source "../node_modules/streamdown/dist/index.js";
 
 @custom-variant dark (&:is(.dark *));
 @custom-variant desktop (@media (min-width: 950px));
@@ -80,11 +81,6 @@
   --sidebar-border: #e5e5e5;
   --sidebar-ring: #999999;
 
-  /* Custom secondary colors */
-  --secondary-orange: #ff4500;
-  --secondary-green: #51da4c;
-  --secondary-blue: #0000ff;
-
   /* Custom chat input */
   --fill-input-chat: #f5f5f5;
 
@@ -121,7 +117,7 @@
   --chart-3: #0000ff;
   --chart-4: #84cc16;
   --chart-5: #f97316;
-  --sidebar: #000000;
+  --sidebar: #0a0a0a;
   --sidebar-foreground: #ffffff;
   --sidebar-primary: #000000;
   --sidebar-primary-foreground: #ffffff;
@@ -129,11 +125,6 @@
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: #333333;
   --sidebar-ring: #666666;
-
-  /* Custom secondary colors */
-  --secondary-orange: #ff4500;
-  --secondary-green: #51da4c;
-  --secondary-blue: #0000ff;
 
   /* Custom chat input */
   --fill-input-chat: #1a1a1a;

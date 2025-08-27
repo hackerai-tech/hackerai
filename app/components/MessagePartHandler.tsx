@@ -33,9 +33,7 @@ export const MessagePartHandler = ({
     }
 
     // For assistant messages, use markdown rendering
-    return (
-      <MemoizedMarkdown key={partId} id={partId} content={part.text ?? ""} />
-    );
+    return <MemoizedMarkdown key={partId} content={part.text ?? ""} />;
   };
 
   // Main switch for different part types

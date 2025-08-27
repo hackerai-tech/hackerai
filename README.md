@@ -64,6 +64,7 @@ Visit **[http://localhost:3000](http://localhost:3000)** and start your penetrat
 | **Convex**     | Real-time database & conversation storage | [convex.dev](https://convex.dev/)       |
 | **WorkOS**     | User authentication & session management  | [workos.com](https://workos.com/)       |
 | **OpenRouter** | LLM access (Claude, GPT, etc.)            | [openrouter.ai](https://openrouter.ai/) |
+| **OpenAI**     | Moderation API                            | [openai.com](https://openai.com/api/)   |
 
 ## 🔧 Optional Enhancements
 

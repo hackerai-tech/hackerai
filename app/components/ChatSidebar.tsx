@@ -151,7 +151,7 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
     return (
       <div className="flex flex-col h-full w-full bg-sidebar border-r">
         {/* Header */}
-        <div className="border-b p-2">
+        <div className="p-2">
           <ChatSidebarHeader
             handleNewChat={handleNewChat}
             handleCloseSidebar={handleCloseSidebar}
@@ -161,11 +161,13 @@ const ChatSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
 
         {/* Chat List */}
         <div className="flex-1 overflow-hidden">
-          <ChatSidebarList
-            chats={chats}
-            currentChatId={currentChatId}
-            handleNewChat={handleNewChat}
-          />
+          <div className="h-full overflow-y-auto">
+            <ChatSidebarList
+              chats={chats}
+              currentChatId={currentChatId}
+              handleNewChat={handleNewChat}
+            />
+          </div>
         </div>
 
         {/* Footer */}
