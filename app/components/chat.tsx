@@ -40,7 +40,7 @@ export const Chat = ({ id }: { id?: string }) => {
   } = useGlobalState();
 
   // Use ID from route if available, otherwise global currentChatId, or generate new one
-  const [chatId, setChatId] = useState(() => id || currentChatId || uuidv4());
+  const [chatId, setChatId] = useState(id || currentChatId || uuidv4());
   // Track whether we should start fetching messages (true for existing chats)
   const [shouldFetchMessages, setShouldFetchMessages] = useState(
     !!id || !!currentChatId,
@@ -60,7 +60,7 @@ export const Chat = ({ id }: { id?: string }) => {
       setChatTitle(null);
       hasInitializedNewChat.current = false; // Reset when navigating to existing chat
     }
-  }, [id, setCurrentChatId, setChatTitle]);
+  }, [id, setCurrentChatId, setChatTitle, setChatId, setShouldFetchMessages, setHasActiveChat]);
 
   // Handle sidebar chat selection (when currentChatId changes but no route id)
   useEffect(() => {
@@ -71,7 +71,7 @@ export const Chat = ({ id }: { id?: string }) => {
       setChatTitle(null);
       hasInitializedNewChat.current = false; // Reset when navigating to existing chat
     }
-  }, [currentChatId, id, setChatTitle]);
+  }, [currentChatId, id, setChatTitle, setChatId, setShouldFetchMessages, setHasActiveChat]);
 
   // Handle new chat creation (when both id and currentChatId are null)
   useEffect(() => {
@@ -83,7 +83,7 @@ export const Chat = ({ id }: { id?: string }) => {
       setTodos([]); // Clear todos for new chat
       hasInitializedNewChat.current = true; // Mark as initialized
     }
-  }, [id, currentChatId, setChatTitle, setTodos]);
+  }, [id, currentChatId, setChatTitle, setTodos, setChatId, setShouldFetchMessages, setHasActiveChat]);
 
   // Use "skip" to conditionally disable the query
   const messagesData = useQuery(
