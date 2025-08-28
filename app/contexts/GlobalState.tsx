@@ -5,8 +5,11 @@ import React, {
   useContext,
   useState,
   useCallback,
+  useEffect,
   ReactNode,
 } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { refreshAuthkitSession } from "@/lib/auth/refresh-session";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
@@ -57,6 +60,9 @@ interface GlobalStateType {
   isTodoPanelExpanded: boolean;
   setIsTodoPanelExpanded: (expanded: boolean) => void;
 
+  // Pro plan state
+  hasProPlan: boolean;
+
   // Utility methods
   clearInput: () => void;
   resetChat: () => void;
@@ -79,6 +85,7 @@ interface GlobalStateProviderProps {
 export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
+  const { user } = useAuth();
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("ask");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
@@ -92,11 +99,34 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   );
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [hasProPlan, setHasProPlan] = useState(false);
 
   const mergeTodos = useCallback((newTodos: Todo[]) => {
     setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
   }, []);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
+
+  // Check for pro plan on user change
+  useEffect(() => {
+    const checkProPlan = async () => {
+      if (user) {
+        try {
+          const response = await refreshAuthkitSession();
+          const session = JSON.parse(response);
+          console.log("Session data:", session);
+          const entitlements = session.entitlements || [];
+          setHasProPlan(entitlements.includes("pro-monthly-plan"));
+        } catch (error) {
+          console.error("Failed to fetch entitlements:", error);
+          setHasProPlan(false);
+        }
+      } else {
+        setHasProPlan(false);
+      }
+    };
+
+    checkProPlan();
+  }, [user]);
 
   const clearInput = () => {
     setInput("");
@@ -181,6 +211,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     isTodoPanelExpanded,
     setIsTodoPanelExpanded,
+
+    hasProPlan,
 
     clearInput,
     resetChat,

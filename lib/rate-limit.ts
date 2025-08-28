@@ -2,8 +2,11 @@ import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { ChatSDKError } from "@/lib/errors";
 
-// Check rate limit for a specific user ID
-export const checkRateLimit = async (userID: string): Promise<void> => {
+// Check rate limit for a specific user
+export const checkRateLimit = async (
+  userId: string,
+  isPro: boolean,
+): Promise<void> => {
   // Check if Redis is configured
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
   const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -13,19 +16,21 @@ export const checkRateLimit = async (userID: string): Promise<void> => {
   }
 
   try {
+    // Get rate limit based on user type
+    const requestLimit = isPro
+      ? parseInt(process.env.PRO_RATE_LIMIT_REQUESTS || "100") // Pro users get higher limit
+      : parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10"); // Free users get lower limit
+
     // Create rate limiter instance
     const ratelimit = new Ratelimit({
       redis: new Redis({
         url: redisUrl,
         token: redisToken,
       }),
-      limiter: Ratelimit.slidingWindow(
-        parseInt(process.env.RATE_LIMIT_REQUESTS || "10"),
-        "5 h",
-      ), // Default: 10 requests per 5 hours
+      limiter: Ratelimit.slidingWindow(requestLimit, "5 h"),
     });
 
-    const { success, reset } = await ratelimit.limit(userID);
+    const { success, reset } = await ratelimit.limit(userId);
 
     if (!success) {
       const resetTime = new Date(reset);

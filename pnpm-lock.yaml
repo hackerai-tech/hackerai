@@ -55,6 +55,9 @@ importers:
       "@workos-inc/authkit-nextjs":
         specifier: ^2.5.0
         version: 2.5.0(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
+      "@workos-inc/node":
+        specifier: ^7.69.1
+        version: 7.69.1(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))
       ai:
         specifier: ^5.0.23
         version: 5.0.23(zod@4.1.1)
@@ -118,6 +121,9 @@ importers:
       streamdown:
         specifier: ^1.1.3
         version: 1.1.3(@types/react@19.1.9)(react@19.1.1)
+      stripe:
+        specifier: ^18.5.0
+        version: 18.5.0(@types/node@24.2.1)
       tailwind-merge:
         specifier: ^3.3.1
         version: 3.3.1
@@ -3167,10 +3173,10 @@ packages:
     peerDependencies:
       react: ">=17"
 
-  "@workos-inc/node@7.66.1":
+  "@workos-inc/node@7.69.1":
     resolution:
       {
-        integrity: sha512-BythBZSrXQ8NgIdEkb5L3yhZiJaHY7byB9J2zYbn0p0cSKOIF923B6nqdN383tCFlgL7uYMvZlclNe0hQhXqvg==,
+        integrity: sha512-ml2TqUHjUVkubq4EnIIM1O1g+eR0ctKnpdHUJntG/1PuVt64CfntJrAUi/5ePgR4d12EeXunHyjOTK75k+f9Ww==,
       }
     engines: { node: ">=16" }
 
@@ -6882,6 +6888,18 @@ packages:
         integrity: sha512-TcccoMhJOM3OebGhSBEmp3UZ2SfDMZUEBdRA/9ynfLi8yYajyWX3JiXArcJt4Umh4vISpspkQIY8ZZoCqjbviA==,
       }
 
+  stripe@18.5.0:
+    resolution:
+      {
+        integrity: sha512-Hp+wFiEQtCB0LlNgcFh5uVyKznpDjzyUZ+CNVEf+I3fhlYvh7rZruIg+jOwzJRCpy0ZTPMjlzm7J2/M2N6d+DA==,
+      }
+    engines: { node: ">=12.*" }
+    peerDependencies:
+      "@types/node": ">=12.x.x"
+    peerDependenciesMeta:
+      "@types/node":
+        optional: true
+
   style-to-js@1.1.17:
     resolution:
       {
@@ -9252,7 +9270,7 @@ snapshots:
 
   "@workos-inc/authkit-nextjs@2.5.0(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))(react-dom@19.1.1(react@19.1.1))(react@19.1.1)":
     dependencies:
-      "@workos-inc/node": 7.66.1(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))
+      "@workos-inc/node": 7.69.1(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))
       iron-session: 8.0.4
       jose: 5.10.0
       next: 15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
@@ -9268,7 +9286,7 @@ snapshots:
       "@workos-inc/authkit-js": 0.13.0
       react: 19.1.1
 
-  "@workos-inc/node@7.66.1(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))":
+  "@workos-inc/node@7.69.1(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))":
     dependencies:
       iron-session: 6.3.1(next@15.5.0(@opentelemetry/api@1.9.0)(react-dom@19.1.1(react@19.1.1))(react@19.1.1))
       jose: 5.6.3
@@ -12082,6 +12100,12 @@ snapshots:
   strip-literal@3.0.0:
     dependencies:
       js-tokens: 9.0.1
+
+  stripe@18.5.0(@types/node@24.2.1):
+    dependencies:
+      qs: 6.14.0
+    optionalDependencies:
+      "@types/node": 24.2.1
 
   style-to-js@1.1.17:
     dependencies:

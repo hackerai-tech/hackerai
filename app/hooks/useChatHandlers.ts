@@ -26,12 +26,12 @@ export const useChatHandlers = ({
   regenerate,
   setMessages,
 }: UseChatHandlersProps) => {
-  const { 
-    input, 
-    mode, 
-    setChatTitle, 
-    clearInput, 
-    todos, 
+  const {
+    input,
+    mode,
+    setChatTitle,
+    clearInput,
+    todos,
     setCurrentChatId,
     shouldFetchMessages,
     setShouldFetchMessages,

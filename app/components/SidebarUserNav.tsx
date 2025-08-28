@@ -2,7 +2,8 @@
 
 import React from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { LogOut } from "lucide-react";
+import { LogOut, Crown } from "lucide-react";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,8 +16,12 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 const SidebarUserNav = () => {
   const { user } = useAuth();
+  const { hasProPlan } = useGlobalState();
 
   if (!user) return null;
+
+  // Determine if user has pro subscription
+  const isProUser = hasProPlan;
 
   const handleSignOut = async () => {
     window.location.href = "/logout";
@@ -63,7 +68,7 @@ const SidebarUserNav = () => {
                 {getDisplayName()}
               </div>
               <div className="text-xs text-sidebar-accent-foreground truncate">
-                Free
+                {isProUser ? "Pro" : "Free"}
               </div>
             </div>
           </div>
