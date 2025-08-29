@@ -44,10 +44,37 @@ export async function GET(req: NextRequest) {
     });
 
     console.log("🔍 [Entitlements API] Session loaded successfully");
+
+    // Get current organization ID from AuthKit session
+    let organizationId: string | undefined;
+    try {
+      const { authkit } = await import("@workos-inc/authkit-nextjs");
+      const { session: authkitSession } = await authkit(req);
+      organizationId = authkitSession?.organizationId;
+      console.log(
+        "🔍 [Entitlements API] Current organization ID:",
+        organizationId,
+      );
+    } catch (error) {
+      console.log(
+        "🔍 [Entitlements API] Failed to get organization ID from AuthKit:",
+        error,
+      );
+    }
+
     console.log("🔍 [Entitlements API] Refreshing session...");
 
-    const refreshResult = await session.refresh();
+    // Refresh with organization ID to ensure we get entitlements for the correct org
+    const refreshResult = organizationId
+      ? await session.refresh({ organizationId })
+      : await session.refresh();
+
     const { sealedSession, entitlements } = refreshResult as any;
+
+    console.log(
+      "🔍 [Entitlements API] Refresh called with org ID:",
+      organizationId,
+    );
 
     console.log("🔍 [Entitlements API] Refresh result:", {
       hasEntitlements: !!entitlements,

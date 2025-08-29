@@ -13,7 +13,6 @@ import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
 
-
 interface GlobalStateType {
   // Input state
   input: string;
