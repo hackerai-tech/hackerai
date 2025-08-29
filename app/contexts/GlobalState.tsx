@@ -12,6 +12,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
+import { refreshAuthkitSession } from "@/lib/actions/refresh-session";
 
 interface GlobalStateType {
   // Input state
@@ -112,28 +113,38 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       if (user) {
         setIsCheckingProPlan(true);
         try {
-          const response = await fetch("/api/entitlements", {
-            credentials: "include", // Ensure cookies are sent
-          });
+          const isProduction = process.env.VERCEL_ENV === "production";
 
-          if (!response.ok) {
-            console.error(
-              "❌ [GlobalState] Entitlements API failed:",
-              response.status,
-              response.statusText,
-            );
-            const errorData = await response.json().catch(() => ({}));
-            console.error("❌ [GlobalState] Error details:", errorData);
-            throw new Error(`HTTP error! status: ${response.status}`);
+          if (isProduction) {
+            // In production, use server action to refresh session
+            const sessionData = await refreshAuthkitSession();
+            const session = JSON.parse(sessionData);
+
+            // Check if user has pro plan from session data
+            // Adjust this logic based on how pro plan info is stored in the session
+            setHasProPlan(session?.user?.hasProPlan || false);
+          } else {
+            // In development, use API endpoint
+            const response = await fetch("/api/entitlements", {
+              credentials: "include", // Ensure cookies are sent
+            });
+
+            if (!response.ok) {
+              console.error(
+                "❌ [GlobalState] Entitlements API failed:",
+                response.status,
+                response.statusText,
+              );
+              const errorData = await response.json().catch(() => ({}));
+              console.error("❌ [GlobalState] Error details:", errorData);
+              throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            setHasProPlan(data.hasProPlan || false);
           }
-
-          const data = await response.json();
-          setHasProPlan(data.hasProPlan || false);
         } catch (error) {
-          console.error(
-            "💥 [GlobalState] Failed to fetch entitlements:",
-            error,
-          );
+          console.error("💥 [GlobalState] Failed to check pro plan:", error);
           setHasProPlan(false);
         } finally {
           setIsCheckingProPlan(false);
