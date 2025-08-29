@@ -11,7 +11,7 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
-import { getUserID } from "@/lib/auth/get-user-id";
+import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type { ChatMode, Todo } from "@/types";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
@@ -52,16 +52,16 @@ export async function POST(req: NextRequest) {
       regenerate?: boolean;
     } = await req.json();
 
-    const userID = await getUserID(req);
+    const { userId, isPro } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
     // Check rate limit for the user
-    await checkRateLimit(userID);
+    await checkRateLimit(userId, isPro);
 
     // Handle initial chat setup, regeneration, and save user message
     const { isNewChat } = await handleInitialChatAndUserMessage({
       chatId,
-      userId: userID,
+      userId,
       messages,
       regenerate,
     });
@@ -71,14 +71,14 @@ export async function POST(req: NextRequest) {
     const { executionMode, truncatedMessages } = await processChatMessages({
       messages,
       mode,
-      userID,
+      userID: userId,
       posthog,
     });
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         const { tools, getSandbox, getTodoManager } = createTools(
-          userID,
+          userId,
           writer,
           mode,
           executionMode,
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
             if (chunk.chunk.type === "tool-call") {
               if (posthog) {
                 posthog.capture({
-                  distinctId: userID,
+                  distinctId: userId,
                   event: "hackerai-" + chunk.chunk.toolName,
                 });
               }

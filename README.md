@@ -88,13 +88,3 @@ Enable AI to search the web for up-to-date information:
 ```env
 EXA_API_KEY=your_exa_api_key_here
 ```
-
-### Rate Limiting
-
-Protect your API with Redis-based rate limiting:
-
-```env
-UPSTASH_REDIS_REST_URL="https://your-redis-url.upstash.io"
-UPSTASH_REDIS_REST_TOKEN="your-redis-token"
-RATE_LIMIT_REQUESTS=10
-```

@@ -2,21 +2,37 @@ import { useStickToBottom } from "use-stick-to-bottom";
 import { useCallback } from "react";
 
 export const useMessageScroll = () => {
-  const { scrollRef, contentRef, isAtBottom } = useStickToBottom();
+  const stickToBottom = useStickToBottom({
+    resize: "smooth",
+    initial: "instant",
+  });
 
-  const handleScrollToBottom = useCallback(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTo({
-        top: scrollRef.current.scrollHeight,
-        behavior: "smooth",
+  const scrollToBottom = useCallback(
+    (options?: {
+      force?: boolean;
+      instant?: boolean;
+    }): boolean | Promise<boolean> => {
+      if (options?.instant) {
+        const scrollContainer = stickToBottom.scrollRef.current;
+        if (scrollContainer) {
+          scrollContainer.scrollTop = scrollContainer.scrollHeight;
+        }
+        return true;
+      }
+
+      return stickToBottom.scrollToBottom({
+        animation: "smooth",
+        preserveScrollPosition: !options?.force,
       });
-    }
-  }, [scrollRef]);
+    },
+    [stickToBottom.scrollToBottom, stickToBottom.scrollRef],
+  );
 
   return {
-    scrollRef,
-    contentRef,
-    scrollToBottom: handleScrollToBottom,
-    isAtBottom,
+    scrollRef: stickToBottom.scrollRef,
+    contentRef: stickToBottom.contentRef,
+    isAtBottom: stickToBottom.isAtBottom,
+    scrollToBottom,
+    stopScroll: stickToBottom.stopScroll,
   };
 };

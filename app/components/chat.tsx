@@ -3,14 +3,14 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { RefObject, useRef, useEffect, useState, useCallback } from "react";
-import { useQuery } from "convex/react";
+import { useQuery, usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
-import ChatSidebar from "./ChatSidebar";
+import MainSidebar from "./Sidebar";
 import Footer from "./Footer";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useMessageScroll } from "../hooks/useMessageScroll";
@@ -36,59 +36,49 @@ export const Chat = ({ id }: { id?: string }) => {
     mergeTodos,
     setTodos,
     currentChatId,
-    setCurrentChatId,
+    isSwitchingChats,
+    setIsSwitchingChats,
+    hasActiveChat,
+    shouldFetchMessages,
+    initializeChat,
+    initializeNewChat,
   } = useGlobalState();
 
   // Use ID from route if available, otherwise global currentChatId, or generate new one
   const [chatId, setChatId] = useState(id || currentChatId || uuidv4());
-  // Track whether we should start fetching messages (true for existing chats)
-  const [shouldFetchMessages, setShouldFetchMessages] = useState(
-    !!id || !!currentChatId,
-  );
-  // Track whether the user has started a chat session this run
-  const [hasActiveChat, setHasActiveChat] = useState(!!id || !!currentChatId);
   // Track if we've already initialized for new chat to prevent infinite loops
   const hasInitializedNewChat = useRef(false);
+  // Track if we've initialized for this specific route ID
+  const hasInitializedRouteId = useRef<string | null>(null);
 
-  // Handle route changes (when navigating to /c/[id])
+  // Handle initial mount and chat initialization
   useEffect(() => {
-    if (id) {
+    if (id && hasInitializedRouteId.current !== id) {
+      // Direct URL with ID - initialize immediately
       setChatId(id);
-      setCurrentChatId(id);
-      setShouldFetchMessages(true);
-      setHasActiveChat(true);
-      setChatTitle(null);
-      hasInitializedNewChat.current = false; // Reset when navigating to existing chat
-    }
-  }, [id, setCurrentChatId, setChatTitle, setChatId, setShouldFetchMessages, setHasActiveChat]);
-
-  // Handle sidebar chat selection (when currentChatId changes but no route id)
-  useEffect(() => {
-    if (!id && currentChatId) {
+      initializeChat(id, true);
+      hasInitializedRouteId.current = id;
+      hasInitializedNewChat.current = false;
+    } else if (!id && !currentChatId && !hasInitializedNewChat.current) {
+      // No ID and no current chat - create new chat
+      const newChatId = uuidv4();
+      setChatId(newChatId);
+      initializeNewChat();
+      hasInitializedNewChat.current = true;
+      hasInitializedRouteId.current = null;
+    } else if (!id && currentChatId && currentChatId !== chatId) {
+      // Global state has a different chat - switch to it
       setChatId(currentChatId);
-      setShouldFetchMessages(true);
-      setHasActiveChat(true);
-      setChatTitle(null);
-      hasInitializedNewChat.current = false; // Reset when navigating to existing chat
+      initializeChat(currentChatId, false);
+      hasInitializedRouteId.current = null;
     }
-  }, [currentChatId, id, setChatTitle, setChatId, setShouldFetchMessages, setHasActiveChat]);
+  }, [id, currentChatId, chatId, initializeChat, initializeNewChat]);
 
-  // Handle new chat creation (when both id and currentChatId are null)
-  useEffect(() => {
-    if (!id && !currentChatId && !hasInitializedNewChat.current) {
-      setChatId(uuidv4());
-      setShouldFetchMessages(false);
-      setHasActiveChat(false);
-      setChatTitle(null);
-      setTodos([]); // Clear todos for new chat
-      hasInitializedNewChat.current = true; // Mark as initialized
-    }
-  }, [id, currentChatId, setChatTitle, setTodos, setChatId, setShouldFetchMessages, setHasActiveChat]);
-
-  // Use "skip" to conditionally disable the query
-  const messagesData = useQuery(
+  // Use paginated query to load messages in batches of 28
+  const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
     shouldFetchMessages ? { chatId } : "skip",
+    { initialNumItems: 28 },
   );
 
   // Get chat data to retrieve title when loading existing chat
@@ -97,10 +87,12 @@ export const Chat = ({ id }: { id?: string }) => {
     id || currentChatId ? { id: chatId } : "skip",
   );
 
-  // Convert Convex messages to UI format for useChat
+  // Convert paginated Convex messages to UI format for useChat
+  // Messages come from server in descending order (newest first from pagination)
+  // We need to reverse them to show chronological order (oldest first)
   const initialMessages: ChatMessage[] =
-    messagesData && messagesData !== null
-      ? convertToUIMessages(messagesData)
+    paginatedMessages.results && paginatedMessages.results.length > 0
+      ? convertToUIMessages([...paginatedMessages.results].reverse())
       : [];
 
   const {
@@ -155,7 +147,8 @@ export const Chat = ({ id }: { id?: string }) => {
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
-    if (chatData && chatData.title && !chatTitle) {
+    if (chatData && chatData.title) {
+      // Always update title from server data to ensure consistency
       setChatTitle(chatData.title);
     }
 
@@ -166,13 +159,17 @@ export const Chat = ({ id }: { id?: string }) => {
       // If chat has no todos, clear existing todos
       setTodos([]);
     }
-  }, [chatData, chatTitle, setChatTitle, setTodos]);
+  }, [chatData, setChatTitle, setTodos]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
-    if (!messagesData || messagesData === null) return;
+    if (!paginatedMessages.results || paginatedMessages.results.length === 0)
+      return;
 
-    const uiMessages = convertToUIMessages(messagesData);
+    // Messages come from server in descending order, reverse for chronological display
+    const uiMessages = convertToUIMessages(
+      [...paginatedMessages.results].reverse(),
+    );
 
     // Merge strategy: Only sync from Convex if:
     // 1. We have no local messages (initial load)
@@ -188,20 +185,25 @@ export const Chat = ({ id }: { id?: string }) => {
     if (shouldSync) {
       setMessages(uiMessages);
     }
-  }, [messagesData, setMessages, messages]);
+  }, [paginatedMessages.results, setMessages, messages]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
+
+  // Handle instant scroll to bottom when switching chats
+  useEffect(() => {
+    if (isSwitchingChats && messages.length > 0) {
+      scrollToBottom({ instant: true, force: true });
+      setIsSwitchingChats(false);
+    }
+  }, [messages, scrollToBottom, isSwitchingChats, setIsSwitchingChats]);
 
   // Chat handlers
   const { handleSubmit, handleStop, handleRegenerate, handleEditMessage } =
     useChatHandlers({
       chatId,
       messages,
-      shouldFetchMessages,
-      setShouldFetchMessages,
-      setHasActiveChat,
       resetSidebarAutoOpenRef,
       sendMessage,
       stop,
@@ -209,7 +211,7 @@ export const Chat = ({ id }: { id?: string }) => {
       setMessages,
     });
 
-  const handleScrollToBottom = () => scrollToBottom();
+  const handleScrollToBottom = () => scrollToBottom({ force: true });
 
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || hasActiveChat;
@@ -230,7 +232,7 @@ export const Chat = ({ id }: { id?: string }) => {
                 onOpenChange={() => {}}
                 defaultOpen={true}
               >
-                <ChatSidebar />
+                <MainSidebar />
               </SidebarProvider>
             )}
           </div>
@@ -263,6 +265,9 @@ export const Chat = ({ id }: { id?: string }) => {
                   status={status}
                   error={error || null}
                   resetSidebarAutoOpen={resetSidebarAutoOpenRef}
+                  paginationStatus={paginatedMessages.status}
+                  loadMore={paginatedMessages.loadMore}
+                  isSwitchingChats={isSwitchingChats}
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
@@ -345,7 +350,7 @@ export const Chat = ({ id }: { id?: string }) => {
             className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
             onClick={(e) => e.stopPropagation()}
           >
-            <ChatSidebar isMobileOverlay={true} />
+            <MainSidebar isMobileOverlay={true} />
           </div>
           {/* Clickable area to close sidebar */}
           <div className="flex-1" />

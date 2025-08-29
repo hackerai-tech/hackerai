@@ -5,6 +5,7 @@ import { MessagePartHandler } from "./MessagePartHandler";
 import { MessageErrorState } from "./MessageErrorState";
 import { MessageEditor } from "./MessageEditor";
 import DotsSpinner from "@/components/ui/dots-spinner";
+import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
 import {
   extractMessageText,
@@ -23,6 +24,13 @@ interface MessagesProps {
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
   resetSidebarAutoOpen?: RefObject<(() => void) | null>;
+  paginationStatus?:
+    | "LoadingFirstPage"
+    | "CanLoadMore"
+    | "LoadingMore"
+    | "Exhausted";
+  loadMore?: (numItems: number) => void;
+  isSwitchingChats?: boolean;
 }
 
 export const Messages = ({
@@ -34,6 +42,9 @@ export const Messages = ({
   scrollRef,
   contentRef,
   resetSidebarAutoOpen,
+  paginationStatus,
+  loadMore,
+  isSwitchingChats,
 }: MessagesProps) => {
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
@@ -94,12 +105,46 @@ export const Messages = ({
     setHoveredMessageId(null);
   }, []);
 
+  // Handle scroll to load more messages when scrolling to top
+  const handleScroll = useCallback(() => {
+    if (!scrollRef.current || !loadMore || paginationStatus !== "CanLoadMore") {
+      return;
+    }
+
+    // Don't trigger pagination while switching chats
+    if (isSwitchingChats) {
+      return;
+    }
+
+    const { scrollTop } = scrollRef.current;
+
+    // Check if we're near the top (within 100px)
+    if (scrollTop < 100) {
+      loadMore(28); // Load 28 more messages
+    }
+  }, [scrollRef, loadMore, paginationStatus, isSwitchingChats]);
+
+  // Add scroll event listener
+  useEffect(() => {
+    const scrollElement = scrollRef.current;
+    if (!scrollElement) return;
+
+    scrollElement.addEventListener("scroll", handleScroll);
+    return () => scrollElement.removeEventListener("scroll", handleScroll);
+  }, [handleScroll]);
+
   return (
     <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
       <div
         ref={contentRef}
         className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
       >
+        {/* Loading indicator at top when loading more messages */}
+        {paginationStatus === "LoadingMore" && (
+          <div className="flex justify-center py-2">
+            <Loading size={6} />
+          </div>
+        )}
         {messages.map((message, index) => {
           const isUser = message.role === "user";
           const isHovered = hoveredMessageId === message.id;

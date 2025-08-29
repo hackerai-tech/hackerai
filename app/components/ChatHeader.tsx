@@ -1,11 +1,11 @@
 "use client";
 
 import React from "react";
-import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft } from "lucide-react";
+import { PanelLeft, Sparkle, Loader2 } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useUpgrade } from "../hooks/useUpgrade";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -25,7 +25,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   chatSidebarOpen = false,
 }) => {
   const { user, loading } = useAuth();
-  const { toggleChatSidebar } = useGlobalState();
+  const { toggleChatSidebar, hasProPlan, isCheckingProPlan } = useGlobalState();
+  const { upgradeLoading, handleUpgrade } = useUpgrade();
 
   // Show sidebar toggle for logged-in users
   const showSidebarToggle = user && !loading;
@@ -54,33 +55,53 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   />
                 </div>
               )}
-              <HackerAISVG theme="dark" scale={0.15} />
-              <span className="text-foreground text-xl font-semibold">
-                HackerAI
-              </span>
+              {/* Show upgrade button for logged-in users without pro plan */}
+              {!loading && user && !isCheckingProPlan && !hasProPlan && (
+                <Button
+                  onClick={handleUpgrade}
+                  disabled={upgradeLoading}
+                  className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200"
+                  size="default"
+                >
+                  {upgradeLoading ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Upgrading...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkle className="mr-2 h-4 w-4 fill-current" />
+                      Upgrade to Pro
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
             <div className="flex flex-1 gap-2 justify-between items-center">
               <div className="flex gap-[40px]"></div>
-              {!loading && !user && (
-                <div className="flex gap-2 items-center">
-                  <Button
-                    onClick={handleSignIn}
-                    variant="default"
-                    size="default"
-                    className="min-w-[74px] rounded-[10px]"
-                  >
-                    Sign in
-                  </Button>
-                  <Button
-                    onClick={handleSignUp}
-                    variant="outline"
-                    size="default"
-                    className="min-w-16 rounded-[10px]"
-                  >
-                    Sign up
-                  </Button>
-                </div>
-              )}
+              <div className="flex gap-2 items-center">
+                {/* Show sign in/up buttons for non-logged-in users */}
+                {!loading && !user && (
+                  <>
+                    <Button
+                      onClick={handleSignIn}
+                      variant="default"
+                      size="default"
+                      className="min-w-[74px] rounded-[10px]"
+                    >
+                      Sign in
+                    </Button>
+                    <Button
+                      onClick={handleSignUp}
+                      variant="outline"
+                      size="default"
+                      className="min-w-16 rounded-[10px]"
+                    >
+                      Sign up
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -95,31 +116,51 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   />
                 </div>
               )}
-              <HackerAISVG theme="dark" scale={0.12} />
-              <span className="text-foreground text-lg font-semibold">
-                HackerAI
-              </span>
+              {/* Show upgrade button for logged-in users without pro plan */}
+              {!loading && user && !isCheckingProPlan && !hasProPlan && (
+                <Button
+                  onClick={handleUpgrade}
+                  disabled={upgradeLoading}
+                  className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200"
+                  size="sm"
+                >
+                  {upgradeLoading ? (
+                    <>
+                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                      Upgrading...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkle className="mr-1 h-3 w-3 fill-current" />
+                      Upgrade to Pro
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
-            {!loading && !user && (
-              <div className="flex items-center gap-2">
-                <Button
-                  onClick={handleSignIn}
-                  variant="default"
-                  size="sm"
-                  className="rounded-[10px]"
-                >
-                  Sign in
-                </Button>
-                <Button
-                  onClick={handleSignUp}
-                  variant="outline"
-                  size="sm"
-                  className="rounded-[10px]"
-                >
-                  Sign up
-                </Button>
-              </div>
-            )}
+            <div className="flex items-center gap-2">
+              {/* Show sign in/up buttons for non-logged-in users */}
+              {!loading && !user && (
+                <>
+                  <Button
+                    onClick={handleSignIn}
+                    variant="default"
+                    size="sm"
+                    className="rounded-[10px]"
+                  >
+                    Sign in
+                  </Button>
+                  <Button
+                    onClick={handleSignUp}
+                    variant="outline"
+                    size="sm"
+                    className="rounded-[10px]"
+                  >
+                    Sign up
+                  </Button>
+                </>
+              )}
+            </div>
           </div>
         </header>
       </div>

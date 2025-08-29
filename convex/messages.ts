@@ -2,6 +2,7 @@ import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
+import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
 
 /**
@@ -48,21 +49,13 @@ export const saveMessage = mutation({
 });
 
 /**
- * Get messages for a chat
+ * Get messages for a chat with pagination
  */
 export const getMessagesByChatId = query({
-  args: { chatId: v.string() },
-  returns: v.array(
-    v.object({
-      _id: v.id("messages"),
-      _creationTime: v.number(),
-      id: v.string(),
-      chat_id: v.string(),
-      role: v.string(),
-      parts: v.array(v.any()),
-      update_time: v.number(),
-    }),
-  ),
+  args: {
+    chatId: v.string(),
+    paginationOpts: paginationOptsValidator,
+  },
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
 
@@ -78,17 +71,23 @@ export const getMessagesByChatId = query({
           userId: user.subject,
         });
       } catch (error) {
-        // Chat doesn't exist yet - return empty array (will be created on first message)
-        return [];
+        // Chat doesn't exist yet - return empty results (will be created on first message)
+        return {
+          page: [],
+          isDone: true,
+          continueCursor: "",
+        };
       }
 
-      const messages = await ctx.db
+      // For chat messages, we use descending order (newest first)
+      // and let the client handle the display order
+      const result = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("asc")
-        .collect();
+        .order("desc") // Newest first - this is correct for "load more" to get older messages
+        .paginate(args.paginationOpts);
 
-      return messages;
+      return result;
     } catch (error) {
       console.error("Failed to get messages:", error);
 
@@ -97,8 +96,12 @@ export const getMessagesByChatId = query({
         throw error;
       }
 
-      // For other errors, return empty array to prevent breaking the UI
-      return [];
+      // For other errors, return empty results to prevent breaking the UI
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
     }
   },
 });

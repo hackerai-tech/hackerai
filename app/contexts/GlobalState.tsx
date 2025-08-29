@@ -5,8 +5,10 @@ import React, {
   useContext,
   useState,
   useCallback,
+  useEffect,
   ReactNode,
 } from "react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
@@ -28,6 +30,16 @@ interface GlobalStateType {
   currentChatId: string | null;
   setCurrentChatId: (chatId: string | null) => void;
 
+  // Chat switching state
+  isSwitchingChats: boolean;
+  setIsSwitchingChats: (switching: boolean) => void;
+
+  // Chat initialization state
+  hasActiveChat: boolean;
+  setHasActiveChat: (active: boolean) => void;
+  shouldFetchMessages: boolean;
+  setShouldFetchMessages: (should: boolean) => void;
+
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -47,13 +59,18 @@ interface GlobalStateType {
   isTodoPanelExpanded: boolean;
   setIsTodoPanelExpanded: (expanded: boolean) => void;
 
+  // Pro plan state
+  hasProPlan: boolean;
+  isCheckingProPlan: boolean;
+
   // Utility methods
   clearInput: () => void;
-  resetChat: () => void;
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
   closeSidebar: () => void;
   toggleChatSidebar: () => void;
+  initializeChat: (chatId: string, fromRoute?: boolean) => void;
+  initializeNewChat: () => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
@@ -67,32 +84,89 @@ interface GlobalStateProviderProps {
 export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
+  const { user } = useAuth();
   const [input, setInput] = useState("");
   const [mode, setMode] = useState<ChatMode>("ask");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [isSwitchingChats, setIsSwitchingChats] = useState(false);
+  const [hasActiveChat, setHasActiveChat] = useState(false);
+  const [shouldFetchMessages, setShouldFetchMessages] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [hasProPlan, setHasProPlan] = useState(false);
+  const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
 
   const mergeTodos = useCallback((newTodos: Todo[]) => {
     setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
   }, []);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
 
+  // Check for pro plan on user change
+  useEffect(() => {
+    const checkProPlan = async () => {
+      if (user) {
+        setIsCheckingProPlan(true);
+        try {
+          const response = await fetch("/api/entitlements", {
+            credentials: "include", // Ensure cookies are sent
+          });
+
+          if (!response.ok) {
+            console.error(
+              "❌ [GlobalState] Entitlements API failed:",
+              response.status,
+              response.statusText,
+            );
+            const errorData = await response.json().catch(() => ({}));
+            console.error("❌ [GlobalState] Error details:", errorData);
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          const data = await response.json();
+          setHasProPlan(data.hasProPlan || false);
+        } catch (error) {
+          console.error(
+            "💥 [GlobalState] Failed to fetch entitlements:",
+            error,
+          );
+          setHasProPlan(false);
+        } finally {
+          setIsCheckingProPlan(false);
+        }
+      } else {
+        setHasProPlan(false);
+        setIsCheckingProPlan(false);
+      }
+    };
+
+    checkProPlan();
+  }, [user]);
+
   const clearInput = () => {
     setInput("");
   };
 
-  const resetChat = () => {
-    setInput("");
-    setChatTitle(null);
+  const initializeChat = useCallback((chatId: string) => {
+    setIsSwitchingChats(true);
+    setCurrentChatId(chatId);
+    setShouldFetchMessages(true);
+    setHasActiveChat(true);
     setTodos([]);
     setIsTodoPanelExpanded(false);
-  };
+  }, []);
+
+  const initializeNewChat = useCallback(() => {
+    setCurrentChatId(null);
+    setShouldFetchMessages(false);
+    setHasActiveChat(false);
+    setTodos([]);
+    setIsTodoPanelExpanded(false);
+  }, []);
 
   const openSidebar = (content: SidebarContent) => {
     setSidebarContent(content);
@@ -126,6 +200,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle,
     currentChatId,
     setCurrentChatId,
+    isSwitchingChats,
+    setIsSwitchingChats,
+    hasActiveChat,
+    setHasActiveChat,
+    shouldFetchMessages,
+    setShouldFetchMessages,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
@@ -139,12 +219,16 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isTodoPanelExpanded,
     setIsTodoPanelExpanded,
 
+    hasProPlan,
+    isCheckingProPlan,
+
     clearInput,
-    resetChat,
     openSidebar,
     updateSidebarContent,
     closeSidebar,
     toggleChatSidebar,
+    initializeChat,
+    initializeNewChat,
   };
 
   return (
