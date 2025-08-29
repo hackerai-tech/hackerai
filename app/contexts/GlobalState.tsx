@@ -12,7 +12,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
-import { refreshAuthkitSession } from "@/lib/actions/refresh-session";
+
 
 interface GlobalStateType {
   // Input state
@@ -113,65 +113,23 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       if (user) {
         setIsCheckingProPlan(true);
         try {
-          const isProduction = process.env.NODE_ENV === "production";
+          const response = await fetch("/api/entitlements", {
+            credentials: "include", // Ensure cookies are sent
+          });
 
-          if (isProduction) {
-            // In production, use server action to refresh session
-            console.log(
-              "🔍 [GlobalState] Using production server action method",
+          if (!response.ok) {
+            console.error(
+              "❌ [GlobalState] Entitlements API failed:",
+              response.status,
+              response.statusText,
             );
-            const sessionData = await refreshAuthkitSession();
-            const session = JSON.parse(sessionData);
-
-            console.log("🔍 [GlobalState] Parsed session data:", {
-              hasSession: !!session,
-              sessionKeys: session ? Object.keys(session) : [],
-              hasUser: !!session?.user,
-              userKeys: session?.user ? Object.keys(session.user) : [],
-              hasEntitlements: !!(
-                session?.entitlements || session?.user?.entitlements
-              ),
-              entitlements:
-                session?.entitlements || session?.user?.entitlements || [],
-            });
-
-            // Check if user has pro plan from session data
-            const entitlements =
-              session?.entitlements || session?.user?.entitlements || [];
-            const hasProPlan = entitlements.includes("pro-monthly-plan");
-            console.log("🔍 [GlobalState] Pro plan check:", {
-              entitlements,
-              hasProPlan,
-            });
-            setHasProPlan(hasProPlan);
-          } else {
-            // In development, use API endpoint
-            console.log(
-              "🔍 [GlobalState] Using development API endpoint method",
-            );
-            const response = await fetch("/api/entitlements", {
-              credentials: "include", // Ensure cookies are sent
-            });
-
-            if (!response.ok) {
-              console.error(
-                "❌ [GlobalState] Entitlements API failed:",
-                response.status,
-                response.statusText,
-              );
-              const errorData = await response.json().catch(() => ({}));
-              console.error("❌ [GlobalState] Error details:", errorData);
-              throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            const data = await response.json();
-            console.log("🔍 [GlobalState] API response:", {
-              hasEntitlements: !!data.entitlements,
-              entitlements: data.entitlements || [],
-              hasProPlan: data.hasProPlan,
-            });
-            setHasProPlan(data.hasProPlan || false);
+            const errorData = await response.json().catch(() => ({}));
+            console.error("❌ [GlobalState] Error details:", errorData);
+            throw new Error(`HTTP error! status: ${response.status}`);
           }
+
+          const data = await response.json();
+          setHasProPlan(data.hasProPlan || false);
         } catch (error) {
           console.error("💥 [GlobalState] Failed to check pro plan:", error);
           setHasProPlan(false);
