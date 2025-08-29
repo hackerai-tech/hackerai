@@ -45,21 +45,44 @@ export async function GET(req: NextRequest) {
 
     console.log("🔍 [Entitlements API] Session loaded successfully");
 
-    // Get current organization ID from AuthKit session
+    // First authenticate to get user ID
+    console.log("🔍 [Entitlements API] Authenticating to get user ID...");
+    const authResult = await session.authenticate();
+    
     let organizationId: string | undefined;
-    try {
-      const { authkit } = await import("@workos-inc/authkit-nextjs");
-      const { session: authkitSession } = await authkit(req);
-      organizationId = authkitSession?.organizationId;
-      console.log(
-        "🔍 [Entitlements API] Current organization ID:",
-        organizationId,
-      );
-    } catch (error) {
-      console.log(
-        "🔍 [Entitlements API] Failed to get organization ID from AuthKit:",
-        error,
-      );
+    if (authResult.authenticated) {
+      const userId = (authResult as any).user?.id;
+      console.log("🔍 [Entitlements API] User ID from session:", userId);
+      
+      if (userId) {
+        // Get organization membership for this user
+        console.log("🔍 [Entitlements API] Fetching organization memberships...");
+        try {
+          const memberships = await workos.userManagement.listOrganizationMemberships({
+            userId: userId,
+            statuses: ['active']
+          });
+          
+          console.log("🔍 [Entitlements API] Found memberships:", {
+            count: memberships.data?.length || 0,
+            memberships: memberships.data?.map(m => ({ id: m.id, orgId: m.organizationId, status: m.status })) || []
+          });
+          
+          // Use the first active membership's organization ID
+          if (memberships.data && memberships.data.length > 0) {
+            organizationId = memberships.data[0].organizationId;
+            console.log("🔍 [Entitlements API] Using organization ID from membership:", organizationId);
+          } else {
+            console.log("🔍 [Entitlements API] No active organization memberships found");
+          }
+        } catch (membershipError) {
+          console.error("🔍 [Entitlements API] Failed to fetch organization memberships:", membershipError);
+        }
+      } else {
+        console.log("🔍 [Entitlements API] No user ID found in session");
+      }
+    } else {
+      console.log("🔍 [Entitlements API] Session not authenticated:", (authResult as any).reason);
     }
 
     console.log("🔍 [Entitlements API] Refreshing session...");
