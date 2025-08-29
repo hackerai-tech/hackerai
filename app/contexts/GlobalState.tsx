@@ -113,7 +113,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       if (user) {
         setIsCheckingProPlan(true);
         try {
-          const isProduction = process.env.VERCEL_ENV === "production";
+          const isProduction = process.env.NODE_ENV === "production";
 
           if (isProduction) {
             // In production, use server action to refresh session
