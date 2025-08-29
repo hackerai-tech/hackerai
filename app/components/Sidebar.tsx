@@ -19,7 +19,6 @@ import {
 } from "@/components/ui/sidebar";
 import SidebarHistory from "./SidebarHistory";
 import SidebarUserNav from "./SidebarUserNav";
-import SidebarUpgrade from "./SidebarUpgrade";
 
 // Shared content components
 const SidebarHeaderContent: React.FC<{
@@ -125,7 +124,6 @@ const MainSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
         </div>
 
         {/* Footer */}
-        <SidebarUpgrade />
         <SidebarUserNav />
       </div>
     );
@@ -158,7 +156,6 @@ const MainSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
       </SidebarContent>
 
       <SidebarFooter>
-        <SidebarUpgrade />
         <SidebarUserNav />
       </SidebarFooter>
     </Sidebar>

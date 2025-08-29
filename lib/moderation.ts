@@ -30,7 +30,7 @@ export async function getModerationResult(
 
     // Check if moderation results exist and are not empty
     if (!moderation?.results || moderation.results.length === 0) {
-      console.log("Moderation API returned no results");
+      console.error("Moderation API returned no results");
       return { shouldUncensorResponse: false };
     }
 

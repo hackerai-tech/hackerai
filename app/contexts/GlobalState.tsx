@@ -9,7 +9,6 @@ import React, {
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { refreshAuthkitSession } from "@/lib/auth/refresh-session";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
@@ -62,6 +61,7 @@ interface GlobalStateType {
 
   // Pro plan state
   hasProPlan: boolean;
+  isCheckingProPlan: boolean;
 
   // Utility methods
   clearInput: () => void;
@@ -100,6 +100,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
   const [todos, setTodos] = useState<Todo[]>([]);
   const [hasProPlan, setHasProPlan] = useState(false);
+  const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
 
   const mergeTodos = useCallback((newTodos: Todo[]) => {
     setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
@@ -110,18 +111,37 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     const checkProPlan = async () => {
       if (user) {
+        setIsCheckingProPlan(true);
         try {
-          const response = await refreshAuthkitSession();
-          const session = JSON.parse(response);
-          console.log("Session data:", session);
-          const entitlements = session.entitlements || [];
-          setHasProPlan(entitlements.includes("pro-monthly-plan"));
+          const response = await fetch("/api/entitlements", {
+            credentials: "include", // Ensure cookies are sent
+          });
+
+          if (!response.ok) {
+            console.error(
+              "❌ [GlobalState] Entitlements API failed:",
+              response.status,
+              response.statusText,
+            );
+            const errorData = await response.json().catch(() => ({}));
+            console.error("❌ [GlobalState] Error details:", errorData);
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+
+          const data = await response.json();
+          setHasProPlan(data.hasProPlan || false);
         } catch (error) {
-          console.error("Failed to fetch entitlements:", error);
+          console.error(
+            "💥 [GlobalState] Failed to fetch entitlements:",
+            error,
+          );
           setHasProPlan(false);
+        } finally {
+          setIsCheckingProPlan(false);
         }
       } else {
         setHasProPlan(false);
+        setIsCheckingProPlan(false);
       }
     };
 
@@ -134,7 +154,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const resetChat = () => {
     setInput("");
-    setChatTitle(null);
     setTodos([]);
     setIsTodoPanelExpanded(false);
     setHasActiveChat(false);
@@ -146,8 +165,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setCurrentChatId(chatId);
     setShouldFetchMessages(true);
     setHasActiveChat(true);
-    // Clear title first to prevent stale titles when switching
-    setChatTitle(null);
     setTodos([]);
     setIsTodoPanelExpanded(false);
   }, []);
@@ -156,7 +173,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setCurrentChatId(null);
     setShouldFetchMessages(false);
     setHasActiveChat(false);
-    setChatTitle(null);
     setTodos([]);
     setIsTodoPanelExpanded(false);
   }, []);
@@ -213,6 +229,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setIsTodoPanelExpanded,
 
     hasProPlan,
+    isCheckingProPlan,
 
     clearInput,
     resetChat,

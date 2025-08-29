@@ -2,8 +2,10 @@
 
 import React from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { LogOut, Crown } from "lucide-react";
+import { LogOut, Sparkle, CreditCard } from "lucide-react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useUpgrade } from "../hooks/useUpgrade";
+import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -16,7 +18,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 const SidebarUserNav = () => {
   const { user } = useAuth();
-  const { hasProPlan } = useGlobalState();
+  const { hasProPlan, isCheckingProPlan } = useGlobalState();
+  const { handleUpgrade } = useUpgrade();
 
   if (!user) return null;
 
@@ -92,6 +95,22 @@ const SidebarUserNav = () => {
           </DropdownMenuLabel>
 
           <DropdownMenuSeparator />
+
+          {/* Show upgrade option for non-pro users */}
+          {!isCheckingProPlan && !isProUser && (
+            <DropdownMenuItem onClick={handleUpgrade}>
+              <Sparkle className="mr-2 h-4 w-4" />
+              <span>Upgrade to Pro</span>
+            </DropdownMenuItem>
+          )}
+
+          {/* Show manage subscription option for pro users */}
+          {!isCheckingProPlan && isProUser && (
+            <DropdownMenuItem onClick={() => redirectToBillingPortal()}>
+              <CreditCard className="mr-2 h-4 w-4" />
+              <span>Manage Subscription</span>
+            </DropdownMenuItem>
+          )}
 
           <DropdownMenuItem onClick={handleSignOut} variant="destructive">
             <LogOut className="mr-2 h-4 w-4" />

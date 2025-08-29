@@ -27,7 +27,6 @@ export const POST = async (req: NextRequest) => {
       organization = await workos.organizations.getOrganization(
         membership.organizationId,
       );
-      console.log("Using existing organization:", organization.id);
     } else {
       // Create new organization for the user
       organization = await workos.organizations.createOrganization({
@@ -39,7 +38,6 @@ export const POST = async (req: NextRequest) => {
         userId,
         roleSlug: "admin",
       });
-      console.log("Created new organization:", organization.id);
     }
 
     // Retrieve price ID from Stripe
@@ -77,7 +75,6 @@ export const POST = async (req: NextRequest) => {
 
     if (matchingCustomer) {
       customer = matchingCustomer;
-      console.log("Using existing Stripe customer:", customer.id);
     }
 
     if (!customer) {
@@ -88,7 +85,6 @@ export const POST = async (req: NextRequest) => {
           workOSOrganizationId: organization.id,
         },
       });
-      console.log("Created new Stripe customer:", customer.id);
 
       // Update WorkOS organization with Stripe customer ID
       // This will allow WorkOS to automatically add entitlements to the access token
