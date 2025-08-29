@@ -117,14 +117,38 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
           if (isProduction) {
             // In production, use server action to refresh session
+            console.log(
+              "🔍 [GlobalState] Using production server action method",
+            );
             const sessionData = await refreshAuthkitSession();
             const session = JSON.parse(sessionData);
 
+            console.log("🔍 [GlobalState] Parsed session data:", {
+              hasSession: !!session,
+              sessionKeys: session ? Object.keys(session) : [],
+              hasUser: !!session?.user,
+              userKeys: session?.user ? Object.keys(session.user) : [],
+              hasEntitlements: !!(
+                session?.entitlements || session?.user?.entitlements
+              ),
+              entitlements:
+                session?.entitlements || session?.user?.entitlements || [],
+            });
+
             // Check if user has pro plan from session data
-            // Adjust this logic based on how pro plan info is stored in the session
-            setHasProPlan(session?.user?.hasProPlan || false);
+            const entitlements =
+              session?.entitlements || session?.user?.entitlements || [];
+            const hasProPlan = entitlements.includes("pro-monthly-plan");
+            console.log("🔍 [GlobalState] Pro plan check:", {
+              entitlements,
+              hasProPlan,
+            });
+            setHasProPlan(hasProPlan);
           } else {
             // In development, use API endpoint
+            console.log(
+              "🔍 [GlobalState] Using development API endpoint method",
+            );
             const response = await fetch("/api/entitlements", {
               credentials: "include", // Ensure cookies are sent
             });
@@ -141,6 +165,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
             }
 
             const data = await response.json();
+            console.log("🔍 [GlobalState] API response:", {
+              hasEntitlements: !!data.entitlements,
+              entitlements: data.entitlements || [],
+              hasProPlan: data.hasProPlan,
+            });
             setHasProPlan(data.hasProPlan || false);
           }
         } catch (error) {
