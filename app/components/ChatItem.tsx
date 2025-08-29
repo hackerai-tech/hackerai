@@ -28,8 +28,6 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
   const {
     closeSidebar,
     setChatSidebarOpen,
-    resetChat,
-    setCurrentChatId,
     currentChatId,
     initializeChat,
     initializeNewChat,
@@ -69,9 +67,16 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleClick();
+    }
+  };
+
   return (
     <div
-      className={`group relative flex w-full cursor-pointer items-center rounded-lg p-2 hover:bg-sidebar-accent/50 focus:outline-hidden ${
+      className={`group relative flex w-full cursor-pointer items-center rounded-lg p-2 hover:bg-sidebar-accent/50 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${
         isCurrentlyActive
           ? "bg-sidebar-accent text-sidebar-accent-foreground"
           : ""
@@ -79,7 +84,11 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onClick={handleClick}
+      onKeyDown={handleKeyDown}
       title={title}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open chat: ${title}`}
     >
       <div
         className={`mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium ${

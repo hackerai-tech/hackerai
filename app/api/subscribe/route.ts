@@ -48,9 +48,23 @@ export const POST = async (req: NextRequest) => {
       price = await stripe.prices.list({
         lookup_keys: [subscriptionLevel],
       });
+
+      // Check if price data exists and has at least one item
+      if (!price.data || price.data.length === 0) {
+        console.error(
+          `No price found for lookup key: ${subscriptionLevel}. This is likely because the products and prices have not been created yet. Run the setup script \`pnpm run setup\` to automatically create them.`,
+        );
+        return NextResponse.json(
+          {
+            error: "Subscription plan not found",
+            details: `No price found for plan: ${subscriptionLevel}`,
+          },
+          { status: 404 },
+        );
+      }
     } catch (error) {
       console.error(
-        "Error retrieving price from Stripe. This is likely because the products and prices have not been created yet. Run the setup script `pnpm run setup` to automatically create them.",
+        `Error retrieving price from Stripe for lookup key: ${subscriptionLevel}. This is likely because the products and prices have not been created yet. Run the setup script \`pnpm run setup\` to automatically create them.`,
         error,
       );
       return NextResponse.json(
@@ -92,6 +106,14 @@ export const POST = async (req: NextRequest) => {
         organization: organization.id,
         stripeCustomerId: customer.id,
       });
+    }
+
+    const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
+    if (!baseUrl) {
+      return NextResponse.json(
+        { error: "NEXT_PUBLIC_BASE_URL is not configured" },
+        { status: 500 },
+      );
     }
 
     const session = await stripe.checkout.sessions.create({

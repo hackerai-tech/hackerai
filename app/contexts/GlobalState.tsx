@@ -65,7 +65,6 @@ interface GlobalStateType {
 
   // Utility methods
   clearInput: () => void;
-  resetChat: () => void;
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
   closeSidebar: () => void;
@@ -152,14 +151,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setInput("");
   };
 
-  const resetChat = () => {
-    setInput("");
-    setTodos([]);
-    setIsTodoPanelExpanded(false);
-    setHasActiveChat(false);
-    setShouldFetchMessages(false);
-  };
-
   const initializeChat = useCallback((chatId: string) => {
     setIsSwitchingChats(true);
     setCurrentChatId(chatId);
@@ -232,7 +223,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isCheckingProPlan,
 
     clearInput,
-    resetChat,
     openSidebar,
     updateSidebarContent,
     closeSidebar,

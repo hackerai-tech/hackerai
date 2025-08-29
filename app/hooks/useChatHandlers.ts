@@ -35,6 +35,7 @@ export const useChatHandlers = ({
     setCurrentChatId,
     shouldFetchMessages,
     setShouldFetchMessages,
+    hasActiveChat,
     setHasActiveChat,
   } = useGlobalState();
 
@@ -49,7 +50,7 @@ export const useChatHandlers = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (input.trim()) {
-      if (messages.length === 0) {
+      if (!hasActiveChat) {
         setChatTitle(null);
         setCurrentChatId(chatId);
         window.history.replaceState({}, "", `/c/${chatId}`);

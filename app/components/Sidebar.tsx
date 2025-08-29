@@ -56,14 +56,8 @@ const MainSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const router = useRouter();
-  const {
-    resetChat,
-    setChatSidebarOpen,
-    closeSidebar,
-    setCurrentChatId,
-    currentChatId,
-    initializeNewChat,
-  } = useGlobalState();
+  const { setChatSidebarOpen, closeSidebar, currentChatId, initializeNewChat } =
+    useGlobalState();
 
   // Create ref for scroll container
   const scrollContainerRef = React.useRef<HTMLDivElement>(null);
