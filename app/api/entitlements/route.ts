@@ -23,31 +23,37 @@ export async function GET(req: NextRequest) {
       sessionData: sessionCookie,
     });
 
-    // First authenticate to get user ID
+    // First authenticate to get user and organization info
     const authResult = await session.authenticate();
 
     let organizationId: string | undefined;
     if (authResult.authenticated) {
-      const userId = (authResult as any).user?.id;
+      // Check if organizationId is already available in the session
+      organizationId = (authResult as any).organizationId;
 
-      if (userId) {
-        // Get organization membership for this user
-        try {
-          const memberships =
-            await workos.userManagement.listOrganizationMemberships({
-              userId: userId,
-              statuses: ["active"],
-            });
+      // If organizationId is not in session, fetch it using userId
+      if (!organizationId) {
+        const userId = (authResult as any).user?.id;
 
-          // Use the first active membership's organization ID
-          if (memberships.data && memberships.data.length > 0) {
-            organizationId = memberships.data[0].organizationId;
+        if (userId) {
+          // Get organization membership for this user
+          try {
+            const memberships =
+              await workos.userManagement.listOrganizationMemberships({
+                userId: userId,
+                statuses: ["active"],
+              });
+
+            // Use the first active membership's organization ID
+            if (memberships.data && memberships.data.length > 0) {
+              organizationId = memberships.data[0].organizationId;
+            }
+          } catch (membershipError) {
+            console.error(
+              "Failed to fetch organization memberships:",
+              membershipError,
+            );
           }
-        } catch (membershipError) {
-          console.error(
-            "Failed to fetch organization memberships:",
-            membershipError,
-          );
         }
       }
     }
