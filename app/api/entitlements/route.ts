@@ -23,7 +23,46 @@ export async function GET(req: NextRequest) {
       sessionData: sessionCookie,
     });
 
-    const refreshResult = await session.refresh();
+    // First authenticate to get user and organization info
+    const authResult = await session.authenticate();
+
+    let organizationId: string | undefined;
+    if (authResult.authenticated) {
+      // Check if organizationId is already available in the session
+      organizationId = (authResult as any).organizationId;
+
+      // If organizationId is not in session, fetch it using userId
+      if (!organizationId) {
+        const userId = (authResult as any).user?.id;
+
+        if (userId) {
+          // Get organization membership for this user
+          try {
+            const memberships =
+              await workos.userManagement.listOrganizationMemberships({
+                userId: userId,
+                statuses: ["active"],
+              });
+
+            // Use the first active membership's organization ID
+            if (memberships.data && memberships.data.length > 0) {
+              organizationId = memberships.data[0].organizationId;
+            }
+          } catch (membershipError) {
+            console.error(
+              "Failed to fetch organization memberships:",
+              membershipError,
+            );
+          }
+        }
+      }
+    }
+
+    // Refresh with organization ID to ensure we get entitlements for the correct org
+    const refreshResult = organizationId
+      ? await session.refresh({ organizationId })
+      : await session.refresh();
+
     const { sealedSession, entitlements } = refreshResult as any;
 
     const hasProPlan = (entitlements || []).includes("pro-monthly-plan");
@@ -45,7 +84,7 @@ export async function GET(req: NextRequest) {
 
     return response;
   } catch (error) {
-    console.error("💥 [Entitlements API] Error refreshing session:", error);
+    console.error("Error refreshing session:", error);
     return NextResponse.json(
       { error: "Failed to refresh session" },
       { status: 500 },

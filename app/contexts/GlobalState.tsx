@@ -130,10 +130,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           const data = await response.json();
           setHasProPlan(data.hasProPlan || false);
         } catch (error) {
-          console.error(
-            "💥 [GlobalState] Failed to fetch entitlements:",
-            error,
-          );
+          console.error("💥 [GlobalState] Failed to check pro plan:", error);
           setHasProPlan(false);
         } finally {
           setIsCheckingProPlan(false);
