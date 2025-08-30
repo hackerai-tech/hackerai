@@ -12,11 +12,19 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
+import type { UploadedFileState } from "@/lib/utils/file-utils";
 
 interface GlobalStateType {
   // Input state
   input: string;
   setInput: (value: string) => void;
+
+  // File upload state
+  uploadedFiles: UploadedFileState[];
+  setUploadedFiles: (files: UploadedFileState[]) => void;
+  addUploadedFile: (file: UploadedFileState) => void;
+  removeUploadedFile: (index: number) => void;
+  updateUploadedFile: (index: number, updates: Partial<UploadedFileState>) => void;
 
   // Mode state
   mode: ChatMode;
@@ -65,6 +73,7 @@ interface GlobalStateType {
 
   // Utility methods
   clearInput: () => void;
+  clearUploadedFiles: () => void;
   openSidebar: (content: SidebarContent) => void;
   updateSidebarContent: (updates: Partial<SidebarContent>) => void;
   closeSidebar: () => void;
@@ -86,6 +95,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 }) => {
   const { user } = useAuth();
   const [input, setInput] = useState("");
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [mode, setMode] = useState<ChatMode>("ask");
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
@@ -148,6 +158,26 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setInput("");
   };
 
+
+
+  const clearUploadedFiles = () => {
+    setUploadedFiles([]);
+  };
+
+  const addUploadedFile = useCallback((file: UploadedFileState) => {
+    setUploadedFiles((prev) => [...prev, file]);
+  }, []);
+
+  const removeUploadedFile = useCallback((index: number) => {
+    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  const updateUploadedFile = useCallback((index: number, updates: Partial<UploadedFileState>) => {
+    setUploadedFiles((prev) => 
+      prev.map((file, i) => i === index ? { ...file, ...updates } : file)
+    );
+  }, []);
+
   const initializeChat = useCallback((chatId: string) => {
     setIsSwitchingChats(true);
     setCurrentChatId(chatId);
@@ -163,6 +193,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setHasActiveChat(false);
     setTodos([]);
     setIsTodoPanelExpanded(false);
+    setUploadedFiles([]);
   }, []);
 
   const openSidebar = (content: SidebarContent) => {
@@ -191,6 +222,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const value: GlobalStateType = {
     input,
     setInput,
+    uploadedFiles,
+    setUploadedFiles,
+    addUploadedFile,
+    removeUploadedFile,
+    updateUploadedFile,
     mode,
     setMode,
     chatTitle,
@@ -220,6 +256,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isCheckingProPlan,
 
     clearInput,
+    clearUploadedFiles,
     openSidebar,
     updateSidebarContent,
     closeSidebar,

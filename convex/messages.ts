@@ -6,6 +6,21 @@ import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
 
 /**
+ * Extract storage IDs from message parts
+ */
+function extractStorageIds(parts: any[]): Id<"_storage">[] {
+  const storageIds: Id<"_storage">[] = [];
+  
+  for (const part of parts) {
+    if (part.type === "file" && part.storageId) {
+      storageIds.push(part.storageId as Id<"_storage">);
+    }
+  }
+  
+  return storageIds;
+}
+
+/**
  * Save a single message to a chat
  */
 export const saveMessage = mutation({
@@ -32,11 +47,15 @@ export const saveMessage = mutation({
         return null;
       }
 
+      // Extract storage IDs from file parts for cleanup tracking
+      const storageIds = extractStorageIds(args.parts);
+
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
+        storage_ids: storageIds.length > 0 ? storageIds : undefined,
         update_time: Date.now(),
       });
 
@@ -131,11 +150,15 @@ export const saveMessageFromClient = mutation({
         userId: user.subject,
       });
 
+      // Extract storage IDs from file parts for cleanup tracking
+      const storageIds = extractStorageIds(args.parts);
+
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
+        storage_ids: storageIds.length > 0 ? storageIds : undefined,
         update_time: Date.now(),
       });
 
@@ -177,6 +200,18 @@ export const deleteLastAssistantMessage = mutation({
         .first();
 
       if (lastAssistantMessage) {
+        // Clean up files associated with this message
+        if (lastAssistantMessage.storage_ids && lastAssistantMessage.storage_ids.length > 0) {
+          for (const storageId of lastAssistantMessage.storage_ids) {
+            try {
+              await ctx.storage.delete(storageId);
+            } catch (error) {
+              console.error(`Failed to delete file ${storageId}:`, error);
+              // Continue with deletion even if file cleanup fails
+            }
+          }
+        }
+
         await ctx.db.delete(lastAssistantMessage._id);
       }
 
@@ -222,12 +257,14 @@ export const regenerateWithNewContent = mutation({
         userId: user.subject,
       });
 
+      // Update message with new content and clear storage_ids since we're replacing with text
       await ctx.db.patch(message._id, {
         parts: [{ type: "text", text: args.newContent }],
+        storage_ids: undefined, // Clear file references when replacing with text
         update_time: Date.now(),
       });
 
-      // Delete all messages after the given message
+      // Delete all messages after the given message and their associated files
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) =>
@@ -238,12 +275,208 @@ export const regenerateWithNewContent = mutation({
         .collect();
 
       for (const msg of messages) {
+        // Clean up files associated with this message
+        if (msg.storage_ids && msg.storage_ids.length > 0) {
+          for (const storageId of msg.storage_ids) {
+            try {
+              await ctx.storage.delete(storageId);
+            } catch (error) {
+              console.error(`Failed to delete file ${storageId}:`, error);
+              // Continue with deletion even if file cleanup fails
+            }
+          }
+        }
+        
         await ctx.db.delete(msg._id);
       }
 
       return null;
     } catch (error) {
       console.error("Failed to regenerate with new content:", error);
+      throw error;
+    }
+  },
+});
+
+/**
+ * Generate upload URL for file storage with authentication
+ */
+export const generateUploadUrl = mutation({
+  args: {},
+  returns: v.string(),
+  handler: async (ctx) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/**
+ * Get file URL from storage ID
+ */
+export const getFileUrl = query({
+  args: {
+    storageId: v.id("_storage"),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    return await ctx.storage.getUrl(args.storageId);
+  },
+});
+
+/**
+ * Get multiple file URLs from storage IDs
+ */
+export const getFileUrls = mutation({
+  args: {
+    storageIds: v.array(v.id("_storage")),
+  },
+  returns: v.array(v.union(v.string(), v.null())),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    const urls = await Promise.all(
+      args.storageIds.map(storageId => ctx.storage.getUrl(storageId))
+    );
+    
+    return urls;
+  },
+});
+
+/**
+ * Delete file from storage by storage ID
+ */
+export const deleteFile = mutation({
+  args: {
+    storageId: v.id("_storage"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    await ctx.storage.delete(args.storageId);
+    return null;
+  },
+});
+
+/**
+ * Delete a message and its associated files
+ */
+export const deleteMessageWithFiles = mutation({
+  args: {
+    messageId: v.id("messages"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      const message = await ctx.db.get(args.messageId);
+      
+      if (!message) {
+        throw new Error("Message not found");
+      }
+
+      // Verify chat ownership
+      await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        chatId: message.chat_id,
+        userId: user.subject,
+      });
+
+      // Clean up files associated with this message
+      if (message.storage_ids && message.storage_ids.length > 0) {
+        for (const storageId of message.storage_ids) {
+          try {
+            await ctx.storage.delete(storageId);
+          } catch (error) {
+            console.error(`Failed to delete file ${storageId}:`, error);
+            // Continue with deletion even if file cleanup fails
+          }
+        }
+      }
+
+      // Delete the message
+      await ctx.db.delete(args.messageId);
+
+      return null;
+    } catch (error) {
+      console.error("Failed to delete message with files:", error);
+      throw error;
+    }
+  },
+});
+
+/**
+ * Delete all messages in a chat and their associated files
+ */
+export const deleteAllChatMessages = mutation({
+  args: {
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      // Verify chat ownership
+      await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        chatId: args.chatId,
+        userId: user.subject,
+      });
+
+      // Get all messages in the chat
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .collect();
+
+      // Delete all files and messages
+      for (const message of messages) {
+        // Clean up files associated with this message
+        if (message.storage_ids && message.storage_ids.length > 0) {
+          for (const storageId of message.storage_ids) {
+            try {
+              await ctx.storage.delete(storageId);
+            } catch (error) {
+              console.error(`Failed to delete file ${storageId}:`, error);
+              // Continue with deletion even if file cleanup fails
+            }
+          }
+        }
+
+        // Delete the message
+        await ctx.db.delete(message._id);
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Failed to delete chat messages with files:", error);
       throw error;
     }
   },

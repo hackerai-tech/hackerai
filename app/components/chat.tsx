@@ -2,12 +2,11 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { RefObject, useRef, useEffect, useState, useCallback } from "react";
+import { RefObject, useRef, useEffect, useState } from "react";
 import { useQuery, usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
-import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
 import MainSidebar from "./Sidebar";
@@ -57,6 +56,7 @@ export const Chat = ({ id }: { id?: string }) => {
       // Direct URL with ID - initialize immediately
       setChatId(id);
       initializeChat(id, true);
+
       hasInitializedRouteId.current = id;
       hasInitializedNewChat.current = false;
     } else if (!id && !currentChatId && !hasInitializedNewChat.current) {
@@ -64,15 +64,23 @@ export const Chat = ({ id }: { id?: string }) => {
       const newChatId = uuidv4();
       setChatId(newChatId);
       initializeNewChat();
+
       hasInitializedNewChat.current = true;
       hasInitializedRouteId.current = null;
     } else if (!id && currentChatId && currentChatId !== chatId) {
       // Global state has a different chat - switch to it
       setChatId(currentChatId);
       initializeChat(currentChatId, false);
+
       hasInitializedRouteId.current = null;
     }
-  }, [id, currentChatId, chatId, initializeChat, initializeNewChat]);
+  }, [
+    id,
+    currentChatId,
+    chatId,
+    initializeChat,
+    initializeNewChat,
+  ]);
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(
@@ -289,6 +297,9 @@ export const Chat = ({ id }: { id?: string }) => {
                           onStop={handleStop}
                           status={status}
                           isCentered={true}
+                          hasMessages={hasMessages}
+                          isAtBottom={isAtBottom}
+                          onScrollToBottom={handleScrollToBottom}
                         />
                       </div>
                     </div>
@@ -307,14 +318,11 @@ export const Chat = ({ id }: { id?: string }) => {
                   onSubmit={handleSubmit}
                   onStop={handleStop}
                   status={status}
+                  hasMessages={hasMessages}
+                  isAtBottom={isAtBottom}
+                  onScrollToBottom={handleScrollToBottom}
                 />
               )}
-
-              <ScrollToBottomButton
-                onClick={handleScrollToBottom}
-                hasMessages={hasMessages}
-                isAtBottom={isAtBottom}
-              />
             </div>
           </div>
 

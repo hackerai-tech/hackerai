@@ -31,6 +31,7 @@ export default defineSchema({
     chat_id: v.string(),
     role: v.string(),
     parts: v.array(v.any()),
+    storage_ids: v.optional(v.array(v.id("_storage"))), // Track uploaded file storage IDs for cleanup
     update_time: v.number(),
   })
     .index("by_message_id", ["id"])

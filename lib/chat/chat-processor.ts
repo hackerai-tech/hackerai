@@ -5,6 +5,31 @@ import type { ChatMode, ExecutionMode } from "@/types";
 import { UIMessage } from "ai";
 
 /**
+ * Checks if messages contain PDF files or images
+ * @param messages - Array of messages to check
+ * @returns boolean - true if PDF or image files are found
+ */
+export function hasMediaFiles(messages: UIMessage[]): boolean {
+  for (const message of messages) {
+    if (message.role === "user" && message.parts) {
+      for (const part of message.parts) {
+        if (part.type === "file" && part.mediaType) {
+          // Check for image files
+          if (part.mediaType.startsWith("image/")) {
+            return true;
+          }
+          // Check for PDF files
+          if (part.mediaType === "application/pdf") {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/**
  * Adds authorization message to the last user message
  * @param messages - Array of messages to process
  */
@@ -54,6 +79,9 @@ export async function processChatMessages({
   // Truncate messages to stay within token limit (processing is now done on frontend)
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
 
+  // Check if messages contain media files (images or PDFs)
+  const containsMediaFiles = hasMediaFiles(messages);
+
   // Determine execution mode from environment variable
   const executionMode: ExecutionMode =
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
@@ -78,5 +106,6 @@ export async function processChatMessages({
     executionMode,
     truncatedMessages,
     shouldUncensorResponse: moderationResult.shouldUncensorResponse,
+    hasMediaFiles: containsMediaFiles,
   };
 }

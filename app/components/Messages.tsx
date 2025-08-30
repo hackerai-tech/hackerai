@@ -2,6 +2,7 @@ import { UIMessage } from "@ai-sdk/react";
 import { useState, RefObject, useEffect, useMemo, useCallback } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
+import { FilePartRenderer } from "./FilePartRenderer";
 import { MessageErrorState } from "./MessageErrorState";
 import { MessageEditor } from "./MessageEditor";
 import DotsSpinner from "@/components/ui/dots-spinner";
@@ -157,6 +158,14 @@ export const Messages = ({
           const messageText = extractMessageText(message.parts);
           const messageHasTextContent = hasTextContent(message.parts);
 
+          // Separate file parts from other parts for user messages
+          const fileParts = message.parts.filter(
+            (part) => part.type === "file",
+          );
+          const nonFileParts = message.parts.filter(
+            (part) => part.type !== "file",
+          );
+
           const shouldShowLoader =
             isLastAssistantMessage &&
             status === "streaming" &&
@@ -181,21 +190,77 @@ export const Messages = ({
                 <div
                   className={`${
                     isUser
-                      ? "max-w-[80%] bg-secondary rounded-lg px-4 py-3 text-primary-foreground border border-border"
+                      ? "w-full flex flex-col gap-1 items-end"
                       : "w-full text-foreground"
                   } overflow-hidden`}
                 >
-                  <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden ">
-                    {message.parts.map((part, partIndex) => (
-                      <MessagePartHandler
-                        key={`${message.id}-${partIndex}`}
-                        message={message}
-                        part={part}
-                        partIndex={partIndex}
-                        status={status}
-                      />
-                    ))}
-                  </div>
+                  {/* Render file parts first for user messages */}
+                  {isUser && fileParts.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-end gap-2 w-full">
+                      {fileParts.map((part, partIndex) => (
+                        <FilePartRenderer
+                          key={`${message.id}-file-${partIndex}`}
+                          part={part}
+                          partIndex={partIndex}
+                          messageId={message.id}
+                          totalFileParts={fileParts.length}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Render text and other parts */}
+                  {nonFileParts.length > 0 && (
+                    <div
+                      className={`${
+                        isUser
+                          ? "max-w-[80%] bg-secondary rounded-[18px] px-4 py-1.5 data-[multiline]:py-3 rounded-se-lg text-primary-foreground border border-border"
+                          : "w-full prose space-y-3 max-w-none dark:prose-invert min-w-0"
+                      } overflow-hidden`}
+                    >
+                      {isUser ? (
+                        <div className="whitespace-pre-wrap">
+                          {nonFileParts.map((part, partIndex) => (
+                            <MessagePartHandler
+                              key={`${message.id}-${partIndex}`}
+                              message={message}
+                              part={part}
+                              partIndex={partIndex}
+                              status={status}
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        // For assistant messages, render all parts in original order
+                        message.parts.map((part, partIndex) => (
+                          <MessagePartHandler
+                            key={`${message.id}-${partIndex}`}
+                            message={message}
+                            part={part}
+                            partIndex={partIndex}
+                            status={status}
+                          />
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  {/* For assistant messages without the user-specific styling, render files mixed with content */}
+                  {!isUser &&
+                    fileParts.length > 0 &&
+                    nonFileParts.length === 0 && (
+                      <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden">
+                        {message.parts.map((part, partIndex) => (
+                          <MessagePartHandler
+                            key={`${message.id}-${partIndex}`}
+                            message={message}
+                            part={part}
+                            partIndex={partIndex}
+                            status={status}
+                          />
+                        ))}
+                      </div>
+                    )}
                 </div>
               )}
 

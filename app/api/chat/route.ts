@@ -68,12 +68,13 @@ export async function POST(req: NextRequest) {
 
     // Process chat messages with moderation, truncation, and analytics
     const posthog = PostHogClient();
-    const { executionMode, truncatedMessages } = await processChatMessages({
-      messages,
-      mode,
-      userID: userId,
-      posthog,
-    });
+    const { executionMode, truncatedMessages, hasMediaFiles } =
+      await processChatMessages({
+        messages,
+        mode,
+        userID: userId,
+        posthog,
+      });
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -95,8 +96,11 @@ export async function POST(req: NextRequest) {
             )
           : Promise.resolve(undefined);
 
+        // Select the appropriate model based on whether media files are present
+        const selectedModel = hasMediaFiles ? "vision-model" : "agent-model";
+
         const result = streamText({
-          model: myProvider.languageModel("agent-model"),
+          model: myProvider.languageModel(selectedModel),
           system: systemPrompt(mode, executionMode),
           messages: convertToModelMessages(truncatedMessages),
           tools,

@@ -4,12 +4,13 @@ import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { ChatMessage } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
+import { createFileUIObject, type FileUIObject } from "@/lib/utils/file-utils";
 
 interface UseChatHandlersProps {
   chatId: string;
   messages: ChatMessage[];
   resetSidebarAutoOpenRef: RefObject<(() => void) | null>;
-  sendMessage: (message: { text: string }, options?: { body?: any }) => void;
+  sendMessage: (message?: any, options?: { body?: any }) => void;
   stop: () => void;
   regenerate: (options?: { body?: any }) => void;
   setMessages: (
@@ -28,9 +29,11 @@ export const useChatHandlers = ({
 }: UseChatHandlersProps) => {
   const {
     input,
+    uploadedFiles,
     mode,
     setChatTitle,
     clearInput,
+    clearUploadedFiles,
     todos,
     setCurrentChatId,
     shouldFetchMessages,
@@ -46,10 +49,13 @@ export const useChatHandlers = ({
   const regenerateWithNewContent = useMutation(
     api.messages.regenerateWithNewContent,
   );
+  const generateUploadUrl = useMutation(api.messages.generateUploadUrl);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (input.trim()) {
+    // Allow submission if there's text input or uploaded files
+    const hasValidFiles = uploadedFiles.some(f => f.uploaded && f.url);
+    if (input.trim() || hasValidFiles) {
       if (!hasActiveChat) {
         setChatTitle(null);
         setCurrentChatId(chatId);
@@ -64,16 +70,40 @@ export const useChatHandlers = ({
         resetSidebarAutoOpenRef.current();
       }
 
-      sendMessage(
-        { text: input },
-        {
-          body: {
-            mode,
-            todos,
+      try {
+        // Get file objects from uploaded files - URLs are already resolved in global state
+        const fileObjects: FileUIObject[] = uploadedFiles
+          .filter(file => file.uploaded && file.url)
+          .map(uploadedFile => createFileUIObject(uploadedFile.file, uploadedFile.url!));
+
+        sendMessage(
+          {
+            text: input.trim() || undefined,
+            files: fileObjects.length > 0 ? fileObjects : undefined,
           },
-        },
-      );
+          {
+            body: {
+              mode,
+              todos,
+            },
+          },
+        );
+      } catch (error) {
+        console.error("Failed to process files:", error);
+        // Fallback to text-only message if file processing fails
+        sendMessage(
+          { text: input },
+          {
+            body: {
+              mode,
+              todos,
+            },
+          },
+        );
+      }
+
       clearInput();
+      clearUploadedFiles();
     }
   };
 

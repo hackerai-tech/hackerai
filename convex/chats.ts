@@ -259,13 +259,25 @@ export const deleteChat = mutation({
         throw new Error("Chat not found");
       }
 
-      // Delete all messages associated with this chat
+      // Delete all messages and their associated files
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
         .collect();
 
       for (const message of messages) {
+        // Clean up files associated with this message
+        if (message.storage_ids && message.storage_ids.length > 0) {
+          for (const storageId of message.storage_ids) {
+            try {
+              await ctx.storage.delete(storageId);
+            } catch (error) {
+              console.error(`Failed to delete file ${storageId}:`, error);
+              // Continue with deletion even if file cleanup fails
+            }
+          }
+        }
+        
         await ctx.db.delete(message._id);
       }
 

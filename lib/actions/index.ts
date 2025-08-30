@@ -24,7 +24,7 @@ const truncateMiddle = (text: string, maxLength: number): string => {
 export const DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE = (
   message: string,
 ) => `### Task:
-You are a helpful assistant that generates short, concise chat titles for an AI penetration testing agent based on the first user message.
+You are a helpful assistant that generates short, concise chat titles for an AI penetration testing assistant based on the first user message.
 
 ### Instructions:
 1. Generate a short title (3-5 words) based on the user's first message
