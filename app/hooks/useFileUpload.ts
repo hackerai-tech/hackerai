@@ -233,9 +233,9 @@ export const useFileUpload = () => {
     fileInputRef.current?.click();
   };
 
-  const handlePasteEvent = async (event: ClipboardEvent) => {
+  const handlePasteEvent = async (event: ClipboardEvent): Promise<boolean> => {
     const items = event.clipboardData?.items;
-    if (!items) return;
+    if (!items) return false;
 
     const files: File[] = [];
 
@@ -250,9 +250,13 @@ export const useFileUpload = () => {
       }
     }
 
-    if (files.length === 0) return;
+    if (files.length === 0) return false;
+
+    // Prevent default paste behavior to avoid pasting file names as text
+    event.preventDefault();
 
     await processFiles(files, "paste");
+    return true;
   };
 
   // Helper to get all uploaded file message parts for sending

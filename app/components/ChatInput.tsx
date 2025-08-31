@@ -80,12 +80,14 @@ export const ChatInput = ({
     [isGenerating, onStop],
   );
 
-  // Handle paste events for image uploads
+  // Handle paste events for file uploads
   useEffect(() => {
-    const handlePaste = (e: ClipboardEvent) => {
+    const handlePaste = async (e: ClipboardEvent) => {
       // Only handle paste if the textarea is focused
       if (textareaRef.current === document.activeElement) {
-        handlePasteEvent(e);
+        const filesProcessed = await handlePasteEvent(e);
+        // If files were processed, the event.preventDefault() is already called
+        // in handlePasteEvent, so no additional action needed here
       }
     };
 
