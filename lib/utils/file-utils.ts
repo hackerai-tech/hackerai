@@ -30,6 +30,7 @@ export interface UploadedFileState {
 /**
  * Upload files to Convex storage and return file message parts
  * Note: This function requires URLs to be fetched separately after upload
+ * The getFileUrls function should be called imperatively using convex.query()
  */
 export async function uploadFilesToConvex(
   files: FileList,
@@ -213,19 +214,4 @@ export function createFileMessagePartFromUploadedFile(
     size: uploadedFile.file.size,
     url: uploadedFile.url,
   };
-}
-
-/**
- * Get all storage IDs from a list of file message parts
- */
-export function extractStorageIdsFromFileParts(parts: any[]): string[] {
-  const storageIds: string[] = [];
-
-  for (const part of parts) {
-    if (part.type === "file" && part.storageId) {
-      storageIds.push(part.storageId);
-    }
-  }
-
-  return storageIds;
 }

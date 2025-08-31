@@ -6,21 +6,6 @@ import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
 
 /**
- * Extract storage IDs from message parts
- */
-function extractStorageIds(parts: any[]): Id<"_storage">[] {
-  const storageIds: Id<"_storage">[] = [];
-
-  for (const part of parts) {
-    if (part.type === "file" && part.storageId) {
-      storageIds.push(part.storageId as Id<"_storage">);
-    }
-  }
-
-  return storageIds;
-}
-
-/**
  * Save a single message to a chat
  */
 export const saveMessage = mutation({
@@ -48,14 +33,12 @@ export const saveMessage = mutation({
       }
 
       // Extract storage IDs from file parts for cleanup tracking
-      const storageIds = extractStorageIds(args.parts);
 
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
-        storage_ids: storageIds.length > 0 ? storageIds : undefined,
         update_time: Date.now(),
       });
 
@@ -150,15 +133,11 @@ export const saveMessageFromClient = mutation({
         userId: user.subject,
       });
 
-      // Extract storage IDs from file parts for cleanup tracking
-      const storageIds = extractStorageIds(args.parts);
-
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
-        storage_ids: storageIds.length > 0 ? storageIds : undefined,
         update_time: Date.now(),
       });
 
@@ -340,7 +319,7 @@ export const getFileUrl = query({
 /**
  * Get multiple file URLs from storage IDs
  */
-export const getFileUrls = mutation({
+export const getFileUrls = query({
   args: {
     storageIds: v.array(v.id("_storage")),
   },
@@ -377,110 +356,5 @@ export const deleteFile = mutation({
 
     await ctx.storage.delete(args.storageId);
     return null;
-  },
-});
-
-/**
- * Delete a message and its associated files
- */
-export const deleteMessageWithFiles = mutation({
-  args: {
-    messageId: v.id("messages"),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-
-    if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
-    }
-
-    try {
-      const message = await ctx.db.get(args.messageId);
-
-      if (!message) {
-        throw new Error("Message not found");
-      }
-
-      // Verify chat ownership
-      await ctx.runQuery(internal.chats.verifyChatOwnership, {
-        chatId: message.chat_id,
-        userId: user.subject,
-      });
-
-      // Clean up files associated with this message
-      if (message.storage_ids && message.storage_ids.length > 0) {
-        for (const storageId of message.storage_ids) {
-          try {
-            await ctx.storage.delete(storageId);
-          } catch (error) {
-            console.error(`Failed to delete file ${storageId}:`, error);
-            // Continue with deletion even if file cleanup fails
-          }
-        }
-      }
-
-      // Delete the message
-      await ctx.db.delete(args.messageId);
-
-      return null;
-    } catch (error) {
-      console.error("Failed to delete message with files:", error);
-      throw error;
-    }
-  },
-});
-
-/**
- * Delete all messages in a chat and their associated files
- */
-export const deleteAllChatMessages = mutation({
-  args: {
-    chatId: v.string(),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-
-    if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
-    }
-
-    try {
-      // Verify chat ownership
-      await ctx.runQuery(internal.chats.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: user.subject,
-      });
-
-      // Get all messages in the chat
-      const messages = await ctx.db
-        .query("messages")
-        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .collect();
-
-      // Delete all files and messages
-      for (const message of messages) {
-        // Clean up files associated with this message
-        if (message.storage_ids && message.storage_ids.length > 0) {
-          for (const storageId of message.storage_ids) {
-            try {
-              await ctx.storage.delete(storageId);
-            } catch (error) {
-              console.error(`Failed to delete file ${storageId}:`, error);
-              // Continue with deletion even if file cleanup fails
-            }
-          }
-        }
-
-        // Delete the message
-        await ctx.db.delete(message._id);
-      }
-
-      return null;
-    } catch (error) {
-      console.error("Failed to delete chat messages with files:", error);
-      throw error;
-    }
   },
 });

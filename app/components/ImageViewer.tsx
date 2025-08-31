@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 interface ImageViewerProps {
   isOpen: boolean;
@@ -15,13 +15,35 @@ export const ImageViewer = ({
   imageAlt,
 }: ImageViewerProps) => {
   const [isImageLoading, setIsImageLoading] = useState(true);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Reset loading state when opening
+  // Reset loading state when imageSrc changes
   useEffect(() => {
-    if (isOpen) {
-      setIsImageLoading(true);
+    setIsImageLoading(true);
+  }, [imageSrc]);
+
+  // Focus the dialog when it opens
+  useEffect(() => {
+    if (isOpen && dialogRef.current) {
+      dialogRef.current.focus();
     }
   }, [isOpen]);
+
+  // Handle Escape key press
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen, onClose]);
 
   // Don't render if not open or no valid image source
   if (!isOpen || !imageSrc || imageSrc.trim() === "") {
@@ -46,19 +68,12 @@ export const ImageViewer = ({
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Escape") {
-      handleClose();
-    }
-  };
-
   return (
     <div
       data-state="open"
       className="radix-state-open:animate-show fixed inset-0 z-[100] flex items-center justify-center overflow-hidden bg-black/90 dark:bg-black/80"
       style={{ pointerEvents: "auto" }}
       onClick={handleBackdropClick}
-      onKeyDown={handleKeyDown}
       tabIndex={-1}
     >
       {/* Close Button */}
@@ -83,7 +98,9 @@ export const ImageViewer = ({
 
       {/* Image Container */}
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-labelledby="image-viewer-title"
         aria-describedby="image-viewer-description"
         data-state="open"
@@ -127,7 +144,6 @@ export const ImageViewer = ({
             sizes="(max-width: 768px) 90vw, 85vw"
             onLoad={handleImageLoad}
             onError={handleImageError}
-            priority
           />
         </div>
       </div>

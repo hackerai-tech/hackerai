@@ -79,19 +79,19 @@ export async function processChatMessages({
   // Truncate messages to stay within token limit (processing is now done on frontend)
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
 
-  // Check if messages contain media files (images or PDFs)
-  const containsMediaFiles = hasMediaFiles(messages);
+  // Check if truncated messages contain media files (images or PDFs)
+  const containsMediaFiles = hasMediaFiles(truncatedMessages);
 
   // Determine execution mode from environment variable
   const executionMode: ExecutionMode =
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
   // Check moderation for the last user message
-  const moderationResult = await getModerationResult(messages);
+  const moderationResult = await getModerationResult(truncatedMessages);
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(messages);
+    addAuthMessage(truncatedMessages);
   }
 
   // Capture analytics event

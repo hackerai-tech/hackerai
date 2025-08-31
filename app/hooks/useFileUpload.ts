@@ -1,6 +1,6 @@
 import { useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
-import { useMutation } from "convex/react";
+import { useMutation, useConvex } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
@@ -10,6 +10,7 @@ import {
   createFileMessagePartFromUploadedFile,
 } from "@/lib/utils/file-utils";
 import { useGlobalState } from "../contexts/GlobalState";
+import { Id } from "@/convex/_generated/dataModel";
 
 type FileProcessingResult = {
   validFiles: File[];
@@ -36,7 +37,7 @@ export const useFileUpload = () => {
 
   const generateUploadUrl = useMutation(api.messages.generateUploadUrl);
   const deleteFile = useMutation(api.messages.deleteFile);
-  const getFileUrl = useMutation(api.messages.getFileUrls);
+  const convex = useConvex();
 
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
@@ -174,8 +175,10 @@ export const useFileUpload = () => {
     try {
       const storageId = await uploadSingleFileToConvex(file, generateUploadUrl);
 
-      // Fetch the URL immediately after upload
-      const urls = await getFileUrl({ storageIds: [storageId as any] });
+      // Fetch the URL immediately after upload using the query
+      const urls = await convex.query(api.messages.getFileUrls, {
+        storageIds: [storageId as Id<"_storage">],
+      });
       const url = urls[0];
 
       // Update the upload state to completed with storage ID and URL
@@ -219,7 +222,9 @@ export const useFileUpload = () => {
     // If the file was uploaded to Convex, delete it from storage
     if (uploadedFile?.storageId) {
       try {
-        await deleteFile({ storageId: uploadedFile.storageId as any });
+        await deleteFile({
+          storageId: uploadedFile.storageId as Id<"_storage">,
+        });
       } catch (error) {
         console.error("Failed to delete file from storage:", error);
         toast.error("Failed to delete file from storage");
