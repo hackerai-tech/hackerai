@@ -28,6 +28,7 @@ export const useFileUpload = () => {
     addUploadedFile,
     updateUploadedFile,
     removeUploadedFile,
+    hasProPlan,
   } = useGlobalState();
 
   // Drag and drop state
@@ -35,8 +36,8 @@ export const useFileUpload = () => {
   const [showDragOverlay, setShowDragOverlay] = useState(false);
   const dragCounterRef = useRef(0);
 
-  const generateUploadUrl = useMutation(api.messages.generateUploadUrl);
-  const deleteFile = useMutation(api.messages.deleteFile);
+  const generateUploadUrl = useMutation(api.fileStorage.generateUploadUrl);
+  const deleteFile = useMutation(api.fileStorage.deleteFile);
   const convex = useConvex();
 
   // Helper function to check and validate files before processing
@@ -148,6 +149,12 @@ export const useFileUpload = () => {
   // Unified file processing function
   const processFiles = useCallback(
     async (files: File[], source: FileSource) => {
+      // Check if user has pro plan for file uploads
+      if (!hasProPlan) {
+        toast.error("Upgrade to Pro to upload files.");
+        return;
+      }
+
       const result = validateAndFilterFiles(files);
 
       // Check if we have slots available
@@ -164,6 +171,7 @@ export const useFileUpload = () => {
       }
     },
     [
+      hasProPlan,
       validateAndFilterFiles,
       showProcessingFeedback,
       startFileUploads,
@@ -176,10 +184,9 @@ export const useFileUpload = () => {
       const storageId = await uploadSingleFileToConvex(file, generateUploadUrl);
 
       // Fetch the URL immediately after upload using the query
-      const urls = await convex.query(api.messages.getFileUrls, {
-        storageIds: [storageId as Id<"_storage">],
+      const url = await convex.query(api.fileStorage.getFileUrl, {
+        storageId: storageId as Id<"_storage">,
       });
-      const url = urls[0];
 
       // Update the upload state to completed with storage ID and URL
       updateUploadedFile(uploadIndex, {

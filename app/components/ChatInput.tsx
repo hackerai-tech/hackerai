@@ -13,7 +13,6 @@ import {
   MessageSquare,
   Infinity,
   ChevronDown,
-  Paperclip,
 } from "lucide-react";
 import { useHotkeys } from "react-hotkeys-hook";
 import TextareaAutosize from "react-textarea-autosize";
@@ -22,6 +21,7 @@ import { TodoPanel } from "./TodoPanel";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "./FileUploadPreview";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
+import { AttachmentButton } from "./AttachmentButton";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useEffect, useRef } from "react";
 
@@ -147,24 +147,10 @@ export const ChatInput = ({
           </div>
           <div className="px-3 flex gap-2 items-center">
             {/* Attachment Button */}
-            <TooltipPrimitive.Root>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  onClick={handleAttachClick}
-                  variant="ghost"
-                  size="sm"
-                  className="rounded-full p-0 w-8 h-8 min-w-0"
-                  aria-label="Attach files"
-                  disabled={isGenerating}
-                >
-                  <Paperclip className="w-[15px] h-[15px]" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Add files</p>
-              </TooltipContent>
-            </TooltipPrimitive.Root>
+            <AttachmentButton
+              onAttachClick={handleAttachClick}
+              disabled={isGenerating}
+            />
 
             {/* Mode selector */}
             <div className="flex items-center gap-2">

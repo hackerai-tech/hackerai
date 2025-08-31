@@ -58,7 +58,7 @@ export const FilePartRenderer = ({
     // Use direct URL if available, otherwise fetch from storageId (for legacy messages)
     const shouldFetchUrl = part.storageId && !part.url;
     const fileUrl = useQuery(
-      api.messages.getFileUrl,
+      api.fileStorage.getFileUrl,
       shouldFetchUrl ? { storageId: part.storageId as Id<"_storage"> } : "skip",
     );
 

@@ -49,7 +49,6 @@ export const useChatHandlers = ({
   const regenerateWithNewContent = useMutation(
     api.messages.regenerateWithNewContent,
   );
-  const generateUploadUrl = useMutation(api.messages.generateUploadUrl);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
