@@ -54,7 +54,7 @@ export const useChatHandlers = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     // Allow submission if there's text input or uploaded files
-    const hasValidFiles = uploadedFiles.some(f => f.uploaded && f.url);
+    const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
       if (!hasActiveChat) {
         setChatTitle(null);
@@ -73,8 +73,10 @@ export const useChatHandlers = ({
       try {
         // Get file objects from uploaded files - URLs are already resolved in global state
         const fileObjects: FileUIObject[] = uploadedFiles
-          .filter(file => file.uploaded && file.url)
-          .map(uploadedFile => createFileUIObject(uploadedFile.file, uploadedFile.url!));
+          .filter((file) => file.uploaded && file.url)
+          .map((uploadedFile) =>
+            createFileUIObject(uploadedFile.file, uploadedFile.url!),
+          );
 
         sendMessage(
           {

@@ -10,13 +10,13 @@ import { validateServiceKey } from "./chats";
  */
 function extractStorageIds(parts: any[]): Id<"_storage">[] {
   const storageIds: Id<"_storage">[] = [];
-  
+
   for (const part of parts) {
     if (part.type === "file" && part.storageId) {
       storageIds.push(part.storageId as Id<"_storage">);
     }
   }
-  
+
   return storageIds;
 }
 
@@ -201,7 +201,10 @@ export const deleteLastAssistantMessage = mutation({
 
       if (lastAssistantMessage) {
         // Clean up files associated with this message
-        if (lastAssistantMessage.storage_ids && lastAssistantMessage.storage_ids.length > 0) {
+        if (
+          lastAssistantMessage.storage_ids &&
+          lastAssistantMessage.storage_ids.length > 0
+        ) {
           for (const storageId of lastAssistantMessage.storage_ids) {
             try {
               await ctx.storage.delete(storageId);
@@ -286,7 +289,7 @@ export const regenerateWithNewContent = mutation({
             }
           }
         }
-        
+
         await ctx.db.delete(msg._id);
       }
 
@@ -350,9 +353,9 @@ export const getFileUrls = mutation({
     }
 
     const urls = await Promise.all(
-      args.storageIds.map(storageId => ctx.storage.getUrl(storageId))
+      args.storageIds.map((storageId) => ctx.storage.getUrl(storageId)),
     );
-    
+
     return urls;
   },
 });
@@ -394,7 +397,7 @@ export const deleteMessageWithFiles = mutation({
 
     try {
       const message = await ctx.db.get(args.messageId);
-      
+
       if (!message) {
         throw new Error("Message not found");
       }

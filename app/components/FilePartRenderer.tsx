@@ -36,15 +36,16 @@ export const FilePartRenderer = ({
     fileName: string;
     subtitle: string;
   }) => (
-    <div key={partId} className="p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background">
+    <div
+      key={partId}
+      className="p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background"
+    >
       <div className="flex flex-row items-center gap-2">
         <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-[#FF5588] flex items-center justify-center">
           {icon}
         </div>
         <div className="overflow-hidden">
-          <div className="truncate font-semibold text-sm">
-            {fileName}
-          </div>
+          <div className="truncate font-semibold text-sm">{fileName}</div>
           <div className="text-muted-foreground truncate text-xs">
             {subtitle}
           </div>
@@ -58,7 +59,7 @@ export const FilePartRenderer = ({
     const shouldFetchUrl = part.storageId && !part.url;
     const fileUrl = useQuery(
       api.messages.getFileUrl,
-      shouldFetchUrl ? { storageId: part.storageId as Id<"_storage"> } : "skip"
+      shouldFetchUrl ? { storageId: part.storageId as Id<"_storage"> } : "skip",
     );
 
     // Determine the actual URL to use

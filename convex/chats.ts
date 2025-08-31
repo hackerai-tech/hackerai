@@ -277,7 +277,7 @@ export const deleteChat = mutation({
             }
           }
         }
-        
+
         await ctx.db.delete(message._id);
       }
 

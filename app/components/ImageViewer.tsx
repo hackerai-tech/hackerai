@@ -16,6 +16,13 @@ export const ImageViewer = ({
 }: ImageViewerProps) => {
   const [isImageLoading, setIsImageLoading] = useState(true);
 
+  // Reset loading state when opening
+  useEffect(() => {
+    if (isOpen) {
+      setIsImageLoading(true);
+    }
+  }, [isOpen]);
+
   // Don't render if not open or no valid image source
   if (!isOpen || !imageSrc || imageSrc.trim() === "") {
     return null;
@@ -44,13 +51,6 @@ export const ImageViewer = ({
       handleClose();
     }
   };
-
-  // Reset loading state when opening
-  useEffect(() => {
-    if (isOpen) {
-      setIsImageLoading(true);
-    }
-  }, [isOpen]);
 
   return (
     <div

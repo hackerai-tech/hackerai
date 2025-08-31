@@ -62,8 +62,8 @@ export async function uploadFilesToConvex(
   });
 
   const uploadResults = await Promise.all(uploadPromises);
-  const storageIds = uploadResults.map(result => result.storageId);
-  
+  const storageIds = uploadResults.map((result) => result.storageId);
+
   // Fetch URLs for all uploaded files
   const urls = await getFileUrls(storageIds);
 
@@ -96,9 +96,7 @@ export async function uploadSingleFileToConvex(
   });
 
   if (!result.ok) {
-    throw new Error(
-      `Failed to upload file ${file.name}: ${result.statusText}`,
-    );
+    throw new Error(`Failed to upload file ${file.name}: ${result.statusText}`);
   }
 
   const { storageId } = await result.json();
@@ -108,10 +106,7 @@ export async function uploadSingleFileToConvex(
 /**
  * Create file UI object from uploaded file state and URL
  */
-export function createFileUIObject(
-  file: File,
-  url: string,
-): FileUIObject {
+export function createFileUIObject(file: File, url: string): FileUIObject {
   return {
     type: "file" as const,
     filename: file.name,
@@ -127,9 +122,11 @@ export function createFileMessagePart(
   uploadedFile: UploadedFileState,
 ): FileMessagePart {
   if (!uploadedFile.storageId || !uploadedFile.url) {
-    throw new Error("File must have both storageId and url to create message part");
+    throw new Error(
+      "File must have both storageId and url to create message part",
+    );
   }
-  
+
   return {
     type: "file" as const,
     mediaType: uploadedFile.file.type,
@@ -207,7 +204,7 @@ export function createFileMessagePartFromUploadedFile(
   if (!uploadedFile.storageId || !uploadedFile.url || !uploadedFile.uploaded) {
     return null;
   }
-  
+
   return {
     type: "file" as const,
     mediaType: uploadedFile.file.type,
@@ -223,12 +220,12 @@ export function createFileMessagePartFromUploadedFile(
  */
 export function extractStorageIdsFromFileParts(parts: any[]): string[] {
   const storageIds: string[] = [];
-  
+
   for (const part of parts) {
     if (part.type === "file" && part.storageId) {
       storageIds.push(part.storageId);
     }
   }
-  
+
   return storageIds;
 }

@@ -74,13 +74,7 @@ export const Chat = ({ id }: { id?: string }) => {
 
       hasInitializedRouteId.current = null;
     }
-  }, [
-    id,
-    currentChatId,
-    chatId,
-    initializeChat,
-    initializeNewChat,
-  ]);
+  }, [id, currentChatId, chatId, initializeChat, initializeNewChat]);
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(

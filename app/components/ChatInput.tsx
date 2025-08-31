@@ -89,9 +89,9 @@ export const ChatInput = ({
       }
     };
 
-    document.addEventListener('paste', handlePaste);
+    document.addEventListener("paste", handlePaste);
     return () => {
-      document.removeEventListener('paste', handlePaste);
+      document.removeEventListener("paste", handlePaste);
     };
   }, [handlePasteEvent]);
 
@@ -103,7 +103,10 @@ export const ChatInput = ({
 
         {/* File Upload Preview */}
         {uploadedFiles && uploadedFiles.length > 0 && (
-          <FileUploadPreview uploadedFiles={uploadedFiles} onRemoveFile={handleRemoveFile} />
+          <FileUploadPreview
+            uploadedFiles={uploadedFiles}
+            onRemoveFile={handleRemoveFile}
+          />
         )}
 
         {/* Hidden File Input */}
@@ -215,7 +218,6 @@ export const ChatInput = ({
               </DropdownMenu>
             </div>
             <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
-
               {isGenerating ? (
                 <TooltipPrimitive.Root>
                   <TooltipTrigger asChild>

@@ -2,23 +2,31 @@ import { useRef } from "react";
 import { toast } from "sonner";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { MAX_FILES_LIMIT, uploadSingleFileToConvex, validateFile, type UploadedFileState, createFileMessagePartFromUploadedFile } from "@/lib/utils/file-utils";
+import {
+  MAX_FILES_LIMIT,
+  uploadSingleFileToConvex,
+  validateFile,
+  type UploadedFileState,
+  createFileMessagePartFromUploadedFile,
+} from "@/lib/utils/file-utils";
 import { useGlobalState } from "../contexts/GlobalState";
 
 export const useFileUpload = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { uploadedFiles, addUploadedFile, updateUploadedFile, removeUploadedFile } = useGlobalState();
-  
+  const {
+    uploadedFiles,
+    addUploadedFile,
+    updateUploadedFile,
+    removeUploadedFile,
+  } = useGlobalState();
+
   const generateUploadUrl = useMutation(api.messages.generateUploadUrl);
   const deleteFile = useMutation(api.messages.deleteFile);
   const getFileUrl = useMutation(api.messages.getFileUrls);
 
   const uploadFileToConvex = async (file: File, uploadIndex: number) => {
     try {
-      const storageId = await uploadSingleFileToConvex(
-        file,
-        generateUploadUrl
-      );
+      const storageId = await uploadSingleFileToConvex(file, generateUploadUrl);
 
       // Fetch the URL immediately after upload
       const urls = await getFileUrl({ storageIds: [storageId as any] });
@@ -39,7 +47,9 @@ export const useFileUpload = () => {
         uploaded: false,
         error: error instanceof Error ? error.message : "Upload failed",
       });
-      toast.error(`Failed to upload ${file.name}: ${error instanceof Error ? error.message : "Unknown error"}`);
+      toast.error(
+        `Failed to upload ${file.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     }
   };
 
@@ -61,7 +71,7 @@ export const useFileUpload = () => {
       const remainingSlots = MAX_FILES_LIMIT - existingUploadedCount;
       if (remainingSlots <= 0) {
         toast.error(
-          `Maximum ${MAX_FILES_LIMIT} files allowed. Please remove some files before adding more.`
+          `Maximum ${MAX_FILES_LIMIT} files allowed. Please remove some files before adding more.`,
         );
         return;
       }
@@ -95,7 +105,7 @@ export const useFileUpload = () => {
     const messages: string[] = [];
     if (truncated) {
       messages.push(
-        `Only ${filesToProcess.length} files were added. Maximum ${MAX_FILES_LIMIT} files allowed.`
+        `Only ${filesToProcess.length} files were added. Maximum ${MAX_FILES_LIMIT} files allowed.`,
       );
     }
     if (invalidFiles.length > 0) {
@@ -113,7 +123,7 @@ export const useFileUpload = () => {
 
   const handleRemoveFile = async (indexToRemove: number) => {
     const uploadedFile = uploadedFiles[indexToRemove];
-    
+
     // If the file was uploaded to Convex, delete it from storage
     if (uploadedFile?.storageId) {
       try {
@@ -123,7 +133,7 @@ export const useFileUpload = () => {
         toast.error("Failed to delete file from storage");
       }
     }
-    
+
     removeUploadedFile(indexToRemove);
   };
 
@@ -136,12 +146,12 @@ export const useFileUpload = () => {
     if (!items) return;
 
     const files: File[] = [];
-    
+
     // Check for any files in clipboard (images, documents, etc.)
     for (let i = 0; i < items.length; i++) {
       const item = items[i];
       // Accept any file type, not just images
-      if (item.kind === 'file') {
+      if (item.kind === "file") {
         const file = item.getAsFile();
         if (file) {
           files.push(file);
@@ -162,7 +172,7 @@ export const useFileUpload = () => {
       const remainingSlots = MAX_FILES_LIMIT - existingUploadedCount;
       if (remainingSlots <= 0) {
         toast.error(
-          `Maximum ${MAX_FILES_LIMIT} files allowed. Please remove some files before adding more.`
+          `Maximum ${MAX_FILES_LIMIT} files allowed. Please remove some files before adding more.`,
         );
         return;
       }
@@ -196,7 +206,7 @@ export const useFileUpload = () => {
     const messages: string[] = [];
     if (truncated) {
       messages.push(
-        `Only ${filesToProcess.length} files were added. Maximum ${MAX_FILES_LIMIT} files allowed.`
+        `Only ${filesToProcess.length} files were added. Maximum ${MAX_FILES_LIMIT} files allowed.`,
       );
     }
     if (invalidFiles.length > 0) {
@@ -205,7 +215,9 @@ export const useFileUpload = () => {
     if (messages.length > 0) {
       toast.error(messages.join("\n\n"));
     } else if (filesToProcess.length > 0) {
-      toast.success(`${filesToProcess.length} file${filesToProcess.length > 1 ? 's' : ''} pasted and uploading`);
+      toast.success(
+        `${filesToProcess.length} file${filesToProcess.length > 1 ? "s" : ""} pasted and uploading`,
+      );
     }
   };
 
@@ -218,12 +230,15 @@ export const useFileUpload = () => {
 
   // Helper to check if all files have finished uploading
   const allFilesUploaded = () => {
-    return uploadedFiles.length > 0 && uploadedFiles.every(file => file.uploaded && !file.uploading);
+    return (
+      uploadedFiles.length > 0 &&
+      uploadedFiles.every((file) => file.uploaded && !file.uploading)
+    );
   };
 
   // Helper to check if any files are currently uploading
   const anyFilesUploading = () => {
-    return uploadedFiles.some(file => file.uploading);
+    return uploadedFiles.some((file) => file.uploading);
   };
 
   return {

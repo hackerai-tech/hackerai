@@ -32,7 +32,7 @@ export const FileUploadPreview = ({
     src: string;
     alt: string;
   } | null>(null);
-  
+
   // Use ref to store base64 previews to avoid regenerating them
   const previewCache = useRef<Map<string, string>>(new Map());
 
@@ -57,7 +57,7 @@ export const FileUploadPreview = ({
         if (isImageFile(uploadedFile.file)) {
           const fileKey = generateFileKey(uploadedFile.file);
           const cachedPreview = previewCache.current.get(fileKey);
-          
+
           if (cachedPreview) {
             // Use cached preview
             preview.preview = cachedPreview;
@@ -174,11 +174,9 @@ export const FileUploadPreview = ({
                               {filePreview.file.name}
                             </div>
                             <div className="text-muted-foreground truncate text-xs">
-                              {filePreview.error ? (
-                                "Upload failed"
-                              ) : (
-                                `Document • ${formatFileSize(filePreview.file.size)}`
-                              )}
+                              {filePreview.error
+                                ? "Upload failed"
+                                : `Document • ${formatFileSize(filePreview.file.size)}`}
                             </div>
                           </div>
                         </div>

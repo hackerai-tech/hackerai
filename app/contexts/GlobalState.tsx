@@ -24,7 +24,10 @@ interface GlobalStateType {
   setUploadedFiles: (files: UploadedFileState[]) => void;
   addUploadedFile: (file: UploadedFileState) => void;
   removeUploadedFile: (index: number) => void;
-  updateUploadedFile: (index: number, updates: Partial<UploadedFileState>) => void;
+  updateUploadedFile: (
+    index: number,
+    updates: Partial<UploadedFileState>,
+  ) => void;
 
   // Mode state
   mode: ChatMode;
@@ -158,8 +161,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setInput("");
   };
 
-
-
   const clearUploadedFiles = () => {
     setUploadedFiles([]);
   };
@@ -172,11 +173,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const updateUploadedFile = useCallback((index: number, updates: Partial<UploadedFileState>) => {
-    setUploadedFiles((prev) => 
-      prev.map((file, i) => i === index ? { ...file, ...updates } : file)
-    );
-  }, []);
+  const updateUploadedFile = useCallback(
+    (index: number, updates: Partial<UploadedFileState>) => {
+      setUploadedFiles((prev) =>
+        prev.map((file, i) => (i === index ? { ...file, ...updates } : file)),
+      );
+    },
+    [],
+  );
 
   const initializeChat = useCallback((chatId: string) => {
     setIsSwitchingChats(true);
