@@ -6,20 +6,15 @@ import {
   MAX_FILES_LIMIT,
   uploadSingleFileToConvex,
   validateFile,
-  type UploadedFileState,
   createFileMessagePartFromUploadedFile,
 } from "@/lib/utils/file-utils";
+import {
+  UploadedFileState,
+  FileProcessingResult,
+  FileSource,
+} from "@/types/file";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
-
-type FileProcessingResult = {
-  validFiles: File[];
-  invalidFiles: string[];
-  truncated: boolean;
-  processedCount: number;
-};
-
-type FileSource = "upload" | "paste" | "drop";
 
 export const useFileUpload = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);

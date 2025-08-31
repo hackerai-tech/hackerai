@@ -1,4 +1,4 @@
-import { FileMessagePart, FileUIObject, UploadedFileState } from "@/types/file";
+import { FileMessagePart, UploadedFileState } from "@/types/file";
 
 /**
  * File upload utilities for handling Convex file storage

@@ -12,7 +12,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
-import type { UploadedFileState } from "@/lib/utils/file-utils";
+import type { UploadedFileState } from "@/types/file";
 
 interface GlobalStateType {
   // Input state

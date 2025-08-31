@@ -5,23 +5,13 @@ import {
   fileToBase64,
   formatFileSize,
   isImageFile,
-  type UploadedFileState,
 } from "@/lib/utils/file-utils";
 import { ImageViewer } from "./ImageViewer";
-
-interface FileUploadPreviewProps {
-  uploadedFiles: UploadedFileState[];
-  onRemoveFile: (index: number) => void;
-}
-
-interface FilePreview {
-  file: File;
-  preview?: string;
-  loading: boolean;
-  uploading: boolean;
-  uploaded: boolean;
-  error?: string;
-}
+import {
+  UploadedFileState,
+  FileUploadPreviewProps,
+  FilePreview,
+} from "@/types/file";
 
 export const FileUploadPreview = ({
   uploadedFiles,

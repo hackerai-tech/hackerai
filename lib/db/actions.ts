@@ -193,14 +193,6 @@ export async function updateChat({
   }
 }
 
-export interface FileUIObject {
-  type: "file";
-  filename: string;
-  mediaType: string;
-  url: string;
-  storageId: string;
-}
-
 /**
  * Transforms storageIds to URLs in file parts of messages
  * @param messages - Array of messages to process
