@@ -4,7 +4,6 @@ import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { ChatMessage } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
-import { createFileUIObject, type FileUIObject } from "@/lib/utils/file-utils";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -43,11 +42,13 @@ export const useChatHandlers = ({
   } = useGlobalState();
 
   const deleteLastAssistantMessage = useMutation(
-    api.messages.deleteLastAssistantMessage,
+    api.messages.deleteLastAssistantMessageFromClient,
   );
-  const saveMessageFromClient = useMutation(api.messages.saveMessageFromClient);
+  const saveAssistantMessage = useMutation(
+    api.messages.saveAssistantMessageFromClient,
+  );
   const regenerateWithNewContent = useMutation(
-    api.messages.regenerateWithNewContent,
+    api.messages.regenerateWithNewContentFromClient,
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -71,16 +72,23 @@ export const useChatHandlers = ({
 
       try {
         // Get file objects from uploaded files - URLs are already resolved in global state
-        const fileObjects: FileUIObject[] = uploadedFiles
-          .filter((file) => file.uploaded && file.url)
-          .map((uploadedFile) =>
-            createFileUIObject(uploadedFile.file, uploadedFile.url!),
-          );
+        const validFiles = uploadedFiles.filter(
+          (file) => file.uploaded && file.url && file.storageId,
+        );
 
         sendMessage(
           {
             text: input.trim() || undefined,
-            files: fileObjects.length > 0 ? fileObjects : undefined,
+            files:
+              validFiles.length > 0
+                ? validFiles.map((uploadedFile) => ({
+                    type: "file" as const,
+                    filename: uploadedFile.file.name,
+                    mediaType: uploadedFile.file.type,
+                    url: uploadedFile.url!,
+                    storageId: uploadedFile.storageId!,
+                  }))
+                : undefined,
           },
           {
             body: {
@@ -114,7 +122,7 @@ export const useChatHandlers = ({
     const lastMessage = messages[messages.length - 1];
     if (lastMessage && lastMessage.role === "assistant") {
       try {
-        await saveMessageFromClient({
+        await saveAssistantMessage({
           id: lastMessage.id,
           chatId,
           role: lastMessage.role,

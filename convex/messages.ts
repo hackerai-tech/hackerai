@@ -15,6 +15,7 @@ export const saveMessage = mutation({
     chatId: v.string(),
     role: v.string(),
     parts: v.array(v.any()),
+    storageIds: v.optional(v.array(v.id("_storage"))),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -32,13 +33,12 @@ export const saveMessage = mutation({
         return null;
       }
 
-      // Extract storage IDs from file parts for cleanup tracking
-
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
+        storage_ids: args.storageIds,
         update_time: Date.now(),
       });
 
@@ -111,7 +111,7 @@ export const getMessagesByChatId = query({
 /**
  * Save a message from the client (with authentication)
  */
-export const saveMessageFromClient = mutation({
+export const saveAssistantMessageFromClient = mutation({
   args: {
     id: v.string(),
     chatId: v.string(),
@@ -152,7 +152,7 @@ export const saveMessageFromClient = mutation({
 /**
  * Delete the last assistant message from a chat
  */
-export const deleteLastAssistantMessage = mutation({
+export const deleteLastAssistantMessageFromClient = mutation({
   args: {
     chatId: v.string(),
   },
@@ -208,7 +208,7 @@ export const deleteLastAssistantMessage = mutation({
 /**
  * Regenerate with new content by updating a message and deleting subsequent messages
  */
-export const regenerateWithNewContent = mutation({
+export const regenerateWithNewContentFromClient = mutation({
   args: {
     messageId: v.id("messages"),
     newContent: v.string(),

@@ -3,6 +3,7 @@ import { getModerationResult } from "@/lib/moderation";
 import { PostHog } from "posthog-node";
 import type { ChatMode, ExecutionMode } from "@/types";
 import { UIMessage } from "ai";
+import { transformStorageIdsToUrls } from "@/lib/db/actions";
 
 /**
  * Checks if messages contain PDF files or images
@@ -79,19 +80,22 @@ export async function processChatMessages({
   // Truncate messages to stay within token limit (processing is now done on frontend)
   const truncatedMessages = truncateMessagesToTokenLimit(messages);
 
+  // Transform storageIds to URLs after truncation
+  const messagesWithUrls = await transformStorageIdsToUrls(truncatedMessages);
+
   // Check if truncated messages contain media files (images or PDFs)
-  const containsMediaFiles = hasMediaFiles(truncatedMessages);
+  const containsMediaFiles = hasMediaFiles(messagesWithUrls);
 
   // Determine execution mode from environment variable
   const executionMode: ExecutionMode =
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
   // Check moderation for the last user message
-  const moderationResult = await getModerationResult(truncatedMessages);
+  const moderationResult = await getModerationResult(messagesWithUrls);
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(truncatedMessages);
+    addAuthMessage(messagesWithUrls);
   }
 
   // Capture analytics event
@@ -104,7 +108,7 @@ export async function processChatMessages({
 
   return {
     executionMode,
-    truncatedMessages,
+    processedMessages: messagesWithUrls,
     shouldUncensorResponse: moderationResult.shouldUncensorResponse,
     hasMediaFiles: containsMediaFiles,
   };

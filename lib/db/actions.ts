@@ -4,8 +4,40 @@ import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessagePart } from "ai";
+import { UIMessage } from "ai";
+import { Id } from "@/convex/_generated/dataModel";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+/**
+ * Extract storage IDs from message parts
+ * @param parts - Array of message parts
+ * @returns Array of storage IDs found in file parts
+ */
+function extractStorageIdsFromParts(
+  parts: UIMessagePart<any, any>[],
+): string[] {
+  const storageIds: string[] = [];
+
+  for (const part of parts) {
+    if (part.type === "file") {
+      // Check if storageId exists directly
+      if ((part as any).storageId) {
+        storageIds.push((part as any).storageId);
+      }
+      // Also check url field as it might contain storageId (before transformation)
+      else if ((part as any).url && typeof (part as any).url === "string") {
+        // Assume url contains storageId if it doesn't start with http
+        const url = (part as any).url;
+        if (!url.startsWith("http")) {
+          storageIds.push(url);
+        }
+      }
+    }
+  }
+
+  return storageIds;
+}
 
 export async function getChatById({ id }: { id: string }) {
   try {
@@ -51,12 +83,17 @@ export async function saveMessage({
   };
 }) {
   try {
+    // Extract storage IDs from file parts
+    const storageIds = extractStorageIdsFromParts(message.parts);
+
     return await convex.mutation(api.messages.saveMessage, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       id: message.id,
       chatId,
       role: message.role,
       parts: message.parts,
+      storageIds:
+        storageIds.length > 0 ? (storageIds as Id<"_storage">[]) : undefined,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");
@@ -153,5 +190,109 @@ export async function updateChat({
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to update chat");
+  }
+}
+
+export interface FileUIObject {
+  type: "file";
+  filename: string;
+  mediaType: string;
+  url: string;
+  storageId: string;
+}
+
+/**
+ * Transforms storageIds to URLs in file parts of messages
+ * @param messages - Array of messages to process
+ */
+export async function transformStorageIdsToUrls(
+  messages: UIMessage[],
+): Promise<UIMessage[]> {
+  // Create a deep copy of messages to avoid mutation
+  const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
+
+  // Collect all storageIds that need URL fetching
+  const storageIdsToFetch: string[] = [];
+  const storageIdToFilePartMap = new Map<
+    string,
+    Array<{ messageIndex: number; partIndex: number }>
+  >();
+
+  for (
+    let messageIndex = 0;
+    messageIndex < updatedMessages.length;
+    messageIndex++
+  ) {
+    const message = updatedMessages[messageIndex];
+    if (!message.parts) continue;
+
+    for (let partIndex = 0; partIndex < message.parts.length; partIndex++) {
+      const part = message.parts[partIndex] as any;
+
+      if (part.type === "file") {
+        // Always remove storageId at the end
+        const cleanupFilePart = () => {
+          if (part.storageId) {
+            delete part.storageId;
+          }
+        };
+
+        // If already has HTTP URL, just cleanup and continue
+        if (part.url && part.url.startsWith("http")) {
+          cleanupFilePart();
+          continue;
+        }
+
+        // Extract storageId that needs URL fetching
+        const storageId = part.storageId || part.url;
+        if (storageId && !storageId.startsWith("http")) {
+          if (!storageIdToFilePartMap.has(storageId)) {
+            storageIdsToFetch.push(storageId);
+            storageIdToFilePartMap.set(storageId, []);
+          }
+          storageIdToFilePartMap
+            .get(storageId)!
+            .push({ messageIndex, partIndex });
+        }
+      }
+    }
+  }
+
+  // If no URLs to fetch, return updated messages (storageIds already cleaned up)
+  if (storageIdsToFetch.length === 0) {
+    return updatedMessages;
+  }
+
+  try {
+    // Fetch URLs for storageIds
+    const urls = await convex.query(api.fileStorage.getFileUrlsWithServiceKey, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      storageIds: storageIdsToFetch as Id<"_storage">[],
+    });
+
+    // Update file parts with fetched URLs and remove storageIds
+    for (let i = 0; i < storageIdsToFetch.length; i++) {
+      const storageId = storageIdsToFetch[i];
+      const url = urls[i];
+      const filePartPositions = storageIdToFilePartMap.get(storageId);
+
+      if (url && filePartPositions) {
+        for (const { messageIndex, partIndex } of filePartPositions) {
+          const filePart = updatedMessages[messageIndex].parts![
+            partIndex
+          ] as any;
+          if (filePart.type === "file") {
+            filePart.url = url;
+            delete filePart.storageId; // Remove storageId after setting URL
+          }
+        }
+      }
+    }
+
+    return updatedMessages;
+  } catch (error) {
+    console.error("Failed to transform storageIds to URLs:", error);
+    // Return original messages if transformation fails
+    return messages;
   }
 }

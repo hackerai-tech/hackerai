@@ -68,7 +68,7 @@ export async function POST(req: NextRequest) {
 
     // Process chat messages with moderation, truncation, and analytics
     const posthog = PostHogClient();
-    const { executionMode, truncatedMessages, hasMediaFiles } =
+    const { executionMode, processedMessages, hasMediaFiles } =
       await processChatMessages({
         messages,
         mode,
@@ -90,7 +90,7 @@ export async function POST(req: NextRequest) {
         // Generate title in parallel if this is a new chat
         const titlePromise = isNewChat
           ? generateTitleFromUserMessageWithWriter(
-              truncatedMessages,
+              processedMessages,
               controller.signal,
               writer,
             )
@@ -102,7 +102,7 @@ export async function POST(req: NextRequest) {
         const result = streamText({
           model: myProvider.languageModel(selectedModel),
           system: systemPrompt(mode, executionMode),
-          messages: convertToModelMessages(truncatedMessages),
+          messages: convertToModelMessages(processedMessages),
           tools,
           abortSignal: controller.signal,
           headers: getAIHeaders(),

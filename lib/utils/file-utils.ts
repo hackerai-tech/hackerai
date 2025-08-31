@@ -1,31 +1,8 @@
+import { FileMessagePart, FileUIObject, UploadedFileState } from "@/types/file";
+
 /**
  * File upload utilities for handling Convex file storage
  */
-
-export interface FileMessagePart {
-  type: "file";
-  mediaType: string;
-  storageId: string;
-  name: string;
-  size: number;
-  url: string; // Always include URL for immediate rendering
-}
-
-export interface FileUIObject {
-  type: "file";
-  filename: string;
-  mediaType: string;
-  url: string;
-}
-
-export interface UploadedFileState {
-  file: File;
-  uploading: boolean;
-  uploaded: boolean;
-  error?: string;
-  storageId?: string;
-  url?: string; // Store the resolved URL
-}
 
 /**
  * Upload files to Convex storage and return file message parts
@@ -102,18 +79,6 @@ export async function uploadSingleFileToConvex(
 
   const { storageId } = await result.json();
   return storageId;
-}
-
-/**
- * Create file UI object from uploaded file state and URL
- */
-export function createFileUIObject(file: File, url: string): FileUIObject {
-  return {
-    type: "file" as const,
-    filename: file.name,
-    mediaType: file.type,
-    url,
-  };
 }
 
 /**

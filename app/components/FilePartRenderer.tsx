@@ -1,5 +1,5 @@
 import Image from "next/image";
-import React, { useState } from "react";
+import React, { useState, memo, useMemo } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
@@ -13,7 +13,7 @@ interface FilePartRendererProps {
   totalFileParts?: number;
 }
 
-export const FilePartRenderer = ({
+const FilePartRendererComponent = ({
   part,
   partIndex,
   messageId,
@@ -24,8 +24,8 @@ export const FilePartRenderer = ({
     alt: string;
   } | null>(null);
 
-  // Reusable file preview UI component
-  const FilePreviewCard = ({
+  // Memoize file preview component to prevent unnecessary re-renders
+  const FilePreviewCard = useMemo(() => ({
     partId,
     icon,
     fileName,
@@ -52,9 +52,10 @@ export const FilePartRenderer = ({
         </div>
       </div>
     </div>
-  );
+  ), []);
 
-  const ConvexFilePart = ({ part, partId }: { part: any; partId: string }) => {
+  // Memoize ConvexFilePart to prevent unnecessary re-renders and re-queries
+  const ConvexFilePart = memo(({ part, partId }: { part: any; partId: string }) => {
     // Use direct URL if available, otherwise fetch from storageId (for legacy messages)
     const shouldFetchUrl = part.storageId && !part.url;
     const fileUrl = useQuery(
@@ -143,9 +144,10 @@ export const FilePartRenderer = ({
         subtitle="Document"
       />
     );
-  };
+  });
 
-  const renderFilePart = () => {
+  // Memoize the rendered file part to prevent re-renders
+  const renderedFilePart = useMemo(() => {
     const partId = `${messageId}-file-${partIndex}`;
 
     // Check if this is a file part with either URL or storageId
@@ -162,11 +164,11 @@ export const FilePartRenderer = ({
         subtitle="Document"
       />
     );
-  };
+  }, [messageId, partIndex, part.url, part.storageId, part.name, part.filename]);
 
   return (
     <>
-      {renderFilePart()}
+      {renderedFilePart}
       {/* Image Viewer Modal */}
       {selectedImage && (
         <ImageViewer
@@ -179,3 +181,18 @@ export const FilePartRenderer = ({
     </>
   );
 };
+
+// Memoize the entire component to prevent unnecessary re-renders during streaming
+export const FilePartRenderer = memo(FilePartRendererComponent, (prevProps, nextProps) => {
+  // Custom comparison to prevent re-renders when props haven't meaningfully changed
+  return (
+    prevProps.messageId === nextProps.messageId &&
+    prevProps.partIndex === nextProps.partIndex &&
+    prevProps.totalFileParts === nextProps.totalFileParts &&
+    prevProps.part.url === nextProps.part.url &&
+    prevProps.part.storageId === nextProps.part.storageId &&
+    prevProps.part.name === nextProps.part.name &&
+    prevProps.part.filename === nextProps.part.filename &&
+    prevProps.part.mediaType === nextProps.part.mediaType
+  );
+});
