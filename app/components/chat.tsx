@@ -15,6 +15,8 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useFileUpload } from "../hooks/useFileUpload";
+import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
@@ -193,6 +195,16 @@ export const Chat = ({ id }: { id?: string }) => {
     useMessageScroll();
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
 
+  // File upload with drag and drop support
+  const {
+    isDragOver,
+    showDragOverlay,
+    handleDragEnter,
+    handleDragLeave,
+    handleDragOver,
+    handleDrop,
+  } = useFileUpload();
+
   // Handle instant scroll to bottom when switching chats
   useEffect(() => {
     if (isSwitchingChats && messages.length > 0) {
@@ -200,6 +212,26 @@ export const Chat = ({ id }: { id?: string }) => {
       setIsSwitchingChats(false);
     }
   }, [messages, scrollToBottom, isSwitchingChats, setIsSwitchingChats]);
+
+  // Set up drag and drop event listeners
+  useEffect(() => {
+    const handleDocumentDragEnter = (e: DragEvent) => handleDragEnter(e);
+    const handleDocumentDragLeave = (e: DragEvent) => handleDragLeave(e);
+    const handleDocumentDragOver = (e: DragEvent) => handleDragOver(e);
+    const handleDocumentDrop = (e: DragEvent) => handleDrop(e);
+
+    document.addEventListener("dragenter", handleDocumentDragEnter);
+    document.addEventListener("dragleave", handleDocumentDragLeave);
+    document.addEventListener("dragover", handleDocumentDragOver);
+    document.addEventListener("drop", handleDocumentDrop);
+
+    return () => {
+      document.removeEventListener("dragenter", handleDocumentDragEnter);
+      document.removeEventListener("dragleave", handleDocumentDragLeave);
+      document.removeEventListener("dragover", handleDocumentDragOver);
+      document.removeEventListener("drop", handleDocumentDrop);
+    };
+  }, [handleDragEnter, handleDragLeave, handleDragOver, handleDrop]);
 
   // Chat handlers
   const { handleSubmit, handleStop, handleRegenerate, handleEditMessage } =
@@ -241,7 +273,7 @@ export const Chat = ({ id }: { id?: string }) => {
         )}
 
         {/* Main Content Area */}
-        <div className="flex flex-1 min-w-0">
+        <div className="flex flex-1 min-w-0 relative">
           {/* Left side - Chat content */}
           <div className="flex flex-col flex-1 min-w-0">
             {/* Unified Header */}
@@ -330,6 +362,12 @@ export const Chat = ({ id }: { id?: string }) => {
               {sidebarOpen && <ComputerSidebar />}
             </div>
           )}
+
+          {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
+          <DragDropOverlay
+            isVisible={showDragOverlay}
+            isDragOver={isDragOver}
+          />
         </div>
       </div>
 
