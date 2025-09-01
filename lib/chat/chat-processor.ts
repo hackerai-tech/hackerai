@@ -2,7 +2,7 @@ import { getModerationResult } from "@/lib/moderation";
 import { PostHog } from "posthog-node";
 import type { ChatMode, ExecutionMode } from "@/types";
 import { UIMessage } from "ai";
-import { transformStorageIdsToUrls, getDocumentContentForFiles } from "@/lib/db/actions";
+import { transformStorageIdsToUrls, getDocumentContentForFiles } from "@/lib/utils/file-transform-utils";
 import { extractAllFileIdsFromMessages } from "@/lib/utils/file-token-utils";
 
 /**
