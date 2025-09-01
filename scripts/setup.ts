@@ -111,7 +111,7 @@ async function writeEnvFile(envVars: Record<string, string>) {
 # =============================================================================
 
 # Convex deployment configuration
-CONVEX_DEPLOYMENT=
+CONVEX_DEPLOYMENT=${envVars.CONVEX_DEPLOYMENT || ""}
 NEXT_PUBLIC_CONVEX_URL=${envVars.NEXT_PUBLIC_CONVEX_URL || ""}
 
 # WorkOS Authentication (Required for user management and conversation persistence)
@@ -156,7 +156,7 @@ OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 
 # Stripe (Optional)
 # STRIPE_API_KEY=
-# NEXT_PUBLIC_BASE_URL=http://localhost:3000/
+NEXT_PUBLIC_BASE_URL=${envVars.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}
 `;
 
   await fs.writeFile(path.join(process.cwd(), ".env.local"), envContent);
@@ -165,7 +165,10 @@ OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
   );
 }
 
-async function setupConvex(): Promise<string> {
+async function setupConvex(): Promise<{
+  NEXT_PUBLIC_CONVEX_URL: string;
+  CONVEX_DEPLOYMENT: string;
+}> {
   console.log(`\n${chalk.bold("Setting up Convex Database")}`);
   console.log(
     "Convex provides the real-time database and authentication backend",
@@ -177,27 +180,36 @@ async function setupConvex(): Promise<string> {
   const projectName = await question(
     "\nEnter a name for your new Convex project: ",
   );
+  const safeProject = projectName.trim();
+  if (!/^[a-zA-Z0-9_-]+$/.test(safeProject)) {
+    console.log(chalk.red("Project name must match /^[a-zA-Z0-9_-]+$/."));
+    return await setupConvex();
+  }
 
   try {
     console.log("Creating new Convex project (this may take a few moments)...");
     await execAsync(
-      `npx convex dev --once --configure=new --project=${projectName}`,
+      `npx convex dev --once --configure=new --project=${safeProject}`,
     );
     console.log(chalk.green("✓ Convex project created successfully"));
 
-    // Read the Convex URL from the generated .env.local file
+    // Read Convex variables from the generated .env.local file
     try {
       const envContent = await fs.readFile(
         path.join(process.cwd(), ".env.local"),
         "utf8",
       );
-      const convexUrlMatch = envContent.match(/NEXT_PUBLIC_CONVEX_URL=(.*)/);
-      return convexUrlMatch?.[1] || "";
+      const convexUrlMatch = envContent.match(/^NEXT_PUBLIC_CONVEX_URL=(.*)$/m);
+      const deploymentMatch = envContent.match(/^CONVEX_DEPLOYMENT=(.*)$/m);
+      return {
+        NEXT_PUBLIC_CONVEX_URL: convexUrlMatch?.[1] || "",
+        CONVEX_DEPLOYMENT: deploymentMatch?.[1] || "",
+      };
     } catch (error) {
       console.log(
-        chalk.yellow("⚠️  Could not read CONVEX_URL from generated file"),
+        chalk.yellow("⚠️  Could not read Convex env from generated file"),
       );
-      return "";
+      return { NEXT_PUBLIC_CONVEX_URL: "", CONVEX_DEPLOYMENT: "" };
     }
   } catch (error) {
     console.log(chalk.red("✗ Failed to create Convex project"));
@@ -228,7 +240,7 @@ async function main() {
   await configureWorkOSDashboard();
 
   // Setup Convex database
-  const NEXT_PUBLIC_CONVEX_URL = await setupConvex();
+  const { NEXT_PUBLIC_CONVEX_URL, CONVEX_DEPLOYMENT } = await setupConvex();
 
   // Write the complete environment file
   await writeEnvFile({
@@ -239,6 +251,8 @@ async function main() {
     NEXT_PUBLIC_WORKOS_REDIRECT_URI,
     WORKOS_COOKIE_PASSWORD,
     NEXT_PUBLIC_CONVEX_URL,
+    CONVEX_DEPLOYMENT,
+    NEXT_PUBLIC_BASE_URL,
   });
 
   console.log(`\n${chalk.green.bold("🎉 Setup completed successfully!")}`);

@@ -51,9 +51,9 @@ export const checkRateLimit = async (
 
       let cause: string;
       if (isPro) {
-        cause = `You've reached the current usage cap for HackerAI, please try again after ${timeString}.`;
+        cause = `You've reached your rate limit, please try again after ${timeString}.`;
       } else {
-        cause = `You've reached the current usage cap for HackerAI, please try again after ${timeString}.\n\nUpgrade to Pro for higher usage limits and more features.`;
+        cause = `You've reached your rate limit, please try again after ${timeString}.\n\nUpgrade to Pro for higher usage limits and more features.`;
       }
 
       throw new ChatSDKError("rate_limit:chat", cause);
