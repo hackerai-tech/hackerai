@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "setup": "pnpm install && npx tsx scripts/setup.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.23",

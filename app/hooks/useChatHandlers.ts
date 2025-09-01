@@ -68,7 +68,7 @@ export const useChatHandlers = ({
       if (tokenCount > MAX_TOKENS) {
         const hasFiles = uploadedFiles.length > 0;
         toast.error("Message is too long", {
-          description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? ' or remove some files' : ''}.`,
+          description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}.`,
         });
         return;
       }
