@@ -1,9 +1,10 @@
 import { useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
-import { useMutation, useConvex } from "convex/react";
+import { useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
+  MAX_TOTAL_TOKENS,
   uploadSingleFileToConvex,
   validateFile,
   createFileMessagePartFromUploadedFile,
@@ -24,6 +25,7 @@ export const useFileUpload = () => {
     updateUploadedFile,
     removeUploadedFile,
     hasProPlan,
+    getTotalTokens,
   } = useGlobalState();
 
   // Drag and drop state
@@ -33,7 +35,7 @@ export const useFileUpload = () => {
 
   const generateUploadUrl = useMutation(api.fileStorage.generateUploadUrl);
   const deleteFile = useMutation(api.fileStorage.deleteFile);
-  const convex = useConvex();
+  const saveFile = useAction(api.fileActions.saveFile);
 
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
@@ -124,18 +126,18 @@ export const useFileUpload = () => {
   // Helper function to start file uploads
   const startFileUploads = useCallback(
     (files: File[]) => {
+      const startingIndex = uploadedFiles.length;
+
       files.forEach((file, index) => {
         // Add file as "uploading" state immediately
-        const uploadState: UploadedFileState = {
+        addUploadedFile({
           file,
           uploading: true,
           uploaded: false,
-        };
-        addUploadedFile(uploadState);
+        });
 
-        // Start upload in background
-        const uploadIndex = uploadedFiles.length + index;
-        uploadFileToConvex(file, uploadIndex);
+        // Start upload in background with correct index
+        uploadFileToConvex(file, startingIndex + index);
       });
     },
     [uploadedFiles.length, addUploadedFile],
@@ -176,20 +178,34 @@ export const useFileUpload = () => {
 
   const uploadFileToConvex = async (file: File, uploadIndex: number) => {
     try {
-      const storageId = await uploadSingleFileToConvex(file, generateUploadUrl);
+      const { fileId, url, tokens } = await uploadSingleFileToConvex(
+        file,
+        generateUploadUrl,
+        saveFile,
+      );
 
-      // Fetch the URL immediately after upload using the query
-      const url = await convex.query(api.fileStorage.getFileUrl, {
-        storageId: storageId as Id<"_storage">,
-      });
+      // Check token limit before updating state
+      const currentTotal = getTotalTokens();
+      const newTotal = currentTotal + tokens;
 
-      // Update the upload state to completed with storage ID and URL
-      updateUploadedFile(uploadIndex, {
-        uploading: false,
-        uploaded: true,
-        storageId,
-        url: url || undefined,
-      });
+      if (newTotal > MAX_TOTAL_TOKENS) {
+        // Exceeds limit - delete file from storage and remove from upload list
+        deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
+        removeUploadedFile(uploadIndex);
+
+        toast.error(
+          `${file.name} exceeds token limit (${newTotal}/${MAX_TOTAL_TOKENS})`,
+        );
+      } else {
+        // Within limits - set success state with tokens
+        updateUploadedFile(uploadIndex, {
+          tokens,
+          uploading: false,
+          uploaded: true,
+          fileId,
+          url,
+        });
+      }
     } catch (error) {
       console.error("Failed to upload file:", error);
       // Update the upload state to error
@@ -222,10 +238,10 @@ export const useFileUpload = () => {
     const uploadedFile = uploadedFiles[indexToRemove];
 
     // If the file was uploaded to Convex, delete it from storage
-    if (uploadedFile?.storageId) {
+    if (uploadedFile?.fileId) {
       try {
         await deleteFile({
-          storageId: uploadedFile.storageId as Id<"_storage">,
+          fileId: uploadedFile.fileId as Id<"files">,
         });
       } catch (error) {
         console.error("Failed to delete file from storage:", error);
@@ -233,6 +249,7 @@ export const useFileUpload = () => {
       }
     }
 
+    // removeUploadedFile in GlobalState will automatically handle token removal
     removeUploadedFile(indexToRemove);
   };
 
@@ -348,6 +365,7 @@ export const useFileUpload = () => {
     getUploadedFileMessageParts,
     allFilesUploaded,
     anyFilesUploading,
+    getTotalTokens,
     // Drag and drop state and handlers
     isDragOver,
     showDragOverlay,

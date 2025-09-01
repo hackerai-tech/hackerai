@@ -24,6 +24,7 @@ import {
   saveMessage,
   updateChat,
 } from "@/lib/db/actions";
+import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { myProvider } from "@/lib/ai/providers";
@@ -58,19 +59,22 @@ export async function POST(req: NextRequest) {
     // Check rate limit for the user
     await checkRateLimit(userId, isPro);
 
-    // Handle initial chat setup, regeneration, and save user message
+    // Truncate messages to stay within token limit with file tokens included
+    const truncatedMessages = await truncateMessagesWithFileTokens(messages);
+
+    // Handle initial chat setup, regeneration, and save user message with truncated messages
     const { isNewChat } = await handleInitialChatAndUserMessage({
       chatId,
       userId,
-      messages,
+      messages: truncatedMessages,
       regenerate,
     });
 
-    // Process chat messages with moderation, truncation, and analytics
+    // Process chat messages with moderation and analytics
     const posthog = PostHogClient();
     const { executionMode, processedMessages, hasMediaFiles } =
       await processChatMessages({
-        messages,
+        messages: truncatedMessages,
         mode,
         userID: userId,
         posthog,

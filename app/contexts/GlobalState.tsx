@@ -29,6 +29,12 @@ interface GlobalStateType {
     updates: Partial<UploadedFileState>,
   ) => void;
 
+  // Token tracking function
+  getTotalTokens: () => number;
+
+  // File upload status tracking
+  isUploadingFiles: boolean;
+
   // Mode state
   mode: ChatMode;
   setMode: (mode: ChatMode) => void;
@@ -165,6 +171,16 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setUploadedFiles([]);
   };
 
+  // Calculate total tokens from all files that have tokens
+  const getTotalTokens = useCallback((): number => {
+    return uploadedFiles.reduce((total, file) => {
+      return file.tokens ? total + file.tokens : total;
+    }, 0);
+  }, [uploadedFiles]);
+
+  // Check if any files are currently uploading
+  const isUploadingFiles = uploadedFiles.some((file) => file.uploading);
+
   const addUploadedFile = useCallback((file: UploadedFileState) => {
     setUploadedFiles((prev) => [...prev, file]);
   }, []);
@@ -231,6 +247,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     addUploadedFile,
     removeUploadedFile,
     updateUploadedFile,
+    getTotalTokens,
+    isUploadingFiles,
     mode,
     setMode,
     chatTitle,

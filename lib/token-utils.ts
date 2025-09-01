@@ -27,11 +27,33 @@ const getMessageTokenCount = (message: UIMessage): number => {
 };
 
 /**
+ * Extracts and counts tokens from message text, reasoning parts, and file tokens
+ */
+const getMessageTokenCountWithFiles = (
+  message: UIMessage,
+  fileTokens: Record<string, number> = {},
+): number => {
+  // Count text and reasoning tokens
+  const textTokens = getMessageTokenCount(message);
+
+  // Count file tokens
+  const fileTokenCount = message.parts
+    .filter((part) => part.type === "file")
+    .reduce((total, part) => {
+      const fileId = (part as any).fileId;
+      return total + (fileId ? fileTokens[fileId] || 0 : 0);
+    }, 0);
+
+  return textTokens + fileTokenCount;
+};
+
+/**
  * Truncates messages to stay within token limit, keeping newest messages first
  */
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
   maxTokens: number = MAX_TOKENS,
+  fileTokens: Record<string, number> = {},
 ): UIMessage[] => {
   if (messages.length === 0) return messages;
 
@@ -40,7 +62,10 @@ export const truncateMessagesToTokenLimit = (
 
   // Process from newest to oldest
   for (let i = messages.length - 1; i >= 0; i--) {
-    const messageTokens = getMessageTokenCount(messages[i]);
+    const messageTokens = getMessageTokenCountWithFiles(
+      messages[i],
+      fileTokens,
+    );
 
     if (totalTokens + messageTokens > maxTokens) break;
 
@@ -54,9 +79,13 @@ export const truncateMessagesToTokenLimit = (
 /**
  * Counts total tokens in all messages
  */
-export const countMessagesTokens = (messages: UIMessage[]): number => {
+export const countMessagesTokens = (
+  messages: UIMessage[],
+  fileTokens: Record<string, number> = {},
+): number => {
   return messages.reduce(
-    (total, message) => total + getMessageTokenCount(message),
+    (total, message) =>
+      total + getMessageTokenCountWithFiles(message, fileTokens),
     0,
   );
 };

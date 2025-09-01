@@ -267,10 +267,14 @@ export const deleteChat = mutation({
 
       for (const message of messages) {
         // Clean up files associated with this message
-        if (message.storage_ids && message.storage_ids.length > 0) {
-          for (const storageId of message.storage_ids) {
+        if (message.file_ids && message.file_ids.length > 0) {
+          for (const storageId of message.file_ids) {
             try {
-              await ctx.storage.delete(storageId);
+              const file = await ctx.db.get(storageId);
+              if (file) {
+                await ctx.storage.delete(file.storage_id);
+                await ctx.db.delete(file._id);
+              }
             } catch (error) {
               console.error(`Failed to delete file ${storageId}:`, error);
               // Continue with deletion even if file cleanup fails

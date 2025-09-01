@@ -1,7 +1,7 @@
 export interface FileMessagePart {
   type: "file";
   mediaType: string;
-  storageId: string;
+  fileId: string; // Database file ID for backend operations
   name: string;
   size: number;
   url: string; // Always include URL for immediate rendering
@@ -12,14 +12,15 @@ export interface UploadedFileState {
   uploading: boolean;
   uploaded: boolean;
   error?: string;
-  storageId?: string;
+  fileId?: string; // Database file ID for backend operations
   url?: string; // Store the resolved URL
+  tokens?: number; // Token count for the file
 }
 
 // File part interface for rendering components
 export interface FilePart {
   url?: string;
-  storageId?: string;
+  fileId?: string;
   name?: string;
   filename?: string;
   mediaType?: string;
@@ -57,3 +58,17 @@ export type FileProcessingResult = {
 };
 
 export type FileSource = "upload" | "paste" | "drop";
+
+// File processing chunk interface
+export interface FileItemChunk {
+  content: string;
+  tokens: number;
+}
+
+// Supported file types for processing
+export type SupportedFileType = "pdf" | "csv" | "json" | "txt" | "md" | "docx";
+
+export interface ProcessFileOptions {
+  fileType: SupportedFileType;
+  prepend?: string; // For markdown files
+}

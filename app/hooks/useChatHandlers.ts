@@ -39,6 +39,7 @@ export const useChatHandlers = ({
     setShouldFetchMessages,
     hasActiveChat,
     setHasActiveChat,
+    isUploadingFiles,
   } = useGlobalState();
 
   const deleteLastAssistantMessage = useMutation(
@@ -53,6 +54,10 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Prevent submission if files are still uploading
+    if (isUploadingFiles) {
+      return;
+    }
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
@@ -73,7 +78,7 @@ export const useChatHandlers = ({
       try {
         // Get file objects from uploaded files - URLs are already resolved in global state
         const validFiles = uploadedFiles.filter(
-          (file) => file.uploaded && file.url && file.storageId,
+          (file) => file.uploaded && file.url && file.fileId,
         );
 
         sendMessage(
@@ -86,7 +91,7 @@ export const useChatHandlers = ({
                     filename: uploadedFile.file.name,
                     mediaType: uploadedFile.file.type,
                     url: uploadedFile.url!,
-                    storageId: uploadedFile.storageId!,
+                    fileId: uploadedFile.fileId!,
                   }))
                 : undefined,
           },

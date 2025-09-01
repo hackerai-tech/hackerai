@@ -1,9 +1,9 @@
-import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
 import { getModerationResult } from "@/lib/moderation";
 import { PostHog } from "posthog-node";
 import type { ChatMode, ExecutionMode } from "@/types";
 import { UIMessage } from "ai";
-import { transformStorageIdsToUrls } from "@/lib/db/actions";
+import { transformStorageIdsToUrls, getDocumentContentForFiles } from "@/lib/db/actions";
+import { extractAllFileIdsFromMessages } from "@/lib/utils/file-token-utils";
 
 /**
  * Checks if messages contain PDF files or images
@@ -64,6 +64,59 @@ export function addAuthMessage(messages: UIMessage[]) {
 }
 
 /**
+ * Adds document content to the beginning of the first user message and removes non-media file parts
+ * @param messages - Array of messages to process
+ * @param documentContent - Formatted document content string
+ * @param fileIdsWithContent - Array of file IDs that have content (to be removed from file parts)
+ */
+export function addDocumentContentAndRemoveFileParts(
+  messages: UIMessage[], 
+  documentContent: string, 
+  fileIdsWithContent: string[]
+) {
+  if (!documentContent || messages.length === 0) {
+    return;
+  }
+
+  // Create a set for faster lookup
+  const fileIdsToRemove = new Set(fileIdsWithContent);
+
+  // Process all messages to remove non-media file parts
+  for (const message of messages) {
+    if (message.parts) {
+      message.parts = message.parts.filter((part: any) => {
+        // Keep non-file parts
+        if (part.type !== "file") {
+          return true;
+        }
+        
+        // Keep file parts that are not in the fileIdsWithContent list (i.e., media files)
+        return !fileIdsToRemove.has(part.fileId);
+      });
+    }
+  }
+
+  // Find the first user message and add document content
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === "user") {
+      const message = messages[i];
+
+      // Ensure message.parts exists
+      if (!message.parts) {
+        message.parts = [];
+      }
+
+      // Add document content as the first text part
+      message.parts.unshift({
+        type: "text",
+        text: documentContent,
+      });
+      break;
+    }
+  }
+}
+
+/**
  * Processes chat messages with moderation, truncation, and analytics
  */
 export async function processChatMessages({
@@ -77,13 +130,21 @@ export async function processChatMessages({
   userID: string;
   posthog: PostHog | null;
 }) {
-  // Truncate messages to stay within token limit (processing is now done on frontend)
-  const truncatedMessages = truncateMessagesToTokenLimit(messages);
+  // Transform storageIds to URLs
+  const messagesWithUrls = await transformStorageIdsToUrls(messages);
 
-  // Transform storageIds to URLs after truncation
-  const messagesWithUrls = await transformStorageIdsToUrls(truncatedMessages);
+  // Extract file IDs from all messages
+  const fileIds = extractAllFileIdsFromMessages(messagesWithUrls);
 
-  // Check if truncated messages contain media files (images or PDFs)
+  // Get document content for non-media files and add to the first user message
+  if (fileIds.length > 0) {
+    const { documentContent, fileIdsWithContent } = await getDocumentContentForFiles(fileIds);
+    if (documentContent) {
+      addDocumentContentAndRemoveFileParts(messagesWithUrls, documentContent, fileIdsWithContent);
+    }
+  }
+
+  // Check if messages contain media files (images or PDFs)
   const containsMediaFiles = hasMediaFiles(messagesWithUrls);
 
   // Determine execution mode from environment variable

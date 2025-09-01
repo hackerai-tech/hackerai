@@ -1,10 +1,7 @@
 import Image from "next/image";
 import React, { useState, memo, useMemo } from "react";
-import { useQuery } from "convex/react";
-import { api } from "@/convex/_generated/api";
-import { Id } from "@/convex/_generated/dataModel";
 import { ImageViewer } from "./ImageViewer";
-import { Loader2, AlertCircle, File } from "lucide-react";
+import { AlertCircle, File } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 
 const FilePartRendererComponent = ({
@@ -52,41 +49,20 @@ const FilePartRendererComponent = ({
     return PreviewCard;
   }, []);
 
-  // Memoize ConvexFilePart to prevent unnecessary re-renders and re-queries
+  // Memoize ConvexFilePart to prevent unnecessary re-renders
   const ConvexFilePart = memo(
     ({ part, partId }: { part: FilePart; partId: string }) => {
-      // Use direct URL if available, otherwise fetch from storageId (for legacy messages)
-      const shouldFetchUrl = part.storageId && !part.url;
-      const fileUrl = useQuery(
-        api.fileStorage.getFileUrl,
-        shouldFetchUrl
-          ? { storageId: part.storageId as Id<"_storage"> }
-          : "skip",
-      );
+      // All new files should have URLs directly available
+      const actualUrl = part.url;
 
-      // Determine the actual URL to use
-      const actualUrl = part.url || fileUrl;
-
-      if (shouldFetchUrl && fileUrl === undefined) {
-        // Loading state for legacy storageId-based files
+      if (!actualUrl) {
+        // Error state for files without URLs
         return (
           <FilePreviewCard
             partId={partId}
-            icon={<Loader2 className="h-6 w-6 text-white animate-spin" />}
+            icon={<AlertCircle className="h-6 w-6 text-red-500" />}
             fileName={part.name || part.filename || "Unknown file"}
-            subtitle="Loading file..."
-          />
-        );
-      }
-
-      if (!actualUrl || (shouldFetchUrl && fileUrl === null)) {
-        // File not found or error
-        return (
-          <FilePreviewCard
-            partId={partId}
-            icon={<AlertCircle className="h-6 w-6 text-white" />}
-            fileName={part.name || part.filename || "Unknown file"}
-            subtitle="File not found"
+            subtitle="File URL not available"
           />
         );
       }
@@ -156,8 +132,8 @@ const FilePartRendererComponent = ({
   const renderedFilePart = useMemo(() => {
     const partId = `${messageId}-file-${partIndex}`;
 
-    // Check if this is a file part with either URL or storageId
-    if (part.url || part.storageId) {
+    // Check if this is a file part with either URL or fileId
+    if (part.url || part.fileId) {
       return <ConvexFilePart part={part} partId={partId} />;
     }
 
@@ -170,14 +146,7 @@ const FilePartRendererComponent = ({
         subtitle="Document"
       />
     );
-  }, [
-    messageId,
-    partIndex,
-    part.url,
-    part.storageId,
-    part.name,
-    part.filename,
-  ]);
+  }, [messageId, partIndex, part.url, part.fileId, part.name, part.filename]);
 
   return (
     <>
@@ -205,7 +174,7 @@ export const FilePartRenderer = memo(
       prevProps.partIndex === nextProps.partIndex &&
       prevProps.totalFileParts === nextProps.totalFileParts &&
       prevProps.part.url === nextProps.part.url &&
-      prevProps.part.storageId === nextProps.part.storageId &&
+      prevProps.part.fileId === nextProps.part.fileId &&
       prevProps.part.name === nextProps.part.name &&
       prevProps.part.filename === nextProps.part.filename &&
       prevProps.part.mediaType === nextProps.part.mediaType

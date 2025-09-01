@@ -15,7 +15,7 @@ export const saveMessage = mutation({
     chatId: v.string(),
     role: v.string(),
     parts: v.array(v.any()),
-    storageIds: v.optional(v.array(v.id("_storage"))),
+    fileIds: v.optional(v.array(v.id("files"))),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -38,7 +38,7 @@ export const saveMessage = mutation({
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
-        storage_ids: args.storageIds,
+        file_ids: args.fileIds,
         update_time: Date.now(),
       });
 
@@ -181,12 +181,16 @@ export const deleteLastAssistantMessageFromClient = mutation({
       if (lastAssistantMessage) {
         // Clean up files associated with this message
         if (
-          lastAssistantMessage.storage_ids &&
-          lastAssistantMessage.storage_ids.length > 0
+          lastAssistantMessage.file_ids &&
+          lastAssistantMessage.file_ids.length > 0
         ) {
-          for (const storageId of lastAssistantMessage.storage_ids) {
+          for (const storageId of lastAssistantMessage.file_ids) {
             try {
-              await ctx.storage.delete(storageId);
+              const file = await ctx.db.get(storageId);
+              if (file) {
+                await ctx.storage.delete(file.storage_id);
+                await ctx.db.delete(file._id);
+              }
             } catch (error) {
               console.error(`Failed to delete file ${storageId}:`, error);
               // Continue with deletion even if file cleanup fails
@@ -242,7 +246,7 @@ export const regenerateWithNewContentFromClient = mutation({
       // Update message with new content and clear storage_ids since we're replacing with text
       await ctx.db.patch(message._id, {
         parts: [{ type: "text", text: args.newContent }],
-        storage_ids: undefined, // Clear file references when replacing with text
+        file_ids: undefined, // Clear file references when replacing with text
         update_time: Date.now(),
       });
 
@@ -258,12 +262,16 @@ export const regenerateWithNewContentFromClient = mutation({
 
       for (const msg of messages) {
         // Clean up files associated with this message
-        if (msg.storage_ids && msg.storage_ids.length > 0) {
-          for (const storageId of msg.storage_ids) {
+        if (msg.file_ids && msg.file_ids.length > 0) {
+          for (const fileId of msg.file_ids) {
             try {
-              await ctx.storage.delete(storageId);
+              const file = await ctx.db.get(fileId);
+              if (file) {
+                await ctx.storage.delete(file.storage_id);
+                await ctx.db.delete(file._id);
+              }
             } catch (error) {
-              console.error(`Failed to delete file ${storageId}:`, error);
+              console.error(`Failed to delete file ${fileId}:`, error);
               // Continue with deletion even if file cleanup fails
             }
           }

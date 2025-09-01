@@ -1,68 +1,19 @@
 import { FileMessagePart, UploadedFileState } from "@/types/file";
+import { Id } from "@/convex/_generated/dataModel";
 
 /**
- * File upload utilities for handling Convex file storage
- */
-
-/**
- * Upload files to Convex storage and return file message parts
- * Note: This function requires URLs to be fetched separately after upload
- * The getFileUrls function should be called imperatively using convex.query()
- */
-export async function uploadFilesToConvex(
-  files: FileList,
-  generateUploadUrl: () => Promise<string>,
-  getFileUrls: (storageIds: string[]) => Promise<(string | null)[]>,
-): Promise<FileMessagePart[]> {
-  const uploadPromises = Array.from(files).map(async (file) => {
-    // Step 1: Get upload URL
-    const postUrl = await generateUploadUrl();
-
-    // Step 2: Upload file to Convex storage
-    const result = await fetch(postUrl, {
-      method: "POST",
-      headers: { "Content-Type": file.type },
-      body: file,
-    });
-
-    if (!result.ok) {
-      throw new Error(
-        `Failed to upload file ${file.name}: ${result.statusText}`,
-      );
-    }
-
-    const { storageId } = await result.json();
-
-    return {
-      storageId,
-      file,
-    };
-  });
-
-  const uploadResults = await Promise.all(uploadPromises);
-  const storageIds = uploadResults.map((result) => result.storageId);
-
-  // Fetch URLs for all uploaded files
-  const urls = await getFileUrls(storageIds);
-
-  // Create file message parts with URLs
-  return uploadResults.map((result, index) => ({
-    type: "file" as const,
-    mediaType: result.file.type,
-    storageId: result.storageId,
-    name: result.file.name,
-    size: result.file.size,
-    url: urls[index] || "", // Fallback to empty string if URL fetch failed
-  }));
-}
-
-/**
- * Upload a single file to Convex storage and return storage ID
+ * Upload a single file to Convex storage and return file ID and URL
  */
 export async function uploadSingleFileToConvex(
   file: File,
   generateUploadUrl: () => Promise<string>,
-): Promise<string> {
+  saveFile: (args: {
+    storageId: Id<"_storage">;
+    name: string;
+    mediaType: string;
+    size: number;
+  }) => Promise<{ url: string; fileId: string; tokens: number }>,
+): Promise<{ fileId: string; url: string; tokens: number }> {
   // Step 1: Get upload URL
   const postUrl = await generateUploadUrl();
 
@@ -78,25 +29,34 @@ export async function uploadSingleFileToConvex(
   }
 
   const { storageId } = await result.json();
-  return storageId;
+
+  // Step 3: Save file metadata to database and get URL, file ID, and tokens
+  const { url, fileId, tokens } = await saveFile({
+    storageId: storageId as Id<"_storage">,
+    name: file.name,
+    mediaType: file.type,
+    size: file.size,
+  });
+
+  return { fileId, url, tokens };
 }
 
 /**
- * Create file message part from uploaded file state (includes both storageId and URL)
+ * Create file message part from uploaded file state (includes fileId and URL)
  */
 export function createFileMessagePart(
   uploadedFile: UploadedFileState,
 ): FileMessagePart {
-  if (!uploadedFile.storageId || !uploadedFile.url) {
+  if (!uploadedFile.fileId || !uploadedFile.url) {
     throw new Error(
-      "File must have both storageId and url to create message part",
+      "File must have both fileId and url to create message part",
     );
   }
 
   return {
     type: "file" as const,
     mediaType: uploadedFile.file.type,
-    storageId: uploadedFile.storageId,
+    fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,
     url: uploadedFile.url,
@@ -162,19 +122,24 @@ export function isImageFile(file: File): boolean {
 export const MAX_FILES_LIMIT = 5;
 
 /**
- * Helper to create file message part from uploadedFile that has both storageId and URL
+ * Maximum total tokens allowed across all files
+ */
+export const MAX_TOTAL_TOKENS = 24000;
+
+/**
+ * Helper to create file message part from uploadedFile that has both fileId and URL
  */
 export function createFileMessagePartFromUploadedFile(
   uploadedFile: UploadedFileState,
 ): FileMessagePart | null {
-  if (!uploadedFile.storageId || !uploadedFile.url || !uploadedFile.uploaded) {
+  if (!uploadedFile.fileId || !uploadedFile.url || !uploadedFile.uploaded) {
     return null;
   }
 
   return {
     type: "file" as const,
     mediaType: uploadedFile.file.type,
-    storageId: uploadedFile.storageId,
+    fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,
     url: uploadedFile.url,

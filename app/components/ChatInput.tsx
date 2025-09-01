@@ -44,7 +44,8 @@ export const ChatInput = ({
   isAtBottom = true,
   onScrollToBottom,
 }: ChatInputProps) => {
-  const { input, setInput, mode, setMode, uploadedFiles } = useGlobalState();
+  const { input, setInput, mode, setMode, uploadedFiles, isUploadingFiles } =
+    useGlobalState();
   const {
     fileInputRef,
     handleFileUploadEvent,
@@ -57,8 +58,12 @@ export const ChatInput = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Allow submission if there's text input or files attached
-    if (status === "ready" && (input.trim() || uploadedFiles.length > 0)) {
+    // Allow submission if there's text input or files attached, and no files are uploading
+    if (
+      status === "ready" &&
+      !isUploadingFiles &&
+      (input.trim() || uploadedFiles.length > 0)
+    ) {
       onSubmit(e);
     }
   };
@@ -227,21 +232,26 @@ export const ChatInput = ({
                 <form onSubmit={handleSubmit}>
                   <TooltipPrimitive.Root>
                     <TooltipTrigger asChild>
-                      <Button
-                        type="submit"
-                        disabled={
-                          status !== "ready" ||
-                          (!input.trim() && uploadedFiles.length === 0)
-                        }
-                        variant="default"
-                        className="rounded-full p-0 w-8 h-8 min-w-0"
-                        aria-label="Send message"
-                      >
-                        <ArrowUp className="w-[15px] h-[15px]" />
-                      </Button>
+                      <div className="inline-block">
+                        <Button
+                          type="submit"
+                          disabled={
+                            status !== "ready" ||
+                            isUploadingFiles ||
+                            (!input.trim() && uploadedFiles.length === 0)
+                          }
+                          variant="default"
+                          className="rounded-full p-0 w-8 h-8 min-w-0"
+                          aria-label="Send message"
+                        >
+                          <ArrowUp className="w-[15px] h-[15px]" />
+                        </Button>
+                      </div>
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>Send (⏎)</p>
+                      <p>
+                        {isUploadingFiles ? "File upload pending" : "Send (⏎)"}
+                      </p>
                     </TooltipContent>
                   </TooltipPrimitive.Root>
                 </form>

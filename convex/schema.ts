@@ -31,9 +31,19 @@ export default defineSchema({
     chat_id: v.string(),
     role: v.string(),
     parts: v.array(v.any()),
-    storage_ids: v.optional(v.array(v.id("_storage"))), // Track uploaded file storage IDs for cleanup
+    file_ids: v.optional(v.array(v.id("files"))),
     update_time: v.number(),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"]),
+
+  files: defineTable({
+    storage_id: v.id("_storage"),
+    user_id: v.string(),
+    name: v.string(),
+    media_type: v.string(),
+    size: v.number(),
+    file_token_size: v.number(),
+    content: v.optional(v.string()),
+  }).index("by_user_id", ["user_id"]),
 });
