@@ -1,7 +1,7 @@
 import { UIMessage } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 
-const MAX_TOKENS = 32000;
+export const MAX_TOKENS = 32000;
 
 // Token limits for different contexts
 export const STREAM_MAX_TOKENS = 4096;
@@ -121,6 +121,21 @@ export const sliceByTokens = (content: string, maxTokens: number): string => {
   if (tokens.length <= maxTokens) return content;
 
   return decode(tokens.slice(0, maxTokens));
+};
+
+/**
+ * Counts tokens for user input including text and uploaded files
+ */
+export const countInputTokens = (
+  input: string,
+  uploadedFiles: Array<{ tokens?: number }> = [],
+): number => {
+  const textTokens = countTokens(input);
+  const fileTokens = uploadedFiles.reduce(
+    (total, file) => total + (file.tokens || 0),
+    0,
+  );
+  return textTokens + fileTokens;
 };
 
 /**

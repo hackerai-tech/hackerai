@@ -24,6 +24,8 @@ import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { AttachmentButton } from "./AttachmentButton";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useEffect, useRef } from "react";
+import { countInputTokens, MAX_TOKENS } from "@/lib/token-utils";
+import { toast } from "sonner";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -85,11 +87,29 @@ export const ChatInput = ({
     [isGenerating, onStop],
   );
 
-  // Handle paste events for file uploads
+  // Handle paste events for file uploads and token validation
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
       // Only handle paste if the textarea is focused
       if (textareaRef.current === document.activeElement) {
+        // Check if pasting text content
+        const clipboardData = e.clipboardData;
+        if (clipboardData) {
+          const pastedText = clipboardData.getData("text");
+
+          if (pastedText) {
+            // Check token limit for the pasted text only
+            const tokenCount = countInputTokens(pastedText, []);
+            if (tokenCount > MAX_TOKENS) {
+              e.preventDefault();
+              toast.error("Content is too long to paste", {
+                description: `The content you're trying to paste is too large (${tokenCount.toLocaleString()} tokens). Please copy a smaller amount.`,
+              });
+              return;
+            }
+          }
+        }
+
         const filesProcessed = await handlePasteEvent(e);
         // If files were processed, the event.preventDefault() is already called
         // in handlePasteEvent, so no additional action needed here
