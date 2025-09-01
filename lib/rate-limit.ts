@@ -49,7 +49,12 @@ export const checkRateLimit = async (
         timeString = `${minutes} minute${minutes > 1 ? "s" : ""}`;
       }
 
-      const cause = `You've reached the current usage cap for HackerAI, please try again after ${timeString}.\n\nWant unlimited usage? Self-host your own HackerAI instance for free. [Learn more](https://github.com/hackerai-tech/hackerai)`;
+      let cause: string;
+      if (isPro) {
+        cause = `You've reached the current usage cap for HackerAI, please try again after ${timeString}.`;
+      } else {
+        cause = `You've reached the current usage cap for HackerAI, please try again after ${timeString}.\n\nUpgrade to Pro for higher usage limits and more features.`;
+      }
 
       throw new ChatSDKError("rate_limit:chat", cause);
     }
