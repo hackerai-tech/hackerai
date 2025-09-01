@@ -4,16 +4,15 @@ import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessagePart } from "ai";
-import { UIMessage } from "ai";
-import { Id } from "@/convex/_generated/dataModel";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
 export async function getChatById({ id }: { id: string }) {
   try {
     const selectedChat = await convex.query(api.chats.getChatById, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      serviceKey,
       id,
     });
     return selectedChat;
@@ -33,7 +32,7 @@ export async function saveChat({
 }) {
   try {
     return await convex.mutation(api.chats.saveChat, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      serviceKey,
       id,
       userId,
       title,
@@ -58,12 +57,12 @@ export async function saveMessage({
     const fileIds = extractFileIdsFromParts(message.parts);
 
     return await convex.mutation(api.messages.saveMessage, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      serviceKey,
       id: message.id,
       chatId,
       role: message.role,
       parts: message.parts,
-      fileIds: fileIds.length > 0 ? (fileIds as Id<"files">[]) : undefined,
+      fileIds: fileIds.length > 0 ? fileIds : undefined,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");
@@ -152,7 +151,7 @@ export async function updateChat({
 }) {
   try {
     return await convex.mutation(api.chats.updateChat, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      serviceKey,
       chatId,
       title,
       finishReason,
@@ -162,5 +161,3 @@ export async function updateChat({
     throw new ChatSDKError("bad_request:database", "Failed to update chat");
   }
 }
-
-

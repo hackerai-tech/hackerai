@@ -17,14 +17,14 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
  */
 export function extractFileIdsFromParts(
   parts: UIMessagePart<any, any>[],
-): string[] {
-  const fileIds: string[] = [];
+): Id<"files">[] {
+  const fileIds: Id<"files">[] = [];
 
   for (const part of parts) {
     if (part.type === "file") {
       // Check if fileId exists directly
       if ((part as any).fileId) {
-        fileIds.push((part as any).fileId);
+        fileIds.push((part as any).fileId as Id<"files">);
       }
     }
   }
@@ -38,7 +38,7 @@ export function extractFileIdsFromParts(
  * @returns Record mapping file IDs to their token counts
  */
 export async function getFileTokensByIds(
-  fileIds: string[],
+  fileIds: Id<"files">[],
 ): Promise<Record<string, number>> {
   if (fileIds.length === 0) {
     return {};
@@ -47,7 +47,7 @@ export async function getFileTokensByIds(
   try {
     const tokens = await convex.query(api.fileStorage.getFileTokensByFileIds, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      fileIds: fileIds as Id<"files">[],
+      fileIds: fileIds,
     });
 
     // Create a mapping from fileId to token count
@@ -69,8 +69,10 @@ export async function getFileTokensByIds(
  * @param messages - Array of messages to extract file IDs from
  * @returns Array of unique file IDs found in all messages
  */
-export function extractAllFileIdsFromMessages(messages: UIMessage[]): string[] {
-  const fileIds = new Set<string>();
+export function extractAllFileIdsFromMessages(
+  messages: UIMessage[],
+): Array<Id<"files">> {
+  const fileIds = new Set<Id<"files">>();
 
   for (const message of messages) {
     if (message.parts) {

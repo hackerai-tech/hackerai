@@ -2,7 +2,7 @@
 
 import { action } from "./_generated/server";
 import { v } from "convex/values";
-import { countTokens, encode } from "gpt-tokenizer";
+import { countTokens } from "gpt-tokenizer";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
 import { JSONLoader } from "langchain/document_loaders/fs/json";
@@ -13,6 +13,7 @@ import type {
   SupportedFileType,
   ProcessFileOptions,
 } from "../types/file";
+import { Id } from "./_generated/dataModel";
 
 // Constants
 const MAX_TOKEN_LIMIT = 24000;
@@ -344,7 +345,7 @@ const processDocxFile = async (text: string): Promise<FileItemChunk[]> => {
   return [
     {
       content: text,
-      tokens: encode(text).length,
+      tokens: countTokens(text),
     },
   ];
 };
@@ -362,7 +363,7 @@ export const saveFile = action({
   },
   returns: v.object({
     url: v.string(),
-    fileId: v.string(),
+    fileId: v.id("files"),
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
@@ -371,6 +372,11 @@ export const saveFile = action({
     if (!user) {
       throw new Error("Unauthorized: User not authenticated");
     }
+
+    // Check file upload limit (100 files maximum)
+    await ctx.runQuery(internal.fileStorage.checkFileUploadLimit, {
+      userId: user.subject,
+    });
 
     const fileUrl = await ctx.storage.getUrl(args.storageId);
 
@@ -394,15 +400,16 @@ export const saveFile = action({
       // Use the comprehensive file processing for all file types (including auto-detection and default handling)
       const chunks = await processFileAuto(file, args.name, args.mediaType);
       tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
-      
+
       // Save content for non-image, non-PDF, non-binary files
-      const shouldSaveContent = !isImageFile(args.mediaType) && 
-                               args.mediaType !== "application/pdf" && 
-                               chunks.length > 0 && 
-                               chunks[0].content.length > 0;
-      
+      const shouldSaveContent =
+        !isImageFile(args.mediaType) &&
+        args.mediaType !== "application/pdf" &&
+        chunks.length > 0 &&
+        chunks[0].content.length > 0;
+
       if (shouldSaveContent) {
-        fileContent = chunks.map(chunk => chunk.content).join('\n\n');
+        fileContent = chunks.map((chunk) => chunk.content).join("\n\n");
       }
     } catch (error) {
       // Check if this is a token limit error - if so, delete storage and re-throw
@@ -426,18 +433,15 @@ export const saveFile = action({
     }
 
     // Use internal mutation to save to database
-    const fileId: string = await ctx.runMutation(
-      internal.fileStorage.saveFileToDb,
-      {
-        storageId: args.storageId,
-        userId: user.subject,
-        name: args.name,
-        mediaType: args.mediaType,
-        size: args.size,
-        fileTokenSize: tokenSize,
-        content: fileContent,
-      },
-    );
+    const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
+      storageId: args.storageId,
+      userId: user.subject,
+      name: args.name,
+      mediaType: args.mediaType,
+      size: args.size,
+      fileTokenSize: tokenSize,
+      content: fileContent,
+    })) as Id<"files">;
 
     // Return the file URL, database file ID, and token count
     return {

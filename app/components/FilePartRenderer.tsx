@@ -146,7 +146,7 @@ const FilePartRendererComponent = ({
         subtitle="Document"
       />
     );
-  }, [messageId, partIndex, part.url, part.fileId, part.name, part.filename]);
+  }, [messageId, partIndex, part.url, part.fileId]);
 
   return (
     <>

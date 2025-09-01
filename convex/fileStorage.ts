@@ -27,6 +27,33 @@ export const countUserFiles = internalQuery({
 });
 
 /**
+ * Internal query to check if user has reached file upload limit (100 files maximum)
+ * Throws an error if limit is exceeded
+ */
+export const checkFileUploadLimit = internalQuery({
+  args: {
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const currentFileCount = await ctx.runQuery(
+      internal.fileStorage.countUserFiles,
+      {
+        userId: args.userId,
+      },
+    );
+
+    if (currentFileCount >= 100) {
+      throw new Error(
+        "Upload limit exceeded: Maximum of 100 files allowed per user",
+      );
+    }
+
+    return null;
+  },
+});
+
+/**
  * Generate upload URL for file storage with authentication
  */
 export const generateUploadUrl = mutation({
@@ -48,18 +75,9 @@ export const generateUploadUrl = mutation({
     }
 
     // Check file upload limit (100 files maximum)
-    const currentFileCount = await ctx.runQuery(
-      internal.fileStorage.countUserFiles,
-      {
-        userId: user.subject,
-      },
-    );
-
-    if (currentFileCount >= 100) {
-      throw new Error(
-        "Upload limit exceeded: Maximum of 100 files allowed per user",
-      );
-    }
+    await ctx.runQuery(internal.fileStorage.checkFileUploadLimit, {
+      userId: user.subject,
+    });
 
     return await ctx.storage.generateUploadUrl();
   },
@@ -188,12 +206,12 @@ export const getFileContentByFileIds = query({
       // Only return content for non-image, non-PDF files
       const isImage = file.media_type.startsWith("image/");
       const isPdf = file.media_type === "application/pdf";
-      
+
       return {
         id: args.fileIds[index],
         name: file.name,
         mediaType: file.media_type,
-        content: (isImage || isPdf) ? null : (file.content || null),
+        content: isImage || isPdf ? null : file.content || null,
       };
     });
   },

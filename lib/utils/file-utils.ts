@@ -32,7 +32,7 @@ export async function uploadSingleFileToConvex(
 
   // Step 3: Save file metadata to database and get URL, file ID, and tokens
   const { url, fileId, tokens } = await saveFile({
-    storageId: storageId as Id<"_storage">,
+    storageId,
     name: file.name,
     mediaType: file.type,
     size: file.size,
