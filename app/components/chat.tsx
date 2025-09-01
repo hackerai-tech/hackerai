@@ -2,12 +2,11 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { RefObject, useRef, useEffect, useState, useCallback } from "react";
+import { RefObject, useRef, useEffect, useState } from "react";
 import { useQuery, usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
-import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
 import MainSidebar from "./Sidebar";
@@ -16,6 +15,8 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useFileUpload } from "../hooks/useFileUpload";
+import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
@@ -57,6 +58,7 @@ export const Chat = ({ id }: { id?: string }) => {
       // Direct URL with ID - initialize immediately
       setChatId(id);
       initializeChat(id, true);
+
       hasInitializedRouteId.current = id;
       hasInitializedNewChat.current = false;
     } else if (!id && !currentChatId && !hasInitializedNewChat.current) {
@@ -64,12 +66,14 @@ export const Chat = ({ id }: { id?: string }) => {
       const newChatId = uuidv4();
       setChatId(newChatId);
       initializeNewChat();
+
       hasInitializedNewChat.current = true;
       hasInitializedRouteId.current = null;
     } else if (!id && currentChatId && currentChatId !== chatId) {
       // Global state has a different chat - switch to it
       setChatId(currentChatId);
       initializeChat(currentChatId, false);
+
       hasInitializedRouteId.current = null;
     }
   }, [id, currentChatId, chatId, initializeChat, initializeNewChat]);
@@ -191,6 +195,16 @@ export const Chat = ({ id }: { id?: string }) => {
     useMessageScroll();
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
 
+  // File upload with drag and drop support
+  const {
+    isDragOver,
+    showDragOverlay,
+    handleDragEnter,
+    handleDragLeave,
+    handleDragOver,
+    handleDrop,
+  } = useFileUpload();
+
   // Handle instant scroll to bottom when switching chats
   useEffect(() => {
     if (isSwitchingChats && messages.length > 0) {
@@ -198,6 +212,26 @@ export const Chat = ({ id }: { id?: string }) => {
       setIsSwitchingChats(false);
     }
   }, [messages, scrollToBottom, isSwitchingChats, setIsSwitchingChats]);
+
+  // Set up drag and drop event listeners
+  useEffect(() => {
+    const handleDocumentDragEnter = (e: DragEvent) => handleDragEnter(e);
+    const handleDocumentDragLeave = (e: DragEvent) => handleDragLeave(e);
+    const handleDocumentDragOver = (e: DragEvent) => handleDragOver(e);
+    const handleDocumentDrop = (e: DragEvent) => handleDrop(e);
+
+    document.addEventListener("dragenter", handleDocumentDragEnter);
+    document.addEventListener("dragleave", handleDocumentDragLeave);
+    document.addEventListener("dragover", handleDocumentDragOver);
+    document.addEventListener("drop", handleDocumentDrop);
+
+    return () => {
+      document.removeEventListener("dragenter", handleDocumentDragEnter);
+      document.removeEventListener("dragleave", handleDocumentDragLeave);
+      document.removeEventListener("dragover", handleDocumentDragOver);
+      document.removeEventListener("drop", handleDocumentDrop);
+    };
+  }, [handleDragEnter, handleDragLeave, handleDragOver, handleDrop]);
 
   // Chat handlers
   const { handleSubmit, handleStop, handleRegenerate, handleEditMessage } =
@@ -239,7 +273,7 @@ export const Chat = ({ id }: { id?: string }) => {
         )}
 
         {/* Main Content Area */}
-        <div className="flex flex-1 min-w-0">
+        <div className="flex flex-1 min-w-0 relative">
           {/* Left side - Chat content */}
           <div className="flex flex-col flex-1 min-w-0">
             {/* Unified Header */}
@@ -289,6 +323,9 @@ export const Chat = ({ id }: { id?: string }) => {
                           onStop={handleStop}
                           status={status}
                           isCentered={true}
+                          hasMessages={hasMessages}
+                          isAtBottom={isAtBottom}
+                          onScrollToBottom={handleScrollToBottom}
                         />
                       </div>
                     </div>
@@ -307,14 +344,11 @@ export const Chat = ({ id }: { id?: string }) => {
                   onSubmit={handleSubmit}
                   onStop={handleStop}
                   status={status}
+                  hasMessages={hasMessages}
+                  isAtBottom={isAtBottom}
+                  onScrollToBottom={handleScrollToBottom}
                 />
               )}
-
-              <ScrollToBottomButton
-                onClick={handleScrollToBottom}
-                hasMessages={hasMessages}
-                isAtBottom={isAtBottom}
-              />
             </div>
           </div>
 
@@ -328,6 +362,12 @@ export const Chat = ({ id }: { id?: string }) => {
               {sidebarOpen && <ComputerSidebar />}
             </div>
           )}
+
+          {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
+          <DragDropOverlay
+            isVisible={showDragOverlay}
+            isDragOver={isDragOver}
+          />
         </div>
       </div>
 

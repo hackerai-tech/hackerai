@@ -41,6 +41,10 @@ export const MessagePartHandler = ({
     case "text":
       return renderTextPart();
 
+    case "file":
+      // File parts are now handled directly in Messages.tsx
+      return null;
+
     case "tool-read_file":
     case "tool-write_file":
     case "tool-delete_file":

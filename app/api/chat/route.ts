@@ -24,6 +24,7 @@ import {
   saveMessage,
   updateChat,
 } from "@/lib/db/actions";
+import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { myProvider } from "@/lib/ai/providers";
@@ -58,22 +59,26 @@ export async function POST(req: NextRequest) {
     // Check rate limit for the user
     await checkRateLimit(userId, isPro);
 
-    // Handle initial chat setup, regeneration, and save user message
+    // Truncate messages to stay within token limit with file tokens included
+    const truncatedMessages = await truncateMessagesWithFileTokens(messages);
+
+    // Handle initial chat setup, regeneration, and save user message with truncated messages
     const { isNewChat } = await handleInitialChatAndUserMessage({
       chatId,
       userId,
-      messages,
+      messages: truncatedMessages,
       regenerate,
     });
 
-    // Process chat messages with moderation, truncation, and analytics
+    // Process chat messages with moderation and analytics
     const posthog = PostHogClient();
-    const { executionMode, truncatedMessages } = await processChatMessages({
-      messages,
-      mode,
-      userID: userId,
-      posthog,
-    });
+    const { executionMode, processedMessages, hasMediaFiles } =
+      await processChatMessages({
+        messages: truncatedMessages,
+        mode,
+        userID: userId,
+        posthog,
+      });
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -89,16 +94,19 @@ export async function POST(req: NextRequest) {
         // Generate title in parallel if this is a new chat
         const titlePromise = isNewChat
           ? generateTitleFromUserMessageWithWriter(
-              truncatedMessages,
+              processedMessages,
               controller.signal,
               writer,
             )
           : Promise.resolve(undefined);
 
+        // Select the appropriate model based on whether media files are present
+        const selectedModel = hasMediaFiles ? "vision-model" : "agent-model";
+
         const result = streamText({
-          model: myProvider.languageModel("agent-model"),
+          model: myProvider.languageModel(selectedModel),
           system: systemPrompt(mode, executionMode),
-          messages: convertToModelMessages(truncatedMessages),
+          messages: convertToModelMessages(processedMessages),
           tools,
           abortSignal: controller.signal,
           headers: getAIHeaders(),

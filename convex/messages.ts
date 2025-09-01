@@ -15,6 +15,7 @@ export const saveMessage = mutation({
     chatId: v.string(),
     role: v.string(),
     parts: v.array(v.any()),
+    fileIds: v.optional(v.array(v.id("files"))),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -37,6 +38,7 @@ export const saveMessage = mutation({
         chat_id: args.chatId,
         role: args.role,
         parts: args.parts,
+        file_ids: args.fileIds,
         update_time: Date.now(),
       });
 
@@ -109,7 +111,7 @@ export const getMessagesByChatId = query({
 /**
  * Save a message from the client (with authentication)
  */
-export const saveMessageFromClient = mutation({
+export const saveAssistantMessageFromClient = mutation({
   args: {
     id: v.string(),
     chatId: v.string(),
@@ -150,7 +152,7 @@ export const saveMessageFromClient = mutation({
 /**
  * Delete the last assistant message from a chat
  */
-export const deleteLastAssistantMessage = mutation({
+export const deleteLastAssistantMessageFromClient = mutation({
   args: {
     chatId: v.string(),
   },
@@ -177,6 +179,25 @@ export const deleteLastAssistantMessage = mutation({
         .first();
 
       if (lastAssistantMessage) {
+        // Clean up files associated with this message
+        if (
+          lastAssistantMessage.file_ids &&
+          lastAssistantMessage.file_ids.length > 0
+        ) {
+          for (const storageId of lastAssistantMessage.file_ids) {
+            try {
+              const file = await ctx.db.get(storageId);
+              if (file) {
+                await ctx.storage.delete(file.storage_id);
+                await ctx.db.delete(file._id);
+              }
+            } catch (error) {
+              console.error(`Failed to delete file ${storageId}:`, error);
+              // Continue with deletion even if file cleanup fails
+            }
+          }
+        }
+
         await ctx.db.delete(lastAssistantMessage._id);
       }
 
@@ -191,7 +212,7 @@ export const deleteLastAssistantMessage = mutation({
 /**
  * Regenerate with new content by updating a message and deleting subsequent messages
  */
-export const regenerateWithNewContent = mutation({
+export const regenerateWithNewContentFromClient = mutation({
   args: {
     messageId: v.id("messages"),
     newContent: v.string(),
@@ -222,12 +243,14 @@ export const regenerateWithNewContent = mutation({
         userId: user.subject,
       });
 
+      // Update message with new content and clear storage_ids since we're replacing with text
       await ctx.db.patch(message._id, {
         parts: [{ type: "text", text: args.newContent }],
+        file_ids: undefined, // Clear file references when replacing with text
         update_time: Date.now(),
       });
 
-      // Delete all messages after the given message
+      // Delete all messages after the given message and their associated files
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) =>
@@ -238,6 +261,22 @@ export const regenerateWithNewContent = mutation({
         .collect();
 
       for (const msg of messages) {
+        // Clean up files associated with this message
+        if (msg.file_ids && msg.file_ids.length > 0) {
+          for (const fileId of msg.file_ids) {
+            try {
+              const file = await ctx.db.get(fileId);
+              if (file) {
+                await ctx.storage.delete(file.storage_id);
+                await ctx.db.delete(file._id);
+              }
+            } catch (error) {
+              console.error(`Failed to delete file ${fileId}:`, error);
+              // Continue with deletion even if file cleanup fails
+            }
+          }
+        }
+
         await ctx.db.delete(msg._id);
       }
 

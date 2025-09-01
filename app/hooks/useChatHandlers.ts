@@ -9,7 +9,7 @@ interface UseChatHandlersProps {
   chatId: string;
   messages: ChatMessage[];
   resetSidebarAutoOpenRef: RefObject<(() => void) | null>;
-  sendMessage: (message: { text: string }, options?: { body?: any }) => void;
+  sendMessage: (message?: any, options?: { body?: any }) => void;
   stop: () => void;
   regenerate: (options?: { body?: any }) => void;
   setMessages: (
@@ -28,28 +28,39 @@ export const useChatHandlers = ({
 }: UseChatHandlersProps) => {
   const {
     input,
+    uploadedFiles,
     mode,
     setChatTitle,
     clearInput,
+    clearUploadedFiles,
     todos,
     setCurrentChatId,
     shouldFetchMessages,
     setShouldFetchMessages,
     hasActiveChat,
     setHasActiveChat,
+    isUploadingFiles,
   } = useGlobalState();
 
   const deleteLastAssistantMessage = useMutation(
-    api.messages.deleteLastAssistantMessage,
+    api.messages.deleteLastAssistantMessageFromClient,
   );
-  const saveMessageFromClient = useMutation(api.messages.saveMessageFromClient);
+  const saveAssistantMessage = useMutation(
+    api.messages.saveAssistantMessageFromClient,
+  );
   const regenerateWithNewContent = useMutation(
-    api.messages.regenerateWithNewContent,
+    api.messages.regenerateWithNewContentFromClient,
   );
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (input.trim()) {
+    // Prevent submission if files are still uploading
+    if (isUploadingFiles) {
+      return;
+    }
+    // Allow submission if there's text input or uploaded files
+    const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
+    if (input.trim() || hasValidFiles) {
       if (!hasActiveChat) {
         setChatTitle(null);
         setCurrentChatId(chatId);
@@ -64,16 +75,49 @@ export const useChatHandlers = ({
         resetSidebarAutoOpenRef.current();
       }
 
-      sendMessage(
-        { text: input },
-        {
-          body: {
-            mode,
-            todos,
+      try {
+        // Get file objects from uploaded files - URLs are already resolved in global state
+        const validFiles = uploadedFiles.filter(
+          (file) => file.uploaded && file.url && file.fileId,
+        );
+
+        sendMessage(
+          {
+            text: input.trim() || undefined,
+            files:
+              validFiles.length > 0
+                ? validFiles.map((uploadedFile) => ({
+                    type: "file" as const,
+                    filename: uploadedFile.file.name,
+                    mediaType: uploadedFile.file.type,
+                    url: uploadedFile.url!,
+                    fileId: uploadedFile.fileId!,
+                  }))
+                : undefined,
           },
-        },
-      );
+          {
+            body: {
+              mode,
+              todos,
+            },
+          },
+        );
+      } catch (error) {
+        console.error("Failed to process files:", error);
+        // Fallback to text-only message if file processing fails
+        sendMessage(
+          { text: input },
+          {
+            body: {
+              mode,
+              todos,
+            },
+          },
+        );
+      }
+
       clearInput();
+      clearUploadedFiles();
     }
   };
 
@@ -83,7 +127,7 @@ export const useChatHandlers = ({
     const lastMessage = messages[messages.length - 1];
     if (lastMessage && lastMessage.role === "assistant") {
       try {
-        await saveMessageFromClient({
+        await saveAssistantMessage({
           id: lastMessage.id,
           chatId,
           role: lastMessage.role,
