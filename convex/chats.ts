@@ -22,7 +22,7 @@ export const verifyChatOwnership = internalQuery({
       .first();
 
     if (!chat) {
-      throw new Error("Chat not found");
+      return null;
     } else if (chat.user_id !== args.userId) {
       throw new Error("Unauthorized: Chat does not belong to user");
     }

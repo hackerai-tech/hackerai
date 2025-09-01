@@ -56,9 +56,6 @@ export async function POST(req: NextRequest) {
     const { userId, isPro } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
-    // Check rate limit for the user
-    await checkRateLimit(userId, isPro);
-
     // Truncate messages to stay within token limit with file tokens included
     const truncatedMessages = await truncateMessagesWithFileTokens(messages);
 
@@ -69,6 +66,9 @@ export async function POST(req: NextRequest) {
       messages: truncatedMessages,
       regenerate,
     });
+
+    // Check rate limit for the user
+    await checkRateLimit(userId, isPro);
 
     // Process chat messages with moderation and analytics
     const posthog = PostHogClient();
