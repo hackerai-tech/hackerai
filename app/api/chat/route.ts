@@ -162,6 +162,7 @@ export async function POST(req: NextRequest) {
               for (const message of messages) {
                 await saveMessage({
                   chatId,
+                  userId,
                   message,
                 });
               }

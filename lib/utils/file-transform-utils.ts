@@ -138,16 +138,11 @@ async function convertPdfToBase64Url(
   url: string,
   fileId: Id<"files">,
 ): Promise<string> {
-  console.log(`Converting PDF to base64 for fileId: ${fileId}`);
-
   const base64Data = await convertFileToBase64(url);
   if (base64Data) {
-    console.log(
-      `Successfully converted PDF to base64, length: ${base64Data.length}`,
-    );
     return `data:application/pdf;base64,${base64Data}`;
   } else {
-    console.log(`Failed to convert PDF to base64 for fileId: ${fileId}`);
+    console.error(`Failed to convert PDF to base64 for fileId: ${fileId}`);
     return url;
   }
 }

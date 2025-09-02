@@ -5,19 +5,22 @@ import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
 import { MessageErrorState } from "./MessageErrorState";
 import { MessageEditor } from "./MessageEditor";
+import { FeedbackInput } from "./FeedbackInput";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
+import { useFeedback } from "../hooks/useFeedback";
 import {
   extractMessageText,
   hasTextContent,
   findLastAssistantMessageIndex,
 } from "@/lib/utils/message-utils";
-import type { ChatStatus } from "@/types";
+import type { ChatStatus, ChatMessage } from "@/types";
 import { toast } from "sonner";
 
 interface MessagesProps {
-  messages: UIMessage[];
+  messages: ChatMessage[];
+  setMessages: (messages: ChatMessage[]) => void;
   onRegenerate: () => void;
   onEditMessage: (messageId: string, newContent: string) => Promise<void>;
   status: ChatStatus;
@@ -36,6 +39,7 @@ interface MessagesProps {
 
 export const Messages = ({
   messages,
+  setMessages,
   onRegenerate,
   onEditMessage,
   status,
@@ -57,6 +61,14 @@ export const Messages = ({
 
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+
+  // Handle feedback logic
+  const {
+    feedbackInputMessageId,
+    handleFeedback,
+    handleFeedbackSubmit,
+    handleFeedbackCancel,
+  } = useFeedback({ messages, setMessages });
 
   // Handle sidebar auto-opening
   const { resetSidebarFlag } = useSidebarAutoOpen(
@@ -283,7 +295,22 @@ export const Messages = ({
                 isHovered={isHovered}
                 isEditing={isEditing}
                 status={status}
+                onFeedback={(type) => handleFeedback(message.id, type)}
+                existingFeedback={message.metadata?.feedbackType || null}
+                isAwaitingFeedbackDetails={
+                  feedbackInputMessageId === message.id
+                }
               />
+
+              {/* Show feedback input for negative feedback */}
+              {feedbackInputMessageId === message.id && (
+                <div className="w-full">
+                  <FeedbackInput
+                    onSend={handleFeedbackSubmit}
+                    onCancel={handleFeedbackCancel}
+                  />
+                </div>
+              )}
             </div>
           );
         })}

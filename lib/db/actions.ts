@@ -43,9 +43,11 @@ export async function saveChat({
 }
 export async function saveMessage({
   chatId,
+  userId,
   message,
 }: {
   chatId: string;
+  userId: string;
   message: {
     id: string;
     role: string;
@@ -60,6 +62,7 @@ export async function saveMessage({
       serviceKey,
       id: message.id,
       chatId,
+      userId,
       role: message.role,
       parts: message.parts,
       fileIds: fileIds.length > 0 ? fileIds : undefined,
@@ -106,7 +109,7 @@ export async function handleInitialChatAndUserMessage({
 
     await saveChat({
       id: chatId,
-      userId: userId,
+      userId,
       title,
     });
   } else {
@@ -123,6 +126,7 @@ export async function handleInitialChatAndUserMessage({
   if (!regenerate) {
     await saveMessage({
       chatId,
+      userId,
       message: {
         id: messages[messages.length - 1].id,
         role: "user",

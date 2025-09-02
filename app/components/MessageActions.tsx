@@ -1,8 +1,14 @@
-import { Copy, Check, RotateCcw, Pencil } from "lucide-react";
+import {
+  Copy,
+  Check,
+  RotateCcw,
+  Pencil,
+  ThumbsUp,
+  ThumbsDown,
+} from "lucide-react";
 import { useState } from "react";
 import type { ChatStatus } from "@/types";
 import { WithTooltip } from "@/components/ui/with-tooltip";
-import { extractMessageText } from "@/lib/utils/message-utils";
 
 interface MessageActionsProps {
   messageText: string;
@@ -14,6 +20,9 @@ interface MessageActionsProps {
   isHovered: boolean;
   isEditing: boolean;
   status: ChatStatus;
+  onFeedback?: (type: "positive" | "negative") => void;
+  existingFeedback?: "positive" | "negative" | null;
+  isAwaitingFeedbackDetails?: boolean;
 }
 
 export const MessageActions = ({
@@ -26,6 +35,9 @@ export const MessageActions = ({
   isHovered,
   isEditing,
   status,
+  onFeedback,
+  existingFeedback,
+  isAwaitingFeedbackDetails = false,
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
 
@@ -36,6 +48,12 @@ export const MessageActions = ({
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error("Failed to copy message:", error);
+    }
+  };
+
+  const handleFeedback = (type: "positive" | "negative") => {
+    if (onFeedback) {
+      onFeedback(type);
     }
   };
 
@@ -85,6 +103,69 @@ export const MessageActions = ({
               side="bottom"
               delayDuration={300}
             />
+          )}
+
+          {/* Show feedback buttons only for assistant messages */}
+          {!isUser && onFeedback && (
+            <>
+              {/* Hide positive feedback button when awaiting negative feedback details */}
+              {!isAwaitingFeedbackDetails && (
+                <WithTooltip
+                  display={"Good response"}
+                  trigger={
+                    <button
+                      type="button"
+                      onClick={() => handleFeedback("positive")}
+                      className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
+                        existingFeedback === "positive"
+                          ? "opacity-100 text-primary-foreground"
+                          : "opacity-70 hover:opacity-100 text-muted-foreground"
+                      }`}
+                      aria-label="Good response"
+                    >
+                      <ThumbsUp
+                        size={16}
+                        fill={
+                          existingFeedback === "positive"
+                            ? "currentColor"
+                            : "none"
+                        }
+                      />
+                    </button>
+                  }
+                  side="bottom"
+                  delayDuration={300}
+                />
+              )}
+              <WithTooltip
+                display={"Poor response"}
+                trigger={
+                  <button
+                    type="button"
+                    onClick={() => handleFeedback("negative")}
+                    className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
+                      existingFeedback === "negative" ||
+                      isAwaitingFeedbackDetails
+                        ? "opacity-100 text-primary-foreground"
+                        : "opacity-70 hover:opacity-100 text-muted-foreground"
+                    }`}
+                    aria-label="Poor response"
+                  >
+                    <ThumbsDown
+                      size={16}
+                      fill={
+                        existingFeedback === "negative" ||
+                        isAwaitingFeedbackDetails
+                          ? "currentColor"
+                          : "none"
+                      }
+                    />
+                  </button>
+                }
+                side="bottom"
+                delayDuration={300}
+              />
+            </>
           )}
 
           {/* Show regenerate only for the last assistant message */}

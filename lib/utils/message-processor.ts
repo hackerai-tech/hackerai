@@ -1,4 +1,4 @@
-import { UIMessage } from "ai";
+import { ChatMessage } from "@/types/chat";
 
 // Generic interface for all tool parts
 interface BaseToolPart {
@@ -48,8 +48,8 @@ interface DataPart {
  * @returns Object with normalized messages and hasChanges flag
  */
 export const normalizeMessages = (
-  messages: UIMessage[],
-): { messages: UIMessage[]; hasChanges: boolean } => {
+  messages: ChatMessage[],
+): { messages: ChatMessage[]; hasChanges: boolean } => {
   let hasChanges = false;
   const normalizedMessages = messages.map((message) => {
     // Only process assistant messages
@@ -123,7 +123,7 @@ export const normalizeMessages = (
     return {
       ...message,
       parts: processedParts,
-    } as UIMessage;
+    };
   });
 
   return { messages: normalizedMessages, hasChanges };

@@ -29,9 +29,11 @@ export default defineSchema({
   messages: defineTable({
     id: v.string(),
     chat_id: v.string(),
+    user_id: v.optional(v.string()),
     role: v.string(),
     parts: v.array(v.any()),
     file_ids: v.optional(v.array(v.id("files"))),
+    feedback_id: v.optional(v.id("feedback")),
     update_time: v.number(),
   })
     .index("by_message_id", ["id"])
@@ -46,4 +48,9 @@ export default defineSchema({
     file_token_size: v.number(),
     content: v.optional(v.string()),
   }).index("by_user_id", ["user_id"]),
+
+  feedback: defineTable({
+    feedback_type: v.union(v.literal("positive"), v.literal("negative")),
+    feedback_details: v.optional(v.string()),
+  }),
 });
