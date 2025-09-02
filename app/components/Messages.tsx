@@ -185,6 +185,11 @@ export const Messages = ({
             (part) => part.type !== "file",
           );
 
+          // Check if message contains image content
+          const hasFileContent = message.parts.some(
+            (part) => part.type === "file",
+          );
+
           const shouldShowLoader =
             isLastAssistantMessage &&
             status === "streaming" &&
@@ -307,6 +312,7 @@ export const Messages = ({
                 isAwaitingFeedbackDetails={
                   feedbackInputMessageId === message.id
                 }
+                hasFileContent={hasFileContent}
               />
 
               {/* Show feedback input for negative feedback */}
