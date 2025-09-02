@@ -4,6 +4,15 @@ import { ChatSDKError, ErrorCode } from "./errors";
 import { ChatMessage } from "@/types/chat";
 import { UIMessagePart } from "ai";
 
+export interface MessageRecord {
+  id: string;
+  role: "user" | "assistant" | "system";
+  parts: UIMessagePart<any, any>[];
+  feedback?: {
+    feedbackType: "positive" | "negative";
+  } | null;
+}
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
@@ -30,11 +39,13 @@ export async function fetchWithErrorHandlers(
   }
 }
 
-export function convertToUIMessages(messages: any[]): ChatMessage[] {
+export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
   return messages.map((message) => ({
     id: message.id,
-    role: message.role as "user" | "assistant" | "system",
-    parts: message.parts as UIMessagePart<any, any>[],
-    metadata: message.feedback,
+    role: message.role,
+    parts: message.parts,
+    metadata: message.feedback
+      ? { feedbackType: message.feedback.feedbackType }
+      : undefined,
   }));
 }

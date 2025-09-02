@@ -50,7 +50,7 @@ export async function saveMessage({
   userId: string;
   message: {
     id: string;
-    role: string;
+    role: "user" | "assistant" | "system";
     parts: UIMessagePart<any, any>[];
   };
 }) {

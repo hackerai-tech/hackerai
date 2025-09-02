@@ -1,5 +1,12 @@
-import { UIMessage } from "@ai-sdk/react";
-import { useState, RefObject, useEffect, useMemo, useCallback } from "react";
+import {
+  useState,
+  RefObject,
+  useEffect,
+  useMemo,
+  useCallback,
+  Dispatch,
+  SetStateAction,
+} from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -20,7 +27,7 @@ import { toast } from "sonner";
 
 interface MessagesProps {
   messages: ChatMessage[];
-  setMessages: (messages: ChatMessage[]) => void;
+  setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
   onEditMessage: (messageId: string, newContent: string) => Promise<void>;
   status: ChatStatus;

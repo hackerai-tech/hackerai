@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, Dispatch, SetStateAction } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { toast } from "sonner";
@@ -6,7 +6,7 @@ import type { ChatMessage } from "@/types";
 
 interface UseFeedbackProps {
   messages: ChatMessage[];
-  setMessages: (messages: ChatMessage[]) => void;
+  setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
 }
 
 export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
@@ -38,11 +38,14 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
             message_id: messageId,
           });
 
-          // Update local message state immediately
+          // Update local message state and merge metadata
           setMessages(
             messages.map((msg) =>
               msg.id === messageId
-                ? { ...msg, metadata: { feedbackType: "positive" } }
+                ? {
+                    ...msg,
+                    metadata: { ...msg.metadata, feedbackType: "positive" },
+                  }
                 : msg,
             ),
           );
@@ -67,11 +70,14 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
             message_id: messageId,
           });
 
-          // Update local message state immediately
+          // Update local message state and merge metadata
           setMessages(
             messages.map((msg) =>
               msg.id === messageId
-                ? { ...msg, metadata: { feedbackType: "negative" } }
+                ? {
+                    ...msg,
+                    metadata: { ...msg.metadata, feedbackType: "negative" },
+                  }
                 : msg,
             ),
           );

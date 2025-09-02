@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import TextareaAutosize from "react-textarea-autosize";
 
 interface FeedbackInputProps {
-  onSend: (details: string) => void;
+  onSend: (details: string) => Promise<void>;
   onCancel: () => void;
 }
 

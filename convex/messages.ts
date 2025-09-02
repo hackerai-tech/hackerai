@@ -35,7 +35,11 @@ export const saveMessage = mutation({
     id: v.string(),
     chatId: v.string(),
     userId: v.string(),
-    role: v.string(),
+    role: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("system"),
+    ),
     parts: v.array(v.any()),
     fileIds: v.optional(v.array(v.id("files"))),
   },
@@ -95,7 +99,11 @@ export const getMessagesByChatId = query({
         id: v.string(),
         // chat_id: v.string(),
         // user_id: v.optional(v.string()),
-        role: v.string(),
+        role: v.union(
+          v.literal("user"),
+          v.literal("assistant"),
+          v.literal("system"),
+        ),
         parts: v.array(v.any()),
         // file_ids: v.optional(v.array(v.id("files"))),
         // feedback_id: v.optional(v.id("feedback")),
@@ -201,7 +209,11 @@ export const saveAssistantMessageFromClient = mutation({
   args: {
     id: v.string(),
     chatId: v.string(),
-    role: v.string(),
+    role: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("system"),
+    ),
     parts: v.array(v.any()),
   },
   returns: v.null(),

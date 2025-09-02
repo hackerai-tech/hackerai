@@ -30,7 +30,11 @@ export default defineSchema({
     id: v.string(),
     chat_id: v.string(),
     user_id: v.optional(v.string()),
-    role: v.string(),
+    role: v.union(
+      v.literal("user"),
+      v.literal("assistant"),
+      v.literal("system"),
+    ),
     parts: v.array(v.any()),
     file_ids: v.optional(v.array(v.id("files"))),
     feedback_id: v.optional(v.id("feedback")),

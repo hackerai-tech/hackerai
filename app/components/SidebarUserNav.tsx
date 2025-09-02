@@ -16,6 +16,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
+const NEXT_PUBLIC_HELP_CENTER_URL =
+  process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
+
 const SidebarUserNav = () => {
   const { user } = useAuth();
   const { hasProPlan, isCheckingProPlan } = useGlobalState();
@@ -31,7 +34,14 @@ const SidebarUserNav = () => {
   };
 
   const handleHelpCenter = () => {
-    window.open("https://help.hackerai.co/en/", "_blank");
+    const newWindow = window.open(
+      NEXT_PUBLIC_HELP_CENTER_URL,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (newWindow) {
+      newWindow.opener = null;
+    }
   };
 
   const getUserInitials = () => {
