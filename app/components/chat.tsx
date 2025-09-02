@@ -115,16 +115,18 @@ export const Chat = ({ id }: { id?: string }) => {
       api: "/api/chat",
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ id, messages, body }) => {
-        const { messages: normalizedMessages, hasChanges } = normalizeMessages(
-          messages as ChatMessage[],
-        );
+        const {
+          messages: normalizedMessages,
+          lastMessage,
+          hasChanges,
+        } = normalizeMessages(messages as ChatMessage[]);
         if (hasChanges) {
           setMessages(normalizedMessages);
         }
         return {
           body: {
             chatId: id,
-            messages: normalizedMessages,
+            messages: lastMessage,
             ...body,
           },
         };

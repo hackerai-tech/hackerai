@@ -3,8 +3,9 @@ import "server-only";
 import { api } from "@/convex/_generated/api";
 import { ChatSDKError } from "../errors";
 import { ConvexHttpClient } from "convex/browser";
-import { UIMessagePart } from "ai";
+import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
+import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -164,4 +165,50 @@ export async function updateChat({
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to update chat");
   }
+}
+
+export async function getMessagesByChatId({
+  chatId,
+  userId,
+  newMessages,
+  regenerate,
+}: {
+  chatId: string;
+  userId: string;
+  newMessages: UIMessage[];
+  regenerate?: boolean;
+}) {
+  let existingMessages: UIMessage[] = [];
+
+  try {
+    existingMessages = await convex.query(
+      api.messages.getMessagesByChatIdForBackend,
+      {
+        serviceKey,
+        chatId,
+        userId,
+      },
+    );
+  } catch (error) {
+    // If chat doesn't exist yet or error fetching, use empty array
+    // This will be handled by handleInitialChatAndUserMessage
+    console.log("No existing messages found for chat:", chatId);
+  }
+
+  // Handle message merging based on regeneration flag
+  let allMessages: UIMessage[];
+
+  if (regenerate) {
+    // For regeneration, don't add new messages to avoid duplication
+    // The backend query already excluded the last message being regenerated
+    allMessages = existingMessages;
+  } else {
+    // For normal chat, merge existing messages with the new user message
+    allMessages = [...existingMessages, ...newMessages];
+  }
+
+  // Truncate messages to stay within token limit with file tokens included
+  const truncatedMessages = await truncateMessagesWithFileTokens(allMessages);
+
+  return truncatedMessages;
 }

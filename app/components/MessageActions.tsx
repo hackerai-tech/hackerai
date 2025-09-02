@@ -62,9 +62,7 @@ export const MessageActions = ({
     isLastAssistantMessage &&
     (status === "submitted" || status === "streaming");
   const shouldShowActions =
-    !isLastAssistantLoading &&
-    !isEditing &&
-    (isLastAssistantMessage || isHovered);
+    !isLastAssistantLoading && !isEditing && (isUser ? isHovered : true); // Always show for assistant, only on hover for user
 
   return (
     <div

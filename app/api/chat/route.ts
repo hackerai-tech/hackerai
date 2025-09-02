@@ -23,8 +23,8 @@ import {
   handleInitialChatAndUserMessage,
   saveMessage,
   updateChat,
+  getMessagesByChatId,
 } from "@/lib/db/actions";
-import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { myProvider } from "@/lib/ai/providers";
@@ -56,10 +56,15 @@ export async function POST(req: NextRequest) {
     const { userId, isPro } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
-    // Truncate messages to stay within token limit with file tokens included
-    const truncatedMessages = await truncateMessagesWithFileTokens(messages);
+    // Get existing messages, merge with new messages, and truncate
+    const truncatedMessages = await getMessagesByChatId({
+      chatId,
+      userId,
+      newMessages: messages,
+      regenerate,
+    });
 
-    // Handle initial chat setup, regeneration, and save user message with truncated messages
+    // Handle initial chat setup, regeneration, and save user message
     const { isNewChat } = await handleInitialChatAndUserMessage({
       chatId,
       userId,
