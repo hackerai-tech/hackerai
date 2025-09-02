@@ -1,90 +1,58 @@
-# HackerAI
+<p align="center">
+  <h1 align="center">HackerAI</h1>
+</p>
 
-_Your AI-Powered Penetration Testing Assistant_
+<p align="center">
+  Your AI-Powered Penetration Testing Assistant
+</p>
 
----
+<p align="center">
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/License-Apache%202.0%20with%20Commercial%20Restrictions-red.svg" alt="License: Apache 2.0 with Commercial Restrictions"/>
+  </a>
+  <a href="https://hackerai.co/">
+    <img src="https://img.shields.io/badge/Demo-Website-blue" alt="Demo: Website"/>
+  </a>
+</p>
 
-## 🚀 Quick Start
+<p align="center">
+  Demo: <a href="https://hackerai.co/">https://hackerai.co/</a>
+</p>
 
-### 1. Install Dependencies
+## Getting started
+
+### Prerequisites
+
+You'll need an [OpenRouter](https://openrouter.ai/) account, an [OpenAI](https://platform.openai.com/) account, a [Convex](https://www.convex.dev/) account, and a [WorkOS](https://workos.com/) account.
+
+**Optional:** To execute terminal commands in isolated containers instead of your local machine, add web search functionality, or enable other advanced features, you can fill out the optional environment variables after running the setup script.
+
+### Clone the repo
+
+```bash
+git clone https://github.com/hackerai-tech/hackerai.git
+```
+
+### Navigate to the project directory
+
+```bash
+cd hackerai
+```
+
+### Install dependencies
 
 ```bash
 pnpm install
 ```
 
-### 2. Set Up Authentication & Database
-
-HackerAI uses **Convex** for real-time database and **WorkOS** for authentication to provide persistent conversations and user management.
-
-#### Configure Convex (Required)
-
-1. Create a Convex account at [convex.dev](https://convex.dev/)
-2. Initialize Convex in your project:
-   ```bash
-   npx convex dev
-   ```
-3. Follow the prompts to create a new project
-
-#### Configure WorkOS Authentication (Required)
-
-1. Create a WorkOS account at [workos.com](https://workos.com/)
-2. Create a new project and get your API credentials
-3. Configure redirect URI: `http://localhost:3000/callback`
-
-### 3. Configure Environment
-
-Create `.env.local` from the example file:
+### Run the setup script
 
 ```bash
-cp .env.local.example .env.local
+pnpm run setup
 ```
 
-Then fill in your API keys and configuration values in the `.env.local` file.
-
-### 4. Deploy Convex Functions
+### Start the development server
 
 ```bash
-npx convex deploy
-```
-
-### 5. Launch Application
-
-```bash
-pnpm dev
-```
-
-Visit **[http://localhost:3000](http://localhost:3000)** and start your penetration testing journey! 🎯
-
----
-
-## 🔑 Required Services
-
-| Service        | Purpose                                   | Get Started                             |
-| -------------- | ----------------------------------------- | --------------------------------------- |
-| **Convex**     | Real-time database & conversation storage | [convex.dev](https://convex.dev/)       |
-| **WorkOS**     | User authentication & session management  | [workos.com](https://workos.com/)       |
-| **OpenRouter** | LLM access (Claude, GPT, etc.)            | [openrouter.ai](https://openrouter.ai/) |
-| **OpenAI**     | Moderation API                            | [openai.com](https://openai.com/api/)   |
-
-## 🔧 Optional Enhancements
-
-### Sandbox Mode
-
-Execute terminal commands in isolated containers instead of your local machine:
-
-| Service | Purpose                   | Get API Key                 |
-| ------- | ------------------------- | --------------------------- |
-| **E2B** | Secure isolated execution | [e2b.dev](https://e2b.dev/) |
-
-```env
-TERMINAL_EXECUTION_MODE=sandbox
-E2B_API_KEY=your_e2b_api_key_here
-```
-
-### Web Search
-
-Enable AI to search the web for up-to-date information:
-
-```env
-EXA_API_KEY=your_exa_api_key_here
+pnpm run dev
 ```

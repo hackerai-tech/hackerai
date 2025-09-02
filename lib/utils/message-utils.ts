@@ -33,7 +33,7 @@ export const hasTextContent = (parts: MessagePart[]): boolean => {
  * Finds the index of the last assistant message
  */
 export const findLastAssistantMessageIndex = (
-  messages: Array<{ role: string }>,
+  messages: Array<{ role: "user" | "assistant" | "system" }>,
 ): number | undefined => {
   return messages
     .map((msg, index) => ({ msg, index }))

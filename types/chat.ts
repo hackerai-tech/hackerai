@@ -1,4 +1,5 @@
 import { UIMessage } from "ai";
+import { z } from "zod";
 
 export type ChatMode = "agent" | "ask";
 
@@ -55,4 +56,10 @@ export interface TodoWriteInput {
 
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
-export type ChatMessage = UIMessage;
+export const messageMetadataSchema = z.object({
+  feedbackType: z.enum(["positive", "negative"]),
+});
+
+export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
+
+export type ChatMessage = UIMessage<MessageMetadata>;

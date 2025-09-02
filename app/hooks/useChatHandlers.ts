@@ -4,6 +4,8 @@ import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { ChatMessage } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
+import { countInputTokens, MAX_TOKENS } from "@/lib/token-utils";
+import { toast } from "sonner";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -61,6 +63,15 @@ export const useChatHandlers = ({
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
+      // Check token limit before sending
+      const tokenCount = countInputTokens(input, uploadedFiles);
+      if (tokenCount > MAX_TOKENS) {
+        const hasFiles = uploadedFiles.length > 0;
+        toast.error("Message is too long", {
+          description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}.`,
+        });
+        return;
+      }
       if (!hasActiveChat) {
         setChatTitle(null);
         setCurrentChatId(chatId);

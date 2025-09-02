@@ -1,35 +1,12 @@
-import { query, mutation, internalQuery } from "./_generated/server";
+import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
-import { internal } from "./_generated/api";
 
 export function validateServiceKey(serviceKey?: string): void {
   if (serviceKey && serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
     throw new Error("Unauthorized: Invalid service key");
   }
 }
-
-export const verifyChatOwnership = internalQuery({
-  args: {
-    chatId: v.string(),
-    userId: v.string(),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const chat = await ctx.db
-      .query("chats")
-      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-      .first();
-
-    if (!chat) {
-      throw new Error("Chat not found");
-    } else if (chat.user_id !== args.userId) {
-      throw new Error("Unauthorized: Chat does not belong to user");
-    }
-
-    return null;
-  },
-});
 
 /**
  * Get a chat by its ID
@@ -243,12 +220,6 @@ export const deleteChat = mutation({
     }
 
     try {
-      // Verify chat ownership
-      await ctx.runQuery(internal.chats.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: user.subject,
-      });
-
       // Find the chat
       const chat = await ctx.db
         .query("chats")
@@ -257,6 +228,8 @@ export const deleteChat = mutation({
 
       if (!chat) {
         throw new Error("Chat not found");
+      } else if (chat.user_id !== user.subject) {
+        throw new Error("Unauthorized: Chat does not belong to user");
       }
 
       // Delete all messages and their associated files

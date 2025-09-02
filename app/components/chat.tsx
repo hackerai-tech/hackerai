@@ -115,8 +115,9 @@ export const Chat = ({ id }: { id?: string }) => {
       api: "/api/chat",
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ id, messages, body }) => {
-        const { messages: normalizedMessages, hasChanges } =
-          normalizeMessages(messages);
+        const { messages: normalizedMessages, hasChanges } = normalizeMessages(
+          messages as ChatMessage[],
+        );
         if (hasChanges) {
           setMessages(normalizedMessages);
         }
@@ -294,6 +295,7 @@ export const Chat = ({ id }: { id?: string }) => {
                   scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                   contentRef={contentRef as RefObject<HTMLDivElement | null>}
                   messages={messages}
+                  setMessages={setMessages}
                   onRegenerate={handleRegenerate}
                   onEditMessage={handleEditMessage}
                   status={status}

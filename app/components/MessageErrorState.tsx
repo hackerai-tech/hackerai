@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { ChatSDKError } from "@/lib/errors";
+import { useUpgrade } from "@/app/hooks/useUpgrade";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 interface MessageErrorStateProps {
   error: Error;
@@ -11,6 +13,8 @@ export const MessageErrorState = ({
   error,
   onRegenerate,
 }: MessageErrorStateProps) => {
+  const { handleUpgrade, upgradeLoading } = useUpgrade();
+  const { hasProPlan } = useGlobalState();
   const isRateLimitError =
     error instanceof ChatSDKError && error.type === "rate_limit";
 
@@ -31,15 +35,14 @@ export const MessageErrorState = ({
         <Button variant="destructive" size="sm" onClick={onRegenerate}>
           {isRateLimitError ? "Try Again" : "Retry"}
         </Button>
-        {isRateLimitError && (
+        {isRateLimitError && !hasProPlan && (
           <Button
-            variant="secondary"
+            variant="default"
             size="sm"
-            onClick={() =>
-              window.open("https://github.com/hackerai-tech/hackerai", "_blank")
-            }
+            onClick={handleUpgrade}
+            disabled={upgradeLoading}
           >
-            Self Host
+            {upgradeLoading ? "Loading..." : "Upgrade"}
           </Button>
         )}
       </div>
