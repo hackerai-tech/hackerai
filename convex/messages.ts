@@ -1,8 +1,30 @@
-import { query, mutation } from "./_generated/server";
+import { query, mutation, internalQuery } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
+
+export const verifyChatOwnership = internalQuery({
+  args: {
+    chatId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new Error("Chat not found");
+    } else if (chat.user_id !== args.userId) {
+      throw new Error("Unauthorized: Chat does not belong to user");
+    }
+
+    return null;
+  },
+});
 
 /**
  * Save a single message to a chat
@@ -33,7 +55,7 @@ export const saveMessage = mutation({
         return null;
       } else {
         // Verify chat ownership
-        await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        await ctx.runQuery(internal.messages.verifyChatOwnership, {
           chatId: args.chatId,
           userId: args.userId,
         });
@@ -101,7 +123,7 @@ export const getMessagesByChatId = query({
     try {
       // Verify chat ownership
       try {
-        await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        await ctx.runQuery(internal.messages.verifyChatOwnership, {
           chatId: args.chatId,
           userId: user.subject,
         });
@@ -192,7 +214,7 @@ export const saveAssistantMessageFromClient = mutation({
 
     try {
       // Verify chat ownership
-      await ctx.runQuery(internal.chats.verifyChatOwnership, {
+      await ctx.runQuery(internal.messages.verifyChatOwnership, {
         chatId: args.chatId,
         userId: user.subject,
       });
@@ -247,7 +269,7 @@ export const deleteLastAssistantMessageFromClient = mutation({
           );
         } else {
           // Verify chat ownership
-          await ctx.runQuery(internal.chats.verifyChatOwnership, {
+          await ctx.runQuery(internal.messages.verifyChatOwnership, {
             chatId: args.chatId,
             userId: user.subject,
           });
@@ -313,7 +335,7 @@ export const regenerateWithNewContentFromClient = mutation({
         );
       } else {
         // Verify chat ownership
-        await ctx.runQuery(internal.chats.verifyChatOwnership, {
+        await ctx.runQuery(internal.messages.verifyChatOwnership, {
           chatId: message.chat_id,
           userId: user.subject,
         });

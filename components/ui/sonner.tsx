@@ -14,12 +14,12 @@ const Toaster = ({ ...props }: ToasterProps) => {
     if (isMobile) {
       return {
         position: "top-center" as const,
-        offset: { top: 20 }
+        offset: { top: 20 },
       };
     }
     return {
       position: "bottom-right" as const,
-      offset: { bottom: 140, right: 50 }
+      offset: { bottom: 140, right: 50 },
     };
   };
 
