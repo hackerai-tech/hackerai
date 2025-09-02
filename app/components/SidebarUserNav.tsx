@@ -2,7 +2,7 @@
 
 import React from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { LogOut, Sparkle, CreditCard } from "lucide-react";
+import { LogOut, Sparkle, CreditCard, LifeBuoy } from "lucide-react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
@@ -28,6 +28,10 @@ const SidebarUserNav = () => {
 
   const handleSignOut = async () => {
     window.location.href = "/logout";
+  };
+
+  const handleHelpCenter = () => {
+    window.open("https://help.hackerai.co/en/", "_blank");
   };
 
   const getUserInitials = () => {
@@ -111,6 +115,11 @@ const SidebarUserNav = () => {
               <span>Manage Subscription</span>
             </DropdownMenuItem>
           )}
+
+          <DropdownMenuItem onClick={handleHelpCenter}>
+            <LifeBuoy className="mr-2 h-4 w-4" />
+            <span>Help Center</span>
+          </DropdownMenuItem>
 
           <DropdownMenuItem onClick={handleSignOut} variant="destructive">
             <LogOut className="mr-2 h-4 w-4" />

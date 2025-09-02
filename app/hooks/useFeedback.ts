@@ -21,7 +21,16 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
   // Handle feedback submission (positive/negative)
   const handleFeedback = useCallback(
     async (messageId: string, type: "positive" | "negative") => {
+      // Find the current message to check existing feedback
+      const currentMessage = messages.find((msg) => msg.id === messageId);
+      const existingFeedback = currentMessage?.metadata?.feedbackType;
+
       if (type === "positive") {
+        // Skip if positive feedback already exists
+        if (existingFeedback === "positive") {
+          return;
+        }
+
         // For positive feedback, save immediately
         try {
           await createFeedback({
@@ -44,7 +53,14 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
           toast.error("Failed to save feedback. Please try again.");
         }
       } else {
-        // For negative feedback, save immediately without details and show input
+        // For negative feedback
+        if (existingFeedback === "negative") {
+          // If negative feedback already exists, just show input for details
+          setFeedbackInputMessageId(messageId);
+          return;
+        }
+
+        // Save negative feedback immediately without details and show input
         try {
           await createFeedback({
             feedback_type: "negative",
