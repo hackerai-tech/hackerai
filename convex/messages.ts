@@ -9,7 +9,7 @@ export const verifyChatOwnership = internalQuery({
     chatId: v.string(),
     userId: v.string(),
   },
-  returns: v.null(),
+  returns: v.boolean(),
   handler: async (ctx, args) => {
     const chat = await ctx.db
       .query("chats")
@@ -17,12 +17,12 @@ export const verifyChatOwnership = internalQuery({
       .first();
 
     if (!chat) {
-      throw new Error("Chat not found");
+      return false;
     } else if (chat.user_id !== args.userId) {
       throw new Error("Unauthorized: Chat does not belong to user");
     }
 
-    return null;
+    return true;
   },
 });
 
@@ -56,10 +56,14 @@ export const saveMessage = mutation({
       if (existingMessage) {
         return null;
       } else {
-        await ctx.runQuery(internal.messages.verifyChatOwnership, {
+        const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
           chatId: args.chatId,
           userId: args.userId,
         });
+        
+        if (!chatExists) {
+          throw new Error("Chat not found");
+        }
       }
 
       await ctx.db.insert("messages", {
@@ -119,12 +123,12 @@ export const getMessagesByChatId = query({
     }
 
     try {
-      try {
-        await ctx.runQuery(internal.messages.verifyChatOwnership, {
-          chatId: args.chatId,
-          userId: user.subject,
-        });
-      } catch (error) {
+      const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
+        chatId: args.chatId,
+        userId: user.subject,
+      });
+      
+      if (!chatExists) {
         return {
           page: [],
           isDone: true,
@@ -208,10 +212,14 @@ export const saveAssistantMessageFromClient = mutation({
 
     try {
       // Verify chat ownership
-      await ctx.runQuery(internal.messages.verifyChatOwnership, {
+      const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
         chatId: args.chatId,
         userId: user.subject,
       });
+      
+      if (!chatExists) {
+        throw new Error("Chat not found");
+      }
 
       await ctx.db.insert("messages", {
         id: args.id,
@@ -263,10 +271,14 @@ export const deleteLastAssistantMessageFromClient = mutation({
           );
         } else {
           // Verify chat ownership
-          await ctx.runQuery(internal.messages.verifyChatOwnership, {
+          const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
             chatId: args.chatId,
             userId: user.subject,
           });
+          
+          if (!chatExists) {
+            throw new Error("Chat not found");
+          }
         }
 
         if (
@@ -321,11 +333,16 @@ export const getMessagesByChatIdForBackend = query({
     validateServiceKey(args.serviceKey);
 
     try {
-      // Verify chat ownership
-      await ctx.runQuery(internal.messages.verifyChatOwnership, {
+      // Verify chat ownership - if chat doesn't exist, return empty array
+      const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
         chatId: args.chatId,
         userId: args.userId,
       });
+
+      if (!chatExists) {
+        // Chat doesn't exist yet (new chat), return empty array
+        return [];
+      }
 
       // Get newest 32 messages and reverse for chronological AI processing
       const messages = await ctx.db
@@ -382,10 +399,14 @@ export const regenerateWithNewContentFromClient = mutation({
         );
       } else {
         // Verify chat ownership
-        await ctx.runQuery(internal.messages.verifyChatOwnership, {
+        const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
           chatId: message.chat_id,
           userId: user.subject,
         });
+        
+        if (!chatExists) {
+          throw new Error("Chat not found");
+        }
       }
 
       await ctx.db.patch(message._id, {
