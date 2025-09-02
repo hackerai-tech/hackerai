@@ -56,11 +56,14 @@ export const saveMessage = mutation({
       if (existingMessage) {
         return null;
       } else {
-        const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
-          chatId: args.chatId,
-          userId: args.userId,
-        });
-        
+        const chatExists = await ctx.runQuery(
+          internal.messages.verifyChatOwnership,
+          {
+            chatId: args.chatId,
+            userId: args.userId,
+          },
+        );
+
         if (!chatExists) {
           throw new Error("Chat not found");
         }
@@ -123,11 +126,14 @@ export const getMessagesByChatId = query({
     }
 
     try {
-      const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: user.subject,
-      });
-      
+      const chatExists = await ctx.runQuery(
+        internal.messages.verifyChatOwnership,
+        {
+          chatId: args.chatId,
+          userId: user.subject,
+        },
+      );
+
       if (!chatExists) {
         return {
           page: [],
@@ -212,11 +218,14 @@ export const saveAssistantMessageFromClient = mutation({
 
     try {
       // Verify chat ownership
-      const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: user.subject,
-      });
-      
+      const chatExists = await ctx.runQuery(
+        internal.messages.verifyChatOwnership,
+        {
+          chatId: args.chatId,
+          userId: user.subject,
+        },
+      );
+
       if (!chatExists) {
         throw new Error("Chat not found");
       }
@@ -271,11 +280,14 @@ export const deleteLastAssistantMessageFromClient = mutation({
           );
         } else {
           // Verify chat ownership
-          const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
-            chatId: args.chatId,
-            userId: user.subject,
-          });
-          
+          const chatExists = await ctx.runQuery(
+            internal.messages.verifyChatOwnership,
+            {
+              chatId: args.chatId,
+              userId: user.subject,
+            },
+          );
+
           if (!chatExists) {
             throw new Error("Chat not found");
           }
@@ -334,10 +346,13 @@ export const getMessagesByChatIdForBackend = query({
 
     try {
       // Verify chat ownership - if chat doesn't exist, return empty array
-      const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: args.userId,
-      });
+      const chatExists = await ctx.runQuery(
+        internal.messages.verifyChatOwnership,
+        {
+          chatId: args.chatId,
+          userId: args.userId,
+        },
+      );
 
       if (!chatExists) {
         // Chat doesn't exist yet (new chat), return empty array
@@ -399,11 +414,14 @@ export const regenerateWithNewContentFromClient = mutation({
         );
       } else {
         // Verify chat ownership
-        const chatExists = await ctx.runQuery(internal.messages.verifyChatOwnership, {
-          chatId: message.chat_id,
-          userId: user.subject,
-        });
-        
+        const chatExists = await ctx.runQuery(
+          internal.messages.verifyChatOwnership,
+          {
+            chatId: message.chat_id,
+            userId: user.subject,
+          },
+        );
+
         if (!chatExists) {
           throw new Error("Chat not found");
         }

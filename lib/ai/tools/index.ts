@@ -7,7 +7,7 @@ import { createWriteFile } from "./write-file";
 import { createDeleteFile } from "./delete-file";
 import { createSearchReplace } from "./search-replace";
 import { createMultiEdit } from "./multi-edit";
-import { createWebSearchTool } from "./web-search";
+import { createWebTool } from "./web";
 import { createTodoWrite } from "./todo-write";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ExecutionMode, ToolContext, Todo } from "@/types";
@@ -52,7 +52,7 @@ export const createTools = (
     multi_edit: createMultiEdit(context),
     todo_write: createTodoWrite(context),
     ...(process.env.EXA_API_KEY && {
-      web_search: createWebSearchTool(context),
+      web: createWebTool(context),
     }),
   };
 
@@ -62,7 +62,7 @@ export const createTools = (
       ? {
           // read_file: allTools.read_file,
           // todo_write: createTodoWrite(context),
-          ...(process.env.EXA_API_KEY && { web_search: allTools.web_search }),
+          ...(process.env.EXA_API_KEY && { web: allTools.web }),
         }
       : allTools;
 
