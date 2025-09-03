@@ -43,45 +43,52 @@ export const Chat = ({ id }: { id?: string }) => {
     shouldFetchMessages,
     initializeChat,
     initializeNewChat,
+    activateChat,
   } = useGlobalState();
 
-  // Use ID from route if available, otherwise global currentChatId, or generate new one
-  const [chatId, setChatId] = useState(id || currentChatId || uuidv4());
-  // Track the last processed ID to detect changes
-  const lastProcessedId = useRef<string | undefined>(undefined);
-  // Track if we've initialized for this specific route
-  const isInitialized = useRef(false);
+  // Generate chat ID - use route ID if available, currentChatId if set, or generate new one
+  const [chatId, setChatId] = useState<string>(() => {
+    if (id) return id;
+    if (currentChatId) return currentChatId;
+    return uuidv4();
+  });
 
-  // Handle initial mount and chat initialization
+  // Use refs to track previous values to prevent infinite loops
+  const prevId = useRef(id);
+  const prevCurrentChatId = useRef(currentChatId);
+
+  // Handle route changes and new chat creation
   useEffect(() => {
-    // Reset initialization flag when ID changes
-    if (lastProcessedId.current !== id) {
-      isInitialized.current = false;
-      lastProcessedId.current = id;
-    }
-
-    // Skip if already initialized for current ID
-    if (isInitialized.current) {
+    const idChanged = prevId.current !== id;
+    const currentChatIdChanged = prevCurrentChatId.current !== currentChatId;
+    
+    // Only update if something actually changed
+    if (!idChanged && !currentChatIdChanged) {
       return;
     }
 
     if (id) {
-      // Direct URL with ID - initialize with existing chat
-      setChatId(id);
-      initializeChat(id, true);
-      isInitialized.current = true;
-    } else if (!currentChatId) {
-      // No ID and no current chat - create new chat
+      // Direct URL with ID - switch to existing chat
+      if (idChanged) {
+        setChatId(id);
+        initializeChat(id, true);
+      }
+    } else if (currentChatId) {
+      // Global state has a chat - switch to it
+      if (currentChatIdChanged) {
+        setChatId(currentChatId);
+        initializeChat(currentChatId, false);
+      }
+    } else if (currentChatIdChanged && prevCurrentChatId.current !== null) {
+      // Current chat was cleared - this is a new chat
       const newChatId = uuidv4();
       setChatId(newChatId);
       initializeNewChat();
-      isInitialized.current = true;
-    } else if (currentChatId && currentChatId !== chatId) {
-      // Global state has a different chat - switch to it
-      setChatId(currentChatId);
-      initializeChat(currentChatId, false);
-      isInitialized.current = true;
     }
+
+    // Update refs
+    prevId.current = id;
+    prevCurrentChatId.current = currentChatId;
   }, [id, currentChatId, initializeChat, initializeNewChat]);
 
   // Use paginated query to load messages in batches of 28
@@ -129,6 +136,7 @@ export const Chat = ({ id }: { id?: string }) => {
         if (hasChanges) {
           setMessages(normalizedMessages);
         }
+
         return {
           body: {
             chatId: id,
@@ -149,6 +157,12 @@ export const Chat = ({ id }: { id?: string }) => {
         if (todoInput.todos) {
           mergeTodos(todoInput.todos);
         }
+      }
+    },
+    onFinish: () => {
+      // Activate chat after first message is sent successfully
+      if (!hasActiveChat && !currentChatId) {
+        activateChat(chatId);
       }
     },
     onError: (error) => {

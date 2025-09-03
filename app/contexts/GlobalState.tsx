@@ -92,6 +92,7 @@ interface GlobalStateType {
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
+  activateChat: (chatId: string) => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
@@ -244,6 +245,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setHasActiveChat(false);
     setTodos([]);
     setIsTodoPanelExpanded(false);
+    setChatTitle(null); // Clear chat title for new chat
+  }, []);
+
+  const activateChat = useCallback((chatId: string) => {
+    setCurrentChatId(chatId);
+    setShouldFetchMessages(true);
+    setHasActiveChat(true);
   }, []);
 
   const openSidebar = (content: SidebarContent) => {
@@ -315,6 +323,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     toggleChatSidebar,
     initializeChat,
     initializeNewChat,
+    activateChat,
   };
 
   return (
