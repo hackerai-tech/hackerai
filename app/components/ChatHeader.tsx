@@ -47,14 +47,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           {/* Desktop header */}
           <div className="py-[10px] flex gap-10 items-center justify-between max-md:hidden">
             <div className="flex items-center gap-2">
-              {showSidebarToggle && !chatSidebarOpen && (
-                <div className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted/50 mr-2">
-                  <PanelLeft
-                    className="size-5 text-muted-foreground cursor-pointer"
-                    onClick={toggleChatSidebar}
-                  />
-                </div>
-              )}
+              {/* Removed sidebar toggle for desktop - handled by collapsed sidebar logo */}
               {/* Show upgrade button for logged-in users without pro plan */}
               {!loading && user && !isCheckingProPlan && !hasProPlan && (
                 <Button
@@ -174,8 +167,9 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
         <div className="sm:min-w-[390px] flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">
           <div className="flex items-center flex-1">
             <div className="relative flex items-center">
+              {/* Only show sidebar toggle on mobile - desktop uses collapsed sidebar logo */}
               {showSidebarToggle && !chatSidebarOpen && (
-                <div className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted/50">
+                <div className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted/50 md:hidden">
                   <PanelLeft
                     className="size-5 text-muted-foreground cursor-pointer"
                     onClick={toggleChatSidebar}

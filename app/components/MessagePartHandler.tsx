@@ -2,7 +2,7 @@ import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
-import { WebSearchToolHandler } from "./tools/WebSearchToolHandler";
+import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import type { ChatStatus } from "@/types";
 
@@ -52,8 +52,12 @@ export const MessagePartHandler = ({
     case "tool-multi_edit":
       return <FileToolsHandler part={part} status={status} />;
 
+    // Keep the old export for backward compatibility
     case "tool-web_search":
       return <WebSearchToolHandler part={part} status={status} />;
+
+    case "tool-web":
+      return <WebToolHandler part={part} status={status} />;
 
     case "data-terminal":
     case "tool-run_terminal_cmd":

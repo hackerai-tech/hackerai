@@ -9,7 +9,7 @@ export const verifyChatOwnership = internalQuery({
     chatId: v.string(),
     userId: v.string(),
   },
-  returns: v.null(),
+  returns: v.boolean(),
   handler: async (ctx, args) => {
     const chat = await ctx.db
       .query("chats")
@@ -17,12 +17,12 @@ export const verifyChatOwnership = internalQuery({
       .first();
 
     if (!chat) {
-      throw new Error("Chat not found");
+      return false;
     } else if (chat.user_id !== args.userId) {
       throw new Error("Unauthorized: Chat does not belong to user");
     }
 
-    return null;
+    return true;
   },
 });
 
@@ -45,11 +45,9 @@ export const saveMessage = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    // Verify service role key
     validateServiceKey(args.serviceKey);
 
     try {
-      // Check if message already exists
       const existingMessage = await ctx.db
         .query("messages")
         .withIndex("by_message_id", (q) => q.eq("id", args.id))
@@ -58,11 +56,17 @@ export const saveMessage = mutation({
       if (existingMessage) {
         return null;
       } else {
-        // Verify chat ownership
-        await ctx.runQuery(internal.messages.verifyChatOwnership, {
-          chatId: args.chatId,
-          userId: args.userId,
-        });
+        const chatExists: boolean = await ctx.runQuery(
+          internal.messages.verifyChatOwnership,
+          {
+            chatId: args.chatId,
+            userId: args.userId,
+          },
+        );
+
+        if (!chatExists) {
+          throw new Error("Chat not found");
+        }
       }
 
       await ctx.db.insert("messages", {
@@ -94,20 +98,13 @@ export const getMessagesByChatId = query({
   returns: v.object({
     page: v.array(
       v.object({
-        // _id: v.id("messages"),
-        // _creationTime: v.number(),
         id: v.string(),
-        // chat_id: v.string(),
-        // user_id: v.optional(v.string()),
         role: v.union(
           v.literal("user"),
           v.literal("assistant"),
           v.literal("system"),
         ),
         parts: v.array(v.any()),
-        // file_ids: v.optional(v.array(v.id("files"))),
-        // feedback_id: v.optional(v.id("feedback")),
-        // update_time: v.number(),
         feedback: v.union(
           v.object({
             feedbackType: v.union(v.literal("positive"), v.literal("negative")),
@@ -129,14 +126,15 @@ export const getMessagesByChatId = query({
     }
 
     try {
-      // Verify chat ownership
-      try {
-        await ctx.runQuery(internal.messages.verifyChatOwnership, {
+      const chatExists: boolean = await ctx.runQuery(
+        internal.messages.verifyChatOwnership,
+        {
           chatId: args.chatId,
           userId: user.subject,
-        });
-      } catch (error) {
-        // Chat doesn't exist yet - return empty results (will be created on first message)
+        },
+      );
+
+      if (!chatExists) {
         return {
           page: [],
           isDone: true,
@@ -144,15 +142,12 @@ export const getMessagesByChatId = query({
         };
       }
 
-      // For chat messages, we use descending order (newest first)
-      // and let the client handle the display order
       const result = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .order("desc") // Newest first - this is correct for "load more" to get older messages
+        .order("desc")
         .paginate(args.paginationOpts);
 
-      // Enhance messages with feedback data for assistant messages
       const enhancedMessages = [];
       for (const message of result.page) {
         if (message.role === "assistant" && message.feedback_id) {
@@ -187,12 +182,9 @@ export const getMessagesByChatId = query({
     } catch (error) {
       console.error("Failed to get messages:", error);
 
-      // Re-throw authorization errors to trigger proper handling on client
       if (error instanceof Error && error.message.includes("Unauthorized")) {
         throw error;
       }
-
-      // For other errors, return empty results to prevent breaking the UI
       return {
         page: [],
         isDone: true,
@@ -226,10 +218,17 @@ export const saveAssistantMessageFromClient = mutation({
 
     try {
       // Verify chat ownership
-      await ctx.runQuery(internal.messages.verifyChatOwnership, {
-        chatId: args.chatId,
-        userId: user.subject,
-      });
+      const chatExists: boolean = await ctx.runQuery(
+        internal.messages.verifyChatOwnership,
+        {
+          chatId: args.chatId,
+          userId: user.subject,
+        },
+      );
+
+      if (!chatExists) {
+        throw new Error("Chat not found");
+      }
 
       await ctx.db.insert("messages", {
         id: args.id,
@@ -281,13 +280,19 @@ export const deleteLastAssistantMessageFromClient = mutation({
           );
         } else {
           // Verify chat ownership
-          await ctx.runQuery(internal.messages.verifyChatOwnership, {
-            chatId: args.chatId,
-            userId: user.subject,
-          });
+          const chatExists: boolean = await ctx.runQuery(
+            internal.messages.verifyChatOwnership,
+            {
+              chatId: args.chatId,
+              userId: user.subject,
+            },
+          );
+
+          if (!chatExists) {
+            throw new Error("Chat not found");
+          }
         }
 
-        // Clean up files associated with this message
         if (
           lastAssistantMessage.file_ids &&
           lastAssistantMessage.file_ids.length > 0
@@ -301,7 +306,6 @@ export const deleteLastAssistantMessageFromClient = mutation({
               }
             } catch (error) {
               console.error(`Failed to delete file ${storageId}:`, error);
-              // Continue with deletion even if file cleanup fails
             }
           }
         }
@@ -313,6 +317,70 @@ export const deleteLastAssistantMessageFromClient = mutation({
     } catch (error) {
       console.error("Failed to delete last assistant message:", error);
       throw error;
+    }
+  },
+});
+
+/**
+ * Get all messages for a chat from the backend (for AI processing)
+ */
+export const getMessagesByChatIdForBackend = query({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.array(
+    v.object({
+      id: v.string(),
+      role: v.union(
+        v.literal("user"),
+        v.literal("assistant"),
+        v.literal("system"),
+      ),
+      parts: v.array(v.any()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    try {
+      // Verify chat ownership - if chat doesn't exist, return empty array
+      const chatExists: boolean = await ctx.runQuery(
+        internal.messages.verifyChatOwnership,
+        {
+          chatId: args.chatId,
+          userId: args.userId,
+        },
+      );
+
+      if (!chatExists) {
+        // Chat doesn't exist yet (new chat), return empty array
+        return [];
+      }
+
+      const LIMIT = 32;
+      // Get newest 32 messages and reverse for chronological AI processing
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .order("desc")
+        .take(LIMIT);
+
+      const chronologicalMessages = messages.reverse();
+
+      return chronologicalMessages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        parts: message.parts,
+      }));
+    } catch (error) {
+      console.error("Failed to get messages for backend:", error);
+
+      if (error instanceof Error && error.message.includes("Unauthorized")) {
+        throw error;
+      }
+      return [];
     }
   },
 });
@@ -347,20 +415,25 @@ export const regenerateWithNewContentFromClient = mutation({
         );
       } else {
         // Verify chat ownership
-        await ctx.runQuery(internal.messages.verifyChatOwnership, {
-          chatId: message.chat_id,
-          userId: user.subject,
-        });
+        const chatExists: boolean = await ctx.runQuery(
+          internal.messages.verifyChatOwnership,
+          {
+            chatId: message.chat_id,
+            userId: user.subject,
+          },
+        );
+
+        if (!chatExists) {
+          throw new Error("Chat not found");
+        }
       }
 
-      // Update message with new content and clear storage_ids since we're replacing with text
       await ctx.db.patch(message._id, {
         parts: [{ type: "text", text: args.newContent }],
-        file_ids: undefined, // Clear file references when replacing with text
+        file_ids: undefined,
         update_time: Date.now(),
       });
 
-      // Delete all messages after the given message and their associated files
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) =>
@@ -371,7 +444,6 @@ export const regenerateWithNewContentFromClient = mutation({
         .collect();
 
       for (const msg of messages) {
-        // Clean up files associated with this message
         if (msg.file_ids && msg.file_ids.length > 0) {
           for (const fileId of msg.file_ids) {
             try {
@@ -382,7 +454,6 @@ export const regenerateWithNewContentFromClient = mutation({
               }
             } catch (error) {
               console.error(`Failed to delete file ${fileId}:`, error);
-              // Continue with deletion even if file cleanup fails
             }
           }
         }

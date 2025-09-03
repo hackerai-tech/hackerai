@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { mainSidebarStorage, STORAGE_KEYS } from "@/lib/utils/sidebar-storage";
 import {
   Sheet,
   SheetContent,
@@ -25,12 +26,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
 const SIDEBAR_WIDTH_ICON = "3rem";
-const SIDEBAR_KEYBOARD_SHORTCUT = "b";
+const SIDEBAR_KEYBOARD_SHORTCUT = "s";
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed";
@@ -69,9 +69,11 @@ function SidebarProvider({
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(defaultOpen);
+  // Internal sidebar state - mobile always false, desktop from localStorage
+  const [_open, _setOpen] = React.useState<boolean>(() => {
+    const stored = mainSidebarStorage.get(isMobile);
+    return stored ?? defaultOpen;
+  });
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
@@ -82,10 +84,18 @@ function SidebarProvider({
         _setOpen(openState);
       }
 
-      // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+      // Persist state on desktop only
+      if (!isMobile && typeof window !== "undefined") {
+        mainSidebarStorage.save(openState, isMobile);
+        // Keep cookie for backward compatibility
+        try {
+          document.cookie = `${STORAGE_KEYS.MAIN_SIDEBAR}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+        } catch {
+          // Ignore cookie errors in production
+        }
+      }
     },
-    [setOpenProp, open],
+    [setOpenProp, open, isMobile],
   );
 
   // Helper to toggle the sidebar.
@@ -97,8 +107,10 @@ function SidebarProvider({
   React.useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (
-        event.key === SIDEBAR_KEYBOARD_SHORTCUT &&
-        (event.metaKey || event.ctrlKey)
+        event.key.toLowerCase() === SIDEBAR_KEYBOARD_SHORTCUT &&
+        event.shiftKey &&
+        (event.metaKey || event.ctrlKey) &&
+        !event.altKey
       ) {
         event.preventDefault();
         toggleSidebar();
@@ -291,14 +303,49 @@ function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
       onClick={toggleSidebar}
       title="Toggle Sidebar"
       className={cn(
-        "hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] sm:flex",
+        "absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 sm:flex",
         "in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize",
         "[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize",
-        "hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full",
+        "hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0",
         "[[data-side=left][data-collapsible=offcanvas]_&]:-right-2",
         "[[data-side=right][data-collapsible=offcanvas]_&]:-left-2",
         className,
       )}
+      {...props}
+    />
+  );
+}
+
+function SidebarExpandArea({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
+  const { toggleSidebar, state, isMobile } = useSidebar();
+
+  // Only show on non-mobile when collapsed
+  if (isMobile || state !== "collapsed") {
+    return null;
+  }
+
+  return (
+    <div
+      data-sidebar="expand-area"
+      data-slot="sidebar-expand-area"
+      className={cn(
+        "absolute inset-0 z-10 cursor-e-resize hover:bg-sidebar-accent/5 transition-colors",
+        className,
+      )}
+      onClick={toggleSidebar}
+      role="button"
+      tabIndex={0}
+      aria-label="Expand sidebar"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleSidebar();
+        }
+      }}
+      title="Click to expand sidebar"
       {...props}
     />
   );
@@ -374,11 +421,14 @@ function SidebarContent({ className, ...props }: React.ComponentProps<"div">) {
       data-slot="sidebar-content"
       data-sidebar="content"
       className={cn(
-        "flex min-h-0 flex-1 flex-col gap-2 overflow-auto group-data-[collapsible=icon]:overflow-hidden",
+        "relative flex min-h-0 flex-1 flex-col gap-2 overflow-auto group-data-[collapsible=icon]:overflow-hidden",
         className,
       )}
       {...props}
-    />
+    >
+      {props.children}
+      <SidebarExpandArea />
+    </div>
   );
 }
 
@@ -701,6 +751,7 @@ function SidebarMenuSubButton({
 export {
   Sidebar,
   SidebarContent,
+  SidebarExpandArea,
   SidebarFooter,
   SidebarGroup,
   SidebarGroupAction,

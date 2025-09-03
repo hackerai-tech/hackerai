@@ -6,6 +6,7 @@ import React, {
   useState,
   useCallback,
   useEffect,
+  useRef,
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
@@ -13,6 +14,8 @@ import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 
 interface GlobalStateType {
   // Input state
@@ -103,6 +106,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [mode, setMode] = useState<ChatMode>("ask");
@@ -115,7 +119,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
-  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
+  // Initialize chat sidebar state
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
+    chatSidebarStorage.get(isMobile),
+  );
   const [todos, setTodos] = useState<Todo[]>([]);
   const [hasProPlan, setHasProPlan] = useState(false);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
@@ -125,32 +132,56 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
 
+  // Handle sidebar persistence and mobile transitions
+  const prevIsMobile = useRef(isMobile);
+  useEffect(() => {
+    // Save state on desktop
+    chatSidebarStorage.save(chatSidebarOpen, isMobile);
+
+    // Close sidebar when transitioning from desktop to mobile
+    if (!prevIsMobile.current && isMobile && chatSidebarOpen) {
+      setChatSidebarOpen(false);
+    }
+
+    prevIsMobile.current = isMobile;
+  }, [chatSidebarOpen, isMobile]);
+
   // Check for pro plan on user change
   useEffect(() => {
     const checkProPlan = async () => {
       if (user) {
         setIsCheckingProPlan(true);
         try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
           const response = await fetch("/api/entitlements", {
-            credentials: "include", // Ensure cookies are sent
+            credentials: "include",
+            signal: controller.signal,
           });
 
+          clearTimeout(timeoutId);
+
           if (!response.ok) {
-            console.error(
-              "❌ [GlobalState] Entitlements API failed:",
-              response.status,
-              response.statusText,
-            );
-            const errorData = await response.json().catch(() => ({}));
-            console.error("❌ [GlobalState] Error details:", errorData);
             throw new Error(`HTTP error! status: ${response.status}`);
           }
 
           const data = await response.json();
           setHasProPlan(data.hasProPlan || false);
         } catch (error) {
-          console.error("💥 [GlobalState] Failed to check pro plan:", error);
           setHasProPlan(false);
+
+          // Retry after delay if it's a network/timeout error
+          if (
+            error instanceof Error &&
+            (error.name === "AbortError" || error.message.includes("fetch"))
+          ) {
+            setTimeout(() => {
+              if (user) {
+                checkProPlan();
+              }
+            }, 5000);
+          }
         } finally {
           setIsCheckingProPlan(false);
         }
@@ -213,7 +244,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setHasActiveChat(false);
     setTodos([]);
     setIsTodoPanelExpanded(false);
-    setUploadedFiles([]);
   }, []);
 
   const openSidebar = (content: SidebarContent) => {
@@ -236,7 +266,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   };
 
   const toggleChatSidebar = () => {
-    setChatSidebarOpen((prev) => !prev);
+    setChatSidebarOpen((prev: boolean) => !prev);
   };
 
   const value: GlobalStateType = {

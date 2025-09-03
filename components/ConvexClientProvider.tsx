@@ -37,11 +37,32 @@ function useAuthFromAuthKit() {
   }
 
   const fetchAccessToken = useCallback(async () => {
+    // If we have a stable token and no error, use it
     if (stableAccessToken.current && !tokenError) {
       return stableAccessToken.current;
     }
+
+    // If token is missing or error exists, try to refresh session
+    if (tokenError || !accessToken) {
+      try {
+        // Force a session refresh by calling the entitlements API
+        // This will trigger WorkOS to refresh the session cookie
+        const response = await fetch("/api/entitlements", {
+          credentials: "include",
+          cache: "no-cache", // Force fresh request
+        });
+
+        if (response.ok) {
+          // Don't return anything - let the auth hook re-run with fresh token
+          return null;
+        }
+      } catch (error) {
+        // Silently handle refresh errors
+      }
+    }
+
     return null;
-  }, [tokenError]);
+  }, [tokenError, accessToken]);
 
   return {
     isLoading: loading,

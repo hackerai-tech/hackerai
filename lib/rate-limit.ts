@@ -27,7 +27,7 @@ export const checkRateLimit = async (
         url: redisUrl,
         token: redisToken,
       }),
-      limiter: Ratelimit.slidingWindow(requestLimit, "5 h"),
+      limiter: Ratelimit.slidingWindow(requestLimit, "3 h"),
     });
 
     const { success, reset } = await ratelimit.limit(userId);

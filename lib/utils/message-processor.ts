@@ -38,18 +38,24 @@ interface DataPart {
 
 /**
  * Normalizes chat messages by transforming incomplete tool calls and cleaning up data parts.
+ * Also prepares the last user message for backend sending.
  *
  * This function:
  * 1. Collects terminal output from data-terminal parts (only terminal tools use data streaming)
  * 2. Transforms tools with input-available state to output-available state when interrupted
  * 3. Removes data-terminal parts to clean up the message structure
+ * 4. Prepares the last user message for backend to reduce payload size
  *
  * @param messages - Array of UI messages to normalize
- * @returns Object with normalized messages and hasChanges flag
+ * @returns Object with normalized messages, last message array, and hasChanges flag
  */
 export const normalizeMessages = (
   messages: ChatMessage[],
-): { messages: ChatMessage[]; hasChanges: boolean } => {
+): {
+  messages: ChatMessage[];
+  lastMessage: ChatMessage[];
+  hasChanges: boolean;
+} => {
   let hasChanges = false;
   const normalizedMessages = messages.map((message) => {
     // Only process assistant messages
@@ -126,7 +132,15 @@ export const normalizeMessages = (
     };
   });
 
-  return { messages: normalizedMessages, hasChanges };
+  // Prepare last message array with only the last user message
+  const lastUserMessage = normalizedMessages
+    .slice()
+    .reverse()
+    .find((msg) => msg.role === "user");
+
+  const lastMessage = lastUserMessage ? [lastUserMessage] : [];
+
+  return { messages: normalizedMessages, lastMessage, hasChanges };
 };
 
 /**

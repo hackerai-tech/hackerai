@@ -47,36 +47,42 @@ export const Chat = ({ id }: { id?: string }) => {
 
   // Use ID from route if available, otherwise global currentChatId, or generate new one
   const [chatId, setChatId] = useState(id || currentChatId || uuidv4());
-  // Track if we've already initialized for new chat to prevent infinite loops
-  const hasInitializedNewChat = useRef(false);
-  // Track if we've initialized for this specific route ID
-  const hasInitializedRouteId = useRef<string | null>(null);
+  // Track the last processed ID to detect changes
+  const lastProcessedId = useRef<string | undefined>(undefined);
+  // Track if we've initialized for this specific route
+  const isInitialized = useRef(false);
 
   // Handle initial mount and chat initialization
   useEffect(() => {
-    if (id && hasInitializedRouteId.current !== id) {
-      // Direct URL with ID - initialize immediately
+    // Reset initialization flag when ID changes
+    if (lastProcessedId.current !== id) {
+      isInitialized.current = false;
+      lastProcessedId.current = id;
+    }
+
+    // Skip if already initialized for current ID
+    if (isInitialized.current) {
+      return;
+    }
+
+    if (id) {
+      // Direct URL with ID - initialize with existing chat
       setChatId(id);
       initializeChat(id, true);
-
-      hasInitializedRouteId.current = id;
-      hasInitializedNewChat.current = false;
-    } else if (!id && !currentChatId && !hasInitializedNewChat.current) {
+      isInitialized.current = true;
+    } else if (!currentChatId) {
       // No ID and no current chat - create new chat
       const newChatId = uuidv4();
       setChatId(newChatId);
       initializeNewChat();
-
-      hasInitializedNewChat.current = true;
-      hasInitializedRouteId.current = null;
-    } else if (!id && currentChatId && currentChatId !== chatId) {
+      isInitialized.current = true;
+    } else if (currentChatId && currentChatId !== chatId) {
       // Global state has a different chat - switch to it
       setChatId(currentChatId);
       initializeChat(currentChatId, false);
-
-      hasInitializedRouteId.current = null;
+      isInitialized.current = true;
     }
-  }, [id, currentChatId, chatId, initializeChat, initializeNewChat]);
+  }, [id, currentChatId, initializeChat, initializeNewChat]);
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(
@@ -115,16 +121,18 @@ export const Chat = ({ id }: { id?: string }) => {
       api: "/api/chat",
       fetch: fetchWithErrorHandlers,
       prepareSendMessagesRequest: ({ id, messages, body }) => {
-        const { messages: normalizedMessages, hasChanges } = normalizeMessages(
-          messages as ChatMessage[],
-        );
+        const {
+          messages: normalizedMessages,
+          lastMessage,
+          hasChanges,
+        } = normalizeMessages(messages as ChatMessage[]);
         if (hasChanges) {
           setMessages(normalizedMessages);
         }
         return {
           body: {
             chatId: id,
-            messages: normalizedMessages,
+            messages: lastMessage,
             ...body,
           },
         };
@@ -150,6 +158,13 @@ export const Chat = ({ id }: { id?: string }) => {
     },
   });
 
+  // Clear messages when starting a new chat (no ID and no current chat)
+  useEffect(() => {
+    if (!id && !currentChatId && !hasActiveChat && messages.length > 0) {
+      setMessages([]);
+    }
+  }, [id, currentChatId, hasActiveChat, messages.length, setMessages]);
+
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
     if (chatData && chatData.title) {
@@ -168,8 +183,13 @@ export const Chat = ({ id }: { id?: string }) => {
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
-    if (!paginatedMessages.results || paginatedMessages.results.length === 0)
+    if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
+      // If no messages from server and we're in a new chat, clear local messages
+      if (!id && !currentChatId && messages.length > 0) {
+        setMessages([]);
+      }
       return;
+    }
 
     // Messages come from server in descending order, reverse for chronological display
     const uiMessages = convertToUIMessages(
@@ -190,7 +210,7 @@ export const Chat = ({ id }: { id?: string }) => {
     if (shouldSync) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessages.results, setMessages, messages]);
+  }, [paginatedMessages.results, setMessages, messages, id, currentChatId]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -254,22 +274,20 @@ export const Chat = ({ id }: { id?: string }) => {
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       <div className="flex w-full h-full overflow-hidden">
-        {/* Chat Sidebar - Desktop screens only (takes space) */}
+        {/* Chat Sidebar - Desktop screens: always mounted, collapses to icon rail when closed */}
         {!isMobile && (
           <div
             className={`transition-all duration-300 ${
-              chatSidebarOpen ? "w-72 flex-shrink-0" : "w-0 overflow-hidden"
+              chatSidebarOpen ? "w-72 flex-shrink-0" : "w-12 flex-shrink-0"
             }`}
           >
-            {chatSidebarOpen && (
-              <SidebarProvider
-                open={true}
-                onOpenChange={() => {}}
-                defaultOpen={true}
-              >
-                <MainSidebar />
-              </SidebarProvider>
-            )}
+            <SidebarProvider
+              open={chatSidebarOpen}
+              onOpenChange={setChatSidebarOpen}
+              defaultOpen={true}
+            >
+              <MainSidebar />
+            </SidebarProvider>
           </div>
         )}
 

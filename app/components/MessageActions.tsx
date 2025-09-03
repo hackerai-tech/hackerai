@@ -23,6 +23,7 @@ interface MessageActionsProps {
   onFeedback?: (type: "positive" | "negative") => void;
   existingFeedback?: "positive" | "negative" | null;
   isAwaitingFeedbackDetails?: boolean;
+  hasFileContent?: boolean;
 }
 
 export const MessageActions = ({
@@ -38,6 +39,7 @@ export const MessageActions = ({
   onFeedback,
   existingFeedback,
   isAwaitingFeedbackDetails = false,
+  hasFileContent = false,
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
 
@@ -62,9 +64,7 @@ export const MessageActions = ({
     isLastAssistantMessage &&
     (status === "submitted" || status === "streaming");
   const shouldShowActions =
-    !isLastAssistantLoading &&
-    !isEditing &&
-    (isLastAssistantMessage || isHovered);
+    !isLastAssistantLoading && !isEditing && (isUser ? isHovered : true); // Always show for assistant, only on hover for user
 
   return (
     <div
@@ -87,8 +87,8 @@ export const MessageActions = ({
             delayDuration={300}
           />
 
-          {/* Show edit only for user messages */}
-          {isUser && (
+          {/* Show edit only for user messages without images */}
+          {isUser && !hasFileContent && (
             <WithTooltip
               display={"Edit message"}
               trigger={
