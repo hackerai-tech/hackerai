@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
 
-const SidebarUserNav = () => {
+const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { hasProPlan, isCheckingProPlan } = useGlobalState();
   const { handleUpgrade } = useUpgrade();
@@ -70,25 +70,41 @@ const SidebarUserNav = () => {
     <div className="border-t border-sidebar-border">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <div className="flex items-center gap-3 p-3 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors">
-            <Avatar className="h-8 w-8">
-              <AvatarImage
-                src={user.profilePictureUrl || undefined}
-                alt={getDisplayName()}
-              />
-              <AvatarFallback className="text-xs">
-                {getUserInitials()}
-              </AvatarFallback>
-            </Avatar>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium text-sidebar-foreground truncate">
-                {getDisplayName()}
-              </div>
-              <div className="text-xs text-sidebar-accent-foreground truncate">
-                {isProUser ? "Pro" : "Free"}
+          {isCollapsed ? (
+            /* Collapsed state - only show avatar centered */
+            <div className="flex items-center justify-center p-2 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors">
+              <Avatar className="h-7 w-7">
+                <AvatarImage
+                  src={user.profilePictureUrl || undefined}
+                  alt={getDisplayName()}
+                />
+                <AvatarFallback className="text-xs">
+                  {getUserInitials()}
+                </AvatarFallback>
+              </Avatar>
+            </div>
+          ) : (
+            /* Expanded state - show full user info */
+            <div className="flex items-center gap-3 p-3 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors">
+              <Avatar className="h-7 w-7">
+                <AvatarImage
+                  src={user.profilePictureUrl || undefined}
+                  alt={getDisplayName()}
+                />
+                <AvatarFallback className="text-xs">
+                  {getUserInitials()}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-sidebar-foreground truncate">
+                  {getDisplayName()}
+                </div>
+                <div className="text-xs text-sidebar-accent-foreground truncate">
+                  {isProUser ? "Pro" : "Free"}
+                </div>
               </div>
             </div>
-          </div>
+          )}
         </DropdownMenuTrigger>
 
         <DropdownMenuContent

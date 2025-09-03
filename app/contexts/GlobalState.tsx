@@ -6,6 +6,7 @@ import React, {
   useState,
   useCallback,
   useEffect,
+  useRef,
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
@@ -13,6 +14,8 @@ import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
 import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 
 interface GlobalStateType {
   // Input state
@@ -103,6 +106,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [mode, setMode] = useState<ChatMode>("ask");
@@ -115,7 +119,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
-  const [chatSidebarOpen, setChatSidebarOpen] = useState(false);
+  // Initialize chat sidebar state
+  const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
+    chatSidebarStorage.get(isMobile),
+  );
   const [todos, setTodos] = useState<Todo[]>([]);
   const [hasProPlan, setHasProPlan] = useState(false);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
@@ -124,6 +131,20 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
   }, []);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
+
+  // Handle sidebar persistence and mobile transitions
+  const prevIsMobile = useRef(isMobile);
+  useEffect(() => {
+    // Save state on desktop
+    chatSidebarStorage.save(chatSidebarOpen, isMobile);
+
+    // Close sidebar when transitioning from desktop to mobile
+    if (!prevIsMobile.current && isMobile && chatSidebarOpen) {
+      setChatSidebarOpen(false);
+    }
+
+    prevIsMobile.current = isMobile;
+  }, [chatSidebarOpen, isMobile]);
 
   // Monitor connection state for debugging
   useEffect(() => {
@@ -360,7 +381,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   };
 
   const toggleChatSidebar = () => {
-    setChatSidebarOpen((prev) => !prev);
+    setChatSidebarOpen((prev: boolean) => !prev);
   };
 
   const value: GlobalStateType = {

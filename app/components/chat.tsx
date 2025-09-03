@@ -297,22 +297,20 @@ export const Chat = ({ id }: { id?: string }) => {
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
       <div className="flex w-full h-full overflow-hidden">
-        {/* Chat Sidebar - Desktop screens only (takes space) */}
+        {/* Chat Sidebar - Desktop screens: always mounted, collapses to icon rail when closed */}
         {!isMobile && (
           <div
             className={`transition-all duration-300 ${
-              chatSidebarOpen ? "w-72 flex-shrink-0" : "w-0 overflow-hidden"
+              chatSidebarOpen ? "w-72 flex-shrink-0" : "w-12 flex-shrink-0"
             }`}
           >
-            {chatSidebarOpen && (
-              <SidebarProvider
-                open={true}
-                onOpenChange={() => {}}
-                defaultOpen={true}
-              >
-                <MainSidebar />
-              </SidebarProvider>
-            )}
+            <SidebarProvider
+              open={chatSidebarOpen}
+              onOpenChange={setChatSidebarOpen}
+              defaultOpen={true}
+            >
+              <MainSidebar />
+            </SidebarProvider>
           </div>
         )}
 

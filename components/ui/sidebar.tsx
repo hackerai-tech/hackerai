@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
+import { mainSidebarStorage, STORAGE_KEYS } from "@/lib/utils/sidebar-storage";
 import {
   Sheet,
   SheetContent,
@@ -25,7 +26,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
@@ -69,9 +69,10 @@ function SidebarProvider({
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
 
-  // This is the internal state of the sidebar.
-  // We use openProp and setOpenProp for control from outside the component.
-  const [_open, _setOpen] = React.useState(defaultOpen);
+  // Internal sidebar state - mobile always false, desktop from localStorage
+  const [_open, _setOpen] = React.useState(() => {
+    return mainSidebarStorage.get(isMobile) || defaultOpen;
+  });
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
@@ -82,10 +83,18 @@ function SidebarProvider({
         _setOpen(openState);
       }
 
-      // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+      // Persist state on desktop only
+      if (!isMobile && typeof window !== "undefined") {
+        mainSidebarStorage.save(openState, isMobile);
+        // Keep cookie for backward compatibility
+        try {
+          document.cookie = `${STORAGE_KEYS.MAIN_SIDEBAR}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
+        } catch {
+          // Ignore cookie errors in production
+        }
+      }
     },
-    [setOpenProp, open],
+    [setOpenProp, open, isMobile],
   );
 
   // Helper to toggle the sidebar.
