@@ -54,20 +54,8 @@ export const Chat = ({ id }: { id?: string }) => {
 
   // Handle initial mount and chat initialization
   useEffect(() => {
-    console.log("🚀 [Chat] Initialization effect triggered:", {
-      timestamp: new Date().toISOString(),
-      id,
-      currentChatId,
-      chatId,
-      hasInitializedNewChat: hasInitializedNewChat.current,
-      hasInitializedRouteId: hasInitializedRouteId.current,
-      shouldFetchMessages,
-      hasActiveChat,
-    });
-
     if (id && hasInitializedRouteId.current !== id) {
       // Direct URL with ID - initialize immediately
-      console.log("🎯 [Chat] Initializing with route ID:", id);
       setChatId(id);
       initializeChat(id, true);
 
@@ -76,7 +64,6 @@ export const Chat = ({ id }: { id?: string }) => {
     } else if (!id && !currentChatId && !hasInitializedNewChat.current) {
       // No ID and no current chat - create new chat
       const newChatId = uuidv4();
-      console.log("🆕 [Chat] Creating new chat:", newChatId);
       setChatId(newChatId);
       initializeNewChat();
 
@@ -84,7 +71,6 @@ export const Chat = ({ id }: { id?: string }) => {
       hasInitializedRouteId.current = null;
     } else if (!id && currentChatId && currentChatId !== chatId) {
       // Global state has a different chat - switch to it
-      console.log("🔄 [Chat] Switching to existing chat:", currentChatId);
       setChatId(currentChatId);
       initializeChat(currentChatId, false);
 
@@ -104,33 +90,6 @@ export const Chat = ({ id }: { id?: string }) => {
     api.chats.getChatById,
     id || currentChatId ? { id: chatId } : "skip",
   );
-
-  // Log query states for debugging
-  useEffect(() => {
-    console.log("📊 [Chat] Query states:", {
-      timestamp: new Date().toISOString(),
-      chatId,
-      currentChatId,
-      shouldFetchMessages,
-      hasActiveChat,
-      isSwitchingChats,
-      messagesStatus: paginatedMessages.status,
-      messagesCount: paginatedMessages.results?.length || 0,
-      chatDataExists: !!chatData,
-      isSkippingMessages: !shouldFetchMessages,
-      isSkippingChatData: !(id || currentChatId),
-    });
-  }, [
-    chatId,
-    currentChatId,
-    shouldFetchMessages,
-    hasActiveChat,
-    isSwitchingChats,
-    paginatedMessages.status,
-    paginatedMessages.results?.length,
-    chatData,
-    id,
-  ]);
 
   // Convert paginated Convex messages to UI format for useChat
   // Messages come from server in descending order (newest first from pagination)
