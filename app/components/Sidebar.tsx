@@ -68,12 +68,12 @@ const SidebarHeaderContent: React.FC<{
       <div className="flex flex-col items-center p-2">
         {/* HackerAI Logo with hover sidebar toggle */}
         <div
-          className="group/logo relative flex items-center justify-center mb-5 cursor-pointer"
+          className="relative flex items-center justify-center mb-5 cursor-pointer"
           onClick={toggleSidebar}
         >
           <HackerAISVG theme="dark" scale={0.12} />
-          {/* Sidebar icon shown on hover */}
-          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/logo:opacity-100 transition-opacity bg-sidebar/80 rounded">
+          {/* Sidebar icon shown on hover over entire collapsed sidebar */}
+          <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity bg-sidebar/80 rounded">
             <SidebarIcon className="w-5 h-5" />
           </div>
         </div>
