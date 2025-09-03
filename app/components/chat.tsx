@@ -62,7 +62,7 @@ export const Chat = ({ id }: { id?: string }) => {
       hasInitializedNewChat: hasInitializedNewChat.current,
       hasInitializedRouteId: hasInitializedRouteId.current,
       shouldFetchMessages,
-      hasActiveChat
+      hasActiveChat,
     });
 
     if (id && hasInitializedRouteId.current !== id) {
@@ -118,18 +118,18 @@ export const Chat = ({ id }: { id?: string }) => {
       messagesCount: paginatedMessages.results?.length || 0,
       chatDataExists: !!chatData,
       isSkippingMessages: !shouldFetchMessages,
-      isSkippingChatData: !(id || currentChatId)
+      isSkippingChatData: !(id || currentChatId),
     });
   }, [
-    chatId, 
-    currentChatId, 
-    shouldFetchMessages, 
-    hasActiveChat, 
-    isSwitchingChats, 
-    paginatedMessages.status, 
-    paginatedMessages.results?.length, 
+    chatId,
+    currentChatId,
+    shouldFetchMessages,
+    hasActiveChat,
+    isSwitchingChats,
+    paginatedMessages.status,
+    paginatedMessages.results?.length,
     chatData,
-    id
+    id,
   ]);
 
   // Convert paginated Convex messages to UI format for useChat

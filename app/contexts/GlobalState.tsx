@@ -134,23 +134,25 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         shouldFetchMessages,
         hasActiveChat,
         isCheckingProPlan,
-        isSwitchingChats
+        isSwitchingChats,
       });
-      
+
       // Reset potentially stuck states
       if (isCheckingProPlan) {
         console.log("🔄 [GlobalState] Resetting stuck isCheckingProPlan state");
         setIsCheckingProPlan(false);
       }
-      
+
       if (isSwitchingChats) {
         console.log("🔄 [GlobalState] Resetting stuck isSwitchingChats state");
         setIsSwitchingChats(false);
       }
-      
+
       // Re-trigger pro plan check if we have a user
       if (user && !isCheckingProPlan) {
-        console.log("🔄 [GlobalState] Re-triggering pro plan check after reconnection");
+        console.log(
+          "🔄 [GlobalState] Re-triggering pro plan check after reconnection",
+        );
         // The checkProPlan useEffect will handle this automatically
       }
     };
@@ -160,18 +162,25 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         timestamp: new Date().toISOString(),
         currentChatId,
         shouldFetchMessages,
-        hasActiveChat
+        hasActiveChat,
       });
     };
 
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+
     return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
     };
-  }, [currentChatId, shouldFetchMessages, hasActiveChat, isCheckingProPlan, isSwitchingChats, user]);
+  }, [
+    currentChatId,
+    shouldFetchMessages,
+    hasActiveChat,
+    isCheckingProPlan,
+    isSwitchingChats,
+    user,
+  ]);
 
   // Check for pro plan on user change
   useEffect(() => {
@@ -181,20 +190,22 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           timestamp: new Date().toISOString(),
           userId: user.id,
           wasChecking: isCheckingProPlan,
-          hadProPlan: hasProPlan
+          hadProPlan: hasProPlan,
         });
-        
+
         setIsCheckingProPlan(true);
         try {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => {
-            console.warn("⏰ [GlobalState] Pro plan check timeout, aborting...");
+            console.warn(
+              "⏰ [GlobalState] Pro plan check timeout, aborting...",
+            );
             controller.abort();
           }, 10000); // 10 second timeout
 
           const response = await fetch("/api/entitlements", {
             credentials: "include",
-            signal: controller.signal
+            signal: controller.signal,
           });
 
           clearTimeout(timeoutId);
@@ -204,7 +215,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
               timestamp: new Date().toISOString(),
               status: response.status,
               statusText: response.statusText,
-              url: response.url
+              url: response.url,
             });
             const errorData = await response.json().catch(() => ({}));
             console.error("❌ [GlobalState] Error details:", errorData);
@@ -215,24 +226,30 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           console.log("✅ [GlobalState] Pro plan check successful:", {
             timestamp: new Date().toISOString(),
             hasProPlan: data.hasProPlan || false,
-            entitlements: data.entitlements || []
+            entitlements: data.entitlements || [],
           });
           setHasProPlan(data.hasProPlan || false);
         } catch (error) {
           console.error("💥 [GlobalState] Failed to check pro plan:", {
             timestamp: new Date().toISOString(),
             error: error instanceof Error ? error.message : error,
-            name: error instanceof Error ? error.name : 'Unknown',
-            isAbortError: error instanceof Error && error.name === 'AbortError',
-            userId: user.id
+            name: error instanceof Error ? error.name : "Unknown",
+            isAbortError: error instanceof Error && error.name === "AbortError",
+            userId: user.id,
           });
           setHasProPlan(false);
-          
+
           // Retry after delay if it's a network/timeout error
-          if (error instanceof Error && (error.name === 'AbortError' || error.message.includes('fetch'))) {
-            console.log("🔄 [GlobalState] Scheduling pro plan check retry in 5s...");
+          if (
+            error instanceof Error &&
+            (error.name === "AbortError" || error.message.includes("fetch"))
+          ) {
+            console.log(
+              "🔄 [GlobalState] Scheduling pro plan check retry in 5s...",
+            );
             setTimeout(() => {
-              if (user) { // Only retry if user is still authenticated
+              if (user) {
+                // Only retry if user is still authenticated
                 checkProPlan();
               }
             }, 5000);
@@ -285,23 +302,26 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
 
-  const initializeChat = useCallback((chatId: string) => {
-    console.log("🔧 [GlobalState] Initializing chat:", {
-      timestamp: new Date().toISOString(),
-      chatId,
-      previousChatId: currentChatId,
-      wasSwitching: isSwitchingChats,
-      hadActiveChat: hasActiveChat,
-      shouldFetchMessagesBefore: shouldFetchMessages
-    });
-    
-    setIsSwitchingChats(true);
-    setCurrentChatId(chatId);
-    setShouldFetchMessages(true);
-    setHasActiveChat(true);
-    setTodos([]);
-    setIsTodoPanelExpanded(false);
-  }, [currentChatId, isSwitchingChats, hasActiveChat, shouldFetchMessages]);
+  const initializeChat = useCallback(
+    (chatId: string) => {
+      console.log("🔧 [GlobalState] Initializing chat:", {
+        timestamp: new Date().toISOString(),
+        chatId,
+        previousChatId: currentChatId,
+        wasSwitching: isSwitchingChats,
+        hadActiveChat: hasActiveChat,
+        shouldFetchMessagesBefore: shouldFetchMessages,
+      });
+
+      setIsSwitchingChats(true);
+      setCurrentChatId(chatId);
+      setShouldFetchMessages(true);
+      setHasActiveChat(true);
+      setTodos([]);
+      setIsTodoPanelExpanded(false);
+    },
+    [currentChatId, isSwitchingChats, hasActiveChat, shouldFetchMessages],
+  );
 
   const initializeNewChat = useCallback(() => {
     console.log("🆕 [GlobalState] Initializing new chat:", {
@@ -309,9 +329,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       previousChatId: currentChatId,
       wasSwitching: isSwitchingChats,
       hadActiveChat: hasActiveChat,
-      shouldFetchMessagesBefore: shouldFetchMessages
+      shouldFetchMessagesBefore: shouldFetchMessages,
     });
-    
+
     setCurrentChatId(null);
     setShouldFetchMessages(false);
     setHasActiveChat(false);

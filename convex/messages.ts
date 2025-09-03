@@ -56,7 +56,7 @@ export const saveMessage = mutation({
       if (existingMessage) {
         return null;
       } else {
-        const chatExists = await ctx.runQuery(
+        const chatExists: boolean = await ctx.runQuery(
           internal.messages.verifyChatOwnership,
           {
             chatId: args.chatId,
@@ -126,7 +126,7 @@ export const getMessagesByChatId = query({
     }
 
     try {
-      const chatExists = await ctx.runQuery(
+      const chatExists: boolean = await ctx.runQuery(
         internal.messages.verifyChatOwnership,
         {
           chatId: args.chatId,
@@ -218,7 +218,7 @@ export const saveAssistantMessageFromClient = mutation({
 
     try {
       // Verify chat ownership
-      const chatExists = await ctx.runQuery(
+      const chatExists: boolean = await ctx.runQuery(
         internal.messages.verifyChatOwnership,
         {
           chatId: args.chatId,
@@ -280,7 +280,7 @@ export const deleteLastAssistantMessageFromClient = mutation({
           );
         } else {
           // Verify chat ownership
-          const chatExists = await ctx.runQuery(
+          const chatExists: boolean = await ctx.runQuery(
             internal.messages.verifyChatOwnership,
             {
               chatId: args.chatId,
@@ -346,7 +346,7 @@ export const getMessagesByChatIdForBackend = query({
 
     try {
       // Verify chat ownership - if chat doesn't exist, return empty array
-      const chatExists = await ctx.runQuery(
+      const chatExists: boolean = await ctx.runQuery(
         internal.messages.verifyChatOwnership,
         {
           chatId: args.chatId,
@@ -359,12 +359,13 @@ export const getMessagesByChatIdForBackend = query({
         return [];
       }
 
+      const LIMIT = 32;
       // Get newest 32 messages and reverse for chronological AI processing
       const messages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
         .order("desc")
-        .take(32);
+        .take(LIMIT);
 
       const chronologicalMessages = messages.reverse();
 
@@ -414,7 +415,7 @@ export const regenerateWithNewContentFromClient = mutation({
         );
       } else {
         // Verify chat ownership
-        const chatExists = await ctx.runQuery(
+        const chatExists: boolean = await ctx.runQuery(
           internal.messages.verifyChatOwnership,
           {
             chatId: message.chat_id,

@@ -33,14 +33,16 @@ function useAuthFromAuthKit() {
 
   // Add timeout to prevent infinite loading states
   const [loadingTimeout, setLoadingTimeout] = useState(false);
-  
+
   useEffect(() => {
     if (loading && !loadingTimeout) {
       const timeout = setTimeout(() => {
-        console.error("🚨 [ConvexAuth] Loading timeout - forcing authentication failure");
+        console.error(
+          "🚨 [ConvexAuth] Loading timeout - forcing authentication failure",
+        );
         setLoadingTimeout(true);
       }, 30000); // 30 second timeout
-      
+
       return () => clearTimeout(timeout);
     } else if (!loading) {
       setLoadingTimeout(false);
@@ -54,13 +56,16 @@ function useAuthFromAuthKit() {
   const stableAccessToken = useRef<string | null>(null);
   const prevLoadingState = useRef<boolean | null>(null);
   const prevAuthState = useRef<boolean | null>(null);
-  
+
   // Log auth state changes for debugging
   useEffect(() => {
     const currentLoading = finalLoading;
     const currentAuth = finalAuthenticated;
-    
-    if (prevLoadingState.current !== currentLoading || prevAuthState.current !== currentAuth) {
+
+    if (
+      prevLoadingState.current !== currentLoading ||
+      prevAuthState.current !== currentAuth
+    ) {
       console.log("🔐 [ConvexAuth] State change:", {
         timestamp: new Date().toISOString(),
         isLoading: currentLoading,
@@ -73,13 +78,22 @@ function useAuthFromAuthKit() {
         userId: user?.id || null,
         loadingTimeout: loadingTimeout,
         finalLoading: finalLoading,
-        finalAuthenticated: finalAuthenticated
+        finalAuthenticated: finalAuthenticated,
       });
-      
+
       prevLoadingState.current = currentLoading;
       prevAuthState.current = currentAuth;
     }
-  }, [finalLoading, finalAuthenticated, isLoading, tokenLoading, user, accessToken, tokenError, loadingTimeout]);
+  }, [
+    finalLoading,
+    finalAuthenticated,
+    isLoading,
+    tokenLoading,
+    user,
+    accessToken,
+    tokenError,
+    loadingTimeout,
+  ]);
 
   // Log token errors specifically
   useEffect(() => {
@@ -90,7 +104,7 @@ function useAuthFromAuthKit() {
         stack: tokenError.stack,
         hasUser: !!user,
         isLoading,
-        tokenLoading
+        tokenLoading,
       });
     }
   }, [tokenError, user, isLoading, tokenLoading]);
@@ -104,18 +118,20 @@ function useAuthFromAuthKit() {
       timestamp: new Date().toISOString(),
       hasStableToken: !!stableAccessToken.current,
       hasTokenError: !!tokenError,
-      tokenErrorMessage: tokenError?.message || null
+      tokenErrorMessage: tokenError?.message || null,
     });
-    
+
     // If we have a stable token and no error, use it
     if (stableAccessToken.current && !tokenError) {
       return stableAccessToken.current;
     }
-    
+
     // If token is missing or error exists, try to refresh session
     if (tokenError || !accessToken) {
-      console.log("🔄 [ConvexAuth] Token missing/error, attempting session refresh...");
-      
+      console.log(
+        "🔄 [ConvexAuth] Token missing/error, attempting session refresh...",
+      );
+
       try {
         // Force a session refresh by calling the entitlements API
         // This will trigger WorkOS to refresh the session cookie
@@ -123,19 +139,24 @@ function useAuthFromAuthKit() {
           credentials: "include",
           cache: "no-cache", // Force fresh request
         });
-        
+
         if (response.ok) {
-          console.log("✅ [ConvexAuth] Session refresh successful, waiting for new token...");
+          console.log(
+            "✅ [ConvexAuth] Session refresh successful, waiting for new token...",
+          );
           // Don't return anything - let the auth hook re-run with fresh token
           return null;
         } else {
-          console.warn("⚠️ [ConvexAuth] Session refresh failed:", response.status);
+          console.warn(
+            "⚠️ [ConvexAuth] Session refresh failed:",
+            response.status,
+          );
         }
       } catch (error) {
         console.error("💥 [ConvexAuth] Session refresh error:", error);
       }
     }
-    
+
     return null;
   }, [tokenError, accessToken]);
 

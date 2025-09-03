@@ -14,7 +14,7 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
     console.log("📄 [Page] Chat page render:", {
       timestamp: new Date().toISOString(),
       chatId,
-      route: `/c/${chatId}`
+      route: `/c/${chatId}`,
     });
   }, [chatId]);
 
@@ -46,49 +46,61 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
 // Component to log when AuthLoading is active
 function AuthLoadingWithLogging() {
   useEffect(() => {
-    console.log("⏳ [Page] AuthLoading component mounted - Convex determining auth state");
-    
+    console.log(
+      "⏳ [Page] AuthLoading component mounted - Convex determining auth state",
+    );
+
     // Set a timeout to detect if we're stuck in AuthLoading
     const timeout = setTimeout(() => {
-      console.warn("🚨 [Page] AuthLoading stuck for 15+ seconds - possible infinite loading!");
+      console.warn(
+        "🚨 [Page] AuthLoading stuck for 15+ seconds - possible infinite loading!",
+      );
     }, 15000);
-    
+
     return () => {
-      console.log("✅ [Page] AuthLoading component unmounted - auth state determined");
+      console.log(
+        "✅ [Page] AuthLoading component unmounted - auth state determined",
+      );
       clearTimeout(timeout);
     };
   }, []);
-  
+
   return <Loading />;
 }
 
 // Component to log when user is authenticated
 function AuthenticatedWithLogging({ chatId }: { chatId: string }) {
   useEffect(() => {
-    console.log("🔓 [Page] Authenticated component mounted - user is authenticated");
+    console.log(
+      "🔓 [Page] Authenticated component mounted - user is authenticated",
+    );
     return () => {
       console.log("🔒 [Page] Authenticated component unmounted");
     };
   }, []);
-  
+
   return <Chat key={chatId} id={chatId} />;
 }
 
 // Component to log when user is unauthenticated
 function UnauthenticatedWithLogging() {
   useEffect(() => {
-    console.log("❌ [Page] Unauthenticated component mounted - user not authenticated");
-    
+    console.log(
+      "❌ [Page] Unauthenticated component mounted - user not authenticated",
+    );
+
     // Set a timeout to detect if we're stuck in Unauthenticated
     const timeout = setTimeout(() => {
-      console.warn("🚨 [Page] Unauthenticated stuck for 15+ seconds - should redirect to login!");
+      console.warn(
+        "🚨 [Page] Unauthenticated stuck for 15+ seconds - should redirect to login!",
+      );
     }, 15000);
-    
+
     return () => {
       console.log("✅ [Page] Unauthenticated component unmounted");
       clearTimeout(timeout);
     };
   }, []);
-  
+
   return <Loading />;
 }
