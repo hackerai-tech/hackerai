@@ -18,14 +18,20 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const APP_NAME = "HackerAI";
+const APP_DEFAULT_TITLE = "HackerAI - AI-Powered Penetration Testing Assistant";
+const APP_TITLE_TEMPLATE = "%s | HackerAI";
+const APP_DESCRIPTION =
+  "HackerAI provides advanced AI and integrated tools to help security teams conduct comprehensive penetration tests effortlessly. Scan, exploit, and analyze web applications, networks, and cloud environments with ease and precision, without needing expert skills.";
+
 export const metadata: Metadata = {
-  applicationName: "HackerAI",
+  applicationName: APP_NAME,
   title: {
-    default: "HackerAI - AI-Powered Penetration Testing Assistant",
+    default: APP_DEFAULT_TITLE,
     template: "%s",
   },
-  description:
-    "HackerAI provides advanced AI and integrated tools to help security teams conduct comprehensive penetration tests effortlessly. Scan, exploit, and analyze web applications, networks, and cloud environments with ease and precision, without needing expert skills.",
+  description: APP_DESCRIPTION,
+  manifest: "/manifest.json",
   keywords: [
     "hackerai",
     "hacker ai",
@@ -34,6 +40,39 @@ export const metadata: Metadata = {
     "hacking ai",
     "pentesting ai",
   ],
+  openGraph: {
+    type: "website",
+    siteName: APP_NAME,
+    title: {
+      default: APP_DEFAULT_TITLE,
+      template: APP_TITLE_TEMPLATE,
+    },
+    description: APP_DESCRIPTION,
+    images: [
+      {
+        url: "https://hackerai.co/icon-512x512.png",
+        width: 512,
+        height: 512,
+        alt: "HackerAI",
+      },
+    ],
+  },
+  twitter: {
+    card: "summary",
+    title: {
+      default: APP_DEFAULT_TITLE,
+      template: APP_TITLE_TEMPLATE,
+    },
+    description: APP_DESCRIPTION,
+    images: [
+      {
+        url: "https://hackerai.co/icon-512x512.png",
+        width: 512,
+        height: 512,
+        alt: "HackerAI",
+      },
+    ],
+  },
 };
 
 export default function RootLayout({
