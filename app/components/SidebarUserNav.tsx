@@ -72,20 +72,32 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
         <DropdownMenuTrigger asChild>
           {isCollapsed ? (
             /* Collapsed state - only show avatar centered */
-            <div className="flex items-center justify-center p-2 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors">
-              <Avatar className="h-7 w-7">
-                <AvatarImage
-                  src={user.profilePictureUrl || undefined}
-                  alt={getDisplayName()}
-                />
-                <AvatarFallback className="text-xs">
-                  {getUserInitials()}
-                </AvatarFallback>
-              </Avatar>
+            <div className="mb-1">
+              <button
+                type="button"
+                className="flex items-center justify-center p-2 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 w-full"
+                aria-haspopup="menu"
+                aria-label={`Open user menu for ${getDisplayName()}`}
+              >
+                <Avatar className="h-7 w-7">
+                  <AvatarImage
+                    src={user.profilePictureUrl || undefined}
+                    alt={getDisplayName()}
+                  />
+                  <AvatarFallback className="text-xs">
+                    {getUserInitials()}
+                  </AvatarFallback>
+                </Avatar>
+              </button>
             </div>
           ) : (
             /* Expanded state - show full user info */
-            <div className="flex items-center gap-3 p-3 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors">
+            <button
+              type="button"
+              className="flex items-center gap-3 p-3 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 w-full text-left"
+              aria-haspopup="menu"
+              aria-label={`Open user menu for ${getDisplayName()}`}
+            >
               <Avatar className="h-7 w-7">
                 <AvatarImage
                   src={user.profilePictureUrl || undefined}
@@ -103,7 +115,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   {isProUser ? "Pro" : "Free"}
                 </div>
               </div>
-            </div>
+            </button>
           )}
         </DropdownMenuTrigger>
 

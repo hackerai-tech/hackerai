@@ -68,8 +68,19 @@ const SidebarHeaderContent: React.FC<{
       <div className="flex flex-col items-center p-2">
         {/* HackerAI Logo with hover sidebar toggle */}
         <div
-          className="relative flex items-center justify-center mb-5 cursor-pointer"
+          className="relative flex items-center justify-center mb-5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded"
           onClick={toggleSidebar}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              if (e.key === " ") {
+                e.preventDefault();
+              }
+              toggleSidebar();
+            }
+          }}
+          tabIndex={0}
+          role="button"
+          aria-label="Expand sidebar"
         >
           <HackerAISVG theme="dark" scale={0.12} />
           {/* Sidebar icon shown on hover over entire collapsed sidebar */}
@@ -215,8 +226,13 @@ const MainSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
     // Initialize new chat state using global state function
     initializeNewChat();
 
-    // Navigate to homepage
+    // Always navigate to homepage to ensure URL changes even if already there
+    // This triggers a re-initialization of the chat component
     router.push("/");
+    // Force a refresh of the page state by using replace if already on home
+    if (window.location.pathname === "/") {
+      router.replace("/");
+    }
   };
 
   const handleCloseSidebar = () => {

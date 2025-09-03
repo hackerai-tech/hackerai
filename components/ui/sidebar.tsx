@@ -315,7 +315,10 @@ function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
   );
 }
 
-function SidebarExpandArea({ className, ...props }: React.ComponentProps<"div">) {
+function SidebarExpandArea({
+  className,
+  ...props
+}: React.ComponentProps<"div">) {
   const { toggleSidebar, state, isMobile } = useSidebar();
 
   // Only show on non-mobile when collapsed

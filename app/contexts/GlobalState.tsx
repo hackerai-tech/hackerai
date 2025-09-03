@@ -244,7 +244,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setHasActiveChat(false);
     setTodos([]);
     setIsTodoPanelExpanded(false);
-    setUploadedFiles([]);
   }, []);
 
   const openSidebar = (content: SidebarContent) => {
