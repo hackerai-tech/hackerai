@@ -70,8 +70,9 @@ function SidebarProvider({
   const [openMobile, setOpenMobile] = React.useState(false);
 
   // Internal sidebar state - mobile always false, desktop from localStorage
-  const [_open, _setOpen] = React.useState(() => {
-    return mainSidebarStorage.get(isMobile) || defaultOpen;
+  const [_open, _setOpen] = React.useState<boolean>(() => {
+    const stored = mainSidebarStorage.get(isMobile);
+    return stored ?? defaultOpen;
   });
   const open = openProp ?? _open;
   const setOpen = React.useCallback(
@@ -335,6 +336,15 @@ function SidebarExpandArea({
         className,
       )}
       onClick={toggleSidebar}
+      role="button"
+      tabIndex={0}
+      aria-label="Expand sidebar"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleSidebar();
+        }
+      }}
       title="Click to expand sidebar"
       {...props}
     />
