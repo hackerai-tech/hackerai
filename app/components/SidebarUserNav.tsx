@@ -37,7 +37,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { handleUpgrade } = useUpgrade();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
-  
+
   const deleteAllChats = useMutation(api.chats.deleteAllChats);
 
   if (!user) return null;
@@ -192,9 +192,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenuSeparator />
 
-          <DropdownMenuItem
-            onClick={() => setShowDeleteDialog(true)}
-          >
+          <DropdownMenuItem onClick={() => setShowDeleteDialog(true)}>
             <Trash2 className="mr-2 h-4 w-4" />
             <span>Delete all chats</span>
           </DropdownMenuItem>
@@ -210,10 +208,12 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear your chat history - are you sure?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Clear your chat history - are you sure?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete all your
-              chats and remove all associated data from our servers.
+              This action cannot be undone. This will permanently delete all
+              your chats and remove all associated data from our servers.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

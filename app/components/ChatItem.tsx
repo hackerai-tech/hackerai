@@ -38,35 +38,29 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
   const [editTitle, setEditTitle] = useState(title);
   const [isRenaming, setIsRenaming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  
-  const {
-    closeSidebar,
-    setChatSidebarOpen,
-    currentChatId,
-    initializeChat,
-    initializeNewChat,
-  } = useGlobalState();
+
+  const { closeSidebar, setChatSidebarOpen, initializeNewChat } =
+    useGlobalState();
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
   const renameChat = useMutation(api.chats.renameChat);
 
-  // Use global currentChatId to determine if this item is active
-  const isCurrentlyActive = currentChatId === id;
+  // Check if this chat is currently active based on URL
+  const isCurrentlyActive = window.location.pathname === `/c/${id}`;
 
   const handleClick = () => {
     // Don't navigate if dialog is open or dropdown is open
     if (showRenameDialog || isDropdownOpen) {
       return;
     }
-    
+
     closeSidebar();
 
     if (isMobile) {
       setChatSidebarOpen(false);
     }
 
-    // Use the new initializeChat function for consistent state management
-    initializeChat(id, true);
+    // Navigate to the chat route
     router.push(`/c/${id}`);
   };
 
@@ -93,7 +87,7 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
     // Close dropdown first, then open dialog with a small delay to avoid focus conflicts
     setIsDropdownOpen(false);
     setEditTitle(title); // Set the current title when opening dialog
-    
+
     // Small delay to ensure dropdown is fully closed before opening dialog
     setTimeout(() => {
       setShowRenameDialog(true);
@@ -102,7 +96,7 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
 
   const handleSaveRename = async () => {
     const trimmedTitle = editTitle.trim();
-    
+
     // Don't save if title is empty or unchanged
     if (!trimmedTitle || trimmedTitle === title) {
       setShowRenameDialog(false);
@@ -140,7 +134,7 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't handle keyboard events if dialog or dropdown is open
     if (showRenameDialog || isDropdownOpen) return;
-    
+
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       handleClick();

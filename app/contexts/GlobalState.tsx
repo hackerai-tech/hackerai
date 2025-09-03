@@ -230,7 +230,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
 
-  const initializeChat = useCallback((chatId: string) => {
+  const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
     setIsSwitchingChats(true);
     setCurrentChatId(chatId);
     setShouldFetchMessages(true);

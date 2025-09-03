@@ -260,7 +260,10 @@ export const deleteChat = mutation({
           try {
             await ctx.db.delete(message.feedback_id);
           } catch (error) {
-            console.error(`Failed to delete feedback ${message.feedback_id}:`, error);
+            console.error(
+              `Failed to delete feedback ${message.feedback_id}:`,
+              error,
+            );
             // Continue with deletion even if feedback cleanup fails
           }
         }
@@ -349,9 +352,7 @@ export const deleteAllChats = mutation({
       // Get all chats for the user
       const userChats = await ctx.db
         .query("chats")
-        .withIndex("by_user_and_updated", (q) =>
-          q.eq("user_id", user.subject),
-        )
+        .withIndex("by_user_and_updated", (q) => q.eq("user_id", user.subject))
         .collect();
 
       // Delete each chat and its associated data
@@ -384,7 +385,10 @@ export const deleteAllChats = mutation({
             try {
               await ctx.db.delete(message.feedback_id);
             } catch (error) {
-              console.error(`Failed to delete feedback ${message.feedback_id}:`, error);
+              console.error(
+                `Failed to delete feedback ${message.feedback_id}:`,
+                error,
+              );
               // Continue with deletion even if feedback cleanup fails
             }
           }
