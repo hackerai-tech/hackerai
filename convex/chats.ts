@@ -255,6 +255,16 @@ export const deleteChat = mutation({
           }
         }
 
+        // Clean up feedback associated with this message
+        if (message.feedback_id) {
+          try {
+            await ctx.db.delete(message.feedback_id);
+          } catch (error) {
+            console.error(`Failed to delete feedback ${message.feedback_id}:`, error);
+            // Continue with deletion even if feedback cleanup fails
+          }
+        }
+
         await ctx.db.delete(message._id);
       }
 
@@ -264,6 +274,78 @@ export const deleteChat = mutation({
       return null;
     } catch (error) {
       console.error("Failed to delete chat:", error);
+      throw error;
+    }
+  },
+});
+
+/**
+ * Delete all chats for the authenticated user
+ */
+export const deleteAllChats = mutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      // Get all chats for the user
+      const userChats = await ctx.db
+        .query("chats")
+        .withIndex("by_user_and_updated", (q) =>
+          q.eq("user_id", user.subject),
+        )
+        .collect();
+
+      // Delete each chat and its associated data
+      for (const chat of userChats) {
+        // Delete all messages and their associated files for this chat
+        const messages = await ctx.db
+          .query("messages")
+          .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+          .collect();
+
+        for (const message of messages) {
+          // Clean up files associated with this message
+          if (message.file_ids && message.file_ids.length > 0) {
+            for (const storageId of message.file_ids) {
+              try {
+                const file = await ctx.db.get(storageId);
+                if (file) {
+                  await ctx.storage.delete(file.storage_id);
+                  await ctx.db.delete(file._id);
+                }
+              } catch (error) {
+                console.error(`Failed to delete file ${storageId}:`, error);
+                // Continue with deletion even if file cleanup fails
+              }
+            }
+          }
+
+          // Clean up feedback associated with this message
+          if (message.feedback_id) {
+            try {
+              await ctx.db.delete(message.feedback_id);
+            } catch (error) {
+              console.error(`Failed to delete feedback ${message.feedback_id}:`, error);
+              // Continue with deletion even if feedback cleanup fails
+            }
+          }
+
+          await ctx.db.delete(message._id);
+        }
+
+        // Delete the chat itself
+        await ctx.db.delete(chat._id);
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Failed to delete all chats:", error);
       throw error;
     }
   },

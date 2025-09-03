@@ -1,8 +1,10 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { LogOut, Sparkle, CreditCard, LifeBuoy } from "lucide-react";
+import { LogOut, Sparkle, CreditCard, LifeBuoy, Trash2 } from "lucide-react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
@@ -15,6 +17,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -23,6 +35,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { hasProPlan, isCheckingProPlan } = useGlobalState();
   const { handleUpgrade } = useUpgrade();
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  
+  const deleteAllChats = useMutation(api.chats.deleteAllChats);
 
   if (!user) return null;
 
@@ -41,6 +57,21 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     );
     if (newWindow) {
       newWindow.opener = null;
+    }
+  };
+
+  const handleDeleteAllChats = async () => {
+    try {
+      setIsDeleting(true);
+      await deleteAllChats();
+      setShowDeleteDialog(false);
+      // Optionally redirect to home or show success message
+      window.location.href = "/";
+    } catch (error) {
+      console.error("Failed to delete all chats:", error);
+      // Optionally show error message to user
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -159,12 +190,44 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             <span>Help Center</span>
           </DropdownMenuItem>
 
+          <DropdownMenuSeparator />
+
+          <DropdownMenuItem
+            onClick={() => setShowDeleteDialog(true)}
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            <span>Delete all chats</span>
+          </DropdownMenuItem>
+
           <DropdownMenuItem onClick={handleSignOut} variant="destructive">
             <LogOut className="mr-2 h-4 w-4" />
             <span>Log out</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {/* Delete All Chats Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear your chat history - are you sure?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete all your
+              chats and remove all associated data from our servers.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteAllChats}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? "Deleting..." : "Confirm deletion"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
