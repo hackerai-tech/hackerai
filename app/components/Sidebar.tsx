@@ -174,7 +174,6 @@ const DesktopSidebarContent: React.FC<{
                 <SidebarHistory
                   chats={paginatedChats.results || []}
                   currentChatId={currentChatId}
-                  handleNewChat={handleNewChat}
                   paginationStatus={paginatedChats.status}
                   loadMore={paginatedChats.loadMore}
                   containerRef={scrollContainerRef}
@@ -257,7 +256,6 @@ const MainSidebar: React.FC<{ isMobileOverlay?: boolean }> = ({
             <SidebarHistory
               chats={paginatedChats.results || []}
               currentChatId={currentChatId}
-              handleNewChat={handleNewChat}
               paginationStatus={paginatedChats.status}
               loadMore={paginatedChats.loadMore}
               containerRef={scrollContainerRef}

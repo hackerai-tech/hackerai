@@ -1,15 +1,13 @@
 "use client";
 
 import React from "react";
-import { Button } from "@/components/ui/button";
-import { Plus, MessageSquare } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import ChatItem from "./ChatItem";
 import Loading from "@/components/ui/loading";
 
 interface SidebarHistoryProps {
   chats: any[];
   currentChatId: string | null;
-  handleNewChat: () => void;
   paginationStatus?:
     | "LoadingFirstPage"
     | "CanLoadMore"
@@ -22,7 +20,6 @@ interface SidebarHistoryProps {
 const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   chats,
   currentChatId,
-  handleNewChat,
   paginationStatus,
   loadMore,
   containerRef,
@@ -80,10 +77,6 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
         <p className="text-sm text-sidebar-accent-foreground mb-4">
           Start a conversation to see your chat history here
         </p>
-        <Button onClick={handleNewChat} variant="default" size="sm">
-          <Plus className="w-4 h-4 mr-2" />
-          New Chat
-        </Button>
       </div>
     );
   }

@@ -280,6 +280,59 @@ export const deleteChat = mutation({
 });
 
 /**
+ * Rename a chat
+ */
+export const renameChat = mutation({
+  args: {
+    chatId: v.string(),
+    newTitle: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      // Find the chat
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+
+      if (!chat) {
+        throw new Error("Chat not found");
+      } else if (chat.user_id !== user.subject) {
+        throw new Error("Unauthorized: Chat does not belong to user");
+      }
+
+      // Validate the new title
+      const trimmedTitle = args.newTitle.trim();
+      if (!trimmedTitle) {
+        throw new Error("Chat title cannot be empty");
+      }
+
+      if (trimmedTitle.length > 100) {
+        throw new Error("Chat title cannot exceed 100 characters");
+      }
+
+      // Update the chat title
+      await ctx.db.patch(chat._id, {
+        title: trimmedTitle,
+        update_time: Date.now(),
+      });
+
+      return null;
+    } catch (error) {
+      console.error("Failed to rename chat:", error);
+      throw error;
+    }
+  },
+});
+
+/**
  * Delete all chats for the authenticated user
  */
 export const deleteAllChats = mutation({
