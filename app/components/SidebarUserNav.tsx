@@ -9,12 +9,14 @@ import {
   LifeBuoy,
   Trash2,
   Github,
+  ChevronRight,
 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,9 +24,6 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  DropdownMenuSub,
-  DropdownMenuSubTrigger,
-  DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -53,6 +52,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { handleUpgrade } = useUpgrade();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const isMobile = useIsMobile();
 
   const deleteAllChats = useMutation(api.chats.deleteAllChats);
 
@@ -223,26 +223,33 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuItem>
           )}
 
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger className="gap-4">
-              <LifeBuoy className="h-4 w-4 text-foreground" />
-              <span>Help</span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <DropdownMenuItem className="gap-4 cursor-pointer">
+                <LifeBuoy className="h-4 w-4 text-foreground" />
+                <span>Help</span>
+                <ChevronRight className="ml-auto h-4 w-4" />
+              </DropdownMenuItem>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side={isMobile ? "top" : "right"}
+              align={isMobile ? "center" : "start"}
+              sideOffset={isMobile ? 8 : 4}
+            >
               <DropdownMenuItem onClick={handleHelpCenter}>
                 <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
                 <span>Help Center</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleGitHub}>
                 <Github className="mr-2 h-4 w-4 text-foreground" />
-                <span>GitHub</span>
+                <span>Source Code</span>
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleXCom}>
                 <XIcon className="mr-2 h-4 w-4 text-foreground" />
-                <span>X.com</span>
+                <span>Social</span>
               </DropdownMenuItem>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+            </DropdownMenuContent>
+          </DropdownMenu>
 
           <DropdownMenuSeparator />
 
