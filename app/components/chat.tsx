@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { RefObject, useRef, useEffect, useState } from "react";
 import { useQuery, usePaginatedQuery } from "convex/react";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
@@ -27,6 +28,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   const isMobile = useIsMobile();
+  const { user, loading: authLoading } = useAuth();
 
   const {
     chatTitle,
@@ -45,7 +47,9 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
 
   // Determine if this is an existing chat (has route ID) or new chat
   const isExistingChat = !!routeChatId;
-  const shouldFetchMessages = isExistingChat;
+  
+  // Only fetch messages if user is authenticated and not loading, and it's an existing chat
+  const shouldFetchMessages = isExistingChat && user && !authLoading;
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(
