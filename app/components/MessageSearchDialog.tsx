@@ -53,7 +53,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 }) => {
   const { user } = useAuth();
   const router = useRouter();
-  const { chats, setChatSidebarOpen } = useGlobalState();
+  const { chats, setChatSidebarOpen, closeSidebar } = useGlobalState();
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -172,13 +172,16 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   ]);
 
   const handleChatClick = (chatId: string) => {
-    router.push(`/c/${chatId}`);
-    onClose();
+    // Close computer sidebar when navigating to a chat
+    closeSidebar();
 
-    // Close sidebar only on mobile for better UX
+    // Close chat sidebar only on mobile for better UX
     if (isMobile) {
       setChatSidebarOpen(false);
     }
+
+    router.push(`/c/${chatId}`);
+    onClose();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

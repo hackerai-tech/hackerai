@@ -16,6 +16,7 @@ interface ChatHeaderProps {
   id?: string;
   chatData?: { title?: string } | null | undefined;
   chatSidebarOpen?: boolean;
+  isExistingChat?: boolean;
 }
 
 const ChatHeader: React.FC<ChatHeaderProps> = ({
@@ -25,9 +26,17 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   id,
   chatData,
   chatSidebarOpen = false,
+  isExistingChat = false,
 }) => {
   const { user, loading } = useAuth();
-  const { toggleChatSidebar, hasProPlan, isCheckingProPlan, initializeNewChat, closeSidebar, setChatSidebarOpen } = useGlobalState();
+  const {
+    toggleChatSidebar,
+    hasProPlan,
+    isCheckingProPlan,
+    initializeNewChat,
+    closeSidebar,
+    setChatSidebarOpen,
+  } = useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const router = useRouter();
   const isMobile = useIsMobile();
@@ -35,8 +44,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   // Show sidebar toggle for logged-in users
   const showSidebarToggle = user && !loading;
 
-  // Check if we're currently in a chat (has an id)
-  const isInChat = !!id;
+  // Check if we're currently in a chat (use isExistingChat prop for accurate state)
+  const isInChat = isExistingChat;
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -58,7 +67,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     // Initialize new chat state using global state function
     initializeNewChat();
 
-    // Always navigate to homepage to ensure URL changes even if already there
+    // Navigate to homepage - Chat component will respond to global state changes
     router.push("/");
   };
 
@@ -212,7 +221,9 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0 text-foreground text-lg font-medium">
                 <span className="whitespace-nowrap text-ellipsis overflow-hidden">
                   {chatTitle ||
-                    (id && chatData === undefined ? "" : "New Chat")}
+                    (isExistingChat && chatData === undefined
+                      ? ""
+                      : "New Chat")}
                 </span>
               </div>
             </div>

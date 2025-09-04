@@ -90,13 +90,8 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     // Initialize new chat state using global state function
     initializeNewChat();
 
-    // Always navigate to homepage to ensure URL changes even if already there
-    // This triggers a re-initialization of the chat component
+    // Navigate to homepage - Chat component will respond to global state changes
     router.push("/");
-    // Force a refresh of the page state by using replace if already on home
-    if (window.location.pathname === "/") {
-      router.replace("/");
-    }
   };
 
   const handleSearchOpen = () => {

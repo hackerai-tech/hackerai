@@ -4,7 +4,6 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { RefObject, useRef, useEffect, useState } from "react";
 import { useQuery, usePaginatedQuery } from "convex/react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
@@ -28,7 +27,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 
 export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   const isMobile = useIsMobile();
-  const { user, loading: authLoading } = useAuth();
 
   const {
     chatTitle,
@@ -38,18 +36,36 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     setChatSidebarOpen,
     mergeTodos,
     setTodos,
+    currentChatId,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
-  const [chatId] = useState<string>(() => {
+  const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
   });
 
-  // Determine if this is an existing chat (has route ID) or new chat
-  const isExistingChat = !!routeChatId;
-  
-  // Only fetch messages if user is authenticated and not loading, and it's an existing chat
-  const shouldFetchMessages = isExistingChat && user && !authLoading;
+  // Track whether this is an existing chat (prop-driven initially, flips after first completion)
+  const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
+  const shouldFetchMessages = isExistingChat;
+
+  // Unified reset: respond to route and global new-chat trigger
+  useEffect(() => {
+    // If a chat id is present in the route, treat as existing chat
+    if (routeChatId) {
+      setChatId(routeChatId);
+      setIsExistingChat(true);
+      return;
+    }
+
+    // If no route id and global state indicates new chat (null), create a fresh id
+    if (currentChatId === null) {
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      setChatTitle(null);
+      // Messages will be cleared below after useChat is ready
+      return;
+    }
+  }, [routeChatId, currentChatId, setChatTitle]);
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(
@@ -124,6 +140,8 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
       if (!isExistingChat) {
         // Use window.history.replaceState to update URL without triggering navigation
         window.history.replaceState(null, "", `/c/${chatId}`);
+        // Flip the state so it becomes an existing chat
+        setIsExistingChat(true);
       }
     },
     onError: (error) => {
@@ -132,6 +150,13 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
       }
     },
   });
+
+  // Clear messages when starting a new chat (after useChat hook is ready)
+  useEffect(() => {
+    if (!routeChatId && currentChatId === null) {
+      setMessages([]);
+    }
+  }, [routeChatId, currentChatId, setMessages]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
@@ -256,6 +281,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
               id={routeChatId}
               chatData={chatData}
               chatSidebarOpen={chatSidebarOpen}
+              isExistingChat={isExistingChat}
             />
 
             {/* Chat interface */}
