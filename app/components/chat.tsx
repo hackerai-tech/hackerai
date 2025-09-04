@@ -25,7 +25,7 @@ import type { Todo, ChatMessage } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 
-export const Chat = ({ id }: { id?: string }) => {
+export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   const isMobile = useIsMobile();
 
   const {
@@ -36,53 +36,16 @@ export const Chat = ({ id }: { id?: string }) => {
     setChatSidebarOpen,
     mergeTodos,
     setTodos,
-    currentChatId,
-    isSwitchingChats,
-    setIsSwitchingChats,
-    hasActiveChat,
-    shouldFetchMessages,
-    initializeChat,
-    initializeNewChat,
   } = useGlobalState();
 
-  // Use ID from route if available, otherwise global currentChatId, or generate new one
-  const [chatId, setChatId] = useState(id || currentChatId || uuidv4());
-  // Track the last processed ID to detect changes
-  const lastProcessedId = useRef<string | undefined>(undefined);
-  // Track if we've initialized for this specific route
-  const isInitialized = useRef(false);
+  // Simple logic: use route chatId if provided, otherwise generate new one
+  const [chatId] = useState<string>(() => {
+    return routeChatId || uuidv4();
+  });
 
-  // Handle initial mount and chat initialization
-  useEffect(() => {
-    // Reset initialization flag when ID changes
-    if (lastProcessedId.current !== id) {
-      isInitialized.current = false;
-      lastProcessedId.current = id;
-    }
-
-    // Skip if already initialized for current ID
-    if (isInitialized.current) {
-      return;
-    }
-
-    if (id) {
-      // Direct URL with ID - initialize with existing chat
-      setChatId(id);
-      initializeChat(id, true);
-      isInitialized.current = true;
-    } else if (!currentChatId) {
-      // No ID and no current chat - create new chat
-      const newChatId = uuidv4();
-      setChatId(newChatId);
-      initializeNewChat();
-      isInitialized.current = true;
-    } else if (currentChatId && currentChatId !== chatId) {
-      // Global state has a different chat - switch to it
-      setChatId(currentChatId);
-      initializeChat(currentChatId, false);
-      isInitialized.current = true;
-    }
-  }, [id, currentChatId, initializeChat, initializeNewChat]);
+  // Determine if this is an existing chat (has route ID) or new chat
+  const isExistingChat = !!routeChatId;
+  const shouldFetchMessages = isExistingChat;
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(
@@ -94,7 +57,7 @@ export const Chat = ({ id }: { id?: string }) => {
   // Get chat data to retrieve title when loading existing chat
   const chatData = useQuery(
     api.chats.getChatById,
-    id || currentChatId ? { id: chatId } : "skip",
+    shouldFetchMessages ? { id: chatId } : "skip",
   );
 
   // Convert paginated Convex messages to UI format for useChat
@@ -129,6 +92,7 @@ export const Chat = ({ id }: { id?: string }) => {
         if (hasChanges) {
           setMessages(normalizedMessages);
         }
+
         return {
           body: {
             chatId: id,
@@ -151,19 +115,19 @@ export const Chat = ({ id }: { id?: string }) => {
         }
       }
     },
+    onFinish: () => {
+      // For new chats, navigate to the proper route after first message
+      if (!isExistingChat) {
+        // Use window.history.replaceState to update URL without triggering navigation
+        window.history.replaceState(null, "", `/c/${chatId}`);
+      }
+    },
     onError: (error) => {
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
     },
   });
-
-  // Clear messages when starting a new chat (no ID and no current chat)
-  useEffect(() => {
-    if (!id && !currentChatId && !hasActiveChat && messages.length > 0) {
-      setMessages([]);
-    }
-  }, [id, currentChatId, hasActiveChat, messages.length, setMessages]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
@@ -184,10 +148,6 @@ export const Chat = ({ id }: { id?: string }) => {
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
-      // If no messages from server and we're in a new chat, clear local messages
-      if (!id && !currentChatId && messages.length > 0) {
-        setMessages([]);
-      }
       return;
     }
 
@@ -196,21 +156,11 @@ export const Chat = ({ id }: { id?: string }) => {
       [...paginatedMessages.results].reverse(),
     );
 
-    // Merge strategy: Only sync from Convex if:
-    // 1. We have no local messages (initial load)
-    // 2. Convex has more messages than local (new messages from server)
-    // 3. Message IDs differ (switching chats or real-time updates)
-    const shouldSync =
-      messages.length === 0 ||
-      uiMessages.length > messages.length ||
-      (uiMessages.length > 0 &&
-        messages.length > 0 &&
-        uiMessages[0]?.id !== messages[0]?.id);
-
-    if (shouldSync) {
+    // Simple sync: always use server messages for existing chats
+    if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessages.results, setMessages, messages, id, currentChatId]);
+  }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -226,13 +176,12 @@ export const Chat = ({ id }: { id?: string }) => {
     handleDrop,
   } = useFileUpload();
 
-  // Handle instant scroll to bottom when switching chats
+  // Handle instant scroll to bottom when loading existing chat messages
   useEffect(() => {
-    if (isSwitchingChats && messages.length > 0) {
+    if (isExistingChat && messages.length > 0) {
       scrollToBottom({ instant: true, force: true });
-      setIsSwitchingChats(false);
     }
-  }, [messages, scrollToBottom, isSwitchingChats, setIsSwitchingChats]);
+  }, [messages.length, scrollToBottom, isExistingChat]);
 
   // Set up drag and drop event listeners
   useEffect(() => {
@@ -269,7 +218,7 @@ export const Chat = ({ id }: { id?: string }) => {
   const handleScrollToBottom = () => scrollToBottom({ force: true });
 
   const hasMessages = messages.length > 0;
-  const showChatLayout = hasMessages || hasActiveChat;
+  const showChatLayout = hasMessages || isExistingChat;
 
   return (
     <div className="h-screen bg-background flex flex-col overflow-hidden">
@@ -298,9 +247,9 @@ export const Chat = ({ id }: { id?: string }) => {
             {/* Unified Header */}
             <ChatHeader
               hasMessages={hasMessages}
-              hasActiveChat={hasActiveChat}
+              hasActiveChat={isExistingChat}
               chatTitle={chatTitle}
-              id={id}
+              id={routeChatId}
               chatData={chatData}
               chatSidebarOpen={chatSidebarOpen}
             />
@@ -321,7 +270,7 @@ export const Chat = ({ id }: { id?: string }) => {
                   resetSidebarAutoOpen={resetSidebarAutoOpenRef}
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
-                  isSwitchingChats={isSwitchingChats}
+                  isSwitchingChats={false}
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
@@ -359,7 +308,7 @@ export const Chat = ({ id }: { id?: string }) => {
               )}
 
               {/* Chat Input - Always show when authenticated */}
-              {(hasMessages || hasActiveChat) && (
+              {(hasMessages || isExistingChat) && (
                 <ChatInput
                   onSubmit={handleSubmit}
                   onStop={handleStop}

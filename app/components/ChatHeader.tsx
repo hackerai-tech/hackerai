@@ -102,12 +102,15 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           <div className="py-3 flex items-center justify-between md:hidden">
             <div className="flex items-center gap-2">
               {showSidebarToggle && !chatSidebarOpen && (
-                <div className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted/50 mr-2">
-                  <PanelLeft
-                    className="size-5 text-muted-foreground cursor-pointer"
-                    onClick={toggleChatSidebar}
-                  />
-                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Toggle chat sidebar"
+                  onClick={toggleChatSidebar}
+                  className="h-7 w-7 mr-2"
+                >
+                  <PanelLeft className="size-5" />
+                </Button>
               )}
               {/* Show upgrade button for logged-in users without pro plan */}
               {!loading && user && !isCheckingProPlan && !hasProPlan && (
@@ -169,12 +172,15 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <div className="relative flex items-center">
               {/* Only show sidebar toggle on mobile - desktop uses collapsed sidebar logo */}
               {showSidebarToggle && !chatSidebarOpen && (
-                <div className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted/50 md:hidden">
-                  <PanelLeft
-                    className="size-5 text-muted-foreground cursor-pointer"
-                    onClick={toggleChatSidebar}
-                  />
-                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Open sidebar"
+                  onClick={toggleChatSidebar}
+                  className="h-7 w-7 md:hidden"
+                >
+                  <PanelLeft className="size-5" />
+                </Button>
               )}
             </div>
           </div>

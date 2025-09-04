@@ -192,7 +192,6 @@ export async function getMessagesByChatId({
   } catch (error) {
     // If chat doesn't exist yet or error fetching, use empty array
     // This will be handled by handleInitialChatAndUserMessage
-    console.log("No existing messages found for chat:", chatId);
   }
 
   // Handle message merging based on regeneration flag

@@ -1,11 +1,22 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { LogOut, Sparkle, CreditCard, LifeBuoy } from "lucide-react";
+import {
+  LogOut,
+  Sparkle,
+  CreditCard,
+  LifeBuoy,
+  Trash2,
+  Github,
+  ChevronRight,
+} from "lucide-react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -15,14 +26,35 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
+
+const XIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" className={className} {...props}>
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+  </svg>
+);
 
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { hasProPlan, isCheckingProPlan } = useGlobalState();
   const { handleUpgrade } = useUpgrade();
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const isMobile = useIsMobile();
+
+  const deleteAllChats = useMutation(api.chats.deleteAllChats);
 
   if (!user) return null;
 
@@ -41,6 +73,43 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     );
     if (newWindow) {
       newWindow.opener = null;
+    }
+  };
+
+  const handleGitHub = () => {
+    const newWindow = window.open(
+      "https://github.com/hackerai-tech/hackerai",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  };
+
+  const handleXCom = () => {
+    const newWindow = window.open(
+      "https://x.com/hackerai_tech",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  };
+
+  const handleDeleteAllChats = async () => {
+    try {
+      setIsDeleting(true);
+      await deleteAllChats();
+      setShowDeleteDialog(false);
+      // Optionally redirect to home or show success message
+      window.location.href = "/";
+    } catch (error) {
+      console.error("Failed to delete all chats:", error);
+      // Optionally show error message to user
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -141,7 +210,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           {/* Show upgrade option for non-pro users */}
           {!isCheckingProPlan && !isProUser && (
             <DropdownMenuItem onClick={handleUpgrade}>
-              <Sparkle className="mr-2 h-4 w-4" />
+              <Sparkle className="mr-2 h-4 w-4 text-foreground" />
               <span>Upgrade to Pro</span>
             </DropdownMenuItem>
           )}
@@ -149,14 +218,44 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           {/* Show manage subscription option for pro users */}
           {!isCheckingProPlan && isProUser && (
             <DropdownMenuItem onClick={() => redirectToBillingPortal()}>
-              <CreditCard className="mr-2 h-4 w-4" />
+              <CreditCard className="mr-2 h-4 w-4 text-foreground" />
               <span>Manage Subscription</span>
             </DropdownMenuItem>
           )}
 
-          <DropdownMenuItem onClick={handleHelpCenter}>
-            <LifeBuoy className="mr-2 h-4 w-4" />
-            <span>Help Center</span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <DropdownMenuItem className="gap-4 cursor-pointer">
+                <LifeBuoy className="h-4 w-4 text-foreground" />
+                <span>Help</span>
+                <ChevronRight className="ml-auto h-4 w-4" />
+              </DropdownMenuItem>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              side={isMobile ? "top" : "right"}
+              align={isMobile ? "center" : "start"}
+              sideOffset={isMobile ? 8 : 4}
+            >
+              <DropdownMenuItem onClick={handleHelpCenter}>
+                <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
+                <span>Help Center</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleGitHub}>
+                <Github className="mr-2 h-4 w-4 text-foreground" />
+                <span>Source Code</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleXCom}>
+                <XIcon className="mr-2 h-4 w-4 text-foreground" />
+                <span>Social</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenuSeparator />
+
+          <DropdownMenuItem onClick={() => setShowDeleteDialog(true)}>
+            <Trash2 className="mr-2 h-4 w-4 text-foreground" />
+            <span>Delete all chats</span>
           </DropdownMenuItem>
 
           <DropdownMenuItem onClick={handleSignOut} variant="destructive">
@@ -165,6 +264,31 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {/* Delete All Chats Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Clear your chat history - are you sure?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete all
+              your chats and remove all associated data from our servers.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteAllChats}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? "Deleting..." : "Confirm deletion"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
