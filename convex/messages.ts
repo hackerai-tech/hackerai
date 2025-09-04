@@ -427,7 +427,7 @@ export const searchMessages = query({
       }),
     ),
     isDone: v.boolean(),
-    continueCursor: v.string(),
+    continueCursor: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
@@ -539,9 +539,18 @@ export const searchMessages = query({
       });
 
       // Apply pagination manually
-      const startIndex = 0;
+      const parsedOffset = args.paginationOpts.cursor
+        ? parseInt(args.paginationOpts.cursor, 10) || 0
+        : 0;
+      const startIndex = parsedOffset;
       const numItems = args.paginationOpts.numItems;
-      const paginatedResults = combinedResults.slice(startIndex, numItems);
+      const paginatedResults = combinedResults.slice(
+        startIndex,
+        startIndex + numItems,
+      );
+
+      const hasMoreItems = startIndex + numItems < combinedResults.length;
+      const nextOffset = hasMoreItems ? startIndex + numItems : 0;
 
       return {
         page: paginatedResults.map((result) => ({
@@ -553,8 +562,8 @@ export const searchMessages = query({
           chat_title: result.chat_title,
           match_type: result.match_type,
         })),
-        isDone: combinedResults.length <= numItems,
-        continueCursor: combinedResults.length > numItems ? "has_more" : "",
+        isDone: startIndex + numItems >= combinedResults.length,
+        continueCursor: hasMoreItems ? nextOffset.toString() : "",
       };
     } catch (error) {
       console.error("Failed to search messages:", error);

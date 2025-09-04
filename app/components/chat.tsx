@@ -36,9 +36,6 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     setChatSidebarOpen,
     mergeTodos,
     setTodos,
-    isSwitchingChats,
-    setIsSwitchingChats,
-    activateChat,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one

@@ -107,12 +107,8 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
       setIsSearching(false);
 
       if (searchResults.results) {
-        // Ensure unique results by ID
-        const uniqueResults = searchResults.results.filter(
-          (item, index, self) =>
-            index === self.findIndex((t) => t.id === item.id),
-        );
-        setAllResults(uniqueResults);
+        // Use all accumulated results from the paginated query
+        setAllResults(searchResults.results);
       }
     }
   }, [searchResults.status, searchResults.results]);
@@ -127,29 +123,39 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
   // Set up Intersection Observer for infinite scrolling
   useEffect(() => {
-    const options = {
-      root: null,
-      rootMargin: "100px",
-      threshold: 0.1,
-    };
+    // Clean up existing observer
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+    }
 
-    observerRef.current = new IntersectionObserver((entries) => {
-      const [entry] = entries;
-      if (
-        entry.isIntersecting &&
-        searchResults.status === "CanLoadMore" &&
-        debouncedQuery.trim()
-      ) {
-        searchResults.loadMore(20);
-      }
-    }, options);
-
+    // Only set up observer if we have results and can load more
     if (
-      loaderRef.current &&
+      searchResults.status === "CanLoadMore" &&
       debouncedQuery.trim() &&
-      searchResults.status === "CanLoadMore"
+      allResults.length > 0
     ) {
-      observerRef.current.observe(loaderRef.current);
+      const options = {
+        root: null,
+        rootMargin: "50px",
+        threshold: 0.1,
+      };
+
+      observerRef.current = new IntersectionObserver((entries) => {
+        const [entry] = entries;
+        if (
+          entry.isIntersecting &&
+          searchResults.status === "CanLoadMore" &&
+          debouncedQuery.trim() &&
+          !searchResults.isLoading
+        ) {
+          searchResults.loadMore(10);
+        }
+      }, options);
+
+      const currentLoader = loaderRef.current;
+      if (currentLoader) {
+        observerRef.current.observe(currentLoader);
+      }
     }
 
     return () => {
@@ -157,7 +163,13 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         observerRef.current.disconnect();
       }
     };
-  }, [loaderRef, searchResults.status, debouncedQuery, searchResults.loadMore]);
+  }, [
+    searchResults.status,
+    debouncedQuery,
+    searchResults.loadMore,
+    searchResults.isLoading,
+    allResults.length,
+  ]);
 
   const handleChatClick = (chatId: string) => {
     router.push(`/c/${chatId}`);
@@ -197,12 +209,12 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
     const regex = new RegExp(
       `(${searchTerm.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
-      "gi",
+      "i",
     );
     const parts = text.split(regex);
 
     return parts.map((part, index) =>
-      regex.test(part) ? (
+      index % 2 === 1 ? (
         <mark
           key={index}
           className="bg-yellow-200 dark:bg-yellow-800 px-1 rounded"
@@ -380,14 +392,26 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                   </div>
                 ))}
 
-                {/* Loader element for intersection observer */}
+                {/* Loader element for intersection observer - only show if we have results and can load more */}
                 {searchResults.status === "CanLoadMore" &&
-                  debouncedQuery.trim() && (
-                    <div ref={loaderRef} className="flex justify-center py-4">
-                      <Loader2 className="animate-spin mr-2" size={16} />
-                      <span className="text-sm">Loading more...</span>
+                  debouncedQuery.trim() &&
+                  allResults.length > 0 &&
+                  !searchResults.isLoading && (
+                    <div
+                      ref={loaderRef}
+                      className="flex justify-center py-4 text-muted-foreground"
+                    >
+                      <div className="text-sm">Scroll for more results...</div>
                     </div>
                   )}
+
+                {/* Show loading state when actively loading more */}
+                {searchResults.isLoading && allResults.length > 0 && (
+                  <div className="flex justify-center py-4">
+                    <Loader2 className="animate-spin mr-2" size={16} />
+                    <span className="text-sm">Loading more...</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
