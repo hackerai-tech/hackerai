@@ -3,9 +3,11 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, Loader2 } from "lucide-react";
+import { PanelLeft, Sparkle, Loader2, SquarePen } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
+import { useRouter } from "next/navigation";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -25,11 +27,16 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   chatSidebarOpen = false,
 }) => {
   const { user, loading } = useAuth();
-  const { toggleChatSidebar, hasProPlan, isCheckingProPlan } = useGlobalState();
+  const { toggleChatSidebar, hasProPlan, isCheckingProPlan, initializeNewChat, closeSidebar, setChatSidebarOpen } = useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
+  const router = useRouter();
+  const isMobile = useIsMobile();
 
   // Show sidebar toggle for logged-in users
   const showSidebarToggle = user && !loading;
+
+  // Check if we're currently in a chat (has an id)
+  const isInChat = !!id;
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -37,6 +44,22 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
 
   const handleSignUp = () => {
     window.location.href = "/signup";
+  };
+
+  const handleNewChat = () => {
+    // Close computer sidebar when creating new chat
+    closeSidebar();
+
+    // Close chat sidebar when creating new chat on mobile screens
+    if (isMobile) {
+      setChatSidebarOpen(false);
+    }
+
+    // Initialize new chat state using global state function
+    initializeNewChat();
+
+    // Always navigate to homepage to ensure URL changes even if already there
+    router.push("/");
   };
 
   // Show empty state header when no messages and no active chat
@@ -194,7 +217,20 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               </div>
             </div>
           </div>
-          <div className="flex-1"></div>
+          <div className="flex-1 flex justify-end">
+            {/* New Chat Button - Only show on mobile when in a chat */}
+            {isMobile && isInChat && showSidebarToggle && (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Start new chat"
+                onClick={handleNewChat}
+                className="h-7 w-7"
+              >
+                <SquarePen className="size-5" />
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     );
