@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useMemo, FC } from "react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -26,22 +25,20 @@ interface SidebarHeaderContentProps {
   isMobileOverlay?: boolean;
 }
 
-const SidebarHeaderContent: FC<SidebarHeaderContentProps> = ({
+// Shared implementation component
+interface SidebarHeaderContentImplProps {
+  handleCloseSidebar: () => void;
+  isCollapsed: boolean;
+  toggleSidebar: () => void;
+}
+
+const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
   handleCloseSidebar,
   isCollapsed,
-  isMobileOverlay = false,
+  toggleSidebar,
 }) => {
-  const { user } = useAuth();
   const isMobile = useIsMobile();
   const router = useRouter();
-  
-  // Only use useSidebar when not in mobile overlay
-  let toggleSidebar = () => {};
-  if (!isMobileOverlay) {
-    const { toggleSidebar: sidebarToggle } = useSidebar();
-    toggleSidebar = sidebarToggle;
-  }
-  
   const { setChatSidebarOpen, closeSidebar, initializeNewChat } =
     useGlobalState();
 
@@ -189,7 +186,7 @@ const SidebarHeaderContent: FC<SidebarHeaderContentProps> = ({
             className="h-8 w-8 p-0"
             onClick={handleCloseSidebar}
           >
-            <PanelLeft className="size-5 text-muted-foreground" />
+            <PanelLeft className="size-5" />
           </Button>
         </div>
       </div>
@@ -240,6 +237,57 @@ const SidebarHeaderContent: FC<SidebarHeaderContentProps> = ({
       {/* Search Dialog */}
       <MessageSearchDialog isOpen={isSearchOpen} onClose={handleSearchClose} />
     </>
+  );
+};
+
+// Desktop sidebar header component (requires SidebarProvider)
+const DesktopSidebarHeaderContent: FC<
+  Omit<SidebarHeaderContentProps, "isMobileOverlay">
+> = ({ handleCloseSidebar, isCollapsed }) => {
+  const { toggleSidebar } = useSidebar();
+  return (
+    <SidebarHeaderContentImpl
+      handleCloseSidebar={handleCloseSidebar}
+      isCollapsed={isCollapsed}
+      toggleSidebar={toggleSidebar}
+    />
+  );
+};
+
+// Mobile sidebar header component (doesn't use SidebarProvider)
+const MobileSidebarHeaderContent: FC<
+  Omit<SidebarHeaderContentProps, "isMobileOverlay">
+> = ({ handleCloseSidebar, isCollapsed }) => {
+  const toggleSidebar = () => {}; // No-op for mobile
+  return (
+    <SidebarHeaderContentImpl
+      handleCloseSidebar={handleCloseSidebar}
+      isCollapsed={isCollapsed}
+      toggleSidebar={toggleSidebar}
+    />
+  );
+};
+
+// Main component that conditionally renders based on context
+const SidebarHeaderContent: FC<SidebarHeaderContentProps> = ({
+  handleCloseSidebar,
+  isCollapsed,
+  isMobileOverlay = false,
+}) => {
+  if (isMobileOverlay) {
+    return (
+      <MobileSidebarHeaderContent
+        handleCloseSidebar={handleCloseSidebar}
+        isCollapsed={isCollapsed}
+      />
+    );
+  }
+
+  return (
+    <DesktopSidebarHeaderContent
+      handleCloseSidebar={handleCloseSidebar}
+      isCollapsed={isCollapsed}
+    />
   );
 };
 

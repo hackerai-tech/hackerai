@@ -104,7 +104,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               {showSidebarToggle && !chatSidebarOpen && (
                 <div className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted/50 mr-2">
                   <PanelLeft
-                    className="size-5 text-muted-foreground cursor-pointer"
+                    className="size-5 cursor-pointer"
                     onClick={toggleChatSidebar}
                   />
                 </div>
@@ -171,7 +171,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               {showSidebarToggle && !chatSidebarOpen && (
                 <div className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted/50 md:hidden">
                   <PanelLeft
-                    className="size-5 text-muted-foreground cursor-pointer"
+                    className="size-5 cursor-pointer"
                     onClick={toggleChatSidebar}
                   />
                 </div>

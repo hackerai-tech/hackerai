@@ -2,7 +2,14 @@
 
 import React, { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { LogOut, Sparkle, CreditCard, LifeBuoy, Trash2, Github } from "lucide-react";
+import {
+  LogOut,
+  Sparkle,
+  CreditCard,
+  LifeBuoy,
+  Trash2,
+  Github,
+} from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -33,18 +40,12 @@ import {
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
-  
+
 const XIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
-  <svg
-    viewBox="0 0 24 24"
-    fill="currentColor"
-    className={className}
-    {...props}
-  >
+  <svg viewBox="0 0 24 24" fill="currentColor" className={className} {...props}>
     <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
   </svg>
 );
-
 
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
