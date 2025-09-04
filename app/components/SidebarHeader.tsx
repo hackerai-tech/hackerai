@@ -22,16 +22,26 @@ interface SidebarHeaderContentProps {
   handleCloseSidebar: () => void;
   /** Whether the sidebar is collapsed */
   isCollapsed: boolean;
+  /** Whether this is being used in mobile overlay (without SidebarProvider) */
+  isMobileOverlay?: boolean;
 }
 
 const SidebarHeaderContent: FC<SidebarHeaderContentProps> = ({
   handleCloseSidebar,
   isCollapsed,
+  isMobileOverlay = false,
 }) => {
   const { user } = useAuth();
   const isMobile = useIsMobile();
   const router = useRouter();
-  const { toggleSidebar } = useSidebar();
+  
+  // Only use useSidebar when not in mobile overlay
+  let toggleSidebar = () => {};
+  if (!isMobileOverlay) {
+    const { toggleSidebar: sidebarToggle } = useSidebar();
+    toggleSidebar = sidebarToggle;
+  }
+  
   const { setChatSidebarOpen, closeSidebar, initializeNewChat } =
     useGlobalState();
 

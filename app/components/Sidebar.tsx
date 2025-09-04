@@ -98,6 +98,7 @@ const MainSidebar: FC<{ isMobileOverlay?: boolean }> = ({
           <SidebarHeaderContent
             handleCloseSidebar={handleCloseSidebar}
             isCollapsed={false}
+            isMobileOverlay={true}
           />
 
           {/* Chat List */}

@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { LogOut, Sparkle, CreditCard, LifeBuoy, Trash2 } from "lucide-react";
+import { LogOut, Sparkle, CreditCard, LifeBuoy, Trash2, Github } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -15,6 +15,9 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -30,6 +33,18 @@ import {
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
+  
+const XIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="currentColor"
+    className={className}
+    {...props}
+  >
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+  </svg>
+);
+
 
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
@@ -52,6 +67,28 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const handleHelpCenter = () => {
     const newWindow = window.open(
       NEXT_PUBLIC_HELP_CENTER_URL,
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  };
+
+  const handleGitHub = () => {
+    const newWindow = window.open(
+      "https://github.com/hackerai-tech/hackerai",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    if (newWindow) {
+      newWindow.opener = null;
+    }
+  };
+
+  const handleXCom = () => {
+    const newWindow = window.open(
+      "https://x.com/hackerai_tech",
       "_blank",
       "noopener,noreferrer",
     );
@@ -172,7 +209,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           {/* Show upgrade option for non-pro users */}
           {!isCheckingProPlan && !isProUser && (
             <DropdownMenuItem onClick={handleUpgrade}>
-              <Sparkle className="mr-2 h-4 w-4" />
+              <Sparkle className="mr-2 h-4 w-4 text-foreground" />
               <span>Upgrade to Pro</span>
             </DropdownMenuItem>
           )}
@@ -180,20 +217,36 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           {/* Show manage subscription option for pro users */}
           {!isCheckingProPlan && isProUser && (
             <DropdownMenuItem onClick={() => redirectToBillingPortal()}>
-              <CreditCard className="mr-2 h-4 w-4" />
+              <CreditCard className="mr-2 h-4 w-4 text-foreground" />
               <span>Manage Subscription</span>
             </DropdownMenuItem>
           )}
 
-          <DropdownMenuItem onClick={handleHelpCenter}>
-            <LifeBuoy className="mr-2 h-4 w-4" />
-            <span>Help Center</span>
-          </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger className="gap-4">
+              <LifeBuoy className="h-4 w-4 text-foreground" />
+              <span>Help</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent>
+              <DropdownMenuItem onClick={handleHelpCenter}>
+                <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
+                <span>Help Center</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleGitHub}>
+                <Github className="mr-2 h-4 w-4 text-foreground" />
+                <span>GitHub</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={handleXCom}>
+                <XIcon className="mr-2 h-4 w-4 text-foreground" />
+                <span>X.com</span>
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
 
           <DropdownMenuSeparator />
 
           <DropdownMenuItem onClick={() => setShowDeleteDialog(true)}>
-            <Trash2 className="mr-2 h-4 w-4" />
+            <Trash2 className="mr-2 h-4 w-4 text-foreground" />
             <span>Delete all chats</span>
           </DropdownMenuItem>
 
