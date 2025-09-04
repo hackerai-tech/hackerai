@@ -24,7 +24,11 @@ export default defineSchema({
     update_time: v.number(),
   })
     .index("by_chat_id", ["id"])
-    .index("by_user_and_updated", ["user_id", "update_time"]),
+    .index("by_user_and_updated", ["user_id", "update_time"])
+    .searchIndex("search_title", {
+      searchField: "title",
+      filterFields: ["user_id"],
+    }),
 
   messages: defineTable({
     id: v.string(),
@@ -36,12 +40,18 @@ export default defineSchema({
       v.literal("system"),
     ),
     parts: v.array(v.any()),
+    content: v.optional(v.string()),
     file_ids: v.optional(v.array(v.id("files"))),
     feedback_id: v.optional(v.id("feedback")),
     update_time: v.number(),
   })
     .index("by_message_id", ["id"])
-    .index("by_chat_id", ["chat_id"]),
+    .index("by_chat_id", ["chat_id"])
+    .index("by_feedback_id", ["feedback_id"])
+    .searchIndex("search_content", {
+      searchField: "content",
+      filterFields: ["user_id"],
+    }),
 
   files: defineTable({
     storage_id: v.id("_storage"),

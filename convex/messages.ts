@@ -4,6 +4,17 @@ import { internal } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
 
+/**
+ * Extract text content from message parts for search and display
+ */
+const extractTextFromParts = (parts: any[]): string => {
+  return parts
+    .filter((part) => part.type === "text")
+    .map((part) => part.text || "")
+    .join(" ")
+    .trim();
+};
+
 export const verifyChatOwnership = internalQuery({
   args: {
     chatId: v.string(),
@@ -69,12 +80,15 @@ export const saveMessage = mutation({
         }
       }
 
+      const content = extractTextFromParts(args.parts);
+
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         user_id: args.userId,
         role: args.role,
         parts: args.parts,
+        content: content || undefined,
         file_ids: args.fileIds,
         update_time: Date.now(),
       });
@@ -230,12 +244,15 @@ export const saveAssistantMessageFromClient = mutation({
         throw new Error("Chat not found");
       }
 
+      const content = extractTextFromParts(args.parts);
+
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
         parts: args.parts,
+        content: content || undefined,
         update_time: Date.now(),
       });
 
@@ -386,6 +403,171 @@ export const getMessagesByChatIdForBackend = query({
 });
 
 /**
+ * Search messages by content and chat titles with full text search
+ */
+export const searchMessages = query({
+  args: {
+    searchQuery: v.string(),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: v.object({
+    page: v.array(
+      v.object({
+        id: v.string(),
+        chat_id: v.string(),
+        content: v.string(),
+        created_at: v.number(),
+        updated_at: v.optional(v.number()),
+        chat_title: v.optional(v.string()),
+        match_type: v.union(
+          v.literal("message"),
+          v.literal("title"),
+          v.literal("both"),
+        ),
+      }),
+    ),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    if (!args.searchQuery.trim()) {
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
+    }
+
+    try {
+      // Search messages by content
+      const messageResults = await ctx.db
+        .query("messages")
+        .withSearchIndex("search_content", (q) =>
+          q.search("content", args.searchQuery).eq("user_id", user.subject),
+        )
+        .collect();
+
+      // Search chats by title
+      const chatResults = await ctx.db
+        .query("chats")
+        .withSearchIndex("search_title", (q) =>
+          q.search("title", args.searchQuery).eq("user_id", user.subject),
+        )
+        .collect();
+
+      // Create a map to track which chats have message matches
+      const messageChatIds = new Set(messageResults.map((msg) => msg.chat_id));
+
+      // Combine and deduplicate results
+      const combinedResults: Array<{
+        id: string;
+        chat_id: string;
+        content: string;
+        created_at: number;
+        updated_at: number;
+        chat_title: string;
+        match_type: "message" | "title" | "both";
+        relevance_score: number;
+      }> = [];
+
+      // Add message results
+      for (const msg of messageResults) {
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", msg.chat_id))
+          .first();
+
+        combinedResults.push({
+          id: msg.id,
+          chat_id: msg.chat_id,
+          content: msg.content || "",
+          created_at: msg._creationTime,
+          updated_at: chat?.update_time || msg.update_time,
+          chat_title: chat?.title || "",
+          match_type: "message",
+          relevance_score: 2, // Message content matches get high score
+        });
+      }
+
+      // Add chat title results (only if not already added via message)
+      for (const chat of chatResults) {
+        const hasMessageMatch = messageChatIds.has(chat.id);
+
+        if (hasMessageMatch) {
+          // Update existing result to "both"
+          const existingResult = combinedResults.find(
+            (r) => r.chat_id === chat.id,
+          );
+          if (existingResult) {
+            existingResult.match_type = "both";
+            existingResult.relevance_score = 3; // Both matches get highest score
+            existingResult.updated_at = chat.update_time; // Use chat's update time
+          }
+        } else {
+          // Get the most recent message for content preview
+          const recentMessage = await ctx.db
+            .query("messages")
+            .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+            .order("desc")
+            .first();
+
+          combinedResults.push({
+            id: `title-${chat.id}`,
+            chat_id: chat.id,
+            content: recentMessage?.content || "",
+            created_at: recentMessage?._creationTime || chat._creationTime,
+            updated_at: chat.update_time,
+            chat_title: chat.title,
+            match_type: "title",
+            relevance_score: 1, // Title-only matches get lower score
+          });
+        }
+      }
+
+      // Sort by relevance score (highest first), then by recency
+      combinedResults.sort((a, b) => {
+        if (a.relevance_score !== b.relevance_score) {
+          return b.relevance_score - a.relevance_score;
+        }
+        return b.updated_at - a.updated_at;
+      });
+
+      // Apply pagination manually
+      const startIndex = 0;
+      const numItems = args.paginationOpts.numItems;
+      const paginatedResults = combinedResults.slice(startIndex, numItems);
+
+      return {
+        page: paginatedResults.map((result) => ({
+          id: result.id,
+          chat_id: result.chat_id,
+          content: result.content,
+          created_at: result.created_at,
+          updated_at: result.updated_at,
+          chat_title: result.chat_title,
+          match_type: result.match_type,
+        })),
+        isDone: combinedResults.length <= numItems,
+        continueCursor: combinedResults.length > numItems ? "has_more" : "",
+      };
+    } catch (error) {
+      console.error("Failed to search messages:", error);
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
+    }
+  },
+});
+
+/**
  * Regenerate with new content by updating a message and deleting subsequent messages
  */
 export const regenerateWithNewContentFromClient = mutation({
@@ -430,6 +612,7 @@ export const regenerateWithNewContentFromClient = mutation({
 
       await ctx.db.patch(message._id, {
         parts: [{ type: "text", text: args.newContent }],
+        content: args.newContent.trim() || undefined,
         file_ids: undefined,
         update_time: Date.now(),
       });

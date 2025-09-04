@@ -16,6 +16,7 @@ import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
+import type { Doc } from "@/convex/_generated/dataModel";
 
 interface GlobalStateType {
   // Input state
@@ -49,6 +50,10 @@ interface GlobalStateType {
   // Current chat ID state
   currentChatId: string | null;
   setCurrentChatId: (chatId: string | null) => void;
+
+  // User chats state
+  chats: Doc<"chats">[];
+  setChats: (chats: Doc<"chats">[]) => void;
 
   // Chat switching state
   isSwitchingChats: boolean;
@@ -125,6 +130,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     chatSidebarStorage.get(isMobile),
   );
   const [todos, setTodos] = useState<Todo[]>([]);
+  const [chats, setChats] = useState<Doc<"chats">[]>([]);
   const [hasProPlan, setHasProPlan] = useState(false);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
 
@@ -293,6 +299,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle,
     currentChatId,
     setCurrentChatId,
+    chats,
+    setChats,
     isSwitchingChats,
     setIsSwitchingChats,
     hasActiveChat,
