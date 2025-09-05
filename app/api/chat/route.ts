@@ -106,7 +106,13 @@ export async function POST(req: NextRequest) {
           : Promise.resolve(undefined);
 
         // Select the appropriate model based on whether media files are present
-        const selectedModel = hasMediaFiles ? "vision-model" : "agent-model";
+        let selectedModel = "";
+        if (mode === "ask") {
+          selectedModel = "ask-model";
+        } else {
+          selectedModel = "agent-model";
+        }
+        selectedModel = hasMediaFiles ? "vision-model" : selectedModel;
 
         const result = streamText({
           model: myProvider.languageModel(selectedModel),
@@ -115,9 +121,11 @@ export async function POST(req: NextRequest) {
           providerOptions: {
             openrouter: {
               provider: {
-                ...(!isPro && {
-                  sort: "price",
-                }),
+                ...(!isPro
+                  ? {
+                      sort: "price",
+                    }
+                  : { sort: "latency" }),
               },
             },
           },
