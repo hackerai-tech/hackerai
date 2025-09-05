@@ -250,7 +250,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   const showChatLayout = hasMessages || isExistingChat;
 
   return (
-    <div className="h-screen bg-background flex flex-col overflow-hidden">
+    <div className="h-full bg-background flex flex-col overflow-hidden">
       <div className="flex w-full h-full overflow-hidden">
         {/* Chat Sidebar - Desktop screens: always mounted, collapses to icon rail when closed */}
         {!isMobile && (
