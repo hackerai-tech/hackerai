@@ -112,13 +112,15 @@ export async function POST(req: NextRequest) {
           model: myProvider.languageModel(selectedModel),
           system: systemPrompt(mode, executionMode),
           messages: convertToModelMessages(processedMessages),
-          ...(!isPro && {
-            providerOptions: {
+          providerOptions: {
+            openrouter: {
               provider: {
-                sort: "price",
+                ...(!isPro && {
+                  sort: "price",
+                }),
               },
             },
-          }),
+          },
           tools,
           abortSignal: controller.signal,
           headers: getAIHeaders(),
