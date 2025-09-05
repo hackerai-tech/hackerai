@@ -17,6 +17,7 @@ interface ChatHeaderProps {
   chatData?: { title?: string } | null | undefined;
   chatSidebarOpen?: boolean;
   isExistingChat?: boolean;
+  isChatNotFound?: boolean;
 }
 
 const ChatHeader: React.FC<ChatHeaderProps> = ({
@@ -27,6 +28,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   chatData,
   chatSidebarOpen = false,
   isExistingChat = false,
+  isChatNotFound = false,
 }) => {
   const { user, loading } = useAuth();
   const {
@@ -220,10 +222,12 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <div className="w-full flex flex-row items-center justify-between flex-1 min-w-0 gap-[24px]">
               <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0 text-foreground text-lg font-medium">
                 <span className="whitespace-nowrap text-ellipsis overflow-hidden">
-                  {chatTitle ||
-                    (isExistingChat && chatData === undefined
-                      ? ""
-                      : "New Chat")}
+                  {isChatNotFound
+                    ? ""
+                    : chatTitle ||
+                      (isExistingChat && chatData === undefined
+                        ? ""
+                        : "New Chat")}
                 </span>
               </div>
             </div>
