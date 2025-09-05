@@ -302,8 +302,8 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                           Chat Not Found
                         </h1>
                         <p className="text-muted-foreground">
-                          This chat doesn't exist or you don't have permission
-                          to view it.
+                          This chat doesn&apos;t exist or you don&apos;t have
+                          permission to view it.
                         </p>
                       </div>
                     </div>
