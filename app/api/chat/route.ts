@@ -24,6 +24,7 @@ import {
   saveMessage,
   updateChat,
   getMessagesByChatId,
+  getUserCustomization,
 } from "@/lib/db/actions";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
@@ -85,6 +86,9 @@ export async function POST(req: NextRequest) {
         posthog,
       });
 
+    // Get user customization data
+    const userCustomization = await getUserCustomization({ userId });
+
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         const { tools, getSandbox, getTodoManager } = createTools(
@@ -116,7 +120,7 @@ export async function POST(req: NextRequest) {
 
         const result = streamText({
           model: myProvider.languageModel(selectedModel),
-          system: systemPrompt(mode, executionMode),
+          system: systemPrompt(mode, executionMode, userCustomization),
           messages: convertToModelMessages(processedMessages),
           providerOptions: {
             openrouter: {

@@ -18,6 +18,7 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileStorage from "../fileStorage.js";
 import type * as messages from "../messages.js";
+import type * as userCustomization from "../userCustomization.js";
 
 /**
  * A utility for referencing Convex functions in your app's API.
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileStorage: typeof fileStorage;
   messages: typeof messages;
+  userCustomization: typeof userCustomization;
 }>;
 export declare const api: FilterApi<
   typeof fullApi,

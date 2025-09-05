@@ -211,3 +211,19 @@ export async function getMessagesByChatId({
 
   return truncatedMessages;
 }
+
+export async function getUserCustomization({ userId }: { userId: string }) {
+  try {
+    const userCustomization = await convex.query(
+      api.userCustomization.getUserCustomizationForBackend,
+      {
+        serviceKey,
+        userId,
+      },
+    );
+    return userCustomization;
+  } catch (error) {
+    // If no customization found or error, return null
+    return null;
+  }
+}

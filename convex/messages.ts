@@ -196,7 +196,10 @@ export const getMessagesByChatId = query({
       console.error("Failed to get messages:", error);
 
       // Handle chat not found error gracefully - return empty results instead of throwing
-      if (error instanceof ConvexError && error.data?.code === "CHAT_NOT_FOUND") {
+      if (
+        error instanceof ConvexError &&
+        error.data?.code === "CHAT_NOT_FOUND"
+      ) {
         return {
           page: [],
           isDone: true,
