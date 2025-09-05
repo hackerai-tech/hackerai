@@ -57,6 +57,14 @@ export async function POST(req: NextRequest) {
     const { userId, isPro } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
+    // Check if free user is trying to use agent mode
+    if (mode === "agent" && !isPro) {
+      throw new ChatSDKError(
+        "forbidden:chat",
+        "Agent mode is only available for Pro users. Please upgrade to access this feature.",
+      );
+    }
+
     // Get existing messages, merge with new messages, and truncate
     const truncatedMessages = await getMessagesByChatId({
       chatId,

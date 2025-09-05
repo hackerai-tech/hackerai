@@ -5,6 +5,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import {
@@ -17,13 +24,14 @@ import {
 import { useHotkeys } from "react-hotkeys-hook";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useUpgrade } from "../hooks/useUpgrade";
 import { TodoPanel } from "./TodoPanel";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "./FileUploadPreview";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { AttachmentButton } from "./AttachmentButton";
 import { useFileUpload } from "../hooks/useFileUpload";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { countInputTokens, MAX_TOKENS } from "@/lib/token-utils";
 import { toast } from "sonner";
 
@@ -46,8 +54,16 @@ export const ChatInput = ({
   isAtBottom = true,
   onScrollToBottom,
 }: ChatInputProps) => {
-  const { input, setInput, mode, setMode, uploadedFiles, isUploadingFiles } =
-    useGlobalState();
+  const {
+    input,
+    setInput,
+    mode,
+    setMode,
+    uploadedFiles,
+    isUploadingFiles,
+    hasProPlan,
+    isCheckingProPlan,
+  } = useGlobalState();
   const {
     fileInputRef,
     handleFileUploadEvent,
@@ -55,8 +71,31 @@ export const ChatInput = ({
     handleAttachClick,
     handlePasteEvent,
   } = useFileUpload();
+  const { handleUpgrade, upgradeLoading } = useUpgrade();
+  const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isGenerating = status === "submitted" || status === "streaming";
+
+  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
+  useEffect(() => {
+    if (!isCheckingProPlan && !hasProPlan && mode === "agent") {
+      setMode("ask");
+    }
+  }, [hasProPlan, isCheckingProPlan, mode, setMode]);
+
+  const handleAgentModeClick = () => {
+    if (hasProPlan) {
+      setMode("agent");
+    } else {
+      setAgentUpgradeDialogOpen(true);
+    }
+  };
+
+  const handleUpgradeClick = async () => {
+    await handleUpgrade();
+    // Don't close popover here - let it stay open to show loading state
+    // The popover will naturally close when user navigates to Stripe
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -213,20 +252,40 @@ export const ChatInput = ({
                       </span>
                     </div>
                   </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => setMode("agent")}
-                    className="cursor-pointer"
-                  >
-                    <Infinity className="w-4 h-4 mr-2" />
-                    <div className="flex flex-col">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">Agent</span>
+                  {hasProPlan || isCheckingProPlan ? (
+                    <DropdownMenuItem
+                      onClick={() => setMode("agent")}
+                      className="cursor-pointer"
+                    >
+                      <Infinity className="w-4 h-4 mr-2" />
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Agent</span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          Hack, test, secure anything
+                        </span>
                       </div>
-                      <span className="text-xs text-muted-foreground">
-                        Hack, test, secure anything
-                      </span>
-                    </div>
-                  </DropdownMenuItem>
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem
+                      onClick={handleAgentModeClick}
+                      className="cursor-pointer"
+                    >
+                      <Infinity className="w-4 h-4 mr-2" />
+                      <div className="flex flex-col flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Agent</span>
+                          <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200">
+                            PRO
+                          </span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          Hack, test, secure anything
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -291,6 +350,30 @@ export const ChatInput = ({
           </div>
         )}
       </div>
+
+      {/* Agent Upgrade Dialog */}
+      <Dialog
+        open={agentUpgradeDialogOpen}
+        onOpenChange={setAgentUpgradeDialogOpen}
+      >
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Upgrade to Pro</DialogTitle>
+            <DialogDescription>
+              Get access to Agent mode and unlock advanced hacking, testing, and
+              security features with Pro.
+            </DialogDescription>
+          </DialogHeader>
+          <Button
+            onClick={handleUpgradeClick}
+            disabled={upgradeLoading}
+            className="w-full"
+            size="lg"
+          >
+            {upgradeLoading ? "Loading..." : "Upgrade to Pro"}
+          </Button>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
