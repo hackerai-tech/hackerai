@@ -33,12 +33,9 @@ export const metadata: Metadata = {
   description: APP_DESCRIPTION,
   manifest: "/manifest.json",
   keywords: [
-    "hackerai",
-    "hacker ai",
-    "pentest ai",
-    "penetration testing ai",
-    "hacking ai",
-    "pentesting ai",
+    "hackerai", "pentestgpt", "hacker ai", "pentest ai", "penetration testing ai", "hacking ai", "pentesting ai",
+    "ai hacker", "hacker chat", "hacker chatbot", "hacker gpt", "hackerai chat",
+    "hacking gpt", "pentest chat", "pentest gpt", "security ai",
   ],
   openGraph: {
     type: "website",
@@ -96,7 +93,7 @@ export default function RootLayout({
       <head>
         <meta
           name="viewport"
-          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+          content="width=device-width, initial-scale=1, viewport-fit=cover"
         />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       </head>
