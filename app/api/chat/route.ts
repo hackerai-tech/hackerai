@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Get existing messages, merge with new messages, and truncate
-    const truncatedMessages = await getMessagesByChatId({
+    const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
       chatId,
       userId,
       newMessages: messages,
@@ -74,11 +74,12 @@ export async function POST(req: NextRequest) {
     });
 
     // Handle initial chat setup, regeneration, and save user message
-    const { isNewChat } = await handleInitialChatAndUserMessage({
+    await handleInitialChatAndUserMessage({
       chatId,
       userId,
       messages: truncatedMessages,
       regenerate,
+      chat,
     });
 
     // Check rate limit for the user
