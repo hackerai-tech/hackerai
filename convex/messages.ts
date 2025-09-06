@@ -1,5 +1,5 @@
 import { query, mutation, internalQuery } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
@@ -28,9 +28,15 @@ export const verifyChatOwnership = internalQuery({
       .first();
 
     if (!chat) {
-      return false;
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "This chat doesn't exist",
+      });
     } else if (chat.user_id !== args.userId) {
-      throw new Error("Unauthorized: Chat does not belong to user");
+      throw new ConvexError({
+        code: "CHAT_UNAUTHORIZED",
+        message: "You don't have permission to access this chat",
+      });
     }
 
     return true;
@@ -136,25 +142,18 @@ export const getMessagesByChatId = query({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
     }
 
     try {
-      const chatExists: boolean = await ctx.runQuery(
-        internal.messages.verifyChatOwnership,
-        {
-          chatId: args.chatId,
-          userId: user.subject,
-        },
-      );
-
-      if (!chatExists) {
-        return {
-          page: [],
-          isDone: true,
-          continueCursor: "",
-        };
-      }
+      await ctx.runQuery(internal.messages.verifyChatOwnership, {
+        chatId: args.chatId,
+        userId: user.subject,
+      });
 
       const result = await ctx.db
         .query("messages")
@@ -196,9 +195,24 @@ export const getMessagesByChatId = query({
     } catch (error) {
       console.error("Failed to get messages:", error);
 
-      if (error instanceof Error && error.message.includes("Unauthorized")) {
+      // Handle chat not found error gracefully - return empty results instead of throwing
+      if (
+        error instanceof ConvexError &&
+        error.data?.code === "CHAT_NOT_FOUND"
+      ) {
+        return {
+          page: [],
+          isDone: true,
+          continueCursor: "",
+        };
+      }
+
+      // Re-throw other ConvexErrors for frontend handling
+      if (error instanceof ConvexError) {
         throw error;
       }
+
+      // For other errors, return empty page
       return {
         page: [],
         isDone: true,

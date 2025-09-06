@@ -67,4 +67,14 @@ export default defineSchema({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),
     feedback_details: v.optional(v.string()),
   }),
+
+  user_customization: defineTable({
+    user_id: v.string(),
+    nickname: v.optional(v.string()),
+    occupation: v.optional(v.string()),
+    personality: v.optional(v.string()),
+    traits: v.optional(v.string()),
+    additional_info: v.optional(v.string()),
+    updated_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
 });

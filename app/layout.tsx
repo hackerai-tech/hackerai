@@ -34,11 +34,21 @@ export const metadata: Metadata = {
   manifest: "/manifest.json",
   keywords: [
     "hackerai",
+    "pentestgpt",
     "hacker ai",
     "pentest ai",
     "penetration testing ai",
     "hacking ai",
     "pentesting ai",
+    "ai hacker",
+    "hacker chat",
+    "hacker chatbot",
+    "hacker gpt",
+    "hackerai chat",
+    "hacking gpt",
+    "pentest chat",
+    "pentest gpt",
+    "security ai",
   ],
   openGraph: {
     type: "website",
@@ -92,16 +102,16 @@ export default function RootLayout({
   );
 
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
+    <html lang="en" className="dark h-full" suppressHydrationWarning>
       <head>
         <meta
           name="viewport"
-          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+          content="width=device-width, initial-scale=1, viewport-fit=cover"
         />
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} antialiased h-full`}
       >
         <ConvexClientProvider>{content}</ConvexClientProvider>
       </body>

@@ -24,6 +24,7 @@ import {
   saveMessage,
   updateChat,
   getMessagesByChatId,
+  getUserCustomization,
 } from "@/lib/db/actions";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
@@ -56,8 +57,16 @@ export async function POST(req: NextRequest) {
     const { userId, isPro } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
+    // Check if free user is trying to use agent mode
+    if (mode === "agent" && !isPro) {
+      throw new ChatSDKError(
+        "forbidden:chat",
+        "Agent mode is only available for Pro users. Please upgrade to access this feature.",
+      );
+    }
+
     // Get existing messages, merge with new messages, and truncate
-    const truncatedMessages = await getMessagesByChatId({
+    const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
       chatId,
       userId,
       newMessages: messages,
@@ -65,11 +74,12 @@ export async function POST(req: NextRequest) {
     });
 
     // Handle initial chat setup, regeneration, and save user message
-    const { isNewChat } = await handleInitialChatAndUserMessage({
+    await handleInitialChatAndUserMessage({
       chatId,
       userId,
       messages: truncatedMessages,
       regenerate,
+      chat,
     });
 
     // Check rate limit for the user
@@ -84,6 +94,9 @@ export async function POST(req: NextRequest) {
         userID: userId,
         posthog,
       });
+
+    // Get user customization data
+    const userCustomization = await getUserCustomization({ userId });
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -106,19 +119,29 @@ export async function POST(req: NextRequest) {
           : Promise.resolve(undefined);
 
         // Select the appropriate model based on whether media files are present
-        const selectedModel = hasMediaFiles ? "vision-model" : "agent-model";
+        let selectedModel = "";
+        if (mode === "ask") {
+          selectedModel = "ask-model";
+        } else {
+          selectedModel = "agent-model";
+        }
+        selectedModel = hasMediaFiles ? "vision-model" : selectedModel;
 
         const result = streamText({
           model: myProvider.languageModel(selectedModel),
-          system: systemPrompt(mode, executionMode),
+          system: systemPrompt(mode, executionMode, userCustomization),
           messages: convertToModelMessages(processedMessages),
-          ...(!isPro && {
-            providerOptions: {
+          providerOptions: {
+            openrouter: {
               provider: {
-                sort: "price",
+                ...(!isPro
+                  ? {
+                      sort: "price",
+                    }
+                  : { sort: "latency" }),
               },
             },
-          }),
+          },
           tools,
           abortSignal: controller.signal,
           headers: getAIHeaders(),

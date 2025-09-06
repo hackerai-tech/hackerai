@@ -23,7 +23,7 @@ const UnauthenticatedContent = () => {
   };
 
   return (
-    <div className="h-screen bg-background flex flex-col overflow-hidden">
+    <div className="h-full bg-background flex flex-col overflow-hidden">
       <div className="flex-shrink-0">
         <Header />
       </div>

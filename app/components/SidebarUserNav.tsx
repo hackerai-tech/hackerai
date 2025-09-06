@@ -10,6 +10,7 @@ import {
   Trash2,
   Github,
   ChevronRight,
+  Settings,
 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -36,6 +37,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -52,6 +54,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { handleUpgrade } = useUpgrade();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
   const isMobile = useIsMobile();
 
   const deleteAllChats = useMutation(api.chats.deleteAllChats);
@@ -223,6 +226,18 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuItem>
           )}
 
+          <DropdownMenuItem onClick={() => setShowCustomizeDialog(true)}>
+            <Settings className="mr-2 h-4 w-4 text-foreground" />
+            <span>Customize HackerAI</span>
+          </DropdownMenuItem>
+
+          <DropdownMenuItem onClick={() => setShowDeleteDialog(true)}>
+            <Trash2 className="mr-2 h-4 w-4 text-foreground" />
+            <span>Delete all chats</span>
+          </DropdownMenuItem>
+
+          <DropdownMenuSeparator />
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <DropdownMenuItem className="gap-4 cursor-pointer">
@@ -251,19 +266,18 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenuSeparator />
-
-          <DropdownMenuItem onClick={() => setShowDeleteDialog(true)}>
-            <Trash2 className="mr-2 h-4 w-4 text-foreground" />
-            <span>Delete all chats</span>
-          </DropdownMenuItem>
-
           <DropdownMenuItem onClick={handleSignOut} variant="destructive">
             <LogOut className="mr-2 h-4 w-4" />
             <span>Log out</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {/* Customize HackerAI Dialog */}
+      <CustomizeHackerAIDialog
+        open={showCustomizeDialog}
+        onOpenChange={setShowCustomizeDialog}
+      />
 
       {/* Delete All Chats Confirmation Dialog */}
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>

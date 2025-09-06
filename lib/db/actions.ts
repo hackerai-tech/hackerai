@@ -78,13 +78,14 @@ export async function handleInitialChatAndUserMessage({
   userId,
   messages,
   regenerate,
+  chat,
 }: {
   chatId: string;
   userId: string;
   messages: { id: string; parts: UIMessagePart<any, any>[] }[];
   regenerate?: boolean;
-}): Promise<{ isNewChat: boolean }> {
-  const chat = await getChatById({ id: chatId });
+  chat: any; // Chat data from getMessagesByChatId
+}) {
   const isNewChat = !chat;
 
   if (!chat) {
@@ -135,8 +136,6 @@ export async function handleInitialChatAndUserMessage({
       },
     });
   }
-
-  return { isNewChat };
 }
 
 export async function updateChat({
@@ -178,20 +177,27 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
 }) {
+  // Check if chat exists first to avoid unnecessary Convex query
+  const chat = await getChatById({ id: chatId });
+  const isNewChat = !chat;
+
   let existingMessages: UIMessage[] = [];
 
-  try {
-    existingMessages = await convex.query(
-      api.messages.getMessagesByChatIdForBackend,
-      {
-        serviceKey,
-        chatId,
-        userId,
-      },
-    );
-  } catch (error) {
-    // If chat doesn't exist yet or error fetching, use empty array
-    // This will be handled by handleInitialChatAndUserMessage
+  // Only fetch existing messages if chat exists
+  if (!isNewChat) {
+    try {
+      existingMessages = await convex.query(
+        api.messages.getMessagesByChatIdForBackend,
+        {
+          serviceKey,
+          chatId,
+          userId,
+        },
+      );
+    } catch (error) {
+      // If error fetching, use empty array
+      console.warn("Failed to fetch existing messages:", error);
+    }
   }
 
   // Handle message merging based on regeneration flag
@@ -209,5 +215,21 @@ export async function getMessagesByChatId({
   // Truncate messages to stay within token limit with file tokens included
   const truncatedMessages = await truncateMessagesWithFileTokens(allMessages);
 
-  return truncatedMessages;
+  return { truncatedMessages, chat, isNewChat };
+}
+
+export async function getUserCustomization({ userId }: { userId: string }) {
+  try {
+    const userCustomization = await convex.query(
+      api.userCustomization.getUserCustomizationForBackend,
+      {
+        serviceKey,
+        userId,
+      },
+    );
+    return userCustomization;
+  } catch (error) {
+    // If no customization found or error, return null
+    return null;
+  }
 }

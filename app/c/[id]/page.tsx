@@ -12,7 +12,7 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
   return (
     <>
       <AuthLoading>
-        <div className="h-screen bg-background flex flex-col overflow-hidden">
+        <div className="h-full bg-background flex flex-col overflow-hidden">
           <div className="flex-1 flex items-center justify-center">
             <Loading />
           </div>
@@ -24,7 +24,7 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
       </Authenticated>
 
       <Unauthenticated>
-        <div className="h-screen bg-background flex flex-col overflow-hidden">
+        <div className="h-full bg-background flex flex-col overflow-hidden">
           <div className="flex-1 flex items-center justify-center">
             <Loading />
           </div>
