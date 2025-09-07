@@ -4,6 +4,7 @@ interface UserCustomization {
   readonly personality?: string;
   readonly traits?: string;
   readonly additional_info?: string;
+  readonly include_memory_entries?: boolean;
   readonly updated_at: number;
 }
 

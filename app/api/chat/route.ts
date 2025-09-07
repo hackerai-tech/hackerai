@@ -24,6 +24,7 @@ import {
   saveMessage,
   updateChat,
   getMessagesByChatId,
+  getUserCustomization,
 } from "@/lib/db/actions";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
@@ -94,6 +95,10 @@ export async function POST(req: NextRequest) {
         posthog,
       });
 
+    // Get user customization to check memory preference (outside stream to avoid duplicate calls)
+    const userCustomization = await getUserCustomization({ userId });
+    const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         const { tools, getSandbox, getTodoManager } = createTools(
@@ -103,6 +108,7 @@ export async function POST(req: NextRequest) {
           executionMode,
           userLocation,
           todos,
+          memoryEnabled,
         );
 
         // Generate title in parallel if this is a new chat
@@ -125,7 +131,12 @@ export async function POST(req: NextRequest) {
 
         const result = streamText({
           model: myProvider.languageModel(selectedModel),
-          system: await systemPrompt(mode, executionMode, userId),
+          system: await systemPrompt(
+            userId,
+            mode,
+            executionMode,
+            userCustomization,
+          ),
           messages: convertToModelMessages(processedMessages),
           providerOptions: {
             openrouter: {

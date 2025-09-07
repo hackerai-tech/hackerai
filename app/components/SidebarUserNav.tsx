@@ -11,6 +11,7 @@ import {
   Github,
   ChevronRight,
   Settings,
+  Settings2,
 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -38,6 +39,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
+import { SettingsDialog } from "./SettingsDialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -55,6 +57,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
+  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const isMobile = useIsMobile();
 
   const deleteAllChats = useMutation(api.chats.deleteAllChats);
@@ -227,8 +230,13 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           )}
 
           <DropdownMenuItem onClick={() => setShowCustomizeDialog(true)}>
-            <Settings className="mr-2 h-4 w-4 text-foreground" />
+            <Settings2 className="mr-2 h-4 w-4 text-foreground" />
             <span>Customize HackerAI</span>
+          </DropdownMenuItem>
+
+          <DropdownMenuItem onClick={() => setShowSettingsDialog(true)}>
+            <Settings className="mr-2 h-4 w-4 text-foreground" />
+            <span>Settings</span>
           </DropdownMenuItem>
 
           <DropdownMenuItem onClick={() => setShowDeleteDialog(true)}>
@@ -272,6 +280,12 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+
+      {/* Settings Dialog */}
+      <SettingsDialog
+        open={showSettingsDialog}
+        onOpenChange={setShowSettingsDialog}
+      />
 
       {/* Customize HackerAI Dialog */}
       <CustomizeHackerAIDialog

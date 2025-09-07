@@ -4,8 +4,8 @@ import {
   type UserCustomization,
 } from "./system-prompt/personality";
 import { generateUserBio } from "./system-prompt/bio";
-import { generateMemorySection, type Memory } from "./system-prompt/memory";
-import { getUserCustomization, getMemories } from "@/lib/db/actions";
+import { generateMemorySection } from "./system-prompt/memory";
+import { getMemories } from "@/lib/db/actions";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -134,15 +134,16 @@ Answer the user's request using the relevant tool(s), if they are available. Che
 
 // Core system prompt with optimized structure
 export const systemPrompt = async (
+  userId: string,
   mode: ChatMode,
   executionMode?: ExecutionMode,
-  userId?: string,
+  userCustomization?: UserCustomization | null,
 ): Promise<string> => {
-  // Get user customization data and memories
-  const userCustomization = userId
-    ? await getUserCustomization({ userId })
-    : null;
-  const memories = userId ? await getMemories({ userId }) : null;
+  // Only get memories if the user has memory entries enabled
+  const shouldIncludeMemories =
+    userCustomization?.include_memory_entries ?? true;
+  const memories =
+    userId && shouldIncludeMemories ? await getMemories({ userId }) : null;
 
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,

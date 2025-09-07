@@ -59,6 +59,7 @@ export const getMemoriesForBackend = query({
 
 /**
  * Create a memory entry with service key authentication (for backend use)
+ * Respects user's memory preference setting
  */
 export const createMemoryForBackend = mutation({
   args: {
@@ -72,6 +73,18 @@ export const createMemoryForBackend = mutation({
     validateServiceKey(args.serviceKey);
 
     try {
+      // Check user's memory preference first
+      const userCustomization = await ctx.db
+        .query("user_customization")
+        .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+        .first();
+
+      // If user has disabled memory entries, don't create memory
+      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+      if (!memoryEnabled) {
+        return args.memoryId; // Return the ID as if created, but don't actually create
+      }
+
       // Check if memory with this ID already exists
       const existing = await ctx.db
         .query("memories")
@@ -215,6 +228,124 @@ export const getMemoryByIdForBackend = query({
       console.error("Failed to get memory by ID:", error);
       throw new Error(
         error instanceof Error ? error.message : "Failed to get memory",
+      );
+    }
+  },
+});
+
+/**
+ * Get memories for frontend display (authenticated user)
+ * Returns all memories for the current user
+ */
+export const getUserMemories = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      memory_id: v.string(),
+      content: v.string(),
+      update_time: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      // Get all memories sorted by update time (newest first)
+      const memories = await ctx.db
+        .query("memories")
+        .withIndex("by_user_and_update_time", (q) =>
+          q.eq("user_id", identity.subject),
+        )
+        .order("desc")
+        .collect();
+
+      return memories.map((memory) => ({
+        memory_id: memory.memory_id,
+        content: memory.content,
+        update_time: memory.update_time,
+      }));
+    } catch (error) {
+      console.error("Failed to get user memories:", error);
+      return [];
+    }
+  },
+});
+
+/**
+ * Delete a specific memory for the authenticated user
+ */
+export const deleteUserMemory = mutation({
+  args: {
+    memoryId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      // Find the memory to delete
+      const memory = await ctx.db
+        .query("memories")
+        .withIndex("by_memory_id", (q) => q.eq("memory_id", args.memoryId))
+        .first();
+
+      if (!memory) {
+        throw new Error(`Memory with ID ${args.memoryId} not found`);
+      }
+
+      // Verify ownership
+      if (memory.user_id !== identity.subject) {
+        throw new Error("Access denied: You don't own this memory");
+      }
+
+      await ctx.db.delete(memory._id);
+      return null;
+    } catch (error) {
+      console.error("Failed to delete memory:", error);
+      throw new Error(
+        error instanceof Error ? error.message : "Failed to delete memory",
+      );
+    }
+  },
+});
+
+/**
+ * Delete all memories for the authenticated user
+ */
+export const deleteAllUserMemories = mutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      // Get all memories for the user
+      const memories = await ctx.db
+        .query("memories")
+        .withIndex("by_user_and_update_time", (q) =>
+          q.eq("user_id", identity.subject),
+        )
+        .collect();
+
+      // Delete all memories
+      for (const memory of memories) {
+        await ctx.db.delete(memory._id);
+      }
+
+      return null;
+    } catch (error) {
+      console.error("Failed to delete all memories:", error);
+      throw new Error(
+        error instanceof Error ? error.message : "Failed to delete memories",
       );
     }
   },
