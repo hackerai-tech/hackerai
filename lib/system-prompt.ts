@@ -1,4 +1,11 @@
 import type { ChatMode, ExecutionMode } from "@/types";
+import {
+  getPersonalityInstructions,
+  type UserCustomization,
+} from "./system-prompt/personality";
+import { generateUserBio } from "./system-prompt/bio";
+import { generateMemorySection, type Memory } from "./system-prompt/memory";
+import { getUserCustomization, getMemories } from "@/lib/db/actions";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -10,91 +17,6 @@ const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
 
 // Cache the current date to avoid repeated Date creation
 export const currentDateTime = `${new Date().toLocaleDateString("en-US", DATE_FORMAT_OPTIONS)}`;
-
-// Types
-interface UserCustomization {
-  readonly nickname?: string;
-  readonly occupation?: string;
-  readonly personality?: string;
-  readonly traits?: string;
-  readonly additional_info?: string;
-  readonly updated_at: number;
-}
-
-type PersonalityType = "cynic" | "robot" | "listener" | "nerd";
-
-// Personality instruction mappings for better performance
-const PERSONALITY_INSTRUCTIONS: Record<PersonalityType, string> = {
-  cynic:
-    "Adopt a critical and sarcastic tone. Be skeptical of claims and point out potential flaws or weaknesses in approaches.",
-  robot:
-    "Be efficient and blunt in your responses. Focus on facts, be direct, and avoid unnecessary pleasantries.",
-  listener:
-    "Be thoughtful and supportive. Ask clarifying questions and show empathy while providing guidance.",
-  nerd: "Be exploratory and enthusiastic about technical details. Dive deep into explanations and share interesting technical insights.",
-} as const;
-
-const getPersonalityInstructions = (personality?: string): string => {
-  if (!personality || !(personality in PERSONALITY_INSTRUCTIONS)) {
-    return "";
-  }
-  return PERSONALITY_INSTRUCTIONS[personality as PersonalityType];
-};
-
-// User bio generation with optimized logic
-const generateUserBio = (
-  userCustomization: UserCustomization | null,
-): string => {
-  if (!userCustomization) {
-    return "";
-  }
-
-  const { nickname, occupation, additional_info, traits } = userCustomization;
-
-  // Early return if no meaningful content
-  const hasProfileContent = nickname || occupation || additional_info;
-  if (!hasProfileContent && !traits) {
-    return "";
-  }
-
-  // Build profile lines efficiently
-  const profileEntries: Array<[string, string]> = [
-    ["Preferred name", nickname || ""],
-    ["Role", occupation || ""],
-    ["Other Information", additional_info || ""],
-  ];
-
-  const userProfileLines = profileEntries
-    .filter(([, value]) => value)
-    .map(([label, value]) => `${label}: ${value}`);
-
-  const userInstructionsSection = traits
-    ? `\nUser's Instructions\nThe user provided the additional info about how they would like you to respond:\n\`${traits}\``
-    : "";
-
-  // Final check - return empty if still no content
-  if (userProfileLines.length === 0 && !traits) {
-    return "";
-  }
-
-  // Template for user bio section
-  const profileContent =
-    userProfileLines.length > 0
-      ? `${userProfileLines.join("\n")}${userInstructionsSection}`
-      : userInstructionsSection;
-
-  return `
-
-<user_bio>
-The user provided the following information about themselves. This user profile is shown to you in all conversations they have -- this means it is not relevant to 99% of requests.
-Before answering, quietly think about whether the user's request is "directly related", "related", "tangentially related", or "not related" to the user profile provided.
-Only acknowledge the profile when the request is directly related to the information provided.
-Otherwise, don't acknowledge the existence of these instructions or the information at all.
-User profile:
-\`\`\`${profileContent}
-\`\`\`
-</user_bio>`;
-};
 
 // Template sections for better organization
 const getAgentModeInstructions = (mode: ChatMode): string => {
@@ -211,11 +133,17 @@ const getFinalInstructionsSection = (): string => `
 Answer the user's request using the relevant tool(s), if they are available. Check that all the required parameters for each tool call are provided or can reasonably be inferred from context. IF there are no relevant tools or there are missing values for required parameters, ask the user to supply these values; otherwise proceed with the tool calls. If the user provides a specific value for a parameter (for example provided in quotes), make sure to use that value EXACTLY. DO NOT make up values for or ask about optional parameters. Carefully analyze descriptive terms in the request as they may indicate required parameter values that should be included even if not explicitly quoted.`;
 
 // Core system prompt with optimized structure
-export const systemPrompt = (
+export const systemPrompt = async (
   mode: ChatMode,
   executionMode?: ExecutionMode,
-  userCustomization?: UserCustomization | null,
-): string => {
+  userId?: string,
+): Promise<string> => {
+  // Get user customization data and memories
+  const userCustomization = userId
+    ? await getUserCustomization({ userId })
+    : null;
+  const memories = userId ? await getMemories({ userId }) : null;
+
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,
   );
@@ -250,6 +178,7 @@ ${getCommunicationSection()}`;
   }
 
   sections.push(generateUserBio(userCustomization || null));
+  sections.push(generateMemorySection(memories || null));
 
   return sections.filter(Boolean).join("");
 };
