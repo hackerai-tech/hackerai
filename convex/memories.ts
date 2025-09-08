@@ -76,7 +76,9 @@ export const createMemoryForBackend = mutation({
       // Validate content length (max 2000 characters, roughly 500 tokens)
       const maxContentLength = 2000;
       if (args.content.length > maxContentLength) {
-        throw new Error(`Memory content exceeds maximum length of ${maxContentLength} characters`);
+        throw new Error(
+          `Memory content exceeds maximum length of ${maxContentLength} characters`,
+        );
       }
 
       // Check user's memory preference first
@@ -140,7 +142,9 @@ export const updateMemoryForBackend = mutation({
       // Validate content length (max 2000 characters, roughly 500 tokens)
       const maxContentLength = 2000;
       if (args.content.length > maxContentLength) {
-        throw new Error(`Memory content exceeds maximum length of ${maxContentLength} characters`);
+        throw new Error(
+          `Memory content exceeds maximum length of ${maxContentLength} characters`,
+        );
       }
 
       // Find the existing memory

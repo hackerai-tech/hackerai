@@ -61,9 +61,7 @@ const ManageMemoriesDialog = ({
             <div className="overflow-y-auto text-sm h-full text-foreground">
               {loading ? (
                 <div className="flex items-center justify-center py-8">
-                  <div className="text-muted-foreground">
-                    Loading...
-                  </div>
+                  <div className="text-muted-foreground">Loading...</div>
                 </div>
               ) : !user ? (
                 <div className="flex items-center justify-center py-8">
