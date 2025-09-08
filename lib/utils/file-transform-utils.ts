@@ -32,15 +32,24 @@ async function convertFileToBase64(fileUrl: string): Promise<string | null> {
 /**
  * Processes file parts in messages to transform URLs and convert PDFs to base64
  * @param messages - Array of messages to process
- * @returns Processed messages with transformed file URLs
+ * @returns Object with processed messages and media file information
  */
 export async function transformStorageIdsToUrls(
   messages: UIMessage[],
-): Promise<UIMessage[]> {
-  if (!messages.length) return messages;
+): Promise<{
+  messages: UIMessage[];
+  hasMediaFiles: boolean;
+  hasBase64Files: boolean;
+}> {
+  if (!messages.length)
+    return { messages, hasMediaFiles: false, hasBase64Files: false };
 
   // Create a deep copy to avoid mutation
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
+
+  // Track media file types
+  let hasMediaFiles = false;
+  let hasBase64Files = false;
 
   // Collect files that need processing
   const filesToProcess = new Map<
@@ -58,6 +67,16 @@ export async function transformStorageIdsToUrls(
 
     message.parts.forEach((part: any, partIndex) => {
       if (part.type === "file" && part.fileId) {
+        // Check for media files
+        if (part.mediaType) {
+          if (
+            part.mediaType.startsWith("image/") ||
+            part.mediaType === "application/pdf"
+          ) {
+            hasMediaFiles = true;
+          }
+        }
+
         const shouldProcess =
           part.mediaType === "application/pdf" ||
           !part.url ||
@@ -79,7 +98,9 @@ export async function transformStorageIdsToUrls(
     });
   });
 
-  if (filesToProcess.size === 0) return updatedMessages;
+  if (filesToProcess.size === 0) {
+    return { messages: updatedMessages, hasMediaFiles, hasBase64Files };
+  }
 
   try {
     // Fetch URLs for files that don't have them
@@ -112,6 +133,11 @@ export async function transformStorageIdsToUrls(
           ? await convertPdfToBase64Url(file.url, fileId as Id<"files">)
           : file.url;
 
+      // Check if this file became a base64 URL
+      if (finalUrl.startsWith("data:")) {
+        hasBase64Files = true;
+      }
+
       // Update all file parts with the final URL
       file.positions.forEach(({ messageIndex, partIndex }) => {
         const filePart = updatedMessages[messageIndex].parts![partIndex] as any;
@@ -121,10 +147,10 @@ export async function transformStorageIdsToUrls(
       });
     }
 
-    return updatedMessages;
+    return { messages: updatedMessages, hasMediaFiles, hasBase64Files };
   } catch (error) {
     console.error("Failed to transform file URLs:", error);
-    return messages;
+    return { messages, hasMediaFiles, hasBase64Files };
   }
 }
 

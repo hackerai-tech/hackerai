@@ -56,6 +56,23 @@ async function getOpenAiApiKey(): Promise<string> {
   return await getOpenAiApiKey();
 }
 
+async function getAiGatewayApiKey(): Promise<string> {
+  console.log(`\n${chalk.bold("Getting AI Gateway API Key")}`);
+  console.log(
+    "You can find your AI Gateway API Key at: https://vercel.com/ai-gateway",
+  );
+  const key = await question("Enter your AI Gateway API Key: ");
+
+  if (key.startsWith("vck_")) {
+    return key;
+  }
+
+  console.log(chalk.red("Invalid AI Gateway API Key format"));
+  console.log('AI Gateway keys should start with "vck_"');
+
+  return await getAiGatewayApiKey();
+}
+
 async function getWorkOSApiKey(): Promise<string> {
   console.log(`\n${chalk.bold("Getting WorkOS API Key")}`);
   console.log(
@@ -127,6 +144,7 @@ NEXT_PUBLIC_WORKOS_REDIRECT_URI=${envVars.NEXT_PUBLIC_WORKOS_REDIRECT_URI}
 
 OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
 OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
+AI_GATEWAY_API_KEY=${envVars.AI_GATEWAY_API_KEY}
 
 # =============================================================================
 # OPTIONAL CONFIGURATIONS
@@ -228,6 +246,7 @@ async function main() {
   // Get required API keys
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
   const OPENAI_API_KEY = await getOpenAiApiKey();
+  const AI_GATEWAY_API_KEY = await getAiGatewayApiKey();
 
   // Get WorkOS configuration
   const WORKOS_API_KEY = await getWorkOSApiKey();
@@ -246,6 +265,7 @@ async function main() {
   await writeEnvFile({
     OPENROUTER_API_KEY,
     OPENAI_API_KEY,
+    AI_GATEWAY_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,
     NEXT_PUBLIC_WORKOS_REDIRECT_URI,

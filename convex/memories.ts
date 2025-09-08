@@ -73,6 +73,14 @@ export const createMemoryForBackend = mutation({
     validateServiceKey(args.serviceKey);
 
     try {
+      // Validate content length (max 2000 characters, roughly 500 tokens)
+      const maxContentLength = 2000;
+      if (args.content.length > maxContentLength) {
+        throw new Error(
+          `Memory content exceeds maximum length of ${maxContentLength} characters`,
+        );
+      }
+
       // Check user's memory preference first
       const userCustomization = await ctx.db
         .query("user_customization")
@@ -131,6 +139,14 @@ export const updateMemoryForBackend = mutation({
     validateServiceKey(args.serviceKey);
 
     try {
+      // Validate content length (max 2000 characters, roughly 500 tokens)
+      const maxContentLength = 2000;
+      if (args.content.length > maxContentLength) {
+        throw new Error(
+          `Memory content exceeds maximum length of ${maxContentLength} characters`,
+        );
+      }
+
       // Find the existing memory
       const existing = await ctx.db
         .query("memories")

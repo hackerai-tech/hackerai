@@ -87,7 +87,7 @@ export async function POST(req: NextRequest) {
 
     // Process chat messages with moderation and analytics
     const posthog = PostHogClient();
-    const { executionMode, processedMessages, hasMediaFiles } =
+    const { executionMode, processedMessages, selectedModel } =
       await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -120,15 +120,6 @@ export async function POST(req: NextRequest) {
             )
           : Promise.resolve(undefined);
 
-        // Select the appropriate model based on whether media files are present
-        let selectedModel = "";
-        if (mode === "ask") {
-          selectedModel = "ask-model";
-        } else {
-          selectedModel = "agent-model";
-        }
-        selectedModel = hasMediaFiles ? "vision-model" : selectedModel;
-
         const result = streamText({
           model: myProvider.languageModel(selectedModel),
           system: await systemPrompt(
@@ -139,15 +130,11 @@ export async function POST(req: NextRequest) {
           ),
           messages: convertToModelMessages(processedMessages),
           providerOptions: {
-            openrouter: {
-              provider: {
-                ...(!isPro
-                  ? {
-                      sort: "price",
-                    }
-                  : { sort: "latency" }),
+            ...(!isPro && {
+              gateway: {
+                order: ["novita"],
               },
-            },
+            }),
           },
           tools,
           abortSignal: controller.signal,
