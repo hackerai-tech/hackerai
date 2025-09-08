@@ -127,9 +127,9 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                     <div>
                       <div className="space-y-4">
                         <div
-                           className="flex items-center justify-between py-3 border-b cursor-pointer hover:bg-muted/50 transition-colors rounded-md px-2 -mx-2"
-                           onClick={handleCustomInstructions}
-                         >
+                          className="flex items-center justify-between py-3 border-b cursor-pointer hover:bg-muted/50 transition-colors rounded-md px-2 -mx-2"
+                          onClick={handleCustomInstructions}
+                        >
                           <div>
                             <div className="font-medium">
                               Custom instructions
@@ -149,38 +149,40 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                         Memory
                       </h3>
                       <div className="space-y-4">
-                         <div className="flex items-center justify-between py-3 border-b">
-                            <div>
-                              <div className="font-medium">Enable memory</div>
-                              <div className="text-sm text-muted-foreground">
-                               Let HackerAI save and use memories when
-                               responding.
-                              </div>
+                        <div className="flex items-center justify-between py-3 border-b">
+                          <div>
+                            <div className="font-medium">Enable memory</div>
+                            <div className="text-sm text-muted-foreground">
+                              Let HackerAI save and use memories when
+                              responding.
                             </div>
-                            <Switch
-                              checked={userCustomization?.include_memory_entries ?? true}
-                              onCheckedChange={(checked) => {
-                                saveCustomization({
-                                  include_memory_entries: checked,
-                                });
-                              }}
-                              aria-label="Toggle memory"
-                              className="dark:bg-blue-400"
-                            />
                           </div>
- 
-                         <div className="flex items-center justify-between py-3">
-                            <div>
-                              <div className="font-medium">Manage memories</div>
-                            </div>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={handleManageMemories}
-                            >
-                              Manage
-                            </Button>
+                          <Switch
+                            checked={
+                              userCustomization?.include_memory_entries ?? true
+                            }
+                            onCheckedChange={(checked) => {
+                              saveCustomization({
+                                include_memory_entries: checked,
+                              });
+                            }}
+                            aria-label="Toggle memory"
+                            className="dark:bg-blue-400"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between py-3">
+                          <div>
+                            <div className="font-medium">Manage memories</div>
                           </div>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleManageMemories}
+                          >
+                            Manage
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>

@@ -139,15 +139,11 @@ export async function POST(req: NextRequest) {
           ),
           messages: convertToModelMessages(processedMessages),
           providerOptions: {
-            openrouter: {
-              provider: {
-                ...(!isPro
-                  ? {
-                      sort: "price",
-                    }
-                  : { sort: "latency" }),
+            ...(!isPro && {
+              gateway: {
+                order: ["novita"],
               },
-            },
+            }),
           },
           tools,
           abortSignal: controller.signal,

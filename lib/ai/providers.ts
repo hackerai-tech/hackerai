@@ -1,11 +1,11 @@
 import { customProvider } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
-import { gateway } from '@ai-sdk/gateway';
+import { gateway } from "@ai-sdk/gateway";
 
 export const myProvider = customProvider({
   languageModels: {
-    "ask-model": openrouter(
-      process.env.NEXT_PUBLIC_ASK_MODEL || "deepseek/deepseek-chat-v3-0324",
+    "ask-model": gateway(
+      process.env.NEXT_PUBLIC_ASK_MODEL || "deepseek/deepseek-v3",
     ),
     "agent-model": gateway(
       process.env.NEXT_PUBLIC_AGENT_MODEL || "alibaba/qwen3-coder",
