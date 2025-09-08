@@ -10,28 +10,24 @@ import {
 import { extractAllFileIdsFromMessages } from "@/lib/utils/file-token-utils";
 
 /**
- * Checks if messages contain PDF files or images
- * @param messages - Array of messages to check
- * @returns boolean - true if PDF or image files are found
+ * Selects the appropriate model based on mode and file content
+ * @param mode - Chat mode (ask or agent)
+ * @param containsMediaFiles - Whether messages contain media files
+ * @param containsBase64Files - Whether messages contain base64 files
+ * @returns Model name to use
  */
-export function hasMediaFiles(messages: UIMessage[]): boolean {
-  for (const message of messages) {
-    if (message.role === "user" && message.parts) {
-      for (const part of message.parts) {
-        if (part.type === "file" && part.mediaType) {
-          // Check for image files
-          if (part.mediaType.startsWith("image/")) {
-            return true;
-          }
-          // Check for PDF files
-          if (part.mediaType === "application/pdf") {
-            return true;
-          }
-        }
-      }
-    }
+export function selectModel(
+  mode: ChatMode,
+  containsMediaFiles: boolean,
+  containsBase64Files: boolean,
+): string {
+  // If there are media files, choose vision model
+  if (containsMediaFiles) {
+    return containsBase64Files ? "vision-base64-model" : "vision-model";
   }
-  return false;
+
+  // Otherwise, choose based on mode
+  return mode === "ask" ? "ask-model" : "agent-model";
 }
 
 /**
@@ -81,8 +77,12 @@ export async function processChatMessages({
   userID: string;
   posthog: PostHog | null;
 }) {
-  // Transform storageIds to URLs
-  const messagesWithUrls = await transformStorageIdsToUrls(messages);
+  // Transform storageIds to URLs and detect media files
+  const {
+    messages: messagesWithUrls,
+    hasMediaFiles: containsMediaFiles,
+    hasBase64Files: containsBase64Files,
+  } = await transformStorageIdsToUrls(messages);
 
   // Extract file IDs from all messages
   const fileIds = extractAllFileIdsFromMessages(messagesWithUrls);
@@ -100,8 +100,12 @@ export async function processChatMessages({
     }
   }
 
-  // Check if messages contain media files (images or PDFs)
-  const containsMediaFiles = hasMediaFiles(messagesWithUrls);
+  // Select the appropriate model
+  const selectedModel = selectModel(
+    mode,
+    containsMediaFiles,
+    containsBase64Files,
+  );
 
   // Determine execution mode from environment variable
   const executionMode: ExecutionMode =
@@ -126,7 +130,6 @@ export async function processChatMessages({
   return {
     executionMode,
     processedMessages: messagesWithUrls,
-    shouldUncensorResponse: moderationResult.shouldUncensorResponse,
-    hasMediaFiles: containsMediaFiles,
+    selectedModel,
   };
 }
