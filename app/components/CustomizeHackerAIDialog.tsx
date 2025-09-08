@@ -59,6 +59,13 @@ export const CustomizeHackerAIDialog = ({
   const [additionalInfo, setAdditionalInfo] = useState("");
   const [isSaving, setIsSaving] = useState(false);
 
+  const MAX_CHAR_LIMIT = 1500;
+
+  const isNicknameOverLimit = nickname.length > MAX_CHAR_LIMIT;
+  const isOccupationOverLimit = occupation.length > MAX_CHAR_LIMIT;
+  const isTraitsOverLimit = traitsText.length > MAX_CHAR_LIMIT;
+  const isAdditionalInfoOverLimit = additionalInfo.length > MAX_CHAR_LIMIT;
+
   const saveCustomization = useMutation(
     api.userCustomization.saveUserCustomization,
   );
@@ -86,6 +93,16 @@ export const CustomizeHackerAIDialog = ({
   };
 
   const handleSave = async () => {
+    // Check for character limit violations
+    if (
+      isNicknameOverLimit ||
+      isOccupationOverLimit ||
+      isTraitsOverLimit ||
+      isAdditionalInfoOverLimit
+    ) {
+      return; // Don't save if any field exceeds the limit
+    }
+
     try {
       setIsSaving(true);
 
@@ -142,9 +159,14 @@ export const CustomizeHackerAIDialog = ({
               placeholder="Nickname"
               value={nickname}
               onChange={(e) => setNickname(e.target.value)}
-              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className={`flex w-full rounded-md border ${isNicknameOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
               maxRows={1}
             />
+            {isNicknameOverLimit && (
+              <div className="text-xs text-red-500 mt-1">
+                {nickname.length}/{MAX_CHAR_LIMIT} characters
+              </div>
+            )}
           </div>
 
           {/* Occupation */}
@@ -155,9 +177,14 @@ export const CustomizeHackerAIDialog = ({
               placeholder="Pentester, bug bounty hunter, etc."
               value={occupation}
               onChange={(e) => setOccupation(e.target.value)}
-              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className={`flex w-full rounded-md border ${isOccupationOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
               maxRows={1}
             />
+            {isOccupationOverLimit && (
+              <div className="text-xs text-red-500 mt-1">
+                {occupation.length}/{MAX_CHAR_LIMIT} characters
+              </div>
+            )}
           </div>
 
           {/* Personality */}
@@ -206,10 +233,15 @@ export const CustomizeHackerAIDialog = ({
               placeholder="Describe or select traits"
               value={traitsText}
               onChange={(e) => setTraitsText(e.target.value)}
-              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className={`flex w-full rounded-md border ${isTraitsOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
               minRows={2}
               maxRows={4}
             />
+            {isTraitsOverLimit && (
+              <div className="text-xs text-red-500 mt-1">
+                {traitsText.length}/{MAX_CHAR_LIMIT} characters
+              </div>
+            )}
 
             {/* Predefined traits */}
             <div className="flex flex-wrap gap-2">
@@ -237,10 +269,15 @@ export const CustomizeHackerAIDialog = ({
               placeholder="Security interests, preferred methodologies, compliance requirements"
               value={additionalInfo}
               onChange={(e) => setAdditionalInfo(e.target.value)}
-              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none"
+              className={`flex w-full rounded-md border ${isAdditionalInfoOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
               minRows={3}
               maxRows={6}
             />
+            {isAdditionalInfoOverLimit && (
+              <div className="text-xs text-red-500 mt-1">
+                {additionalInfo.length}/{MAX_CHAR_LIMIT} characters
+              </div>
+            )}
           </div>
         </div>
 
@@ -248,7 +285,16 @@ export const CustomizeHackerAIDialog = ({
           <Button variant="outline" onClick={handleCancel} disabled={isSaving}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={isSaving}>
+          <Button
+            onClick={handleSave}
+            disabled={
+              isSaving ||
+              isNicknameOverLimit ||
+              isOccupationOverLimit ||
+              isTraitsOverLimit ||
+              isAdditionalInfoOverLimit
+            }
+          >
             {isSaving ? "Saving..." : "Save"}
           </Button>
         </DialogFooter>

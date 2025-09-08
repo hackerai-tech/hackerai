@@ -21,6 +21,27 @@ export const saveUserCustomization = mutation({
       throw new Error("Unauthorized: User not authenticated");
     }
 
+    const MAX_CHAR_LIMIT = 1500;
+
+    // Validate character limits
+    if (args.nickname && args.nickname.length > MAX_CHAR_LIMIT) {
+      throw new Error(`Nickname exceeds ${MAX_CHAR_LIMIT} character limit`);
+    }
+    if (args.occupation && args.occupation.length > MAX_CHAR_LIMIT) {
+      throw new Error(`Occupation exceeds ${MAX_CHAR_LIMIT} character limit`);
+    }
+    if (args.personality && args.personality.length > MAX_CHAR_LIMIT) {
+      throw new Error(`Personality exceeds ${MAX_CHAR_LIMIT} character limit`);
+    }
+    if (args.traits && args.traits.length > MAX_CHAR_LIMIT) {
+      throw new Error(`Traits exceeds ${MAX_CHAR_LIMIT} character limit`);
+    }
+    if (args.additional_info && args.additional_info.length > MAX_CHAR_LIMIT) {
+      throw new Error(
+        `Additional info exceeds ${MAX_CHAR_LIMIT} character limit`,
+      );
+    }
+
     try {
       // Check if user already has customization data
       const existing = await ctx.db
