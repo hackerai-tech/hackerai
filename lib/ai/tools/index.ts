@@ -9,6 +9,7 @@ import { createSearchReplace } from "./search-replace";
 import { createMultiEdit } from "./multi-edit";
 import { createWebTool } from "./web";
 import { createTodoWrite } from "./todo-write";
+import { createUpdateMemory } from "./update-memory";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ExecutionMode, ToolContext, Todo } from "@/types";
 import type { Geo } from "@vercel/functions";
@@ -21,6 +22,7 @@ export const createTools = (
   executionMode: ExecutionMode = "local",
   userLocation: Geo,
   initialTodos?: Todo[],
+  memoryEnabled: boolean = true,
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -40,6 +42,7 @@ export const createTools = (
     executionMode,
     userLocation,
     todoManager,
+    userID,
   };
 
   // Create all available tools
@@ -51,6 +54,7 @@ export const createTools = (
     search_replace: createSearchReplace(context),
     multi_edit: createMultiEdit(context),
     todo_write: createTodoWrite(context),
+    ...(memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(process.env.EXA_API_KEY && {
       web: createWebTool(context),
     }),
@@ -62,6 +66,7 @@ export const createTools = (
       ? {
           // read_file: allTools.read_file,
           // todo_write: createTodoWrite(context),
+          ...(memoryEnabled && { update_memory: allTools.update_memory }),
           ...(process.env.EXA_API_KEY && { web: allTools.web }),
         }
       : allTools;

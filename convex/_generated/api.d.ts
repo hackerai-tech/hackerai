@@ -17,6 +17,7 @@ import type * as chats from "../chats.js";
 import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as memories from "../memories.js";
 import type * as messages from "../messages.js";
 import type * as userCustomization from "../userCustomization.js";
 
@@ -33,6 +34,7 @@ declare const fullApi: ApiFromModules<{
   feedback: typeof feedback;
   fileActions: typeof fileActions;
   fileStorage: typeof fileStorage;
+  memories: typeof memories;
   messages: typeof messages;
   userCustomization: typeof userCustomization;
 }>;

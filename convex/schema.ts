@@ -76,5 +76,16 @@ export default defineSchema({
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     updated_at: v.number(),
+    include_memory_entries: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
+
+  memories: defineTable({
+    user_id: v.string(),
+    memory_id: v.string(),
+    content: v.string(),
+    update_time: v.number(),
+    tokens: v.number(),
+  })
+    .index("by_memory_id", ["memory_id"])
+    .index("by_user_and_update_time", ["user_id", "update_time"]),
 });

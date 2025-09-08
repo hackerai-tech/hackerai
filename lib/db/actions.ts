@@ -233,3 +233,111 @@ export async function getUserCustomization({ userId }: { userId: string }) {
     return null;
   }
 }
+
+export async function getMemories({ userId }: { userId: string }) {
+  try {
+    const memories = await convex.query(api.memories.getMemoriesForBackend, {
+      serviceKey,
+      userId,
+    });
+    return memories;
+  } catch (error) {
+    // If no memories found or error, return empty array
+    return [];
+  }
+}
+
+// Generate a shorter memory ID (7 characters)
+const generateMemoryId = () => {
+  return Math.random().toString(36).substring(2, 9);
+};
+
+export async function getMemoryById({ memoryId }: { memoryId: string }) {
+  try {
+    const memory = await convex.query(api.memories.getMemoryByIdForBackend, {
+      memoryId,
+    });
+    return memory;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to get memory",
+    );
+  }
+}
+
+export async function createMemory({
+  userId,
+  content,
+  memoryId,
+}: {
+  userId: string;
+  content: string;
+  memoryId?: string;
+}) {
+  try {
+    const finalMemoryId = memoryId || generateMemoryId();
+    const returnedId = await convex.mutation(
+      api.memories.createMemoryForBackend,
+      {
+        serviceKey,
+        userId,
+        memoryId: finalMemoryId,
+        content: content.trim(),
+      },
+    );
+    return returnedId;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to create memory",
+    );
+  }
+}
+
+export async function updateMemory({
+  userId,
+  memoryId,
+  content,
+}: {
+  userId: string;
+  memoryId: string;
+  content: string;
+}) {
+  try {
+    await convex.mutation(api.memories.updateMemoryForBackend, {
+      serviceKey,
+      userId,
+      memoryId,
+      content: content.trim(),
+    });
+    return;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to update memory",
+    );
+  }
+}
+
+export async function deleteMemory({
+  userId,
+  memoryId,
+}: {
+  userId: string;
+  memoryId: string;
+}) {
+  try {
+    await convex.mutation(api.memories.deleteMemoryForBackend, {
+      serviceKey,
+      userId,
+      memoryId,
+    });
+    return;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to delete memory",
+    );
+  }
+}

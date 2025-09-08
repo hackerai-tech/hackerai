@@ -95,8 +95,9 @@ export async function POST(req: NextRequest) {
         posthog,
       });
 
-    // Get user customization data
+    // Get user customization to check memory preference (outside stream to avoid duplicate calls)
     const userCustomization = await getUserCustomization({ userId });
+    const memoryEnabled = userCustomization?.include_memory_entries ?? true;
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -107,6 +108,7 @@ export async function POST(req: NextRequest) {
           executionMode,
           userLocation,
           todos,
+          memoryEnabled,
         );
 
         // Generate title in parallel if this is a new chat
@@ -129,7 +131,12 @@ export async function POST(req: NextRequest) {
 
         const result = streamText({
           model: myProvider.languageModel(selectedModel),
-          system: systemPrompt(mode, executionMode, userCustomization),
+          system: await systemPrompt(
+            userId,
+            mode,
+            executionMode,
+            userCustomization,
+          ),
           messages: convertToModelMessages(processedMessages),
           providerOptions: {
             openrouter: {

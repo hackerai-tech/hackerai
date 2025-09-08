@@ -12,6 +12,7 @@ export const saveUserCustomization = mutation({
     personality: v.optional(v.string()),
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
+    include_memory_entries: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -34,6 +35,10 @@ export const saveUserCustomization = mutation({
         personality: args.personality?.trim() || undefined,
         traits: args.traits?.trim() || undefined,
         additional_info: args.additional_info?.trim() || undefined,
+        include_memory_entries:
+          args.include_memory_entries !== undefined
+            ? args.include_memory_entries
+            : true, // Default to enabled
         updated_at: Date.now(),
       };
 
@@ -66,6 +71,7 @@ export const getUserCustomization = query({
       personality: v.optional(v.string()),
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
+      include_memory_entries: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -91,6 +97,7 @@ export const getUserCustomization = query({
         personality: customization.personality,
         traits: customization.traits,
         additional_info: customization.additional_info,
+        include_memory_entries: customization.include_memory_entries ?? true, // Default to enabled if not set
         updated_at: customization.updated_at,
       };
     } catch (error) {
@@ -116,6 +123,7 @@ export const getUserCustomizationForBackend = query({
       personality: v.optional(v.string()),
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
+      include_memory_entries: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -138,6 +146,7 @@ export const getUserCustomizationForBackend = query({
         personality: customization.personality,
         traits: customization.traits,
         additional_info: customization.additional_info,
+        include_memory_entries: customization.include_memory_entries ?? true, // Default to enabled if not set
         updated_at: customization.updated_at,
       };
     } catch (error) {

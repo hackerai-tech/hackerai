@@ -4,6 +4,7 @@ import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
+import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import type { ChatStatus } from "@/types";
 
 interface MessagePartHandlerProps {
@@ -67,6 +68,9 @@ export const MessagePartHandler = ({
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
+
+    case "tool-update_memory":
+      return <MemoryToolHandler part={part} status={status} />;
 
     default:
       return null;
