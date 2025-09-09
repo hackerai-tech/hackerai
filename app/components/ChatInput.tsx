@@ -323,7 +323,7 @@ export const ChatInput = ({
                           className="rounded-full p-0 w-8 h-8 min-w-0"
                           aria-label="Send message"
                         >
-                          <ArrowUp className="w-[15px] h-[15px]" />
+                          <ArrowUp size={15} strokeWidth={3} />
                         </Button>
                       </div>
                     </TooltipTrigger>
