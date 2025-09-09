@@ -63,8 +63,6 @@ export const ChatInput = ({
     isUploadingFiles,
     hasProPlan,
     isCheckingProPlan,
-    autoSaveDraft,
-    onMessageSubmit,
   } = useGlobalState();
   const {
     fileInputRef,
@@ -85,20 +83,6 @@ export const ChatInput = ({
     }
   }, [hasProPlan, isCheckingProPlan, mode, setMode]);
 
-  // Auto-save draft on input change
-  useEffect(() => {
-    autoSaveDraft();
-  }, [input, autoSaveDraft]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      // Import draftStorage directly for cleanup
-      import("@/lib/utils/draft-storage").then(({ draftStorage }) => {
-        draftStorage.clearPendingSave();
-      });
-    };
-  }, []);
 
   const handleAgentModeClick = () => {
     if (hasProPlan) {
@@ -122,9 +106,6 @@ export const ChatInput = ({
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0)
     ) {
-      // Handle draft cleanup for message submission
-      onMessageSubmit();
-
       onSubmit(e);
     }
   };

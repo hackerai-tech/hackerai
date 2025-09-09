@@ -16,7 +16,6 @@ import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
-import { draftStorage } from "@/lib/utils/draft-storage";
 import type { Doc } from "@/convex/_generated/dataModel";
 
 interface GlobalStateType {
@@ -89,9 +88,6 @@ interface GlobalStateType {
   hasProPlan: boolean;
   isCheckingProPlan: boolean;
 
-  // Draft management
-  autoSaveDraft: () => void;
-  onMessageSubmit: () => void;
 
   // Utility methods
   clearInput: () => void;
@@ -158,15 +154,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     prevIsMobile.current = isMobile;
   }, [chatSidebarOpen, isMobile]);
 
-  // Initialize draft system when user becomes available
-  useEffect(() => {
-    if (user?.id) {
-      const draft = draftStorage.initializeForUser(user.id, currentChatId);
-      if (draft !== input) {
-        setInput(draft);
-      }
-    }
-  }, [user?.id, currentChatId]); // Run when user or currentChatId changes
 
   // Check for pro plan on user change
   useEffect(() => {
@@ -298,18 +285,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatSidebarOpen((prev: boolean) => !prev);
   };
 
-  // Draft management methods
-  const autoSaveDraft = useCallback(() => {
-    if (user?.id) {
-      draftStorage.autoSave(currentChatId, input, user.id);
-    }
-  }, [input, currentChatId, user?.id]);
-
-  const onMessageSubmit = useCallback(() => {
-    if (user?.id) {
-      draftStorage.onMessageSubmit(currentChatId, user.id);
-    }
-  }, [currentChatId, user?.id]);
 
   const value: GlobalStateType = {
     input,
@@ -350,9 +325,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     hasProPlan,
     isCheckingProPlan,
-
-    autoSaveDraft,
-    onMessageSubmit,
 
     clearInput,
     clearUploadedFiles,
