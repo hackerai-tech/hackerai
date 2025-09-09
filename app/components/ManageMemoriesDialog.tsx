@@ -3,7 +3,6 @@
 import React from "react";
 import { Trash2 } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { api } from "@/convex/_generated/api";
 import {
   Dialog,
@@ -22,8 +21,7 @@ const ManageMemoriesDialog = ({
   open,
   onOpenChange,
 }: ManageMemoriesDialogProps) => {
-  const { user, loading } = useAuth();
-  const memories = useQuery(api.memories.getUserMemories, user ? {} : "skip");
+  const memories = useQuery(api.memories.getUserMemories, open ? {} : "skip");
   const deleteMemory = useMutation(api.memories.deleteUserMemory);
   const deleteAllMemories = useMutation(api.memories.deleteAllUserMemories);
 
@@ -59,22 +57,7 @@ const ManageMemoriesDialog = ({
         <div className="flex-1 overflow-hidden px-6 pb-6">
           <div className="h-[400px] rounded-lg border border-border overflow-hidden">
             <div className="overflow-y-auto text-sm h-full text-foreground">
-              {loading ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="text-muted-foreground">Loading...</div>
-                </div>
-              ) : !user ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="text-center">
-                    <div className="mb-2 text-muted-foreground">
-                      Please sign in to view memories
-                    </div>
-                    <div className="text-sm text-muted-foreground/70">
-                      You need to be logged in to access saved memories.
-                    </div>
-                  </div>
-                </div>
-              ) : memories === undefined ? (
+              {memories === undefined ? (
                 <div className="flex items-center justify-center py-8">
                   <div className="text-muted-foreground">
                     Loading memories...
@@ -127,7 +110,7 @@ const ManageMemoriesDialog = ({
             </div>
           </div>
 
-          {user && memories && memories.length > 0 && (
+          {memories && memories.length > 0 && (
             <div className="mt-4 flex justify-end">
               <Button
                 onClick={handleDeleteAllMemories}

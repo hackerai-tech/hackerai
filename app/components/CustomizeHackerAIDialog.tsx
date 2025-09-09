@@ -71,6 +71,7 @@ export const CustomizeHackerAIDialog = ({
   );
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
+    open ? {} : "skip",
   );
 
   // Load existing customization data
