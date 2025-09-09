@@ -139,7 +139,7 @@ function determineShouldUncensorResponse(
 
   // 0.1 is the minimum moderation level for the model to be used
   const minModerationLevel = 0.1;
-  const maxModerationLevel = 0.90;
+  const maxModerationLevel = 0.9;
   return (
     moderationLevel >= minModerationLevel &&
     moderationLevel <= maxModerationLevel &&

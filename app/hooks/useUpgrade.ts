@@ -43,7 +43,8 @@ export const useUpgrade = () => {
       const { error, url } = await res.json();
 
       if (url) {
-        return router.push(url);
+        window.location.href = url;
+        return;
       }
 
       if (error) {

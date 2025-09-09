@@ -49,7 +49,6 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
   const shouldFetchMessages = isExistingChat;
 
-
   // Unified reset: respond to route and global new-chat trigger
   useEffect(() => {
     // If a chat id is present in the route, treat as existing chat

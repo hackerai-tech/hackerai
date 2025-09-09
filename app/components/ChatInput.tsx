@@ -24,7 +24,7 @@ import {
 import { useHotkeys } from "react-hotkeys-hook";
 import TextareaAutosize from "react-textarea-autosize";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useUpgrade } from "../hooks/useUpgrade";
+import { redirectToPricing } from "../hooks/usePricingDialog";
 import { TodoPanel } from "./TodoPanel";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "./FileUploadPreview";
@@ -71,7 +71,6 @@ export const ChatInput = ({
     handleAttachClick,
     handlePasteEvent,
   } = useFileUpload();
-  const { handleUpgrade, upgradeLoading } = useUpgrade();
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isGenerating = status === "submitted" || status === "streaming";
@@ -83,7 +82,6 @@ export const ChatInput = ({
     }
   }, [hasProPlan, isCheckingProPlan, mode, setMode]);
 
-
   const handleAgentModeClick = () => {
     if (hasProPlan) {
       setMode("agent");
@@ -92,10 +90,11 @@ export const ChatInput = ({
     }
   };
 
-  const handleUpgradeClick = async () => {
-    await handleUpgrade();
-    // Don't close popover here - let it stay open to show loading state
-    // The popover will naturally close when user navigates to Stripe
+  const handleUpgradeClick = () => {
+    // Close the upgrade dialog first
+    setAgentUpgradeDialogOpen(false);
+    // Navigate to pricing page
+    redirectToPricing();
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -365,13 +364,8 @@ export const ChatInput = ({
               security features with Pro.
             </DialogDescription>
           </DialogHeader>
-          <Button
-            onClick={handleUpgradeClick}
-            disabled={upgradeLoading}
-            className="w-full"
-            size="lg"
-          >
-            {upgradeLoading ? "Loading..." : "Upgrade to Pro"}
+          <Button onClick={handleUpgradeClick} className="w-full" size="lg">
+            Upgrade to Pro
           </Button>
         </DialogContent>
       </Dialog>

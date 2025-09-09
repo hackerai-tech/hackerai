@@ -16,7 +16,7 @@ import {
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { useUpgrade } from "../hooks/useUpgrade";
+import { redirectToPricing } from "../hooks/usePricingDialog";
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
@@ -53,7 +53,6 @@ const XIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { hasProPlan, isCheckingProPlan } = useGlobalState();
-  const { handleUpgrade } = useUpgrade();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
@@ -215,7 +214,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           {/* Show upgrade option for non-pro users */}
           {!isCheckingProPlan && !isProUser && (
-            <DropdownMenuItem onClick={handleUpgrade}>
+            <DropdownMenuItem onClick={redirectToPricing}>
               <Sparkle className="mr-2 h-4 w-4 text-foreground" />
               <span>Upgrade to Pro</span>
             </DropdownMenuItem>

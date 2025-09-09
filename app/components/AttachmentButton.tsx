@@ -8,8 +8,8 @@ import { TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import { Paperclip } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useUpgrade } from "../hooks/useUpgrade";
 import { useState } from "react";
+import { redirectToPricing } from "../hooks/usePricingDialog";
 
 interface AttachmentButtonProps {
   onAttachClick: () => void;
@@ -21,7 +21,6 @@ export const AttachmentButton = ({
   disabled = false,
 }: AttachmentButtonProps) => {
   const { hasProPlan, isCheckingProPlan } = useGlobalState();
-  const { handleUpgrade, upgradeLoading } = useUpgrade();
   const [popoverOpen, setPopoverOpen] = useState(false);
 
   const handleClick = () => {
@@ -32,10 +31,11 @@ export const AttachmentButton = ({
     }
   };
 
-  const handleUpgradeClick = async () => {
-    await handleUpgrade();
-    // Don't close popover here - let it stay open to show loading state
-    // The popover will naturally close when user navigates to Stripe
+  const handleUpgradeClick = () => {
+    // Close the popover first
+    setPopoverOpen(false);
+    // Navigate to pricing page
+    redirectToPricing();
   };
 
   // If user has pro plan or we're checking, show normal tooltip behavior
@@ -84,12 +84,8 @@ export const AttachmentButton = ({
           <p className="text-sm text-muted-foreground">
             Get access to file attachments and more features with Pro
           </p>
-          <Button
-            onClick={handleUpgradeClick}
-            disabled={upgradeLoading}
-            className="w-full"
-          >
-            {upgradeLoading ? "Loading..." : "Upgrade now"}
+          <Button onClick={handleUpgradeClick} className="w-full">
+            Upgrade now
           </Button>
         </div>
       </PopoverContent>

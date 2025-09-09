@@ -1,8 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { ChatSDKError } from "@/lib/errors";
-import { useUpgrade } from "@/app/hooks/useUpgrade";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 
 interface MessageErrorStateProps {
   error: Error;
@@ -13,7 +13,6 @@ export const MessageErrorState = ({
   error,
   onRegenerate,
 }: MessageErrorStateProps) => {
-  const { handleUpgrade, upgradeLoading } = useUpgrade();
   const { hasProPlan } = useGlobalState();
   const isRateLimitError =
     error instanceof ChatSDKError && error.type === "rate_limit";
@@ -36,13 +35,8 @@ export const MessageErrorState = ({
           {isRateLimitError ? "Try Again" : "Retry"}
         </Button>
         {isRateLimitError && !hasProPlan && (
-          <Button
-            variant="default"
-            size="sm"
-            onClick={handleUpgrade}
-            disabled={upgradeLoading}
-          >
-            {upgradeLoading ? "Loading..." : "Upgrade"}
+          <Button variant="default" size="sm" onClick={redirectToPricing}>
+            Upgrade
           </Button>
         )}
       </div>

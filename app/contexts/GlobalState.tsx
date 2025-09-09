@@ -88,7 +88,6 @@ interface GlobalStateType {
   hasProPlan: boolean;
   isCheckingProPlan: boolean;
 
-
   // Utility methods
   clearInput: () => void;
   clearUploadedFiles: () => void;
@@ -153,7 +152,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     prevIsMobile.current = isMobile;
   }, [chatSidebarOpen, isMobile]);
-
 
   // Check for pro plan on user change
   useEffect(() => {
@@ -284,7 +282,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const toggleChatSidebar = () => {
     setChatSidebarOpen((prev: boolean) => !prev);
   };
-
 
   const value: GlobalStateType = {
     input,
