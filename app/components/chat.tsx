@@ -38,6 +38,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     mergeTodos,
     setTodos,
     currentChatId,
+    setCurrentChatId,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -48,6 +49,16 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   // Track whether this is an existing chat (prop-driven initially, flips after first completion)
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
   const shouldFetchMessages = isExistingChat;
+
+  // Sync chatId with global state only for existing chats
+  useEffect(() => {
+    if (isExistingChat && chatId && chatId !== currentChatId) {
+      setCurrentChatId(chatId);
+    } else if (!isExistingChat && currentChatId !== null) {
+      // For new chats, ensure currentChatId is null for draft purposes
+      setCurrentChatId(null);
+    }
+  }, [chatId, currentChatId, setCurrentChatId, isExistingChat]);
 
   // Unified reset: respond to route and global new-chat trigger
   useEffect(() => {
@@ -60,7 +71,8 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
 
     // If no route id and global state indicates new chat (null), create a fresh id
     if (currentChatId === null) {
-      setChatId(uuidv4());
+      const newChatId = uuidv4();
+      setChatId(newChatId);
       setIsExistingChat(false);
       setChatTitle(null);
       // Messages will be cleared below after useChat is ready
@@ -143,6 +155,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
         window.history.replaceState(null, "", `/c/${chatId}`);
         // Flip the state so it becomes an existing chat
         setIsExistingChat(true);
+        // The sync effect will handle updating currentChatId when isExistingChat becomes true
       }
     },
     onError: (error) => {
