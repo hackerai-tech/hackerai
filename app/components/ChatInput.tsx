@@ -32,7 +32,11 @@ import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { AttachmentButton } from "./AttachmentButton";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useEffect, useRef, useState } from "react";
-import { countInputTokens, MAX_TOKENS } from "@/lib/token-utils";
+import {
+  countInputTokens,
+  MAX_TOKENS_PRO,
+  MAX_TOKENS_FREE,
+} from "@/lib/token-utils";
 import { toast } from "sonner";
 
 interface ChatInputProps {
@@ -137,12 +141,14 @@ export const ChatInput = ({
           const pastedText = clipboardData.getData("text");
 
           if (pastedText) {
-            // Check token limit for the pasted text only
+            // Check token limit for the pasted text only based on user plan
             const tokenCount = countInputTokens(pastedText, []);
-            if (tokenCount > MAX_TOKENS) {
+            const maxTokens = hasProPlan ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
+            if (tokenCount > maxTokens) {
               e.preventDefault();
+              const planText = hasProPlan ? "" : " (Free plan limit)";
               toast.error("Content is too long to paste", {
-                description: `The content you're trying to paste is too large (${tokenCount.toLocaleString()} tokens). Please copy a smaller amount.`,
+                description: `The content you're trying to paste is too large (${tokenCount.toLocaleString()} tokens). Please copy a smaller amount${planText}.`,
               });
               return;
             }

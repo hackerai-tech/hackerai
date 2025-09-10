@@ -71,6 +71,7 @@ export async function POST(req: NextRequest) {
       userId,
       newMessages: messages,
       regenerate,
+      isPro,
     });
 
     // Handle initial chat setup, regeneration, and save user message
@@ -124,6 +125,7 @@ export async function POST(req: NextRequest) {
           model: trackedProvider.languageModel(selectedModel),
           system: await systemPrompt(
             userId,
+            isPro,
             mode,
             executionMode,
             userCustomization,
