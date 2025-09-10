@@ -234,16 +234,21 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   }, [handleDragEnter, handleDragLeave, handleDragOver, handleDrop]);
 
   // Chat handlers
-  const { handleSubmit, handleStop, handleRegenerate, handleRetry, handleEditMessage } =
-    useChatHandlers({
-      chatId,
-      messages,
-      resetSidebarAutoOpenRef,
-      sendMessage,
-      stop,
-      regenerate,
-      setMessages,
-    });
+  const {
+    handleSubmit,
+    handleStop,
+    handleRegenerate,
+    handleRetry,
+    handleEditMessage,
+  } = useChatHandlers({
+    chatId,
+    messages,
+    resetSidebarAutoOpenRef,
+    sendMessage,
+    stop,
+    regenerate,
+    setMessages,
+  });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });
 

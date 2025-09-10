@@ -134,11 +134,9 @@ export async function POST(req: NextRequest) {
           providerOptions: {
             openrouter: {
               provider: {
-                ...(!isPro
-                  ? {
-                      sort: "price",
-                    }
-                  : { sort: "latency" }),
+                ...(!isPro && {
+                  sort: "price",
+                }),
               },
             },
           },

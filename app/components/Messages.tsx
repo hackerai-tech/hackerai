@@ -331,9 +331,7 @@ export const Messages = ({
         })}
 
         {/* Error state */}
-        {error && (
-          <MessageErrorState error={error} onRetry={onRetry} />
-        )}
+        {error && <MessageErrorState error={error} onRetry={onRetry} />}
       </div>
     </div>
   );
