@@ -98,37 +98,6 @@ export const checkLocalFileExists = async (
   }
 };
 
-export const deleteLocalFile = async (filePath: string): Promise<string> => {
-  try {
-    // Resolve the file path to handle both relative and absolute paths
-    const resolvedPath = resolve(filePath);
-
-    // Check if file exists first
-    const fileExists = await checkLocalFileExists(filePath);
-    if (!fileExists) {
-      throw new Error(`File not found: ${filePath}`);
-    }
-
-    // Delete the file
-    await unlink(resolvedPath);
-
-    return `Successfully deleted file: ${filePath}`;
-  } catch (error: unknown) {
-    const fileError = error as NodeJS.ErrnoException;
-    if (fileError.code === "ENOENT") {
-      throw new Error(`File not found: ${filePath}`);
-    } else if (fileError.code === "EACCES") {
-      throw new Error(`Permission denied: ${filePath}`);
-    } else if (fileError.code === "EISDIR") {
-      throw new Error(`Cannot delete directory with delete_file: ${filePath}`);
-    } else {
-      throw new Error(
-        `Error deleting file: ${fileError.message || "Unknown error"}`,
-      );
-    }
-  }
-};
-
 // Helper function to validate file access
 const validateFileAccess = async (filePath: string): Promise<string> => {
   const resolvedPath = resolve(filePath);
@@ -233,92 +202,6 @@ export const searchReplaceLocalFile = async (
 
     const action = replaceAll ? "replacements" : "replacement";
     return `Successfully made ${replacementCount} ${action} in ${filePath}`;
-  } catch (error: unknown) {
-    return handleFileError(error, filePath);
-  }
-};
-
-export interface EditOperation {
-  old_string: string;
-  new_string: string;
-  replace_all?: boolean;
-}
-
-export const multiEditLocalFile = async (
-  filePath: string,
-  edits: EditOperation[],
-): Promise<string> => {
-  try {
-    // Validate edits array
-    if (!edits || edits.length === 0) {
-      throw new Error("No edits provided");
-    }
-
-    const resolvedPath = resolve(filePath);
-    const fileExists = await checkLocalFileExists(filePath);
-
-    // Handle file creation case
-    if (!fileExists) {
-      // For new file creation, first edit must have empty old_string
-      const firstEdit = edits[0];
-      if (firstEdit.old_string !== "") {
-        throw new Error(
-          "File not found. For new file creation, the first edit must have an empty old_string and the file contents as new_string.",
-        );
-      }
-    } else {
-      // For existing files, validate file access
-      await validateFileAccess(filePath);
-    }
-
-    // Read the file content (or start with empty string for new files)
-    let currentContent = fileExists
-      ? await readFile(resolvedPath, "utf-8")
-      : "";
-    let totalReplacements = 0;
-    const editResults: string[] = [];
-
-    // Apply each edit sequentially
-    for (let i = 0; i < edits.length; i++) {
-      const edit = edits[i];
-      const { old_string, new_string, replace_all = false } = edit;
-
-      // Handle file creation case (empty old_string means insert content)
-      if (old_string === "") {
-        if (i === 0 && !fileExists) {
-          // First edit for new file creation
-          currentContent = new_string;
-          totalReplacements += 1;
-          editResults.push(`Edit ${i + 1}: Created file with content`);
-        } else {
-          throw new Error(
-            `Edit ${i + 1}: Empty old_string is only allowed for the first edit when creating a new file`,
-          );
-        }
-      } else {
-        // Validate edit parameters (skip validation for empty old_string)
-        validateEdit(old_string, new_string, i);
-
-        // Perform the string replacement
-        const { updatedContent, replacementCount } = performStringReplacement(
-          currentContent,
-          old_string,
-          new_string,
-          replace_all,
-          i,
-        );
-
-        currentContent = updatedContent;
-        totalReplacements += replacementCount;
-        const action = replace_all ? "replacements" : "replacement";
-        editResults.push(`Edit ${i + 1}: ${replacementCount} ${action}`);
-      }
-    }
-
-    // Write the updated content back to the file
-    await writeFile(resolvedPath, currentContent, "utf-8");
-
-    return `Successfully applied ${edits.length} edits with ${totalReplacements} total replacements in ${filePath}:\n${editResults.join("\n")}`;
   } catch (error: unknown) {
     return handleFileError(error, filePath);
   }

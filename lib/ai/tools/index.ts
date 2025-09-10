@@ -4,9 +4,7 @@ import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
-import { createDeleteFile } from "./delete-file";
 import { createSearchReplace } from "./search-replace";
-import { createMultiEdit } from "./multi-edit";
 import { createWebTool } from "./web";
 import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
@@ -50,9 +48,7 @@ export const createTools = (
     run_terminal_cmd: createRunTerminalCmd(context),
     read_file: createReadFile(context),
     write_file: createWriteFile(context),
-    delete_file: createDeleteFile(context),
     search_replace: createSearchReplace(context),
-    multi_edit: createMultiEdit(context),
     todo_write: createTodoWrite(context),
     ...(memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(process.env.EXA_API_KEY && {
