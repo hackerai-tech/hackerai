@@ -86,8 +86,6 @@ export async function handleInitialChatAndUserMessage({
   regenerate?: boolean;
   chat: any; // Chat data from getMessagesByChatId
 }) {
-  const isNewChat = !chat;
-
   if (!chat) {
     // Save new chat and get the document _id
     let title = "New Chat";

@@ -83,8 +83,8 @@ export async function POST(req: NextRequest) {
       chat,
     });
 
-    // Check rate limit for the user
-    await checkRateLimit(userId, isPro);
+    // Check rate limit for the user with mode
+    await checkRateLimit(userId, isPro, mode);
 
     // Process chat messages with moderation
     const { executionMode, processedMessages, selectedModel } =

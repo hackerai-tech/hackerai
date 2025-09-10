@@ -1,11 +1,13 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { ChatSDKError } from "@/lib/errors";
+import type { ChatMode } from "@/types";
 
 // Check rate limit for a specific user
 export const checkRateLimit = async (
   userId: string,
   isPro: boolean,
+  mode: ChatMode,
 ): Promise<void> => {
   // Check if Redis is configured
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
@@ -16,12 +18,22 @@ export const checkRateLimit = async (
   }
 
   try {
-    // Get rate limit based on user type
-    const requestLimit = isPro
-      ? parseInt(process.env.PRO_RATE_LIMIT_REQUESTS || "100") // Pro users get higher limit
-      : parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10"); // Free users get lower limit
+    // Get rate limit based on user type and mode
+    let requestLimit: number;
 
-    // Create rate limiter instance
+    if (mode === "agent") {
+      // Agent mode is only for pro users
+      requestLimit = parseInt(
+        process.env.AGENT_MODE_RATE_LIMIT_REQUESTS || "50",
+      );
+    } else {
+      // Regular ask mode limits
+      requestLimit = isPro
+        ? parseInt(process.env.PRO_RATE_LIMIT_REQUESTS || "100") // Pro users get higher limit
+        : parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10"); // Free users get lower limit
+    }
+
+    // Create rate limiter instance with mode-specific key
     const ratelimit = new Ratelimit({
       redis: new Redis({
         url: redisUrl,
@@ -30,7 +42,9 @@ export const checkRateLimit = async (
       limiter: Ratelimit.slidingWindow(requestLimit, "5 h"),
     });
 
-    const { success, reset } = await ratelimit.limit(userId);
+    // Use mode-specific key for rate limiting
+    const rateLimitKey = `${userId}:${mode}`;
+    const { success, reset } = await ratelimit.limit(rateLimitKey);
 
     if (!success) {
       const resetTime = new Date(reset);
@@ -50,8 +64,13 @@ export const checkRateLimit = async (
       }
 
       let cause: string;
+
       if (isPro) {
-        cause = `You've reached your rate limit, please try again after ${timeString}.`;
+        if (mode === "agent") {
+          cause = `You've reached your agent mode rate limit, please try again after ${timeString}.\n\nYou can continue using ask mode in the meantime.`;
+        } else {
+          cause = `You've reached your ask mode rate limit, please try again after ${timeString}.\n\nYou can continue using agent mode in the meantime.`;
+        }
       } else {
         cause = `You've reached your rate limit, please try again after ${timeString}.\n\nUpgrade to Pro for higher usage limits and more features.`;
       }
