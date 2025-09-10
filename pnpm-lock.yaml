@@ -124,6 +124,9 @@ importers:
       pdf-parse:
         specifier: ^1.1.1
         version: 1.1.1
+      posthog-js:
+        specifier: ^1.262.0
+        version: 1.262.0
       posthog-node:
         specifier: ^5.8.2
         version: 5.8.2
@@ -4406,6 +4409,12 @@ packages:
       }
     engines: { node: ">= 0.6" }
 
+  core-js@3.45.1:
+    resolution:
+      {
+        integrity: sha512-L4NPsJlCfZsPeXukyzHFlg/i7IIVwHSItR0wg0FLNqYClJ4MQYTYLbC7EkjKYRLZF2iof2MUgN0EGy7MdQFChg==,
+      }
+
   cose-base@1.0.3:
     resolution:
       {
@@ -5358,6 +5367,12 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  fflate@0.4.8:
+    resolution:
+      {
+        integrity: sha512-FJqqoDBR00Mdj9ppamLa/Y7vxm+PRmNWA67N846RvsoYVMKB4q3y/de5PA7gUmRMYK/8CMz2GDZQmCRN1wBcWA==,
+      }
 
   file-entry-cache@8.0.0:
     resolution:
@@ -7530,12 +7545,32 @@ packages:
       }
     engines: { node: ^10 || ^12 || >=14 }
 
+  posthog-js@1.262.0:
+    resolution:
+      {
+        integrity: sha512-RPbm+0qLVsgKQEN3KjfYAK+0qOwBPT28RHDg4WIstN8/z2m6PczMqSirOIXSqbvDwSCQQQRPTKS6fSurevqJMA==,
+      }
+    peerDependencies:
+      "@rrweb/types": 2.0.0-alpha.17
+      rrweb-snapshot: 2.0.0-alpha.17
+    peerDependenciesMeta:
+      "@rrweb/types":
+        optional: true
+      rrweb-snapshot:
+        optional: true
+
   posthog-node@5.8.2:
     resolution:
       {
         integrity: sha512-z3XRvYwnc3T/1999FKzv16YTpxERQqLunULl2vkOPfgbCXUGNyJWLgcbTcED2ZIDE11jjZhrSph4De6OSMLphw==,
       }
     engines: { node: ">=20" }
+
+  preact@10.27.1:
+    resolution:
+      {
+        integrity: sha512-V79raXEWch/rbqoNc7nT9E4ep7lu+mI3+sBmfRD4i1M73R3WLYcCtdI0ibxGVf4eQL8ZIz2nFacqEC+rmnOORQ==,
+      }
 
   prelude-ls@1.2.1:
     resolution:
@@ -8913,6 +8948,12 @@ packages:
         integrity: sha512-QW95TCTaHmsYfHDybGMwO5IJIM93I/6vTRk+daHTWFPhwh+C8Cg7j7XyKrwrj8Ib6vYXe0ocYNrmzY4xAAN6ug==,
       }
     engines: { node: ">= 14" }
+
+  web-vitals@4.2.4:
+    resolution:
+      {
+        integrity: sha512-r4DIlprAGwJ7YM11VZp4R884m0Vmgr6EAKe3P+kO0PPj3Unqyvv59rczf6UiGcb9Z8QxZVcqKNwv/g0WNdWwsw==,
+      }
 
   webcrypto-core@1.8.1:
     resolution:
@@ -11427,6 +11468,8 @@ snapshots:
 
   cookie@0.7.2: {}
 
+  core-js@3.45.1: {}
+
   cose-base@1.0.3:
     dependencies:
       layout-base: 1.0.2
@@ -12188,6 +12231,8 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.3):
     optionalDependencies:
       picomatch: 4.0.3
+
+  fflate@0.4.8: {}
 
   file-entry-cache@8.0.0:
     dependencies:
@@ -13696,9 +13741,19 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
+  posthog-js@1.262.0:
+    dependencies:
+      "@posthog/core": 1.0.2
+      core-js: 3.45.1
+      fflate: 0.4.8
+      preact: 10.27.1
+      web-vitals: 4.2.4
+
   posthog-node@5.8.2:
     dependencies:
       "@posthog/core": 1.0.2
+
+  preact@10.27.1: {}
 
   prelude-ls@1.2.1: {}
 
@@ -14743,6 +14798,8 @@ snapshots:
   web-namespaces@2.0.1: {}
 
   web-streams-polyfill@4.0.0-beta.3: {}
+
+  web-vitals@4.2.4: {}
 
   webcrypto-core@1.8.1:
     dependencies:
