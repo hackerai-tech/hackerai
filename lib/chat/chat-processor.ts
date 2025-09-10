@@ -69,13 +69,9 @@ export function addAuthMessage(messages: UIMessage[]) {
 export async function processChatMessages({
   messages,
   mode,
-  userID,
-  posthog,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
-  userID: string;
-  posthog: PostHog | null;
 }) {
   // Transform storageIds to URLs and detect media files
   const {
@@ -117,14 +113,6 @@ export async function processChatMessages({
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
     addAuthMessage(messagesWithUrls);
-  }
-
-  // Capture analytics event
-  if (posthog) {
-    posthog.capture({
-      distinctId: userID,
-      event: "hackerai-" + mode,
-    });
   }
 
   return {

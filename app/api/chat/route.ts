@@ -28,7 +28,7 @@ import {
 } from "@/lib/db/actions";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
-import { myProvider } from "@/lib/ai/providers";
+import { createTrackedProvider } from "@/lib/ai/providers";
 
 export const maxDuration = 300;
 
@@ -85,19 +85,17 @@ export async function POST(req: NextRequest) {
     // Check rate limit for the user
     await checkRateLimit(userId, isPro);
 
-    // Process chat messages with moderation and analytics
-    const posthog = PostHogClient();
+    // Process chat messages with moderation
     const { executionMode, processedMessages, selectedModel } =
       await processChatMessages({
         messages: truncatedMessages,
         mode,
-        userID: userId,
-        posthog,
       });
 
     // Get user customization to check memory preference (outside stream to avoid duplicate calls)
     const userCustomization = await getUserCustomization({ userId });
     const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+    const posthog = PostHogClient();
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -120,8 +118,10 @@ export async function POST(req: NextRequest) {
             )
           : Promise.resolve(undefined);
 
+        const trackedProvider = createTrackedProvider(userId, chatId, isPro);
+
         const result = streamText({
-          model: myProvider.languageModel(selectedModel),
+          model: trackedProvider.languageModel(selectedModel),
           system: await systemPrompt(
             userId,
             mode,
@@ -130,11 +130,15 @@ export async function POST(req: NextRequest) {
           ),
           messages: convertToModelMessages(processedMessages),
           providerOptions: {
-            ...(!isPro && {
-              gateway: {
-                order: ["novita"],
+            openrouter: {
+              provider: {
+                ...(!isPro
+                  ? {
+                      sort: "price",
+                    }
+                  : { sort: "latency" }),
               },
-            }),
+            },
           },
           tools,
           abortSignal: controller.signal,
