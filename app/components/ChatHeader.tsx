@@ -3,9 +3,9 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, Loader2, SquarePen } from "lucide-react";
+import { PanelLeft, Sparkle, SquarePen } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useUpgrade } from "../hooks/useUpgrade";
+import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
 
@@ -39,7 +39,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     closeSidebar,
     setChatSidebarOpen,
   } = useGlobalState();
-  const { upgradeLoading, handleUpgrade } = useUpgrade();
+  // Removed useUpgrade hook - we now redirect to pricing dialog instead
   const router = useRouter();
   const isMobile = useIsMobile();
 
@@ -55,6 +55,11 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
 
   const handleSignUp = () => {
     window.location.href = "/signup";
+  };
+
+  const handleUpgradeClick = () => {
+    // Navigate to pricing page
+    redirectToPricing();
   };
 
   const handleNewChat = () => {
@@ -85,22 +90,12 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               {/* Show upgrade button for logged-in users without pro plan */}
               {!loading && user && !isCheckingProPlan && !hasProPlan && (
                 <Button
-                  onClick={handleUpgrade}
-                  disabled={upgradeLoading}
+                  onClick={handleUpgradeClick}
                   className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200"
                   size="default"
                 >
-                  {upgradeLoading ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Upgrading...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkle className="mr-2 h-4 w-4 fill-current" />
-                      Upgrade to Pro
-                    </>
-                  )}
+                  <Sparkle className="mr-2 h-4 w-4 fill-current" />
+                  Upgrade to Pro
                 </Button>
               )}
             </div>
@@ -149,22 +144,12 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               {/* Show upgrade button for logged-in users without pro plan */}
               {!loading && user && !isCheckingProPlan && !hasProPlan && (
                 <Button
-                  onClick={handleUpgrade}
-                  disabled={upgradeLoading}
+                  onClick={handleUpgradeClick}
                   className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200"
                   size="sm"
                 >
-                  {upgradeLoading ? (
-                    <>
-                      <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                      Upgrading...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkle className="mr-1 h-3 w-3 fill-current" />
-                      Upgrade to Pro
-                    </>
-                  )}
+                  <Sparkle className="mr-1 h-3 w-3 fill-current" />
+                  Upgrade to Pro
                 </Button>
               )}
             </div>

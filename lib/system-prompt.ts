@@ -153,7 +153,7 @@ export const systemPrompt = async (
   const basePrompt = `You are an AI penetration testing assistant developed by HackerAI.
 You are an interactive security assessment tool that helps users with penetration testing, vulnerability assessment, and ethical hacking tasks. Use the instructions below and the tools available to you to assist the user.
 
-You are conducting security assessments with a USER to identify and analyze security vulnerabilities. ${personalityInstructions}
+You are conducting security assessments with a USER to identify and analyze security vulnerabilities.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.
 
@@ -180,6 +180,13 @@ ${getCommunicationSection()}`;
 
   sections.push(generateUserBio(userCustomization || null));
   sections.push(generateMemorySection(memories || null));
+
+  // Add personality instructions at the end
+  if (personalityInstructions) {
+    sections.push(
+      `\n\n<personality>\n${personalityInstructions}\n</personality>`,
+    );
+  }
 
   return sections.filter(Boolean).join("");
 };

@@ -48,6 +48,7 @@ export default defineSchema({
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
     .index("by_feedback_id", ["feedback_id"])
+    .index("by_user_id", ["user_id"])
     .searchIndex("search_content", {
       searchField: "content",
       filterFields: ["user_id"],

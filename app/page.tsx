@@ -6,6 +6,8 @@ import Header from "./components/Header";
 import Footer from "./components/Footer";
 import { useGlobalState } from "./contexts/GlobalState";
 import { Chat } from "./components/chat";
+import PricingDialog from "./components/PricingDialog";
+import { usePricingDialog } from "./hooks/usePricingDialog";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
@@ -68,6 +70,8 @@ const AuthenticatedContent = () => {
 
 // Main page component with Convex authentication
 export default function Page() {
+  const { showPricing, handleClosePricing } = usePricingDialog();
+
   return (
     <>
       <Authenticated>
@@ -76,6 +80,7 @@ export default function Page() {
       <Unauthenticated>
         <UnauthenticatedContent />
       </Unauthenticated>
+      <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
     </>
   );
 }

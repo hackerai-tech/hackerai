@@ -3,11 +3,14 @@
 import { Chat } from "../../components/chat";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import Loading from "@/components/ui/loading";
+import PricingDialog from "../../components/PricingDialog";
+import { usePricingDialog } from "../../hooks/usePricingDialog";
 import { use } from "react";
 
 export default function Page(props: { params: Promise<{ id: string }> }) {
   const params = use(props.params);
   const chatId = params.id;
+  const { showPricing, handleClosePricing } = usePricingDialog();
 
   return (
     <>
@@ -30,6 +33,8 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
           </div>
         </div>
       </Unauthenticated>
+
+      <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
     </>
   );
 }

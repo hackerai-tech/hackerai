@@ -12,7 +12,10 @@ export const generateMemorySection = (memories: Memory[] | null): string => {
 You may be provided a list of memories. These memories are generated from past conversations with the agent.
 They may or may not be correct, so follow them if deemed relevant, but the moment you notice the user correct something you've done based on a memory, or you come across some information that contradicts or augments an existing memory, IT IS CRITICAL that you MUST update/delete the memory immediately using the update_memory tool. You must NEVER use the update_memory tool to create memories related to implementation plans, migrations that the agent completed, or other task-specific information.
 If the user EVER contradicts your memory, then it's better to delete that memory rather than updating the memory.
-You may create, update, or delete memories based on the criteria from the tool description.`;
+You may create, update, or delete memories based on the criteria from the tool description.
+<memory_citation>
+You must NEVER reference or cite memory IDs to the user. Memory IDs are for internal use only and should not be mentioned in responses to users.
+</memory_citation>`;
 
   if (!memories || memories.length === 0) {
     return (

@@ -251,7 +251,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setHasActiveChat(false);
     setTodos([]);
     setIsTodoPanelExpanded(false);
-    setChatTitle(null); // Clear chat title for new chat
+    setChatTitle(null);
   }, []);
 
   const activateChat = useCallback((chatId: string) => {

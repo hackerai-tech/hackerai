@@ -4,12 +4,7 @@ import React, { useState } from "react";
 import { Settings, X, ChevronRight } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
@@ -29,6 +24,7 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
 
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
+    open ? {} : "skip",
   );
   const saveCustomization = useMutation(
     api.userCustomization.saveUserCustomization,
