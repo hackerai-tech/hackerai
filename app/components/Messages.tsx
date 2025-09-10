@@ -29,6 +29,7 @@ interface MessagesProps {
   messages: ChatMessage[];
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
+  onRetry: () => void;
   onEditMessage: (messageId: string, newContent: string) => Promise<void>;
   status: ChatStatus;
   error: Error | null;
@@ -48,6 +49,7 @@ export const Messages = ({
   messages,
   setMessages,
   onRegenerate,
+  onRetry,
   onEditMessage,
   status,
   error,
@@ -330,7 +332,7 @@ export const Messages = ({
 
         {/* Error state */}
         {error && (
-          <MessageErrorState error={error} onRegenerate={onRegenerate} />
+          <MessageErrorState error={error} onRetry={onRetry} />
         )}
       </div>
     </div>

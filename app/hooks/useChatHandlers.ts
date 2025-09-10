@@ -169,6 +169,16 @@ export const useChatHandlers = ({
     });
   };
 
+  const handleRetry = async () => {
+    regenerate({
+      body: {
+        mode,
+        todos,
+        regenerate: true,
+      },
+    });
+  };
+
   const handleEditMessage = async (messageId: string, newContent: string) => {
     await regenerateWithNewContent({
       messageId: messageId as Id<"messages">,
@@ -206,6 +216,7 @@ export const useChatHandlers = ({
     handleSubmit,
     handleStop,
     handleRegenerate,
+    handleRetry,
     handleEditMessage,
   };
 };

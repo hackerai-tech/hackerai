@@ -234,7 +234,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   }, [handleDragEnter, handleDragLeave, handleDragOver, handleDrop]);
 
   // Chat handlers
-  const { handleSubmit, handleStop, handleRegenerate, handleEditMessage } =
+  const { handleSubmit, handleStop, handleRegenerate, handleRetry, handleEditMessage } =
     useChatHandlers({
       chatId,
       messages,
@@ -315,6 +315,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                     messages={messages}
                     setMessages={setMessages}
                     onRegenerate={handleRegenerate}
+                    onRetry={handleRetry}
                     onEditMessage={handleEditMessage}
                     status={status}
                     error={error || null}
