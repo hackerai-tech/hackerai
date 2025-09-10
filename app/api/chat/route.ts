@@ -131,15 +131,6 @@ export async function POST(req: NextRequest) {
             userCustomization,
           ),
           messages: convertToModelMessages(processedMessages),
-          providerOptions: {
-            openrouter: {
-              provider: {
-                ...(!isPro && {
-                  sort: "price",
-                }),
-              },
-            },
-          },
           tools,
           abortSignal: controller.signal,
           headers: getAIHeaders(),
