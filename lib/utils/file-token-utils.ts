@@ -1,7 +1,6 @@
 import "server-only";
 
 import { api } from "@/convex/_generated/api";
-import { ChatSDKError } from "../errors";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessagePart } from "ai";
 import { UIMessage } from "ai";
@@ -88,12 +87,12 @@ export function extractAllFileIdsFromMessages(
  * Truncate messages with file tokens included - combines file ID extraction,
  * token fetching, and message truncation in one efficient operation
  * @param messages - Array of messages to truncate
- * @param maxTokens - Maximum token limit (optional, uses default from token-utils)
+ * @param isPro - Whether the user has a pro plan (affects token limits)
  * @returns Truncated messages array
  */
 export async function truncateMessagesWithFileTokens(
   messages: UIMessage[],
-  maxTokens?: number,
+  isPro: boolean = true,
 ): Promise<UIMessage[]> {
   // Extract file IDs from all messages
   const fileIds = extractAllFileIdsFromMessages(messages);
@@ -102,5 +101,5 @@ export async function truncateMessagesWithFileTokens(
   const fileTokens = await getFileTokensByIds(fileIds);
 
   // Truncate messages with file tokens included
-  return truncateMessagesToTokenLimit(messages, maxTokens, fileTokens);
+  return truncateMessagesToTokenLimit(messages, fileTokens, isPro);
 }

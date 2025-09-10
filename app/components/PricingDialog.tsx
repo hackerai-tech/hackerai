@@ -121,10 +121,9 @@ const PlanCard: React.FC<PlanCardProps> = ({
 };
 
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
-  const { user, loading } = useAuth();
+  const { user } = useAuth();
   const { hasProPlan, isCheckingProPlan } = useGlobalState();
-  const { upgradeLoading, handleUpgrade, upgradeError } = useUpgrade();
-  const isMobile = useIsMobile();
+  const { upgradeLoading, handleUpgrade } = useUpgrade();
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -258,7 +257,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
           {/* Pro Plan */}
           <PlanCard
             planName="Pro"
-            price={20}
+            price={25}
             description="More access to advanced intelligence"
             features={proFeatures}
             buttonText={proButtonConfig.text}

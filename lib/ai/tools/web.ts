@@ -72,7 +72,7 @@ open_url(url: str) Opens the given URL and displays it.`,
             const searchOptions = {
               type: "auto" as const,
               text: {
-                maxCharacters: 8000,
+                maxCharacters: 2000,
               },
               ...(country && { userLocation: country }),
             };
@@ -84,7 +84,7 @@ open_url(url: str) Opens the given URL and displays it.`,
             result = await exa.searchAndContents(query, {
               type: "auto",
               text: {
-                maxCharacters: 8000,
+                maxCharacters: 2000,
               },
             });
           }
@@ -95,7 +95,9 @@ open_url(url: str) Opens the given URL and displays it.`,
             return "Error: URL is required for open_url command";
           }
 
-          const results = await exa.getContents([url], { text: true });
+          const results = await exa.getContents([url], {
+            text: { maxCharacters: 12000 },
+          });
           return results.results;
         }
 

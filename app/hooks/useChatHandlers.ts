@@ -4,7 +4,11 @@ import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { ChatMessage } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
-import { countInputTokens, MAX_TOKENS } from "@/lib/token-utils";
+import {
+  countInputTokens,
+  MAX_TOKENS_PRO,
+  MAX_TOKENS_FREE,
+} from "@/lib/token-utils";
 import { toast } from "sonner";
 
 interface UseChatHandlersProps {
@@ -42,6 +46,7 @@ export const useChatHandlers = ({
     hasActiveChat,
     setHasActiveChat,
     isUploadingFiles,
+    hasProPlan,
   } = useGlobalState();
 
   const deleteLastAssistantMessage = useMutation(
@@ -63,12 +68,14 @@ export const useChatHandlers = ({
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
-      // Check token limit before sending
+      // Check token limit before sending based on user plan
       const tokenCount = countInputTokens(input, uploadedFiles);
-      if (tokenCount > MAX_TOKENS) {
+      const maxTokens = hasProPlan ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
+      if (tokenCount > maxTokens) {
         const hasFiles = uploadedFiles.length > 0;
+        const planText = hasProPlan ? "" : " (Free plan limit)";
         toast.error("Message is too long", {
-          description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}.`,
+          description: `Your message is too large (${tokenCount.toLocaleString()} tokens). Please make it shorter${hasFiles ? " or remove some files" : ""}${planText}.`,
         });
         return;
       }
@@ -162,6 +169,16 @@ export const useChatHandlers = ({
     });
   };
 
+  const handleRetry = async () => {
+    regenerate({
+      body: {
+        mode,
+        todos,
+        regenerate: true,
+      },
+    });
+  };
+
   const handleEditMessage = async (messageId: string, newContent: string) => {
     await regenerateWithNewContent({
       messageId: messageId as Id<"messages">,
@@ -199,6 +216,7 @@ export const useChatHandlers = ({
     handleSubmit,
     handleStop,
     handleRegenerate,
+    handleRetry,
     handleEditMessage,
   };
 };

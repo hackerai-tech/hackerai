@@ -6,12 +6,12 @@ import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 
 interface MessageErrorStateProps {
   error: Error;
-  onRegenerate: () => void;
+  onRetry: () => void;
 }
 
 export const MessageErrorState = ({
   error,
-  onRegenerate,
+  onRetry,
 }: MessageErrorStateProps) => {
   const { hasProPlan } = useGlobalState();
   const isRateLimitError =
@@ -31,7 +31,7 @@ export const MessageErrorState = ({
         )}
       </div>
       <div className="flex gap-2">
-        <Button variant="destructive" size="sm" onClick={onRegenerate}>
+        <Button variant="destructive" size="sm" onClick={onRetry}>
           {isRateLimitError ? "Try Again" : "Retry"}
         </Button>
         {isRateLimitError && !hasProPlan && (

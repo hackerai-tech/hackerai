@@ -135,6 +135,7 @@ Answer the user's request using the relevant tool(s), if they are available. Che
 // Core system prompt with optimized structure
 export const systemPrompt = async (
   userId: string,
+  isPro: boolean,
   mode: ChatMode,
   executionMode?: ExecutionMode,
   userCustomization?: UserCustomization | null,
@@ -143,7 +144,9 @@ export const systemPrompt = async (
   const shouldIncludeMemories =
     userCustomization?.include_memory_entries ?? true;
   const memories =
-    userId && shouldIncludeMemories ? await getMemories({ userId }) : null;
+    userId && shouldIncludeMemories
+      ? await getMemories({ userId, isPro })
+      : null;
 
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,

@@ -4,12 +4,13 @@ import { validateServiceKey } from "./chats";
 
 /**
  * Get memories for backend processing (with service key)
- * Enforces 10,000 token limit by removing old memories if needed
+ * Enforces token limit based on user plan (10k for pro, 5k for free)
  */
 export const getMemoriesForBackend = query({
   args: {
     serviceKey: v.optional(v.string()),
     userId: v.string(),
+    isPro: v.boolean(),
   },
   returns: v.array(
     v.object({
@@ -31,12 +32,13 @@ export const getMemoriesForBackend = query({
         .order("desc")
         .collect();
 
-      // Calculate total tokens and enforce 10,000 token limit
+      // Calculate total tokens and enforce token limit based on user plan
+      const tokenLimit = args.isPro ? 10000 : 5000;
       let totalTokens = 0;
       const validMemories = [];
 
       for (const memory of memories) {
-        if (totalTokens + memory.tokens <= 10000) {
+        if (totalTokens + memory.tokens <= tokenLimit) {
           totalTokens += memory.tokens;
           validMemories.push(memory);
         } else {

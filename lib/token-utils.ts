@@ -1,7 +1,8 @@
 import { UIMessage } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 
-export const MAX_TOKENS = 32000;
+export const MAX_TOKENS_PRO = 32000;
+export const MAX_TOKENS_FREE = 16000;
 
 // Token limits for different contexts
 export const STREAM_MAX_TOKENS = 4096;
@@ -52,9 +53,11 @@ const getMessageTokenCountWithFiles = (
  */
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
-  maxTokens: number = MAX_TOKENS,
   fileTokens: Record<string, number> = {},
+  isPro: boolean = true,
 ): UIMessage[] => {
+  // Use appropriate token limit based on user type
+  const tokenLimit = isPro ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
   if (messages.length === 0) return messages;
 
   const result: UIMessage[] = [];
@@ -67,7 +70,7 @@ export const truncateMessagesToTokenLimit = (
       fileTokens,
     );
 
-    if (totalTokens + messageTokens > maxTokens) break;
+    if (totalTokens + messageTokens > tokenLimit) break;
 
     totalTokens += messageTokens;
     result.unshift(messages[i]);

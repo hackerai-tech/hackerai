@@ -86,8 +86,6 @@ export async function handleInitialChatAndUserMessage({
   regenerate?: boolean;
   chat: any; // Chat data from getMessagesByChatId
 }) {
-  const isNewChat = !chat;
-
   if (!chat) {
     // Save new chat and get the document _id
     let title = "New Chat";
@@ -171,11 +169,13 @@ export async function getMessagesByChatId({
   userId,
   newMessages,
   regenerate,
+  isPro,
 }: {
   chatId: string;
   userId: string;
   newMessages: UIMessage[];
   regenerate?: boolean;
+  isPro: boolean;
 }) {
   // Check if chat exists first to avoid unnecessary Convex query
   const chat = await getChatById({ id: chatId });
@@ -213,7 +213,10 @@ export async function getMessagesByChatId({
   }
 
   // Truncate messages to stay within token limit with file tokens included
-  const truncatedMessages = await truncateMessagesWithFileTokens(allMessages);
+  const truncatedMessages = await truncateMessagesWithFileTokens(
+    allMessages,
+    isPro,
+  );
 
   return { truncatedMessages, chat, isNewChat };
 }
@@ -234,11 +237,18 @@ export async function getUserCustomization({ userId }: { userId: string }) {
   }
 }
 
-export async function getMemories({ userId }: { userId: string }) {
+export async function getMemories({
+  userId,
+  isPro,
+}: {
+  userId: string;
+  isPro: boolean;
+}) {
   try {
     const memories = await convex.query(api.memories.getMemoriesForBackend, {
       serviceKey,
       userId,
+      isPro,
     });
     return memories;
   } catch (error) {
