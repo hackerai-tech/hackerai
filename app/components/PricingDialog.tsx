@@ -267,7 +267,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
             onButtonClick={proButtonConfig.onClick}
             isButtonDisabled={proButtonConfig.disabled}
             isButtonLoading={proButtonConfig.loading}
-            customClassName="border-s border-e border-t border-b md:-mt-4 md:-mb-4 md:min-h-[20rem] md:max-w-96 md:pb-6 md:first:rounded-ss-xl md:first:rounded-es-xl md:last:rounded-se-xl md:last:rounded-ee-xl border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777] md:mt-0 md:mb-0 relative flex flex-1 flex-col justify-center gap-4 rounded-xl px-6 py-6.5 text-sm md:rounded-2xl! md:border-e-1 md:border-b-1 md:border-t-1 md:border-s-1"
+            customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
           />
         </div>
       </DialogContent>

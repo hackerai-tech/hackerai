@@ -6,9 +6,7 @@ export const usePricingDialog = () => {
   useEffect(() => {
     // Check if URL hash is #pricing
     const checkHash = () => {
-      if (window.location.hash === "#pricing") {
-        setShowPricing(true);
-      }
+      setShowPricing(window.location.hash === "#pricing");
     };
 
     // Check on mount
