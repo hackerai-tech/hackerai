@@ -116,6 +116,16 @@ export const POST = async (req: NextRequest) => {
       );
     }
 
+    // Build success and cancel URLs with a refresh hint so the client can refresh
+    // entitlements exactly when returning from checkout/billing portal
+    const successUrl = new URL(baseUrl);
+    successUrl.searchParams.set("checkout", "success");
+    successUrl.searchParams.set("refresh", "entitlements");
+
+    const cancelUrl = new URL(baseUrl);
+    cancelUrl.searchParams.set("checkout", "cancel");
+    cancelUrl.searchParams.set("refresh", "entitlements");
+
     const session = await stripe.checkout.sessions.create({
       customer: customer.id,
       billing_address_collection: "auto",
@@ -126,8 +136,8 @@ export const POST = async (req: NextRequest) => {
         },
       ],
       mode: "subscription",
-      success_url: `${process.env.NEXT_PUBLIC_BASE_URL}`,
-      cancel_url: `${process.env.NEXT_PUBLIC_BASE_URL}`,
+      success_url: successUrl.toString(),
+      cancel_url: cancelUrl.toString(),
     });
 
     return NextResponse.json({ url: session.url });
