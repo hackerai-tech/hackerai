@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useCallback, useState } from "react";
+import { ReactNode, useCallback, useRef, useState } from "react";
 import { ConvexReactClient } from "convex/react";
 import { ConvexProviderWithAuth } from "convex/react";
 import {
@@ -33,6 +33,8 @@ export function ConvexClientProvider({
 function useAuthFromAuthKit() {
   const { user, loading } = useAuth();
   const { accessToken, getAccessToken, refresh } = useAccessToken();
+  const failureCountRef = useRef(0);
+  const lastFailureAtRef = useRef<number | null>(null);
 
   const shouldForceLogout = (value: unknown): boolean => {
     const message =
@@ -71,8 +73,18 @@ function useAuthFromAuthKit() {
 
         return (await getAccessToken()) ?? null;
       } catch (error) {
-        if (shouldForceLogout(error) && typeof window !== "undefined") {
+        const hasDigest = !!(error && typeof error === "object" && "digest" in (error as Record<string, unknown>));
+        if ((shouldForceLogout(error) || hasDigest) && typeof window !== "undefined") {
           // Redirect immediately if the session has ended / invalid_grant
+          window.location.href = "/logout";
+          return null;
+        }
+        // Fallback: if repeated failures occur quickly, force logout
+        const now = Date.now();
+        const withinWindow = lastFailureAtRef.current && now - lastFailureAtRef.current < 10000; // 10s
+        failureCountRef.current = withinWindow ? failureCountRef.current + 1 : 1;
+        lastFailureAtRef.current = now;
+        if (failureCountRef.current >= 2 && typeof window !== "undefined") {
           window.location.href = "/logout";
           return null;
         }
