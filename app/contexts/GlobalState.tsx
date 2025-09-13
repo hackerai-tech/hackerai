@@ -111,7 +111,7 @@ interface GlobalStateProviderProps {
 export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   children,
 }) => {
-  const { user } = useAuth();
+  const { user, entitlements } = useAuth();
   const isMobile = useIsMobile();
   const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
@@ -153,52 +153,64 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     prevIsMobile.current = isMobile;
   }, [chatSidebarOpen, isMobile]);
 
-  // Check for pro plan on user change
+  // Derive pro status from current token entitlements
   useEffect(() => {
-    const checkProPlan = async () => {
-      if (user) {
-        setIsCheckingProPlan(true);
-        try {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+    if (!user) {
+      setHasProPlan(false);
+      return;
+    }
 
-          const response = await fetch("/api/entitlements", {
-            credentials: "include",
-            signal: controller.signal,
-          });
+    if (Array.isArray(entitlements)) {
+      const hasPro = entitlements.includes("pro-monthly-plan");
+      setHasProPlan(hasPro);
+    }
+  }, [user, entitlements]);
 
-          clearTimeout(timeoutId);
-
-          if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-          }
-
-          const data = await response.json();
-          setHasProPlan(data.hasProPlan || false);
-        } catch (error) {
-          setHasProPlan(false);
-
-          // Retry after delay if it's a network/timeout error
-          if (
-            error instanceof Error &&
-            (error.name === "AbortError" || error.message.includes("fetch"))
-          ) {
-            setTimeout(() => {
-              if (user) {
-                checkProPlan();
-              }
-            }, 5000);
-          }
-        } finally {
-          setIsCheckingProPlan(false);
-        }
-      } else {
+  // Refresh entitlements only when explicitly requested via URL param
+  useEffect(() => {
+    const refreshFromUrl = async () => {
+      if (!user) {
         setHasProPlan(false);
         setIsCheckingProPlan(false);
+        return;
+      }
+
+      if (typeof window === "undefined") return;
+
+      const url = new URL(window.location.href);
+      const shouldRefresh = url.searchParams.get("refresh") === "entitlements";
+      if (!shouldRefresh) return;
+
+      setIsCheckingProPlan(true);
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+        const response = await fetch("/api/entitlements", {
+          credentials: "include",
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (response.ok) {
+          const data = await response.json();
+          setHasProPlan(!!data.hasProPlan);
+        } else {
+          setHasProPlan(false);
+        }
+      } catch {
+        setHasProPlan(false);
+      } finally {
+        setIsCheckingProPlan(false);
+        // Remove the refresh param to avoid repeated refreshes
+        url.searchParams.delete("refresh");
+        url.searchParams.delete("checkout");
+        window.history.replaceState({}, "", url.toString());
       }
     };
 
-    checkProPlan();
+    refreshFromUrl();
   }, [user]);
 
   const clearInput = () => {

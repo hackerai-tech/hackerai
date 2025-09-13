@@ -5,7 +5,10 @@ interface Memory {
 }
 
 // Memory section generation with combined logic
-export const generateMemorySection = (memories: Memory[] | null): string => {
+export const generateMemorySection = (
+  memories: Memory[] | null,
+  shouldIncludeMemories: boolean = true,
+): string => {
   const baseMemoryInstructions = `
 
 <memories>
@@ -16,6 +19,17 @@ You may create, update, or delete memories based on the criteria from the tool d
 <memory_citation>
 You must NEVER reference or cite memory IDs to the user. Memory IDs are for internal use only and should not be mentioned in responses to users.
 </memory_citation>`;
+
+  const disabledMemoryMessage = `
+
+<memories>
+The \`update_memory\` tool is disabled. Do not send any messages to it.
+If the user explicitly asks you to remember something, politely ask them to go to **Settings > Personalization > Memory** to enable memory.
+</memories>`;
+
+  if (!shouldIncludeMemories) {
+    return disabledMemoryMessage;
+  }
 
   if (!memories || memories.length === 0) {
     return (

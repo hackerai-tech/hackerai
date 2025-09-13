@@ -91,6 +91,7 @@ export async function POST(req: NextRequest) {
       await processChatMessages({
         messages: truncatedMessages,
         mode,
+        isPro,
       });
 
     // Get user customization to check memory preference (outside stream to avoid duplicate calls)

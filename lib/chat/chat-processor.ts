@@ -69,9 +69,11 @@ export function addAuthMessage(messages: UIMessage[]) {
 export async function processChatMessages({
   messages,
   mode,
+  isPro,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
+  isPro: boolean;
 }) {
   // Transform storageIds to URLs and detect media files
   const {
@@ -107,12 +109,14 @@ export async function processChatMessages({
   const executionMode: ExecutionMode =
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
-  // Check moderation for the last user message
-  const moderationResult = await getModerationResult(messagesWithUrls);
+  if (isPro) {
+    // Check moderation for the last user message
+    const moderationResult = await getModerationResult(messagesWithUrls);
 
-  // If moderation allows, add authorization message
-  if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(messagesWithUrls);
+    // If moderation allows, add authorization message
+    if (moderationResult.shouldUncensorResponse) {
+      addAuthMessage(messagesWithUrls);
+    }
   }
 
   return {
