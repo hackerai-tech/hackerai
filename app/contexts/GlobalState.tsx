@@ -197,6 +197,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           const data = await response.json();
           setHasProPlan(!!data.hasProPlan);
         } else {
+          if (response.status === 401) {
+            if (typeof window !== "undefined") {
+              window.location.href = "/logout";
+              return;
+            }
+          }
           setHasProPlan(false);
         }
       } catch {

@@ -1,5 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { WorkOS } from "@workos-inc/node";
+import { json, extractErrorMessage } from "@/lib/api/response";
 
 const workos = new WorkOS(process.env.WORKOS_API_KEY!, {
   clientId: process.env.WORKOS_CLIENT_ID!,
@@ -11,10 +12,7 @@ export async function GET(req: NextRequest) {
     const sessionCookie = req.cookies.get("wos-session")?.value;
 
     if (!sessionCookie) {
-      return NextResponse.json(
-        { error: "No session cookie found" },
-        { status: 401 },
-      );
+      return json({ error: "No session cookie found" }, { status: 401 });
     }
 
     // Load the original session
@@ -68,10 +66,7 @@ export async function GET(req: NextRequest) {
     const hasProPlan = (entitlements || []).includes("pro-monthly-plan");
 
     // Create response with entitlements
-    const response = NextResponse.json({
-      entitlements: entitlements || [],
-      hasProPlan,
-    });
+    const response = json({ entitlements: entitlements || [], hasProPlan });
 
     // Set the updated refresh session data in a cookie
     if (sealedSession) {
@@ -85,9 +80,14 @@ export async function GET(req: NextRequest) {
     return response;
   } catch (error) {
     console.error("Error refreshing session:", error);
-    return NextResponse.json(
-      { error: "Failed to refresh session" },
-      { status: 500 },
+    const normalized = extractErrorMessage(error).toLowerCase();
+    const should401 =
+      normalized.includes("invalid_grant") ||
+      normalized.includes("session has already ended");
+
+    return json(
+      { error: should401 ? "Unauthorized" : "Failed to refresh session" },
+      { status: should401 ? 401 : 500 },
     );
   }
 }
