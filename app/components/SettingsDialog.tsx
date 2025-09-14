@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
-import { Settings, X, ChevronRight } from "lucide-react";
+import { Settings, X, ChevronRight, Shield } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
+import { SecurityTab } from "@/app/components/SecurityTab";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface SettingsDialogProps {
@@ -32,6 +33,7 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
 
   const tabs = [
     { id: "Personalization", label: "Personalization", icon: Settings },
+    { id: "Security", label: "Security", icon: Shield },
   ];
 
   const handleCustomInstructions = () => {
@@ -163,7 +165,6 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                               });
                             }}
                             aria-label="Toggle memory"
-                            className="dark:bg-blue-400"
                           />
                         </div>
 
@@ -183,6 +184,8 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                     </div>
                   </div>
                 )}
+
+                {activeTab === "Security" && <SecurityTab />}
               </div>
             </div>
           </div>
