@@ -3,6 +3,11 @@ import { workos } from "@/app/api/workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isUnauthorizedError } from "@/lib/api/response";
 
+interface VerifyMfaRequest {
+  challengeId?: string;
+  code?: string;
+}
+
 export async function POST(req: NextRequest) {
   try {
     // Get authenticated user
@@ -11,21 +16,26 @@ export async function POST(req: NextRequest) {
       userId = await getUserID(req);
     } catch (e) {
       const status = isUnauthorizedError(e) ? 401 : 500;
-      return NextResponse.json({ error: status === 401 ? "Unauthorized" : "Failed to verify MFA challenge" }, { status });
+      return NextResponse.json(
+        {
+          error:
+            status === 401 ? "Unauthorized" : "Failed to verify MFA challenge",
+        },
+        { status },
+      );
     }
 
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    let body: unknown;
+    let body: VerifyMfaRequest;
     try {
       body = await req.json();
     } catch {
       return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
     }
-    const challengeId = (body as any)?.challengeId as string | undefined;
-    const code = (body as any)?.code as string | undefined;
+    const { challengeId, code } = body as VerifyMfaRequest;
 
     if (!challengeId || !code) {
       return NextResponse.json(
@@ -65,7 +75,10 @@ export async function POST(req: NextRequest) {
 
     const status = isUnauthorizedError(error) ? 401 : 500;
     return NextResponse.json(
-      { error: status === 401 ? "Unauthorized" : "Failed to verify MFA challenge" },
+      {
+        error:
+          status === 401 ? "Unauthorized" : "Failed to verify MFA challenge",
+      },
       { status },
     );
   }

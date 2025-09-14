@@ -3,6 +3,11 @@ import { workos } from "@/app/api/workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { isUnauthorizedError } from "@/lib/api/response";
 
+interface DeleteMfaFactorRequest {
+  factorId?: string;
+  code?: string;
+}
+
 export async function POST(req: NextRequest) {
   try {
     // Get authenticated user
@@ -11,25 +16,33 @@ export async function POST(req: NextRequest) {
       userId = await getUserID(req);
     } catch (e) {
       const status = isUnauthorizedError(e) ? 401 : 500;
-      return NextResponse.json({ error: status === 401 ? "Unauthorized" : "Failed to remove MFA factor" }, { status });
+      return NextResponse.json(
+        {
+          error:
+            status === 401 ? "Unauthorized" : "Failed to remove MFA factor",
+        },
+        { status },
+      );
     }
 
     if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    let body: unknown;
+    let body: DeleteMfaFactorRequest;
     try {
       body = await req.json();
     } catch {
       return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
     }
 
-    const factorId = (body as any)?.factorId as string | undefined;
-    const code = (body as any)?.code as string | undefined;
+    const { factorId, code } = body as DeleteMfaFactorRequest;
 
     if (!factorId || !code) {
-      return NextResponse.json({ error: "factorId and code are required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "factorId and code are required" },
+        { status: 400 },
+      );
     }
 
     if (code.length !== 6) {
@@ -54,7 +67,10 @@ export async function POST(req: NextRequest) {
     });
 
     if (!verification.valid) {
-      return NextResponse.json({ error: "Invalid verification code" }, { status: 400 });
+      return NextResponse.json(
+        { error: "Invalid verification code" },
+        { status: 400 },
+      );
     }
 
     // Delete factor
@@ -64,15 +80,18 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     if (error instanceof Error) {
       if (error.message.toLowerCase().includes("expired")) {
-        return NextResponse.json({ error: "Challenge has expired" }, { status: 400 });
+        return NextResponse.json(
+          { error: "Challenge has expired" },
+          { status: 400 },
+        );
       }
     }
     const status = isUnauthorizedError(error) ? 401 : 500;
     return NextResponse.json(
-      { error: status === 401 ? "Unauthorized" : "Failed to remove MFA factor" },
+      {
+        error: status === 401 ? "Unauthorized" : "Failed to remove MFA factor",
+      },
       { status },
     );
   }
 }
-
-

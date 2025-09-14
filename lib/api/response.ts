@@ -27,5 +27,3 @@ export const isUnauthorizedError = (err: unknown): boolean => {
     normalized.includes("unauthorized")
   );
 };
-
-

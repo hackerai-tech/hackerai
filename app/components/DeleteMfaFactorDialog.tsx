@@ -71,7 +71,8 @@ const DeleteMfaFactorDialog: React.FC<DeleteMfaFactorDialogProps> = ({
       <DialogContent className="sm:max-w-md max-w-[95vw]">
         <DialogTitle>Remove authentication method</DialogTitle>
         <DialogDescription>
-          To remove this method, confirm with a 6-digit code from your authenticator app.
+          To remove this method, confirm with a 6-digit code from your
+          authenticator app.
         </DialogDescription>
 
         <div className="space-y-4">
@@ -107,5 +108,3 @@ const DeleteMfaFactorDialog: React.FC<DeleteMfaFactorDialogProps> = ({
 };
 
 export { DeleteMfaFactorDialog };
-
-

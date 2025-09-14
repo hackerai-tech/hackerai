@@ -37,8 +37,10 @@ const SecurityTab = () => {
     open: boolean;
     data: EnrollmentData | null;
   }>({ open: false, data: null });
-  const [enrolling, setEnrolling] = useState(false);
-  const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; factorId: string | null }>({ open: false, factorId: null });
+  const [deleteDialog, setDeleteDialog] = useState<{
+    open: boolean;
+    factorId: string | null;
+  }>({ open: false, factorId: null });
 
   const fetchFactors = async () => {
     try {
@@ -47,9 +49,13 @@ const SecurityTab = () => {
         const data = await response.json();
         setFactors(data.factors);
         setMfaEnabled(data.factors.length > 0);
+      } else {
+        const error = await response.json().catch(() => ({}));
+        toast.error(error?.error || "Failed to load security settings");
       }
     } catch (error) {
       console.error("Failed to fetch MFA factors:", error);
+      toast.error("Failed to load security settings");
     } finally {
       setLoading(false);
     }
@@ -60,7 +66,6 @@ const SecurityTab = () => {
   }, []);
 
   const handleEnrollStart = async () => {
-    setEnrolling(true);
     try {
       const response = await fetch("/api/mfa/enroll", {
         method: "POST",
@@ -81,8 +86,6 @@ const SecurityTab = () => {
       }
     } catch (error) {
       toast.error("Failed to enroll MFA factor");
-    } finally {
-      setEnrolling(false);
     }
   };
 
@@ -102,7 +105,7 @@ const SecurityTab = () => {
     } else if (!enabled && factors.length > 0) {
       // Disable MFA - remove all factors
       for (const factor of factors) {
-        await handleDeleteFactor(factor.id);
+        handleDeleteFactor(factor.id);
       }
     }
   };
@@ -125,7 +128,9 @@ const SecurityTab = () => {
 
       if (response.ok) {
         const data = await response.json();
-        toast.success(`Logged out of ${data.revokedSessions} devices successfully`);
+        toast.success(
+          `Logged out of ${data.revokedSessions} devices successfully`,
+        );
         // Redirect to logout route to end current session
         window.location.href = "/logout";
       } else {
@@ -135,10 +140,6 @@ const SecurityTab = () => {
     } catch (error) {
       toast.error("Failed to log out of all devices");
     }
-  };
-
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString();
   };
 
   if (loading) {
@@ -191,12 +192,14 @@ const SecurityTab = () => {
           <div className="flex-1 pr-4">
             <div className="font-medium text-base">Log out of all devices</div>
             <div className="text-sm text-muted-foreground mt-1">
-              Log out of all active sessions across all devices, including your current session. It may take up to 10 minutes for other devices to be logged out.
+              Log out of all active sessions across all devices, including your
+              current session. It may take up to 10 minutes for other devices to
+              be logged out.
             </div>
           </div>
-          <Button 
-            variant="destructive" 
-            size="sm" 
+          <Button
+            variant="destructive"
+            size="sm"
             onClick={handleLogoutAll}
             className="bg-red-600 hover:bg-red-700 text-white shrink-0"
           >

@@ -68,21 +68,41 @@ function useAuthFromAuthKit() {
 
       try {
         if (forceRefreshToken) {
-          return (await refresh()) ?? null;
+          const token = (await refresh()) ?? null;
+          if (token) {
+            failureCountRef.current = 0;
+            lastFailureAtRef.current = null;
+          }
+          return token;
         }
 
-        return (await getAccessToken()) ?? null;
+        const token = (await getAccessToken()) ?? null;
+        if (token) {
+          failureCountRef.current = 0;
+          lastFailureAtRef.current = null;
+        }
+        return token;
       } catch (error) {
-        const hasDigest = !!(error && typeof error === "object" && "digest" in (error as Record<string, unknown>));
-        if ((shouldForceLogout(error) || hasDigest) && typeof window !== "undefined") {
+        const hasDigest = !!(
+          error &&
+          typeof error === "object" &&
+          "digest" in (error as Record<string, unknown>)
+        );
+        if (
+          (shouldForceLogout(error) || hasDigest) &&
+          typeof window !== "undefined"
+        ) {
           // Redirect immediately if the session has ended / invalid_grant
           window.location.href = "/logout";
           return null;
         }
         // Fallback: if repeated failures occur quickly, force logout
         const now = Date.now();
-        const withinWindow = lastFailureAtRef.current && now - lastFailureAtRef.current < 10000; // 10s
-        failureCountRef.current = withinWindow ? failureCountRef.current + 1 : 1;
+        const withinWindow =
+          lastFailureAtRef.current && now - lastFailureAtRef.current < 10000; // 10s
+        failureCountRef.current = withinWindow
+          ? failureCountRef.current + 1
+          : 1;
         lastFailureAtRef.current = now;
         if (failureCountRef.current >= 2 && typeof window !== "undefined") {
           window.location.href = "/logout";

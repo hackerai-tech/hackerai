@@ -11,7 +11,12 @@ export async function GET(req: NextRequest) {
       userId = await getUserID(req);
     } catch (e) {
       const status = isUnauthorizedError(e) ? 401 : 500;
-      return NextResponse.json({ error: status === 401 ? "Unauthorized" : "Failed to get MFA factors" }, { status });
+      return NextResponse.json(
+        {
+          error: status === 401 ? "Unauthorized" : "Failed to get MFA factors",
+        },
+        { status },
+      );
     }
 
     // Get user's MFA factors from WorkOS
@@ -37,50 +42,6 @@ export async function GET(req: NextRequest) {
     const status = isUnauthorizedError(error) ? 401 : 500;
     return NextResponse.json(
       { error: status === 401 ? "Unauthorized" : "Failed to get MFA factors" },
-      { status },
-    );
-  }
-}
-
-export async function DELETE(req: NextRequest) {
-  try {
-    // Get authenticated user
-    let userId: string;
-    try {
-      userId = await getUserID(req);
-    } catch (e) {
-      const status = isUnauthorizedError(e) ? 401 : 500;
-      return NextResponse.json({ error: status === 401 ? "Unauthorized" : "Failed to delete MFA factor" }, { status });
-    }
-
-    let body: unknown;
-    try {
-      body = await req.json();
-    } catch {
-      return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
-    }
-    const factorId = (body as any)?.factorId as string | undefined;
-
-    if (!factorId) {
-      return NextResponse.json({ error: "Factor ID is required" }, { status: 400 });
-    }
-
-    // Ensure factor belongs to the authenticated user
-    const factors = await workos.userManagement.listAuthFactors({ userId });
-    const ownsFactor = factors.data.some((f) => f.id === factorId);
-    if (!ownsFactor) {
-      return NextResponse.json({ error: "Factor not found" }, { status: 404 });
-    }
-
-    // Delete factor from WorkOS
-    await workos.mfa.deleteFactor(factorId);
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error("Delete MFA factor error:", error);
-    const status = isUnauthorizedError(error) ? 401 : 500;
-    return NextResponse.json(
-      { error: status === 401 ? "Unauthorized" : "Failed to delete MFA factor" },
       { status },
     );
   }

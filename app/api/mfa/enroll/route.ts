@@ -11,7 +11,13 @@ export async function POST(req: NextRequest) {
       userId = await getUserID(req);
     } catch (e) {
       const status = isUnauthorizedError(e) ? 401 : 500;
-      return NextResponse.json({ error: status === 401 ? "Unauthorized" : "Failed to enroll MFA factor" }, { status });
+      return NextResponse.json(
+        {
+          error:
+            status === 401 ? "Unauthorized" : "Failed to enroll MFA factor",
+        },
+        { status },
+      );
     }
 
     if (!userId) {
@@ -44,7 +50,9 @@ export async function POST(req: NextRequest) {
     console.error("MFA enrollment error:", error);
     const status = isUnauthorizedError(error) ? 401 : 500;
     return NextResponse.json(
-      { error: status === 401 ? "Unauthorized" : "Failed to enroll MFA factor" },
+      {
+        error: status === 401 ? "Unauthorized" : "Failed to enroll MFA factor",
+      },
       { status },
     );
   }
