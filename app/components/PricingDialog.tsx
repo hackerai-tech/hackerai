@@ -257,7 +257,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
           {/* Pro Plan */}
           <PlanCard
             planName="Pro"
-            price={25}
+            price={20}
             description="More access to advanced intelligence"
             features={proFeatures}
             buttonText={proButtonConfig.text}

@@ -1,5 +1,4 @@
 import { getModerationResult } from "@/lib/moderation";
-import { PostHog } from "posthog-node";
 import type { ChatMode, ExecutionMode } from "@/types";
 import { UIMessage } from "ai";
 import {
