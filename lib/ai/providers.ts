@@ -13,9 +13,6 @@ const baseProviders = {
   "vision-model": openrouter(
     process.env.NEXT_PUBLIC_VISION_MODEL || "google/gemini-2.5-flash",
   ),
-  "vision-base64-model": openrouter(
-    process.env.NEXT_PUBLIC_VISION_BASE64_MODEL || "google/gemini-2.5-flash",
-  ),
   "title-generator-model": openrouter(
     process.env.NEXT_PUBLIC_TITLE_MODEL || "google/gemini-2.5-flash",
   ),

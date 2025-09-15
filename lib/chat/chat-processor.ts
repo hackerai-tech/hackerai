@@ -1,5 +1,4 @@
 import { getModerationResult } from "@/lib/moderation";
-import { PostHog } from "posthog-node";
 import type { ChatMode, ExecutionMode } from "@/types";
 import { UIMessage } from "ai";
 import {
@@ -19,11 +18,10 @@ import { extractAllFileIdsFromMessages } from "@/lib/utils/file-token-utils";
 export function selectModel(
   mode: ChatMode,
   containsMediaFiles: boolean,
-  containsBase64Files: boolean,
 ): string {
   // If there are media files, choose vision model
   if (containsMediaFiles) {
-    return containsBase64Files ? "vision-base64-model" : "vision-model";
+    return "vision-model";
   }
 
   // Otherwise, choose based on mode
@@ -76,11 +74,8 @@ export async function processChatMessages({
   isPro: boolean;
 }) {
   // Transform storageIds to URLs and detect media files
-  const {
-    messages: messagesWithUrls,
-    hasMediaFiles: containsMediaFiles,
-    hasBase64Files: containsBase64Files,
-  } = await transformStorageIdsToUrls(messages);
+  const { messages: messagesWithUrls, hasMediaFiles: containsMediaFiles } =
+    await transformStorageIdsToUrls(messages);
 
   // Extract file IDs from all messages
   const fileIds = extractAllFileIdsFromMessages(messagesWithUrls);
@@ -99,11 +94,7 @@ export async function processChatMessages({
   }
 
   // Select the appropriate model
-  const selectedModel = selectModel(
-    mode,
-    containsMediaFiles,
-    containsBase64Files,
-  );
+  const selectedModel = selectModel(mode, containsMediaFiles);
 
   // Determine execution mode from environment variable
   const executionMode: ExecutionMode =
