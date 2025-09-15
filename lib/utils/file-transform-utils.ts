@@ -18,17 +18,14 @@ export async function transformStorageIdsToUrls(
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
-  hasBase64Files: boolean;
 }> {
-  if (!messages.length)
-    return { messages, hasMediaFiles: false, hasBase64Files: false };
+  if (!messages.length) return { messages, hasMediaFiles: false };
 
   // Create a deep copy to avoid mutation
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
 
   // Track media file types
   let hasMediaFiles = false;
-  let hasBase64Files = false;
 
   // Collect files that need processing
   const filesToProcess = new Map<
@@ -75,7 +72,7 @@ export async function transformStorageIdsToUrls(
   });
 
   if (filesToProcess.size === 0) {
-    return { messages: updatedMessages, hasMediaFiles, hasBase64Files };
+    return { messages: updatedMessages, hasMediaFiles };
   }
 
   try {
@@ -115,10 +112,10 @@ export async function transformStorageIdsToUrls(
       });
     }
 
-    return { messages: updatedMessages, hasMediaFiles, hasBase64Files };
+    return { messages: updatedMessages, hasMediaFiles };
   } catch (error) {
     console.error("Failed to transform file URLs:", error);
-    return { messages, hasMediaFiles, hasBase64Files };
+    return { messages, hasMediaFiles };
   }
 }
 
