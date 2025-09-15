@@ -211,7 +211,9 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   {getUserInitials()}
                 </AvatarFallback>
               </Avatar>
-              <div className="flex-1 min-w-0">
+              <div
+                className={`flex-1 min-w-0 ${!isCheckingProPlan && !isProUser ? "pr-20" : ""}`}
+              >
                 <div className="text-sm font-medium text-sidebar-foreground truncate">
                   {getDisplayName()}
                 </div>
