@@ -9,6 +9,27 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
 /**
+ * Converts a file URL to base64 data
+ * @param fileUrl - The URL of the file to convert
+ * @returns Base64 string or null if conversion fails
+ */
+async function convertFileToBase64(fileUrl: string): Promise<string | null> {
+  if (!fileUrl) return null;
+
+  try {
+    const response = await fetch(fileUrl);
+    if (!response.ok) return null;
+
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    return buffer.toString("base64");
+  } catch (error) {
+    console.error("Failed to convert file to base64:", error);
+    return null;
+  }
+}
+
+/**
  * Processes file parts in messages to transform URLs and convert PDFs to base64
  * @param messages - Array of messages to process
  * @returns Object with processed messages and media file information
@@ -18,14 +39,17 @@ export async function transformStorageIdsToUrls(
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
+  hasBase64Files: boolean;
 }> {
-  if (!messages.length) return { messages, hasMediaFiles: false };
+  if (!messages.length)
+    return { messages, hasMediaFiles: false, hasBase64Files: false };
 
   // Create a deep copy to avoid mutation
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
 
   // Track media file types
   let hasMediaFiles = false;
+  let hasBase64Files = false;
 
   // Collect files that need processing
   const filesToProcess = new Map<
@@ -53,7 +77,10 @@ export async function transformStorageIdsToUrls(
           }
         }
 
-        const shouldProcess = !part.url || !part.url.startsWith("http");
+        const shouldProcess =
+          part.mediaType === "application/pdf" ||
+          !part.url ||
+          !part.url.startsWith("http");
 
         if (shouldProcess) {
           if (!filesToProcess.has(part.fileId)) {
@@ -72,7 +99,7 @@ export async function transformStorageIdsToUrls(
   });
 
   if (filesToProcess.size === 0) {
-    return { messages: updatedMessages, hasMediaFiles };
+    return { messages: updatedMessages, hasMediaFiles, hasBase64Files };
   }
 
   try {
@@ -97,11 +124,19 @@ export async function transformStorageIdsToUrls(
       }
     });
 
-    // Process each file: always use storage URL, never convert to base64
-    for (const [, file] of filesToProcess) {
+    // Process each file
+    for (const [fileId, file] of filesToProcess) {
       if (!file.url) continue;
 
-      const finalUrl = file.url;
+      const finalUrl =
+        file.mediaType === "application/pdf"
+          ? await convertPdfToBase64Url(file.url, fileId as Id<"files">)
+          : file.url;
+
+      // Check if this file became a base64 URL
+      if (finalUrl.startsWith("data:")) {
+        hasBase64Files = true;
+      }
 
       // Update all file parts with the final URL
       file.positions.forEach(({ messageIndex, partIndex }) => {
@@ -112,10 +147,29 @@ export async function transformStorageIdsToUrls(
       });
     }
 
-    return { messages: updatedMessages, hasMediaFiles };
+    return { messages: updatedMessages, hasMediaFiles, hasBase64Files };
   } catch (error) {
     console.error("Failed to transform file URLs:", error);
-    return { messages, hasMediaFiles };
+    return { messages, hasMediaFiles, hasBase64Files };
+  }
+}
+
+/**
+ * Converts a PDF URL to base64 data URL
+ * @param url - The PDF URL to convert
+ * @param fileId - File ID for logging
+ * @returns Base64 data URL or original URL if conversion fails
+ */
+async function convertPdfToBase64Url(
+  url: string,
+  fileId: Id<"files">,
+): Promise<string> {
+  const base64Data = await convertFileToBase64(url);
+  if (base64Data) {
+    return `data:application/pdf;base64,${base64Data}`;
+  } else {
+    console.error(`Failed to convert PDF to base64 for fileId: ${fileId}`);
+    return url;
   }
 }
 
