@@ -152,7 +152,11 @@ export const useChatHandlers = ({
     stop();
 
     const lastMessage = messages[messages.length - 1];
-    if (!temporaryChatsEnabled && lastMessage && lastMessage.role === "assistant") {
+    if (
+      !temporaryChatsEnabled &&
+      lastMessage &&
+      lastMessage.role === "assistant"
+    ) {
       try {
         await saveAssistantMessage({
           id: lastMessage.id,

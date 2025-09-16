@@ -8,7 +8,12 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -116,14 +121,20 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                           size="sm"
                           aria-label="Toggle temporary chats for new chats"
                           aria-pressed={temporaryChatsEnabled}
-                          onClick={() => setTemporaryChatsEnabled(!temporaryChatsEnabled)}
+                          onClick={() =>
+                            setTemporaryChatsEnabled(!temporaryChatsEnabled)
+                          }
                           className="flex items-center gap-2 rounded-full px-3"
                         >
                           <HatGlasses className="size-5" />
                         </Button>
                       </TooltipTrigger>
                       <TooltipContent>
-                        <p>{temporaryChatsEnabled ? "Turn off temporary chat" : "Turn on temporary chat"}</p>
+                        <p>
+                          {temporaryChatsEnabled
+                            ? "Turn off temporary chat"
+                            : "Turn on temporary chat"}
+                        </p>
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
@@ -190,14 +201,20 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                         size="icon"
                         aria-label="Toggle temporary chats for new chats"
                         aria-pressed={temporaryChatsEnabled}
-                        onClick={() => setTemporaryChatsEnabled(!temporaryChatsEnabled)}
+                        onClick={() =>
+                          setTemporaryChatsEnabled(!temporaryChatsEnabled)
+                        }
                         className="h-7 w-7 rounded-full"
                       >
                         <HatGlasses className="size-5" />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>{temporaryChatsEnabled ? "Turn off temporary chat" : "Turn on temporary chat"}</p>
+                      <p>
+                        {temporaryChatsEnabled
+                          ? "Turn off temporary chat"
+                          : "Turn on temporary chat"}
+                      </p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -255,36 +272,36 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <div className="w-full flex flex-row items-center justify-between flex-1 min-w-0 gap-[24px]">
               <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0 text-foreground text-lg font-medium">
                 <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2">
-                  {isChatNotFound
-                    ? ""
-                    : !isExistingChat && temporaryChatsEnabled
-                    ? (
-                        <>
-                          Temporary Chat
-                          <HatGlasses className="size-5" />
-                        </>
-                      )
-                    : chatTitle ||
-                      (isExistingChat && chatData === undefined
-                        ? ""
-                        : "New Chat")}
+                  {isChatNotFound ? (
+                    ""
+                  ) : !isExistingChat && temporaryChatsEnabled ? (
+                    <>
+                      Temporary Chat
+                      <HatGlasses className="size-5" />
+                    </>
+                  ) : (
+                    chatTitle ||
+                    (isExistingChat && chatData === undefined ? "" : "New Chat")
+                  )}
                 </span>
               </div>
             </div>
           </div>
           <div className="flex-1 flex justify-end">
             {/* New Chat Button - Show on mobile when in a chat or when temporary chat is active */}
-            {isMobile && (isInChat || (!isExistingChat && temporaryChatsEnabled)) && showSidebarToggle && (
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label="Start new chat"
-                onClick={handleNewChat}
-                className="h-7 w-7"
-              >
-                <SquarePen className="size-5" />
-              </Button>
-            )}
+            {isMobile &&
+              (isInChat || (!isExistingChat && temporaryChatsEnabled)) &&
+              showSidebarToggle && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Start new chat"
+                  onClick={handleNewChat}
+                  className="h-7 w-7"
+                >
+                  <SquarePen className="size-5" />
+                </Button>
+              )}
           </div>
         </div>
       </div>

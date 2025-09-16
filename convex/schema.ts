@@ -64,7 +64,7 @@ export default defineSchema({
     content: v.optional(v.string()),
     is_attached: v.boolean(),
   })
-    .index("by_user_id", ["user_id"]) 
+    .index("by_user_id", ["user_id"])
     .index("by_is_attached", ["is_attached"]),
 
   feedback: defineTable({

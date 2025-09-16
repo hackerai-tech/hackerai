@@ -372,9 +372,10 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                                 Temporary Chat
                               </h1>
                               <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
-                                This chat is private and temporary. It won&apos;t be saved,
-                                won&apos;t update HackerAI&apos;s memory, and will be deleted
-                                when you refresh the page.
+                                This chat is private and temporary. It
+                                won&apos;t be saved, won&apos;t update
+                                HackerAI&apos;s memory, and will be deleted when
+                                you refresh the page.
                               </p>
                             </>
                           ) : (
@@ -414,16 +415,17 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                 )}
 
                 {/* Chat Input - Bottom placement (also for mobile new chats) */}
-                {(hasMessages || isExistingChat || isMobile) && !isChatNotFound && (
-                  <ChatInput
-                    onSubmit={handleSubmit}
-                    onStop={handleStop}
-                    status={status}
-                    hasMessages={hasMessages}
-                    isAtBottom={isAtBottom}
-                    onScrollToBottom={handleScrollToBottom}
-                  />
-                )}
+                {(hasMessages || isExistingChat || isMobile) &&
+                  !isChatNotFound && (
+                    <ChatInput
+                      onSubmit={handleSubmit}
+                      onStop={handleStop}
+                      status={status}
+                      hasMessages={hasMessages}
+                      isAtBottom={isAtBottom}
+                      onScrollToBottom={handleScrollToBottom}
+                    />
+                  )}
               </div>
             </div>
 

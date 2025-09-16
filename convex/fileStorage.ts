@@ -231,9 +231,8 @@ export const purgeExpiredUnattachedFiles = internalMutation({
 
     const candidates = await ctx.db
       .query("files")
-      .withIndex(
-        "by_is_attached",
-        (q) => q.eq("is_attached", false).lt("_creationTime", args.cutoffTimeMs),
+      .withIndex("by_is_attached", (q) =>
+        q.eq("is_attached", false).lt("_creationTime", args.cutoffTimeMs),
       )
       .order("asc")
       .take(limit);
