@@ -84,7 +84,12 @@ const parseSteps = (text: string): Step[] => {
 };
 
 const getHeaderText = (steps: Step[], status: ChatStatus): string => {
-  if (status !== "streaming") return "Chain of Thought";
+  // Show "Chain of Thought" only if there are multiple steps
+  if (status !== "streaming") {
+    return steps.length > 1
+      ? "Chain of Thought"
+      : steps[0]?.label.replace(/\*\*/g, "") || "Reasoning";
+  }
 
   const lastStep = steps[steps.length - 1];
   const label = lastStep?.label.replace(/\*\*/g, "") || "Reasoning";
