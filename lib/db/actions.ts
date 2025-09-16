@@ -170,33 +170,40 @@ export async function getMessagesByChatId({
   newMessages,
   regenerate,
   isPro,
+  isTemporary,
 }: {
   chatId: string;
   userId: string;
   newMessages: UIMessage[];
   regenerate?: boolean;
   isPro: boolean;
+  isTemporary?: boolean;
 }) {
-  // Check if chat exists first to avoid unnecessary Convex query
-  const chat = await getChatById({ id: chatId });
-  const isNewChat = !chat;
-
+  // For temporary chats, skip database operations
+  let chat = undefined;
+  let isNewChat = true;
   let existingMessages: UIMessage[] = [];
 
-  // Only fetch existing messages if chat exists
-  if (!isNewChat) {
-    try {
-      existingMessages = await convex.query(
-        api.messages.getMessagesByChatIdForBackend,
-        {
-          serviceKey,
-          chatId,
-          userId,
-        },
-      );
-    } catch (error) {
-      // If error fetching, use empty array
-      console.warn("Failed to fetch existing messages:", error);
+  if (!isTemporary) {
+    // Check if chat exists first to avoid unnecessary Convex query
+    chat = await getChatById({ id: chatId });
+    isNewChat = !chat;
+
+    // Only fetch existing messages if chat exists
+    if (!isNewChat) {
+      try {
+        existingMessages = await convex.query(
+          api.messages.getMessagesByChatIdForBackend,
+          {
+            serviceKey,
+            chatId,
+            userId,
+          },
+        );
+      } catch (error) {
+        // If error fetching, use empty array
+        console.warn("Failed to fetch existing messages:", error);
+      }
     }
   }
 

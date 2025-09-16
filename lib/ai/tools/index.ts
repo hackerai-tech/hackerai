@@ -21,6 +21,7 @@ export const createTools = (
   userLocation: Geo,
   initialTodos?: Todo[],
   memoryEnabled: boolean = true,
+  isTemporary: boolean = false,
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -50,7 +51,8 @@ export const createTools = (
     write_file: createWriteFile(context),
     search_replace: createSearchReplace(context),
     todo_write: createTodoWrite(context),
-    ...(memoryEnabled && { update_memory: createUpdateMemory(context) }),
+    ...(!isTemporary &&
+      memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(process.env.EXA_API_KEY && {
       web: createWebTool(context),
     }),
@@ -62,7 +64,8 @@ export const createTools = (
       ? {
           // read_file: allTools.read_file,
           // todo_write: createTodoWrite(context),
-          ...(memoryEnabled && { update_memory: allTools.update_memory }),
+          ...(!isTemporary &&
+            memoryEnabled && { update_memory: allTools.update_memory }),
           ...(process.env.EXA_API_KEY && { web: allTools.web }),
         }
       : allTools;

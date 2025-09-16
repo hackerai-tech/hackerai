@@ -98,6 +98,13 @@ interface GlobalStateType {
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
   activateChat: (chatId: string) => void;
+
+  // Temporary chats preference
+  temporaryChatsEnabled: boolean;
+  setTemporaryChatsEnabled: (enabled: boolean) => void;
+
+  // Register a chat reset function that will be invoked on initializeNewChat
+  setChatReset: (fn: (() => void) | null) => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateType | undefined>(
@@ -133,6 +140,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chats, setChats] = useState<Doc<"chats">[]>([]);
   const [hasProPlan, setHasProPlan] = useState(false);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
+  const chatResetRef = useRef<(() => void) | null>(null);
+  // Initialize temporary chats from URL parameter
+  const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get("temporary-chat") === "true";
+  });
 
   const mergeTodos = useCallback((newTodos: Todo[]) => {
     setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
@@ -219,6 +233,27 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     refreshFromUrl();
   }, [user]);
 
+  // Listen for URL changes to sync temporary chat state
+  useEffect(() => {
+    const handleUrlChange = () => {
+      if (typeof window === "undefined") return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlTemporaryEnabled = urlParams.get("temporary-chat") === "true";
+
+      // Only update state if it differs from URL to avoid infinite loops
+      if (temporaryChatsEnabled !== urlTemporaryEnabled) {
+        setTemporaryChatsEnabled(urlTemporaryEnabled);
+      }
+    };
+
+    // Listen for popstate events (browser back/forward)
+    window.addEventListener("popstate", handleUrlChange);
+
+    return () => {
+      window.removeEventListener("popstate", handleUrlChange);
+    };
+  }, [temporaryChatsEnabled]);
+
   const clearInput = () => {
     setInput("");
   };
@@ -264,12 +299,20 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []);
 
   const initializeNewChat = useCallback(() => {
+    // Allow chat component to reset its local state immediately
+    if (chatResetRef.current) {
+      chatResetRef.current();
+    }
     setCurrentChatId(null);
     setShouldFetchMessages(false);
     setHasActiveChat(false);
     setTodos([]);
     setIsTodoPanelExpanded(false);
     setChatTitle(null);
+  }, []);
+
+  const setChatReset = useCallback((fn: (() => void) | null) => {
+    chatResetRef.current = fn;
   }, []);
 
   const activateChat = useCallback((chatId: string) => {
@@ -300,6 +343,21 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const toggleChatSidebar = () => {
     setChatSidebarOpen((prev: boolean) => !prev);
   };
+
+  // Custom setter for temporary chats that also updates URL
+  const setTemporaryChatsEnabledWithUrl = useCallback((enabled: boolean) => {
+    setTemporaryChatsEnabled(enabled);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (enabled) {
+        url.searchParams.set("temporary-chat", "true");
+      } else {
+        url.searchParams.delete("temporary-chat");
+      }
+      window.history.replaceState({}, "", url.toString());
+    }
+  }, []);
 
   const value: GlobalStateType = {
     input,
@@ -350,6 +408,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     initializeChat,
     initializeNewChat,
     activateChat,
+
+    temporaryChatsEnabled,
+    setTemporaryChatsEnabled: setTemporaryChatsEnabledWithUrl,
+    setChatReset,
   };
 
   return (

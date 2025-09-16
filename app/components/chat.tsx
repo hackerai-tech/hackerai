@@ -38,6 +38,8 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     mergeTodos,
     setTodos,
     currentChatId,
+    temporaryChatsEnabled,
+    setChatReset,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -48,6 +50,17 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   // Track whether this is an existing chat (prop-driven initially, flips after first completion)
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
   const shouldFetchMessages = isExistingChat;
+
+  // Refs to avoid stale closures in callbacks
+  const isExistingChatRef = useRef(isExistingChat);
+  useEffect(() => {
+    isExistingChatRef.current = isExistingChat;
+  }, [isExistingChat]);
+
+  const temporaryChatsEnabledRef = useRef(temporaryChatsEnabled);
+  useEffect(() => {
+    temporaryChatsEnabledRef.current = temporaryChatsEnabled;
+  }, [temporaryChatsEnabled]);
 
   // Unified reset: respond to route and global new-chat trigger
   useEffect(() => {
@@ -114,10 +127,13 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
           setMessages(normalizedMessages);
         }
 
+        const isTemporaryChat = !isExistingChat && temporaryChatsEnabled;
+
         return {
           body: {
             chatId: id,
-            messages: lastMessage,
+            // For temporary chats, send full message history; otherwise, only the last message
+            messages: isTemporaryChat ? normalizedMessages : lastMessage,
             ...body,
           },
         };
@@ -138,7 +154,9 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     },
     onFinish: () => {
       // For new chats, navigate to the proper route after first message
-      if (!isExistingChat) {
+      const isTemporaryChat =
+        !isExistingChatRef.current && temporaryChatsEnabledRef.current;
+      if (!isExistingChatRef.current && !isTemporaryChat) {
         // Use window.history.replaceState to update URL without triggering navigation
         window.history.replaceState(null, "", `/c/${chatId}`);
         // Flip the state so it becomes an existing chat
@@ -158,6 +176,19 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
       setMessages([]);
     }
   }, [routeChatId, currentChatId, setMessages]);
+
+  // Register a reset function with global state so initializeNewChat can call it
+  useEffect(() => {
+    const reset = () => {
+      setMessages([]);
+      setIsExistingChat(false);
+      setChatId(uuidv4());
+      setChatTitle(null);
+      setTodos([]);
+    };
+    setChatReset(reset);
+    return () => setChatReset(null);
+  }, [setChatReset, setMessages, setChatTitle, setTodos]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
@@ -255,6 +286,9 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
+  // UI-level temporary chat flag
+  const isTempChat = !isExistingChat && temporaryChatsEnabled;
+
   // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user
   const isChatNotFound =
     isExistingChat && chatData === null && shouldFetchMessages;
@@ -328,32 +362,50 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                     paginationStatus={paginatedMessages.status}
                     loadMore={paginatedMessages.loadMore}
                     isSwitchingChats={false}
+                    isTemporaryChat={isTempChat}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0">
                     <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
                       <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
                         <div className="text-center">
-                          <h1 className="text-3xl font-bold text-foreground mb-2">
-                            HackerAI
-                          </h1>
-                          <p className="text-muted-foreground">
-                            Your AI pentest assistant
-                          </p>
+                          {temporaryChatsEnabled ? (
+                            <>
+                              <h1 className="text-3xl font-bold text-foreground mb-2">
+                                Temporary Chat
+                              </h1>
+                              <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
+                                This chat is private and temporary. It won&apos;t be saved,
+                                won&apos;t update HackerAI&apos;s memory, and will be deleted
+                                when you refresh the page.
+                              </p>
+                            </>
+                          ) : (
+                            <>
+                              <h1 className="text-3xl font-bold text-foreground mb-2">
+                                HackerAI
+                              </h1>
+                              <p className="text-muted-foreground">
+                                Your AI pentest assistant
+                              </p>
+                            </>
+                          )}
                         </div>
 
-                        {/* Centered input */}
-                        <div className="w-full">
-                          <ChatInput
-                            onSubmit={handleSubmit}
-                            onStop={handleStop}
-                            status={status}
-                            isCentered={true}
-                            hasMessages={hasMessages}
-                            isAtBottom={isAtBottom}
-                            onScrollToBottom={handleScrollToBottom}
-                          />
-                        </div>
+                        {/* Centered input (desktop only) */}
+                        {!isMobile && (
+                          <div className="w-full">
+                            <ChatInput
+                              onSubmit={handleSubmit}
+                              onStop={handleStop}
+                              status={status}
+                              isCentered={true}
+                              hasMessages={hasMessages}
+                              isAtBottom={isAtBottom}
+                              onScrollToBottom={handleScrollToBottom}
+                            />
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -364,8 +416,8 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                   </div>
                 )}
 
-                {/* Chat Input - Always show when authenticated */}
-                {(hasMessages || isExistingChat) && !isChatNotFound && (
+                {/* Chat Input - Bottom placement (also for mobile new chats) */}
+                {(hasMessages || isExistingChat || isMobile) && !isChatNotFound && (
                   <ChatInput
                     onSubmit={handleSubmit}
                     onStop={handleStop}

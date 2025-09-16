@@ -3,11 +3,12 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, SquarePen } from "lucide-react";
+import { PanelLeft, Sparkle, SquarePen, HatGlasses } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -38,6 +39,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     initializeNewChat,
     closeSidebar,
     setChatSidebarOpen,
+    temporaryChatsEnabled,
+    setTemporaryChatsEnabled,
   } = useGlobalState();
   // Removed useUpgrade hook - we now redirect to pricing dialog instead
   const router = useRouter();
@@ -74,7 +77,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     // Initialize new chat state using global state function
     initializeNewChat();
 
-    // Navigate to homepage - Chat component will respond to global state changes
+    // Always disable temporary chat for a new chat
+    setTemporaryChatsEnabled(false);
     router.push("/");
   };
 
@@ -102,6 +106,28 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             <div className="flex flex-1 gap-2 justify-between items-center">
               <div className="flex gap-[40px]"></div>
               <div className="flex gap-2 items-center">
+                {/* Temporary Chat Toggle - Desktop */}
+                {!loading && user && (
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant={temporaryChatsEnabled ? "default" : "ghost"}
+                          size="sm"
+                          aria-label="Toggle temporary chats for new chats"
+                          aria-pressed={temporaryChatsEnabled}
+                          onClick={() => setTemporaryChatsEnabled(!temporaryChatsEnabled)}
+                          className="flex items-center gap-2 rounded-full px-3"
+                        >
+                          <HatGlasses className="size-5" />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>{temporaryChatsEnabled ? "Turn off temporary chat" : "Turn on temporary chat"}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                )}
                 {/* Show sign in/up buttons for non-logged-in users */}
                 {!loading && !user && (
                   <>
@@ -154,6 +180,28 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               )}
             </div>
             <div className="flex items-center gap-2">
+              {/* Temporary Chat Toggle - Mobile */}
+              {!loading && user && (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        variant={temporaryChatsEnabled ? "default" : "ghost"}
+                        size="icon"
+                        aria-label="Toggle temporary chats for new chats"
+                        aria-pressed={temporaryChatsEnabled}
+                        onClick={() => setTemporaryChatsEnabled(!temporaryChatsEnabled)}
+                        className="h-7 w-7 rounded-full"
+                      >
+                        <HatGlasses className="size-5" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>{temporaryChatsEnabled ? "Turn off temporary chat" : "Turn on temporary chat"}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              )}
               {/* Show sign in/up buttons for non-logged-in users */}
               {!loading && !user && (
                 <>
@@ -206,9 +254,16 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           <div className="max-w-full sm:max-w-[768px] sm:min-w-[390px] flex w-full flex-col gap-[4px] overflow-hidden">
             <div className="w-full flex flex-row items-center justify-between flex-1 min-w-0 gap-[24px]">
               <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0 text-foreground text-lg font-medium">
-                <span className="whitespace-nowrap text-ellipsis overflow-hidden">
+                <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2">
                   {isChatNotFound
                     ? ""
+                    : !isExistingChat && temporaryChatsEnabled
+                    ? (
+                        <>
+                          Temporary Chat
+                          <HatGlasses className="size-5" />
+                        </>
+                      )
                     : chatTitle ||
                       (isExistingChat && chatData === undefined
                         ? ""
@@ -218,8 +273,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
             </div>
           </div>
           <div className="flex-1 flex justify-end">
-            {/* New Chat Button - Only show on mobile when in a chat */}
-            {isMobile && isInChat && showSidebarToggle && (
+            {/* New Chat Button - Show on mobile when in a chat or when temporary chat is active */}
+            {isMobile && (isInChat || (!isExistingChat && temporaryChatsEnabled)) && showSidebarToggle && (
               <Button
                 variant="ghost"
                 size="icon"

@@ -145,7 +145,7 @@ export const CustomizeHackerAIDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange} modal={true}>
       <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Customize HackerAI</DialogTitle>
+          <DialogTitle>Personalization</DialogTitle>
           <DialogDescription>
             Introduce yourself to get better, more personalized responses
           </DialogDescription>

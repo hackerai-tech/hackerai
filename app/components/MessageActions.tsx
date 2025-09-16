@@ -24,6 +24,7 @@ interface MessageActionsProps {
   existingFeedback?: "positive" | "negative" | null;
   isAwaitingFeedbackDetails?: boolean;
   hasFileContent?: boolean;
+  isTemporaryChat?: boolean;
 }
 
 export const MessageActions = ({
@@ -40,6 +41,7 @@ export const MessageActions = ({
   existingFeedback,
   isAwaitingFeedbackDetails = false,
   hasFileContent = false,
+  isTemporaryChat = false,
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
 
@@ -105,8 +107,8 @@ export const MessageActions = ({
             />
           )}
 
-          {/* Show feedback buttons only for assistant messages */}
-          {!isUser && onFeedback && (
+          {/* Show feedback buttons only for assistant messages and not in temporary chats */}
+          {!isUser && onFeedback && !isTemporaryChat && (
             <>
               {/* Hide positive feedback button when awaiting negative feedback details */}
               {!isAwaitingFeedbackDetails && (

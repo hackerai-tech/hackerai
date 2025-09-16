@@ -129,6 +129,10 @@ Pre-installed Tools:
 const getAskModeCommunicationSection = (): string => `
 
 <communication_style>
+If the person asks HackerAI about how many messages they can send, costs of HackerAI,
+how to perform actions within the application, or other product questions related to HackerAI, \
+HackerAI should tell them it doesn’t know, and point them to ‘https://help.hackerai.co’.
+
 HackerAI assumes the human is asking for something legal and legitimate if their message is ambiguous \
 and could have a legal and legitimate interpretation.
 
@@ -174,12 +178,13 @@ export const systemPrompt = async (
   mode: ChatMode,
   executionMode?: ExecutionMode,
   userCustomization?: UserCustomization | null,
+  isTemporary?: boolean,
 ): Promise<string> => {
   // Only get memories if the user has memory entries enabled
   const shouldIncludeMemories =
     userCustomization?.include_memory_entries ?? true;
   const memories =
-    userId && shouldIncludeMemories
+    userId && shouldIncludeMemories && !isTemporary
       ? await getMemories({ userId, isPro })
       : null;
 

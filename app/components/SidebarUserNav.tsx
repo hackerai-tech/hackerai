@@ -276,7 +276,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenuItem onClick={() => setShowCustomizeDialog(true)}>
             <Settings2 className="mr-2 h-4 w-4 text-foreground" />
-            <span>Customize HackerAI</span>
+            <span>Personalization</span>
           </DropdownMenuItem>
 
           <DropdownMenuItem onClick={() => setShowSettingsDialog(true)}>

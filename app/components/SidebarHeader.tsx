@@ -39,8 +39,12 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
 }) => {
   const isMobile = useIsMobile();
   const router = useRouter();
-  const { setChatSidebarOpen, closeSidebar, initializeNewChat } =
-    useGlobalState();
+  const {
+    setChatSidebarOpen,
+    closeSidebar,
+    initializeNewChat,
+    setTemporaryChatsEnabled,
+  } = useGlobalState();
 
   // Search dialog state
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -90,7 +94,8 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     // Initialize new chat state using global state function
     initializeNewChat();
 
-    // Navigate to homepage - Chat component will respond to global state changes
+    // Always disable temporary chat for a new chat
+    setTemporaryChatsEnabled(false);
     router.push("/");
   };
 

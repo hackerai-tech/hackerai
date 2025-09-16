@@ -43,6 +43,7 @@ interface MessagesProps {
     | "Exhausted";
   loadMore?: (numItems: number) => void;
   isSwitchingChats?: boolean;
+  isTemporaryChat?: boolean;
 }
 
 export const Messages = ({
@@ -59,6 +60,7 @@ export const Messages = ({
   paginationStatus,
   loadMore,
   isSwitchingChats,
+  isTemporaryChat,
 }: MessagesProps) => {
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
@@ -315,6 +317,7 @@ export const Messages = ({
                   feedbackInputMessageId === message.id
                 }
                 hasFileContent={hasFileContent}
+                isTemporaryChat={Boolean(isTemporaryChat)}
               />
 
               {/* Show feedback input for negative feedback */}

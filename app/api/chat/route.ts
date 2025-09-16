@@ -46,12 +46,14 @@ export async function POST(req: NextRequest) {
       todos,
       chatId,
       regenerate,
+      temporary,
     }: {
       messages: UIMessage[];
       mode: ChatMode;
       chatId: string;
       todos?: Todo[];
       regenerate?: boolean;
+      temporary?: boolean;
     } = await req.json();
 
     const { userId, isPro } = await getUserIDAndPro(req);
@@ -65,6 +67,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // If temporary mode, bypass DB reads/writes; use provided messages directly
+    const isTemporary = Boolean(temporary);
+
     // Get existing messages, merge with new messages, and truncate
     const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
       chatId,
@@ -72,16 +77,18 @@ export async function POST(req: NextRequest) {
       newMessages: messages,
       regenerate,
       isPro,
+      isTemporary,
     });
 
-    // Handle initial chat setup, regeneration, and save user message
-    await handleInitialChatAndUserMessage({
-      chatId,
-      userId,
-      messages: truncatedMessages,
-      regenerate,
-      chat,
-    });
+    if (!isTemporary) {
+      await handleInitialChatAndUserMessage({
+        chatId,
+        userId,
+        messages: truncatedMessages,
+        regenerate,
+        chat,
+      });
+    }
 
     // Check rate limit for the user with mode
     await checkRateLimit(userId, isPro, mode);
@@ -109,10 +116,11 @@ export async function POST(req: NextRequest) {
           userLocation,
           todos,
           memoryEnabled,
+          isTemporary,
         );
 
-        // Generate title in parallel if this is a new chat
-        const titlePromise = isNewChat
+        // Generate title in parallel only for non-temporary new chats
+        const titlePromise = isNewChat && !isTemporary
           ? generateTitleFromUserMessageWithWriter(
               processedMessages,
               controller.signal,
@@ -130,6 +138,7 @@ export async function POST(req: NextRequest) {
             mode,
             executionMode,
             userCustomization,
+            isTemporary,
           ),
           messages: convertToModelMessages(processedMessages),
           tools,
@@ -150,7 +159,6 @@ export async function POST(req: NextRequest) {
           onError: async (error) => {
             console.error("Error:", error);
 
-            // Perform same cleanup as onFinish to prevent resource leaks
             const sandbox = getSandbox();
             if (sandbox) {
               await pauseSandbox(sandbox);
@@ -166,13 +174,15 @@ export async function POST(req: NextRequest) {
             const generatedTitle = await titlePromise;
             const currentTodos = getTodoManager().getAllTodos();
 
-            if (generatedTitle || finishReason || currentTodos.length > 0) {
-              await updateChat({
-                chatId,
-                title: generatedTitle,
-                finishReason,
-                todos: currentTodos.length > 0 ? currentTodos : undefined,
-              });
+            if (!isTemporary) {
+              if (generatedTitle || finishReason || currentTodos.length > 0) {
+                await updateChat({
+                  chatId,
+                  title: generatedTitle,
+                  finishReason,
+                  todos: currentTodos.length > 0 ? currentTodos : undefined,
+                });
+              }
             }
           },
           onAbort: async (error) => {
@@ -184,6 +194,7 @@ export async function POST(req: NextRequest) {
           result.toUIMessageStream({
             generateMessageId: uuidv4,
             onFinish: async ({ messages }) => {
+              if (isTemporary) return;
               for (const message of messages) {
                 await saveMessage({
                   chatId,
