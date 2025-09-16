@@ -109,7 +109,14 @@ export const saveMessage = mutation({
               continue;
             }
             if (file.user_id !== args.userId) {
-              console.warn("Skipping file not owned by user:", fileId, "owner:", file.user_id, "requester:", args.userId);
+              console.warn(
+                "Skipping file not owned by user:",
+                fileId,
+                "owner:",
+                file.user_id,
+                "requester:",
+                args.userId,
+              );
               continue;
             }
             await ctx.db.patch(fileId, { is_attached: true });

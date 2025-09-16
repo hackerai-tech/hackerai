@@ -40,8 +40,7 @@ export async function transformStorageIdsToUrls(
   messages: UIMessage[];
   hasMediaFiles: boolean;
 }> {
-  if (!messages.length)
-    return { messages, hasMediaFiles: false };
+  if (!messages.length) return { messages, hasMediaFiles: false };
 
   // Create a deep copy to avoid mutation
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
