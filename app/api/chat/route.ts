@@ -120,13 +120,14 @@ export async function POST(req: NextRequest) {
         );
 
         // Generate title in parallel only for non-temporary new chats
-        const titlePromise = isNewChat && !isTemporary
-          ? generateTitleFromUserMessageWithWriter(
-              processedMessages,
-              controller.signal,
-              writer,
-            )
-          : Promise.resolve(undefined);
+        const titlePromise =
+          isNewChat && !isTemporary
+            ? generateTitleFromUserMessageWithWriter(
+                processedMessages,
+                controller.signal,
+                writer,
+              )
+            : Promise.resolve(undefined);
 
         const trackedProvider = createTrackedProvider(userId, chatId, isPro);
 
@@ -143,6 +144,13 @@ export async function POST(req: NextRequest) {
           messages: convertToModelMessages(processedMessages),
           tools,
           abortSignal: controller.signal,
+          providerOptions: {
+            openai: {
+              parallelToolCalls: false,
+              reasoningSummary: "detailed",
+              reasoningEffort: "medium",
+            },
+          },
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
           stopWhen: stepCountIs(10),
@@ -203,6 +211,7 @@ export async function POST(req: NextRequest) {
                 });
               }
             },
+            sendReasoning: true,
           }),
         );
       },

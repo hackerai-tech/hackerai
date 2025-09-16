@@ -6,6 +6,7 @@ import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import type { ChatStatus } from "@/types";
+import { ReasoningHandler } from "./ReasoningHandler";
 
 interface MessagePartHandlerProps {
   message: UIMessage;
@@ -42,9 +43,10 @@ export const MessagePartHandler = ({
     case "text":
       return renderTextPart();
 
-    case "file":
-      // File parts are now handled directly in Messages.tsx
-      return null;
+    case "reasoning":
+      return (
+        <ReasoningHandler message={message} partIndex={partIndex} status={status} />
+      );
 
     case "tool-read_file":
     case "tool-write_file":

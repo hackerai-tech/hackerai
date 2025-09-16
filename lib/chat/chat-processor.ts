@@ -12,17 +12,15 @@ import { extractAllFileIdsFromMessages } from "@/lib/utils/file-token-utils";
  * Selects the appropriate model based on mode and file content
  * @param mode - Chat mode (ask or agent)
  * @param containsMediaFiles - Whether messages contain media files
- * @param containsBase64Files - Whether messages contain base64 files
  * @returns Model name to use
  */
 export function selectModel(
   mode: ChatMode,
   containsMediaFiles: boolean,
-  containsBase64Files: boolean,
 ): string {
   // If there are media files, choose vision model
-  if (containsMediaFiles) {
-    return containsBase64Files ? "vision-base64-model" : "vision-model";
+  if (containsMediaFiles && mode === "ask") {
+    return "vision-model";
   }
 
   // Otherwise, choose based on mode
@@ -78,7 +76,6 @@ export async function processChatMessages({
   const {
     messages: messagesWithUrls,
     hasMediaFiles: containsMediaFiles,
-    hasBase64Files: containsBase64Files,
   } = await transformStorageIdsToUrls(messages);
 
   // Extract file IDs from all messages
@@ -101,7 +98,6 @@ export async function processChatMessages({
   const selectedModel = selectModel(
     mode,
     containsMediaFiles,
-    containsBase64Files,
   );
 
   // Determine execution mode from environment variable
