@@ -99,6 +99,17 @@ export const saveMessage = mutation({
         update_time: Date.now(),
       });
 
+      // Mark attached files as linked so purge won't remove them
+      if (args.fileIds && args.fileIds.length > 0) {
+        for (const fileId of args.fileIds) {
+          try {
+            await ctx.db.patch(fileId, { is_attached: true });
+          } catch (e) {
+            console.warn("Failed to mark file as attached:", fileId, e);
+          }
+        }
+      }
+
       return null;
     } catch (error) {
       console.error("Failed to save message:", error);

@@ -218,6 +218,42 @@ export const getFileContentByFileIds = query({
 });
 
 /**
+ * Internal mutation: purge unattached files older than cutoff
+ */
+export const purgeExpiredUnattachedFiles = internalMutation({
+  args: {
+    cutoffTimeMs: v.number(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({ deletedCount: v.number() }),
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 100;
+
+    const candidates = await ctx.db
+      .query("files")
+      .withIndex(
+        "by_is_attached",
+        (q) => q.eq("is_attached", false).lt("_creationTime", args.cutoffTimeMs),
+      )
+      .order("asc")
+      .take(limit);
+
+    let deletedCount = 0;
+    for (const file of candidates) {
+      try {
+        await ctx.storage.delete(file.storage_id);
+      } catch (e) {
+        console.warn("Failed to delete storage blob:", file.storage_id, e);
+      }
+      await ctx.db.delete(file._id);
+      deletedCount++;
+    }
+
+    return { deletedCount };
+  },
+});
+
+/**
  * Internal mutation to save file metadata to database
  * This is separated from the action to handle database operations
  */
@@ -241,6 +277,7 @@ export const saveFileToDb = internalMutation({
       size: args.size,
       file_token_size: args.fileTokenSize,
       content: args.content,
+      is_attached: false,
     });
     return fileId;
   },

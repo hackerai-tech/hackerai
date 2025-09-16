@@ -153,13 +153,10 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
       }
     },
     onFinish: () => {
-      // For new chats, navigate to the proper route after first message
+      // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
       if (!isExistingChatRef.current && !isTemporaryChat) {
-        // Use window.history.replaceState to update URL without triggering navigation
-        window.history.replaceState(null, "", `/c/${chatId}`);
-        // Flip the state so it becomes an existing chat
         setIsExistingChat(true);
       }
     },
