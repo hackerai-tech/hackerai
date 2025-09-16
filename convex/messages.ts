@@ -99,6 +99,26 @@ export const saveMessage = mutation({
         update_time: Date.now(),
       });
 
+      // Mark attached files as linked so purge won't remove them
+      if (args.fileIds && args.fileIds.length > 0) {
+        for (const fileId of args.fileIds) {
+          try {
+            const file = await ctx.db.get(fileId);
+            if (!file) {
+              console.warn("File not found while marking attached:", fileId);
+              continue;
+            }
+            if (file.user_id !== args.userId) {
+              console.warn("Skipping file not owned by user:", fileId, "owner:", file.user_id, "requester:", args.userId);
+              continue;
+            }
+            await ctx.db.patch(fileId, { is_attached: true });
+          } catch (e) {
+            console.warn("Failed to mark file as attached:", fileId, e);
+          }
+        }
+      }
+
       return null;
     } catch (error) {
       console.error("Failed to save message:", error);

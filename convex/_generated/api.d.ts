@@ -14,6 +14,7 @@ import type {
   FunctionReference,
 } from "convex/server";
 import type * as chats from "../chats.js";
+import type * as crons from "../crons.js";
 import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileStorage from "../fileStorage.js";
@@ -31,6 +32,7 @@ import type * as userCustomization from "../userCustomization.js";
  */
 declare const fullApi: ApiFromModules<{
   chats: typeof chats;
+  crons: typeof crons;
   feedback: typeof feedback;
   fileActions: typeof fileActions;
   fileStorage: typeof fileStorage;

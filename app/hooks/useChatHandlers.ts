@@ -1,4 +1,4 @@
-import { RefObject } from "react";
+import { RefObject, useEffect, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -47,7 +47,14 @@ export const useChatHandlers = ({
     setHasActiveChat,
     isUploadingFiles,
     hasProPlan,
+    temporaryChatsEnabled,
   } = useGlobalState();
+
+  // Avoid stale closure on temporary flag
+  const temporaryChatsEnabledRef = useRef(temporaryChatsEnabled);
+  useEffect(() => {
+    temporaryChatsEnabledRef.current = temporaryChatsEnabled;
+  }, [temporaryChatsEnabled]);
 
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessageFromClient,
@@ -79,7 +86,7 @@ export const useChatHandlers = ({
         });
         return;
       }
-      if (!hasActiveChat) {
+      if (!hasActiveChat && !temporaryChatsEnabledRef.current) {
         setChatTitle(null);
         setCurrentChatId(chatId);
         window.history.replaceState({}, "", `/c/${chatId}`);
@@ -117,6 +124,7 @@ export const useChatHandlers = ({
             body: {
               mode,
               todos,
+              temporary: temporaryChatsEnabled,
             },
           },
         );
@@ -129,6 +137,7 @@ export const useChatHandlers = ({
             body: {
               mode,
               todos,
+              temporary: temporaryChatsEnabled,
             },
           },
         );
@@ -143,7 +152,11 @@ export const useChatHandlers = ({
     stop();
 
     const lastMessage = messages[messages.length - 1];
-    if (lastMessage && lastMessage.role === "assistant") {
+    if (
+      !temporaryChatsEnabled &&
+      lastMessage &&
+      lastMessage.role === "assistant"
+    ) {
       try {
         await saveAssistantMessage({
           id: lastMessage.id,
@@ -158,13 +171,16 @@ export const useChatHandlers = ({
   };
 
   const handleRegenerate = async () => {
-    await deleteLastAssistantMessage({ chatId });
+    if (!temporaryChatsEnabled) {
+      await deleteLastAssistantMessage({ chatId });
+    }
 
     regenerate({
       body: {
         mode,
         todos,
         regenerate: true,
+        temporary: temporaryChatsEnabled,
       },
     });
   };
@@ -175,15 +191,18 @@ export const useChatHandlers = ({
         mode,
         todos,
         regenerate: true,
+        temporary: temporaryChatsEnabled,
       },
     });
   };
 
   const handleEditMessage = async (messageId: string, newContent: string) => {
-    await regenerateWithNewContent({
-      messageId: messageId as Id<"messages">,
-      newContent,
-    });
+    if (!temporaryChatsEnabled) {
+      await regenerateWithNewContent({
+        messageId: messageId as Id<"messages">,
+        newContent,
+      });
+    }
 
     // Update local state to reflect the edit and remove subsequent messages
     setMessages((prevMessages) => {
@@ -208,6 +227,7 @@ export const useChatHandlers = ({
         mode,
         todos,
         regenerate: true,
+        temporary: temporaryChatsEnabled,
       },
     });
   };

@@ -28,6 +28,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -141,11 +148,34 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   };
 
   return (
-    <div className="border-t border-sidebar-border">
+    <div className="relative">
+      {/* Upgrade button outside of dropdown trigger when collapsed */}
+      {isCollapsed && !isCheckingProPlan && !isProUser && (
+        <div className="mb-1">
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="w-full h-8 px-2 bg-primary"
+                  onClick={redirectToPricing}
+                >
+                  <Sparkle className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">
+                <p>Upgrade Plan</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      )}
+
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           {isCollapsed ? (
-            /* Collapsed state - only show avatar centered */
+            /* Collapsed state - only show avatar */
             <div className="mb-1">
               <button
                 type="button"
@@ -181,7 +211,9 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   {getUserInitials()}
                 </AvatarFallback>
               </Avatar>
-              <div className="flex-1 min-w-0">
+              <div
+                className={`flex-1 min-w-0 ${!isCheckingProPlan && !isProUser ? "pr-20" : ""}`}
+              >
                 <div className="text-sm font-medium text-sidebar-foreground truncate">
                   {getDisplayName()}
                 </div>
@@ -192,6 +224,20 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </button>
           )}
         </DropdownMenuTrigger>
+
+        {/* Upgrade button outside of dropdown trigger when expanded */}
+        {!isCollapsed && !isCheckingProPlan && !isProUser && (
+          <div className="absolute top-3 right-3">
+            <Button
+              variant="secondary"
+              size="sm"
+              className=""
+              onClick={redirectToPricing}
+            >
+              Upgrade
+            </Button>
+          </div>
+        )}
 
         <DropdownMenuContent
           className="w-56"
@@ -230,7 +276,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenuItem onClick={() => setShowCustomizeDialog(true)}>
             <Settings2 className="mr-2 h-4 w-4 text-foreground" />
-            <span>Customize HackerAI</span>
+            <span>Personalization</span>
           </DropdownMenuItem>
 
           <DropdownMenuItem onClick={() => setShowSettingsDialog(true)}>

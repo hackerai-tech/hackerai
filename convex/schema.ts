@@ -62,7 +62,10 @@ export default defineSchema({
     size: v.number(),
     file_token_size: v.number(),
     content: v.optional(v.string()),
-  }).index("by_user_id", ["user_id"]),
+    is_attached: v.boolean(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_is_attached", ["is_attached"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),

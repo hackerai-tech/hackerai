@@ -1,5 +1,6 @@
 import { customProvider } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
+import { openai } from "@ai-sdk/openai";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 
@@ -7,14 +8,11 @@ const baseProviders = {
   "ask-model": openrouter(
     process.env.NEXT_PUBLIC_ASK_MODEL || "deepseek/deepseek-chat-v3-0324",
   ),
-  "agent-model": openrouter(
-    process.env.NEXT_PUBLIC_AGENT_MODEL || "qwen/qwen3-coder",
+  "agent-model": openai(
+    process.env.NEXT_PUBLIC_AGENT_MODEL || "gpt-5-mini",
   ),
   "vision-model": openrouter(
     process.env.NEXT_PUBLIC_VISION_MODEL || "google/gemini-2.5-flash",
-  ),
-  "vision-base64-model": openrouter(
-    process.env.NEXT_PUBLIC_VISION_BASE64_MODEL || "google/gemini-2.5-flash",
   ),
   "title-generator-model": openrouter(
     process.env.NEXT_PUBLIC_TITLE_MODEL || "google/gemini-2.5-flash",
