@@ -149,6 +149,7 @@ export async function updateChat({
     id: string;
     content: string;
     status: "pending" | "in_progress" | "completed" | "cancelled";
+    sourceMessageId?: string;
   }>;
 }) {
   try {
@@ -210,8 +211,8 @@ export async function getMessagesByChatId({
   // Handle message merging based on regeneration flag
   let allMessages: UIMessage[];
 
-  if (regenerate) {
-    // For regeneration, don't add new messages to avoid duplication
+  if (regenerate && !isTemporary) {
+    // For regeneration and not temporary chat, don't add new messages to avoid duplication
     // The backend query already excluded the last message being regenerated
     allMessages = existingMessages;
   } else {

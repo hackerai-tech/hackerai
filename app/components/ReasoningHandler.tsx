@@ -22,7 +22,10 @@ type Step = { label: string; body: string };
 const HEADER_MAX_LENGTH = 80;
 const HEADING_REGEX = /\*\*([^*]+)\*\*\n\n/g;
 
-const collectReasoningText = (parts: UIMessage["parts"], startIndex: number): string => {
+const collectReasoningText = (
+  parts: UIMessage["parts"],
+  startIndex: number,
+): string => {
   const collected: string[] = [];
   for (let i = startIndex; i < parts.length; i++) {
     const part = parts[i];
@@ -35,7 +38,10 @@ const collectReasoningText = (parts: UIMessage["parts"], startIndex: number): st
   return collected.join("");
 };
 
-const hasActiveReasoning = (parts: UIMessage["parts"], startIndex: number): boolean => {
+const hasActiveReasoning = (
+  parts: UIMessage["parts"],
+  startIndex: number,
+): boolean => {
   for (let i = startIndex; i < parts.length; i++) {
     const part = parts[i];
     if (part?.type === "reasoning") {
@@ -50,7 +56,7 @@ const hasActiveReasoning = (parts: UIMessage["parts"], startIndex: number): bool
 const parseSteps = (text: string): Step[] => {
   const steps: Step[] = [];
   const matches: Array<{ label: string; start: number; end: number }> = [];
-  
+
   let match: RegExpExecArray | null;
   while ((match = HEADING_REGEX.exec(text)) !== null) {
     matches.push({
@@ -68,9 +74,9 @@ const parseSteps = (text: string): Step[] => {
     });
   } else {
     const firstLine = text.split(/\n+/)[0]?.trim() || "Reasoning";
-    steps.push({ 
-      label: firstLine.slice(0, HEADER_MAX_LENGTH), 
-      body: text 
+    steps.push({
+      label: firstLine.slice(0, HEADER_MAX_LENGTH),
+      body: text,
     });
   }
 
@@ -78,14 +84,23 @@ const parseSteps = (text: string): Step[] => {
 };
 
 const getHeaderText = (steps: Step[], status: ChatStatus): string => {
-  if (status !== "streaming") return "Chain of Thought";
-  
+  // Show "Chain of Thought" only if there are multiple steps
+  if (status !== "streaming") {
+    return steps.length > 1
+      ? "Chain of Thought"
+      : steps[0]?.label.replace(/\*\*/g, "") || "Reasoning";
+  }
+
   const lastStep = steps[steps.length - 1];
   const label = lastStep?.label.replace(/\*\*/g, "") || "Reasoning";
   return label.slice(0, HEADER_MAX_LENGTH);
 };
 
-export const ReasoningHandler = ({ message, partIndex, status }: ReasoningHandlerProps) => {
+export const ReasoningHandler = ({
+  message,
+  partIndex,
+  status,
+}: ReasoningHandlerProps) => {
   const parts = Array.isArray(message.parts) ? message.parts : [];
   const currentPart = parts[partIndex];
 
@@ -99,7 +114,11 @@ export const ReasoningHandler = ({ message, partIndex, status }: ReasoningHandle
   const trimmedContent = combined.trim();
 
   // Show thinking placeholder if no content but actively reasoning
-  if (!trimmedContent && status === "streaming" && hasActiveReasoning(parts, partIndex)) {
+  if (
+    !trimmedContent &&
+    status === "streaming" &&
+    hasActiveReasoning(parts, partIndex)
+  ) {
     return (
       <div className="text-base text-muted-foreground py-2">
         <ShimmerText>Thinking…</ShimmerText>
@@ -118,8 +137,9 @@ export const ReasoningHandler = ({ message, partIndex, status }: ReasoningHandle
       <ChainOfThoughtContent>
         {steps.map((step, idx) => {
           const isLast = idx === steps.length - 1;
-          const stepStatus = isLast && status === "streaming" ? "active" : "complete";
-          
+          const stepStatus =
+            isLast && status === "streaming" ? "active" : "complete";
+
           return (
             <ChainOfThoughtStep
               key={`${message.id}-reasoning-step-${idx}`}
@@ -134,5 +154,3 @@ export const ReasoningHandler = ({ message, partIndex, status }: ReasoningHandle
     </ChainOfThought>
   );
 };
-
-

@@ -40,6 +40,7 @@ export interface Todo {
   id: string;
   content: string;
   status: "pending" | "in_progress" | "completed" | "cancelled";
+  sourceMessageId?: string;
 }
 
 export interface TodoBlockProps {

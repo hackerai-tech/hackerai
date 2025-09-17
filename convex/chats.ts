@@ -32,6 +32,7 @@ export const getChatById = query({
               v.literal("completed"),
               v.literal("cancelled"),
             ),
+            sourceMessageId: v.optional(v.string()),
           }),
         ),
       ),
@@ -108,6 +109,7 @@ export const updateChat = mutation({
             v.literal("completed"),
             v.literal("cancelled"),
           ),
+          sourceMessageId: v.optional(v.string()),
         }),
       ),
     ),
@@ -136,6 +138,7 @@ export const updateChat = mutation({
           id: string;
           content: string;
           status: "pending" | "in_progress" | "completed" | "cancelled";
+          sourceMessageId?: string;
         }>;
         update_time: number;
       } = {

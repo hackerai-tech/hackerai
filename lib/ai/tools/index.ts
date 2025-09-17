@@ -22,6 +22,7 @@ export const createTools = (
   initialTodos?: Todo[],
   memoryEnabled: boolean = true,
   isTemporary: boolean = false,
+  assistantMessageId?: string,
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -42,6 +43,7 @@ export const createTools = (
     userLocation,
     todoManager,
     userID,
+    assistantMessageId,
   };
 
   // Create all available tools

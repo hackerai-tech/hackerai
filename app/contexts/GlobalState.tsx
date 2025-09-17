@@ -12,7 +12,10 @@ import React, {
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type { ChatMode, SidebarContent } from "@/types/chat";
 import type { Todo } from "@/types";
-import { mergeTodos as mergeTodosUtil } from "@/lib/utils/todo-utils";
+import {
+  mergeTodos as mergeTodosUtil,
+  computeReplaceAssistantTodos,
+} from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
@@ -79,6 +82,7 @@ interface GlobalStateType {
   todos: Todo[];
   setTodos: (todos: Todo[]) => void;
   mergeTodos: (todos: Todo[]) => void;
+  replaceAssistantTodos: (todos: Todo[], sourceMessageId?: string) => void;
 
   // UI state
   isTodoPanelExpanded: boolean;
@@ -151,6 +155,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const mergeTodos = useCallback((newTodos: Todo[]) => {
     setTodos((currentTodos) => mergeTodosUtil(currentTodos, newTodos));
   }, []);
+  const replaceAssistantTodos = useCallback(
+    (incoming: Todo[], sourceMessageId?: string) => {
+      setTodos((current) =>
+        computeReplaceAssistantTodos(current, incoming, sourceMessageId),
+      );
+    },
+    [],
+  );
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
 
   // Handle sidebar persistence and mobile transitions
@@ -392,6 +404,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     todos,
     setTodos,
     mergeTodos,
+    replaceAssistantTodos,
 
     isTodoPanelExpanded,
     setIsTodoPanelExpanded,

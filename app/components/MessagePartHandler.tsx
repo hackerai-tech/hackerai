@@ -45,7 +45,11 @@ export const MessagePartHandler = ({
 
     case "reasoning":
       return (
-        <ReasoningHandler message={message} partIndex={partIndex} status={status} />
+        <ReasoningHandler
+          message={message}
+          partIndex={partIndex}
+          status={status}
+        />
       );
 
     case "tool-read_file":

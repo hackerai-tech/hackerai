@@ -22,6 +22,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage } from "@/types";
+import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
@@ -37,6 +38,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     setChatSidebarOpen,
     mergeTodos,
     setTodos,
+    replaceAssistantTodos,
     currentChatId,
     temporaryChatsEnabled,
     setChatReset,
@@ -146,8 +148,24 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     },
     onToolCall: ({ toolCall }) => {
       if (toolCall.toolName === "todo_write" && toolCall.input) {
-        const todoInput = toolCall.input as { merge: boolean; todos: Todo[] };
-        if (todoInput.todos) {
+        const todoInput = toolCall.input as { merge?: boolean; todos: Todo[] };
+        if (!todoInput.todos) return;
+        // Determine last assistant message id to stamp/replace
+        const lastAssistant = [...messages]
+          .reverse()
+          .find((m) => m.role === "assistant");
+        const lastAssistantId = lastAssistant?.id;
+
+        const treatAsMerge = shouldTreatAsMerge(
+          todoInput.merge,
+          todoInput.todos,
+        );
+
+        if (!treatAsMerge) {
+          // Fresh plan creation: replace assistant todos with new ones, stamp with current assistant id if present.
+          replaceAssistantTodos(todoInput.todos, lastAssistantId);
+        } else {
+          // Partial update: merge
           mergeTodos(todoInput.todos);
         }
       }
@@ -194,12 +212,32 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
       setChatTitle(chatData.title);
     }
 
-    // Load todos from the chat data if they exist, replacing existing todos
-    if (chatData && chatData.todos && chatData.todos.length > 0) {
-      setTodos(chatData.todos);
-    } else if (chatData && (!chatData.todos || chatData.todos.length === 0)) {
-      // If chat has no todos, clear existing todos
-      setTodos([]);
+    // Load todos from the chat data if they exist.
+    if (chatData && chatData.todos) {
+      // setTodos signature expects Todo[], so derive the new array first
+      const nextTodos: Todo[] = (() => {
+        const incoming: Todo[] = chatData.todos as Todo[];
+        if (!incoming || incoming.length === 0) return [] as Todo[];
+
+        // Split by assistant attribution
+        const incomingAssistant: Todo[] = incoming.filter((t: Todo) =>
+          Boolean(t.sourceMessageId),
+        );
+        const incomingManual: Todo[] = incoming.filter(
+          (t: Todo) => !t.sourceMessageId,
+        );
+
+        const prevManual: Todo[] = [];
+        // We can't access previous value directly here without functional setter.
+        // Fallback: since server is source of truth, treat incoming manual todos as updates only for ids we already have.
+        // The actual merge of manual todos will be handled elsewhere when tool updates come in.
+
+        // Build manual map from previous
+        // Replace assistant todos entirely with incoming assistant todos and keep incoming manual ones as-is
+        return [...incomingAssistant, ...incomingManual] as Todo[];
+      })();
+
+      setTodos(nextTodos);
     }
   }, [chatData, setChatTitle, setTodos]);
 
@@ -360,6 +398,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                     loadMore={paginatedMessages.loadMore}
                     isSwitchingChats={false}
                     isTemporaryChat={isTempChat}
+                    finishReason={chatData?.finish_reason}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0">
@@ -372,10 +411,10 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                                 Temporary Chat
                               </h1>
                               <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
-                                This chat is private and temporary. It
-                                won&apos;t be saved, won&apos;t update
-                                HackerAI&apos;s memory, and will be deleted when
-                                you refresh the page.
+                                This chat won&apos;t appear in history, use or
+                                update HackerAI&apos;s memory, or be used to
+                                train models. This chat will be deleted when you
+                                refresh the page.
                               </p>
                             </>
                           ) : (

@@ -3,34 +3,30 @@ import { z } from "zod";
 import type { ToolContext, Todo } from "@/types";
 
 export const createTodoWrite = (context: ToolContext) => {
-  const { todoManager } = context;
+  const { todoManager, assistantMessageId } = context;
 
   return tool({
     description: `Use this tool to create and manage a structured task list for your current coding session. This helps track progress, organize complex tasks, and demonstrate thoroughness.
 
 Note: Other than when first creating todos, don't tell the user you're updating todos, just do it.
 
-### When to Use This Tool
+When to Use:
+1. Multi-step tasks (2+ distinct steps).
+2. Non-trivial features/refactors requiring planning.
+3. User explicitly requests a todo list.
+4. User provides multiple tasks (numbered or comma-separated).
+5. After receiving new instructions—capture requirements as todos (use merge=false for a fresh list).
+6. After completing tasks—mark done and add follow-ups if needed.
 
-Use proactively for:
-1. Complex multi-step tasks (3+ distinct steps)
-2. Non-trivial tasks requiring careful planning
-3. User explicitly requests todo list
-4. User provides multiple tasks (numbered/comma-separated)
-5. After receiving new instructions - capture requirements as todos (use merge=false to add new ones)
-6. After completing tasks - mark complete with merge=true and add follow-ups
-7. When starting new tasks - mark as in_progress (ideally only one at a time)
+When NOT to Use:
+1. Single, straightforward tasks.
+2. Trivial changes (<5 minutes).
+3. Purely informational/read-only requests.
+4. Hypothetical tasks (“fix errors if tests fail”).
+5. Operational actions done in service of a higher-level task (unless the user specifically asks).
 
-### When NOT to Use
-
-Skip for:
-1. Single, straightforward tasks
-2. Trivial tasks with no organizational benefit
-3. Tasks completable in < 3 trivial steps
-4. Purely conversational/informational requests
-5. Todo items should NOT include operational actions done in service of higher-level tasks.
-
-NEVER INCLUDE THESE IN TODOS: linting; testing; searching or examining the codebase.
+Tasks NOT to track:
+- Linting, testing, searching/examining the codebase, or communicating with the user—unless explicitly requested by the user.
 
 ### Examples
 
@@ -177,12 +173,23 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
           }
         }
 
+        // If incoming payload looks like partial updates (missing content fields), switch to merge to avoid replacing the whole plan.
+        const shouldMerge =
+          merge ||
+          todos.some((t) => t.content === undefined || t.content === null);
+
         // Update backend state first
-        const updatedTodos = todoManager.setTodos(todos, merge);
+        const updatedTodos = todoManager.setTodos(
+          // When creating a plan (shouldMerge=false), stamp todos with assistantMessageId
+          shouldMerge || !assistantMessageId
+            ? todos
+            : todos.map((t) => ({ ...t, sourceMessageId: assistantMessageId })),
+          shouldMerge,
+        );
 
         // Get current stats from the manager
         const stats = todoManager.getStats();
-        const action = merge ? "updated" : "created";
+        const action = shouldMerge ? "updated" : "created";
 
         const counts = {
           completed: stats.done, // Use 'done' which includes both completed and cancelled
@@ -194,6 +201,7 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
           id: t.id,
           content: t.content,
           status: t.status,
+          sourceMessageId: t.sourceMessageId,
         }));
 
         return {

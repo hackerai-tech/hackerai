@@ -73,10 +73,8 @@ export async function processChatMessages({
   isPro: boolean;
 }) {
   // Transform storageIds to URLs and detect media files
-  const {
-    messages: messagesWithUrls,
-    hasMediaFiles: containsMediaFiles,
-  } = await transformStorageIdsToUrls(messages);
+  const { messages: messagesWithUrls, hasMediaFiles: containsMediaFiles } =
+    await transformStorageIdsToUrls(messages);
 
   // Extract file IDs from all messages
   const fileIds = extractAllFileIdsFromMessages(messagesWithUrls);
@@ -95,23 +93,18 @@ export async function processChatMessages({
   }
 
   // Select the appropriate model
-  const selectedModel = selectModel(
-    mode,
-    containsMediaFiles,
-  );
+  const selectedModel = selectModel(mode, containsMediaFiles);
 
   // Determine execution mode from environment variable
   const executionMode: ExecutionMode =
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
-  if (isPro) {
-    // Check moderation for the last user message
-    const moderationResult = await getModerationResult(messagesWithUrls);
+  // Check moderation for the last user message
+  const moderationResult = await getModerationResult(messagesWithUrls);
 
-    // If moderation allows, add authorization message
-    if (moderationResult.shouldUncensorResponse) {
-      addAuthMessage(messagesWithUrls);
-    }
+  // If moderation allows, add authorization message
+  if (moderationResult.shouldUncensorResponse) {
+    addAuthMessage(messagesWithUrls);
   }
 
   return {
