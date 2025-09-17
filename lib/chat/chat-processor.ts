@@ -99,14 +99,12 @@ export async function processChatMessages({
   const executionMode: ExecutionMode =
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
-  if (isPro) {
-    // Check moderation for the last user message
-    const moderationResult = await getModerationResult(messagesWithUrls);
+  // Check moderation for the last user message
+  const moderationResult = await getModerationResult(messagesWithUrls);
 
-    // If moderation allows, add authorization message
-    if (moderationResult.shouldUncensorResponse) {
-      addAuthMessage(messagesWithUrls);
-    }
+  // If moderation allows, add authorization message
+  if (moderationResult.shouldUncensorResponse) {
+    addAuthMessage(messagesWithUrls);
   }
 
   return {
