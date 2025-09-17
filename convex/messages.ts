@@ -109,14 +109,7 @@ export const saveMessage = mutation({
               continue;
             }
             if (file.user_id !== args.userId) {
-              console.warn(
-                "Skipping file not owned by user:",
-                fileId,
-                "owner:",
-                file.user_id,
-                "requester:",
-                args.userId,
-              );
+              console.warn("Skipping file not owned by user:", fileId);
               continue;
             }
             await ctx.db.patch(fileId, { is_attached: true });
@@ -699,5 +692,51 @@ export const regenerateWithNewContentFromClient = mutation({
       console.error("Failed to regenerate with new content:", error);
       throw error;
     }
+  },
+});
+
+/**
+ * Append new parts to the last assistant message (backend, service role)
+ */
+export const updateMessageAppendPartsForBackend = mutation({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+    userId: v.string(),
+    messageId: v.string(),
+    parts: v.array(v.any()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    // Verify chat ownership
+    await ctx.runQuery(internal.messages.verifyChatOwnership, {
+      chatId: args.chatId,
+      userId: args.userId,
+    });
+
+    const existing = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", args.messageId))
+      .first();
+
+    if (!existing) {
+      throw new Error("Message to update not found");
+    }
+
+    const newParts = Array.isArray(existing.parts)
+      ? [...existing.parts, ...args.parts]
+      : args.parts;
+
+    const content = extractTextFromParts(newParts);
+
+    await ctx.db.patch(existing._id, {
+      parts: newParts,
+      content: content || undefined,
+      update_time: Date.now(),
+    });
+
+    return null;
   },
 });

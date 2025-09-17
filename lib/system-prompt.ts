@@ -101,11 +101,34 @@ Code chunks that you receive (via tool calls or from user) may include inline li
 
 const getTaskManagementSection = (): string => `
 
-<task_management>
-You have access to the todo_write tool to help you manage and plan tasks. Use these tools VERY frequently to ensure that you are tracking your tasks and giving the user visibility into your progress. These tools are also EXTREMELY helpful for planning tasks, and for breaking down larger complex tasks into smaller steps. If you do not use this tool when planning, you may forget to do important tasks - and that is unacceptable.
-It is critical that you mark todos as completed as soon as you are done with a task. Do not batch up multiple tasks before marking them as completed.
-IMPORTANT: Always use the todo_write tool to plan and track tasks throughout the conversation unless the request is too simple.
-</task_management>`;
+<todo_spec>
+Purpose: Use the todo_write tool to track and manage tasks.
+
+Defining tasks:
+- Create atomic todo items (≤14 words, verb-led, clear outcome) using todo_write before you start working on an implementation task.
+- Todo items should be high-level, meaningful, nontrivial tasks that would take a user at least 5 minutes to perform. They can be reconnaissance activities, vulnerability assessments, exploit development, report generation, etc. Multi-target scans can be contained in one task.
+- Don't cram multiple semantically different steps into one todo, but if there's a clear higher-level grouping then use that, otherwise split them into two. Prefer fewer, larger todo items.
+- Todo items should NOT include operational actions done in service of higher-level tasks.
+- If the user asks you to plan but not implement, don't create a todo list until it's actually time to implement.
+- If the user asks you to implement, do not output a separate text-based High-Level Plan. Just build and display the todo list.
+
+Todo item content:
+- Should be simple, clear, and short, with just enough context that a user can quickly grok the task
+- Should be a verb and action-oriented, like "Scan network for open ports" or "Test SQL injection on login form"
+- SHOULD NOT include details like specific payloads, tool parameters, CVE numbers, etc., or making comprehensive lists of targets or vulnerabilities that will be tested, unless the user's goal is a large assessment that just involves making these checks.
+</todo_spec>`;
+
+const getSummarySection = (): string => `
+
+<summary_spec>
+At the end of your turn, you should provide a summary.
+
+Summarize any changes you made at a high-level and their impact. If the user asked for info, summarize the answer but don't explain your search process. If the user asked a basic query, skip the summary entirely.
+Use concise bullet points for lists; short paragraphs if needed. Use markdown if you need headings.
+Don't repeat the plan.
+It's very important that you keep the summary short, non-repetitive, and high-signal, or it will be too long to read. The user can view your full assessment results in the terminal, so only flag specific findings that are very important to highlight to the user.
+Don't add headings like "Summary:" or "Update:".
+</summary_spec>`;
 
 const getSandboxEnvironmentSection = (): string => `
 
@@ -221,6 +244,7 @@ When using markdown in assistant messages, use backticks to format file, directo
     sections.push(getGeneralGuidelinesSection());
     sections.push(getInlineLineNumbersSection());
     sections.push(getTaskManagementSection());
+    sections.push(getSummarySection());
 
     if (executionMode === "sandbox") {
       sections.push(getSandboxEnvironmentSection());

@@ -44,6 +44,7 @@ interface MessagesProps {
   loadMore?: (numItems: number) => void;
   isSwitchingChats?: boolean;
   isTemporaryChat?: boolean;
+  finishReason?: string;
 }
 
 export const Messages = ({
@@ -61,6 +62,7 @@ export const Messages = ({
   loadMore,
   isSwitchingChats,
   isTemporaryChat,
+  finishReason,
 }: MessagesProps) => {
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
@@ -300,6 +302,19 @@ export const Messages = ({
                   </div>
                 </div>
               )}
+
+              {/* Tool-calls stop notice under last assistant message */}
+              {isLastAssistantMessage &&
+                finishReason === "tool-calls" &&
+                status !== "streaming" && (
+                  <div className="mt-2 w-full">
+                    <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
+                      I automatically stopped after 10 steps to prevent going
+                      off course. Say "continue" if you'd like me to keep
+                      working on this task.
+                    </div>
+                  </div>
+                )}
 
               <MessageActions
                 messageText={messageText}

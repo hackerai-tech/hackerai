@@ -398,6 +398,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                     loadMore={paginatedMessages.loadMore}
                     isSwitchingChats={false}
                     isTemporaryChat={isTempChat}
+                    finishReason={chatData?.finish_reason}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0">

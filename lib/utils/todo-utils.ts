@@ -8,7 +8,10 @@ import type { Todo } from "@/types";
  * @param newTodos - The new todos to merge
  * @returns Updated todos array (same reference if no changes)
  */
-export const mergeTodos = (currentTodos: Todo[], newTodos: Todo[]): Todo[] => {
+export const mergeTodos = (
+  currentTodos: Todo[],
+  newTodos: ReadonlyArray<TodoLike>,
+): Todo[] => {
   let hasChanges = false;
   const updatedTodos = [...currentTodos];
 
@@ -18,7 +21,7 @@ export const mergeTodos = (currentTodos: Todo[], newTodos: Todo[]): Todo[] => {
     if (existingIndex >= 0) {
       // Check if the todo actually changed
       const existing = updatedTodos[existingIndex];
-      const merged = {
+      const merged: Todo = {
         ...existing,
         // Preserve existing fields when incoming values are undefined
         content:
@@ -28,7 +31,7 @@ export const mergeTodos = (currentTodos: Todo[], newTodos: Todo[]): Todo[] => {
           newTodo.sourceMessageId !== undefined
             ? newTodo.sourceMessageId
             : existing.sourceMessageId,
-      } as typeof existing;
+      };
 
       if (
         existing.content !== merged.content ||
@@ -40,8 +43,10 @@ export const mergeTodos = (currentTodos: Todo[], newTodos: Todo[]): Todo[] => {
       }
     } else {
       // Add new todo
-      updatedTodos.push(newTodo);
-      hasChanges = true;
+      if (isCompleteTodoLike(newTodo)) {
+        updatedTodos.push(newTodo);
+        hasChanges = true;
+      }
     }
   }
 
@@ -57,6 +62,13 @@ export type TodoLike = {
   content?: string;
   status?: Todo["status"];
   sourceMessageId?: string;
+};
+
+/**
+ * Narrow a `TodoLike` to a full `Todo` by ensuring required fields exist.
+ */
+const isCompleteTodoLike = (candidate: TodoLike): candidate is Todo => {
+  return candidate.content !== undefined && candidate.status !== undefined;
 };
 
 /**
