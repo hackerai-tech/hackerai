@@ -149,6 +149,7 @@ export async function updateChat({
     id: string;
     content: string;
     status: "pending" | "in_progress" | "completed" | "cancelled";
+    sourceMessageId?: string;
   }>;
 }) {
   try {

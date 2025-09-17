@@ -13,6 +13,7 @@ import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type { ChatMode, Todo } from "@/types";
+import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
@@ -67,9 +68,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // If temporary mode, bypass DB reads/writes; use provided messages directly
-    const isTemporary = Boolean(temporary);
-
     // Get existing messages, merge with new messages, and truncate
     const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
       chatId,
@@ -77,10 +75,16 @@ export async function POST(req: NextRequest) {
       newMessages: messages,
       regenerate,
       isPro,
-      isTemporary,
+      isTemporary: temporary,
     });
 
-    if (!isTemporary) {
+    const baseTodos: Todo[] = getBaseTodosForRequest(
+      (chat?.todos as unknown as Todo[]) || [],
+      Array.isArray(todos) ? todos : [],
+      { isTemporary: !!temporary, regenerate },
+    );
+
+    if (!temporary) {
       await handleInitialChatAndUserMessage({
         chatId,
         userId,
@@ -105,6 +109,7 @@ export async function POST(req: NextRequest) {
     const userCustomization = await getUserCustomization({ userId });
     const memoryEnabled = userCustomization?.include_memory_entries ?? true;
     const posthog = PostHogClient();
+    const assistantMessageId = uuidv4();
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -114,14 +119,15 @@ export async function POST(req: NextRequest) {
           mode,
           executionMode,
           userLocation,
-          todos,
+          baseTodos,
           memoryEnabled,
-          isTemporary,
+          temporary,
+          assistantMessageId,
         );
 
         // Generate title in parallel only for non-temporary new chats
         const titlePromise =
-          isNewChat && !isTemporary
+          isNewChat && !temporary
             ? generateTitleFromUserMessageWithWriter(
                 processedMessages,
                 controller.signal,
@@ -139,7 +145,7 @@ export async function POST(req: NextRequest) {
             mode,
             executionMode,
             userCustomization,
-            isTemporary,
+            temporary,
           ),
           messages: convertToModelMessages(processedMessages),
           tools,
@@ -180,15 +186,25 @@ export async function POST(req: NextRequest) {
             }
 
             const generatedTitle = await titlePromise;
-            const currentTodos = getTodoManager().getAllTodos();
 
-            if (!isTemporary) {
-              if (generatedTitle || finishReason || currentTodos.length > 0) {
+            if (!temporary) {
+              const mergedTodos = getTodoManager().mergeWith(
+                baseTodos,
+                assistantMessageId,
+              );
+
+              const shouldPersist = regenerate
+                ? true
+                : Boolean(
+                    generatedTitle || finishReason || mergedTodos.length > 0,
+                  );
+
+              if (shouldPersist) {
                 await updateChat({
                   chatId,
                   title: generatedTitle,
                   finishReason,
-                  todos: currentTodos.length > 0 ? currentTodos : undefined,
+                  todos: mergedTodos,
                 });
               }
             }
@@ -200,9 +216,9 @@ export async function POST(req: NextRequest) {
 
         writer.merge(
           result.toUIMessageStream({
-            generateMessageId: uuidv4,
+            generateMessageId: () => assistantMessageId,
             onFinish: async ({ messages }) => {
-              if (isTemporary) return;
+              if (temporary) return;
               for (const message of messages) {
                 await saveMessage({
                   chatId,

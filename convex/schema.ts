@@ -18,6 +18,7 @@ export default defineSchema({
             v.literal("completed"),
             v.literal("cancelled"),
           ),
+          sourceMessageId: v.optional(v.string()),
         }),
       ),
     ),

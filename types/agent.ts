@@ -20,6 +20,7 @@ export interface ToolContext {
   userLocation: Geo;
   todoManager: TodoManager;
   userID: string;
+  assistantMessageId?: string;
 }
 
 export type ExecutionMode = "sandbox" | "local";

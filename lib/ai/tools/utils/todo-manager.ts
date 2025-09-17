@@ -12,6 +12,7 @@ export interface TodoUpdate {
  */
 export class TodoManager {
   private todos: Todo[] = [];
+  private hasCreatedPlanThisRun: boolean = false;
 
   constructor(initialTodos?: Todo[]) {
     if (initialTodos) {
@@ -34,8 +35,9 @@ export class TodoManager {
     merge: boolean = false,
   ): Todo[] {
     if (!merge) {
-      // Replace all todos
-      this.todos = [];
+      // Replace all assistant-sourced todos; preserve manual ones across runs
+      this.todos = this.todos.filter((t) => !t.sourceMessageId);
+      this.hasCreatedPlanThisRun = true;
     }
 
     for (const todo of newTodos) {
@@ -52,6 +54,8 @@ export class TodoManager {
           id: todo.id,
           content: todo.content ?? this.todos[existingIndex].content,
           status: todo.status ?? this.todos[existingIndex].status,
+          sourceMessageId:
+            todo.sourceMessageId ?? this.todos[existingIndex].sourceMessageId,
         };
       } else {
         // Add new todo
@@ -64,6 +68,7 @@ export class TodoManager {
           id: todo.id,
           content: todo.content ?? "",
           status: todo.status ?? "pending",
+          sourceMessageId: todo.sourceMessageId,
         });
       }
     }
@@ -88,5 +93,31 @@ export class TodoManager {
       // Count both completed and cancelled as "done" for progress tracking
       done: completed + cancelled,
     };
+  }
+
+  /**
+   * Merge base todos (from client/request) with current manager todos (tool-updated)
+   * and tag only newly generated/updated todos with the provided assistantMessageId.
+   */
+  mergeWith(baseTodos: Todo[] | undefined, assistantMessageId: string): Todo[] {
+    const base: Todo[] = Array.isArray(baseTodos) ? baseTodos : [];
+    const baseIdSet = new Set(base.map((t) => t.id));
+
+    const idToTodo: Record<string, Todo> = {};
+    for (const t of base) {
+      idToTodo[t.id] = t;
+    }
+
+    for (const t of this.todos) {
+      const shouldTag =
+        this.hasCreatedPlanThisRun &&
+        !t.sourceMessageId &&
+        !baseIdSet.has(t.id);
+      idToTodo[t.id] = shouldTag
+        ? { ...t, sourceMessageId: assistantMessageId }
+        : t;
+    }
+
+    return Object.values(idToTodo);
   }
 }

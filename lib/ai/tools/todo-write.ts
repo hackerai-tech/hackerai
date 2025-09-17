@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ToolContext, Todo } from "@/types";
 
 export const createTodoWrite = (context: ToolContext) => {
-  const { todoManager } = context;
+  const { todoManager, assistantMessageId } = context;
 
   return tool({
     description: `Use this tool to create and manage a structured task list for your current coding session. This helps track progress, organize complex tasks, and demonstrate thoroughness.
@@ -177,12 +177,23 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
           }
         }
 
+        // If incoming payload looks like partial updates (missing content fields), switch to merge to avoid replacing the whole plan.
+        const shouldMerge =
+          merge ||
+          todos.some((t) => t.content === undefined || t.content === null);
+
         // Update backend state first
-        const updatedTodos = todoManager.setTodos(todos, merge);
+        const updatedTodos = todoManager.setTodos(
+          // When creating a plan (shouldMerge=false), stamp todos with assistantMessageId
+          shouldMerge || !assistantMessageId
+            ? todos
+            : todos.map((t) => ({ ...t, sourceMessageId: assistantMessageId })),
+          shouldMerge,
+        );
 
         // Get current stats from the manager
         const stats = todoManager.getStats();
-        const action = merge ? "updated" : "created";
+        const action = shouldMerge ? "updated" : "created";
 
         const counts = {
           completed: stats.done, // Use 'done' which includes both completed and cancelled
@@ -194,6 +205,7 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
           id: t.id,
           content: t.content,
           status: t.status,
+          sourceMessageId: t.sourceMessageId,
         }));
 
         return {
