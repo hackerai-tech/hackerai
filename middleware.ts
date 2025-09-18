@@ -8,6 +8,7 @@ export default authkitMiddleware({
       "/login",
       "/signup",
       "/logout",
+      "/api/clear-auth-cookies",
       "/callback",
       "/privacy-policy",
       "/terms-of-service",

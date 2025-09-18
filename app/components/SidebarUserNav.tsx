@@ -5,19 +5,18 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   LogOut,
   Sparkle,
-  CreditCard,
   LifeBuoy,
   Trash2,
   Github,
   ChevronRight,
   Settings,
   Settings2,
+  CircleUserRound,
 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
-import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import { useIsMobile } from "@/hooks/use-mobile";
 import {
   DropdownMenu,
@@ -246,11 +245,9 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           sideOffset={8}
         >
           <DropdownMenuLabel className="font-normal">
-            <div className="flex flex-col space-y-1">
-              <p className="text-sm font-medium leading-none">
-                {getDisplayName()}
-              </p>
-              <p className="text-xs leading-none text-muted-foreground">
+            <div className="flex items-center space-x-2">
+              <CircleUserRound className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+              <p className="leading-none text-muted-foreground truncate min-w-0">
                 {user.email}
               </p>
             </div>
@@ -263,14 +260,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             <DropdownMenuItem onClick={redirectToPricing}>
               <Sparkle className="mr-2 h-4 w-4 text-foreground" />
               <span>Upgrade to Pro</span>
-            </DropdownMenuItem>
-          )}
-
-          {/* Show manage subscription option for pro users */}
-          {!isCheckingProPlan && isProUser && (
-            <DropdownMenuItem onClick={() => redirectToBillingPortal()}>
-              <CreditCard className="mr-2 h-4 w-4 text-foreground" />
-              <span>Manage Subscription</span>
             </DropdownMenuItem>
           )}
 
@@ -319,8 +308,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenuItem onClick={handleSignOut} variant="destructive">
-            <LogOut className="mr-2 h-4 w-4" />
+          <DropdownMenuItem onClick={handleSignOut}>
+            <LogOut className="mr-2 h-4 w-4 text-foreground" />
             <span>Log out</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
