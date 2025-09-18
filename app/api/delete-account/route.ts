@@ -37,9 +37,17 @@ export const POST = async (req: NextRequest) => {
             limit: 100,
           });
 
-          // Cancel sequentially and abort on first failure
+          // Cancel subscriptions, continue on failures
           for (const sub of subs.data) {
-            await stripe.subscriptions.cancel(sub.id as string);
+            try {
+              await stripe.subscriptions.cancel(sub.id as string);
+            } catch (subErr) {
+              console.warn(
+                "Failed to cancel subscription, continuing:",
+                sub.id,
+                subErr,
+              );
+            }
           }
 
           // Delete the Stripe customer after cancellations
