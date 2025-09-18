@@ -138,7 +138,7 @@ export const DeleteAccountDialog = ({
 
             <div className="space-y-2">
               <Label htmlFor="delete-confirm">
-                To proceed, type "DELETE" in the input field below.
+                To proceed, type &quot;DELETE&quot; in the input field below.
               </Label>
               <Input
                 id="delete-confirm"
