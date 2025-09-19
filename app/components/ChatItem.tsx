@@ -64,9 +64,14 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
     router.push(`/c/${id}`);
   };
 
+  const [isDeleting, setIsDeleting] = useState(false);
+
   const handleDelete = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+
+    if (isDeleting) return;
+    setIsDeleting(true);
 
     try {
       await deleteChat({ chatId: id });
@@ -76,8 +81,19 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
         initializeNewChat();
         router.push("/");
       }
-    } catch (error) {
-      console.error("Failed to delete chat:", error);
+    } catch (error: any) {
+      // Treat not found as success, and swallow other errors to avoid user noise
+      const message = String(error?.message || error);
+      if (message.includes("Chat not found")) {
+        if (isCurrentlyActive) {
+          initializeNewChat();
+          router.push("/");
+        }
+      } else {
+        console.error("Failed to delete chat:", error);
+      }
+    } finally {
+      setIsDeleting(false);
     }
   };
 
