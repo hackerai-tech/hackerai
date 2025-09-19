@@ -63,3 +63,50 @@ export const getUserIDAndPro = async (
     throw new ChatSDKError("unauthorized:auth");
   }
 };
+
+/**
+ * Get the current user ID only if the user has signed in recently.
+ * Enforces a freshness window (default 10 minutes) using session.user.lastSignInAt.
+ * Throws ChatSDKError if unauthenticated or if the last sign-in is stale.
+ *
+ * @param req - NextRequest object (server-side only)
+ * @param windowMs - Freshness window in milliseconds (default 10 minutes)
+ * @returns Promise<string> - User ID
+ * @throws ChatSDKError - When user is not authenticated or login is stale
+ */
+export const getUserIDWithFreshLogin = async (
+  req: NextRequest,
+  windowMs: number = 10 * 60 * 1000,
+): Promise<string> => {
+  try {
+    const { authkit } = await import("@workos-inc/authkit-nextjs");
+    const { session } = await authkit(req);
+
+    if (!session?.user?.id) {
+      throw new ChatSDKError("unauthorized:auth", "missing_session_user");
+    }
+
+    const lastSignInAt: unknown = (session as any)?.user?.lastSignInAt;
+    const lastSignInMs =
+      typeof lastSignInAt === "string" ? Date.parse(lastSignInAt) : NaN;
+
+    if (!Number.isFinite(lastSignInMs)) {
+      throw new ChatSDKError("unauthorized:auth", "missing_last_sign_in");
+    }
+
+    const now = Date.now();
+    const isFresh = now - lastSignInMs <= windowMs;
+    if (!isFresh) {
+      throw new ChatSDKError("unauthorized:auth", "recent_login_required");
+    }
+
+    return session.user.id;
+  } catch (error) {
+    if (error instanceof ChatSDKError) {
+      throw error;
+    }
+
+    console.error("Failed to verify fresh login:", error);
+    throw new ChatSDKError("unauthorized:auth", "recent_login_required");
+  }
+};

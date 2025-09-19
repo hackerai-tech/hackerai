@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "../stripe";
 import { workos } from "../workos";
-import { getUserID } from "@/lib/auth/get-user-id";
+import { getUserIDWithFreshLogin } from "@/lib/auth/get-user-id";
+import { ChatSDKError } from "@/lib/errors";
 
 export const POST = async (req: NextRequest) => {
   try {
-    const userId = await getUserID(req);
+    // Enforce recent login (10-minute window) before any destructive action
+    const userId = await getUserIDWithFreshLogin(req);
 
     // List all org memberships for this user
+    // NOTE: Pagination not required - users can only have one organization (max 2 if something goes wrong)
     const memberships = await workos.userManagement.listOrganizationMemberships(
       {
         userId,
@@ -63,6 +66,9 @@ export const POST = async (req: NextRequest) => {
         }
 
         // Try to delete the WorkOS organization entirely
+        // NOTE: Currently safe since subscriptions are single-person only (one user per org).
+        // TODO: If team plans are added, check membership count before deleting org to avoid
+        // user-triggered deletion of shared organizations. Only delete if sole member or owner.
         try {
           // Prefer deleting the organization; if it fails (e.g., shared org), fall back to removing membership
           await workos.organizations.deleteOrganization(orgId);
@@ -92,6 +98,9 @@ export const POST = async (req: NextRequest) => {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
+    if (error instanceof ChatSDKError) {
+      return error.toResponse();
+    }
     const message =
       error && typeof error === "object" && "message" in (error as any)
         ? (error as any).message
