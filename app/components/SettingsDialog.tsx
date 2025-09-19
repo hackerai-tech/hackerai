@@ -1,15 +1,13 @@
 "use client";
 
 import React, { useState } from "react";
-import { Settings, X, ChevronRight, Shield } from "lucide-react";
-import { useQuery, useMutation } from "convex/react";
-import { api } from "@/convex/_generated/api";
+import { Settings, X, Shield, CreditCard } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
 import { SecurityTab } from "@/app/components/SecurityTab";
+import { PersonalizationTab } from "@/app/components/PersonalizationTab";
+import { AccountTab } from "@/app/components/AccountTab";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface SettingsDialogProps {
@@ -23,17 +21,10 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
   const [showMemoriesDialog, setShowMemoriesDialog] = useState(false);
   const isMobile = useIsMobile();
 
-  const userCustomization = useQuery(
-    api.userCustomization.getUserCustomization,
-    open ? {} : "skip",
-  );
-  const saveCustomization = useMutation(
-    api.userCustomization.saveUserCustomization,
-  );
-
   const tabs = [
     { id: "Personalization", label: "Personalization", icon: Settings },
     { id: "Security", label: "Security", icon: Shield },
+    { id: "Account", label: "Account", icon: CreditCard },
   ];
 
   const handleCustomInstructions = () => {
@@ -69,7 +60,7 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
           )}
 
           <div
-            className={`flex ${isMobile ? "flex-col" : "flex-row"} ${isMobile ? "h-[580px]" : "h-[672px]"} max-h-[90vh]`}
+            className={`flex ${isMobile ? "flex-col" : "flex-row"} ${isMobile ? "h-[80dvh]" : "h-[672px]"} max-h-[90vh] min-h-0`}
           >
             {/* Tabs */}
             <div
@@ -92,14 +83,20 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                           key={tab.id}
                           type="button"
                           onClick={() => setActiveTab(tab.id)}
-                          className={`flex px-1 py-2 items-center text-sm leading-5 max-md:whitespace-nowrap md:h-8 md:gap-2 md:self-stretch md:px-4 md:rounded-lg hover:bg-muted ${
+                          className={`group flex items-center gap-1.5 px-1 py-2 text-sm leading-5 max-md:whitespace-nowrap md:h-12 md:gap-2.5 md:self-stretch md:px-4 md:rounded-lg hover:bg-muted transition-colors ${
                             activeTab === tab.id
                               ? `${isMobile ? "font-medium" : "bg-muted font-medium"}`
                               : ""
                           } ${isMobile && activeTab === tab.id ? "relative" : ""}`}
                         >
-                          {!isMobile && <IconComponent className="h-4 w-4" />}
-                          <span className="truncate">{tab.label}</span>
+                          {!isMobile && (
+                            <div className="flex items-center justify-center">
+                              <IconComponent className="h-5 w-5" />
+                            </div>
+                          )}
+                          <div className="flex min-w-0 grow items-center">
+                            <div className="truncate">{tab.label}</div>
+                          </div>
                           {isMobile && activeTab === tab.id && (
                             <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-foreground"></div>
                           )}
@@ -112,80 +109,23 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
             </div>
 
             {/* Content area */}
-            <div className="flex flex-col items-start self-stretch flex-1 overflow-hidden">
+            <div className="flex flex-col items-start self-stretch flex-1 overflow-hidden min-h-0">
               {!isMobile && (
                 <div className="gap-1 items-center px-6 py-5 hidden md:flex self-stretch border-b">
                   <h3 className="text-lg font-medium">{activeTab}</h3>
                 </div>
               )}
-              <div className="flex-1 self-stretch items-start overflow-y-auto px-4 pt-4 pb-4 md:px-6 md:pt-4">
+              <div className="flex-1 self-stretch items-start overflow-y-auto px-4 pt-4 pb-4 md:px-6 md:pt-4 min-h-0">
                 {activeTab === "Personalization" && (
-                  <div className="space-y-6">
-                    {/* Personalization Section */}
-                    <div>
-                      <div className="space-y-4">
-                        <div
-                          className="flex items-center justify-between py-3 border-b cursor-pointer hover:bg-muted/50 transition-colors rounded-md px-2 -mx-2"
-                          onClick={handleCustomInstructions}
-                        >
-                          <div>
-                            <div className="font-medium">
-                              Custom instructions
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            Configure
-                            <ChevronRight className="h-4 w-4" />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Memory Section */}
-                    <div>
-                      <h3 className="text-lg font-medium mb-4 pb-2 border-b">
-                        Memory
-                      </h3>
-                      <div className="space-y-4">
-                        <div className="flex items-center justify-between py-3 border-b">
-                          <div>
-                            <div className="font-medium">Enable memory</div>
-                            <div className="text-sm text-muted-foreground">
-                              Let HackerAI save and use memories when
-                              responding.
-                            </div>
-                          </div>
-                          <Switch
-                            checked={
-                              userCustomization?.include_memory_entries ?? true
-                            }
-                            onCheckedChange={(checked) => {
-                              saveCustomization({
-                                include_memory_entries: checked,
-                              });
-                            }}
-                            aria-label="Toggle memory"
-                          />
-                        </div>
-
-                        <div className="flex items-center justify-between py-3">
-                          <div>
-                            <div className="font-medium">Manage memories</div>
-                          </div>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleManageMemories}
-                          >
-                            Manage
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  <PersonalizationTab
+                    onCustomInstructions={handleCustomInstructions}
+                    onManageMemories={handleManageMemories}
+                  />
                 )}
 
                 {activeTab === "Security" && <SecurityTab />}
+
+                {activeTab === "Account" && <AccountTab />}
               </div>
             </div>
           </div>

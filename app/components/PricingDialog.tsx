@@ -4,20 +4,10 @@ import React from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import {
-  Sparkle,
-  Loader2,
-  MessagesSquare,
-  Brain,
-  Clock,
-  Upload,
-  FlaskConical,
-  X,
-  SquareTerminal,
-} from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { freeFeatures, proFeatures } from "@/lib/pricing/features";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -143,21 +133,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     }
   };
 
-  // Plan data configuration
-  const freeFeatures = [
-    { icon: Sparkle, text: "Access to basic AI model" },
-    { icon: Clock, text: "Limited and slower responses" },
-    { icon: Brain, text: "Basic memory and context" },
-  ];
-
-  const proFeatures = [
-    { icon: Sparkle, text: "Access to smartest AI model" },
-    { icon: MessagesSquare, text: "Expanded messaging" },
-    { icon: Upload, text: "Access to file uploads" },
-    { icon: SquareTerminal, text: "Agent mode with terminal" },
-    { icon: Brain, text: "Expanded memory and context" },
-    { icon: FlaskConical, text: "Research preview of new features" },
-  ];
+  // Plan data configuration imported from shared module
 
   // Button configurations for Free plan
   const getFreeButtonConfig = () => {

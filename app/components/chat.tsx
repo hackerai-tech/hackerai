@@ -92,7 +92,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
 
   // Get chat data to retrieve title when loading existing chat
   const chatData = useQuery(
-    api.chats.getChatById,
+    api.chats.getChatByIdFromClient,
     shouldFetchMessages ? { id: chatId } : "skip",
   );
 

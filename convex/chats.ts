@@ -11,6 +11,68 @@ export function validateServiceKey(serviceKey?: string): void {
 /**
  * Get a chat by its ID
  */
+export const getChatByIdFromClient = query({
+  args: { id: v.string() },
+  returns: v.union(
+    v.object({
+      _id: v.id("chats"),
+      _creationTime: v.number(),
+      id: v.string(),
+      title: v.string(),
+      user_id: v.string(),
+      finish_reason: v.optional(v.string()),
+      todos: v.optional(
+        v.array(
+          v.object({
+            id: v.string(),
+            content: v.string(),
+            status: v.union(
+              v.literal("pending"),
+              v.literal("in_progress"),
+              v.literal("completed"),
+              v.literal("cancelled"),
+            ),
+            sourceMessageId: v.optional(v.string()),
+          }),
+        ),
+      ),
+      update_time: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    try {
+      // Enforce ownership: only return the chat for the authenticated owner
+      const identity = await ctx.auth.getUserIdentity();
+      if (!identity) {
+        return null;
+      }
+
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+        .first();
+
+      if (!chat) {
+        return null;
+      }
+
+      if (chat.user_id !== identity.subject) {
+        return null;
+      }
+
+      return chat;
+    } catch (error) {
+      console.error("Failed to get chat by id:", error);
+      return null;
+    }
+  },
+});
+
+/**
+ * Backend: Get a chat by its ID using service key (no ctx.auth).
+ * Used by server-side actions that already enforce ownership separately.
+ */
 export const getChatById = query({
   args: { serviceKey: v.optional(v.string()), id: v.string() },
   returns: v.union(
@@ -52,7 +114,7 @@ export const getChatById = query({
 
       return chat || null;
     } catch (error) {
-      console.error("Failed to get chat by id:", error);
+      console.error("Failed to get chat by id (backend):", error);
       return null;
     }
   },
