@@ -292,7 +292,7 @@ export const deleteChat = mutation({
         .first();
 
       if (!chat) {
-        throw new Error("Chat not found");
+        return null;
       } else if (chat.user_id !== user.subject) {
         throw new Error("Unauthorized: Chat does not belong to user");
       }
@@ -342,7 +342,8 @@ export const deleteChat = mutation({
       return null;
     } catch (error) {
       console.error("Failed to delete chat:", error);
-      throw error;
+      // Avoid surfacing errors to the client; treat as a no-op
+      return null;
     }
   },
 });

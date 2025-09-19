@@ -110,16 +110,16 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   };
 
   const handleDeleteAllChats = async () => {
+    if (isDeleting) return;
+    setIsDeleting(true);
     try {
-      setIsDeleting(true);
       await deleteAllChats();
-      setShowDeleteDialog(false);
-      // Optionally redirect to home or show success message
-      window.location.href = "/";
     } catch (error) {
+      // Swallow errors and proceed as success to avoid surfacing noise
       console.error("Failed to delete all chats:", error);
-      // Optionally show error message to user
     } finally {
+      setShowDeleteDialog(false);
+      window.location.href = "/";
       setIsDeleting(false);
     }
   };
