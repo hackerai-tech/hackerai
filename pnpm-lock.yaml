@@ -21,7 +21,7 @@ importers:
         version: 2.0.0
       "@langchain/community":
         specifier: ^0.3.55
-        version: 0.3.55(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@16.4.7)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(zod@4.1.8))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@0.3.72(@opentelemetry/api@1.9.0)(openai@5.20.2(ws@8.18.3)(zod@4.1.8)))(@opentelemetry/api@1.9.0)(@upstash/ratelimit@2.0.6(@upstash/redis@1.35.3))(@upstash/redis@1.35.3)(axios@1.11.0)(convex@1.27.0(react@19.1.1))(google-auth-library@9.15.1)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsonwebtoken@9.0.2)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(pdf-parse@1.1.1)(playwright@1.55.0)(weaviate-client@3.8.1)(ws@8.18.3)
+        version: 0.3.55(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@16.4.7)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(zod@4.1.8))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@0.3.72(@opentelemetry/api@1.9.0)(openai@5.20.2(ws@8.18.3)(zod@4.1.8)))(@opentelemetry/api@1.9.0)(@upstash/ratelimit@2.0.6(@upstash/redis@1.35.3))(@upstash/redis@1.35.3)(axios@1.11.0)(convex@1.27.0(react@19.1.1))(google-auth-library@9.15.1)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsonwebtoken@9.0.2)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(pdf-parse@1.1.1)(playwright@1.55.0)(redis@5.8.2)(weaviate-client@3.8.1)(ws@8.18.3)
       "@openrouter/ai-sdk-provider":
         specifier: ^1.2.0
         version: 1.2.0(ai@5.0.44(zod@4.1.8))(zod@4.1.8)
@@ -154,6 +154,12 @@ importers:
       react-textarea-autosize:
         specifier: ^8.5.9
         version: 8.5.9(@types/react@19.1.9)(react@19.1.1)
+      redis:
+        specifier: ^5.8.2
+        version: 5.8.2
+      resumable-stream:
+        specifier: ^2.2.4
+        version: 2.2.4
       shiki:
         specifier: ^3.12.2
         version: 3.12.2
@@ -2564,6 +2570,49 @@ packages:
         integrity: sha512-HPwpGIzkl28mWyZqG52jiqDJ12waP11Pa1lGoiyUkIEuMLBP0oeK/C89esbXrxsky5we7dfd8U58nm0SgAWpVw==,
       }
 
+  "@redis/bloom@5.8.2":
+    resolution:
+      {
+        integrity: sha512-855DR0ChetZLarblio5eM0yLwxA9Dqq50t8StXKp5bAtLT0G+rZ+eRzzqxl37sPqQKjUudSYypz55o6nNhbz0A==,
+      }
+    engines: { node: ">= 18" }
+    peerDependencies:
+      "@redis/client": ^5.8.2
+
+  "@redis/client@5.8.2":
+    resolution:
+      {
+        integrity: sha512-WtMScno3+eBpTac1Uav2zugXEoXqaU23YznwvFgkPwBQVwEHTDgOG7uEAObtZ/Nyn8SmAMbqkEubJaMOvnqdsQ==,
+      }
+    engines: { node: ">= 18" }
+
+  "@redis/json@5.8.2":
+    resolution:
+      {
+        integrity: sha512-uxpVfas3I0LccBX9rIfDgJ0dBrUa3+0Gc8sEwmQQH0vHi7C1Rx1Qn8Nv1QWz5bohoeIXMICFZRcyDONvum2l/w==,
+      }
+    engines: { node: ">= 18" }
+    peerDependencies:
+      "@redis/client": ^5.8.2
+
+  "@redis/search@5.8.2":
+    resolution:
+      {
+        integrity: sha512-cNv7HlgayavCBXqPXgaS97DRPVWFznuzsAmmuemi2TMCx5scwLiP50TeZvUS06h/MG96YNPe6A0Zt57yayfxwA==,
+      }
+    engines: { node: ">= 18" }
+    peerDependencies:
+      "@redis/client": ^5.8.2
+
+  "@redis/time-series@5.8.2":
+    resolution:
+      {
+        integrity: sha512-g2NlHM07fK8H4k+613NBsk3y70R2JIM2dPMSkhIjl2Z17SYvaYKdusz85d7VYOrZBWtDrHV/WD2E3vGu+zni8A==,
+      }
+    engines: { node: ">= 18" }
+    peerDependencies:
+      "@redis/client": ^5.8.2
+
   "@rolldown/binding-android-arm64@1.0.0-beta.33":
     resolution:
       {
@@ -4324,6 +4373,13 @@ packages:
         integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==,
       }
     engines: { node: ">=6" }
+
+  cluster-key-slot@1.1.2:
+    resolution:
+      {
+        integrity: sha512-RMr0FhtfXemyinomL4hrWcYJxmX6deFdCxpJzhDttxgO1+bcCnkk+9drydLVDmAMG7NE6aN/fl4F7ucU/90gAA==,
+      }
+    engines: { node: ">=0.10.0" }
 
   color-convert@2.0.1:
     resolution:
@@ -7834,6 +7890,13 @@ packages:
       }
     engines: { node: ">= 14.18.0" }
 
+  redis@5.8.2:
+    resolution:
+      {
+        integrity: sha512-31vunZj07++Y1vcFGcnNWEf5jPoTkGARgfWI4+Tk55vdwHxhAvug8VEtW7Cx+/h47NuJTEg/JL77zAwC6E0OeA==,
+      }
+    engines: { node: ">= 18" }
+
   reflect.getprototypeof@1.0.10:
     resolution:
       {
@@ -7942,6 +8005,12 @@ packages:
         integrity: sha512-U7WjGVG9sH8tvjW5SmGbQuui75FiyjAX72HX15DwBBwF9dNiQZRQAg9nnPhYy+TUnE0+VcrttuvNI8oSxZcocA==,
       }
     hasBin: true
+
+  resumable-stream@2.2.4:
+    resolution:
+      {
+        integrity: sha512-1MPxh4IjQVNPR4m4/7zV7/QtBa6qAhrWs+RPTeai8LnO1YnxFaGy+VbYtd0iLGZZ967F+rmOSFsNdm4BeoSYgA==,
+      }
 
   retry-axios@2.6.0:
     resolution:
@@ -9762,7 +9831,7 @@ snapshots:
 
   "@js-sdsl/ordered-map@4.4.2": {}
 
-  "@langchain/community@0.3.55(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@16.4.7)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(zod@4.1.8))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@0.3.72(@opentelemetry/api@1.9.0)(openai@5.20.2(ws@8.18.3)(zod@4.1.8)))(@opentelemetry/api@1.9.0)(@upstash/ratelimit@2.0.6(@upstash/redis@1.35.3))(@upstash/redis@1.35.3)(axios@1.11.0)(convex@1.27.0(react@19.1.1))(google-auth-library@9.15.1)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsonwebtoken@9.0.2)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(pdf-parse@1.1.1)(playwright@1.55.0)(weaviate-client@3.8.1)(ws@8.18.3)":
+  "@langchain/community@0.3.55(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@16.4.7)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(zod@4.1.8))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@0.3.72(@opentelemetry/api@1.9.0)(openai@5.20.2(ws@8.18.3)(zod@4.1.8)))(@opentelemetry/api@1.9.0)(@upstash/ratelimit@2.0.6(@upstash/redis@1.35.3))(@upstash/redis@1.35.3)(axios@1.11.0)(convex@1.27.0(react@19.1.1))(google-auth-library@9.15.1)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsonwebtoken@9.0.2)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(pdf-parse@1.1.1)(playwright@1.55.0)(redis@5.8.2)(weaviate-client@3.8.1)(ws@8.18.3)":
     dependencies:
       "@browserbasehq/stagehand": 1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@16.4.7)(openai@5.20.2(ws@8.18.3)(zod@4.1.8))(zod@4.1.8)
       "@ibm-cloud/watsonx-ai": 1.6.12
@@ -9789,6 +9858,7 @@ snapshots:
       jsonwebtoken: 9.0.2
       pdf-parse: 1.1.1
       playwright: 1.55.0
+      redis: 5.8.2
       weaviate-client: 3.8.1
       ws: 8.18.3
     transitivePeerDependencies:
@@ -10451,6 +10521,26 @@ snapshots:
       "@types/react-dom": 19.1.7(@types/react@19.1.9)
 
   "@radix-ui/rect@1.1.1": {}
+
+  "@redis/bloom@5.8.2(@redis/client@5.8.2)":
+    dependencies:
+      "@redis/client": 5.8.2
+
+  "@redis/client@5.8.2":
+    dependencies:
+      cluster-key-slot: 1.1.2
+
+  "@redis/json@5.8.2(@redis/client@5.8.2)":
+    dependencies:
+      "@redis/client": 5.8.2
+
+  "@redis/search@5.8.2(@redis/client@5.8.2)":
+    dependencies:
+      "@redis/client": 5.8.2
+
+  "@redis/time-series@5.8.2(@redis/client@5.8.2)":
+    dependencies:
+      "@redis/client": 5.8.2
 
   "@rolldown/binding-android-arm64@1.0.0-beta.33":
     optional: true
@@ -11473,6 +11563,8 @@ snapshots:
       wrap-ansi: 7.0.0
 
   clsx@2.1.1: {}
+
+  cluster-key-slot@1.1.2: {}
 
   color-convert@2.0.1:
     dependencies:
@@ -13967,6 +14059,14 @@ snapshots:
 
   readdirp@4.1.2: {}
 
+  redis@5.8.2:
+    dependencies:
+      "@redis/bloom": 5.8.2(@redis/client@5.8.2)
+      "@redis/client": 5.8.2
+      "@redis/json": 5.8.2(@redis/client@5.8.2)
+      "@redis/search": 5.8.2(@redis/client@5.8.2)
+      "@redis/time-series": 5.8.2(@redis/client@5.8.2)
+
   reflect.getprototypeof@1.0.10:
     dependencies:
       call-bind: 1.0.8
@@ -14069,6 +14169,8 @@ snapshots:
       is-core-module: 2.16.1
       path-parse: 1.0.7
       supports-preserve-symlinks-flag: 1.0.0
+
+  resumable-stream@2.2.4: {}
 
   retry-axios@2.6.0(axios@1.11.0):
     dependencies:

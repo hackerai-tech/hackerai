@@ -36,7 +36,6 @@ ${truncateMiddle(message, 8000)}`;
 
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
-  abortSignal: AbortSignal,
 ): Promise<string> => {
   const firstMessage = truncatedMessages[0];
   const textContent = firstMessage.parts
@@ -66,7 +65,6 @@ export const generateTitleFromUserMessage = async (
         content: DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE(textContent),
       },
     ],
-    abortSignal,
   });
 
   return title;
@@ -74,14 +72,10 @@ export const generateTitleFromUserMessage = async (
 
 export const generateTitleFromUserMessageWithWriter = async (
   truncatedMessages: UIMessage[],
-  abortSignal: AbortSignal,
   writer: UIMessageStreamWriter,
 ): Promise<string | undefined> => {
   try {
-    const chatTitle = await generateTitleFromUserMessage(
-      truncatedMessages,
-      abortSignal,
-    );
+    const chatTitle = await generateTitleFromUserMessage(truncatedMessages);
 
     writer.write({
       type: "data-title",

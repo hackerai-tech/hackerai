@@ -126,8 +126,6 @@ export const CitationDisplay: FC<CitationDisplayProps> = ({
                   }
                   fill
                   sizes="24px"
-                  // Disable optimization for small favicon images
-                  unoptimized={true}
                 />
               ) : (
                 <div className="flex items-center justify-center w-full h-full">

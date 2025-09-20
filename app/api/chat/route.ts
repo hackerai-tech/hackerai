@@ -30,16 +30,34 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
+import { after } from "next/server";
+import { createResumableStreamContext } from "resumable-stream";
+import { setActiveStreamId } from "@/lib/db/actions";
 
 export const maxDuration = 300;
 
+let globalStreamContext: any | null = null;
+export function getStreamContext() {
+  if (!globalStreamContext) {
+    try {
+      globalStreamContext = createResumableStreamContext({ waitUntil: after });
+    } catch (error: any) {
+      if (
+        typeof error?.message === "string" &&
+        error.message.includes("REDIS_URL")
+      ) {
+        console.log(
+          " > Resumable streams are disabled due to missing REDIS_URL",
+        );
+      } else {
+        console.warn("Resumable stream context init failed:", error);
+      }
+    }
+  }
+  return globalStreamContext;
+}
+
 export async function POST(req: NextRequest) {
-  const controller = new AbortController();
-
-  req.signal.addEventListener("abort", () => {
-    console.log("Request aborted");
-  });
-
   try {
     const {
       messages,
@@ -111,6 +129,11 @@ export async function POST(req: NextRequest) {
     const posthog = PostHogClient();
     const assistantMessageId = uuidv4();
 
+    // Clear any previous active stream id before starting a new one (non-temporary chats)
+    if (!temporary) {
+      await setActiveStreamId({ chatId, activeStreamId: undefined });
+    }
+
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         const { tools, getSandbox, getTodoManager } = createTools(
@@ -128,11 +151,7 @@ export async function POST(req: NextRequest) {
         // Generate title in parallel only for non-temporary new chats
         const titlePromise =
           isNewChat && !temporary
-            ? generateTitleFromUserMessageWithWriter(
-                processedMessages,
-                controller.signal,
-                writer,
-              )
+            ? generateTitleFromUserMessageWithWriter(processedMessages, writer)
             : Promise.resolve(undefined);
 
         const trackedProvider = createTrackedProvider(userId, chatId, isPro);
@@ -149,7 +168,6 @@ export async function POST(req: NextRequest) {
           ),
           messages: convertToModelMessages(processedMessages),
           tools,
-          abortSignal: controller.signal,
           providerOptions: {
             openai: {
               parallelToolCalls: false,
@@ -207,10 +225,10 @@ export async function POST(req: NextRequest) {
                   todos: mergedTodos,
                 });
               }
+
+              // Clear active stream id when finished
+              await setActiveStreamId({ chatId, activeStreamId: undefined });
             }
-          },
-          onAbort: async (error) => {
-            console.log("Stream was aborted", error);
           },
         });
 
@@ -233,7 +251,22 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return new Response(stream.pipeThrough(new JsonToSseTransformStream()));
+    // Wrap the UI message stream as SSE
+    const sse = stream.pipeThrough(new JsonToSseTransformStream());
+
+    // Create a resumable stream and persist the active stream id (non-temporary chats)
+    if (!temporary) {
+      const streamContext = getStreamContext();
+      if (streamContext) {
+        const streamId = uuidv4();
+        await setActiveStreamId({ chatId, activeStreamId: streamId });
+        const body = await streamContext.resumableStream(streamId, () => sse);
+        return new Response(body);
+      }
+    }
+
+    // Temporary chats do not support resumption; return SSE directly
+    return new Response(sse);
   } catch (error) {
     // Handle ChatSDKErrors (including authentication errors)
     if (error instanceof ChatSDKError) {

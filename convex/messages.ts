@@ -213,9 +213,7 @@ export const getMessagesByChatId = query({
         page: enhancedMessages,
       };
     } catch (error) {
-      console.error("Failed to get messages:", error);
-
-      // Handle chat not found error gracefully - return empty results instead of throwing
+      // Handle chat not found error gracefully - return empty results without logging
       if (
         error instanceof ConvexError &&
         error.data?.code === "CHAT_NOT_FOUND"
@@ -226,6 +224,9 @@ export const getMessagesByChatId = query({
           continueCursor: "",
         };
       }
+
+      // Log unexpected errors only
+      console.error("Failed to get messages:", error);
 
       // Re-throw other ConvexErrors for frontend handling
       if (error instanceof ConvexError) {
@@ -265,6 +266,15 @@ export const saveAssistantMessageFromClient = mutation({
     }
 
     try {
+      // Deduplicate by message id to avoid duplicates when stop is clicked multiple times
+      const existing = await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q) => q.eq("id", args.id))
+        .first();
+      if (existing) {
+        return null;
+      }
+
       // Verify chat ownership
       const chatExists: boolean = await ctx.runQuery(
         internal.messages.verifyChatOwnership,
