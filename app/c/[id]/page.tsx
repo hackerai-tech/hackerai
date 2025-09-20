@@ -23,7 +23,7 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
       </AuthLoading>
 
       <Authenticated>
-        <Chat chatId={chatId} />
+        <Chat chatId={chatId} autoResume={true} />
       </Authenticated>
 
       <Unauthenticated>

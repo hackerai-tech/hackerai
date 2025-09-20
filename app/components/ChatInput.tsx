@@ -47,6 +47,7 @@ interface ChatInputProps {
   hasMessages?: boolean;
   isAtBottom?: boolean;
   onScrollToBottom?: () => void;
+  hideStop?: boolean;
 }
 
 export const ChatInput = ({
@@ -57,6 +58,7 @@ export const ChatInput = ({
   hasMessages = false,
   isAtBottom = true,
   onScrollToBottom,
+  hideStop = false,
 }: ChatInputProps) => {
   const {
     input,
@@ -121,7 +123,7 @@ export const ChatInput = ({
       onStop();
     },
     {
-      enabled: isGenerating,
+      enabled: isGenerating && !hideStop,
       enableOnFormTags: true,
       enableOnContentEditable: true,
       preventDefault: true,
@@ -217,10 +219,7 @@ export const ChatInput = ({
           </div>
           <div className="px-3 flex gap-2 items-center">
             {/* Attachment Button */}
-            <AttachmentButton
-              onAttachClick={handleAttachClick}
-              disabled={isGenerating}
-            />
+            <AttachmentButton onAttachClick={handleAttachClick} />
 
             {/* Mode selector */}
             <div className="flex items-center gap-2">
@@ -296,7 +295,7 @@ export const ChatInput = ({
               </DropdownMenu>
             </div>
             <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
-              {isGenerating ? (
+              {isGenerating && !hideStop ? (
                 <TooltipPrimitive.Root>
                   <TooltipTrigger asChild>
                     <Button

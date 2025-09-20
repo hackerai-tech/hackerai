@@ -284,6 +284,28 @@ export async function getMemoryById({ memoryId }: { memoryId: string }) {
   }
 }
 
+export async function setActiveStreamId({
+  chatId,
+  activeStreamId,
+}: {
+  chatId: string;
+  activeStreamId: string | undefined;
+}) {
+  try {
+    await convex.mutation(api.chats.setActiveStreamId, {
+      serviceKey,
+      chatId,
+      activeStreamId,
+    });
+    return;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to set active stream id",
+    );
+  }
+}
+
 export async function createMemory({
   userId,
   content,

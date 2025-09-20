@@ -5,9 +5,10 @@ import "./globals.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { GlobalStateProvider } from "./contexts/GlobalState";
-import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
+import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { PostHogProvider } from "./providers";
+import { DataStreamProvider } from "./components/DataStreamProvider";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -94,12 +95,14 @@ export default function RootLayout({
   const content = (
     <GlobalStateProvider>
       <PostHogProvider>
-        <TodoBlockProvider>
-          <TooltipProvider>
-            {children}
-            <Toaster />
-          </TooltipProvider>
-        </TodoBlockProvider>
+        <DataStreamProvider>
+          <TodoBlockProvider>
+            <TooltipProvider>
+              {children}
+              <Toaster />
+            </TooltipProvider>
+          </TodoBlockProvider>
+        </DataStreamProvider>
       </PostHogProvider>
     </GlobalStateProvider>
   );

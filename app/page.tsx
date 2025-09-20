@@ -65,7 +65,7 @@ const UnauthenticatedContent = () => {
 
 // Authenticated content that shows chat (UUID generated internally)
 const AuthenticatedContent = () => {
-  return <Chat />;
+  return <Chat autoResume={false} />;
 };
 
 // Main page component with Convex authentication

@@ -61,6 +61,8 @@
     "react-hotkeys-hook": "^5.1.0",
     "react-shiki": "^0.8.0",
     "react-textarea-autosize": "^8.5.9",
+    "redis": "^5.8.2",
+    "resumable-stream": "^2.2.4",
     "shiki": "^3.12.2",
     "sonner": "^2.0.7",
     "streamdown": "^1.2.0",

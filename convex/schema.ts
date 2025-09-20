@@ -7,6 +7,7 @@ export default defineSchema({
     title: v.string(),
     user_id: v.string(),
     finish_reason: v.optional(v.string()),
+    active_stream_id: v.optional(v.string()),
     todos: v.optional(
       v.array(
         v.object({
@@ -34,7 +35,7 @@ export default defineSchema({
   messages: defineTable({
     id: v.string(),
     chat_id: v.string(),
-    user_id: v.optional(v.string()),
+    user_id: v.string(),
     role: v.union(
       v.literal("user"),
       v.literal("assistant"),

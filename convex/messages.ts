@@ -266,6 +266,15 @@ export const saveAssistantMessageFromClient = mutation({
     }
 
     try {
+      // Deduplicate by message id to avoid duplicates when stop is clicked multiple times
+      const existing = await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q) => q.eq("id", args.id))
+        .first();
+      if (existing) {
+        return null;
+      }
+
       // Verify chat ownership
       const chatExists: boolean = await ctx.runQuery(
         internal.messages.verifyChatOwnership,

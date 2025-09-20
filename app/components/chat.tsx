@@ -26,9 +26,18 @@ import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
+import { useAutoResume } from "../hooks/useAutoResume";
+import { useDataStream } from "./DataStreamProvider";
 
-export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
+export const Chat = ({
+  chatId: routeChatId,
+  autoResume,
+}: {
+  chatId?: string;
+  autoResume: boolean;
+}) => {
   const isMobile = useIsMobile();
+  const { setDataStream, isAutoResuming, setIsAutoResuming } = useDataStream();
 
   const {
     chatTitle,
@@ -112,6 +121,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
     stop,
     error,
     regenerate,
+    resumeStream,
   } = useChat({
     id: chatId,
     messages: initialMessages,
@@ -141,10 +151,10 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
         };
       },
     }),
-    onData: ({ data, type }) => {
-      if (type === "data-title") {
-        setChatTitle((data as { chatTitle: string }).chatTitle);
-      }
+    onData: (dataPart) => {
+      setDataStream((ds) => (ds ? [...ds, dataPart] : []));
+      if (dataPart.type === "data-title")
+        setChatTitle((dataPart.data as { chatTitle: string }).chatTitle);
     },
     onToolCall: ({ toolCall }) => {
       if (toolCall.toolName === "todo_write" && toolCall.input) {
@@ -171,6 +181,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
       }
     },
     onFinish: () => {
+      setIsAutoResuming(false);
       // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
@@ -179,10 +190,19 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
       }
     },
     onError: (error) => {
+      setIsAutoResuming(false);
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
     },
+  });
+
+  // Auto-resume controlled by prop; default to true when a specific chat id is present, false on "/"
+  useAutoResume({
+    autoResume,
+    initialMessages,
+    resumeStream,
+    setMessages,
   });
 
   // Clear messages when starting a new chat (after useChat hook is ready)
@@ -436,6 +456,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                               onSubmit={handleSubmit}
                               onStop={handleStop}
                               status={status}
+                              hideStop={isAutoResuming}
                               isCentered={true}
                               hasMessages={hasMessages}
                               isAtBottom={isAtBottom}
@@ -460,6 +481,7 @@ export const Chat = ({ chatId: routeChatId }: { chatId?: string }) => {
                       onSubmit={handleSubmit}
                       onStop={handleStop}
                       status={status}
+                      hideStop={isAutoResuming}
                       hasMessages={hasMessages}
                       isAtBottom={isAtBottom}
                       onScrollToBottom={handleScrollToBottom}

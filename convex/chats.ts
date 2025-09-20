@@ -21,6 +21,7 @@ export const getChatByIdFromClient = query({
       title: v.string(),
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
+      active_stream_id: v.optional(v.string()),
       todos: v.optional(
         v.array(
           v.object({
@@ -83,6 +84,7 @@ export const getChatById = query({
       title: v.string(),
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
+      active_stream_id: v.optional(v.string()),
       todos: v.optional(
         v.array(
           v.object({
@@ -227,6 +229,41 @@ export const updateChat = mutation({
       console.error("Failed to update chat:", error);
       throw new Error("Failed to update chat");
     }
+  },
+});
+
+/**
+ * Set or clear the active resumable stream id for a chat (backend only)
+ */
+export const setActiveStreamId = mutation({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+    activeStreamId: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new Error("Chat not found");
+    }
+
+    const patch: { active_stream_id?: string; update_time: number } = {
+      update_time: Date.now(),
+    };
+    if (args.activeStreamId !== undefined) {
+      patch.active_stream_id = args.activeStreamId;
+    }
+    await ctx.db.patch(chat._id, patch);
+
+    return null;
   },
 });
 
