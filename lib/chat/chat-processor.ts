@@ -100,7 +100,7 @@ export async function processChatMessages({
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
   // Check moderation for the last user message
-  const moderationResult = await getModerationResult(messagesWithUrls);
+  const moderationResult = await getModerationResult(messagesWithUrls, isPro);
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
