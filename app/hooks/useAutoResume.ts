@@ -19,21 +19,20 @@ export function useAutoResume({
   setMessages,
 }: UseAutoResumeParams) {
   const { dataStream, setIsAutoResuming } = useDataStream();
-  const hasAttemptedRef = useRef(false);
+  const hasAutoResumedRef = useRef(false);
 
   useEffect(() => {
-    if (!autoResume) return;
-    if (hasAttemptedRef.current) return;
+    if (!autoResume || hasAutoResumedRef.current) return;
+    if (initialMessages.length === 0) return;
 
     const mostRecentMessage = initialMessages.at(-1);
-    const shouldResume = mostRecentMessage?.role === "user";
 
-    if (shouldResume) {
-      hasAttemptedRef.current = true;
+    if (mostRecentMessage?.role === "user") {
+      hasAutoResumedRef.current = true;
       setIsAutoResuming(true);
       resumeStream();
     }
-  }, [autoResume, initialMessages, resumeStream]);
+  }, [autoResume, initialMessages.length > 0]);
 
   useEffect(() => {
     if (!dataStream) return;
