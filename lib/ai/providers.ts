@@ -9,8 +9,8 @@ const baseProviders = {
     process.env.NEXT_PUBLIC_ASK_MODEL || "deepseek/deepseek-chat-v3-0324",
   ),
   "agent-model": openai(process.env.NEXT_PUBLIC_AGENT_MODEL || "gpt-5-mini"),
-  "vision-model": openrouter(
-    process.env.NEXT_PUBLIC_VISION_MODEL || "google/gemini-2.5-flash",
+  "vision-model": openai(
+    process.env.NEXT_PUBLIC_VISION_MODEL || "gpt-5-2025-08-07",
   ),
   "title-generator-model": openrouter(
     process.env.NEXT_PUBLIC_TITLE_MODEL || "google/gemini-2.5-flash",
