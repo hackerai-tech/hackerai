@@ -10,10 +10,10 @@ const baseProviders = {
   ),
   "agent-model": openai(process.env.NEXT_PUBLIC_AGENT_MODEL || "gpt-5-mini"),
   "vision-model": openai(
-    process.env.NEXT_PUBLIC_VISION_MODEL || "gpt-5-2025-08-07",
+    process.env.NEXT_PUBLIC_VISION_MODEL || "gpt-4.1-2025-04-14",
   ),
-  "title-generator-model": openrouter(
-    process.env.NEXT_PUBLIC_TITLE_MODEL || "google/gemini-2.5-flash",
+  "title-generator-model": openai(
+    process.env.NEXT_PUBLIC_TITLE_MODEL || "gpt-4.1-mini-2025-04-14",
   ),
 };
 

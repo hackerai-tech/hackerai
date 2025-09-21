@@ -171,12 +171,10 @@ export async function POST(req: NextRequest) {
           providerOptions: {
             openai: {
               parallelToolCalls: false,
-              ...(mode === "agent"
-                ? {
-                    reasoningSummary: "detailed",
-                    reasoningEffort: "medium",
-                  }
-                : { reasoningEffort: "minimal" }),
+              ...(mode === "agent" && {
+                reasoningSummary: "detailed",
+                reasoningEffort: "medium",
+              }),
             },
           },
           headers: getAIHeaders(),
