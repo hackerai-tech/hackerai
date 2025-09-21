@@ -4,6 +4,7 @@ const MODERATION_CHAR_LIMIT = 1000;
 
 export async function getModerationResult(
   messages: any[],
+  isPro: boolean,
 ): Promise<{ shouldUncensorResponse: boolean }> {
   const openaiApiKey = process.env.OPENAI_API_KEY;
 
@@ -43,6 +44,7 @@ export async function getModerationResult(
     const shouldUncensorResponse = determineShouldUncensorResponse(
       moderationLevel,
       hazardCategories,
+      isPro,
     );
 
     // console.log(
@@ -119,6 +121,7 @@ function calculateModerationLevel(
 function determineShouldUncensorResponse(
   moderationLevel: number,
   hazardCategories: string[],
+  isPro: boolean,
 ): boolean {
   const forbiddenCategories = [
     "sexual",
@@ -139,7 +142,7 @@ function determineShouldUncensorResponse(
 
   // 0.1 is the minimum moderation level for the model to be used
   const minModerationLevel = 0.1;
-  const maxModerationLevel = 0.9;
+  const maxModerationLevel = isPro ? 0.98 : 0.9;
   return (
     moderationLevel >= minModerationLevel &&
     moderationLevel <= maxModerationLevel &&

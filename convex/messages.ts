@@ -213,10 +213,11 @@ export const getMessagesByChatId = query({
         page: enhancedMessages,
       };
     } catch (error) {
-      // Handle chat not found error gracefully - return empty results without logging
+      // Handle chat access errors gracefully - return empty results without logging
       if (
         error instanceof ConvexError &&
-        error.data?.code === "CHAT_NOT_FOUND"
+        (error.data?.code === "CHAT_NOT_FOUND" ||
+          error.data?.code === "CHAT_UNAUTHORIZED")
       ) {
         return {
           page: [],

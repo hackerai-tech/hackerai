@@ -6,14 +6,14 @@ import PostHogClient from "@/app/posthog";
 
 const baseProviders = {
   "ask-model": openrouter(
-    process.env.NEXT_PUBLIC_ASK_MODEL || "deepseek/deepseek-chat-v3-0324",
+    process.env.NEXT_PUBLIC_ASK_MODEL || "deepseek/deepseek-chat-v3.1",
   ),
   "agent-model": openai(process.env.NEXT_PUBLIC_AGENT_MODEL || "gpt-5-mini"),
-  "vision-model": openrouter(
-    process.env.NEXT_PUBLIC_VISION_MODEL || "google/gemini-2.5-flash",
+  "vision-model": openai(
+    process.env.NEXT_PUBLIC_VISION_MODEL || "gpt-4.1-2025-04-14",
   ),
-  "title-generator-model": openrouter(
-    process.env.NEXT_PUBLIC_TITLE_MODEL || "google/gemini-2.5-flash",
+  "title-generator-model": openai(
+    process.env.NEXT_PUBLIC_TITLE_MODEL || "gpt-4.1-mini-2025-04-14",
   ),
 };
 
