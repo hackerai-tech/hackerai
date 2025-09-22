@@ -64,7 +64,7 @@ const getMessageTokenCountWithFiles = (
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
   fileTokens: Record<string, number> = {},
-  maxTokens: number = MAX_TOKENS_PRO,
+  maxTokens: number = MAX_TOKENS_FREE,
 ): UIMessage[] => {
   const tokenLimit = maxTokens;
   if (messages.length === 0) return messages;
