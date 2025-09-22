@@ -4,19 +4,15 @@ import { Authenticated, Unauthenticated } from "convex/react";
 import { ChatInput } from "./components/ChatInput";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
-import { useGlobalState } from "./contexts/GlobalState";
 import { Chat } from "./components/chat";
 import PricingDialog from "./components/PricingDialog";
 import { usePricingDialog } from "./hooks/usePricingDialog";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
-  const { clearInput } = useGlobalState();
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Clear the input and redirect to login
-    clearInput();
+    // Preserve input draft for later; redirect to login
     window.location.href = "/login";
   };
 
@@ -49,6 +45,8 @@ const UnauthenticatedContent = () => {
                 onStop={handleStop}
                 status="ready"
                 isCentered={true}
+                isNewChat={true}
+                clearDraftOnSubmit={false}
               />
             </div>
           </div>

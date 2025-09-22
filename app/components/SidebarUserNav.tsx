@@ -46,6 +46,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
 import { SettingsDialog } from "./SettingsDialog";
+import { clientLogout } from "@/lib/utils/logout";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -72,8 +73,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   // Determine if user has pro subscription
   const isProUser = hasProPlan;
 
-  const handleSignOut = async () => {
-    window.location.href = "/logout";
+  const handleLogOut = async () => {
+    clientLogout();
   };
 
   const handleHelpCenter = () => {
@@ -308,7 +309,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenuItem onClick={handleSignOut}>
+          <DropdownMenuItem onClick={handleLogOut}>
             <LogOut className="mr-2 h-4 w-4 text-foreground" />
             <span>Log out</span>
           </DropdownMenuItem>

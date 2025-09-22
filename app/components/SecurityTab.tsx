@@ -113,7 +113,8 @@ const SecurityTab = () => {
   const handleLogout = async () => {
     try {
       // Redirect to logout route
-      window.location.href = "/logout";
+      const { clientLogout } = await import("@/lib/utils/logout");
+      clientLogout();
     } catch (error) {
       toast.error("Failed to log out");
     }
@@ -132,7 +133,8 @@ const SecurityTab = () => {
           `Logged out of ${data.revokedSessions} devices successfully`,
         );
         // Redirect to logout route to end current session
-        window.location.href = "/logout";
+        const { clientLogout } = await import("@/lib/utils/logout");
+        clientLogout();
       } else {
         const error = await response.json();
         toast.error(error.error || "Failed to log out of all devices");

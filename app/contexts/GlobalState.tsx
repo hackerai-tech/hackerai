@@ -225,7 +225,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         } else {
           if (response.status === 401) {
             if (typeof window !== "undefined") {
-              window.location.href = "/logout";
+              const { clientLogout } = await import("@/lib/utils/logout");
+              clientLogout();
               return;
             }
           }
@@ -306,6 +307,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setCurrentChatId(chatId);
     setShouldFetchMessages(true);
     setHasActiveChat(true);
+    // Clear text input only - preserve uploaded files across chat switches
+    setInput("");
     setTodos([]);
     setIsTodoPanelExpanded(false);
   }, []);

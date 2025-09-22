@@ -39,8 +39,12 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
   const [isRenaming, setIsRenaming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const { closeSidebar, setChatSidebarOpen, initializeNewChat } =
-    useGlobalState();
+  const {
+    closeSidebar,
+    setChatSidebarOpen,
+    initializeNewChat,
+    initializeChat,
+  } = useGlobalState();
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
   const renameChat = useMutation(api.chats.renameChat);
@@ -59,6 +63,9 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
     if (isMobile) {
       setChatSidebarOpen(false);
     }
+
+    // Clear input and transient state for the selected chat
+    initializeChat(id);
 
     // Navigate to the chat route
     router.push(`/c/${id}`);
