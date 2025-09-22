@@ -45,8 +45,11 @@ export const getMemoriesForBackend = query({
       const validMemories = [];
 
       for (const memory of memories) {
-        if (totalTokens + memory.tokens <= tokenLimit) {
-          totalTokens += memory.tokens;
+        const tokensValue = Number(memory.tokens);
+        const safeTokens =
+          Number.isFinite(tokensValue) && tokensValue > 0 ? tokensValue : 0;
+        if (totalTokens + safeTokens <= tokenLimit) {
+          totalTokens += safeTokens;
           validMemories.push(memory);
         } else {
           // Token limit exceeded, stop adding memories

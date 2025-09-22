@@ -1,5 +1,5 @@
 import { getModerationResult } from "@/lib/moderation";
-import type { ChatMode, ExecutionMode } from "@/types";
+import type { ChatMode, ExecutionMode, SubscriptionTier } from "@/types";
 import { UIMessage } from "ai";
 import {
   transformStorageIdsToUrls,
@@ -66,11 +66,11 @@ export function addAuthMessage(messages: UIMessage[]) {
 export async function processChatMessages({
   messages,
   mode,
-  isPro,
+  subscription,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
-  isPro: boolean;
+  subscription: SubscriptionTier;
 }) {
   // Transform storageIds to URLs and detect media files
   const { messages: messagesWithUrls, hasMediaFiles: containsMediaFiles } =
@@ -99,9 +99,12 @@ export async function processChatMessages({
   const executionMode: ExecutionMode =
     (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
-  if (isPro) {
+  if (subscription !== "free") {
     // Check moderation for the last user message
-    const moderationResult = await getModerationResult(messagesWithUrls, isPro);
+    const moderationResult = await getModerationResult(
+      messagesWithUrls,
+      subscription === "pro" || subscription === "ultra",
+    );
 
     // If moderation allows, add authorization message
     if (moderationResult.shouldUncensorResponse) {

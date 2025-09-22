@@ -3,6 +3,7 @@ import { openrouter } from "@openrouter/ai-sdk-provider";
 import { openai } from "@ai-sdk/openai";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
+import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
   "ask-model": openrouter(
@@ -24,7 +25,7 @@ export const myProvider = customProvider({
 export const createTrackedProvider = (
   userId?: string,
   conversationId?: string,
-  isPro?: boolean,
+  subscription?: SubscriptionTier,
 ) => {
   const phClient = PostHogClient();
 
@@ -40,7 +41,7 @@ export const createTrackedProvider = (
       posthogProperties: {
         modelType: modelName,
         ...(conversationId && { conversationId }),
-        subscriptionTier: isPro ? "pro" : "free",
+        subscriptionTier: subscription,
       },
       posthogPrivacyMode: true,
     });

@@ -6,9 +6,8 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 // Check rate limit for a specific user
 export const checkRateLimit = async (
   userId: string,
-  isPro: boolean,
   mode: ChatMode,
-  subscription: SubscriptionTier = isPro ? "pro" : "free",
+  subscription: SubscriptionTier,
 ): Promise<void> => {
   // Check if Redis is configured
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
@@ -37,7 +36,7 @@ export const checkRateLimit = async (
       // Regular ask mode limits with ultra tier
       if (subscription === "ultra") {
         requestLimit = parseInt(process.env.ULTRA_RATE_LIMIT_REQUESTS || "240");
-      } else if (isPro) {
+      } else if (subscription === "pro") {
         requestLimit = parseInt(process.env.PRO_RATE_LIMIT_REQUESTS || "80");
       } else {
         requestLimit = parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10");
@@ -76,7 +75,7 @@ export const checkRateLimit = async (
 
       let cause: string;
 
-      if (isPro) {
+      if (subscription !== "free") {
         if (mode === "agent") {
           cause = `You've reached your agent mode rate limit, please try again after ${timeString}.\n\nYou can continue using ask mode in the meantime.`;
         } else {

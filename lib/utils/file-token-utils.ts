@@ -8,8 +8,8 @@ import { Id } from "@/convex/_generated/dataModel";
 import {
   truncateMessagesToTokenLimit,
   getMaxTokensForSubscription,
-  type SubscriptionTier,
 } from "@/lib/token-utils";
+import type { SubscriptionTier } from "@/types";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 

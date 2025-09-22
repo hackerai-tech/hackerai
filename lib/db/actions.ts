@@ -6,6 +6,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
+import type { SubscriptionTier } from "@/types";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -175,7 +176,7 @@ export async function getMessagesByChatId({
 }: {
   chatId: string;
   userId: string;
-  subscription: "free" | "pro" | "ultra";
+  subscription: SubscriptionTier;
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
@@ -250,7 +251,7 @@ export async function getMemories({
   subscription,
 }: {
   userId: string;
-  subscription: "free" | "pro" | "ultra";
+  subscription: SubscriptionTier;
 }) {
   try {
     const memories = await convex.query(api.memories.getMemoriesForBackend, {

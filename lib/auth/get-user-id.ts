@@ -35,14 +35,13 @@ export const getUserID = async (req: NextRequest): Promise<string> => {
  * Throws ChatSDKError if user is not authenticated
  *
  * @param req - NextRequest object (server-side only)
- * @returns Promise<{userId: string, isPro: boolean}> - Object with userId and isPro
+ * @returns Promise<{ userId: string; isPro: boolean; subscription: SubscriptionTier }> - Object with userId, isPro, and subscription
  * @throws ChatSDKError - When user is not authenticated
  */
 export const getUserIDAndPro = async (
   req: NextRequest,
 ): Promise<{
   userId: string;
-  isPro: boolean;
   subscription: SubscriptionTier;
 }> => {
   try {
@@ -67,9 +66,7 @@ export const getUserIDAndPro = async (
       subscription = "pro";
     }
 
-    const isPro = subscription !== "free";
-
-    return { userId: session.user.id, isPro, subscription };
+    return { userId: session.user.id, subscription };
   } catch (error) {
     if (error instanceof ChatSDKError) {
       throw error;
