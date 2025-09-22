@@ -20,6 +20,7 @@ import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Doc } from "@/convex/_generated/dataModel";
+import type { SubscriptionTier } from "@/types";
 
 interface GlobalStateType {
   // Input state
@@ -88,8 +89,8 @@ interface GlobalStateType {
   isTodoPanelExpanded: boolean;
   setIsTodoPanelExpanded: (expanded: boolean) => void;
 
-  // Pro plan state
-  hasProPlan: boolean;
+  // Subscription state
+  subscription: SubscriptionTier;
   isCheckingProPlan: boolean;
 
   // Utility methods
@@ -142,7 +143,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   );
   const [todos, setTodos] = useState<Todo[]>([]);
   const [chats, setChats] = useState<Doc<"chats">[]>([]);
-  const [hasProPlan, setHasProPlan] = useState(false);
+  const [subscription, setSubscription] = useState<SubscriptionTier>("free");
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
   // Initialize temporary chats from URL parameter
@@ -179,16 +180,17 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     prevIsMobile.current = isMobile;
   }, [chatSidebarOpen, isMobile]);
 
-  // Derive pro status from current token entitlements
+  // Derive subscription tier from current token entitlements
   useEffect(() => {
     if (!user) {
-      setHasProPlan(false);
+      setSubscription("free");
       return;
     }
 
     if (Array.isArray(entitlements)) {
-      const hasPro = entitlements.includes("pro-monthly-plan");
-      setHasProPlan(hasPro);
+      const ultra = entitlements.includes("ultra-monthly-plan");
+      const pro = entitlements.includes("pro-monthly-plan");
+      setSubscription(ultra ? "ultra" : pro ? "pro" : "free");
     }
   }, [user, entitlements]);
 
@@ -196,7 +198,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   useEffect(() => {
     const refreshFromUrl = async () => {
       if (!user) {
-        setHasProPlan(false);
+        setSubscription("free");
         setIsCheckingProPlan(false);
         return;
       }
@@ -221,18 +223,20 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
         if (response.ok) {
           const data = await response.json();
-          setHasProPlan(!!data.hasProPlan);
+          const tier = data.subscription as SubscriptionTier | undefined;
+          setSubscription(tier === "ultra" || tier === "pro" ? tier : "free");
         } else {
           if (response.status === 401) {
             if (typeof window !== "undefined") {
-              window.location.href = "/logout";
+              const { clientLogout } = await import("@/lib/utils/logout");
+              clientLogout();
               return;
             }
           }
-          setHasProPlan(false);
+          setSubscription("free");
         }
       } catch {
-        setHasProPlan(false);
+        setSubscription("free");
       } finally {
         setIsCheckingProPlan(false);
         // Remove the refresh param to avoid repeated refreshes
@@ -306,6 +310,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setCurrentChatId(chatId);
     setShouldFetchMessages(true);
     setHasActiveChat(true);
+    // Clear text input only - preserve uploaded files across chat switches
+    setInput("");
     setTodos([]);
     setIsTodoPanelExpanded(false);
   }, []);
@@ -409,7 +415,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isTodoPanelExpanded,
     setIsTodoPanelExpanded,
 
-    hasProPlan,
+    subscription,
     isCheckingProPlan,
 
     clearInput,

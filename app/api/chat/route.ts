@@ -75,11 +75,11 @@ export async function POST(req: NextRequest) {
       temporary?: boolean;
     } = await req.json();
 
-    const { userId, isPro } = await getUserIDAndPro(req);
+    const { userId, subscription } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
     // Check if free user is trying to use agent mode
-    if (mode === "agent" && !isPro) {
+    if (mode === "agent" && subscription === "free") {
       throw new ChatSDKError(
         "forbidden:chat",
         "Agent mode is only available for Pro users. Please upgrade to access this feature.",
@@ -90,9 +90,9 @@ export async function POST(req: NextRequest) {
     const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
       chatId,
       userId,
+      subscription,
       newMessages: messages,
       regenerate,
-      isPro,
       isTemporary: temporary,
     });
 
@@ -113,14 +113,14 @@ export async function POST(req: NextRequest) {
     }
 
     // Check rate limit for the user with mode
-    await checkRateLimit(userId, isPro, mode);
+    await checkRateLimit(userId, mode, subscription);
 
     // Process chat messages with moderation
     const { executionMode, processedMessages, selectedModel } =
       await processChatMessages({
         messages: truncatedMessages,
         mode,
-        isPro,
+        subscription,
       });
 
     // Get user customization to check memory preference (outside stream to avoid duplicate calls)
@@ -154,14 +154,18 @@ export async function POST(req: NextRequest) {
             ? generateTitleFromUserMessageWithWriter(processedMessages, writer)
             : Promise.resolve(undefined);
 
-        const trackedProvider = createTrackedProvider(userId, chatId, isPro);
+        const trackedProvider = createTrackedProvider(
+          userId,
+          chatId,
+          subscription,
+        );
 
         const result = streamText({
           model: trackedProvider.languageModel(selectedModel),
           system: await systemPrompt(
             userId,
-            isPro,
             mode,
+            subscription,
             executionMode,
             userCustomization,
             temporary,
@@ -176,6 +180,15 @@ export async function POST(req: NextRequest) {
                 reasoningEffort: "medium",
               }),
             },
+            ...(subscription === "free"
+              ? {
+                  openrouter: {
+                    provider: {
+                      sort: "price",
+                    },
+                  },
+                }
+              : {}),
           },
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),

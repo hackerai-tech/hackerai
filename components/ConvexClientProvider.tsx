@@ -92,8 +92,8 @@ function useAuthFromAuthKit() {
           (shouldForceLogout(error) || hasDigest) &&
           typeof window !== "undefined"
         ) {
-          // Redirect immediately if the session has ended / invalid_grant
-          window.location.href = "/logout";
+          const { clientLogout } = await import("@/lib/utils/logout");
+          clientLogout();
           return null;
         }
         // Fallback: if repeated failures occur quickly, force logout
@@ -105,7 +105,8 @@ function useAuthFromAuthKit() {
           : 1;
         lastFailureAtRef.current = now;
         if (failureCountRef.current >= 2 && typeof window !== "undefined") {
-          window.location.href = "/logout";
+          const { clientLogout } = await import("@/lib/utils/logout");
+          clientLogout();
           return null;
         }
         console.error("Failed to get access token:", error);

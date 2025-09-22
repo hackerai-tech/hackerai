@@ -1,13 +1,13 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { ChatSDKError } from "@/lib/errors";
-import type { ChatMode } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types";
 
 // Check rate limit for a specific user
 export const checkRateLimit = async (
   userId: string,
-  isPro: boolean,
   mode: ChatMode,
+  subscription: SubscriptionTier,
 ): Promise<void> => {
   // Check if Redis is configured
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
@@ -18,19 +18,29 @@ export const checkRateLimit = async (
   }
 
   try {
-    // Get rate limit based on user type and mode
+    // Get rate limit based on subscription tier and mode
     let requestLimit: number;
 
     if (mode === "agent") {
-      // Agent mode is only for pro users
-      requestLimit = parseInt(
-        process.env.AGENT_MODE_RATE_LIMIT_REQUESTS || "50",
-      );
+      // Agent mode is only for paid users; ultra gets higher cap
+      if (subscription === "ultra") {
+        requestLimit = parseInt(
+          process.env.ULTRA_AGENT_MODE_RATE_LIMIT_REQUESTS || "90",
+        );
+      } else {
+        requestLimit = parseInt(
+          process.env.AGENT_MODE_RATE_LIMIT_REQUESTS || "30",
+        );
+      }
     } else {
-      // Regular ask mode limits
-      requestLimit = isPro
-        ? parseInt(process.env.PRO_RATE_LIMIT_REQUESTS || "100") // Pro users get higher limit
-        : parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10"); // Free users get lower limit
+      // Regular ask mode limits with ultra tier
+      if (subscription === "ultra") {
+        requestLimit = parseInt(process.env.ULTRA_RATE_LIMIT_REQUESTS || "240");
+      } else if (subscription === "pro") {
+        requestLimit = parseInt(process.env.PRO_RATE_LIMIT_REQUESTS || "80");
+      } else {
+        requestLimit = parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10");
+      }
     }
 
     // Create rate limiter instance with mode-specific key
@@ -43,7 +53,7 @@ export const checkRateLimit = async (
     });
 
     // Use mode-specific key for rate limiting
-    const rateLimitKey = `${userId}:${mode}`;
+    const rateLimitKey = `${userId}:${mode}:${subscription}`;
     const { success, reset } = await ratelimit.limit(rateLimitKey);
 
     if (!success) {
@@ -65,14 +75,14 @@ export const checkRateLimit = async (
 
       let cause: string;
 
-      if (isPro) {
+      if (subscription !== "free") {
         if (mode === "agent") {
           cause = `You've reached your agent mode rate limit, please try again after ${timeString}.\n\nYou can continue using ask mode in the meantime.`;
         } else {
           cause = `You've reached your ask mode rate limit, please try again after ${timeString}.\n\nYou can continue using agent mode in the meantime.`;
         }
       } else {
-        cause = `You've reached your rate limit, please try again after ${timeString}.\n\nUpgrade to Pro for higher usage limits and more features.`;
+        cause = `You've reached your rate limit, please try again after ${timeString}.\n\nUpgrade plan for higher usage limits and more features.`;
       }
 
       throw new ChatSDKError("rate_limit:chat", cause);

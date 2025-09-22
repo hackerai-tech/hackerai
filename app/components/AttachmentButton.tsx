@@ -20,11 +20,11 @@ export const AttachmentButton = ({
   onAttachClick,
   disabled = false,
 }: AttachmentButtonProps) => {
-  const { hasProPlan, isCheckingProPlan } = useGlobalState();
+  const { subscription, isCheckingProPlan } = useGlobalState();
   const [popoverOpen, setPopoverOpen] = useState(false);
 
   const handleClick = () => {
-    if (hasProPlan) {
+    if (subscription !== "free") {
       onAttachClick();
     } else {
       setPopoverOpen(true);
@@ -39,7 +39,7 @@ export const AttachmentButton = ({
   };
 
   // If user has pro plan or we're checking, show normal tooltip behavior
-  if (hasProPlan || isCheckingProPlan) {
+  if (subscription !== "free" || isCheckingProPlan) {
     return (
       <TooltipPrimitive.Root>
         <TooltipTrigger asChild>
@@ -80,7 +80,7 @@ export const AttachmentButton = ({
       </PopoverTrigger>
       <PopoverContent className="w-80 p-4" side="top" align="start">
         <div className="space-y-3">
-          <h3 className="font-semibold text-base">Upgrade to Pro</h3>
+          <h3 className="font-semibold text-base">Upgrade plan</h3>
           <p className="text-sm text-muted-foreground">
             Get access to file attachments and more features with Pro
           </p>

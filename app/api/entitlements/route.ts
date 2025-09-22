@@ -63,10 +63,24 @@ export async function GET(req: NextRequest) {
 
     const { sealedSession, entitlements } = refreshResult as any;
 
-    const hasProPlan = (entitlements || []).includes("pro-monthly-plan");
+    const allEntitlements: string[] = Array.isArray(entitlements)
+      ? entitlements
+      : [];
 
-    // Create response with entitlements
-    const response = json({ entitlements: entitlements || [], hasProPlan });
+    // Compute a single subscription tier
+    const subscription: "free" | "pro" | "ultra" = allEntitlements.includes(
+      "ultra-monthly-plan",
+    )
+      ? "ultra"
+      : allEntitlements.includes("pro-monthly-plan")
+        ? "pro"
+        : "free";
+
+    // Create response with entitlements and normalized subscription tier
+    const response = json({
+      entitlements: allEntitlements,
+      subscription,
+    });
 
     // Set the updated refresh session data in a cookie
     if (sealedSession) {

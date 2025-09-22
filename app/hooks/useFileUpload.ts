@@ -9,11 +9,7 @@ import {
   validateFile,
   createFileMessagePartFromUploadedFile,
 } from "@/lib/utils/file-utils";
-import {
-  UploadedFileState,
-  FileProcessingResult,
-  FileSource,
-} from "@/types/file";
+import { FileProcessingResult, FileSource } from "@/types/file";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 
@@ -24,7 +20,7 @@ export const useFileUpload = () => {
     addUploadedFile,
     updateUploadedFile,
     removeUploadedFile,
-    hasProPlan,
+    subscription,
     getTotalTokens,
   } = useGlobalState();
 
@@ -147,8 +143,8 @@ export const useFileUpload = () => {
   const processFiles = useCallback(
     async (files: File[], source: FileSource) => {
       // Check if user has pro plan for file uploads
-      if (!hasProPlan) {
-        toast.error("Upgrade to Pro to upload files.");
+      if (subscription === "free") {
+        toast.error("Upgrade plan to upload files.");
         return;
       }
 
@@ -168,7 +164,7 @@ export const useFileUpload = () => {
       }
     },
     [
-      hasProPlan,
+      subscription,
       validateAndFilterFiles,
       showProcessingFeedback,
       startFileUploads,

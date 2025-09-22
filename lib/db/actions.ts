@@ -6,6 +6,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
+import type { SubscriptionTier } from "@/types";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -170,14 +171,14 @@ export async function getMessagesByChatId({
   userId,
   newMessages,
   regenerate,
-  isPro,
+  subscription,
   isTemporary,
 }: {
   chatId: string;
   userId: string;
+  subscription: SubscriptionTier;
   newMessages: UIMessage[];
   regenerate?: boolean;
-  isPro: boolean;
   isTemporary?: boolean;
 }) {
   // For temporary chats, skip database operations
@@ -223,7 +224,7 @@ export async function getMessagesByChatId({
   // Truncate messages to stay within token limit with file tokens included
   const truncatedMessages = await truncateMessagesWithFileTokens(
     allMessages,
-    isPro,
+    subscription,
   );
 
   return { truncatedMessages, chat, isNewChat };
@@ -247,16 +248,16 @@ export async function getUserCustomization({ userId }: { userId: string }) {
 
 export async function getMemories({
   userId,
-  isPro,
+  subscription,
 }: {
   userId: string;
-  isPro: boolean;
+  subscription: SubscriptionTier;
 }) {
   try {
     const memories = await convex.query(api.memories.getMemoriesForBackend, {
       serviceKey,
       userId,
-      isPro,
+      subscription,
     });
     return memories;
   } catch (error) {

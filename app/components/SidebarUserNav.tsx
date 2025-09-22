@@ -6,15 +6,12 @@ import {
   LogOut,
   Sparkle,
   LifeBuoy,
-  Trash2,
   Github,
   ChevronRight,
   Settings,
   Settings2,
   CircleUserRound,
 } from "lucide-react";
-import { useMutation } from "convex/react";
-import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -34,18 +31,9 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
 import { SettingsDialog } from "./SettingsDialog";
+import { clientLogout } from "@/lib/utils/logout";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -58,22 +46,18 @@ const XIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
 
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
-  const { hasProPlan, isCheckingProPlan } = useGlobalState();
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const { isCheckingProPlan, subscription } = useGlobalState();
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const isMobile = useIsMobile();
 
-  const deleteAllChats = useMutation(api.chats.deleteAllChats);
-
   if (!user) return null;
 
   // Determine if user has pro subscription
-  const isProUser = hasProPlan;
+  const isProUser = subscription !== "free";
 
-  const handleSignOut = async () => {
-    window.location.href = "/logout";
+  const handleLogOut = async () => {
+    clientLogout();
   };
 
   const handleHelpCenter = () => {
@@ -106,21 +90,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     );
     if (newWindow) {
       newWindow.opener = null;
-    }
-  };
-
-  const handleDeleteAllChats = async () => {
-    if (isDeleting) return;
-    setIsDeleting(true);
-    try {
-      await deleteAllChats();
-    } catch (error) {
-      // Swallow errors and proceed as success to avoid surfacing noise
-      console.error("Failed to delete all chats:", error);
-    } finally {
-      setShowDeleteDialog(false);
-      window.location.href = "/";
-      setIsDeleting(false);
     }
   };
 
@@ -217,7 +186,11 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   {getDisplayName()}
                 </div>
                 <div className="text-xs text-sidebar-accent-foreground truncate">
-                  {isProUser ? "Pro" : "Free"}
+                  {subscription === "ultra"
+                    ? "Ultra"
+                    : isProUser
+                      ? "Pro"
+                      : "Free"}
                 </div>
               </div>
             </button>
@@ -259,7 +232,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           {!isCheckingProPlan && !isProUser && (
             <DropdownMenuItem onClick={redirectToPricing}>
               <Sparkle className="mr-2 h-4 w-4 text-foreground" />
-              <span>Upgrade to Pro</span>
+              <span>Upgrade plan</span>
             </DropdownMenuItem>
           )}
 
@@ -271,11 +244,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuItem onClick={() => setShowSettingsDialog(true)}>
             <Settings className="mr-2 h-4 w-4 text-foreground" />
             <span>Settings</span>
-          </DropdownMenuItem>
-
-          <DropdownMenuItem onClick={() => setShowDeleteDialog(true)}>
-            <Trash2 className="mr-2 h-4 w-4 text-foreground" />
-            <span>Delete all chats</span>
           </DropdownMenuItem>
 
           <DropdownMenuSeparator />
@@ -308,7 +276,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenuItem onClick={handleSignOut}>
+          <DropdownMenuItem onClick={handleLogOut}>
             <LogOut className="mr-2 h-4 w-4 text-foreground" />
             <span>Log out</span>
           </DropdownMenuItem>
@@ -326,31 +294,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
         open={showCustomizeDialog}
         onOpenChange={setShowCustomizeDialog}
       />
-
-      {/* Delete All Chats Confirmation Dialog */}
-      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Clear your chat history - are you sure?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete all
-              your chats and remove all associated data from our servers.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteAllChats}
-              disabled={isDeleting}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isDeleting ? "Deleting..." : "Confirm deletion"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 };

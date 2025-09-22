@@ -59,8 +59,9 @@ export const DeleteAccountDialog = ({
     return emailMatches && phraseMatches && !isDeleting;
   }, [confirmInput, emailInput, expectedEmail, hasRecentLogin, isDeleting]);
 
-  const handleRefreshLogin = () => {
-    window.location.href = "/logout";
+  const handleRefreshLogin = async () => {
+    const { clientLogout } = await import("@/lib/utils/logout");
+    clientLogout();
   };
 
   const handleConfirmDelete = async () => {

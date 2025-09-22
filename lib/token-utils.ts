@@ -1,8 +1,18 @@
 import { UIMessage } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
+import type { SubscriptionTier } from "@/types";
 
 export const MAX_TOKENS_PRO = 32000;
 export const MAX_TOKENS_FREE = 16000;
+export const MAX_TOKENS_ULTRA = 128000;
+
+export const getMaxTokensForSubscription = (
+  subscription: SubscriptionTier,
+): number => {
+  if (subscription === "ultra") return MAX_TOKENS_ULTRA;
+  if (subscription === "pro") return MAX_TOKENS_PRO;
+  return MAX_TOKENS_FREE;
+};
 
 // Token limits for different contexts
 export const STREAM_MAX_TOKENS = 4096;
@@ -54,10 +64,9 @@ const getMessageTokenCountWithFiles = (
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
   fileTokens: Record<string, number> = {},
-  isPro: boolean = true,
+  maxTokens: number = MAX_TOKENS_FREE,
 ): UIMessage[] => {
-  // Use appropriate token limit based on user type
-  const tokenLimit = isPro ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
+  const tokenLimit = maxTokens;
   if (messages.length === 0) return messages;
 
   const result: UIMessage[] = [];

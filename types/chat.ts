@@ -3,6 +3,8 @@ import { z } from "zod";
 
 export type ChatMode = "agent" | "ask";
 
+export type SubscriptionTier = "free" | "pro" | "ultra";
+
 export interface SidebarFile {
   path: string;
   content: string;

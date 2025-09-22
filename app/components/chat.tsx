@@ -461,6 +461,7 @@ export const Chat = ({
                               hasMessages={hasMessages}
                               isAtBottom={isAtBottom}
                               onScrollToBottom={handleScrollToBottom}
+                              isNewChat={!isExistingChat}
                             />
                           </div>
                         )}
@@ -485,6 +486,7 @@ export const Chat = ({
                       hasMessages={hasMessages}
                       isAtBottom={isAtBottom}
                       onScrollToBottom={handleScrollToBottom}
+                      isNewChat={!isExistingChat}
                     />
                   )}
               </div>

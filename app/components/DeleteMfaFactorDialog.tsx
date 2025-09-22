@@ -57,7 +57,8 @@ const DeleteMfaFactorDialog: React.FC<DeleteMfaFactorDialogProps> = ({
       const err = await response.json().catch(() => ({}));
       toast.error(err?.error || "Failed to remove authentication method");
       if (response.status === 401) {
-        window.location.href = "/logout";
+        const { clientLogout } = await import("@/lib/utils/logout");
+        clientLogout();
       }
     } catch {
       toast.error("Failed to remove authentication method");

@@ -10,7 +10,9 @@ export const getMemoriesForBackend = query({
   args: {
     serviceKey: v.optional(v.string()),
     userId: v.string(),
-    isPro: v.boolean(),
+    subscription: v.optional(
+      v.union(v.literal("free"), v.literal("pro"), v.literal("ultra")),
+    ),
   },
   returns: v.array(
     v.object({
@@ -32,14 +34,22 @@ export const getMemoriesForBackend = query({
         .order("desc")
         .collect();
 
-      // Calculate total tokens and enforce token limit based on user plan
-      const tokenLimit = args.isPro ? 10000 : 5000;
+      // Calculate total tokens and enforce token limit based on subscription
+      const tokenLimit =
+        args.subscription === "ultra"
+          ? 20000
+          : args.subscription === "pro"
+            ? 10000
+            : 5000;
       let totalTokens = 0;
       const validMemories = [];
 
       for (const memory of memories) {
-        if (totalTokens + memory.tokens <= tokenLimit) {
-          totalTokens += memory.tokens;
+        const tokensValue = Number(memory.tokens);
+        const safeTokens =
+          Number.isFinite(tokensValue) && tokensValue > 0 ? tokensValue : 0;
+        if (totalTokens + safeTokens <= tokenLimit) {
+          totalTokens += safeTokens;
           validMemories.push(memory);
         } else {
           // Token limit exceeded, stop adding memories

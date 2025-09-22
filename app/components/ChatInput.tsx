@@ -38,6 +38,12 @@ import {
   MAX_TOKENS_FREE,
 } from "@/lib/token-utils";
 import { toast } from "sonner";
+import {
+  NULL_THREAD_DRAFT_ID,
+  getDraftContentById,
+  upsertDraft,
+  removeDraft,
+} from "@/lib/utils/conversation-drafts";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -48,6 +54,8 @@ interface ChatInputProps {
   isAtBottom?: boolean;
   onScrollToBottom?: () => void;
   hideStop?: boolean;
+  isNewChat?: boolean;
+  clearDraftOnSubmit?: boolean;
 }
 
 export const ChatInput = ({
@@ -59,6 +67,8 @@ export const ChatInput = ({
   isAtBottom = true,
   onScrollToBottom,
   hideStop = false,
+  isNewChat = false,
+  clearDraftOnSubmit = true,
 }: ChatInputProps) => {
   const {
     input,
@@ -67,7 +77,7 @@ export const ChatInput = ({
     setMode,
     uploadedFiles,
     isUploadingFiles,
-    hasProPlan,
+    subscription,
     isCheckingProPlan,
   } = useGlobalState();
   const {
@@ -83,13 +93,13 @@ export const ChatInput = ({
 
   // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
   useEffect(() => {
-    if (!isCheckingProPlan && !hasProPlan && mode === "agent") {
+    if (!isCheckingProPlan && subscription === "free" && mode === "agent") {
       setMode("ask");
     }
-  }, [hasProPlan, isCheckingProPlan, mode, setMode]);
+  }, [subscription, isCheckingProPlan, mode, setMode]);
 
   const handleAgentModeClick = () => {
-    if (hasProPlan) {
+    if (subscription !== "free") {
       setMode("agent");
     } else {
       setAgentUpgradeDialogOpen(true);
@@ -112,6 +122,11 @@ export const ChatInput = ({
       (input.trim() || uploadedFiles.length > 0)
     ) {
       onSubmit(e);
+      if (isNewChat && clearDraftOnSubmit) {
+        // Remove draft immediately and clear input on next tick to avoid race with onSubmit
+        removeDraft(NULL_THREAD_DRAFT_ID);
+        setTimeout(() => setInput(""), 0);
+      }
     }
   };
 
@@ -132,6 +147,27 @@ export const ChatInput = ({
     [isGenerating, onStop],
   );
 
+  // Load initial draft for new (non-id) chats
+  useEffect(() => {
+    if (!isNewChat) return;
+    const content = getDraftContentById(NULL_THREAD_DRAFT_ID);
+    if (content && !input) setInput(content);
+  }, [isNewChat]);
+
+  // Persist draft as user types for new (non-id) chats
+  useEffect(() => {
+    if (!isNewChat) return;
+    const handle = window.setTimeout(() => {
+      if (input) {
+        upsertDraft(NULL_THREAD_DRAFT_ID, input);
+      } else {
+        removeDraft(NULL_THREAD_DRAFT_ID);
+      }
+    }, 600);
+
+    return () => window.clearTimeout(handle);
+  }, [input, isNewChat]);
+
   // Handle paste events for file uploads and token validation
   useEffect(() => {
     const handlePaste = async (e: ClipboardEvent) => {
@@ -145,10 +181,12 @@ export const ChatInput = ({
           if (pastedText) {
             // Check token limit for the pasted text only based on user plan
             const tokenCount = countInputTokens(pastedText, []);
-            const maxTokens = hasProPlan ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
+            const maxTokens =
+              subscription !== "free" ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
             if (tokenCount > maxTokens) {
               e.preventDefault();
-              const planText = hasProPlan ? "" : " (Free plan limit)";
+              const planText =
+                subscription !== "free" ? "" : " (Free plan limit)";
               toast.error("Content is too long to paste", {
                 description: `The content you're trying to paste is too large (${tokenCount.toLocaleString()} tokens). Please copy a smaller amount${planText}.`,
               });
@@ -257,7 +295,7 @@ export const ChatInput = ({
                       </span>
                     </div>
                   </DropdownMenuItem>
-                  {hasProPlan || isCheckingProPlan ? (
+                  {subscription !== "free" || isCheckingProPlan ? (
                     <DropdownMenuItem
                       onClick={() => setMode("agent")}
                       className="cursor-pointer"
@@ -363,14 +401,14 @@ export const ChatInput = ({
       >
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>Upgrade to Pro</DialogTitle>
+            <DialogTitle>Upgrade plan</DialogTitle>
             <DialogDescription>
               Get access to Agent mode and unlock advanced hacking, testing, and
               security features with Pro.
             </DialogDescription>
           </DialogHeader>
           <Button onClick={handleUpgradeClick} className="w-full" size="lg">
-            Upgrade to Pro
+            Upgrade plan
           </Button>
         </DialogContent>
       </Dialog>
