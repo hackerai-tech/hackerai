@@ -147,8 +147,6 @@ OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 # Rate Limiting (Upstash Redis)
 # UPSTASH_REDIS_REST_URL="https://your-redis-url.upstash.io"
 # UPSTASH_REDIS_REST_TOKEN="your-redis-token"
-# PRO_RATE_LIMIT_REQUESTS=
-# FREE_RATE_LIMIT_REQUESTS=
 
 # Analytics (PostHog)
 # NEXT_PUBLIC_POSTHOG_KEY="phc_your_project_key_here"

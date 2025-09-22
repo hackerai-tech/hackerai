@@ -12,17 +12,47 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { X, ChevronDown } from "lucide-react";
-import { proFeatures } from "@/lib/pricing/features";
+import { proFeatures, ultraFeatures } from "@/lib/pricing/features";
 import DeleteAccountDialog from "./DeleteAccountDialog";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const AccountTab = () => {
-  const { hasProPlan } = useGlobalState();
+  const { subscription } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [showDeleteChats, setShowDeleteChats] = useState(false);
+  const [isDeletingChats, setIsDeletingChats] = useState(false);
 
-  const currentPlanFeatures = hasProPlan ? proFeatures : proFeatures;
+  const deleteAllChats = useMutation(api.chats.deleteAllChats);
+
+  const currentPlanFeatures = proFeatures;
 
   const handleCancelSubscription = () => {
     redirectToBillingPortal();
+  };
+
+  const handleDeleteAllChats = async () => {
+    if (isDeletingChats) return;
+    setIsDeletingChats(true);
+    try {
+      await deleteAllChats();
+    } catch (error) {
+      console.error("Failed to delete all chats:", error);
+    } finally {
+      setShowDeleteChats(false);
+      window.location.href = "/";
+      setIsDeletingChats(false);
+    }
   };
 
   return (
@@ -32,10 +62,14 @@ const AccountTab = () => {
         <div className="flex items-center justify-between">
           <div>
             <div className="font-medium">
-              {hasProPlan ? "HackerAI Pro" : "Get HackerAI Pro"}
+              {subscription === "ultra"
+                ? "HackerAI Ultra"
+                : subscription === "pro"
+                  ? "HackerAI Pro"
+                  : "Get HackerAI Pro"}
             </div>
           </div>
-          {hasProPlan ? (
+          {subscription !== "free" ? (
             <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm">
@@ -62,25 +96,40 @@ const AccountTab = () => {
 
         <div className="mt-2 rounded-lg bg-transparent px-0">
           <span className="text-sm font-semibold inline-block pb-4">
-            {hasProPlan
-              ? "Thanks for subscribing to Pro! Your plan includes:"
-              : "Get everything in Free, and more."}
+            {subscription === "ultra"
+              ? "Thanks for subscribing to Ultra! Your plan includes everything in Pro, plus:"
+              : subscription !== "free"
+                ? "Thanks for subscribing to Pro! Your plan includes:"
+                : "Get everything in Free, and more."}
           </span>
-          <ul className="mb-2 flex flex-col gap-5">
-            {currentPlanFeatures.map((feature, index) => (
-              <li key={index} className="relative">
-                <div className="flex justify-start gap-3.5">
-                  <feature.icon className="h-5 w-5 shrink-0" />
-                  <span className="font-normal">{feature.text}</span>
-                </div>
-              </li>
-            ))}
-          </ul>
+          {subscription === "ultra" ? (
+            <ul className="mb-2 flex flex-col gap-5">
+              {ultraFeatures.map((feature, index) => (
+                <li key={index} className="relative">
+                  <div className="flex justify-start gap-3.5">
+                    <feature.icon className="h-5 w-5 shrink-0" />
+                    <span className="font-normal">{feature.text}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <ul className="mb-2 flex flex-col gap-5">
+              {currentPlanFeatures.map((feature, index) => (
+                <li key={index} className="relative">
+                  <div className="flex justify-start gap-3.5">
+                    <feature.icon className="h-5 w-5 shrink-0" />
+                    <span className="font-normal">{feature.text}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
 
       {/* Payment Section - Only show for Pro users */}
-      {hasProPlan && (
+      {subscription !== "free" && (
         <div>
           <div className="space-y-4">
             <div className="flex items-center justify-between py-3">
@@ -98,6 +147,23 @@ const AccountTab = () => {
           </div>
         </div>
       )}
+
+      {/* Delete All Chats Section */}
+      <div>
+        <div className="flex items-center justify-between py-3">
+          <div>
+            <div className="font-medium">Delete all chats</div>
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => setShowDeleteChats(true)}
+            aria-label="Delete all chats"
+          >
+            Delete all
+          </Button>
+        </div>
+      </div>
 
       {/* Delete Account Section */}
       <div>
@@ -120,6 +186,33 @@ const AccountTab = () => {
         open={showDeleteAccount}
         onOpenChange={setShowDeleteAccount}
       />
+
+      {/* Delete All Chats Confirmation Dialog */}
+      <AlertDialog open={showDeleteChats} onOpenChange={setShowDeleteChats}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Clear your chat history - are you sure?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. This will permanently delete all
+              your chats and remove all associated data from our servers.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeletingChats}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteAllChats}
+              disabled={isDeletingChats}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeletingChats ? "Deleting..." : "Confirm deletion"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

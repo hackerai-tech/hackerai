@@ -66,12 +66,17 @@ export const generateUploadUrl = mutation({
       throw new Error("Unauthorized: User not authenticated");
     }
 
-    // Check if user has pro-monthly-plan entitlement
-    if (
-      !Array.isArray(user.entitlements) ||
-      !user.entitlements.includes("pro-monthly-plan")
-    ) {
-      throw new Error("Unauthorized: Pro plan required for file uploads");
+    // Check if user has paid entitlement (pro or ultra)
+    const entitlements: Array<string> = Array.isArray(user.entitlements)
+      ? (user.entitlements.filter(
+          (e: unknown): e is string => typeof e === "string",
+        ) as Array<string>)
+      : [];
+    const isPaid =
+      entitlements.includes("pro-monthly-plan") ||
+      entitlements.includes("ultra-monthly-plan");
+    if (!isPaid) {
+      throw new Error("Unauthorized: Paid plan required for file uploads");
     }
 
     // Check file upload limit (100 files maximum)

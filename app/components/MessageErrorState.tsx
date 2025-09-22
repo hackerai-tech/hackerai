@@ -13,7 +13,7 @@ export const MessageErrorState = ({
   error,
   onRetry,
 }: MessageErrorStateProps) => {
-  const { hasProPlan } = useGlobalState();
+  const { subscription } = useGlobalState();
   const isRateLimitError =
     error instanceof ChatSDKError && error.type === "rate_limit";
 
@@ -34,7 +34,7 @@ export const MessageErrorState = ({
         <Button variant="destructive" size="sm" onClick={onRetry}>
           {isRateLimitError ? "Try Again" : "Retry"}
         </Button>
-        {isRateLimitError && !hasProPlan && (
+        {isRateLimitError && subscription === "free" && (
           <Button variant="default" size="sm" onClick={redirectToPricing}>
             Upgrade
           </Button>

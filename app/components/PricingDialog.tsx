@@ -2,12 +2,17 @@
 
 import React from "react";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
-import { freeFeatures, proFeatures } from "@/lib/pricing/features";
+import {
+  freeFeatures,
+  proFeatures,
+  ultraFeatures,
+} from "@/lib/pricing/features";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -29,6 +34,9 @@ interface PlanCardProps {
   isButtonDisabled?: boolean;
   isButtonLoading?: boolean;
   customClassName?: string;
+  badgeText?: string;
+  badgeClassName?: string;
+  footerNote?: string;
 }
 
 const PlanCard: React.FC<PlanCardProps> = ({
@@ -43,6 +51,9 @@ const PlanCard: React.FC<PlanCardProps> = ({
   isButtonDisabled = false,
   isButtonLoading = false,
   customClassName = "",
+  badgeText,
+  badgeClassName = "",
+  footerNote,
 }) => {
   return (
     <div
@@ -50,9 +61,16 @@ const PlanCard: React.FC<PlanCardProps> = ({
     >
       <div className="relative flex flex-col mt-0">
         <div className="flex flex-col gap-5">
-          <p className="flex items-center gap-2 justify-between text-[28px] font-medium">
+          <div className="flex items-center gap-2 justify-between text-[28px] font-medium">
             {planName}
-          </p>
+            {badgeText ? (
+              <Badge
+                className={`ms-1 border-none rounded-4xl px-2 pt-1.5 pb-1.25 text-[11px] font-semibold bg-[#DCDBFF] text-[#615EEB] dark:bg-[#444378] dark:text-[#B9B7FF] ${badgeClassName}`}
+              >
+                {badgeText}
+              </Badge>
+            ) : null}
+          </div>
           <div className="flex items-end gap-1.5">
             <div className="flex text-foreground">
               <div className="text-2xl text-muted-foreground">$</div>
@@ -106,13 +124,16 @@ const PlanCard: React.FC<PlanCardProps> = ({
           ))}
         </ul>
       </div>
+      {footerNote ? (
+        <p className="text-muted-foreground text-xs mt-auto">{footerNote}</p>
+      ) : null}
     </div>
   );
 };
 
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
-  const { hasProPlan, isCheckingProPlan } = useGlobalState();
+  const { subscription, isCheckingProPlan } = useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
 
   const handleSignIn = () => {
@@ -123,9 +144,11 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     window.location.href = "/signup";
   };
 
-  const handleUpgradeClick = async () => {
+  const handleUpgradeClick = async (
+    plan: "pro-monthly-plan" | "ultra-monthly-plan" = "pro-monthly-plan",
+  ) => {
     try {
-      await handleUpgrade();
+      await handleUpgrade(plan);
       // Don't close dialog on success - let the redirect happen
     } catch (error) {
       // Only close on error if needed
@@ -137,7 +160,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   // Button configurations for Free plan
   const getFreeButtonConfig = () => {
-    if (user && !isCheckingProPlan && !hasProPlan) {
+    if (user && !isCheckingProPlan && subscription === "free") {
       return {
         text: "Your current plan",
         disabled: true,
@@ -164,7 +187,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   // Button configurations for Pro plan
   const getProButtonConfig = () => {
-    if (user && !isCheckingProPlan && hasProPlan) {
+    if (user && !isCheckingProPlan && subscription === "pro") {
       return {
         text: "Current Plan",
         disabled: true,
@@ -177,7 +200,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: upgradeLoading,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
-        onClick: handleUpgradeClick,
+        onClick: () => handleUpgradeClick("pro-monthly-plan"),
         loading: upgradeLoading,
       };
     } else {
@@ -191,8 +214,29 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  // Button configurations for Ultra plan
+  const getUltraButtonConfig = () => {
+    if (user && !isCheckingProPlan && subscription === "ultra") {
+      return {
+        text: "Current Plan",
+        disabled: true,
+        className: "opacity-50 cursor-not-allowed",
+        variant: "secondary" as const,
+      };
+    }
+    return {
+      text: user ? "Get Ultra" : "Get Ultra",
+      disabled: upgradeLoading,
+      className: "",
+      variant: "default" as const,
+      onClick: () => handleUpgradeClick("ultra-monthly-plan"),
+      loading: upgradeLoading,
+    } as const;
+  };
+
   const freeButtonConfig = getFreeButtonConfig();
   const proButtonConfig = getProButtonConfig();
+  const ultraButtonConfig = getUltraButtonConfig();
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
@@ -243,6 +287,22 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
             isButtonDisabled={proButtonConfig.disabled}
             isButtonLoading={proButtonConfig.loading}
             customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+            badgeText="POPULAR"
+          />
+
+          {/* Ultra Plan */}
+          <PlanCard
+            planName="Ultra"
+            price={200}
+            description="Full access to the best of HackerAI"
+            features={ultraFeatures}
+            buttonText={ultraButtonConfig.text}
+            buttonVariant={ultraButtonConfig.variant}
+            buttonClassName={ultraButtonConfig.className}
+            isButtonDisabled={ultraButtonConfig.disabled}
+            isButtonLoading={ultraButtonConfig.loading}
+            onButtonClick={ultraButtonConfig.onClick}
+            footerNote="Unlimited subject to abuse guardrails."
           />
         </div>
       </DialogContent>

@@ -170,14 +170,14 @@ export async function getMessagesByChatId({
   userId,
   newMessages,
   regenerate,
-  isPro,
+  subscription,
   isTemporary,
 }: {
   chatId: string;
   userId: string;
+  subscription: "free" | "pro" | "ultra";
   newMessages: UIMessage[];
   regenerate?: boolean;
-  isPro: boolean;
   isTemporary?: boolean;
 }) {
   // For temporary chats, skip database operations
@@ -223,7 +223,7 @@ export async function getMessagesByChatId({
   // Truncate messages to stay within token limit with file tokens included
   const truncatedMessages = await truncateMessagesWithFileTokens(
     allMessages,
-    isPro,
+    subscription,
   );
 
   return { truncatedMessages, chat, isNewChat };
@@ -247,16 +247,16 @@ export async function getUserCustomization({ userId }: { userId: string }) {
 
 export async function getMemories({
   userId,
-  isPro,
+  subscription,
 }: {
   userId: string;
-  isPro: boolean;
+  subscription: "free" | "pro" | "ultra";
 }) {
   try {
     const memories = await convex.query(api.memories.getMemoriesForBackend, {
       serviceKey,
       userId,
-      isPro,
+      subscription,
     });
     return memories;
   } catch (error) {

@@ -5,7 +5,11 @@ import { ConvexHttpClient } from "convex/browser";
 import { UIMessagePart } from "ai";
 import { UIMessage } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
-import { truncateMessagesToTokenLimit } from "@/lib/token-utils";
+import {
+  truncateMessagesToTokenLimit,
+  getMaxTokensForSubscription,
+  type SubscriptionTier,
+} from "@/lib/token-utils";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -92,7 +96,7 @@ export function extractAllFileIdsFromMessages(
  */
 export async function truncateMessagesWithFileTokens(
   messages: UIMessage[],
-  isPro: boolean = true,
+  subscription: SubscriptionTier = "pro",
 ): Promise<UIMessage[]> {
   // Extract file IDs from all messages
   const fileIds = extractAllFileIdsFromMessages(messages);
@@ -101,5 +105,6 @@ export async function truncateMessagesWithFileTokens(
   const fileTokens = await getFileTokensByIds(fileIds);
 
   // Truncate messages with file tokens included
-  return truncateMessagesToTokenLimit(messages, fileTokens, isPro);
+  const maxTokens = getMaxTokensForSubscription(subscription);
+  return truncateMessagesToTokenLimit(messages, fileTokens, maxTokens);
 }

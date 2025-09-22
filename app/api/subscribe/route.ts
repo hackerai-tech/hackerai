@@ -5,13 +5,19 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const POST = async (req: NextRequest) => {
   try {
+    const body = await req.json().catch(() => ({}));
+    const requestedPlan: string | undefined = body?.plan;
     // Get user ID from authenticated session
     const userId = await getUserID(req);
 
     // Get user details from WorkOS to use email as organization name
     const user = await workos.userManagement.getUser(userId);
     const orgName = user.email;
-    const subscriptionLevel = "pro-monthly-plan";
+    const allowedPlans = new Set(["pro-monthly-plan", "ultra-monthly-plan"]);
+    const subscriptionLevel =
+      typeof requestedPlan === "string" && allowedPlans.has(requestedPlan)
+        ? (requestedPlan as "pro-monthly-plan" | "ultra-monthly-plan")
+        : "pro-monthly-plan";
 
     // Check if user already has an organization
     const existingMemberships =

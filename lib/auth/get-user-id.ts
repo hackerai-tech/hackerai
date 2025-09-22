@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { ChatSDKError } from "@/lib/errors";
-// import { WorkOS } from "@workos-inc/node";
+import type { SubscriptionTier } from "@/types";
 
 /**
  * Get the current user ID from the authenticated session
@@ -40,7 +40,11 @@ export const getUserID = async (req: NextRequest): Promise<string> => {
  */
 export const getUserIDAndPro = async (
   req: NextRequest,
-): Promise<{ userId: string; isPro: boolean }> => {
+): Promise<{
+  userId: string;
+  isPro: boolean;
+  subscription: SubscriptionTier;
+}> => {
   try {
     const { authkit } = await import("@workos-inc/authkit-nextjs");
     const { session } = await authkit(req);
@@ -49,11 +53,23 @@ export const getUserIDAndPro = async (
       throw new ChatSDKError("unauthorized:auth");
     }
 
-    // Check if user has pro entitlements
-    const entitlements = session.entitlements || [];
-    const isPro = entitlements.includes("pro-monthly-plan");
+    // Check if user has paid entitlements (pro or ultra) and determine tier
+    const entitlements: Array<string> = Array.isArray(session.entitlements)
+      ? (session.entitlements.filter(
+          (e: unknown): e is string => typeof e === "string",
+        ) as Array<string>)
+      : [];
 
-    return { userId: session.user.id, isPro };
+    let subscription: SubscriptionTier = "free";
+    if (entitlements.includes("ultra-monthly-plan")) {
+      subscription = "ultra";
+    } else if (entitlements.includes("pro-monthly-plan")) {
+      subscription = "pro";
+    }
+
+    const isPro = subscription !== "free";
+
+    return { userId: session.user.id, isPro, subscription };
   } catch (error) {
     if (error instanceof ChatSDKError) {
       throw error;

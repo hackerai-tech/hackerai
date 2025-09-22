@@ -77,7 +77,7 @@ export const ChatInput = ({
     setMode,
     uploadedFiles,
     isUploadingFiles,
-    hasProPlan,
+    subscription,
     isCheckingProPlan,
   } = useGlobalState();
   const {
@@ -93,13 +93,13 @@ export const ChatInput = ({
 
   // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
   useEffect(() => {
-    if (!isCheckingProPlan && !hasProPlan && mode === "agent") {
+    if (!isCheckingProPlan && subscription === "free" && mode === "agent") {
       setMode("ask");
     }
-  }, [hasProPlan, isCheckingProPlan, mode, setMode]);
+  }, [subscription, isCheckingProPlan, mode, setMode]);
 
   const handleAgentModeClick = () => {
-    if (hasProPlan) {
+    if (subscription !== "free") {
       setMode("agent");
     } else {
       setAgentUpgradeDialogOpen(true);
@@ -181,10 +181,12 @@ export const ChatInput = ({
           if (pastedText) {
             // Check token limit for the pasted text only based on user plan
             const tokenCount = countInputTokens(pastedText, []);
-            const maxTokens = hasProPlan ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
+            const maxTokens =
+              subscription !== "free" ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
             if (tokenCount > maxTokens) {
               e.preventDefault();
-              const planText = hasProPlan ? "" : " (Free plan limit)";
+              const planText =
+                subscription !== "free" ? "" : " (Free plan limit)";
               toast.error("Content is too long to paste", {
                 description: `The content you're trying to paste is too large (${tokenCount.toLocaleString()} tokens). Please copy a smaller amount${planText}.`,
               });
@@ -293,7 +295,7 @@ export const ChatInput = ({
                       </span>
                     </div>
                   </DropdownMenuItem>
-                  {hasProPlan || isCheckingProPlan ? (
+                  {subscription !== "free" || isCheckingProPlan ? (
                     <DropdownMenuItem
                       onClick={() => setMode("agent")}
                       className="cursor-pointer"
@@ -399,14 +401,14 @@ export const ChatInput = ({
       >
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
-            <DialogTitle>Upgrade to Pro</DialogTitle>
+            <DialogTitle>Upgrade plan</DialogTitle>
             <DialogDescription>
               Get access to Agent mode and unlock advanced hacking, testing, and
               security features with Pro.
             </DialogDescription>
           </DialogHeader>
           <Button onClick={handleUpgradeClick} className="w-full" size="lg">
-            Upgrade to Pro
+            Upgrade plan
           </Button>
         </DialogContent>
       </Dialog>

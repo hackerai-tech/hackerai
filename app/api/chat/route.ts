@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
       temporary?: boolean;
     } = await req.json();
 
-    const { userId, isPro } = await getUserIDAndPro(req);
+    const { userId, isPro, subscription } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
     // Check if free user is trying to use agent mode
@@ -90,9 +90,9 @@ export async function POST(req: NextRequest) {
     const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
       chatId,
       userId,
+      subscription,
       newMessages: messages,
       regenerate,
-      isPro,
       isTemporary: temporary,
     });
 
@@ -113,7 +113,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Check rate limit for the user with mode
-    await checkRateLimit(userId, isPro, mode);
+    await checkRateLimit(userId, isPro, mode, subscription);
 
     // Process chat messages with moderation
     const { executionMode, processedMessages, selectedModel } =
@@ -160,8 +160,8 @@ export async function POST(req: NextRequest) {
           model: trackedProvider.languageModel(selectedModel),
           system: await systemPrompt(
             userId,
-            isPro,
             mode,
+            subscription,
             executionMode,
             userCustomization,
             temporary,

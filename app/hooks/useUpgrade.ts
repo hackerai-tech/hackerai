@@ -1,14 +1,13 @@
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 
 export const useUpgrade = () => {
   const { user } = useAuth();
-  const router = useRouter();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
   const [upgradeError, setUpgradeError] = useState("");
 
   const handleUpgrade = async (
+    planKey?: "pro-monthly-plan" | "ultra-monthly-plan",
     e?: React.MouseEvent<HTMLButtonElement | HTMLDivElement>,
   ) => {
     e?.preventDefault();
@@ -32,6 +31,9 @@ export const useUpgrade = () => {
         headers: {
           "Content-Type": "application/json",
         },
+        body: JSON.stringify(
+          planKey ? { plan: planKey } : { plan: "pro-monthly-plan" },
+        ),
       });
 
       // Check if response is ok, if not throw error with status and body
