@@ -64,8 +64,10 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
       setChatSidebarOpen(false);
     }
 
-    // Clear input and transient state for the selected chat
-    initializeChat(id);
+    // Clear input and transient state only when switching to a different chat
+    if (!isCurrentlyActive) {
+      initializeChat(id);
+    }
 
     // Navigate to the chat route
     router.push(`/c/${id}`);
