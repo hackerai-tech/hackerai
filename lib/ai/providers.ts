@@ -6,7 +6,7 @@ import PostHogClient from "@/app/posthog";
 
 const baseProviders = {
   "ask-model": openrouter(
-    process.env.NEXT_PUBLIC_ASK_MODEL || "deepseek/deepseek-chat-v3.1",
+    process.env.NEXT_PUBLIC_ASK_MODEL || "qwen/qwen3-coder",
   ),
   "agent-model": openai(process.env.NEXT_PUBLIC_AGENT_MODEL || "gpt-5-mini"),
   "vision-model": openai(
