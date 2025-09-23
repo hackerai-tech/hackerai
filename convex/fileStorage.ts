@@ -72,9 +72,15 @@ export const generateUploadUrl = mutation({
           (e: unknown): e is string => typeof e === "string",
         ) as Array<string>)
       : [];
+    // Consider normalized entitlements ("pro-plan", "ultra-plan") as paid
+    // and keep supporting monthly/yearly legacy keys
     const isPaid =
+      entitlements.includes("pro-plan") ||
+      entitlements.includes("ultra-plan") ||
       entitlements.includes("pro-monthly-plan") ||
-      entitlements.includes("ultra-monthly-plan");
+      entitlements.includes("ultra-monthly-plan") ||
+      entitlements.includes("pro-yearly-plan") ||
+      entitlements.includes("ultra-yearly-plan");
     if (!isPaid) {
       throw new Error("Unauthorized: Paid plan required for file uploads");
     }

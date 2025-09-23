@@ -1,6 +1,6 @@
 "use client";
 
-import { ReactNode, useCallback, useRef, useState } from "react";
+import { ReactNode, useCallback, useState } from "react";
 import { ConvexReactClient } from "convex/react";
 import { ConvexProviderWithAuth } from "convex/react";
 import {
@@ -9,17 +9,9 @@ import {
   useAccessToken,
 } from "@workos-inc/authkit-nextjs/components";
 
-export function ConvexClientProvider({
-  children,
-  expectAuth,
-}: {
-  children: ReactNode;
-  expectAuth?: boolean;
-}) {
+export function ConvexClientProvider({ children }: { children: ReactNode }) {
   const [convex] = useState(() => {
-    return new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!, {
-      expectAuth,
-    });
+    return new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
   });
   return (
     <AuthKitProvider>
@@ -31,33 +23,11 @@ export function ConvexClientProvider({
 }
 
 function useAuthFromAuthKit() {
-  const { user, loading } = useAuth();
-  const { accessToken, getAccessToken, refresh } = useAccessToken();
-  const failureCountRef = useRef(0);
-  const lastFailureAtRef = useRef<number | null>(null);
+  const { user, loading: isLoading } = useAuth();
+  const { getAccessToken, refresh } = useAccessToken();
 
-  const shouldForceLogout = (value: unknown): boolean => {
-    const message =
-      typeof value === "string"
-        ? value
-        : value && typeof value === "object" && "message" in value
-          ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (value as any).message
-          : undefined;
-    if (!message) return false;
-    const normalized = String(message).toLowerCase();
-    if (normalized.includes("invalid_grant")) return true;
-    if (normalized.includes("session has already ended")) return true;
-    if (normalized.includes("failed to refresh session")) return true;
-    return false;
-  };
+  const isAuthenticated = !!user;
 
-  const hasIncompleteAuth =
-    (!!user && !accessToken) || (!user && !!accessToken);
-  const isLoading = loading || hasIncompleteAuth;
-  const authenticated = !!user && !!accessToken;
-
-  // Create a stable fetchAccessToken function
   const fetchAccessToken = useCallback(
     async ({
       forceRefreshToken,
@@ -68,47 +38,11 @@ function useAuthFromAuthKit() {
 
       try {
         if (forceRefreshToken) {
-          const token = (await refresh()) ?? null;
-          if (token) {
-            failureCountRef.current = 0;
-            lastFailureAtRef.current = null;
-          }
-          return token;
+          return (await refresh()) ?? null;
         }
 
-        const token = (await getAccessToken()) ?? null;
-        if (token) {
-          failureCountRef.current = 0;
-          lastFailureAtRef.current = null;
-        }
-        return token;
+        return (await getAccessToken()) ?? null;
       } catch (error) {
-        const hasDigest = !!(
-          error &&
-          typeof error === "object" &&
-          "digest" in (error as Record<string, unknown>)
-        );
-        if (
-          (shouldForceLogout(error) || hasDigest) &&
-          typeof window !== "undefined"
-        ) {
-          const { clientLogout } = await import("@/lib/utils/logout");
-          clientLogout();
-          return null;
-        }
-        // Fallback: if repeated failures occur quickly, force logout
-        const now = Date.now();
-        const withinWindow =
-          lastFailureAtRef.current && now - lastFailureAtRef.current < 10000; // 10s
-        failureCountRef.current = withinWindow
-          ? failureCountRef.current + 1
-          : 1;
-        lastFailureAtRef.current = now;
-        if (failureCountRef.current >= 2 && typeof window !== "undefined") {
-          const { clientLogout } = await import("@/lib/utils/logout");
-          clientLogout();
-          return null;
-        }
         console.error("Failed to get access token:", error);
         return null;
       }
@@ -118,7 +52,7 @@ function useAuthFromAuthKit() {
 
   return {
     isLoading,
-    isAuthenticated: authenticated,
+    isAuthenticated,
     fetchAccessToken,
   };
 }
