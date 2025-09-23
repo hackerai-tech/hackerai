@@ -143,7 +143,7 @@ export const CustomizeHackerAIDialog = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} modal={true}>
-      <DialogContent className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[500px] max-h-[90vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>Personalization</DialogTitle>
           <DialogDescription>
@@ -151,138 +151,140 @@ export const CustomizeHackerAIDialog = ({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-8">
-          {/* Nickname */}
-          <div className="space-y-3">
-            <Label htmlFor="nickname">What should HackerAI call you?</Label>
-            <TextareaAutosize
-              id="nickname"
-              placeholder="Nickname"
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              className={`flex w-full rounded-md border ${isNicknameOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
-              maxRows={1}
-            />
-            {isNicknameOverLimit && (
-              <div className="text-xs text-red-500 mt-1">
-                {nickname.length}/{MAX_CHAR_LIMIT} characters
-              </div>
-            )}
-          </div>
+        <div className="flex-1 overflow-y-auto">
+          <div className="space-y-8">
+            {/* Nickname */}
+            <div className="space-y-3">
+              <Label htmlFor="nickname">What should HackerAI call you?</Label>
+              <TextareaAutosize
+                id="nickname"
+                placeholder="Nickname"
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                className={`flex w-full rounded-md border ${isNicknameOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
+                maxRows={1}
+              />
+              {isNicknameOverLimit && (
+                <div className="text-xs text-red-500 mt-1">
+                  {nickname.length}/{MAX_CHAR_LIMIT} characters
+                </div>
+              )}
+            </div>
 
-          {/* Occupation */}
-          <div className="space-y-3">
-            <Label htmlFor="occupation">What do you do?</Label>
-            <TextareaAutosize
-              id="occupation"
-              placeholder="Pentester, bug bounty hunter, etc."
-              value={occupation}
-              onChange={(e) => setOccupation(e.target.value)}
-              className={`flex w-full rounded-md border ${isOccupationOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
-              maxRows={1}
-            />
-            {isOccupationOverLimit && (
-              <div className="text-xs text-red-500 mt-1">
-                {occupation.length}/{MAX_CHAR_LIMIT} characters
-              </div>
-            )}
-          </div>
+            {/* Occupation */}
+            <div className="space-y-3">
+              <Label htmlFor="occupation">What do you do?</Label>
+              <TextareaAutosize
+                id="occupation"
+                placeholder="Pentester, bug bounty hunter, etc."
+                value={occupation}
+                onChange={(e) => setOccupation(e.target.value)}
+                className={`flex w-full rounded-md border ${isOccupationOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
+                maxRows={1}
+              />
+              {isOccupationOverLimit && (
+                <div className="text-xs text-red-500 mt-1">
+                  {occupation.length}/{MAX_CHAR_LIMIT} characters
+                </div>
+              )}
+            </div>
 
-          {/* Personality */}
-          <div className="space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <Label className="sm:flex-shrink-0">
-                What personality should HackerAI have?
+            {/* Personality */}
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <Label className="sm:flex-shrink-0">
+                  What personality should HackerAI have?
+                </Label>
+                <Select value={personality} onValueChange={setPersonality}>
+                  <SelectTrigger className="w-full sm:w-auto">
+                    <SelectValue placeholder="Select personality">
+                      {
+                        personalityOptions.find(
+                          (opt) => opt.value === personality,
+                        )?.label
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {personalityOptions.map((option) => (
+                      <SelectItem
+                        key={option.value}
+                        value={option.value}
+                        className="flex flex-col items-start py-3"
+                      >
+                        <div className="flex flex-col">
+                          <div className="font-medium">{option.label}</div>
+                          {option.value !== "default" && (
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                              {option.description}
+                            </div>
+                          )}
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Traits */}
+            <div className="space-y-4">
+              <Label>What traits should HackerAI have?</Label>
+
+              <TextareaAutosize
+                placeholder="Describe or select traits"
+                value={traitsText}
+                onChange={(e) => setTraitsText(e.target.value)}
+                className={`flex w-full rounded-md border ${isTraitsOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
+                minRows={2}
+                maxRows={4}
+              />
+              {isTraitsOverLimit && (
+                <div className="text-xs text-red-500 mt-1">
+                  {traitsText.length}/{MAX_CHAR_LIMIT} characters
+                </div>
+              )}
+
+              {/* Predefined traits */}
+              <div className="flex flex-wrap gap-2">
+                {predefinedTraits.map((trait) => (
+                  <button
+                    key={trait}
+                    type="button"
+                    onClick={() => handleAddTrait(trait)}
+                    className="inline-flex items-center gap-1 px-3 py-1 text-sm border rounded-full hover:bg-muted transition-colors"
+                  >
+                    <Plus className="h-3 w-3" />
+                    {trait}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Additional Info */}
+            <div className="space-y-3">
+              <Label htmlFor="additional-info">
+                Anything else HackerAI should know about you?
               </Label>
-              <Select value={personality} onValueChange={setPersonality}>
-                <SelectTrigger className="w-full sm:w-auto">
-                  <SelectValue placeholder="Select personality">
-                    {
-                      personalityOptions.find(
-                        (opt) => opt.value === personality,
-                      )?.label
-                    }
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  {personalityOptions.map((option) => (
-                    <SelectItem
-                      key={option.value}
-                      value={option.value}
-                      className="flex flex-col items-start py-3"
-                    >
-                      <div className="flex flex-col">
-                        <div className="font-medium">{option.label}</div>
-                        {option.value !== "default" && (
-                          <div className="text-xs text-muted-foreground mt-0.5">
-                            {option.description}
-                          </div>
-                        )}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <TextareaAutosize
+                id="additional-info"
+                placeholder="Security interests, preferred methodologies, compliance requirements"
+                value={additionalInfo}
+                onChange={(e) => setAdditionalInfo(e.target.value)}
+                className={`flex w-full rounded-md border ${isAdditionalInfoOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
+                minRows={3}
+                maxRows={6}
+              />
+              {isAdditionalInfoOverLimit && (
+                <div className="text-xs text-red-500 mt-1">
+                  {additionalInfo.length}/{MAX_CHAR_LIMIT} characters
+                </div>
+              )}
             </div>
-          </div>
-
-          {/* Traits */}
-          <div className="space-y-4">
-            <Label>What traits should HackerAI have?</Label>
-
-            <TextareaAutosize
-              placeholder="Describe or select traits"
-              value={traitsText}
-              onChange={(e) => setTraitsText(e.target.value)}
-              className={`flex w-full rounded-md border ${isTraitsOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
-              minRows={2}
-              maxRows={4}
-            />
-            {isTraitsOverLimit && (
-              <div className="text-xs text-red-500 mt-1">
-                {traitsText.length}/{MAX_CHAR_LIMIT} characters
-              </div>
-            )}
-
-            {/* Predefined traits */}
-            <div className="flex flex-wrap gap-2">
-              {predefinedTraits.map((trait) => (
-                <button
-                  key={trait}
-                  type="button"
-                  onClick={() => handleAddTrait(trait)}
-                  className="inline-flex items-center gap-1 px-3 py-1 text-sm border rounded-full hover:bg-muted transition-colors"
-                >
-                  <Plus className="h-3 w-3" />
-                  {trait}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Additional Info */}
-          <div className="space-y-3">
-            <Label htmlFor="additional-info">
-              Anything else HackerAI should know about you?
-            </Label>
-            <TextareaAutosize
-              id="additional-info"
-              placeholder="Security interests, preferred methodologies, compliance requirements"
-              value={additionalInfo}
-              onChange={(e) => setAdditionalInfo(e.target.value)}
-              className={`flex w-full rounded-md border ${isAdditionalInfoOverLimit ? "border-red-500" : "border-input"} bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 resize-none`}
-              minRows={3}
-              maxRows={6}
-            />
-            {isAdditionalInfoOverLimit && (
-              <div className="text-xs text-red-500 mt-1">
-                {additionalInfo.length}/{MAX_CHAR_LIMIT} characters
-              </div>
-            )}
           </div>
         </div>
 
-        <DialogFooter className="gap-2">
+        <DialogFooter className="flex-row justify-end gap-2 border-t pt-4">
           <Button variant="outline" onClick={handleCancel} disabled={isSaving}>
             Cancel
           </Button>
