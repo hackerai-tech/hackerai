@@ -138,8 +138,6 @@ export const POST = async (req: NextRequest) => {
     successUrl.searchParams.set("refresh", "entitlements");
 
     const cancelUrl = new URL(baseUrl);
-    cancelUrl.searchParams.set("checkout", "cancel");
-    cancelUrl.searchParams.set("refresh", "entitlements");
 
     const session = await stripe.checkout.sessions.create({
       customer: customer.id,
