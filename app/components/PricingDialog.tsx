@@ -13,6 +13,7 @@ import {
   proFeatures,
   ultraFeatures,
 } from "@/lib/pricing/features";
+import BillingFrequencySelector from "./BillingFrequencySelector";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -135,6 +136,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
   const { subscription, isCheckingProPlan } = useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
+  const [isYearly, setIsYearly] = React.useState(false);
+  const handleBillingChange = (value: "monthly" | "yearly") => {
+    setIsYearly(value === "yearly");
+  };
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -145,7 +150,11 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   };
 
   const handleUpgradeClick = async (
-    plan: "pro-monthly-plan" | "ultra-monthly-plan" = "pro-monthly-plan",
+    plan:
+      | "pro-monthly-plan"
+      | "ultra-monthly-plan"
+      | "pro-yearly-plan"
+      | "ultra-yearly-plan" = "pro-monthly-plan",
   ) => {
     try {
       await handleUpgrade(plan);
@@ -200,7 +209,8 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: upgradeLoading,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
-        onClick: () => handleUpgradeClick("pro-monthly-plan"),
+        onClick: () =>
+          handleUpgradeClick(isYearly ? "pro-yearly-plan" : "pro-monthly-plan"),
         loading: upgradeLoading,
       };
     } else {
@@ -229,7 +239,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       disabled: upgradeLoading,
       className: "",
       variant: "default" as const,
-      onClick: () => handleUpgradeClick("ultra-monthly-plan"),
+      onClick: () =>
+        handleUpgradeClick(
+          isYearly ? "ultra-yearly-plan" : "ultra-monthly-plan",
+        ),
       loading: upgradeLoading,
     } as const;
   };
@@ -260,6 +273,14 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
           </button>
         </div>
 
+        <div className="mt-2 mb-4 flex justify-center px-6">
+          <BillingFrequencySelector
+            value={isYearly ? "yearly" : "monthly"}
+            onChange={handleBillingChange}
+            isOpen={isOpen}
+          />
+        </div>
+
         <div className="flex justify-center gap-6 flex-col md:flex-row pb-8">
           {/* Free Plan */}
           <PlanCard
@@ -277,7 +298,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
           {/* Pro Plan */}
           <PlanCard
             planName="Pro"
-            price={20}
+            price={isYearly ? 17 : 20}
             description="More access to advanced intelligence"
             features={proFeatures}
             buttonText={proButtonConfig.text}
@@ -293,7 +314,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
           {/* Ultra Plan */}
           <PlanCard
             planName="Ultra"
-            price={200}
+            price={isYearly ? 166 : 200}
             description="Full access to the best of HackerAI"
             features={ultraFeatures}
             buttonText={ultraButtonConfig.text}

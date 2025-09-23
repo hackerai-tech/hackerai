@@ -68,11 +68,20 @@ export async function GET(req: NextRequest) {
       : [];
 
     // Compute a single subscription tier
-    const subscription: "free" | "pro" | "ultra" = allEntitlements.includes(
-      "ultra-monthly-plan",
-    )
+    // Prefer normalized entitlements (e.g. "ultra-plan", "pro-plan") if present,
+    // but maintain backward compatibility by also checking monthly/yearly variants.
+    const hasUltra =
+      allEntitlements.includes("ultra-plan") ||
+      allEntitlements.includes("ultra-monthly-plan") ||
+      allEntitlements.includes("ultra-yearly-plan");
+    const hasPro =
+      allEntitlements.includes("pro-plan") ||
+      allEntitlements.includes("pro-monthly-plan") ||
+      allEntitlements.includes("pro-yearly-plan");
+
+    const subscription: "free" | "pro" | "ultra" = hasUltra
       ? "ultra"
-      : allEntitlements.includes("pro-monthly-plan")
+      : hasPro
         ? "pro"
         : "free";
 

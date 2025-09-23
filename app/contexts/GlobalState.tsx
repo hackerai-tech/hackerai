@@ -181,6 +181,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, [chatSidebarOpen, isMobile]);
 
   // Derive subscription tier from current token entitlements
+  // Prefer normalized entitlements ("pro-plan", "ultra-plan"); fall back to monthly/yearly keys for backward compatibility
   useEffect(() => {
     if (!user) {
       setSubscription("free");
@@ -188,9 +189,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
 
     if (Array.isArray(entitlements)) {
-      const ultra = entitlements.includes("ultra-monthly-plan");
-      const pro = entitlements.includes("pro-monthly-plan");
-      setSubscription(ultra ? "ultra" : pro ? "pro" : "free");
+      const hasUltra =
+        entitlements.includes("ultra-plan") ||
+        entitlements.includes("ultra-monthly-plan") ||
+        entitlements.includes("ultra-yearly-plan");
+      const hasPro =
+        entitlements.includes("pro-plan") ||
+        entitlements.includes("pro-monthly-plan") ||
+        entitlements.includes("pro-yearly-plan");
+      setSubscription(hasUltra ? "ultra" : hasPro ? "pro" : "free");
     }
   }, [user, entitlements]);
 

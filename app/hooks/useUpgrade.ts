@@ -7,7 +7,11 @@ export const useUpgrade = () => {
   const [upgradeError, setUpgradeError] = useState("");
 
   const handleUpgrade = async (
-    planKey?: "pro-monthly-plan" | "ultra-monthly-plan",
+    planKey?:
+      | "pro-monthly-plan"
+      | "ultra-monthly-plan"
+      | "pro-yearly-plan"
+      | "ultra-yearly-plan",
     e?: React.MouseEvent<HTMLButtonElement | HTMLDivElement>,
   ) => {
     e?.preventDefault();

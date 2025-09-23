@@ -13,10 +13,19 @@ export const POST = async (req: NextRequest) => {
     // Get user details from WorkOS to use email as organization name
     const user = await workos.userManagement.getUser(userId);
     const orgName = user.email;
-    const allowedPlans = new Set(["pro-monthly-plan", "ultra-monthly-plan"]);
+    const allowedPlans = new Set([
+      "pro-monthly-plan",
+      "ultra-monthly-plan",
+      "pro-yearly-plan",
+      "ultra-yearly-plan",
+    ]);
     const subscriptionLevel =
       typeof requestedPlan === "string" && allowedPlans.has(requestedPlan)
-        ? (requestedPlan as "pro-monthly-plan" | "ultra-monthly-plan")
+        ? (requestedPlan as
+            | "pro-monthly-plan"
+            | "ultra-monthly-plan"
+            | "pro-yearly-plan"
+            | "ultra-yearly-plan")
         : "pro-monthly-plan";
 
     // Check if user already has an organization
