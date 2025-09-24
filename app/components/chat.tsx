@@ -125,6 +125,7 @@ export const Chat = ({
   } = useChat({
     id: chatId,
     messages: initialMessages,
+    experimental_throttle: 100,
     generateId: () => uuidv4(),
     transport: new DefaultChatTransport({
       api: "/api/chat",
