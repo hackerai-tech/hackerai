@@ -43,7 +43,7 @@ import {
   getDraftContentById,
   upsertDraft,
   removeDraft,
-} from "@/lib/utils/conversation-drafts";
+} from "@/lib/utils/client-storage";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -73,8 +73,8 @@ export const ChatInput = ({
   const {
     input,
     setInput,
-    mode,
-    setMode,
+    chatMode,
+    setChatMode,
     uploadedFiles,
     isUploadingFiles,
     subscription,
@@ -93,14 +93,14 @@ export const ChatInput = ({
 
   // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
   useEffect(() => {
-    if (!isCheckingProPlan && subscription === "free" && mode === "agent") {
-      setMode("ask");
+    if (!isCheckingProPlan && subscription === "free" && chatMode === "agent") {
+      setChatMode("ask");
     }
-  }, [subscription, isCheckingProPlan, mode, setMode]);
+  }, [subscription, isCheckingProPlan, chatMode, setChatMode]);
 
   const handleAgentModeClick = () => {
     if (subscription !== "free") {
-      setMode("agent");
+      setChatMode("agent");
     } else {
       setAgentUpgradeDialogOpen(true);
     }
@@ -240,7 +240,7 @@ export const ChatInput = ({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder={
-                mode === "agent"
+                chatMode === "agent"
                   ? "Hack, test, secure anything"
                   : "Ask, learn, brainstorm"
               }
@@ -268,7 +268,7 @@ export const ChatInput = ({
                     size="sm"
                     className="bg-muted h-7 px-2 text-xs font-medium rounded-md hover:bg-muted/50 focus-visible:ring-1"
                   >
-                    {mode === "agent" ? (
+                    {chatMode === "agent" ? (
                       <>
                         <Infinity className="w-3 h-3 mr-1" />
                         Agent
@@ -284,7 +284,7 @@ export const ChatInput = ({
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="w-54">
                   <DropdownMenuItem
-                    onClick={() => setMode("ask")}
+                    onClick={() => setChatMode("ask")}
                     className="cursor-pointer"
                   >
                     <MessageSquare className="w-4 h-4 mr-2" />
@@ -297,7 +297,7 @@ export const ChatInput = ({
                   </DropdownMenuItem>
                   {subscription !== "free" || isCheckingProPlan ? (
                     <DropdownMenuItem
-                      onClick={() => setMode("agent")}
+                      onClick={() => setChatMode("agent")}
                       className="cursor-pointer"
                     >
                       <Infinity className="w-4 h-4 mr-2" />

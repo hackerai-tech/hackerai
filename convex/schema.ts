@@ -8,6 +8,9 @@ export default defineSchema({
     user_id: v.string(),
     finish_reason: v.optional(v.string()),
     active_stream_id: v.optional(v.string()),
+    default_model_slug: v.optional(
+      v.union(v.literal("ask"), v.literal("agent")),
+    ),
     todos: v.optional(
       v.array(
         v.object({

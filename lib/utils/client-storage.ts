@@ -11,6 +11,7 @@ export type ConversationDraftStore = {
 
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "conversation_drafts";
 export const NULL_THREAD_DRAFT_ID = "null_thread";
+export const CHAT_MODE_STORAGE_KEY = "chat_mode";
 
 const isBrowser = (): boolean => typeof window !== "undefined";
 
@@ -36,6 +37,26 @@ export const writeDraftStore = (store: ConversationDraftStore): void => {
       CONVERSATION_DRAFTS_STORAGE_KEY,
       JSON.stringify({ drafts: store.drafts, userId: store.userId }),
     );
+  } catch {
+    // ignore
+  }
+};
+
+export const readChatMode = (): "ask" | "agent" | null => {
+  if (!isBrowser()) return null;
+  try {
+    const raw = window.localStorage.getItem(CHAT_MODE_STORAGE_KEY);
+    if (raw === "ask" || raw === "agent") return raw;
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+export const writeChatMode = (mode: "ask" | "agent"): void => {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);
   } catch {
     // ignore
   }
