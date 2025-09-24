@@ -704,15 +704,20 @@ export const regenerateWithNewContentFromClient = mutation({
     } catch (error) {
       // Only log unexpected errors. "Message not found" is treated as a benign no-op above.
       if (
-        !(error instanceof Error &&
+        !(
+          error instanceof Error &&
           (error.message.includes("Message not found") ||
             error.message.includes("CHAT_NOT_FOUND") ||
-            error.message.includes("CHAT_UNAUTHORIZED")))
+            error.message.includes("CHAT_UNAUTHORIZED"))
+        )
       ) {
         console.error("Failed to regenerate with new content:", error);
       }
       // Do not surface benign errors to the client
-      if (error instanceof Error && error.message.includes("Message not found")) {
+      if (
+        error instanceof Error &&
+        error.message.includes("Message not found")
+      ) {
         return null;
       }
       throw error;
