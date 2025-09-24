@@ -142,6 +142,7 @@ export async function updateChat({
   title,
   finishReason,
   todos,
+  defaultModelSlug,
 }: {
   chatId: string;
   title?: string;
@@ -152,6 +153,7 @@ export async function updateChat({
     status: "pending" | "in_progress" | "completed" | "cancelled";
     sourceMessageId?: string;
   }>;
+  defaultModelSlug?: "ask" | "agent";
 }) {
   try {
     return await convex.mutation(api.chats.updateChat, {
@@ -160,6 +162,7 @@ export async function updateChat({
       title,
       finishReason,
       todos,
+      defaultModelSlug,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to update chat");

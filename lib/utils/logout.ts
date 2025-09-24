@@ -1,6 +1,6 @@
 "use client";
 
-import { clearAllDrafts } from "@/lib/utils/conversation-drafts";
+import { clearAllDrafts } from "@/lib/utils/client-storage";
 
 export const clientLogout = (redirectPath: string = "/logout"): void => {
   if (typeof window === "undefined") return;

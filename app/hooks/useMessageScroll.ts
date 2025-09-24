@@ -33,6 +33,5 @@ export const useMessageScroll = () => {
     contentRef: stickToBottom.contentRef,
     isAtBottom: stickToBottom.isAtBottom,
     scrollToBottom,
-    stopScroll: stickToBottom.stopScroll,
   };
 };

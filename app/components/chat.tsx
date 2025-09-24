@@ -16,6 +16,7 @@ import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useFileUpload } from "../hooks/useFileUpload";
+import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
@@ -27,6 +28,7 @@ import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
+import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
 
 export const Chat = ({
@@ -42,6 +44,7 @@ export const Chat = ({
   const {
     chatTitle,
     setChatTitle,
+    setChatMode,
     sidebarOpen,
     chatSidebarOpen,
     setChatSidebarOpen,
@@ -63,31 +66,34 @@ export const Chat = ({
   const shouldFetchMessages = isExistingChat;
 
   // Refs to avoid stale closures in callbacks
-  const isExistingChatRef = useRef(isExistingChat);
-  useEffect(() => {
-    isExistingChatRef.current = isExistingChat;
-  }, [isExistingChat]);
+  const isExistingChatRef = useLatestRef(isExistingChat);
 
-  const temporaryChatsEnabledRef = useRef(temporaryChatsEnabled);
-  useEffect(() => {
-    temporaryChatsEnabledRef.current = temporaryChatsEnabled;
-  }, [temporaryChatsEnabled]);
+  // Suppress transient "Chat Not Found" while server creates the chat
+  const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
+
+  const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
+
+  // Ensure we only initialize mode from server once per chat id
+  const hasInitializedModeFromChatRef = useRef(false);
 
   // Unified reset: respond to route and global new-chat trigger
   useEffect(() => {
-    // If a chat id is present in the route, treat as existing chat
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-      return;
-    }
-
-    // If no route id and global state indicates new chat (null), create a fresh id
+    // If global state indicates a new chat, prefer that over any stale route id
     if (currentChatId === null) {
+      if (routeChatId) {
+        return;
+      }
       setChatId(uuidv4());
       setIsExistingChat(false);
       setChatTitle(null);
       // Messages will be cleared below after useChat is ready
+      return;
+    }
+
+    // If a chat id is present in the route, treat as existing chat
+    if (routeChatId) {
+      setChatId(routeChatId);
+      setIsExistingChat(true);
       return;
     }
   }, [routeChatId, currentChatId, setChatTitle]);
@@ -125,6 +131,7 @@ export const Chat = ({
   } = useChat({
     id: chatId,
     messages: initialMessages,
+    experimental_throttle: 100,
     generateId: () => uuidv4(),
     transport: new DefaultChatTransport({
       api: "/api/chat",
@@ -182,6 +189,7 @@ export const Chat = ({
     },
     onFinish: () => {
       setIsAutoResuming(false);
+      setAwaitingServerChat(false);
       // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
@@ -191,6 +199,7 @@ export const Chat = ({
     },
     onError: (error) => {
       setIsAutoResuming(false);
+      setAwaitingServerChat(false);
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
@@ -205,13 +214,6 @@ export const Chat = ({
     setMessages,
   });
 
-  // Clear messages when starting a new chat (after useChat hook is ready)
-  useEffect(() => {
-    if (!routeChatId && currentChatId === null) {
-      setMessages([]);
-    }
-  }, [routeChatId, currentChatId, setMessages]);
-
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
     const reset = () => {
@@ -220,6 +222,7 @@ export const Chat = ({
       setChatId(uuidv4());
       setChatTitle(null);
       setTodos([]);
+      setAwaitingServerChat(false);
     };
     setChatReset(reset);
     return () => setChatReset(null);
@@ -227,13 +230,24 @@ export const Chat = ({
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
-    if (chatData && chatData.title) {
+    // Only process when we intend to fetch for an existing chat
+    if (!shouldFetchMessages) {
+      return;
+    }
+
+    const dataId = (chatData as any)?.id as string | undefined;
+    // Ignore when no data or data is stale (doesn't match current chatId)
+    if (!chatData || dataId !== chatId) {
+      return;
+    }
+
+    if (chatData.title) {
       // Always update title from server data to ensure consistency
       setChatTitle(chatData.title);
     }
 
     // Load todos from the chat data if they exist.
-    if (chatData && chatData.todos) {
+    if (chatData.todos) {
       // setTodos signature expects Todo[], so derive the new array first
       const nextTodos: Todo[] = (() => {
         const incoming: Todo[] = chatData.todos as Todo[];
@@ -259,7 +273,29 @@ export const Chat = ({
 
       setTodos(nextTodos);
     }
-  }, [chatData, setChatTitle, setTodos]);
+    // Server has responded for this chat id; stop suppressing not-found state
+    setAwaitingServerChat(false);
+    // Initialize mode from server once per chat id (only for existing chats)
+    if (!hasInitializedModeFromChatRef.current && isExistingChat) {
+      const slug = (chatData as any).default_model_slug;
+      if (slug === "ask" || slug === "agent") {
+        setChatMode(slug);
+        hasInitializedModeFromChatRef.current = true;
+      }
+    }
+  }, [
+    chatData,
+    setChatTitle,
+    setTodos,
+    shouldFetchMessages,
+    isExistingChat,
+    chatId,
+  ]);
+
+  // Reset the one-time initializer when chat changes
+  useEffect(() => {
+    hasInitializedModeFromChatRef.current = false;
+  }, [chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
@@ -299,25 +335,13 @@ export const Chat = ({
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Set up drag and drop event listeners
-  useEffect(() => {
-    const handleDocumentDragEnter = (e: DragEvent) => handleDragEnter(e);
-    const handleDocumentDragLeave = (e: DragEvent) => handleDragLeave(e);
-    const handleDocumentDragOver = (e: DragEvent) => handleDragOver(e);
-    const handleDocumentDrop = (e: DragEvent) => handleDrop(e);
-
-    document.addEventListener("dragenter", handleDocumentDragEnter);
-    document.addEventListener("dragleave", handleDocumentDragLeave);
-    document.addEventListener("dragover", handleDocumentDragOver);
-    document.addEventListener("drop", handleDocumentDrop);
-
-    return () => {
-      document.removeEventListener("dragenter", handleDocumentDragEnter);
-      document.removeEventListener("dragleave", handleDocumentDragLeave);
-      document.removeEventListener("dragover", handleDocumentDragOver);
-      document.removeEventListener("drop", handleDocumentDrop);
-    };
-  }, [handleDragEnter, handleDragLeave, handleDragOver, handleDrop]);
+  // Document-level drag and drop listeners encapsulated in a hook
+  useDocumentDragAndDrop({
+    handleDragEnter,
+    handleDragLeave,
+    handleDragOver,
+    handleDrop,
+  });
 
   // Chat handlers
   const {
@@ -334,6 +358,11 @@ export const Chat = ({
     stop,
     regenerate,
     setMessages,
+    isExistingChat,
+    activateChatLocally: () => {
+      setIsExistingChat(true);
+      setAwaitingServerChat(true);
+    },
   });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });
@@ -346,7 +375,10 @@ export const Chat = ({
 
   // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user
   const isChatNotFound =
-    isExistingChat && chatData === null && shouldFetchMessages;
+    isExistingChat &&
+    chatData === null &&
+    shouldFetchMessages &&
+    !awaitingServerChat;
 
   return (
     <ConvexErrorBoundary>

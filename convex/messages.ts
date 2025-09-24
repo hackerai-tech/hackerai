@@ -644,7 +644,9 @@ export const regenerateWithNewContentFromClient = mutation({
         .first();
 
       if (!message) {
-        throw new Error("Message not found");
+        // Silently no-op if the message no longer exists (edited/removed locally or race)
+        // Avoid throwing/logging to prevent noisy errors on client
+        return null;
       } else if (message.user_id && message.user_id !== user.subject) {
         throw new Error(
           "Unauthorized: User not allowed to regenerate this message",
@@ -700,7 +702,24 @@ export const regenerateWithNewContentFromClient = mutation({
 
       return null;
     } catch (error) {
-      console.error("Failed to regenerate with new content:", error);
+      // Only log unexpected errors. "Message not found" is treated as a benign no-op above.
+      if (
+        !(
+          error instanceof Error &&
+          (error.message.includes("Message not found") ||
+            error.message.includes("CHAT_NOT_FOUND") ||
+            error.message.includes("CHAT_UNAUTHORIZED"))
+        )
+      ) {
+        console.error("Failed to regenerate with new content:", error);
+      }
+      // Do not surface benign errors to the client
+      if (
+        error instanceof Error &&
+        error.message.includes("Message not found")
+      ) {
+        return null;
+      }
       throw error;
     }
   },

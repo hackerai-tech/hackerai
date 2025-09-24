@@ -22,6 +22,9 @@ export const getChatByIdFromClient = query({
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
       active_stream_id: v.optional(v.string()),
+      default_model_slug: v.optional(
+        v.union(v.literal("ask"), v.literal("agent")),
+      ),
       todos: v.optional(
         v.array(
           v.object({
@@ -85,6 +88,9 @@ export const getChatById = query({
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
       active_stream_id: v.optional(v.string()),
+      default_model_slug: v.optional(
+        v.union(v.literal("ask"), v.literal("agent")),
+      ),
       todos: v.optional(
         v.array(
           v.object({
@@ -162,6 +168,7 @@ export const updateChat = mutation({
     chatId: v.string(),
     title: v.optional(v.string()),
     finishReason: v.optional(v.string()),
+    defaultModelSlug: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
     todos: v.optional(
       v.array(
         v.object({
@@ -198,6 +205,7 @@ export const updateChat = mutation({
       const updateData: {
         title?: string;
         finish_reason?: string;
+        default_model_slug?: "ask" | "agent";
         todos?: Array<{
           id: string;
           content: string;
@@ -215,6 +223,10 @@ export const updateChat = mutation({
 
       if (args.finishReason !== undefined) {
         updateData.finish_reason = args.finishReason;
+      }
+
+      if (args.defaultModelSlug !== undefined) {
+        updateData.default_model_slug = args.defaultModelSlug;
       }
 
       if (args.todos !== undefined) {

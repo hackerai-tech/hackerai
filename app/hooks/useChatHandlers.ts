@@ -22,6 +22,8 @@ interface UseChatHandlersProps {
   setMessages: (
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
+  isExistingChat: boolean;
+  activateChatLocally: () => void;
 }
 
 export const useChatHandlers = ({
@@ -32,22 +34,20 @@ export const useChatHandlers = ({
   stop,
   regenerate,
   setMessages,
+  isExistingChat,
+  activateChatLocally,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
     input,
     uploadedFiles,
-    mode,
+    chatMode,
     setChatTitle,
     clearInput,
     clearUploadedFiles,
     todos,
     setTodos,
     setCurrentChatId,
-    shouldFetchMessages,
-    setShouldFetchMessages,
-    hasActiveChat,
-    setHasActiveChat,
     isUploadingFiles,
     subscription,
     temporaryChatsEnabled,
@@ -90,14 +90,11 @@ export const useChatHandlers = ({
         });
         return;
       }
-      if (!hasActiveChat && !temporaryChatsEnabledRef.current) {
+      if (!isExistingChat && !temporaryChatsEnabledRef.current) {
         setChatTitle(null);
         setCurrentChatId(chatId);
         window.history.replaceState({}, "", `/c/${chatId}`);
-        if (!shouldFetchMessages) {
-          setShouldFetchMessages(true);
-        }
-        setHasActiveChat(true);
+        activateChatLocally();
       }
 
       if (resetSidebarAutoOpenRef.current) {
@@ -126,7 +123,7 @@ export const useChatHandlers = ({
           },
           {
             body: {
-              mode,
+              mode: chatMode,
               todos,
               temporary: temporaryChatsEnabled,
             },
@@ -139,7 +136,7 @@ export const useChatHandlers = ({
           { text: input },
           {
             body: {
-              mode,
+              mode: chatMode,
               todos,
               temporary: temporaryChatsEnabled,
             },
@@ -194,7 +191,7 @@ export const useChatHandlers = ({
 
     regenerate({
       body: {
-        mode,
+        mode: chatMode,
         // Send cleaned todos and current messages so server can filter assistant todos reliably
         messages,
         todos: cleanedTodos,
@@ -216,7 +213,7 @@ export const useChatHandlers = ({
 
     regenerate({
       body: {
-        mode,
+        mode: chatMode,
         messages,
         todos: cleanedTodos,
         regenerate: true,
@@ -249,10 +246,15 @@ export const useChatHandlers = ({
     }
 
     if (!temporaryChatsEnabled) {
-      await regenerateWithNewContent({
-        messageId: messageId as Id<"messages">,
-        newContent,
-      });
+      try {
+        await regenerateWithNewContent({
+          messageId: messageId as Id<"messages">,
+          newContent,
+        });
+      } catch (error) {
+        // Swallow benign errors (e.g., racing edits where the message was already removed)
+        // Avoid logging to keep console clean
+      }
     }
 
     // Update local state to reflect the edit and remove subsequent messages
@@ -285,7 +287,7 @@ export const useChatHandlers = ({
 
     regenerate({
       body: {
-        mode,
+        mode: chatMode,
         todos: cleanedTodosForEdit,
         regenerate: true,
         temporary: temporaryChatsEnabled,

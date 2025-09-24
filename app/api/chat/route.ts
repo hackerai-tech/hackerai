@@ -238,6 +238,7 @@ export async function POST(req: NextRequest) {
                   title: generatedTitle,
                   finishReason,
                   todos: mergedTodos,
+                  defaultModelSlug: mode,
                 });
               }
 
