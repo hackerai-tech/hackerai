@@ -246,10 +246,15 @@ export const useChatHandlers = ({
     }
 
     if (!temporaryChatsEnabled) {
-      await regenerateWithNewContent({
-        messageId: messageId as Id<"messages">,
-        newContent,
-      });
+      try {
+        await regenerateWithNewContent({
+          messageId: messageId as Id<"messages">,
+          newContent,
+        });
+      } catch (error) {
+        // Swallow benign errors (e.g., racing edits where the message was already removed)
+        // Avoid logging to keep console clean
+      }
     }
 
     // Update local state to reflect the edit and remove subsequent messages
