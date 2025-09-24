@@ -314,10 +314,6 @@ export const Chat = ({
     }
   }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
 
-  useEffect(() => {
-    // no-op in production: effect removed
-  }, [shouldFetchMessages, chatData, chatId]);
-
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
   const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
