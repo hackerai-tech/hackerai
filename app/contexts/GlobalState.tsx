@@ -134,6 +134,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
   );
+
+  // Persist chat mode preference to localStorage on change
+  useEffect(() => {
+    writeChatMode(chatMode);
+  }, [chatMode]);
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
     chatSidebarStorage.get(isMobile),
