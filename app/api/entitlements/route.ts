@@ -1,6 +1,10 @@
 import { NextRequest } from "next/server";
 import { WorkOS } from "@workos-inc/node";
-import { json, extractErrorMessage } from "@/lib/api/response";
+import {
+  json,
+  extractErrorMessage,
+  isRateLimitError,
+} from "@/lib/api/response";
 
 const workos = new WorkOS(process.env.WORKOS_API_KEY!, {
   clientId: process.env.WORKOS_CLIENT_ID!,
@@ -102,11 +106,20 @@ export async function GET(req: NextRequest) {
 
     return response;
   } catch (error) {
-    console.error("Error refreshing session:", error);
+    // Silently handle WorkOS rate limits to avoid noisy logs
+    if (isRateLimitError(error)) {
+      return json({ entitlements: [], subscription: "free" });
+    }
+
     const normalized = extractErrorMessage(error).toLowerCase();
     const should401 =
       normalized.includes("invalid_grant") ||
       normalized.includes("session has already ended");
+
+    if (!should401) {
+      // Keep auth errors quiet, log only unexpected cases
+      console.error("Error refreshing session:", error);
+    }
 
     return json(
       { error: should401 ? "Unauthorized" : "Failed to refresh session" },
