@@ -40,3 +40,59 @@ export const findLastAssistantMessageIndex = (
     .reverse()
     .find(({ msg }) => msg.role === "assistant")?.index;
 };
+
+/**
+ * Represents a citation/source extracted from web tool outputs
+ */
+export type WebSource = {
+  title?: string;
+  url: string;
+  text?: string;
+  publishedDate?: string;
+};
+
+/**
+ * Extract web sources from a message's tool outputs.
+ * Handles both new `tool-web` and legacy `tool-web_search` parts
+ * and flexible output shapes: array, { result: [] }, or { results: [] }.
+ */
+export const extractWebSourcesFromMessage = (message: {
+  parts?: Array<any>;
+}): Array<WebSource> => {
+  const sources: Array<WebSource> = [];
+
+  const parts: Array<any> = Array.isArray((message as any)?.parts)
+    ? (message as any).parts
+    : [];
+
+  for (const part of parts) {
+    if (part?.type === "tool-web" || part?.type === "tool-web_search") {
+      if (part.state !== "output-available") continue;
+      const output = part.output;
+
+      let results: any = undefined;
+      if (Array.isArray(output)) {
+        results = output;
+      } else if (Array.isArray(output?.result)) {
+        results = output.result;
+      } else if (Array.isArray(output?.results)) {
+        results = output.results;
+      }
+
+      if (Array.isArray(results)) {
+        for (const r of results) {
+          const url = r?.url || r?.id;
+          if (!url || typeof url !== "string") continue;
+          sources.push({
+            title: r?.title,
+            url,
+            text: r?.text,
+            publishedDate: r?.publishedDate,
+          });
+        }
+      }
+    }
+  }
+
+  return sources;
+};
