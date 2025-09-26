@@ -267,8 +267,8 @@ export const ChatInput = ({
                     variant="ghost"
                     size="sm"
                     className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 ${
-                      chatMode === "agent" 
-                        ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20" 
+                      chatMode === "agent"
+                        ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20"
                         : "bg-muted hover:bg-muted/50"
                     }`}
                   >
@@ -351,7 +351,10 @@ export const ChatInput = ({
                       }`}
                       aria-label="Stop generation"
                     >
-                      <Square className="w-[15px] h-[15px]" fill="currentColor" />
+                      <Square
+                        className="w-[15px] h-[15px]"
+                        fill="currentColor"
+                      />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -372,8 +375,8 @@ export const ChatInput = ({
                           }
                           variant="default"
                           className={`rounded-full p-0 w-8 h-8 min-w-0 ${
-                            chatMode === "agent" 
-                              ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500" 
+                            chatMode === "agent"
+                              ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
                               : ""
                           }`}
                           aria-label="Send message"

@@ -123,9 +123,14 @@ export async function createOrConnectPersistentTerminal(
     // Step 4: Create new sandbox (fallback for all failure cases)
     const sandbox = await Sandbox.create(template, {
       timeoutMs,
+      // Enable secure mode to generate pre-signed URLs for file downloads
+      // This allows unauthorized environments (like browsers) to securely access
+      // sandbox files through signed URLs with optional expiration times
+      secure: true,
       metadata: {
         userID,
         template,
+        secure: "true",
       },
     });
 
