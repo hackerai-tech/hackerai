@@ -146,7 +146,8 @@ export const Chat = ({
           setMessages(normalizedMessages);
         }
 
-        const isTemporaryChat = !isExistingChat && temporaryChatsEnabled;
+        const isTemporaryChat =
+          !isExistingChatRef.current && temporaryChatsEnabledRef.current;
 
         return {
           body: {
