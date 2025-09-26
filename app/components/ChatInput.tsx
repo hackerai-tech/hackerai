@@ -266,7 +266,11 @@ export const ChatInput = ({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="bg-muted h-7 px-2 text-xs font-medium rounded-md hover:bg-muted/50 focus-visible:ring-1"
+                    className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 ${
+                      chatMode === "agent" 
+                        ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20" 
+                        : "bg-muted hover:bg-muted/50"
+                    }`}
                   >
                     {chatMode === "agent" ? (
                       <>
@@ -339,11 +343,15 @@ export const ChatInput = ({
                     <Button
                       type="button"
                       onClick={onStop}
-                      variant="destructive"
-                      className="rounded-full p-0 w-8 h-8 min-w-0"
+                      variant="ghost"
+                      className={`rounded-full p-0 w-8 h-8 min-w-0 ${
+                        chatMode === "agent"
+                          ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
+                          : "bg-muted hover:bg-muted/70 text-foreground"
+                      }`}
                       aria-label="Stop generation"
                     >
-                      <Square className="w-[15px] h-[15px]" />
+                      <Square className="w-[15px] h-[15px]" fill="currentColor" />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -363,7 +371,11 @@ export const ChatInput = ({
                             (!input.trim() && uploadedFiles.length === 0)
                           }
                           variant="default"
-                          className="rounded-full p-0 w-8 h-8 min-w-0"
+                          className={`rounded-full p-0 w-8 h-8 min-w-0 ${
+                            chatMode === "agent" 
+                              ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500" 
+                              : ""
+                          }`}
                           aria-label="Send message"
                         >
                           <ArrowUp size={15} strokeWidth={3} />

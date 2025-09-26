@@ -6,7 +6,7 @@ export const getAIHeaders = () => ({
   "HTTP-Referer":
     process.env.NODE_ENV === "development"
       ? "https://test.hackerai.co"
-      : "https://www.hackerai.co",
+      : "https://hackerai.co",
   "X-Title":
     process.env.NODE_ENV === "development" ? "HackerAI-Dev" : "HackerAI",
 });
