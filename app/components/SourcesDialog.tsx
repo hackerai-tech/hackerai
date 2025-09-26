@@ -25,9 +25,11 @@ export const SourcesDialog = ({
   const getDomain = (url: string) => {
     try {
       const u = new URL(url);
-      return `${u.protocol}//${u.hostname}`;
+      return u.hostname;
     } catch {
-      return url;
+      // Fallback: try to extract hostname from string
+      const match = url.match(/^(?:https?:\/\/)?([^\/]+)/);
+      return match ? match[1] : url;
     }
   };
 
