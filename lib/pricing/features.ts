@@ -27,7 +27,6 @@ export const proFeatures: Array<PricingFeature> = [
   { icon: Upload, text: "Access to file uploads" },
   { icon: SquareTerminal, text: "Agent mode with terminal" },
   { icon: Brain, text: "Expanded memory and context" },
-  { icon: Key, text: "Fewer refusals" },
 ];
 
 export const ultraFeatures: Array<PricingFeature> = [

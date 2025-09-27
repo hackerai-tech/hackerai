@@ -13,6 +13,7 @@ interface MessagePartHandlerProps {
   part: any;
   partIndex: number;
   status: ChatStatus;
+  isLastMessage?: boolean;
 }
 
 export const MessagePartHandler = ({
@@ -20,6 +21,7 @@ export const MessagePartHandler = ({
   part,
   partIndex,
   status,
+  isLastMessage,
 }: MessagePartHandlerProps) => {
   const renderTextPart = () => {
     const partId = `${message.id}-text-${partIndex}`;
@@ -49,6 +51,7 @@ export const MessagePartHandler = ({
           message={message}
           partIndex={partIndex}
           status={status}
+          isLastMessage={isLastMessage}
         />
       );
 

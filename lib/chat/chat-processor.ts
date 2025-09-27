@@ -21,6 +21,8 @@ export function selectModel(
   // If there are media files, choose vision model
   if (containsMediaFiles && mode === "ask") {
     return "vision-model";
+  } else if (containsMediaFiles && mode === "agent") {
+    return "agent-model-with-vision";
   }
 
   // Otherwise, choose based on mode

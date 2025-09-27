@@ -185,15 +185,22 @@ export const useChatHandlers = ({
     );
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
+    // Determine messages to send for this regenerate call
+    let messagesForRegenerate: ChatMessage[] = messages;
+
     if (!temporaryChatsEnabled) {
       await deleteLastAssistantMessage({ chatId });
+    } else {
+      // For temporary chats, do not alter local state; just exclude the last message from the payload
+      messagesForRegenerate =
+        messages && messages.length > 0 ? messages.slice(0, -1) : messages;
     }
 
     regenerate({
       body: {
         mode: chatMode,
         // Send cleaned todos and current messages so server can filter assistant todos reliably
-        messages,
+        messages: messagesForRegenerate,
         todos: cleanedTodos,
         regenerate: true,
         temporary: temporaryChatsEnabled,

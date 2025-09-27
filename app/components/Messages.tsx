@@ -21,6 +21,7 @@ import {
   extractMessageText,
   hasTextContent,
   findLastAssistantMessageIndex,
+  extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import { toast } from "sonner";
@@ -130,6 +131,12 @@ export const Messages = ({
   const handleMouseLeave = useCallback(() => {
     setHoveredMessageId(null);
   }, []);
+
+  // Extract web sources (memoized adapter)
+  const extractWebSources = useCallback(
+    (message: ChatMessage) => extractWebSourcesFromMessage(message as any),
+    [],
+  );
 
   // Handle scroll to load more messages when scrolling to top
   const handleScroll = useCallback(() => {
@@ -269,6 +276,7 @@ export const Messages = ({
                             part={part}
                             partIndex={partIndex}
                             status={status}
+                            isLastMessage={index === messages.length - 1}
                           />
                         ))
                       )}
@@ -333,6 +341,15 @@ export const Messages = ({
                 }
                 hasFileContent={hasFileContent}
                 isTemporaryChat={Boolean(isTemporaryChat)}
+                sources={
+                  !isUser
+                    ? isLastAssistantMessage
+                      ? status !== "streaming"
+                        ? extractWebSources(message)
+                        : []
+                      : extractWebSources(message)
+                    : []
+                }
               />
 
               {/* Show feedback input for negative feedback */}

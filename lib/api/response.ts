@@ -27,3 +27,15 @@ export const isUnauthorizedError = (err: unknown): boolean => {
     normalized.includes("unauthorized")
   );
 };
+
+export const isRateLimitError = (err: unknown): boolean => {
+  const normalized = extractErrorMessage(err).toLowerCase();
+  // Detect common 429 shapes and WorkOS SDK message
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const statusCode = (err as any)?.status;
+  return (
+    statusCode === 429 ||
+    normalized.includes("rate limit exceeded") ||
+    normalized.includes("too many requests")
+  );
+};
