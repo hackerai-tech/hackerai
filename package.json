@@ -14,6 +14,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^2.0.32",
     "@ai-sdk/react": "^2.0.49",
+    "@ai-sdk/xai": "^2.0.23",
     "@convex-dev/workos": "^0.0.1",
     "@e2b/code-interpreter": "2.0.0",
     "@langchain/community": "^0.3.56",

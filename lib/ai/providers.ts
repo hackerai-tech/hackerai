@@ -1,6 +1,7 @@
 import { customProvider } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 import { openai } from "@ai-sdk/openai";
+import { xai } from "@ai-sdk/xai";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
@@ -9,7 +10,10 @@ const baseProviders = {
   "ask-model": openrouter(
     process.env.NEXT_PUBLIC_ASK_MODEL || "qwen/qwen3-coder",
   ),
-  "agent-model": openai(process.env.NEXT_PUBLIC_AGENT_MODEL || "gpt-5-mini"),
+  "agent-model": xai(process.env.NEXT_PUBLIC_AGENT_MODEL || "grok-code-fast-1"),
+  "agent-model-with-vision": xai(
+    process.env.NEXT_PUBLIC_AGENT_MODEL_WITH_VISION || "grok-4-fast-reasoning",
+  ),
   "vision-model": openai(
     process.env.NEXT_PUBLIC_VISION_MODEL || "gpt-4.1-2025-04-14",
   ),

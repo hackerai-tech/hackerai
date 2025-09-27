@@ -56,6 +56,21 @@ async function getOpenAiApiKey(): Promise<string> {
   return await getOpenAiApiKey();
 }
 
+async function getXaiApiKey(): Promise<string> {
+  console.log(`\n${chalk.bold("Getting XAI API Key for Agent mode")}`);
+  console.log("You can find your XAI API Key at: https://xai.com/api-keys");
+  const key = await question("Enter your XAI API Key: ");
+
+  if (key.startsWith("xai-")) {
+    return key;
+  }
+
+  console.log(chalk.red("Invalid XAI API Key format"));
+  console.log('XAI keys should start with "xai-"');
+
+  return await getXaiApiKey();
+}
+
 async function getWorkOSApiKey(): Promise<string> {
   console.log(`\n${chalk.bold("Getting WorkOS API Key")}`);
   console.log(
@@ -127,6 +142,7 @@ NEXT_PUBLIC_WORKOS_REDIRECT_URI=${envVars.NEXT_PUBLIC_WORKOS_REDIRECT_URI}
 
 OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
 OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
+XAI_API_KEY=${envVars.XAI_API_KEY}
 
 # =============================================================================
 # OPTIONAL CONFIGURATIONS
@@ -138,11 +154,6 @@ OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 # Terminal execution mode: "local" (default) or "sandbox"
 # TERMINAL_EXECUTION_MODE=local
 # E2B_API_KEY=your_e2b_api_key_here
-
-# AI Model Configuration
-# NEXT_PUBLIC_AGENT_MODEL=
-# NEXT_PUBLIC_VISION_MODEL=
-# NEXT_PUBLIC_TITLE_MODEL=
 
 # Rate Limiting (Upstash Redis)
 # UPSTASH_REDIS_REST_URL="https://your-redis-url.upstash.io"
@@ -226,6 +237,7 @@ async function main() {
   // Get required API keys
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
   const OPENAI_API_KEY = await getOpenAiApiKey();
+  const XAI_API_KEY = await getXaiApiKey();
 
   // Get WorkOS configuration
   const WORKOS_API_KEY = await getWorkOSApiKey();
@@ -244,6 +256,7 @@ async function main() {
   await writeEnvFile({
     OPENROUTER_API_KEY,
     OPENAI_API_KEY,
+    XAI_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,
     NEXT_PUBLIC_WORKOS_REDIRECT_URI,

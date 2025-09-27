@@ -276,6 +276,7 @@ export const Messages = ({
                             part={part}
                             partIndex={partIndex}
                             status={status}
+                            isLastMessage={index === messages.length - 1}
                           />
                         ))
                       )}
