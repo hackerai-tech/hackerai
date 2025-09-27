@@ -7,19 +7,11 @@ import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
-  "ask-model": openrouter(
-    process.env.NEXT_PUBLIC_ASK_MODEL || "qwen/qwen3-coder",
-  ),
-  "agent-model": xai(process.env.NEXT_PUBLIC_AGENT_MODEL || "grok-code-fast-1"),
-  "agent-model-with-vision": xai(
-    process.env.NEXT_PUBLIC_AGENT_MODEL_WITH_VISION || "grok-4-fast-reasoning",
-  ),
-  "vision-model": openai(
-    process.env.NEXT_PUBLIC_VISION_MODEL || "gpt-4.1-2025-04-14",
-  ),
-  "title-generator-model": openai(
-    process.env.NEXT_PUBLIC_TITLE_MODEL || "gpt-4.1-mini-2025-04-14",
-  ),
+  "ask-model": openrouter("qwen/qwen3-coder"),
+  "agent-model": xai("grok-code-fast-1"),
+  "agent-model-with-vision": xai("grok-4-fast-reasoning"),
+  "vision-model": openai("gpt-4.1-2025-04-14"),
+  "title-generator-model": openai("gpt-4.1-mini-2025-04-14"),
 };
 
 export const myProvider = customProvider({
