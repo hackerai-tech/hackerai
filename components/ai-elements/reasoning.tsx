@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
-import { createContext, memo, useContext, useEffect } from "react";
+import { createContext, memo, useContext } from "react";
 import type { ComponentProps } from "react";
 
 type ReasoningContextValue = {
@@ -49,14 +49,6 @@ export const Reasoning = memo(
       defaultProp: defaultOpen,
       onChange: onOpenChange,
     });
-
-    useEffect(() => {
-      if (isStreaming === true) {
-        setIsOpen(true);
-      } else if (isStreaming === false) {
-        setIsOpen(false);
-      }
-    }, [isStreaming, setIsOpen]);
 
     return (
       <ReasoningContext.Provider

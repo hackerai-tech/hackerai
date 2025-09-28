@@ -52,11 +52,11 @@ export const ReasoningHandler = ({
   if (!combined && status !== "streaming") return null;
 
   const isLastPart = partIndex === parts.length - 1;
-  const autoOpen =
+  const showStreamingIndicator =
     status === "streaming" && isLastPart && Boolean(isLastMessage);
 
   return (
-    <Reasoning className="w-full" isStreaming={autoOpen}>
+    <Reasoning className="w-full" isStreaming={showStreamingIndicator}>
       <ReasoningTrigger />
       {combined && (
         <ReasoningContent>
