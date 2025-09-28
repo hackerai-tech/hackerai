@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { CommandExitError } from "@e2b/code-interpreter";
+import { CommandExitError, FilesystemEventType } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
 import {
@@ -9,6 +9,7 @@ import {
 } from "./utils/local-terminal";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
+import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
@@ -54,7 +55,6 @@ In using these tools, adhere to the following guidelines:
     ) => {
       try {
         if (executionMode === "local") {
-          // Execute locally using Node.js child_process
           const { onStdout, onStderr } = createLocalTerminalHandlers(
             writer,
             toolCallId,
@@ -106,10 +106,8 @@ In using these tools, adhere to the following guidelines:
             }
           });
         } else {
-          // Execute in sandbox (existing behavior)
           const { sandbox } = await sandboxManager.getSandbox();
 
-          // Generate cryptographically strong unique ID for this terminal session
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
@@ -119,6 +117,57 @@ In using these tools, adhere to the following guidelines:
               id: `${terminalSessionId}-${++outputCounter}`,
               data: { terminal: output, toolCallId },
             });
+          };
+
+          const watchDirname = "/home/user";
+          const collectedFileUrls: Array<{ path: string; downloadUrl: string }> = [];
+          const seenPaths = new Set<string>();
+
+          const flushUploads = async () => {
+            const paths = Array.from(seenPaths);
+            for (const fullPath of paths) {
+              try {
+                const saved = await uploadSandboxFileToConvex({
+                  sandbox,
+                  userId: context.userID,
+                  fullPath,
+                });
+                context.fileAccumulator.add(saved.fileId);
+                collectedFileUrls.push({ path: fullPath, downloadUrl: saved.url });
+              } catch (e) {
+                // ignore individual upload errors to avoid failing the whole run
+              }
+            }
+          };
+
+          const watchHandle = await sandbox.files.watchDir(
+            watchDirname,
+            async (event) => {
+              try {
+                if (
+                  event.type === FilesystemEventType.WRITE ||
+                  event.type === FilesystemEventType.CREATE
+                ) {
+                  const fullPath = `${watchDirname}/${event.name}`;
+                  if (seenPaths.has(fullPath)) {
+                    return;
+                  }
+                  seenPaths.add(fullPath);
+                }
+              } catch (e) {
+                // ignore watcher errors
+              }
+            },
+            { recursive: true },
+          );
+
+          const closeWatcher = () => {
+            setTimeout(() => {
+              try {
+                // @ts-expect-error optional close depending on SDK version
+                watchHandle?.close?.();
+              } catch {}
+            }, 500);
           };
 
           return new Promise((resolve, reject) => {
@@ -131,13 +180,22 @@ In using these tools, adhere to the following guidelines:
                 onTimeout: () => {
                   if (!resolved) {
                     resolved = true;
-                    // Send timeout message through streaming interface
                     createTerminalWriter(
                       TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS),
                     );
                     handler.cleanup();
-                    const result = handler.getResult();
-                    resolve({ result: { ...result, exitCode: null } });
+                    closeWatcher();
+                    // Defer uploads until after execution completes to avoid empty files
+                    (async () => {
+                      try {
+                        await flushUploads();
+                      } catch {}
+                      const result = handler.getResult();
+                      resolve({
+                        result: { ...result, exitCode: null },
+                        fileUrls: collectedFileUrls,
+                      });
+                    })();
                   }
                 },
               },
@@ -159,8 +217,14 @@ In using these tools, adhere to the following guidelines:
               : sandbox.commands.run(command, commonOptions);
 
             runPromise
-              .then((execution) => {
+              .then(async (execution) => {
                 handler.cleanup();
+                closeWatcher();
+
+                // Upload files only after execution completes
+                try {
+                  await flushUploads();
+                } catch {}
 
                 if (!resolved) {
                   resolved = true;
@@ -171,15 +235,23 @@ In using these tools, adhere to the following guidelines:
                       stdout: finalResult.stdout,
                       stderr: finalResult.stderr,
                     },
+                    fileUrls: collectedFileUrls,
                   });
                 }
               })
               .catch((error) => {
                 handler.cleanup();
-                if (!resolved) {
-                  resolved = true;
-                  reject(error);
-                }
+                closeWatcher();
+                // Best-effort upload before rejecting
+                (async () => {
+                  try {
+                    await flushUploads();
+                  } catch {}
+                  if (!resolved) {
+                    resolved = true;
+                    reject(error);
+                  }
+                })();
               });
           });
         }

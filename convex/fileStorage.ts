@@ -57,9 +57,29 @@ export const checkFileUploadLimit = internalQuery({
  * Generate upload URL for file storage with authentication
  */
 export const generateUploadUrl = mutation({
-  args: {},
+  args: {
+    serviceKey: v.optional(v.string()),
+    userId: v.optional(v.string()),
+  },
   returns: v.string(),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
+    // If called with a service key, allow backend flows to upload on behalf of a user
+    if (args.serviceKey) {
+      validateServiceKey(args.serviceKey);
+      const actingUserId = args.userId;
+      if (!actingUserId) {
+        throw new Error("userId is required when using serviceKey");
+      }
+
+      // Enforce upload limit even for service flows
+      await ctx.runQuery(internal.fileStorage.checkFileUploadLimit, {
+        userId: actingUserId,
+      });
+
+      return await ctx.storage.generateUploadUrl();
+    }
+
+    // Default user-authenticated flow
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {

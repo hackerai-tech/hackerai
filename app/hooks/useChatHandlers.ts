@@ -60,13 +60,13 @@ export const useChatHandlers = ({
   }, [temporaryChatsEnabled]);
 
   const deleteLastAssistantMessage = useMutation(
-    api.messages.deleteLastAssistantMessageFromClient,
+    api.messages.deleteLastAssistantMessage,
   );
   const saveAssistantMessage = useMutation(
-    api.messages.saveAssistantMessageFromClient,
+    api.messages.saveAssistantMessage,
   );
   const regenerateWithNewContent = useMutation(
-    api.messages.regenerateWithNewContentFromClient,
+    api.messages.regenerateWithNewContent,
   );
 
   const handleSubmit = async (e: React.FormEvent) => {

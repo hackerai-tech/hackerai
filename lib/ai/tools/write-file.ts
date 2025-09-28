@@ -2,6 +2,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
 import { writeLocalFile } from "./utils/local-file-operations";
+import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 
 export const createWriteFile = (context: ToolContext) => {
   const { sandboxManager, executionMode } = context;
@@ -35,13 +36,22 @@ Usage:
           const result = await writeLocalFile(file_path, contents);
           return { result };
         } else {
-          // Write file to sandbox (existing behavior)
+          // Write file to sandbox
           const { sandbox } = await sandboxManager.getSandbox();
 
           await sandbox.files.write(file_path, contents);
 
+          const saved = await uploadSandboxFileToConvex({
+            sandbox,
+            userId: context.userID,
+            fullPath: file_path,
+          });
+
+          context.fileAccumulator.add(saved.fileId);
+
           return {
             result: `Successfully wrote ${contents.split("\n").length} lines to ${file_path}`,
+            downloadUrl: saved.url,
           };
         }
       } catch (error) {

@@ -11,6 +11,7 @@ import { createUpdateMemory } from "./update-memory";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ExecutionMode, ToolContext, Todo } from "@/types";
 import type { Geo } from "@vercel/functions";
+import { FileAccumulator } from "./utils/file-accumulator";
 
 // Factory function to create tools with context
 export const createTools = (
@@ -35,6 +36,7 @@ export const createTools = (
   );
 
   const todoManager = new TodoManager(initialTodos);
+  const fileAccumulator = new FileAccumulator();
 
   const context: ToolContext = {
     sandboxManager,
@@ -44,6 +46,7 @@ export const createTools = (
     todoManager,
     userID,
     assistantMessageId,
+    fileAccumulator,
   };
 
   // Create all available tools
@@ -74,6 +77,7 @@ export const createTools = (
 
   const getSandbox = () => sandbox;
   const getTodoManager = () => todoManager;
+  const getFileAccumulator = () => fileAccumulator;
 
-  return { tools, getSandbox, getTodoManager };
+  return { tools, getSandbox, getTodoManager, getFileAccumulator };
 };

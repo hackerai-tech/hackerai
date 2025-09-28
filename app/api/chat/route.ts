@@ -78,7 +78,6 @@ export async function POST(req: NextRequest) {
     const { userId, subscription } = await getUserIDAndPro(req);
     const userLocation = geolocation(req);
 
-    // Check if free user is trying to use agent mode
     if (mode === "agent" && subscription === "free") {
       throw new ChatSDKError(
         "forbidden:chat",
@@ -86,7 +85,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Get existing messages, merge with new messages, and truncate
     const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
       chatId,
       userId,
@@ -112,10 +110,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Check rate limit for the user with mode
     await checkRateLimit(userId, mode, subscription);
 
-    // Process chat messages with moderation
     const { executionMode, processedMessages, selectedModel } =
       await processChatMessages({
         messages: truncatedMessages,
@@ -123,30 +119,29 @@ export async function POST(req: NextRequest) {
         subscription,
       });
 
-    // Get user customization to check memory preference (outside stream to avoid duplicate calls)
     const userCustomization = await getUserCustomization({ userId });
     const memoryEnabled = userCustomization?.include_memory_entries ?? true;
     const posthog = PostHogClient();
     const assistantMessageId = uuidv4();
 
-    // Clear any previous active stream id before starting a new one (non-temporary chats)
     if (!temporary) {
       await setActiveStreamId({ chatId, activeStreamId: undefined });
     }
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        const { tools, getSandbox, getTodoManager } = createTools(
-          userId,
-          writer,
-          mode,
-          executionMode,
-          userLocation,
-          baseTodos,
-          memoryEnabled,
-          temporary,
-          assistantMessageId,
-        );
+        const { tools, getSandbox, getTodoManager, getFileAccumulator } =
+          createTools(
+            userId,
+            writer,
+            mode,
+            executionMode,
+            userLocation,
+            baseTodos,
+            memoryEnabled,
+            temporary,
+            assistantMessageId,
+          );
 
         // Generate title in parallel only for non-temporary new chats
         const titlePromise =
@@ -253,11 +248,16 @@ export async function POST(req: NextRequest) {
             generateMessageId: () => assistantMessageId,
             onFinish: async ({ messages }) => {
               if (temporary) return;
+              const newFileIds = getFileAccumulator().getAll();
               for (const message of messages) {
                 await saveMessage({
                   chatId,
                   userId,
                   message,
+                  extraFileIds:
+                    message.role === "assistant"
+                      ? (newFileIds as unknown as string[])
+                      : undefined,
                 });
               }
             },

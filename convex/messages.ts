@@ -247,7 +247,7 @@ export const getMessagesByChatId = query({
 /**
  * Save a message from the client (with authentication)
  */
-export const saveAssistantMessageFromClient = mutation({
+export const saveAssistantMessage = mutation({
   args: {
     id: v.string(),
     chatId: v.string(),
@@ -312,7 +312,7 @@ export const saveAssistantMessageFromClient = mutation({
 /**
  * Delete the last assistant message from a chat
  */
-export const deleteLastAssistantMessageFromClient = mutation({
+export const deleteLastAssistantMessage = mutation({
   args: {
     chatId: v.string(),
   },
@@ -624,7 +624,7 @@ export const searchMessages = query({
 /**
  * Regenerate with new content by updating a message and deleting subsequent messages
  */
-export const regenerateWithNewContentFromClient = mutation({
+export const regenerateWithNewContent = mutation({
   args: {
     messageId: v.string(),
     newContent: v.string(),
@@ -722,51 +722,5 @@ export const regenerateWithNewContentFromClient = mutation({
       }
       throw error;
     }
-  },
-});
-
-/**
- * Append new parts to the last assistant message (backend, service role)
- */
-export const updateMessageAppendPartsForBackend = mutation({
-  args: {
-    serviceKey: v.optional(v.string()),
-    chatId: v.string(),
-    userId: v.string(),
-    messageId: v.string(),
-    parts: v.array(v.any()),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-
-    // Verify chat ownership
-    await ctx.runQuery(internal.messages.verifyChatOwnership, {
-      chatId: args.chatId,
-      userId: args.userId,
-    });
-
-    const existing = await ctx.db
-      .query("messages")
-      .withIndex("by_message_id", (q) => q.eq("id", args.messageId))
-      .first();
-
-    if (!existing) {
-      throw new Error("Message to update not found");
-    }
-
-    const newParts = Array.isArray(existing.parts)
-      ? [...existing.parts, ...args.parts]
-      : args.parts;
-
-    const content = extractTextFromParts(newParts);
-
-    await ctx.db.patch(existing._id, {
-      parts: newParts,
-      content: content || undefined,
-      update_time: Date.now(),
-    });
-
-    return null;
   },
 });

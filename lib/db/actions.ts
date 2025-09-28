@@ -47,6 +47,7 @@ export async function saveMessage({
   chatId,
   userId,
   message,
+  extraFileIds,
 }: {
   chatId: string;
   userId: string;
@@ -55,10 +56,15 @@ export async function saveMessage({
     role: "user" | "assistant" | "system";
     parts: UIMessagePart<any, any>[];
   };
+  extraFileIds?: string[];
 }) {
   try {
     // Extract file IDs from file parts
     const fileIds = extractFileIdsFromParts(message.parts);
+    const mergedFileIds = [
+      ...fileIds,
+      ...((extraFileIds || []).filter(Boolean) as string[]),
+    ];
 
     return await convex.mutation(api.messages.saveMessage, {
       serviceKey,
@@ -67,7 +73,7 @@ export async function saveMessage({
       userId,
       role: message.role,
       parts: message.parts,
-      fileIds: fileIds.length > 0 ? fileIds : undefined,
+      fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");

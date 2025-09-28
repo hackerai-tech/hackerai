@@ -14,6 +14,7 @@ import type {
   ProcessFileOptions,
 } from "../types/file";
 import { Id } from "./_generated/dataModel";
+import { validateServiceKey } from "./chats";
 
 // Constants
 const MAX_TOKEN_LIMIT = 24000;
@@ -360,6 +361,8 @@ export const saveFile = action({
     name: v.string(),
     mediaType: v.string(),
     size: v.number(),
+    serviceKey: v.optional(v.string()),
+    userId: v.optional(v.string()),
   },
   returns: v.object({
     url: v.string(),
@@ -367,15 +370,25 @@ export const saveFile = action({
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
-    const user = await ctx.auth.getUserIdentity();
-
-    if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+    // Determine acting user: service role or authenticated user
+    let actingUserId: string;
+    if (args.serviceKey) {
+      validateServiceKey(args.serviceKey);
+      if (!args.userId) {
+        throw new Error("userId is required when using serviceKey");
+      }
+      actingUserId = args.userId;
+    } else {
+      const user = await ctx.auth.getUserIdentity();
+      if (!user) {
+        throw new Error("Unauthorized: User not authenticated");
+      }
+      actingUserId = user.subject;
     }
 
     // Check file upload limit (100 files maximum)
     await ctx.runQuery(internal.fileStorage.checkFileUploadLimit, {
-      userId: user.subject,
+      userId: actingUserId,
     });
 
     const fileUrl = await ctx.storage.getUrl(args.storageId);
@@ -435,7 +448,7 @@ export const saveFile = action({
     // Use internal mutation to save to database
     const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
       storageId: args.storageId,
-      userId: user.subject,
+      userId: actingUserId,
       name: args.name,
       mediaType: args.mediaType,
       size: args.size,
