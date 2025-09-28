@@ -10,7 +10,8 @@ const baseProviders = {
   "ask-model": openrouter("qwen/qwen3-coder"),
   "agent-model": xai("grok-code-fast-1"),
   "agent-model-with-vision": xai("grok-4-fast-reasoning"),
-  "vision-model": openai("gpt-4.1-2025-04-14"),
+  "vision-model": openrouter("qwen/qwen3-vl-235b-a22b-instruct"),
+  "vision-model-for-pdfs": openai("gpt-4.1-2025-04-14"),
   "title-generator-model": openai("gpt-4.1-mini-2025-04-14"),
 };
 

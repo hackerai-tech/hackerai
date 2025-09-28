@@ -17,11 +17,18 @@ import { extractAllFileIdsFromMessages } from "@/lib/utils/file-token-utils";
 export function selectModel(
   mode: ChatMode,
   containsMediaFiles: boolean,
+  containsPdfFiles: boolean,
 ): string {
-  // If there are media files, choose vision model
+  // Prefer a dedicated PDF vision model for PDFs in ask mode
+  if (containsPdfFiles && mode === "ask") {
+    return "vision-model-for-pdfs";
+  }
+
+  // If there are media files (images or otherwise), choose appropriate vision model
   if (containsMediaFiles && mode === "ask") {
     return "vision-model";
-  } else if (containsMediaFiles && mode === "agent") {
+  }
+  if (containsMediaFiles && mode === "agent") {
     return "agent-model-with-vision";
   }
 
@@ -78,6 +85,14 @@ export async function processChatMessages({
   const { messages: messagesWithUrls, hasMediaFiles: containsMediaFiles } =
     await transformStorageIdsToUrls(messages);
 
+  // Detect if any attached files are PDFs
+  const containsPdfFiles = messagesWithUrls.some((message: any) =>
+    (message.parts || []).some(
+      (part: any) =>
+        part?.type === "file" && part?.mediaType === "application/pdf",
+    ),
+  );
+
   // Extract file IDs from all messages
   const fileIds = extractAllFileIdsFromMessages(messagesWithUrls);
 
@@ -95,7 +110,7 @@ export async function processChatMessages({
   }
 
   // Select the appropriate model
-  const selectedModel = selectModel(mode, containsMediaFiles);
+  const selectedModel = selectModel(mode, containsMediaFiles, containsPdfFiles);
 
   // Determine execution mode from environment variable
   const executionMode: ExecutionMode =
