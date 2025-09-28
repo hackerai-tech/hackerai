@@ -48,8 +48,7 @@ export async function uploadSandboxFileToConvex(args: {
   const blob = toBlob(data);
   const mediaType = DEFAULT_MEDIA_TYPE;
 
-  let postUrl: string;
-  postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
+  const postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
     serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
     userId,
   });
