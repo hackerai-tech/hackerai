@@ -4,7 +4,7 @@ import type { SubscriptionTier } from "@/types";
 
 export const MAX_TOKENS_PRO = 32000;
 export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_ULTRA = 128000;
+export const MAX_TOKENS_ULTRA = 100000;
 
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
