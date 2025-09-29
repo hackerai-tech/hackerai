@@ -254,9 +254,7 @@ export async function POST(req: NextRequest) {
                   userId,
                   message,
                   extraFileIds:
-                    message.role === "assistant"
-                      ? (newFileIds as unknown as string[])
-                      : undefined,
+                    message.role === "assistant" ? newFileIds : undefined,
                 });
               }
             },

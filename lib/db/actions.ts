@@ -7,6 +7,7 @@ import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
 import type { SubscriptionTier } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -56,7 +57,7 @@ export async function saveMessage({
     role: "user" | "assistant" | "system";
     parts: UIMessagePart<any, any>[];
   };
-  extraFileIds?: string[];
+  extraFileIds?: Array<Id<"files">>;
 }) {
   try {
     // Extract file IDs from file parts

@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
-import { createContext, memo, useContext } from "react";
+import { createContext, memo, useContext, useEffect, useRef } from "react";
 import type { ComponentProps } from "react";
 
 type ReasoningContextValue = {
@@ -50,14 +50,19 @@ export const Reasoning = memo(
       onChange: onOpenChange,
     });
 
+    useEffect(() => {
+      if (isStreaming === true) {
+        setIsOpen(true);
+      } else if (isStreaming === false) {
+        setIsOpen(false);
+      }
+    }, [isStreaming, setIsOpen]);
+
     return (
       <ReasoningContext.Provider
         value={{ isOpen: !!isOpen, setIsOpen, isStreaming }}
       >
-        <div
-          className={cn("not-prose max-w-prose space-y-2", className)}
-          {...props}
-        >
+        <div className={cn("not-prose w-full space-y-2", className)} {...props}>
           {children}
         </div>
       </ReasoningContext.Provider>
@@ -109,12 +114,21 @@ export type ReasoningContentProps = ComponentProps<typeof CollapsibleContent>;
 
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => {
-    const { isOpen } = useReasoningContext();
+    const { isOpen, isStreaming } = useReasoningContext();
+    const contentRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+      if (isStreaming && contentRef.current) {
+        contentRef.current.scrollTop = contentRef.current.scrollHeight;
+      }
+    }, [children, isStreaming]);
+
     return (
       <Collapsible open={isOpen}>
         <CollapsibleContent
+          ref={contentRef}
           className={cn(
-            "mt-2 space-y-3",
+            "mt-2 space-y-3 opacity-50 max-h-60 overflow-y-auto",
             "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
             className,
           )}

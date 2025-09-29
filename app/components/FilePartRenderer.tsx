@@ -55,7 +55,7 @@ const FilePartRendererComponent = ({
         return (
           <button
             key={partId}
-            onClick={() => window.open(url, "_blank")}
+            onClick={() => window.open(url, "_blank", "noopener,noreferrer")}
             className="group p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background hover:bg-secondary transition-colors cursor-pointer"
             type="button"
             aria-label={`Open ${fileName}`}

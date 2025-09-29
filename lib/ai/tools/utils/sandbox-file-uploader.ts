@@ -1,3 +1,5 @@
+import "server-only";
+
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
@@ -41,6 +43,19 @@ export async function uploadSandboxFileToConvex(args: {
   userId: string;
   fullPath: string;
 }): Promise<UploadedFileInfo> {
+  if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
+    throw new Error(
+      "NEXT_PUBLIC_CONVEX_URL is required for sandbox file uploads",
+    );
+  }
+
+  if (!process.env.CONVEX_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "CONVEX_SERVICE_ROLE_KEY is required for sandbox file uploads. " +
+        "This is a server-only secret and must never be exposed to the client.",
+    );
+  }
+
   const { sandbox, userId, fullPath } = args;
   const convex = getConvexClient();
 
