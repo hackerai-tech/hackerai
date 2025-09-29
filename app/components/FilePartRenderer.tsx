@@ -1,7 +1,7 @@
 import Image from "next/image";
 import React, { useState, memo, useMemo } from "react";
 import { ImageViewer } from "./ImageViewer";
-import { AlertCircle, File } from "lucide-react";
+import { AlertCircle, File, Eye } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 
 const FilePartRendererComponent = ({
@@ -22,29 +22,58 @@ const FilePartRendererComponent = ({
       icon,
       fileName,
       subtitle,
+      url,
     }: {
       partId: string;
       icon: React.ReactNode;
       fileName: string;
       subtitle: string;
-    }) => (
-      <div
-        key={partId}
-        className="p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background"
-      >
+      url?: string;
+    }) => {
+      const content = (
         <div className="flex flex-row items-center gap-2">
           <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-[#FF5588] flex items-center justify-center">
             {icon}
           </div>
-          <div className="overflow-hidden">
-            <div className="truncate font-semibold text-sm">{fileName}</div>
-            <div className="text-muted-foreground truncate text-xs">
+          <div className="overflow-hidden flex-1">
+            <div className="truncate font-semibold text-sm text-left">
+              {fileName}
+            </div>
+            <div className="text-muted-foreground truncate text-xs text-left">
               {subtitle}
             </div>
           </div>
+          {url && (
+            <div className="flex items-center justify-center w-6 h-6 rounded-md border border-border opacity-0 group-hover:opacity-100 transition-opacity">
+              <Eye className="w-4 h-4 text-muted-foreground" />
+            </div>
+          )}
         </div>
-      </div>
-    );
+      );
+
+      if (url) {
+        return (
+          <button
+            key={partId}
+            onClick={() => window.open(url, "_blank")}
+            className="group p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background hover:bg-secondary transition-colors cursor-pointer"
+            type="button"
+            aria-label={`Open ${fileName}`}
+          >
+            {content}
+          </button>
+        );
+      }
+
+      return (
+        <div
+          key={partId}
+          className="p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background"
+        >
+          {content}
+        </div>
+      );
+    };
     PreviewCard.displayName = "FilePreviewCard";
     return PreviewCard;
   }, []);
@@ -63,6 +92,7 @@ const FilePartRendererComponent = ({
             icon={<AlertCircle className="h-6 w-6 text-red-500" />}
             fileName={part.name || part.filename || "Unknown file"}
             subtitle="File URL not available"
+            url={undefined}
           />
         );
       }
@@ -121,6 +151,7 @@ const FilePartRendererComponent = ({
           icon={<File className="h-6 w-6 text-white" />}
           fileName={part.name || part.filename || "Document"}
           subtitle="Document"
+          url={actualUrl}
         />
       );
     },
@@ -144,6 +175,7 @@ const FilePartRendererComponent = ({
         icon={<File className="h-6 w-6 text-white" />}
         fileName={part.name || part.filename || "Unknown file"}
         subtitle="Document"
+        url={part.url}
       />
     );
   }, [messageId, partIndex, part.url, part.fileId]);

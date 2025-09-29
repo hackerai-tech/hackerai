@@ -2,6 +2,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
+import { createGetTerminalFiles } from "./get-terminal-files";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 import { createSearchReplace } from "./search-replace";
@@ -52,6 +53,7 @@ export const createTools = (
   // Create all available tools
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
+    get_terminal_files: createGetTerminalFiles(context),
     read_file: createReadFile(context),
     write_file: createWriteFile(context),
     search_replace: createSearchReplace(context),

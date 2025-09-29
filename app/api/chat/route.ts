@@ -175,15 +175,14 @@ export async function POST(req: NextRequest) {
                 reasoningEffort: "medium",
               }),
             },
-            ...(subscription === "free"
-              ? {
-                  openrouter: {
-                    provider: {
-                      sort: "price",
-                    },
-                  },
-                }
-              : {}),
+            openrouter: {
+              ...(subscription === "free" && {
+                provider: {
+                  sort: "price",
+                },
+              }),
+              parallelToolCalls: false,
+            },
           },
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),

@@ -62,9 +62,7 @@ export const useChatHandlers = ({
   const deleteLastAssistantMessage = useMutation(
     api.messages.deleteLastAssistantMessage,
   );
-  const saveAssistantMessage = useMutation(
-    api.messages.saveAssistantMessage,
-  );
+  const saveAssistantMessage = useMutation(api.messages.saveAssistantMessage);
   const regenerateWithNewContent = useMutation(
     api.messages.regenerateWithNewContent,
   );

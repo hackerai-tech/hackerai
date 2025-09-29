@@ -34,9 +34,10 @@ export const useFileUpload = () => {
   const saveFile = useAction(api.fileActions.saveFile);
 
   // Wrap Convex mutation to match `() => Promise<string>` signature expected by the util
-  const generateUploadUrlFn = useCallback(() => generateUploadUrl({}), [
-    generateUploadUrl,
-  ]);
+  const generateUploadUrlFn = useCallback(
+    () => generateUploadUrl({}),
+    [generateUploadUrl],
+  );
 
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
