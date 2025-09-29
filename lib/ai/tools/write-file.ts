@@ -13,7 +13,8 @@ Usage:
 - This tool will overwrite the existing file if there is one at the provided path.
 - If this is an existing file, you MUST use the read_file tool first to read the file's contents.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.`,
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+- If you need to share the written file with the user, use the get_terminal_files tool after writing.`,
     inputSchema: z.object({
       file_path: z
         .string()
@@ -35,7 +36,7 @@ Usage:
           const result = await writeLocalFile(file_path, contents);
           return { result };
         } else {
-          // Write file to sandbox (existing behavior)
+          // Write file to sandbox
           const { sandbox } = await sandboxManager.getSandbox();
 
           await sandbox.files.write(file_path, contents);

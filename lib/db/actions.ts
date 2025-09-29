@@ -7,6 +7,7 @@ import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
 import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
 import type { SubscriptionTier } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -47,6 +48,7 @@ export async function saveMessage({
   chatId,
   userId,
   message,
+  extraFileIds,
 }: {
   chatId: string;
   userId: string;
@@ -55,10 +57,15 @@ export async function saveMessage({
     role: "user" | "assistant" | "system";
     parts: UIMessagePart<any, any>[];
   };
+  extraFileIds?: Array<Id<"files">>;
 }) {
   try {
     // Extract file IDs from file parts
     const fileIds = extractFileIdsFromParts(message.parts);
+    const mergedFileIds = [
+      ...fileIds,
+      ...((extraFileIds || []).filter(Boolean) as string[]),
+    ];
 
     return await convex.mutation(api.messages.saveMessage, {
       serviceKey,
@@ -67,7 +74,7 @@ export async function saveMessage({
       userId,
       role: message.role,
       parts: message.parts,
-      fileIds: fileIds.length > 0 ? fileIds : undefined,
+      fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");

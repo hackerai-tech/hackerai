@@ -2,6 +2,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
+import { createGetTerminalFiles } from "./get-terminal-files";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 import { createSearchReplace } from "./search-replace";
@@ -11,6 +12,7 @@ import { createUpdateMemory } from "./update-memory";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ExecutionMode, ToolContext, Todo } from "@/types";
 import type { Geo } from "@vercel/functions";
+import { FileAccumulator } from "./utils/file-accumulator";
 
 // Factory function to create tools with context
 export const createTools = (
@@ -35,6 +37,7 @@ export const createTools = (
   );
 
   const todoManager = new TodoManager(initialTodos);
+  const fileAccumulator = new FileAccumulator();
 
   const context: ToolContext = {
     sandboxManager,
@@ -44,11 +47,13 @@ export const createTools = (
     todoManager,
     userID,
     assistantMessageId,
+    fileAccumulator,
   };
 
   // Create all available tools
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
+    get_terminal_files: createGetTerminalFiles(context),
     read_file: createReadFile(context),
     write_file: createWriteFile(context),
     search_replace: createSearchReplace(context),
@@ -74,6 +79,7 @@ export const createTools = (
 
   const getSandbox = () => sandbox;
   const getTodoManager = () => todoManager;
+  const getFileAccumulator = () => fileAccumulator;
 
-  return { tools, getSandbox, getTodoManager };
+  return { tools, getSandbox, getTodoManager, getFileAccumulator };
 };

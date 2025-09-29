@@ -29,8 +29,9 @@ In using these tools, adhere to the following guidelines:
 5. If the command would use a pager, append \` | cat\` to the command.
 6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command.
 7. Dont include any newlines in the command.
-8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation
-9. Avoid commands with excessive output; redirect to files when necessary`,
+8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation.
+9. Avoid commands with excessive output; redirect to files when necessary.
+10. When users want to download or access files created/modified in the terminal sandbox, use the get_terminal_files tool to provide them as attachments.`,
     inputSchema: z.object({
       command: z.string().describe("The terminal command to execute"),
       explanation: z
@@ -54,7 +55,6 @@ In using these tools, adhere to the following guidelines:
     ) => {
       try {
         if (executionMode === "local") {
-          // Execute locally using Node.js child_process
           const { onStdout, onStderr } = createLocalTerminalHandlers(
             writer,
             toolCallId,
@@ -106,10 +106,8 @@ In using these tools, adhere to the following guidelines:
             }
           });
         } else {
-          // Execute in sandbox (existing behavior)
           const { sandbox } = await sandboxManager.getSandbox();
 
-          // Generate cryptographically strong unique ID for this terminal session
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
@@ -131,13 +129,14 @@ In using these tools, adhere to the following guidelines:
                 onTimeout: () => {
                   if (!resolved) {
                     resolved = true;
-                    // Send timeout message through streaming interface
                     createTerminalWriter(
                       TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS),
                     );
                     handler.cleanup();
                     const result = handler.getResult();
-                    resolve({ result: { ...result, exitCode: null } });
+                    resolve({
+                      result: { ...result, exitCode: null },
+                    });
                   }
                 },
               },
@@ -159,7 +158,7 @@ In using these tools, adhere to the following guidelines:
               : sandbox.commands.run(command, commonOptions);
 
             runPromise
-              .then((execution) => {
+              .then(async (execution) => {
                 handler.cleanup();
 
                 if (!resolved) {

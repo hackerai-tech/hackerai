@@ -22,6 +22,7 @@ import {
   hasTextContent,
   findLastAssistantMessageIndex,
   extractWebSourcesFromMessage,
+  extractSavedFilesFromMessage,
 } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import { toast } from "sonner";
@@ -138,6 +139,12 @@ export const Messages = ({
     [],
   );
 
+  // Extract saved files (memoized adapter)
+  const extractSavedFiles = useCallback(
+    (message: ChatMessage) => extractSavedFilesFromMessage(message as any),
+    [],
+  );
+
   // Handle scroll to load more messages when scrolling to top
   const handleScroll = useCallback(() => {
     if (!scrollRef.current || !loadMore || paginationStatus !== "CanLoadMore") {
@@ -207,6 +214,12 @@ export const Messages = ({
             isLastAssistantMessage &&
             status === "streaming" &&
             !messageHasTextContent;
+
+          // Get saved files for assistant messages
+          const savedFiles =
+            !isUser && (isLastAssistantMessage ? status !== "streaming" : true)
+              ? extractSavedFiles(message)
+              : [];
 
           return (
             <div
@@ -299,6 +312,26 @@ export const Messages = ({
                         ))}
                       </div>
                     )}
+                </div>
+              )}
+
+              {/* Saved files from tools (shown after message content for assistant) */}
+              {!isUser && savedFiles.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 w-full">
+                  {savedFiles.map((file, fileIndex) => (
+                    <FilePartRenderer
+                      key={`${message.id}-saved-file-${fileIndex}`}
+                      part={{
+                        url: file.downloadUrl,
+                        name: file.filename,
+                        filename: file.path,
+                        mediaType: undefined,
+                      }}
+                      partIndex={fileIndex}
+                      messageId={message.id}
+                      totalFileParts={savedFiles.length}
+                    />
+                  ))}
                 </div>
               )}
 

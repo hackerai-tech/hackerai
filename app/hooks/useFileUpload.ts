@@ -33,6 +33,12 @@ export const useFileUpload = () => {
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
 
+  // Wrap Convex mutation to match `() => Promise<string>` signature expected by the util
+  const generateUploadUrlFn = useCallback(
+    () => generateUploadUrl({}),
+    [generateUploadUrl],
+  );
+
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
     (files: File[]): FileProcessingResult => {
@@ -176,7 +182,7 @@ export const useFileUpload = () => {
     try {
       const { fileId, url, tokens } = await uploadSingleFileToConvex(
         file,
-        generateUploadUrl,
+        generateUploadUrlFn,
         saveFile,
       );
 
