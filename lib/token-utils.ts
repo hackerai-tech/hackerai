@@ -2,9 +2,13 @@ import { UIMessage } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
 
-export const MAX_TOKENS_PRO = 32000;
 export const MAX_TOKENS_FREE = 16000;
+export const MAX_TOKENS_PRO = 32000;
 export const MAX_TOKENS_ULTRA = 100000;
+/**
+ * Maximum total tokens allowed across all files
+ */
+export const MAX_TOKENS_FILE = 24000;
 
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,

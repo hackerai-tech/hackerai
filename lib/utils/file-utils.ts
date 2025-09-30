@@ -117,14 +117,24 @@ export function isImageFile(file: File): boolean {
 }
 
 /**
+ * Check if media type is a supported image format for AI
+ * AI supports: PNG, JPEG, WEBP, and non-animated GIF
+ */
+export function isSupportedImageMediaType(mediaType: string): boolean {
+  const supportedTypes = [
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/webp",
+    "image/gif",
+  ];
+  return supportedTypes.includes(mediaType.toLowerCase());
+}
+
+/**
  * Maximum number of files allowed to be uploaded at once
  */
 export const MAX_FILES_LIMIT = 5;
-
-/**
- * Maximum total tokens allowed across all files
- */
-export const MAX_TOTAL_TOKENS = 24000;
 
 /**
  * Helper to create file message part from uploadedFile that has both fileId and URL

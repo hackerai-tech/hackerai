@@ -7,6 +7,7 @@ import {
 import { v } from "convex/values";
 import { validateServiceKey } from "./chats";
 import { internal } from "./_generated/api";
+import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 
 /**
  * Internal query to count files for a user
@@ -235,14 +236,15 @@ export const getFileContentByFileIds = query({
       }
 
       // Only return content for non-image, non-PDF files
-      const isImage = file.media_type.startsWith("image/");
+      // Note: Supported image formats don't have content, unsupported images may have extracted content
+      const isSupportedImage = isSupportedImageMediaType(file.media_type);
       const isPdf = file.media_type === "application/pdf";
 
       return {
         id: args.fileIds[index],
         name: file.name,
         mediaType: file.media_type,
-        content: isImage || isPdf ? null : file.content || null,
+        content: isSupportedImage || isPdf ? null : file.content || null,
       };
     });
   },

@@ -4,6 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessage } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
+import { isSupportedImageMediaType } from "./file-utils";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -65,10 +66,10 @@ export async function transformStorageIdsToUrls(
 
     message.parts.forEach((part: any, partIndex) => {
       if (part.type === "file" && part.fileId) {
-        // Check for media files
+        // Check for media files (supported images and PDFs)
         if (part.mediaType) {
           if (
-            part.mediaType.startsWith("image/") ||
+            isSupportedImageMediaType(part.mediaType) ||
             part.mediaType === "application/pdf"
           ) {
             hasMediaFiles = true;

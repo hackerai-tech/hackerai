@@ -4,11 +4,11 @@ import { useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
-  MAX_TOTAL_TOKENS,
   uploadSingleFileToConvex,
   validateFile,
   createFileMessagePartFromUploadedFile,
 } from "@/lib/utils/file-utils";
+import { MAX_TOKENS_FILE } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
@@ -190,13 +190,13 @@ export const useFileUpload = () => {
       const currentTotal = getTotalTokens();
       const newTotal = currentTotal + tokens;
 
-      if (newTotal > MAX_TOTAL_TOKENS) {
+      if (newTotal > MAX_TOKENS_FILE) {
         // Exceeds limit - delete file from storage and remove from upload list
         deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
         removeUploadedFile(uploadIndex);
 
         toast.error(
-          `${file.name} exceeds token limit (${newTotal}/${MAX_TOTAL_TOKENS})`,
+          `${file.name} exceeds token limit (${newTotal}/${MAX_TOKENS_FILE})`,
         );
       } else {
         // Within limits - set success state with tokens
