@@ -33,6 +33,7 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import { setActiveStreamId } from "@/lib/db/actions";
+import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 
 export const maxDuration = 300;
 
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
 
     await checkRateLimit(userId, mode, subscription);
 
-    const { executionMode, processedMessages, selectedModel } =
+    const { executionMode, processedMessages, selectedModel, sandboxFiles } =
       await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -130,18 +131,27 @@ export async function POST(req: NextRequest) {
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        const { tools, getSandbox, getTodoManager, getFileAccumulator } =
-          createTools(
-            userId,
-            writer,
-            mode,
-            executionMode,
-            userLocation,
-            baseTodos,
-            memoryEnabled,
-            temporary,
-            assistantMessageId,
-          );
+        const {
+          tools,
+          getSandbox,
+          ensureSandbox,
+          getTodoManager,
+          getFileAccumulator,
+        } = createTools(
+          userId,
+          writer,
+          mode,
+          executionMode,
+          userLocation,
+          baseTodos,
+          memoryEnabled,
+          temporary,
+          assistantMessageId,
+        );
+
+        if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
+          await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+        }
 
         // Generate title in parallel only for non-temporary new chats
         const titlePromise =

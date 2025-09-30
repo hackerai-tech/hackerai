@@ -140,8 +140,8 @@ System Environment:
 - VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
 
 Development Environment:
-- Python 3.12.10 (commands: python3, pip3)
-- Node.js 20.19.2 (commands: node, npm)
+- Python 3.12.11 (commands: python3, pip3)
+- Node.js 20.19.4 (commands: node, npm)
 - Golang 1.24.2 (commands: go)
 
 Pre-installed Tools:

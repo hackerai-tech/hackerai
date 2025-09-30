@@ -44,7 +44,7 @@ Usage:
             context.fileAccumulator.add(saved.fileId);
             fileUrls.push({ path: filePath, downloadUrl: saved.url });
           } catch (e) {
-            console.log(
+            console.error(
               `[provide-terminal-files] Failed to upload: ${filePath}`,
               e,
             );

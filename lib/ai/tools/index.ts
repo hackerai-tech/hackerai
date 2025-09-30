@@ -78,8 +78,18 @@ export const createTools = (
       : allTools;
 
   const getSandbox = () => sandbox;
+  const ensureSandbox = async () => {
+    const { sandbox: ensured } = await sandboxManager.getSandbox();
+    return ensured;
+  };
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;
 
-  return { tools, getSandbox, getTodoManager, getFileAccumulator };
+  return {
+    tools,
+    getSandbox,
+    ensureSandbox,
+    getTodoManager,
+    getFileAccumulator,
+  };
 };
