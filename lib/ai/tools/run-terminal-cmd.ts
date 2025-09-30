@@ -142,7 +142,20 @@ If you are generating files:
               handler.cleanup();
               if (!resolved) {
                 resolved = true;
-                reject(error);
+                // Handle CommandExitError as a valid result (non-zero exit code)
+                if (error instanceof CommandExitError) {
+                  const finalResult = handler.getResult();
+                  resolve({
+                    result: {
+                      exitCode: error.exitCode,
+                      stdout: finalResult.stdout,
+                      stderr: finalResult.stderr,
+                      error: error.message,
+                    },
+                  });
+                } else {
+                  reject(error);
+                }
               }
             });
         });

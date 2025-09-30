@@ -18,7 +18,7 @@ export const TerminalToolHandler = ({
   status,
 }: TerminalToolHandlerProps) => {
   const { openSidebar } = useGlobalState();
-  const { toolCallId, state, input, output } = part;
+  const { toolCallId, state, input, output, errorText } = part;
   const terminalInput = input as {
     command: string;
     is_background: boolean;
@@ -44,7 +44,9 @@ export const TerminalToolHandler = ({
     const finalOutput =
       combinedOutput ||
       streamingOutput ||
-      (terminalOutput?.result?.error ?? "");
+      (terminalOutput?.result?.error ?? "") ||
+      errorText ||
+      "";
 
     const sidebarTerminal: SidebarTerminal = {
       command: terminalInput.command,
@@ -75,24 +77,19 @@ export const TerminalToolHandler = ({
         />
       ) : null;
     case "input-available":
-      return status === "streaming" ? (
+      return (
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action="Executing"
+          action={status === "streaming" ? "Executing" : "Executed"}
           target={terminalInput?.command || ""}
-          isShimmer={true}
+          isShimmer={status === "streaming"}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />
-      ) : null;
-    case "output-available": {
-      const stdout = terminalOutput.result?.stdout ?? "";
-      const stderr = terminalOutput.result?.stderr ?? "";
-      const combinedOutput = stdout + stderr;
-      const hasOutput = combinedOutput || terminalOutput.result?.error;
-
+      );
+    case "output-available":
       return (
         <ToolBlock
           key={toolCallId}
@@ -104,7 +101,18 @@ export const TerminalToolHandler = ({
           onKeyDown={handleKeyDown}
         />
       );
-    }
+    case "output-error":
+      return (
+        <ToolBlock
+          key={toolCallId}
+          icon={<Terminal />}
+          action="Executed"
+          target={terminalInput?.command || ""}
+          isClickable={true}
+          onClick={handleOpenInSidebar}
+          onKeyDown={handleKeyDown}
+        />
+      );
     default:
       return null;
   }
