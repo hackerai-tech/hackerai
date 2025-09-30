@@ -71,6 +71,24 @@ async function getXaiApiKey(): Promise<string> {
   return await getXaiApiKey();
 }
 
+async function getE2bApiKey(): Promise<string> {
+  console.log(`\n${chalk.bold("Getting E2B API Key for Agent mode")}`);
+  console.log(
+    "E2B provides the sandbox environment required for agent mode to execute commands",
+  );
+  console.log("You can find your E2B API Key at: https://e2b.dev/dashboard");
+  const key = await question("Enter your E2B API Key: ");
+
+  if (key.startsWith("e2b_")) {
+    return key;
+  }
+
+  console.log(chalk.red("Invalid E2B API Key format"));
+  console.log('E2B keys should start with "e2b_"');
+
+  return await getE2bApiKey();
+}
+
 async function getWorkOSApiKey(): Promise<string> {
   console.log(`\n${chalk.bold("Getting WorkOS API Key")}`);
   console.log(
@@ -144,16 +162,15 @@ OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
 OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 XAI_API_KEY=${envVars.XAI_API_KEY}
 
+# E2B Sandbox (Required for agent mode - provides secure code execution environment)
+E2B_API_KEY=${envVars.E2B_API_KEY}
+
 # =============================================================================
 # OPTIONAL CONFIGURATIONS
 # =============================================================================
 
 # Web Search API Key (Optional - enables web search functionality)
 # EXA_API_KEY=your_exa_api_key_here
-
-# Terminal execution mode: "local" (default) or "sandbox"
-# TERMINAL_EXECUTION_MODE=local
-# E2B_API_KEY=your_e2b_api_key_here
 
 # Rate Limiting (Upstash Redis)
 # UPSTASH_REDIS_REST_URL="https://your-redis-url.upstash.io"
@@ -238,6 +255,7 @@ async function main() {
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
   const OPENAI_API_KEY = await getOpenAiApiKey();
   const XAI_API_KEY = await getXaiApiKey();
+  const E2B_API_KEY = await getE2bApiKey();
 
   // Get WorkOS configuration
   const WORKOS_API_KEY = await getWorkOSApiKey();
@@ -257,6 +275,7 @@ async function main() {
     OPENROUTER_API_KEY,
     OPENAI_API_KEY,
     XAI_API_KEY,
+    E2B_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,
     NEXT_PUBLIC_WORKOS_REDIRECT_URI,

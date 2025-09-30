@@ -1,4 +1,4 @@
-import type { ChatMode, ExecutionMode } from "@/types";
+import type { ChatMode } from "@/types";
 import {
   getPersonalityInstructions,
   type UserCustomization,
@@ -140,8 +140,8 @@ System Environment:
 - VPN connectivity is not available due to missing TUN/TAP device support in the sandbox environment
 
 Development Environment:
-- Python 3.12.10 (commands: python3, pip3)
-- Node.js 20.19.2 (commands: node, npm)
+- Python 3.12.11 (commands: python3, pip3)
+- Node.js 20.19.4 (commands: node, npm)
 - Golang 1.24.2 (commands: go)
 
 Pre-installed Tools:
@@ -196,7 +196,6 @@ export const systemPrompt = async (
   userId: string,
   mode: ChatMode,
   subscription: "free" | "pro" | "ultra",
-  executionMode?: ExecutionMode,
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
 ): Promise<string> => {
@@ -242,11 +241,7 @@ When using markdown in assistant messages, use backticks to format file, directo
     sections.push(getInlineLineNumbersSection());
     sections.push(getTaskManagementSection());
     sections.push(getSummarySection());
-
-    if (executionMode === "sandbox") {
-      sections.push(getSandboxEnvironmentSection());
-    }
-
+    sections.push(getSandboxEnvironmentSection());
     sections.push(getFinalInstructionsSection());
   }
 

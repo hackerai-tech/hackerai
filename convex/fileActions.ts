@@ -15,18 +15,8 @@ import type {
 } from "../types/file";
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./chats";
-
-// Constants
-const MAX_TOKEN_LIMIT = 24000;
-
-/**
- * Check if the file is an image based on MIME type
- * @param mediaType - The MIME type of the file
- * @returns boolean - True if the file is an image
- */
-const isImageFile = (mediaType: string): boolean => {
-  return mediaType.startsWith("image/");
-};
+import { isSupportedImageMediaType } from "../lib/utils/file-utils";
+import { MAX_TOKENS_FILE } from "../lib/token-utils";
 
 /**
  * Validate token count and throw error if exceeds limit
@@ -38,9 +28,9 @@ const validateTokenLimit = (
   fileName: string,
 ): void => {
   const totalTokens = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
-  if (totalTokens > MAX_TOKEN_LIMIT) {
+  if (totalTokens > MAX_TOKENS_FILE) {
     throw new Error(
-      `File "${fileName}" exceeds the maximum token limit of ${MAX_TOKEN_LIMIT} tokens. Current tokens: ${totalTokens}`,
+      `File "${fileName}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${totalTokens}`,
     );
   }
 };
@@ -176,8 +166,9 @@ const processFileAuto = async (
   mediaType?: string,
   prepend?: string,
 ): Promise<FileItemChunk[]> => {
-  // Check if file is an image - return 0 tokens immediately
-  if (mediaType && isImageFile(mediaType)) {
+  // Check if file is a supported image format - return 0 tokens immediately
+  // Unsupported image formats will be processed as files
+  if (mediaType && isSupportedImageMediaType(mediaType)) {
     return [
       {
         content: "",
@@ -213,8 +204,9 @@ const processFileAuto = async (
     // If processing fails, try simple text decoding as fallback
     console.warn(`Failed to process file with comprehensive logic: ${error}`);
 
-    // Check if file is an image - return 0 tokens
-    if (mediaType && isImageFile(mediaType)) {
+    // Check if file is a supported image format - return 0 tokens
+    // Unsupported image formats will fall through to text processing
+    if (mediaType && isSupportedImageMediaType(mediaType)) {
       return [
         {
           content: "",
@@ -230,9 +222,9 @@ const processFileAuto = async (
         const fallbackTokens = countTokens(textContent);
 
         // Check token limit for fallback processing
-        if (fallbackTokens > MAX_TOKEN_LIMIT) {
+        if (fallbackTokens > MAX_TOKENS_FILE) {
           throw new Error(
-            `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKEN_LIMIT} tokens. Current tokens: ${fallbackTokens}`,
+            `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${fallbackTokens}`,
           );
         }
 
@@ -415,8 +407,9 @@ export const saveFile = action({
       tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
 
       // Save content for non-image, non-PDF, non-binary files
+      // Note: Unsupported image formats will have content extracted, so we check for supported images
       const shouldSaveContent =
-        !isImageFile(args.mediaType) &&
+        !isSupportedImageMediaType(args.mediaType) &&
         args.mediaType !== "application/pdf" &&
         chunks.length > 0 &&
         chunks[0].content.length > 0;

@@ -1,12 +1,7 @@
 import { getModerationResult } from "@/lib/moderation";
-import type { ChatMode, ExecutionMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types";
 import { UIMessage } from "ai";
-import {
-  transformStorageIdsToUrls,
-  getDocumentContentForFiles,
-  addDocumentContentAndRemoveFileParts,
-} from "@/lib/utils/file-transform-utils";
-import { extractAllFileIdsFromMessages } from "@/lib/utils/file-token-utils";
+import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 
 /**
  * Selects the appropriate model based on mode and file content
@@ -81,40 +76,16 @@ export async function processChatMessages({
   mode: ChatMode;
   subscription: SubscriptionTier;
 }) {
-  // Transform storageIds to URLs and detect media files
-  const { messages: messagesWithUrls, hasMediaFiles: containsMediaFiles } =
-    await transformStorageIdsToUrls(messages);
-
-  // Detect if any attached files are PDFs
-  const containsPdfFiles = messagesWithUrls.some((message: any) =>
-    (message.parts || []).some(
-      (part: any) =>
-        part?.type === "file" && part?.mediaType === "application/pdf",
-    ),
-  );
-
-  // Extract file IDs from all messages
-  const fileIds = extractAllFileIdsFromMessages(messagesWithUrls);
-
-  // Get document content for non-media files and add to the first user message
-  if (fileIds.length > 0) {
-    const { documentContent, fileIdsWithContent } =
-      await getDocumentContentForFiles(fileIds);
-    if (documentContent) {
-      addDocumentContentAndRemoveFileParts(
-        messagesWithUrls,
-        documentContent,
-        fileIdsWithContent,
-      );
-    }
-  }
+  // Process all file attachments: transform URLs, detect media/PDFs, and add document content
+  const {
+    messages: messagesWithUrls,
+    hasMediaFiles: containsMediaFiles,
+    sandboxFiles,
+    containsPdfFiles,
+  } = await processMessageFiles(messages, mode);
 
   // Select the appropriate model
   const selectedModel = selectModel(mode, containsMediaFiles, containsPdfFiles);
-
-  // Determine execution mode from environment variable
-  const executionMode: ExecutionMode =
-    (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(
@@ -128,8 +99,8 @@ export async function processChatMessages({
   }
 
   return {
-    executionMode,
     processedMessages: messagesWithUrls,
     selectedModel,
+    sandboxFiles,
   };
 }

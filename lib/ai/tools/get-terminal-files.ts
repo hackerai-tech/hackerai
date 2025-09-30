@@ -4,7 +4,7 @@ import type { ToolContext } from "@/types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 
 export const createGetTerminalFiles = (context: ToolContext) => {
-  const { sandboxManager, executionMode } = context;
+  const { sandboxManager } = context;
 
   return tool({
     description: `Provide terminal files as attachments to the user. Use this when you need to share files created, modified, or accessed during terminal operations.
@@ -23,13 +23,6 @@ Usage:
     }),
     execute: async ({ files }: { files: string[] }) => {
       try {
-        if (executionMode === "local") {
-          return {
-            result: "File sharing is only available in sandbox execution mode",
-            fileUrls: [],
-          };
-        }
-
         const { sandbox } = await sandboxManager.getSandbox();
         const fileUrls: Array<{ path: string; downloadUrl: string }> = [];
 
@@ -44,7 +37,7 @@ Usage:
             context.fileAccumulator.add(saved.fileId);
             fileUrls.push({ path: filePath, downloadUrl: saved.url });
           } catch (e) {
-            console.log(
+            console.error(
               `[provide-terminal-files] Failed to upload: ${filePath}`,
               e,
             );

@@ -17,12 +17,9 @@ export interface SandboxContext {
 export interface ToolContext {
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
-  executionMode: ExecutionMode;
   userLocation: Geo;
   todoManager: TodoManager;
   userID: string;
   assistantMessageId?: string;
   fileAccumulator: FileAccumulator;
 }
-
-export type ExecutionMode = "sandbox" | "local";

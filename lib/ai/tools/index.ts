@@ -10,7 +10,7 @@ import { createWebTool } from "./web";
 import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
 import type { UIMessageStreamWriter } from "ai";
-import type { ChatMode, ExecutionMode, ToolContext, Todo } from "@/types";
+import type { ChatMode, ToolContext, Todo } from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 
@@ -19,7 +19,6 @@ export const createTools = (
   userID: string,
   writer: UIMessageStreamWriter,
   mode: ChatMode = "agent",
-  executionMode: ExecutionMode = "local",
   userLocation: Geo,
   initialTodos?: Todo[],
   memoryEnabled: boolean = true,
@@ -42,7 +41,6 @@ export const createTools = (
   const context: ToolContext = {
     sandboxManager,
     writer,
-    executionMode,
     userLocation,
     todoManager,
     userID,
@@ -78,8 +76,18 @@ export const createTools = (
       : allTools;
 
   const getSandbox = () => sandbox;
+  const ensureSandbox = async () => {
+    const { sandbox: ensured } = await sandboxManager.getSandbox();
+    return ensured;
+  };
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;
 
-  return { tools, getSandbox, getTodoManager, getFileAccumulator };
+  return {
+    tools,
+    getSandbox,
+    ensureSandbox,
+    getTodoManager,
+    getFileAccumulator,
+  };
 };

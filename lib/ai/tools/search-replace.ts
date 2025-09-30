@@ -1,10 +1,9 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
-import { searchReplaceLocalFile } from "./utils/local-file-operations";
 
 export const createSearchReplace = (context: ToolContext) => {
-  const { sandboxManager, executionMode } = context;
+  const { sandboxManager } = context;
 
   return tool({
     description: `Performs exact string replacements in files.
@@ -46,73 +45,60 @@ Usage:
       replace_all?: boolean;
     }) => {
       try {
-        if (executionMode === "local") {
-          // Perform search and replace locally using Node.js fs
-          const result = await searchReplaceLocalFile(
-            file_path,
-            old_string,
-            new_string,
-            replace_all,
-          );
-          return { result };
-        } else {
-          // Perform search and replace in sandbox using files.read() and files.write()
-          const { sandbox } = await sandboxManager.getSandbox();
+        const { sandbox } = await sandboxManager.getSandbox();
 
-          try {
-            // Read the file content
-            const fileContent = await sandbox.files.read(file_path);
+        try {
+          // Read the file content
+          const fileContent = await sandbox.files.read(file_path);
 
-            // Validate that old_string and new_string are different
-            if (old_string === new_string) {
-              return {
-                result:
-                  "Invalid: old_string and new_string are exactly the same",
-              };
-            }
-
-            // Check if old_string exists in the file
-            if (!fileContent.includes(old_string)) {
-              return {
-                result: `String not found in file: "${old_string}"`,
-              };
-            }
-
-            let updatedContent: string;
-            let replacementCount: number;
-
-            if (replace_all) {
-              // Replace all occurrences
-              const regex = new RegExp(
-                old_string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-                "g",
-              );
-              updatedContent = fileContent.replace(regex, new_string);
-              replacementCount = (fileContent.match(regex) || []).length;
-            } else {
-              // Replace only the first occurrence
-              const occurrences = fileContent.split(old_string).length - 1;
-              if (occurrences > 1) {
-                return {
-                  result: `String "${old_string}" appears ${occurrences} times in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.`,
-                };
-              }
-              updatedContent = fileContent.replace(old_string, new_string);
-              replacementCount = 1;
-            }
-
-            // Write the updated content back to the file
-            await sandbox.files.write(file_path, updatedContent);
-
-            const action = replace_all ? "replacements" : "replacement";
+          // Validate that old_string and new_string are different
+          if (old_string === new_string) {
             return {
-              result: `Successfully made ${replacementCount} ${action} in ${file_path}`,
-            };
-          } catch (error) {
-            return {
-              result: `Error editing file: ${error instanceof Error ? error.message : String(error)}`,
+              result: "Invalid: old_string and new_string are exactly the same",
             };
           }
+
+          // Check if old_string exists in the file
+          if (!fileContent.includes(old_string)) {
+            return {
+              result: `String not found in file: "${old_string}"`,
+            };
+          }
+
+          let updatedContent: string;
+          let replacementCount: number;
+
+          if (replace_all) {
+            // Replace all occurrences
+            const regex = new RegExp(
+              old_string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+              "g",
+            );
+            updatedContent = fileContent.replace(regex, new_string);
+            replacementCount = (fileContent.match(regex) || []).length;
+          } else {
+            // Replace only the first occurrence
+            const occurrences = fileContent.split(old_string).length - 1;
+            if (occurrences > 1) {
+              return {
+                result: `String "${old_string}" appears ${occurrences} times in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.`,
+              };
+            }
+            updatedContent = fileContent.replace(old_string, new_string);
+            replacementCount = 1;
+          }
+
+          // Write the updated content back to the file
+          await sandbox.files.write(file_path, updatedContent);
+
+          const action = replace_all ? "replacements" : "replacement";
+          return {
+            result: `Successfully made ${replacementCount} ${action} in ${file_path}`,
+          };
+        } catch (error) {
+          return {
+            result: `Error editing file: ${error instanceof Error ? error.message : String(error)}`,
+          };
         }
       } catch (error) {
         return {
