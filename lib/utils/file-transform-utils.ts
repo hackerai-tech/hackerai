@@ -4,6 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessage } from "ai";
 import type { ChatMode } from "@/types";
+import type { FileMessagePart } from "@/types/file";
 import { Id } from "@/convex/_generated/dataModel";
 import { isSupportedImageMediaType } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
@@ -13,16 +14,7 @@ import { extractAllFileIdsFromMessages } from "./file-token-utils";
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
-type FilePart = {
-  type: "file";
-  fileId?: string;
-  url?: string;
-  mediaType?: string;
-  name?: string;
-  filename?: string;
-};
-
-function isFilePart(part: any): part is FilePart {
+function isFilePart(part: any): part is FileMessagePart {
   return part && typeof part === "object" && part.type === "file";
 }
 
@@ -100,7 +92,6 @@ export async function processMessageFiles(
   let hasMediaFiles = false;
   const sandboxFiles: SandboxFile[] = [];
 
-
   // Collect files that need processing
   const filesToProcess = new Map<
     string,
@@ -147,7 +138,6 @@ export async function processMessageFiles(
       }
     });
   });
-
 
   if (filesToProcess.size === 0) {
     // Always add document content for non-media files even if no URL processing is needed
@@ -202,10 +192,7 @@ export async function processMessageFiles(
 
       let finalUrl = file.url;
       if (file.mediaType === "application/pdf") {
-        finalUrl = await convertUrlToBase64DataUrl(
-          file.url,
-          "application/pdf",
-        );
+        finalUrl = await convertUrlToBase64DataUrl(file.url, "application/pdf");
       }
 
       // Update all file parts with the final URL
@@ -370,7 +357,7 @@ function pruneFileParts(
  */
 function removeNonMediaFileParts(messages: UIMessage[]) {
   pruneFileParts(messages, (mediaType) =>
-    isSupportedImageMediaType(mediaType ?? ""),
+    mediaType ? isSupportedImageMediaType(mediaType) : false,
   );
 }
 

@@ -1,4 +1,4 @@
-import type { ChatMode, ExecutionMode } from "@/types";
+import type { ChatMode } from "@/types";
 import {
   getPersonalityInstructions,
   type UserCustomization,
@@ -196,7 +196,6 @@ export const systemPrompt = async (
   userId: string,
   mode: ChatMode,
   subscription: "free" | "pro" | "ultra",
-  executionMode?: ExecutionMode,
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
 ): Promise<string> => {
@@ -242,11 +241,7 @@ When using markdown in assistant messages, use backticks to format file, directo
     sections.push(getInlineLineNumbersSection());
     sections.push(getTaskManagementSection());
     sections.push(getSummarySection());
-
-    if (executionMode === "sandbox") {
-      sections.push(getSandboxEnvironmentSection());
-    }
-
+    sections.push(getSandboxEnvironmentSection());
     sections.push(getFinalInstructionsSection());
   }
 

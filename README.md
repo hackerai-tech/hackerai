@@ -23,9 +23,23 @@
 
 ### Prerequisites
 
-You'll need an [OpenRouter](https://openrouter.ai/) account, an [OpenAI](https://platform.openai.com/) account, a [Convex](https://www.convex.dev/) account, and a [WorkOS](https://workos.com/) account.
+You'll need the following accounts:
 
-**Optional:** To execute terminal commands in isolated containers instead of your local machine, add web search functionality, or enable other advanced features, you can fill out the optional environment variables after running the setup script.
+**Required:**
+
+- [OpenRouter](https://openrouter.ai/) - AI model provider
+- [OpenAI](https://platform.openai.com/) - AI model provider
+- [XAI](https://x.ai/) - AI model provider for agent mode
+- [E2B](https://e2b.dev/) - Sandbox environment for secure code execution in agent mode
+- [Convex](https://www.convex.dev/) - Database and backend
+- [WorkOS](https://workos.com/) - Authentication and user management
+
+**Optional:**
+
+- [Exa](https://exa.ai/) - Web search functionality
+- [Upstash Redis](https://upstash.com/) - Rate limiting
+- [PostHog](https://posthog.com/) - Analytics
+- [Stripe](https://stripe.com/) - Payment processing
 
 ### Clone the repo
 

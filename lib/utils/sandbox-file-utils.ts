@@ -24,7 +24,6 @@ export const collectSandboxFiles = (
   const lastUserIdx = getLastUserMessageIndex(updatedMessages);
   if (lastUserIdx === -1) return;
 
-
   for (let i = 0; i < updatedMessages.length; i++) {
     const msg = updatedMessages[i];
     if (msg.role !== "user" || !msg.parts) continue;
@@ -33,14 +32,15 @@ export const collectSandboxFiles = (
 
     for (const part of msg.parts as any[]) {
       if (part?.type === "file" && part?.fileId && part?.url) {
-        const name: string = part.name || part.filename || "file";
-        const localPath = `/home/user/upload/${name}`;
+        const rawName: string = part.name || part.filename || "file";
+        const sanitizedName = rawName.split(/[/\\]/g).pop() ?? "file";
+        const localPath = `/home/user/upload/${sanitizedName}`;
         // Only upload files for the last user message
         if (i === lastUserIdx) {
           sandboxFiles.push({ url: part.url, localPath });
         }
         tags.push(
-          `<attachment filename="${name}" local_path="${localPath}" />`,
+          `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
         );
       }
     }

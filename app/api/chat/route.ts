@@ -113,7 +113,7 @@ export async function POST(req: NextRequest) {
 
     await checkRateLimit(userId, mode, subscription);
 
-    const { executionMode, processedMessages, selectedModel, sandboxFiles } =
+    const { processedMessages, selectedModel, sandboxFiles } =
       await processChatMessages({
         messages: truncatedMessages,
         mode,
@@ -141,7 +141,6 @@ export async function POST(req: NextRequest) {
           userId,
           writer,
           mode,
-          executionMode,
           userLocation,
           baseTodos,
           memoryEnabled,
@@ -171,7 +170,6 @@ export async function POST(req: NextRequest) {
             userId,
             mode,
             subscription,
-            executionMode,
             userCustomization,
             temporary,
           ),

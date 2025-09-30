@@ -3,10 +3,6 @@ import { z } from "zod";
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
-import {
-  executeLocalCommand,
-  createLocalTerminalHandlers,
-} from "./utils/local-terminal";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 
@@ -14,7 +10,7 @@ const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer, executionMode } = context;
+  const { sandboxManager, writer } = context;
 
   return tool({
     description: `PROPOSE a command to run on behalf of the user.
@@ -77,134 +73,79 @@ If you are generating files:
       { toolCallId }: { toolCallId: string },
     ) => {
       try {
-        if (executionMode === "local") {
-          const { onStdout, onStderr } = createLocalTerminalHandlers(
-            writer,
-            toolCallId,
+        const { sandbox } = await sandboxManager.getSandbox();
+
+        const terminalSessionId = `terminal-${randomUUID()}`;
+        let outputCounter = 0;
+
+        const createTerminalWriter = (output: string) => {
+          writer.write({
+            type: "data-terminal",
+            id: `${terminalSessionId}-${++outputCounter}`,
+            data: { terminal: output, toolCallId },
+          });
+        };
+
+        return new Promise((resolve, reject) => {
+          let resolved = false;
+
+          const handler = createTerminalHandler(
+            (output) => createTerminalWriter(output),
+            {
+              timeoutSeconds: STREAM_TIMEOUT_SECONDS,
+              onTimeout: () => {
+                if (!resolved) {
+                  resolved = true;
+                  createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
+                  handler.cleanup();
+                  const result = handler.getResult();
+                  resolve({
+                    result: { ...result, exitCode: null },
+                  });
+                }
+              },
+            },
           );
 
-          return new Promise(async (resolve) => {
-            let resolved = false;
+          const commonOptions = {
+            timeoutMs: MAX_COMMAND_EXECUTION_TIME,
+            user: "root" as const,
+            cwd: "/home/user",
+            onStdout: handler.stdout,
+            onStderr: handler.stderr,
+          };
 
-            const handler = createTerminalHandler(
-              (output, isStderr) =>
-                isStderr ? onStderr(output) : onStdout(output),
-              {
-                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
-                onTimeout: () => {
-                  if (!resolved) {
-                    resolved = true;
-                    const result = handler.getResult();
-                    resolve({ result: { ...result, exitCode: null } });
-                  }
-                },
-              },
-            );
+          const runPromise = is_background
+            ? sandbox.commands.run(command, {
+                ...commonOptions,
+                background: true,
+              })
+            : sandbox.commands.run(command, commonOptions);
 
-            try {
-              const result = await executeLocalCommand(command, {
-                cwd: process.cwd(),
-                onStdout: handler.stdout,
-                onStderr: handler.stderr,
-                background: is_background,
-              });
-
+          runPromise
+            .then(async (execution) => {
               handler.cleanup();
 
               if (!resolved) {
+                resolved = true;
                 const finalResult = handler.getResult();
                 resolve({
                   result: {
-                    ...result,
+                    ...execution,
                     stdout: finalResult.stdout,
                     stderr: finalResult.stderr,
                   },
                 });
               }
-            } catch (error) {
+            })
+            .catch((error) => {
               handler.cleanup();
               if (!resolved) {
-                throw error;
+                resolved = true;
+                reject(error);
               }
-            }
-          });
-        } else {
-          const { sandbox } = await sandboxManager.getSandbox();
-
-          const terminalSessionId = `terminal-${randomUUID()}`;
-          let outputCounter = 0;
-
-          const createTerminalWriter = (output: string) => {
-            writer.write({
-              type: "data-terminal",
-              id: `${terminalSessionId}-${++outputCounter}`,
-              data: { terminal: output, toolCallId },
             });
-          };
-
-          return new Promise((resolve, reject) => {
-            let resolved = false;
-
-            const handler = createTerminalHandler(
-              (output) => createTerminalWriter(output),
-              {
-                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
-                onTimeout: () => {
-                  if (!resolved) {
-                    resolved = true;
-                    createTerminalWriter(
-                      TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS),
-                    );
-                    handler.cleanup();
-                    const result = handler.getResult();
-                    resolve({
-                      result: { ...result, exitCode: null },
-                    });
-                  }
-                },
-              },
-            );
-
-            const commonOptions = {
-              timeoutMs: MAX_COMMAND_EXECUTION_TIME,
-              user: "root" as const,
-              cwd: "/home/user",
-              onStdout: handler.stdout,
-              onStderr: handler.stderr,
-            };
-
-            const runPromise = is_background
-              ? sandbox.commands.run(command, {
-                  ...commonOptions,
-                  background: true,
-                })
-              : sandbox.commands.run(command, commonOptions);
-
-            runPromise
-              .then(async (execution) => {
-                handler.cleanup();
-
-                if (!resolved) {
-                  resolved = true;
-                  const finalResult = handler.getResult();
-                  resolve({
-                    result: {
-                      ...execution,
-                      stdout: finalResult.stdout,
-                      stderr: finalResult.stderr,
-                    },
-                  });
-                }
-              })
-              .catch((error) => {
-                handler.cleanup();
-                if (!resolved) {
-                  resolved = true;
-                  reject(error);
-                }
-              });
-          });
-        }
+        });
       } catch (error) {
         return error as CommandExitError;
       }

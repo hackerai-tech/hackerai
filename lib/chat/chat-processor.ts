@@ -1,5 +1,5 @@
 import { getModerationResult } from "@/lib/moderation";
-import type { ChatMode, ExecutionMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 
@@ -87,10 +87,6 @@ export async function processChatMessages({
   // Select the appropriate model
   const selectedModel = selectModel(mode, containsMediaFiles, containsPdfFiles);
 
-  // Determine execution mode from environment variable
-  const executionMode: ExecutionMode =
-    (process.env.TERMINAL_EXECUTION_MODE as ExecutionMode) || "local";
-
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(
     messagesWithUrls,
@@ -103,7 +99,6 @@ export async function processChatMessages({
   }
 
   return {
-    executionMode,
     processedMessages: messagesWithUrls,
     selectedModel,
     sandboxFiles,
