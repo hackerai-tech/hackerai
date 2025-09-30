@@ -152,15 +152,16 @@ export async function processMessageFiles(
   if (filesToProcess.size === 0) {
     // Always add document content for non-media files even if no URL processing is needed
     const fileIds = extractAllFileIdsFromMessages(updatedMessages);
-    // In agent mode, collect sandbox files BEFORE document conversion removes file parts
+    // Mode-specific transforms
     if (mode === "agent") {
       collectSandboxFiles(updatedMessages, sandboxFiles);
-    }
-    if (mode !== "agent" && fileIds.length > 0) {
-      await addDocumentContentToMessages(updatedMessages, fileIds);
-    }
-    if (mode === "agent") {
       removeNonMediaFileParts(updatedMessages);
+    } else {
+      if (fileIds.length > 0) {
+        await addDocumentContentToMessages(updatedMessages, fileIds);
+      }
+      // In ask mode, strip audio files entirely to avoid provider errors
+      removeAudioFileParts(updatedMessages);
     }
 
     const containsPdfFiles = containsPdfAttachments(updatedMessages);
@@ -221,15 +222,16 @@ export async function processMessageFiles(
 
     // Extract file IDs from all messages and process document content
     const fileIds = extractAllFileIdsFromMessages(updatedMessages);
-    // In agent mode, collect sandbox files BEFORE document conversion removes file parts
+    // Mode-specific transforms
     if (mode === "agent") {
       collectSandboxFiles(updatedMessages, sandboxFiles);
-    }
-    if (mode !== "agent" && fileIds.length > 0) {
-      await addDocumentContentToMessages(updatedMessages, fileIds);
-    }
-    if (mode === "agent") {
       removeNonMediaFileParts(updatedMessages);
+    } else {
+      if (fileIds.length > 0) {
+        await addDocumentContentToMessages(updatedMessages, fileIds);
+      }
+      // In ask mode, strip audio files entirely to avoid provider errors
+      removeAudioFileParts(updatedMessages);
     }
 
     return {
@@ -347,25 +349,37 @@ async function addDocumentContentToMessages(
 }
 
 /**
+ * Generic file-part pruner using a predicate for which file MIME types to keep.
+ */
+function pruneFileParts(
+  messages: UIMessage[],
+  shouldKeepFile: (mediaType: string | undefined) => boolean,
+) {
+  for (const message of messages) {
+    if (!message.parts) continue;
+    message.parts = message.parts.filter((part: any) => {
+      if (part?.type !== "file") return true;
+      return shouldKeepFile(part.mediaType);
+    });
+  }
+}
+
+/**
  * Removes non-image file parts from messages (used in agent mode after files are transformed to attachment tags)
  * Only keeps image file parts so the model can see them. PDFs and text files are removed.
- * @param messages - Array of messages to process
  */
 function removeNonMediaFileParts(messages: UIMessage[]) {
-  for (const message of messages) {
-    if (message.parts) {
-      message.parts = message.parts.filter((part: any) => {
-        // Keep non-file parts
-        if (part.type !== "file") return true;
+  pruneFileParts(messages, (mediaType) =>
+    isSupportedImageMediaType(mediaType ?? ""),
+  );
+}
 
-        // Only keep image file parts for the model to process
-        if (isSupportedImageMediaType(part.mediaType)) {
-          return true;
-        }
-
-        // Remove PDFs and text/document file parts (uploaded to sandbox and referenced via attachment tags)
-        return false;
-      });
-    }
-  }
+/**
+ * Removes audio file parts from messages (used in ask mode to avoid provider errors)
+ */
+function removeAudioFileParts(messages: UIMessage[]) {
+  pruneFileParts(messages, (mediaType) => {
+    if (!mediaType) return true;
+    return !mediaType.startsWith("audio/");
+  });
 }
