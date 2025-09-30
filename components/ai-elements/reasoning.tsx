@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import { createContext, memo, useContext, useEffect, useRef } from "react";
 import type { ComponentProps } from "react";
+import { useStickToBottom } from "use-stick-to-bottom";
 
 type ReasoningContextValue = {
   isOpen: boolean;
@@ -115,18 +116,21 @@ export type ReasoningContentProps = ComponentProps<typeof CollapsibleContent>;
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => {
     const { isOpen, isStreaming } = useReasoningContext();
-    const contentRef = useRef<HTMLDivElement>(null);
+    const { scrollRef, contentRef, isAtBottom } = useStickToBottom({
+      resize: "smooth",
+      initial: "instant",
+    });
 
     useEffect(() => {
-      if (isStreaming && contentRef.current) {
-        contentRef.current.scrollTop = contentRef.current.scrollHeight;
+      if (isStreaming && isAtBottom && scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
       }
-    }, [children, isStreaming]);
+    }, [children, isStreaming, isAtBottom, scrollRef]);
 
     return (
       <Collapsible open={isOpen}>
         <CollapsibleContent
-          ref={contentRef}
+          ref={scrollRef}
           className={cn(
             "mt-2 space-y-3 opacity-50 max-h-60 overflow-y-auto",
             "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
@@ -134,7 +138,7 @@ export const ReasoningContent = memo(
           )}
           {...props}
         >
-          {children}
+          <div ref={contentRef}>{children}</div>
         </CollapsibleContent>
       </Collapsible>
     );

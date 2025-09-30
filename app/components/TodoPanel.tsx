@@ -89,7 +89,7 @@ export const TodoPanel = ({ status }: TodoPanelProps) => {
 
       {/* Todo List - Collapsible */}
       {isExpanded && (
-        <div className="border-t border-border px-4 py-3 space-y-2">
+        <div className="border-t border-border px-4 py-3 space-y-2 max-h-[200px] overflow-y-auto">
           {todos.map((todo) => (
             <SharedTodoItem key={todo.id} todo={todo} />
           ))}
