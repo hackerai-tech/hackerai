@@ -172,9 +172,7 @@ export const Chat = ({
           message: string;
           isUploading: boolean;
         };
-        setUploadStatus(
-          uploadData.isUploading ? uploadData : null,
-        );
+        setUploadStatus(uploadData.isUploading ? uploadData : null);
       }
     },
     onToolCall: ({ toolCall }) => {
