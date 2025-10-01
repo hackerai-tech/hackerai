@@ -212,6 +212,7 @@ export const Chat = ({
     onError: (error) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
+      setUploadStatus(null);
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
@@ -235,6 +236,7 @@ export const Chat = ({
       setChatTitle(null);
       setTodos([]);
       setAwaitingServerChat(false);
+      setUploadStatus(null);
     };
     setChatReset(reset);
     return () => setChatReset(null);

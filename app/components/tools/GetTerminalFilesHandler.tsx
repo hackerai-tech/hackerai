@@ -3,8 +3,22 @@ import ToolBlock from "@/components/ui/tool-block";
 import { FileDown } from "lucide-react";
 import type { ChatStatus } from "@/types/chat";
 
+interface TerminalFilesPart {
+  toolCallId: string;
+  state:
+    | "input-streaming"
+    | "input-available"
+    | "output-available"
+    | "output-error";
+  input?: { files: string[] };
+  output?: {
+    result: string;
+    fileUrls: Array<{ path: string; downloadUrl: string }>;
+  };
+}
+
 interface GetTerminalFilesHandlerProps {
-  part: any;
+  part: TerminalFilesPart;
   status: ChatStatus;
 }
 
@@ -13,11 +27,8 @@ export const GetTerminalFilesHandler = ({
   status,
 }: GetTerminalFilesHandlerProps) => {
   const { toolCallId, state, input, output } = part;
-  const filesInput = input as { files: string[] };
-  const filesOutput = output as {
-    result: string;
-    fileUrls: Array<{ path: string; downloadUrl: string }>;
-  };
+  const filesInput = input;
+  const filesOutput = output;
 
   const getFileNames = (paths: string[]) => {
     return paths.map((path) => path.split("/").pop() || path).join(", ");
@@ -45,7 +56,7 @@ export const GetTerminalFilesHandler = ({
         />
       );
 
-    case "output-available":
+    case "output-available": {
       const fileCount = filesOutput?.fileUrls?.length || 0;
       const fileNames = getFileNames(filesInput?.files || []);
 
@@ -57,6 +68,7 @@ export const GetTerminalFilesHandler = ({
           target={fileNames}
         />
       );
+    }
 
     case "output-error":
       return (

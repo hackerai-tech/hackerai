@@ -159,17 +159,19 @@ export async function POST(req: NextRequest) {
             transient: true,
           });
 
-          await uploadSandboxFiles(sandboxFiles, ensureSandbox);
-
-          // Send upload complete notification
-          writer.write({
-            type: "data-upload-status",
-            data: {
-              message: "",
-              isUploading: false,
-            },
-            transient: true,
-          });
+          try {
+            await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+          } finally {
+            // Send upload complete notification
+            writer.write({
+              type: "data-upload-status",
+              data: {
+                message: "",
+                isUploading: false,
+              },
+              transient: true,
+            });
+          }
         }
 
         // Generate title in parallel only for non-temporary new chats
