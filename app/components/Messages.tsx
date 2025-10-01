@@ -13,6 +13,7 @@ import { FilePartRenderer } from "./FilePartRenderer";
 import { MessageErrorState } from "./MessageErrorState";
 import { MessageEditor } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
+import { ShimmerText } from "./ShimmerText";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
@@ -47,6 +48,7 @@ interface MessagesProps {
   isSwitchingChats?: boolean;
   isTemporaryChat?: boolean;
   finishReason?: string;
+  uploadStatus?: { message: string; isUploading: boolean } | null;
 }
 
 export const Messages = ({
@@ -65,6 +67,7 @@ export const Messages = ({
   isSwitchingChats,
   isTemporaryChat,
   finishReason,
+  uploadStatus,
 }: MessagesProps) => {
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
@@ -397,6 +400,15 @@ export const Messages = ({
             </div>
           );
         })}
+
+        {/* Upload status - shown where assistant response will appear */}
+        {uploadStatus?.isUploading && (
+          <div className="flex flex-col items-start">
+            <ShimmerText className="text-sm">
+              {uploadStatus.message}...
+            </ShimmerText>
+          </div>
+        )}
 
         {/* Error state */}
         {error && <MessageErrorState error={error} onRetry={onRetry} />}
