@@ -5,6 +5,7 @@ import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
+import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import type { ChatStatus } from "@/types";
 import { ReasoningHandler } from "./ReasoningHandler";
 
@@ -74,6 +75,9 @@ export const MessagePartHandler = ({
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
       );
+
+    case "tool-get_terminal_files":
+      return <GetTerminalFilesHandler part={part} status={status} />;
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;

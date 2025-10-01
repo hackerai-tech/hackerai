@@ -14,45 +14,15 @@ import {
 import { X, ChevronDown } from "lucide-react";
 import { proFeatures, ultraFeatures } from "@/lib/pricing/features";
 import DeleteAccountDialog from "./DeleteAccountDialog";
-import { useMutation } from "convex/react";
-import { api } from "@/convex/_generated/api";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 const AccountTab = () => {
   const { subscription } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
-  const [showDeleteChats, setShowDeleteChats] = useState(false);
-  const [isDeletingChats, setIsDeletingChats] = useState(false);
-
-  const deleteAllChats = useMutation(api.chats.deleteAllChats);
 
   const currentPlanFeatures = proFeatures;
 
   const handleCancelSubscription = () => {
     redirectToBillingPortal();
-  };
-
-  const handleDeleteAllChats = async () => {
-    if (isDeletingChats) return;
-    setIsDeletingChats(true);
-    try {
-      await deleteAllChats();
-    } catch (error) {
-      console.error("Failed to delete all chats:", error);
-    } finally {
-      setShowDeleteChats(false);
-      window.location.href = "/";
-      setIsDeletingChats(false);
-    }
   };
 
   return (
@@ -148,23 +118,6 @@ const AccountTab = () => {
         </div>
       )}
 
-      {/* Delete All Chats Section */}
-      <div>
-        <div className="flex items-center justify-between py-3">
-          <div>
-            <div className="font-medium">Delete all chats</div>
-          </div>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => setShowDeleteChats(true)}
-            aria-label="Delete all chats"
-          >
-            Delete all
-          </Button>
-        </div>
-      </div>
-
       {/* Delete Account Section */}
       <div>
         <div className="flex items-center justify-between py-3">
@@ -186,33 +139,6 @@ const AccountTab = () => {
         open={showDeleteAccount}
         onOpenChange={setShowDeleteAccount}
       />
-
-      {/* Delete All Chats Confirmation Dialog */}
-      <AlertDialog open={showDeleteChats} onOpenChange={setShowDeleteChats}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Clear your chat history - are you sure?
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              This action cannot be undone. This will permanently delete all
-              your chats and remove all associated data from our servers.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeletingChats}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDeleteAllChats}
-              disabled={isDeletingChats}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              {isDeletingChats ? "Deleting..." : "Confirm deletion"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 };

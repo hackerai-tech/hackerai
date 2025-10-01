@@ -40,6 +40,10 @@ export const Chat = ({
 }) => {
   const isMobile = useIsMobile();
   const { setDataStream, isAutoResuming, setIsAutoResuming } = useDataStream();
+  const [uploadStatus, setUploadStatus] = useState<{
+    message: string;
+    isUploading: boolean;
+  } | null>(null);
 
   const {
     chatTitle,
@@ -163,6 +167,13 @@ export const Chat = ({
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
       if (dataPart.type === "data-title")
         setChatTitle((dataPart.data as { chatTitle: string }).chatTitle);
+      if (dataPart.type === "data-upload-status") {
+        const uploadData = dataPart.data as {
+          message: string;
+          isUploading: boolean;
+        };
+        setUploadStatus(uploadData.isUploading ? uploadData : null);
+      }
     },
     onToolCall: ({ toolCall }) => {
       if (toolCall.toolName === "todo_write" && toolCall.input) {
@@ -201,6 +212,7 @@ export const Chat = ({
     onError: (error) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
+      setUploadStatus(null);
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
@@ -224,6 +236,7 @@ export const Chat = ({
       setChatTitle(null);
       setTodos([]);
       setAwaitingServerChat(false);
+      setUploadStatus(null);
     };
     setChatReset(reset);
     return () => setChatReset(null);
@@ -452,6 +465,7 @@ export const Chat = ({
                     isSwitchingChats={false}
                     isTemporaryChat={isTempChat}
                     finishReason={chatData?.finish_reason}
+                    uploadStatus={uploadStatus}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0">

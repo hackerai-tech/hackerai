@@ -1,7 +1,7 @@
 import Image from "next/image";
-import React, { useState, memo, useMemo } from "react";
+import React, { useState, memo, useMemo, useCallback } from "react";
 import { ImageViewer } from "./ImageViewer";
-import { AlertCircle, File, Eye } from "lucide-react";
+import { AlertCircle, File, Download } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 
 const FilePartRendererComponent = ({
@@ -14,6 +14,26 @@ const FilePartRendererComponent = ({
     src: string;
     alt: string;
   } | null>(null);
+
+  const handleDownload = useCallback(async (url: string, fileName: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error("Error downloading file:", error);
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }, []);
 
   // Memoize file preview component to prevent unnecessary re-renders
   const FilePreviewCard = useMemo(() => {
@@ -45,7 +65,7 @@ const FilePartRendererComponent = ({
           </div>
           {url && (
             <div className="flex items-center justify-center w-6 h-6 rounded-md border border-border opacity-0 group-hover:opacity-100 transition-opacity">
-              <Eye className="w-4 h-4 text-muted-foreground" />
+              <Download className="w-4 h-4 text-muted-foreground" />
             </div>
           )}
         </div>
@@ -55,10 +75,10 @@ const FilePartRendererComponent = ({
         return (
           <button
             key={partId}
-            onClick={() => window.open(url, "_blank", "noopener,noreferrer")}
+            onClick={() => handleDownload(url, fileName)}
             className="group p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background hover:bg-secondary transition-colors cursor-pointer"
             type="button"
-            aria-label={`Open ${fileName}`}
+            aria-label={`Download ${fileName}`}
           >
             {content}
           </button>
@@ -76,7 +96,7 @@ const FilePartRendererComponent = ({
     };
     PreviewCard.displayName = "FilePreviewCard";
     return PreviewCard;
-  }, []);
+  }, [handleDownload]);
 
   // Memoize ConvexFilePart to prevent unnecessary re-renders
   const ConvexFilePart = memo(
@@ -178,7 +198,7 @@ const FilePartRendererComponent = ({
         url={part.url}
       />
     );
-  }, [messageId, partIndex, part.url, part.fileId]);
+  }, [messageId, partIndex, part.url, part.fileId, FilePreviewCard]);
 
   return (
     <>

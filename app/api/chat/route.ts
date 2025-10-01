@@ -149,7 +149,29 @@ export async function POST(req: NextRequest) {
         );
 
         if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
-          await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+          // Send upload start notification
+          writer.write({
+            type: "data-upload-status",
+            data: {
+              message: "Uploading attachments to the computer",
+              isUploading: true,
+            },
+            transient: true,
+          });
+
+          try {
+            await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+          } finally {
+            // Send upload complete notification
+            writer.write({
+              type: "data-upload-status",
+              data: {
+                message: "",
+                isUploading: false,
+              },
+              transient: true,
+            });
+          }
         }
 
         // Generate title in parallel only for non-temporary new chats

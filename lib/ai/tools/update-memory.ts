@@ -144,10 +144,16 @@ The exception to all of the above instructions, as stated at the top, is if the 
             };
           }
 
-          // Get the memory content before deleting
-          const memoryContentToDelete = await getMemoryById({
-            memoryId: existing_knowledge_id,
-          });
+          // Get the memory content before deleting (if it exists)
+          let memoryContentToDelete: string | null = null;
+          try {
+            memoryContentToDelete = await getMemoryById({
+              memoryId: existing_knowledge_id,
+            });
+          } catch (error) {
+            // Memory might not exist, continue with deletion anyway
+            console.warn("Memory not found during delete:", error);
+          }
 
           await deleteMemory({
             userId: context.userID,

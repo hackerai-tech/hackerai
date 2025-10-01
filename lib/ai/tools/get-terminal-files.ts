@@ -7,13 +7,14 @@ export const createGetTerminalFiles = (context: ToolContext) => {
   const { sandboxManager } = context;
 
   return tool({
-    description: `Provide terminal files as attachments to the user. Use this when you need to share files created, modified, or accessed during terminal operations.
+    description: `Share files from the terminal sandbox with the user as downloadable attachments.
     
 Usage:
-- Use this tool after running terminal commands that create output files
-- Provide the full paths to files you want to share with the user
-- Files will be uploaded and download URLs will be returned
-- This tool only works in sandbox execution mode`,
+- Use this tool when the user requests files or needs to download results from the sandbox
+- Provide full file paths (e.g., /home/user/output.txt, /home/user/scan-results.xml)
+- Files are automatically uploaded and made available for download
+- Use this after generating reports, saving scan results, or creating any files the user needs to access
+- Multiple files can be shared in a single call`,
     inputSchema: z.object({
       files: z
         .array(z.string())

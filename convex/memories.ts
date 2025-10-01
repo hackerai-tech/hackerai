@@ -195,6 +195,7 @@ export const updateMemoryForBackend = mutation({
 
 /**
  * Delete a memory entry with service key authentication (for backend use)
+ * Idempotent - returns success even if memory doesn't exist
  */
 export const deleteMemoryForBackend = mutation({
   args: {
@@ -213,8 +214,9 @@ export const deleteMemoryForBackend = mutation({
         .withIndex("by_memory_id", (q) => q.eq("memory_id", args.memoryId))
         .first();
 
+      // If memory doesn't exist, treat as successful deletion (idempotent)
       if (!memory) {
-        throw new Error(`Memory with ID ${args.memoryId} not found`);
+        return null;
       }
 
       // Verify ownership
@@ -304,6 +306,7 @@ export const getUserMemories = query({
 
 /**
  * Delete a specific memory for the authenticated user
+ * Idempotent - returns success even if memory doesn't exist
  */
 export const deleteUserMemory = mutation({
   args: {
@@ -323,8 +326,9 @@ export const deleteUserMemory = mutation({
         .withIndex("by_memory_id", (q) => q.eq("memory_id", args.memoryId))
         .first();
 
+      // If memory doesn't exist, treat as successful deletion (idempotent)
       if (!memory) {
-        throw new Error(`Memory with ID ${args.memoryId} not found`);
+        return null;
       }
 
       // Verify ownership

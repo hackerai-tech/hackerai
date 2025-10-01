@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useState } from "react";
-import { Settings, X, Shield, CircleUserRound } from "lucide-react";
+import { Settings, X, Shield, CircleUserRound, Database } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
 import { SecurityTab } from "@/app/components/SecurityTab";
 import { PersonalizationTab } from "@/app/components/PersonalizationTab";
 import { AccountTab } from "@/app/components/AccountTab";
+import { DataControlsTab } from "@/app/components/DataControlsTab";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface SettingsDialogProps {
@@ -24,6 +25,7 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
   const tabs = [
     { id: "Personalization", label: "Personalization", icon: Settings },
     { id: "Security", label: "Security", icon: Shield },
+    { id: "Data controls", label: "Data controls", icon: Database },
     { id: "Account", label: "Account", icon: CircleUserRound },
   ];
 
@@ -124,6 +126,8 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                 )}
 
                 {activeTab === "Security" && <SecurityTab />}
+
+                {activeTab === "Data controls" && <DataControlsTab />}
 
                 {activeTab === "Account" && <AccountTab />}
               </div>

@@ -12,7 +12,7 @@ const baseProviders = {
   "agent-model-with-vision": xai("grok-4-fast-reasoning"),
   "vision-model": openrouter("qwen/qwen3-vl-235b-a22b-instruct"),
   "vision-model-for-pdfs": openai("gpt-4.1-2025-04-14"),
-  "title-generator-model": openai("gpt-4.1-mini-2025-04-14"),
+  "title-generator-model": openrouter("google/gemini-2.5-flash"),
 };
 
 export const myProvider = customProvider({
