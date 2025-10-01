@@ -7,23 +7,6 @@ import type { Sandbox } from "@e2b/code-interpreter";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
 
-function toBlob(data: unknown, mediaType: string = DEFAULT_MEDIA_TYPE): Blob {
-  if (typeof data === "string") {
-    return new Blob([data], { type: mediaType });
-  }
-  if (data instanceof ArrayBuffer) {
-    return new Blob([data], { type: mediaType });
-  }
-  if (ArrayBuffer.isView(data)) {
-    const view = data as ArrayBufferView;
-    const base = view.buffer as ArrayBuffer;
-    const copy = base.slice(view.byteOffset, view.byteOffset + view.byteLength);
-    return new Blob([copy], { type: mediaType });
-  }
-  const str = String(data ?? "");
-  return new Blob([str], { type: mediaType });
-}
-
 export type UploadedFileInfo = {
   url: string;
   fileId: Id<"files">;
@@ -59,8 +42,18 @@ export async function uploadSandboxFileToConvex(args: {
   const { sandbox, userId, fullPath } = args;
   const convex = getConvexClient();
 
-  const data: unknown = await sandbox.files.read(fullPath);
-  const blob = toBlob(data);
+  const downloadUrl = await sandbox.downloadUrl(fullPath, {
+    useSignatureExpiration: 30_000, // 30 seconds
+  });
+
+  const fileRes = await fetch(downloadUrl);
+  if (!fileRes.ok) {
+    throw new Error(
+      `Failed to download ${fullPath}: ${fileRes.status} ${fileRes.statusText}`,
+    );
+  }
+
+  const blob = await fileRes.blob();
   const mediaType = DEFAULT_MEDIA_TYPE;
 
   const postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
