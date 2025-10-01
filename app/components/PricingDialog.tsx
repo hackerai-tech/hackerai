@@ -12,6 +12,7 @@ import {
   freeFeatures,
   proFeatures,
   ultraFeatures,
+  teamFeatures,
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
 
@@ -134,9 +135,14 @@ const PlanCard: React.FC<PlanCardProps> = ({
 
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
-  const { subscription, isCheckingProPlan } = useGlobalState();
+  const {
+    subscription,
+    isCheckingProPlan,
+    setTeamPricingDialogOpen,
+  } = useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [isYearly, setIsYearly] = React.useState(false);
+  const [showTeamPlan, setShowTeamPlan] = React.useState(false);
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
   };
@@ -165,7 +171,21 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     }
   };
 
-  // Plan data configuration imported from shared module
+  const handleTeamClick = () => {
+    if (!user) {
+      handleSignIn();
+      return;
+    }
+
+    // Update URL with billing period before opening team dialog
+    const url = new URL(window.location.href);
+    url.searchParams.set("selectedPlan", isYearly ? "yearly" : "monthly");
+    url.hash = "team-pricing-seat-selection";
+    window.history.replaceState({}, "", url.toString());
+
+    onClose(); // Close the pricing dialog
+    setTeamPricingDialogOpen(true);
+  };
 
   // Button configurations for Free plan
   const getFreeButtonConfig = () => {
@@ -281,50 +301,94 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
           />
         </div>
 
-        <div className="flex justify-center gap-6 flex-col md:flex-row pb-8">
-          {/* Free Plan */}
-          <PlanCard
-            planName="Free"
-            price={0}
-            description="Intelligence for everyday tasks"
-            features={freeFeatures}
-            buttonText={freeButtonConfig.text}
-            buttonVariant={freeButtonConfig.variant}
-            buttonClassName={freeButtonConfig.className}
-            onButtonClick={freeButtonConfig.onClick}
-            isButtonDisabled={freeButtonConfig.disabled}
-          />
+        <div className="flex justify-center gap-6 flex-col md:flex-row pb-6">
+          {showTeamPlan ? (
+            <>
+              {/* Free Plan */}
+              <PlanCard
+                planName="Free"
+                price={0}
+                description="Intelligence for everyday tasks"
+                features={freeFeatures}
+                buttonText={freeButtonConfig.text}
+                buttonVariant={freeButtonConfig.variant}
+                buttonClassName={freeButtonConfig.className}
+                onButtonClick={freeButtonConfig.onClick}
+                isButtonDisabled={freeButtonConfig.disabled}
+              />
 
-          {/* Pro Plan */}
-          <PlanCard
-            planName="Pro"
-            price={isYearly ? 17 : 20}
-            description="More access to advanced intelligence"
-            features={proFeatures}
-            buttonText={proButtonConfig.text}
-            buttonVariant={proButtonConfig.variant}
-            buttonClassName={proButtonConfig.className}
-            onButtonClick={proButtonConfig.onClick}
-            isButtonDisabled={proButtonConfig.disabled}
-            isButtonLoading={proButtonConfig.loading}
-            customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
-            badgeText="POPULAR"
-          />
+              {/* Team Plan */}
+              <PlanCard
+                planName="Team"
+                price={isYearly ? 33 : 40}
+                description="Supercharge your team with a secure, collaborative workspace"
+                features={teamFeatures}
+                buttonText={"Get Team"}
+                buttonVariant={"default"}
+                buttonClassName="font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white"
+                onButtonClick={handleTeamClick}
+                isButtonDisabled={false}
+                customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                badgeText="RECOMMENDED"
+              />
+            </>
+          ) : (
+            <>
+              {/* Free Plan */}
+              <PlanCard
+                planName="Free"
+                price={0}
+                description="Intelligence for everyday tasks"
+                features={freeFeatures}
+                buttonText={freeButtonConfig.text}
+                buttonVariant={freeButtonConfig.variant}
+                buttonClassName={freeButtonConfig.className}
+                onButtonClick={freeButtonConfig.onClick}
+                isButtonDisabled={freeButtonConfig.disabled}
+              />
 
-          {/* Ultra Plan */}
-          <PlanCard
-            planName="Ultra"
-            price={isYearly ? 166 : 200}
-            description="Full access to the best of HackerAI"
-            features={ultraFeatures}
-            buttonText={ultraButtonConfig.text}
-            buttonVariant={ultraButtonConfig.variant}
-            buttonClassName={ultraButtonConfig.className}
-            isButtonDisabled={ultraButtonConfig.disabled}
-            isButtonLoading={ultraButtonConfig.loading}
-            onButtonClick={ultraButtonConfig.onClick}
-            footerNote="Unlimited subject to abuse guardrails."
-          />
+              {/* Pro Plan */}
+              <PlanCard
+                planName="Pro"
+                price={isYearly ? 17 : 20}
+                description="More access to advanced intelligence"
+                features={proFeatures}
+                buttonText={proButtonConfig.text}
+                buttonVariant={proButtonConfig.variant}
+                buttonClassName={proButtonConfig.className}
+                onButtonClick={proButtonConfig.onClick}
+                isButtonDisabled={proButtonConfig.disabled}
+                isButtonLoading={proButtonConfig.loading}
+                customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                badgeText="POPULAR"
+              />
+
+              {/* Ultra Plan */}
+              <PlanCard
+                planName="Ultra"
+                price={isYearly ? 166 : 200}
+                description="Full access to the best of HackerAI"
+                features={ultraFeatures}
+                buttonText={ultraButtonConfig.text}
+                buttonVariant={ultraButtonConfig.variant}
+                buttonClassName={ultraButtonConfig.className}
+                isButtonDisabled={ultraButtonConfig.disabled}
+                isButtonLoading={ultraButtonConfig.loading}
+                onButtonClick={ultraButtonConfig.onClick}
+                footerNote="Unlimited subject to abuse guardrails."
+              />
+            </>
+          )}
+        </div>
+
+        <div className="flex justify-center pb-8">
+          <Button
+            variant="secondary"
+            className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
+            onClick={() => setShowTeamPlan((prev) => !prev)}
+          >
+            {showTeamPlan ? "View Individual Plan" : "View Team Plan"}
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

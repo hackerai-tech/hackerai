@@ -93,11 +93,12 @@ export const generateUploadUrl = mutation({
           (e: unknown): e is string => typeof e === "string",
         ) as Array<string>)
       : [];
-    // Consider normalized entitlements ("pro-plan", "ultra-plan") as paid
+    // Consider normalized entitlements ("pro-plan", "ultra-plan", "team-plan") as paid
     // and keep supporting monthly/yearly legacy keys
     const isPaid =
       entitlements.includes("pro-plan") ||
       entitlements.includes("ultra-plan") ||
+      entitlements.includes("team-plan") ||
       entitlements.includes("pro-monthly-plan") ||
       entitlements.includes("ultra-monthly-plan") ||
       entitlements.includes("pro-yearly-plan") ||

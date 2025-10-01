@@ -12,14 +12,19 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { X, ChevronDown } from "lucide-react";
-import { proFeatures, ultraFeatures } from "@/lib/pricing/features";
+import {
+  proFeatures,
+  ultraFeatures,
+  teamFeatures,
+} from "@/lib/pricing/features";
 import DeleteAccountDialog from "./DeleteAccountDialog";
 
 const AccountTab = () => {
   const { subscription } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
 
-  const currentPlanFeatures = proFeatures;
+  const currentPlanFeatures =
+    subscription === "team" ? teamFeatures : proFeatures;
 
   const handleCancelSubscription = () => {
     redirectToBillingPortal();
@@ -34,9 +39,11 @@ const AccountTab = () => {
             <div className="font-medium">
               {subscription === "ultra"
                 ? "HackerAI Ultra"
-                : subscription === "pro"
-                  ? "HackerAI Pro"
-                  : "Get HackerAI Pro"}
+                : subscription === "team"
+                  ? "HackerAI Team"
+                  : subscription === "pro"
+                    ? "HackerAI Pro"
+                    : "Get HackerAI Pro"}
             </div>
           </div>
           {subscription !== "free" ? (
@@ -68,33 +75,25 @@ const AccountTab = () => {
           <span className="text-sm font-semibold inline-block pb-4">
             {subscription === "ultra"
               ? "Thanks for subscribing to Ultra! Your plan includes everything in Pro, plus:"
-              : subscription !== "free"
-                ? "Thanks for subscribing to Pro! Your plan includes:"
-                : "Get everything in Free, and more."}
+              : subscription === "team"
+                ? "Thanks for subscribing to Team! Your plan includes:"
+                : subscription !== "free"
+                  ? "Thanks for subscribing to Pro! Your plan includes:"
+                  : "Get everything in Free, and more."}
           </span>
-          {subscription === "ultra" ? (
-            <ul className="mb-2 flex flex-col gap-5">
-              {ultraFeatures.map((feature, index) => (
-                <li key={index} className="relative">
-                  <div className="flex justify-start gap-3.5">
-                    <feature.icon className="h-5 w-5 shrink-0" />
-                    <span className="font-normal">{feature.text}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <ul className="mb-2 flex flex-col gap-5">
-              {currentPlanFeatures.map((feature, index) => (
-                <li key={index} className="relative">
-                  <div className="flex justify-start gap-3.5">
-                    <feature.icon className="h-5 w-5 shrink-0" />
-                    <span className="font-normal">{feature.text}</span>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <ul className="mb-2 flex flex-col gap-5">
+            {(subscription === "ultra"
+              ? ultraFeatures
+              : currentPlanFeatures
+            ).map((feature, index) => (
+              <li key={index} className="relative">
+                <div className="flex justify-start gap-3.5">
+                  <feature.icon className="h-5 w-5 shrink-0" />
+                  <span className="font-normal">{feature.text}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
 

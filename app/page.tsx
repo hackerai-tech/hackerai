@@ -1,12 +1,15 @@
 "use client";
 
+import React from "react";
 import { Authenticated, Unauthenticated } from "convex/react";
 import { ChatInput } from "./components/ChatInput";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import { Chat } from "./components/chat";
 import PricingDialog from "./components/PricingDialog";
+import TeamPricingDialog from "./components/TeamPricingDialog";
 import { usePricingDialog } from "./hooks/usePricingDialog";
+import { useGlobalState } from "./contexts/GlobalState";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
@@ -69,6 +72,24 @@ const AuthenticatedContent = () => {
 // Main page component with Convex authentication
 export default function Page() {
   const { showPricing, handleClosePricing } = usePricingDialog();
+  const { teamPricingDialogOpen, setTeamPricingDialogOpen } = useGlobalState();
+
+  // Read initial values from URL for team pricing dialog
+  const { initialSeats, initialPlan } = React.useMemo(() => {
+    if (typeof window === "undefined") {
+      return { initialSeats: 5, initialPlan: "monthly" as const };
+    }
+    const urlParams = new URLSearchParams(window.location.search);
+    const urlSeats = urlParams.get("numSeats");
+    const urlPlan = urlParams.get("selectedPlan");
+
+    const seats = urlSeats ? parseInt(urlSeats) : 5;
+    const plan = (urlPlan === "yearly" ? "yearly" : "monthly") as
+      | "monthly"
+      | "yearly";
+
+    return { initialSeats: seats, initialPlan: plan };
+  }, []);
 
   return (
     <>
@@ -79,6 +100,12 @@ export default function Page() {
         <UnauthenticatedContent />
       </Unauthenticated>
       <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
+      <TeamPricingDialog
+        isOpen={teamPricingDialogOpen}
+        onClose={() => setTeamPricingDialogOpen(false)}
+        initialSeats={initialSeats}
+        initialPlan={initialPlan}
+      />
     </>
   );
 }

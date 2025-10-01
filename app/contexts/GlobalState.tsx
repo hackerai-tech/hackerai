@@ -103,6 +103,10 @@ interface GlobalStateType {
   temporaryChatsEnabled: boolean;
   setTemporaryChatsEnabled: (enabled: boolean) => void;
 
+  // Team pricing dialog state
+  teamPricingDialogOpen: boolean;
+  setTeamPricingDialogOpen: (open: boolean) => void;
+
   // Register a chat reset function that will be invoked on initializeNewChat
   setChatReset: (fn: (() => void) | null) => void;
 }
@@ -166,6 +170,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get("temporary-chat") === "true";
   });
+  // Initialize team pricing dialog from URL hash
+  const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.location.hash === "#team-pricing-seat-selection";
+  });
 
   useEffect(() => {
     // Save state on desktop
@@ -192,11 +201,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         entitlements.includes("ultra-plan") ||
         entitlements.includes("ultra-monthly-plan") ||
         entitlements.includes("ultra-yearly-plan");
+      const hasTeam = entitlements.includes("team-plan");
       const hasPro =
         entitlements.includes("pro-plan") ||
         entitlements.includes("pro-monthly-plan") ||
         entitlements.includes("pro-yearly-plan");
-      setSubscription(hasUltra ? "ultra" : hasPro ? "pro" : "free");
+      setSubscription(
+        hasUltra ? "ultra" : hasTeam ? "team" : hasPro ? "pro" : "free",
+      );
     }
   }, [user, entitlements]);
 
@@ -230,7 +242,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         if (response.ok) {
           const data = await response.json();
           const tier = data.subscription as SubscriptionTier | undefined;
-          setSubscription(tier === "ultra" || tier === "pro" ? tier : "free");
+          setSubscription(
+            tier === "ultra" || tier === "team" || tier === "pro"
+              ? tier
+              : "free",
+          );
         } else {
           if (response.status === 401) {
             if (typeof window !== "undefined") {
@@ -275,6 +291,29 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       window.removeEventListener("popstate", handleUrlChange);
     };
   }, [temporaryChatsEnabled]);
+
+  // Listen for hash changes to sync team pricing dialog state
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (typeof window === "undefined") return;
+      const shouldOpen =
+        window.location.hash === "#team-pricing-seat-selection";
+
+      // Only update state if it differs to avoid infinite loops
+      if (teamPricingDialogOpen !== shouldOpen) {
+        setTeamPricingDialogOpen(shouldOpen);
+      }
+    };
+
+    // Listen for hash changes
+    window.addEventListener("hashchange", handleHashChange);
+    window.addEventListener("popstate", handleHashChange);
+
+    return () => {
+      window.removeEventListener("hashchange", handleHashChange);
+      window.removeEventListener("popstate", handleHashChange);
+    };
+  }, [teamPricingDialogOpen]);
 
   const clearInput = () => {
     setInput("");
@@ -426,6 +465,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     temporaryChatsEnabled,
     setTemporaryChatsEnabled: setTemporaryChatsEnabledWithUrl,
+
+    teamPricingDialogOpen,
+    setTeamPricingDialogOpen,
+
     setChatReset,
   };
 

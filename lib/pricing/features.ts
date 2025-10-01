@@ -7,7 +7,8 @@ import {
   Upload,
   FlaskConical,
   SquareTerminal,
-  Key,
+  CreditCard,
+  Users,
 } from "lucide-react";
 
 export type PricingFeature = {
@@ -33,4 +34,13 @@ export const ultraFeatures: Array<PricingFeature> = [
   { icon: MessagesSquare, text: "Unlimited messages and uploads" },
   { icon: Brain, text: "Maximum memory and context" },
   { icon: FlaskConical, text: "Research preview of new features" },
+];
+
+export const teamFeatures: Array<PricingFeature> = [
+  {
+    icon: Sparkle,
+    text: "Everything in Pro and more: access to smartest AI model, expanded messaging, file uploads, agent mode with terminal, expanded memory and context",
+  },
+  { icon: CreditCard, text: "Centralized billing and invoicing" },
+  { icon: Users, text: "Advanced team + seat management" },
 ];

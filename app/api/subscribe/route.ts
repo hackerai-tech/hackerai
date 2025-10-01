@@ -7,6 +7,7 @@ export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
     const requestedPlan: string | undefined = body?.plan;
+    const requestedQuantity: number | undefined = body?.quantity;
     // Get user ID from authenticated session
     const userId = await getUserID(req);
 
@@ -18,6 +19,8 @@ export const POST = async (req: NextRequest) => {
       "ultra-monthly-plan",
       "pro-yearly-plan",
       "ultra-yearly-plan",
+      "team-monthly-plan",
+      "team-yearly-plan",
     ]);
     const subscriptionLevel =
       typeof requestedPlan === "string" && allowedPlans.has(requestedPlan)
@@ -25,8 +28,14 @@ export const POST = async (req: NextRequest) => {
             | "pro-monthly-plan"
             | "ultra-monthly-plan"
             | "pro-yearly-plan"
-            | "ultra-yearly-plan")
+            | "ultra-yearly-plan"
+            | "team-monthly-plan"
+            | "team-yearly-plan")
         : "pro-monthly-plan";
+
+    // Quantity is only used for team plans, defaults to 1 for individual plans
+    const quantity =
+      requestedQuantity && requestedQuantity >= 1 ? requestedQuantity : 1;
 
     // Check if user already has an organization
     const existingMemberships =
@@ -145,7 +154,7 @@ export const POST = async (req: NextRequest) => {
       line_items: [
         {
           price: price.data[0].id,
-          quantity: 1,
+          quantity: quantity,
         },
       ],
       mode: "subscription",
