@@ -284,6 +284,7 @@ const generateMemoryId = () => {
 export async function getMemoryById({ memoryId }: { memoryId: string }) {
   try {
     const memory = await convex.query(api.memories.getMemoryByIdForBackend, {
+      serviceKey,
       memoryId,
     });
     return memory;
