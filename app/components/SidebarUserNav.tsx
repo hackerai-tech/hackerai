@@ -126,10 +126,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="w-full h-8 px-2 bg-primary"
+                  className="w-full h-8 px-2 bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0"
                   onClick={redirectToPricing}
                 >
-                  <Sparkle className="h-4 w-4" />
+                  <Sparkle className="h-4 w-4 fill-current" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -179,9 +179,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   {getUserInitials()}
                 </AvatarFallback>
               </Avatar>
-              <div
-                className={`flex-1 min-w-0 ${!isCheckingProPlan && !isProUser ? "pr-20" : ""}`}
-              >
+              <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-sidebar-foreground truncate">
                   {getDisplayName()}
                 </div>
@@ -196,20 +194,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </button>
           )}
         </DropdownMenuTrigger>
-
-        {/* Upgrade button outside of dropdown trigger when expanded */}
-        {!isCollapsed && !isCheckingProPlan && !isProUser && (
-          <div className="absolute top-3 right-3">
-            <Button
-              variant="secondary"
-              size="sm"
-              className=""
-              onClick={redirectToPricing}
-            >
-              Upgrade
-            </Button>
-          </div>
-        )}
 
         <DropdownMenuContent
           className="w-56"
@@ -227,14 +211,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           </DropdownMenuLabel>
 
           <DropdownMenuSeparator />
-
-          {/* Show upgrade option for non-pro users */}
-          {!isCheckingProPlan && !isProUser && (
-            <DropdownMenuItem onClick={redirectToPricing}>
-              <Sparkle className="mr-2 h-4 w-4 text-foreground" />
-              <span>Upgrade plan</span>
-            </DropdownMenuItem>
-          )}
 
           <DropdownMenuItem onClick={() => setShowCustomizeDialog(true)}>
             <Settings2 className="mr-2 h-4 w-4 text-foreground" />

@@ -135,11 +135,8 @@ const PlanCard: React.FC<PlanCardProps> = ({
 
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
-  const {
-    subscription,
-    isCheckingProPlan,
-    setTeamPricingDialogOpen,
-  } = useGlobalState();
+  const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
+    useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [isYearly, setIsYearly] = React.useState(false);
   const [showTeamPlan, setShowTeamPlan] = React.useState(false);

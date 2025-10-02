@@ -11,7 +11,12 @@ export const getMemoriesForBackend = query({
     serviceKey: v.optional(v.string()),
     userId: v.string(),
     subscription: v.optional(
-      v.union(v.literal("free"), v.literal("pro"), v.literal("ultra")),
+      v.union(
+        v.literal("free"),
+        v.literal("pro"),
+        v.literal("ultra"),
+        v.literal("team"),
+      ),
     ),
   },
   returns: v.array(
@@ -38,7 +43,7 @@ export const getMemoriesForBackend = query({
       const tokenLimit =
         args.subscription === "ultra"
           ? 20000
-          : args.subscription === "pro"
+          : args.subscription === "pro" || args.subscription === "team"
             ? 10000
             : 5000;
       let totalTokens = 0;
