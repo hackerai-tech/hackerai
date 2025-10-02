@@ -115,7 +115,7 @@ export const TeamDialogs = ({
             <DialogTitle>Invite team member</DialogTitle>
             <DialogDescription>
               Send an invitation to join your team. If they already have an
-              account, they'll need to log out and log back in after accepting
+              account, they&apos;ll need to log out and log back in after accepting
               the invite to access the team subscription.
             </DialogDescription>
           </DialogHeader>
@@ -262,7 +262,7 @@ export const TeamDialogs = ({
             <DialogTitle>Remove seats</DialogTitle>
             <DialogDescription>
               Reduce the number of seats for your team. The change will take
-              effect at your next billing cycle and you'll be charged less.
+              effect at your next billing cycle and you&apos;ll be charged less.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -415,7 +415,7 @@ export const InviteAcceptedDialog = ({
         <DialogHeader>
           <DialogTitle>Welcome to the team! 🎉</DialogTitle>
           <DialogDescription>
-            You've successfully joined the team. You now have access to all team
+            You&apos;ve successfully joined the team. You now have access to all team
             plan features.
           </DialogDescription>
         </DialogHeader>
