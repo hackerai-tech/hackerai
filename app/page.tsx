@@ -89,13 +89,25 @@ export default function Page() {
     const urlSeats = urlParams.get("numSeats");
     const urlPlan = urlParams.get("selectedPlan");
 
-    const seats = urlSeats ? parseInt(urlSeats) : 5;
+    // Validate and parse seats with fallback to 5 if NaN or less than 1
+    let seats = 5;
+    if (urlSeats) {
+      const parsed = parseInt(urlSeats, 10);
+      if (!isNaN(parsed) && parsed >= 1) {
+        seats = parsed;
+      }
+    }
+
+    // Normalize plan to either "monthly" or "yearly"
     const plan = (urlPlan === "yearly" ? "yearly" : "monthly") as
       | "monthly"
       | "yearly";
 
     return { initialSeats: seats, initialPlan: plan };
-  }, []);
+  }, [
+    typeof window !== "undefined" ? window.location.search : "",
+    teamPricingDialogOpen,
+  ]);
 
   return (
     <>

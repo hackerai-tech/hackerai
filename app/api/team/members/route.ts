@@ -109,6 +109,12 @@ export const GET = async (req: NextRequest) => {
         expiresAt: invitation.expiresAt,
       }));
 
+    const pendingInvitationsCount = invitationsWithDetails.length;
+    const availableSeats = Math.max(
+      0,
+      totalSeats - (currentSeats + pendingInvitationsCount),
+    );
+
     return NextResponse.json({
       members: membersWithDetails,
       invitations: invitationsWithDetails,
@@ -117,7 +123,7 @@ export const GET = async (req: NextRequest) => {
         teamName: organization.name,
         currentSeats,
         totalSeats,
-        availableSeats: totalSeats - currentSeats,
+        availableSeats,
         billingPeriod,
       },
       isAdmin,

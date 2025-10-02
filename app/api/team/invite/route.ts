@@ -64,18 +64,28 @@ export const POST = async (req: NextRequest) => {
         const subscription = subscriptions.data[0];
         const quantity = subscription.items.data[0]?.quantity || 1;
 
-        // Count current active members
-        const currentMembers =
-          await workos.userManagement.listOrganizationMemberships({
+        // Count current members and pending invitations
+        const [currentMembers, pendingInvitations] = await Promise.all([
+          workos.userManagement.listOrganizationMemberships({
             organizationId,
-            statuses: ["active"],
-          });
+          }),
+          workos.userManagement.listInvitations({
+            organizationId,
+          }),
+        ]);
 
-        if (currentMembers.data.length >= quantity) {
+        const pendingInvitationsCount = pendingInvitations.data.filter(
+          (invitation) => invitation.state === "pending",
+        ).length;
+
+        const totalSeatsInUse =
+          currentMembers.data.length + pendingInvitationsCount;
+
+        if (totalSeatsInUse >= quantity) {
           return NextResponse.json(
             {
               error: "Seat limit reached",
-              details: `You have ${currentMembers.data.length} members and ${quantity} seats. Please upgrade to add more members.`,
+              details: `You have ${currentMembers.data.length} members and ${pendingInvitationsCount} pending invitations (${totalSeatsInUse} total) with ${quantity} seats. Please upgrade to add more members.`,
             },
             { status: 400 },
           );

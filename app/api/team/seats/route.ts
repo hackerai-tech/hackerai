@@ -19,9 +19,15 @@ export const PATCH = async (req: NextRequest) => {
     const { quantity } = body;
 
     // Validate quantity
-    if (!quantity || typeof quantity !== "number" || quantity < 2) {
+    if (
+      !quantity ||
+      typeof quantity !== "number" ||
+      !Number.isFinite(quantity) ||
+      !Number.isInteger(quantity) ||
+      quantity < 2
+    ) {
       return NextResponse.json(
-        { error: "Quantity must be at least 2" },
+        { error: "Quantity must be a finite integer of at least 2" },
         { status: 400 },
       );
     }

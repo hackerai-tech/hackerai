@@ -115,8 +115,8 @@ export const TeamDialogs = ({
             <DialogTitle>Invite team member</DialogTitle>
             <DialogDescription>
               Send an invitation to join your team. If they already have an
-              account, they&apos;ll need to log out and log back in after accepting
-              the invite to access the team subscription.
+              account, they&apos;ll need to log out and log back in after
+              accepting the invite to access the team subscription.
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={handleInvite}>
@@ -415,8 +415,8 @@ export const InviteAcceptedDialog = ({
         <DialogHeader>
           <DialogTitle>Welcome to the team! 🎉</DialogTitle>
           <DialogDescription>
-            You&apos;ve successfully joined the team. You now have access to all team
-            plan features.
+            You&apos;ve successfully joined the team. You now have access to all
+            team plan features.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
