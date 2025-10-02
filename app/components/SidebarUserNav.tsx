@@ -233,9 +233,11 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 <div className="text-xs text-sidebar-accent-foreground truncate">
                   {subscription === "ultra"
                     ? "Ultra"
-                    : isProUser
-                      ? "Pro"
-                      : "Free"}
+                    : subscription === "team"
+                      ? "Team"
+                      : subscription === "pro"
+                        ? "Pro"
+                        : "Free"}
                 </div>
               </div>
             </button>

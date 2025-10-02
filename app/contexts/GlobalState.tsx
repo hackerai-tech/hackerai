@@ -107,6 +107,10 @@ interface GlobalStateType {
   teamPricingDialogOpen: boolean;
   setTeamPricingDialogOpen: (open: boolean) => void;
 
+  // Team welcome dialog state
+  teamWelcomeDialogOpen: boolean;
+  setTeamWelcomeDialogOpen: (open: boolean) => void;
+
   // Register a chat reset function that will be invoked on initializeNewChat
   setChatReset: (fn: (() => void) | null) => void;
 }
@@ -174,6 +178,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
     if (typeof window === "undefined") return false;
     return window.location.hash === "#team-pricing-seat-selection";
+  });
+
+  // Initialize team welcome dialog from URL parameter
+  const [teamWelcomeDialogOpen, setTeamWelcomeDialogOpen] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get("team-welcome") === "true";
   });
 
   useEffect(() => {
@@ -263,7 +274,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         setIsCheckingProPlan(false);
         // Remove the refresh param to avoid repeated refreshes
         url.searchParams.delete("refresh");
-        url.searchParams.delete("checkout");
         window.history.replaceState({}, "", url.toString());
       }
     };
@@ -314,6 +324,27 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       window.removeEventListener("popstate", handleHashChange);
     };
   }, [teamPricingDialogOpen]);
+
+  // Listen for URL changes to sync team welcome dialog state
+  useEffect(() => {
+    const handleUrlChange = () => {
+      if (typeof window === "undefined") return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const shouldOpen = urlParams.get("team-welcome") === "true";
+
+      // Only update state if it differs to avoid infinite loops
+      if (teamWelcomeDialogOpen !== shouldOpen) {
+        setTeamWelcomeDialogOpen(shouldOpen);
+      }
+    };
+
+    // Listen for popstate events (browser back/forward)
+    window.addEventListener("popstate", handleUrlChange);
+
+    return () => {
+      window.removeEventListener("popstate", handleUrlChange);
+    };
+  }, [teamWelcomeDialogOpen]);
 
   const clearInput = () => {
     setInput("");
@@ -416,6 +447,20 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, []);
 
+  // Custom setter for team welcome dialog that also updates URL
+  const setTeamWelcomeDialogOpenWithUrl = useCallback((open: boolean) => {
+    setTeamWelcomeDialogOpen(open);
+
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      if (!open) {
+        // Remove the param when dialog is closed
+        url.searchParams.delete("team-welcome");
+        window.history.replaceState({}, "", url.toString());
+      }
+    }
+  }, []);
+
   const value: GlobalStateType = {
     input,
     setInput,
@@ -468,6 +513,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,
+
+    teamWelcomeDialogOpen,
+    setTeamWelcomeDialogOpen: setTeamWelcomeDialogOpenWithUrl,
 
     setChatReset,
   };

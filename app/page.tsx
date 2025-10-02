@@ -8,6 +8,7 @@ import Footer from "./components/Footer";
 import { Chat } from "./components/chat";
 import PricingDialog from "./components/PricingDialog";
 import TeamPricingDialog from "./components/TeamPricingDialog";
+import { TeamWelcomeDialog } from "./components/TeamDialogs";
 import { usePricingDialog } from "./hooks/usePricingDialog";
 import { useGlobalState } from "./contexts/GlobalState";
 
@@ -72,7 +73,12 @@ const AuthenticatedContent = () => {
 // Main page component with Convex authentication
 export default function Page() {
   const { showPricing, handleClosePricing } = usePricingDialog();
-  const { teamPricingDialogOpen, setTeamPricingDialogOpen } = useGlobalState();
+  const {
+    teamPricingDialogOpen,
+    setTeamPricingDialogOpen,
+    teamWelcomeDialogOpen,
+    setTeamWelcomeDialogOpen,
+  } = useGlobalState();
 
   // Read initial values from URL for team pricing dialog
   const { initialSeats, initialPlan } = React.useMemo(() => {
@@ -105,6 +111,10 @@ export default function Page() {
         onClose={() => setTeamPricingDialogOpen(false)}
         initialSeats={initialSeats}
         initialPlan={initialPlan}
+      />
+      <TeamWelcomeDialog
+        open={teamWelcomeDialogOpen}
+        onOpenChange={setTeamWelcomeDialogOpen}
       />
     </>
   );

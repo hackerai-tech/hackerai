@@ -143,8 +143,15 @@ export const POST = async (req: NextRequest) => {
     // Build success and cancel URLs with a refresh hint so the client can refresh
     // entitlements exactly when returning from checkout/billing portal
     const successUrl = new URL(baseUrl);
-    successUrl.searchParams.set("checkout", "success");
     successUrl.searchParams.set("refresh", "entitlements");
+
+    // Add team welcome param for team plans
+    if (
+      subscriptionLevel === "team-monthly-plan" ||
+      subscriptionLevel === "team-yearly-plan"
+    ) {
+      successUrl.searchParams.set("team-welcome", "true");
+    }
 
     const cancelUrl = new URL(baseUrl);
 
