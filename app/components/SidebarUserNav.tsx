@@ -44,6 +44,50 @@ const XIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+// Upgrade banner component
+const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
+  const { isCheckingProPlan, subscription } = useGlobalState();
+  const isProUser = subscription !== "free";
+
+  // Don't show for pro users or while checking
+  if (isCheckingProPlan || isProUser) {
+    return null;
+  }
+
+  const handleUpgrade = () => {
+    redirectToPricing();
+  };
+
+  return (
+    <div className="relative">
+      {!isCollapsed && (
+        <div className="relative rounded-t-2xl bg-[#F1F1FB] dark:bg-[#373669] backdrop-blur-sm transition-all duration-200">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={handleUpgrade}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleUpgrade();
+              }
+            }}
+            className="group relative z-10 flex w-full items-center rounded-t-2xl py-2.5 px-4 text-xs border border-sidebar-border hover:bg-[#E4E4F6] dark:hover:bg-[#414071] transition-all duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:outline-none cursor-pointer"
+            aria-label="Upgrade your plan"
+          >
+            <span className="flex items-center gap-2.5">
+              <Sparkle className="h-4 w-4 text-[#5D5BD0] dark:text-[#DCDBF6] fill-current" />
+              <span className="text-xs font-medium text-[#5D5BD0] dark:text-[#DCDBF6]">
+                Upgrade your plan
+              </span>
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { isCheckingProPlan, subscription } = useGlobalState();
@@ -117,7 +161,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   return (
     <div className="relative">
-      {/* Upgrade button outside of dropdown trigger when collapsed */}
+      {/* Upgrade banner above user nav */}
+      <UpgradeBanner isCollapsed={isCollapsed} />
+
+      {/* Upgrade button for collapsed state */}
       {isCollapsed && !isCheckingProPlan && !isProUser && (
         <div className="mb-1">
           <TooltipProvider>
