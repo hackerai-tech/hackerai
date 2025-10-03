@@ -61,7 +61,7 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
   return (
     <div className="relative">
       {!isCollapsed && (
-        <div className="relative rounded-t-2xl bg-[#F1F1FB] dark:bg-[#373669] backdrop-blur-sm transition-all duration-200">
+        <div className="relative rounded-t-2xl bg-premium-bg backdrop-blur-sm transition-all duration-200">
           <div
             role="button"
             tabIndex={0}
@@ -72,12 +72,12 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
                 handleUpgrade();
               }
             }}
-            className="group relative z-10 flex w-full items-center rounded-t-2xl py-2.5 px-4 text-xs border border-sidebar-border hover:bg-[#E4E4F6] dark:hover:bg-[#414071] transition-all duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:outline-none cursor-pointer"
+            className="group relative z-10 flex w-full items-center rounded-t-2xl py-2.5 px-4 text-xs border border-sidebar-border hover:bg-premium-hover transition-all duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:outline-none cursor-pointer"
             aria-label="Upgrade your plan"
           >
             <span className="flex items-center gap-2.5">
-              <Sparkle className="h-4 w-4 text-[#5D5BD0] dark:text-[#DCDBF6] fill-current" />
-              <span className="text-xs font-medium text-[#5D5BD0] dark:text-[#DCDBF6]">
+              <Sparkle className="h-4 w-4 text-premium-text fill-current" />
+              <span className="text-xs font-medium text-premium-text">
                 Upgrade your plan
               </span>
             </span>
@@ -173,7 +173,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="w-full h-8 px-2 bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0"
+                  className="w-full h-8 px-2 bg-premium-bg text-premium-text hover:bg-premium-hover border-0"
                   onClick={redirectToPricing}
                 >
                   <Sparkle className="h-4 w-4 fill-current" />

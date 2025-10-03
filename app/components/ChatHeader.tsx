@@ -103,7 +103,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 subscription === "free" && (
                   <Button
                     onClick={handleUpgradeClick}
-                    className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200"
+                    className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200"
                     size="default"
                   >
                     <Sparkle className="mr-2 h-4 w-4 fill-current" />
@@ -188,7 +188,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 subscription === "free" && (
                   <Button
                     onClick={handleUpgradeClick}
-                    className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200"
+                    className="flex items-center gap-1 rounded-full py-2 ps-2.5 pe-3 text-sm font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200"
                     size="sm"
                   >
                     <Sparkle className="mr-1 h-3 w-3 fill-current" />

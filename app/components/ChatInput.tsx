@@ -323,7 +323,7 @@ export const ChatInput = ({
                       <div className="flex flex-col flex-1">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">Agent</span>
-                          <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0 transition-all duration-200">
+                          <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
                             PRO
                           </span>
                         </div>
