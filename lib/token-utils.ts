@@ -30,18 +30,6 @@ export const TIMEOUT_MESSAGE = (seconds: number) =>
   `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
 
 /**
- * Extracts and counts tokens from message text and reasoning parts
- */
-const getMessageTokenCount = (message: UIMessage): number => {
-  const textContent = message.parts
-    .filter((part) => part.type === "text" || part.type === "reasoning")
-    .map((part) => part.text || "")
-    .join(" ");
-
-  return countTokens(textContent);
-};
-
-/**
  * Extracts and counts tokens from message text, reasoning parts, and file tokens
  */
 const getMessageTokenCountWithFiles = (
@@ -49,8 +37,7 @@ const getMessageTokenCountWithFiles = (
   fileTokens: Record<string, number> = {},
 ): number => {
   // Count text and reasoning tokens
-  const textTokens = getMessageTokenCount(message);
-
+  const textTokens = countTokens(JSON.stringify(message.parts));
   // Count file tokens
   const fileTokenCount = message.parts
     .filter((part) => part.type === "file")
