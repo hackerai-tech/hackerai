@@ -355,9 +355,10 @@ export const Messages = ({
                 status !== "streaming" && (
                   <div className="mt-2 w-full">
                     <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
-                      I automatically stopped after {mode === "ask" ? 5 : 10} steps to prevent going
-                      off course. Say &quot;continue&quot; if you&apos;d like me
-                      to keep working on this task.
+                      I automatically stopped after {mode === "ask" ? 5 : 10}{" "}
+                      steps to prevent going off course. Say
+                      &quot;continue&quot; if you&apos;d like me to keep working
+                      on this task.
                     </div>
                   </div>
                 )}

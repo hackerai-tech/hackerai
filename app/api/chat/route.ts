@@ -197,6 +197,33 @@ export async function POST(req: NextRequest) {
           ),
           messages: convertToModelMessages(processedMessages),
           tools,
+          // Dynamically refresh the system prompt (memories) after memory updates
+          prepareStep: async ({ steps, stepNumber }) => {
+            try {
+              const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
+              const toolResults =
+                (lastStep && (lastStep as any).toolResults) || [];
+              const lastToolResult = Array.isArray(toolResults)
+                ? toolResults.at(-1)
+                : undefined;
+              const wasMemoryUpdate =
+                lastToolResult && lastToolResult.toolName === "update_memory";
+
+              if (!wasMemoryUpdate) return {};
+
+              return {
+                system: await systemPrompt(
+                  userId,
+                  mode,
+                  subscription,
+                  userCustomization,
+                  temporary,
+                ),
+              };
+            } catch {
+              return {};
+            }
+          },
           providerOptions: {
             openai: {
               parallelToolCalls: false,
