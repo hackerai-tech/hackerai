@@ -30,7 +30,6 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { truncateModelMessagesToTokenLimit } from "@/lib/token-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import { setActiveStreamId } from "@/lib/db/actions";
@@ -198,9 +197,8 @@ export async function POST(req: NextRequest) {
           ),
           messages: convertToModelMessages(processedMessages),
           tools,
-          // Dynamically refresh system prompt after memory updates
-          // and trim messages to fit token budget while preserving last two
-          prepareStep: async ({ steps, messages }) => {
+          // Dynamically refresh the system prompt (memories) after memory updates
+          prepareStep: async ({ steps }) => {
             try {
               const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
               const toolResults =
@@ -211,28 +209,17 @@ export async function POST(req: NextRequest) {
               const wasMemoryUpdate =
                 lastToolResult && lastToolResult.toolName === "update_memory";
 
-              // Trim messages to budget; keep last 2 and all initial system messages
-              const MAX_CONTEXT_TOKENS = 32000; // safe high cap; models internally handle further limits
-              const trimmed = truncateModelMessagesToTokenLimit(
-                (messages as any) || [],
-                MAX_CONTEXT_TOKENS,
-                2,
-              );
+              if (!wasMemoryUpdate) return {};
 
-              if (wasMemoryUpdate) {
-                return {
-                  messages: trimmed as any,
-                  system: await systemPrompt(
-                    userId,
-                    mode,
-                    subscription,
-                    userCustomization,
-                    temporary,
-                  ),
-                };
-              }
-
-              return { messages: trimmed as any };
+              return {
+                system: await systemPrompt(
+                  userId,
+                  mode,
+                  subscription,
+                  userCustomization,
+                  temporary,
+                ),
+              };
             } catch {
               return {};
             }
