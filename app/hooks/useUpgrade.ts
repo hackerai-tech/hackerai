@@ -11,8 +11,11 @@ export const useUpgrade = () => {
       | "pro-monthly-plan"
       | "ultra-monthly-plan"
       | "pro-yearly-plan"
-      | "ultra-yearly-plan",
+      | "ultra-yearly-plan"
+      | "team-monthly-plan"
+      | "team-yearly-plan",
     e?: React.MouseEvent<HTMLButtonElement | HTMLDivElement>,
+    quantity?: number,
   ) => {
     e?.preventDefault();
 
@@ -30,14 +33,21 @@ export const useUpgrade = () => {
     setUpgradeError("");
 
     try {
+      const requestBody: { plan: string; quantity?: number } = {
+        plan: planKey || "pro-monthly-plan",
+      };
+
+      // Add quantity for team plans
+      if (quantity && quantity > 1) {
+        requestBody.quantity = quantity;
+      }
+
       const res = await fetch("/api/subscribe", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(
-          planKey ? { plan: planKey } : { plan: "pro-monthly-plan" },
-        ),
+        body: JSON.stringify(requestBody),
       });
 
       // Check if response is ok, if not throw error with status and body

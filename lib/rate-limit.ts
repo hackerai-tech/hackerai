@@ -27,15 +27,21 @@ export const checkRateLimit = async (
         requestLimit = parseInt(
           process.env.ULTRA_AGENT_MODE_RATE_LIMIT_REQUESTS || "90",
         );
+      } else if (subscription === "team") {
+        requestLimit = parseInt(
+          process.env.TEAM_AGENT_MODE_RATE_LIMIT_REQUESTS || "60",
+        );
       } else {
         requestLimit = parseInt(
           process.env.AGENT_MODE_RATE_LIMIT_REQUESTS || "30",
         );
       }
     } else {
-      // Regular ask mode limits with ultra tier
+      // Regular ask mode limits with ultra and team tiers
       if (subscription === "ultra") {
         requestLimit = parseInt(process.env.ULTRA_RATE_LIMIT_REQUESTS || "240");
+      } else if (subscription === "team") {
+        requestLimit = parseInt(process.env.TEAM_RATE_LIMIT_REQUESTS || "160");
       } else if (subscription === "pro") {
         requestLimit = parseInt(process.env.PRO_RATE_LIMIT_REQUESTS || "80");
       } else {

@@ -1,7 +1,14 @@
 "use client";
 
 import React, { useState } from "react";
-import { Settings, X, Shield, CircleUserRound, Database } from "lucide-react";
+import {
+  Settings,
+  X,
+  Shield,
+  CircleUserRound,
+  Database,
+  Users,
+} from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
@@ -9,7 +16,9 @@ import { SecurityTab } from "@/app/components/SecurityTab";
 import { PersonalizationTab } from "@/app/components/PersonalizationTab";
 import { AccountTab } from "@/app/components/AccountTab";
 import { DataControlsTab } from "@/app/components/DataControlsTab";
+import { TeamTab } from "@/app/components/TeamTab";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -21,13 +30,21 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
   const [showMemoriesDialog, setShowMemoriesDialog] = useState(false);
   const isMobile = useIsMobile();
+  const { subscription } = useGlobalState();
 
-  const tabs = [
+  const baseTabs = [
     { id: "Personalization", label: "Personalization", icon: Settings },
     { id: "Security", label: "Security", icon: Shield },
     { id: "Data controls", label: "Data controls", icon: Database },
-    { id: "Account", label: "Account", icon: CircleUserRound },
   ];
+
+  const teamTab = { id: "Team", label: "Team", icon: Users };
+  const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
+
+  const tabs =
+    subscription === "team"
+      ? [...baseTabs, teamTab, accountTab]
+      : [...baseTabs, accountTab];
 
   const handleCustomInstructions = () => {
     setShowCustomizeDialog(true);
@@ -75,9 +92,9 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                   </div>
                 </div>
               )}
-              <div className="relative flex w-full max-md:pe-3">
-                <div className="flex-1 flex-shrink-0 flex items-start self-stretch px-3 overflow-auto w-max md:w-full pb-0 border-b md:border-b-0 md:flex-col md:gap-3 md:px-2 max-md:gap-2.5">
-                  <div className="flex md:gap-0.5 gap-2.5 md:flex-col items-start self-stretch">
+              <div className="relative flex w-full">
+                <div className="flex-1 flex items-start self-stretch px-3 w-full pb-0 border-b md:border-b-0 md:flex-col md:gap-3 md:px-2 max-md:gap-2.5">
+                  <div className="flex md:gap-0.5 gap-2.5 md:flex-col items-start self-stretch flex-wrap md:flex-nowrap">
                     {tabs.map((tab) => {
                       const IconComponent = tab.icon;
                       return (
@@ -128,6 +145,8 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                 {activeTab === "Security" && <SecurityTab />}
 
                 {activeTab === "Data controls" && <DataControlsTab />}
+
+                {activeTab === "Team" && <TeamTab />}
 
                 {activeTab === "Account" && <AccountTab />}
               </div>

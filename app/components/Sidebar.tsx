@@ -17,7 +17,6 @@ import {
 import SidebarUserNav from "./SidebarUserNav";
 import SidebarHistory from "./SidebarHistory";
 import SidebarHeaderContent from "./SidebarHeader";
-
 // ChatList component content
 const ChatListContent: FC = () => {
   const { currentChatId } = useGlobalState();

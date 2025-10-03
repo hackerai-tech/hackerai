@@ -72,22 +72,25 @@ export async function GET(req: NextRequest) {
       : [];
 
     // Compute a single subscription tier
-    // Prefer normalized entitlements (e.g. "ultra-plan", "pro-plan") if present,
+    // Prefer normalized entitlements (e.g. "ultra-plan", "pro-plan", "team-plan") if present,
     // but maintain backward compatibility by also checking monthly/yearly variants.
     const hasUltra =
       allEntitlements.includes("ultra-plan") ||
       allEntitlements.includes("ultra-monthly-plan") ||
       allEntitlements.includes("ultra-yearly-plan");
+    const hasTeam = allEntitlements.includes("team-plan");
     const hasPro =
       allEntitlements.includes("pro-plan") ||
       allEntitlements.includes("pro-monthly-plan") ||
       allEntitlements.includes("pro-yearly-plan");
 
-    const subscription: "free" | "pro" | "ultra" = hasUltra
+    const subscription: "free" | "pro" | "ultra" | "team" = hasUltra
       ? "ultra"
-      : hasPro
-        ? "pro"
-        : "free";
+      : hasTeam
+        ? "team"
+        : hasPro
+          ? "pro"
+          : "free";
 
     // Create response with entitlements and normalized subscription tier
     const response = json({

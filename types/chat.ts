@@ -3,7 +3,7 @@ import { z } from "zod";
 
 export type ChatMode = "agent" | "ask";
 
-export type SubscriptionTier = "free" | "pro" | "ultra";
+export type SubscriptionTier = "free" | "pro" | "ultra" | "team";
 
 export interface SidebarFile {
   path: string;

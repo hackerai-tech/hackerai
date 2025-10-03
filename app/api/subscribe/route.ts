@@ -7,6 +7,7 @@ export const POST = async (req: NextRequest) => {
   try {
     const body = await req.json().catch(() => ({}));
     const requestedPlan: string | undefined = body?.plan;
+    const requestedQuantity: number | undefined = body?.quantity;
     // Get user ID from authenticated session
     const userId = await getUserID(req);
 
@@ -18,6 +19,8 @@ export const POST = async (req: NextRequest) => {
       "ultra-monthly-plan",
       "pro-yearly-plan",
       "ultra-yearly-plan",
+      "team-monthly-plan",
+      "team-yearly-plan",
     ]);
     const subscriptionLevel =
       typeof requestedPlan === "string" && allowedPlans.has(requestedPlan)
@@ -25,8 +28,14 @@ export const POST = async (req: NextRequest) => {
             | "pro-monthly-plan"
             | "ultra-monthly-plan"
             | "pro-yearly-plan"
-            | "ultra-yearly-plan")
+            | "ultra-yearly-plan"
+            | "team-monthly-plan"
+            | "team-yearly-plan")
         : "pro-monthly-plan";
+
+    // Quantity is only used for team plans, defaults to 1 for individual plans
+    const quantity =
+      requestedQuantity && requestedQuantity >= 1 ? requestedQuantity : 1;
 
     // Check if user already has an organization
     const existingMemberships =
@@ -134,8 +143,15 @@ export const POST = async (req: NextRequest) => {
     // Build success and cancel URLs with a refresh hint so the client can refresh
     // entitlements exactly when returning from checkout/billing portal
     const successUrl = new URL(baseUrl);
-    successUrl.searchParams.set("checkout", "success");
     successUrl.searchParams.set("refresh", "entitlements");
+
+    // Add team welcome param for team plans
+    if (
+      subscriptionLevel === "team-monthly-plan" ||
+      subscriptionLevel === "team-yearly-plan"
+    ) {
+      successUrl.searchParams.set("team-welcome", "true");
+    }
 
     const cancelUrl = new URL(baseUrl);
 
@@ -145,7 +161,7 @@ export const POST = async (req: NextRequest) => {
       line_items: [
         {
           price: price.data[0].id,
-          quantity: 1,
+          quantity: quantity,
         },
       ],
       mode: "subscription",

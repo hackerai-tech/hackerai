@@ -44,6 +44,50 @@ const XIcon = ({ className, ...props }: React.SVGProps<SVGSVGElement>) => (
   </svg>
 );
 
+// Upgrade banner component
+const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
+  const { isCheckingProPlan, subscription } = useGlobalState();
+  const isProUser = subscription !== "free";
+
+  // Don't show for pro users or while checking
+  if (isCheckingProPlan || isProUser) {
+    return null;
+  }
+
+  const handleUpgrade = () => {
+    redirectToPricing();
+  };
+
+  return (
+    <div className="relative">
+      {!isCollapsed && (
+        <div className="relative rounded-t-2xl bg-[#F1F1FB] dark:bg-[#373669] backdrop-blur-sm transition-all duration-200">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={handleUpgrade}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleUpgrade();
+              }
+            }}
+            className="group relative z-10 flex w-full items-center rounded-t-2xl py-2.5 px-4 text-xs border border-sidebar-border hover:bg-[#E4E4F6] dark:hover:bg-[#414071] transition-all duration-150 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:outline-none cursor-pointer"
+            aria-label="Upgrade your plan"
+          >
+            <span className="flex items-center gap-2.5">
+              <Sparkle className="h-4 w-4 text-[#5D5BD0] dark:text-[#DCDBF6] fill-current" />
+              <span className="text-xs font-medium text-[#5D5BD0] dark:text-[#DCDBF6]">
+                Upgrade your plan
+              </span>
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { isCheckingProPlan, subscription } = useGlobalState();
@@ -117,7 +161,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   return (
     <div className="relative">
-      {/* Upgrade button outside of dropdown trigger when collapsed */}
+      {/* Upgrade banner above user nav */}
+      <UpgradeBanner isCollapsed={isCollapsed} />
+
+      {/* Upgrade button for collapsed state */}
       {isCollapsed && !isCheckingProPlan && !isProUser && (
         <div className="mb-1">
           <TooltipProvider>
@@ -126,10 +173,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 <Button
                   variant="secondary"
                   size="sm"
-                  className="w-full h-8 px-2 bg-primary"
+                  className="w-full h-8 px-2 bg-[#F1F1FB] text-[#5D5BD0] hover:bg-[#E4E4F6] dark:bg-[#373669] dark:text-[#DCDBF6] dark:hover:bg-[#414071] border-0"
                   onClick={redirectToPricing}
                 >
-                  <Sparkle className="h-4 w-4" />
+                  <Sparkle className="h-4 w-4 fill-current" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -179,37 +226,23 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                   {getUserInitials()}
                 </AvatarFallback>
               </Avatar>
-              <div
-                className={`flex-1 min-w-0 ${!isCheckingProPlan && !isProUser ? "pr-20" : ""}`}
-              >
+              <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-sidebar-foreground truncate">
                   {getDisplayName()}
                 </div>
                 <div className="text-xs text-sidebar-accent-foreground truncate">
                   {subscription === "ultra"
                     ? "Ultra"
-                    : isProUser
-                      ? "Pro"
-                      : "Free"}
+                    : subscription === "team"
+                      ? "Team"
+                      : subscription === "pro"
+                        ? "Pro"
+                        : "Free"}
                 </div>
               </div>
             </button>
           )}
         </DropdownMenuTrigger>
-
-        {/* Upgrade button outside of dropdown trigger when expanded */}
-        {!isCollapsed && !isCheckingProPlan && !isProUser && (
-          <div className="absolute top-3 right-3">
-            <Button
-              variant="secondary"
-              size="sm"
-              className=""
-              onClick={redirectToPricing}
-            >
-              Upgrade
-            </Button>
-          </div>
-        )}
 
         <DropdownMenuContent
           className="w-56"
@@ -227,14 +260,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           </DropdownMenuLabel>
 
           <DropdownMenuSeparator />
-
-          {/* Show upgrade option for non-pro users */}
-          {!isCheckingProPlan && !isProUser && (
-            <DropdownMenuItem onClick={redirectToPricing}>
-              <Sparkle className="mr-2 h-4 w-4 text-foreground" />
-              <span>Upgrade plan</span>
-            </DropdownMenuItem>
-          )}
 
           <DropdownMenuItem onClick={() => setShowCustomizeDialog(true)}>
             <Settings2 className="mr-2 h-4 w-4 text-foreground" />

@@ -59,11 +59,12 @@ export const getUserIDAndPro = async (
         ) as Array<string>)
       : [];
 
-    // Prefer normalized entitlements ("pro-plan", "ultra-plan"); also support legacy monthly/yearly keys
+    // Prefer normalized entitlements ("pro-plan", "ultra-plan", "team-plan"); also support legacy monthly/yearly keys
     const hasUltra =
       entitlements.includes("ultra-plan") ||
       entitlements.includes("ultra-monthly-plan") ||
       entitlements.includes("ultra-yearly-plan");
+    const hasTeam = entitlements.includes("team-plan");
     const hasPro =
       entitlements.includes("pro-plan") ||
       entitlements.includes("pro-monthly-plan") ||
@@ -72,6 +73,8 @@ export const getUserIDAndPro = async (
     let subscription: SubscriptionTier = "free";
     if (hasUltra) {
       subscription = "ultra";
+    } else if (hasTeam) {
+      subscription = "team";
     } else if (hasPro) {
       subscription = "pro";
     }

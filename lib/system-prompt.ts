@@ -196,7 +196,7 @@ Answer the user's request using the relevant tool(s), if they are available. Che
 export const systemPrompt = async (
   userId: string,
   mode: ChatMode,
-  subscription: "free" | "pro" | "ultra",
+  subscription: "free" | "pro" | "ultra" | "team",
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
 ): Promise<string> => {
