@@ -216,7 +216,7 @@ export async function POST(req: NextRequest) {
           },
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
-          stopWhen: stepCountIs(10),
+          stopWhen: stepCountIs(mode === "ask" ? 5 : 10),
           onChunk: async (chunk) => {
             if (chunk.chunk.type === "tool-call") {
               if (posthog) {
