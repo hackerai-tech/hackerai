@@ -186,17 +186,49 @@ export async function POST(req: NextRequest) {
           subscription,
         );
 
+        let currentSystemPrompt = await systemPrompt(
+          userId,
+          mode,
+          subscription,
+          userCustomization,
+          temporary,
+        );
+
         const result = streamText({
           model: trackedProvider.languageModel(selectedModel),
-          system: await systemPrompt(
-            userId,
-            mode,
-            subscription,
-            userCustomization,
-            temporary,
-          ),
+          system: currentSystemPrompt,
           messages: convertToModelMessages(processedMessages),
           tools,
+          // Refresh system prompt when memory updates occur, cache and reuse until next update
+          prepareStep: async ({ steps }) => {
+            try {
+              const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
+              const toolResults =
+                (lastStep && (lastStep as any).toolResults) || [];
+              const wasMemoryUpdate =
+                Array.isArray(toolResults) && toolResults.some(r => r?.toolName === "update_memory");
+
+              if (!wasMemoryUpdate) {
+                return currentSystemPrompt ? { system: currentSystemPrompt } : {};
+              }
+
+              // Refresh and cache the updated system prompt
+              currentSystemPrompt = await systemPrompt(
+                userId,
+                mode,
+                subscription,
+                userCustomization,
+                temporary,
+              );
+
+              return {
+                system: currentSystemPrompt,
+              };
+            } catch (error) {
+              console.error("Error in prepareStep:", error);
+              return currentSystemPrompt ? { system: currentSystemPrompt } : {};
+            }
+          },
           providerOptions: {
             openai: {
               parallelToolCalls: false,
@@ -216,7 +248,7 @@ export async function POST(req: NextRequest) {
           },
           headers: getAIHeaders(),
           experimental_transform: smoothStream({ chunking: "word" }),
-          stopWhen: stepCountIs(10),
+          stopWhen: stepCountIs(mode === "ask" ? 5 : 10),
           onChunk: async (chunk) => {
             if (chunk.chunk.type === "tool-call") {
               if (posthog) {
