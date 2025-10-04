@@ -467,7 +467,7 @@ export const Chat = ({
                     isTemporaryChat={isTempChat}
                     finishReason={chatData?.finish_reason}
                     uploadStatus={uploadStatus}
-                    mode={(chatData as any)?.default_model_slug || chatMode}
+                    mode={chatMode ?? (chatData as any)?.default_model_slug}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0">

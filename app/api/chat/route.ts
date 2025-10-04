@@ -186,42 +186,47 @@ export async function POST(req: NextRequest) {
           subscription,
         );
 
+        let currentSystemPrompt = await systemPrompt(
+          userId,
+          mode,
+          subscription,
+          userCustomization,
+          temporary,
+        );
+
         const result = streamText({
           model: trackedProvider.languageModel(selectedModel),
-          system: await systemPrompt(
-            userId,
-            mode,
-            subscription,
-            userCustomization,
-            temporary,
-          ),
+          system: currentSystemPrompt,
           messages: convertToModelMessages(processedMessages),
           tools,
-          // Dynamically refresh the system prompt (memories) after memory updates
+          // Refresh system prompt when memory updates occur, cache and reuse until next update
           prepareStep: async ({ steps }) => {
             try {
               const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
               const toolResults =
                 (lastStep && (lastStep as any).toolResults) || [];
-              const lastToolResult = Array.isArray(toolResults)
-                ? toolResults.at(-1)
-                : undefined;
               const wasMemoryUpdate =
-                lastToolResult && lastToolResult.toolName === "update_memory";
+                Array.isArray(toolResults) && toolResults.some(r => r?.toolName === "update_memory");
 
-              if (!wasMemoryUpdate) return {};
+              if (!wasMemoryUpdate) {
+                return currentSystemPrompt ? { system: currentSystemPrompt } : {};
+              }
+
+              // Refresh and cache the updated system prompt
+              currentSystemPrompt = await systemPrompt(
+                userId,
+                mode,
+                subscription,
+                userCustomization,
+                temporary,
+              );
 
               return {
-                system: await systemPrompt(
-                  userId,
-                  mode,
-                  subscription,
-                  userCustomization,
-                  temporary,
-                ),
+                system: currentSystemPrompt,
               };
-            } catch {
-              return {};
+            } catch (error) {
+              console.error("Error in prepareStep:", error);
+              return currentSystemPrompt ? { system: currentSystemPrompt } : {};
             }
           },
           providerOptions: {
