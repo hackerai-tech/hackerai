@@ -102,7 +102,9 @@ export const generateUploadUrl = mutation({
       entitlements.includes("pro-monthly-plan") ||
       entitlements.includes("ultra-monthly-plan") ||
       entitlements.includes("pro-yearly-plan") ||
-      entitlements.includes("ultra-yearly-plan");
+      entitlements.includes("ultra-yearly-plan") ||
+      entitlements.includes("pentestgpt-pro-plan") ||
+      entitlements.includes("pentestgpt-team-plan")
     if (!isPaid) {
       throw new Error("Unauthorized: Paid plan required for file uploads");
     }

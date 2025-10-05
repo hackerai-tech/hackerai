@@ -212,11 +212,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         entitlements.includes("ultra-plan") ||
         entitlements.includes("ultra-monthly-plan") ||
         entitlements.includes("ultra-yearly-plan");
-      const hasTeam = entitlements.includes("team-plan");
+      const hasTeam =
+        entitlements.includes("team-plan") ||
+        entitlements.includes("pentestgpt-team-plan");
       const hasPro =
         entitlements.includes("pro-plan") ||
         entitlements.includes("pro-monthly-plan") ||
-        entitlements.includes("pro-yearly-plan");
+        entitlements.includes("pro-yearly-plan") ||
+        entitlements.includes("pentestgpt-pro-plan");
       setSubscription(
         hasUltra ? "ultra" : hasTeam ? "team" : hasPro ? "pro" : "free",
       );

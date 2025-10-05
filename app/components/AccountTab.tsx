@@ -50,14 +50,22 @@ const AccountTab = () => {
       } else {
         setMigrationMessage({
           type: "success",
-          text:
-            data.message ||
-            "Successfully migrated! Please refresh the page to see your new subscription.",
+          text: data.message || "Successfully migrated! Refreshing...",
         });
-        // Refresh the page after 2 seconds to update entitlements
+
+        // Immediately refresh entitlements
+        try {
+          await fetch("/api/entitlements", {
+            credentials: "include",
+          });
+        } catch (error) {
+          console.error("Failed to refresh entitlements:", error);
+        }
+
+        // Reload the page to reflect new subscription
         setTimeout(() => {
-          window.location.href = "/?refresh=entitlements";
-        }, 2000);
+          window.location.reload();
+        }, 1000);
       }
     } catch (error) {
       setMigrationMessage({
