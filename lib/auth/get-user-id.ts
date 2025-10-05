@@ -60,15 +60,19 @@ export const getUserIDAndPro = async (
       : [];
 
     // Prefer normalized entitlements ("pro-plan", "ultra-plan", "team-plan"); also support legacy monthly/yearly keys
+    // Also support pentestgpt migration entitlements
     const hasUltra =
       entitlements.includes("ultra-plan") ||
       entitlements.includes("ultra-monthly-plan") ||
       entitlements.includes("ultra-yearly-plan");
-    const hasTeam = entitlements.includes("team-plan");
+    const hasTeam =
+      entitlements.includes("team-plan") ||
+      entitlements.includes("pentestgpt-team-plan");
     const hasPro =
       entitlements.includes("pro-plan") ||
       entitlements.includes("pro-monthly-plan") ||
-      entitlements.includes("pro-yearly-plan");
+      entitlements.includes("pro-yearly-plan") ||
+      entitlements.includes("pentestgpt-pro-plan");
 
     let subscription: SubscriptionTier = "free";
     if (hasUltra) {

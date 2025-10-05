@@ -74,15 +74,19 @@ export async function GET(req: NextRequest) {
     // Compute a single subscription tier
     // Prefer normalized entitlements (e.g. "ultra-plan", "pro-plan", "team-plan") if present,
     // but maintain backward compatibility by also checking monthly/yearly variants.
+    // Also support pentestgpt migration entitlements
     const hasUltra =
       allEntitlements.includes("ultra-plan") ||
       allEntitlements.includes("ultra-monthly-plan") ||
       allEntitlements.includes("ultra-yearly-plan");
-    const hasTeam = allEntitlements.includes("team-plan");
+    const hasTeam =
+      allEntitlements.includes("team-plan") ||
+      allEntitlements.includes("pentestgpt-team-plan");
     const hasPro =
       allEntitlements.includes("pro-plan") ||
       allEntitlements.includes("pro-monthly-plan") ||
-      allEntitlements.includes("pro-yearly-plan");
+      allEntitlements.includes("pro-yearly-plan") ||
+      allEntitlements.includes("pentestgpt-pro-plan");
 
     const subscription: "free" | "pro" | "ultra" | "team" = hasUltra
       ? "ultra"

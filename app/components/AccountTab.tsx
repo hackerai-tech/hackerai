@@ -22,6 +22,52 @@ import DeleteAccountDialog from "./DeleteAccountDialog";
 const AccountTab = () => {
   const { subscription } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [migrationMessage, setMigrationMessage] = useState<{
+    type: "success" | "error";
+    text: string;
+  } | null>(null);
+
+  const handleMigratePentestGPT = async () => {
+    setIsMigrating(true);
+    setMigrationMessage(null);
+
+    try {
+      const response = await fetch("/api/migrate-pentestgpt", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setMigrationMessage({
+          type: "error",
+          text: data.message || data.error || "Migration failed",
+        });
+      } else {
+        setMigrationMessage({
+          type: "success",
+          text:
+            data.message ||
+            "Successfully migrated! Please refresh the page to see your new subscription.",
+        });
+        // Refresh the page after 2 seconds to update entitlements
+        setTimeout(() => {
+          window.location.href = "/?refresh=entitlements";
+        }, 2000);
+      }
+    } catch (error) {
+      setMigrationMessage({
+        type: "error",
+        text: "An unexpected error occurred during migration",
+      });
+    } finally {
+      setIsMigrating(false);
+    }
+  };
 
   const currentPlanFeatures =
     subscription === "team" ? teamFeatures : proFeatures;
@@ -96,6 +142,39 @@ const AccountTab = () => {
           </ul>
         </div>
       </div>
+
+      {/* Migrate from PentestGPT Section - Only show for Free users */}
+      {subscription === "free" && (
+        <div className="border-b pb-6">
+          <div className="flex items-center justify-between py-3">
+            <div>
+              <div className="font-medium">Migrate from PentestGPT</div>
+              <div className="text-sm text-muted-foreground mt-1">
+                Transfer your active PentestGPT subscription
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleMigratePentestGPT}
+              disabled={isMigrating}
+            >
+              {isMigrating ? "Migrating..." : "Migrate"}
+            </Button>
+          </div>
+          {migrationMessage && (
+            <div
+              className={`mt-3 p-3 rounded-md text-sm ${
+                migrationMessage.type === "success"
+                  ? "bg-green-50 text-green-800 dark:bg-green-900/20 dark:text-green-400"
+                  : "bg-red-50 text-red-800 dark:bg-red-900/20 dark:text-red-400"
+              }`}
+            >
+              {migrationMessage.text}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Payment Section - Only show for Pro users */}
       {subscription !== "free" && (
