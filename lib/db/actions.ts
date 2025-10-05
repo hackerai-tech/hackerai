@@ -5,7 +5,15 @@ import { ChatSDKError } from "../errors";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessage, UIMessagePart } from "ai";
 import { extractFileIdsFromParts } from "@/lib/utils/file-token-utils";
-import { truncateMessagesWithFileTokens } from "@/lib/utils/file-token-utils";
+import {
+  extractAllFileIdsFromMessages,
+  getFileTokensByIds,
+  truncateMessagesWithFileTokens,
+} from "@/lib/utils/file-token-utils";
+import {
+  countMessagesTokens,
+  getMaxTokensForSubscription,
+} from "@/lib/token-utils";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
@@ -131,7 +139,7 @@ export async function handleInitialChatAndUserMessage({
   }
 
   // Only save user message if this is not a regeneration
-  if (!regenerate) {
+  if (!regenerate && Array.isArray(messages) && messages.length > 0) {
     await saveMessage({
       chatId,
       userId,
@@ -231,11 +239,44 @@ export async function getMessagesByChatId({
     allMessages = [...existingMessages, ...newMessages];
   }
 
-  // Truncate messages to stay within token limit with file tokens included
   const truncatedMessages = await truncateMessagesWithFileTokens(
     allMessages,
     subscription,
   );
+
+  if (!truncatedMessages || truncatedMessages.length === 0) {
+    // Structured diagnostic log (no user content)
+    try {
+      const fileIds = extractAllFileIdsFromMessages(allMessages);
+      const fileTokens = await getFileTokensByIds(fileIds as any);
+      const maxTokens = getMaxTokensForSubscription(subscription);
+      const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
+      console.error("chat-truncation-empty", {
+        chatId,
+        userId,
+        isTemporary: !!isTemporary,
+        regenerate: !!regenerate,
+        subscription,
+        existingMessagesCount: existingMessages.length,
+        newMessagesCount: newMessages.length,
+        allMessagesCount: allMessages.length,
+        totalTokensBefore,
+        maxTokens,
+        fileIdsCount: fileIds.length,
+        fileTokensSample: Object.entries(fileTokens)
+          .slice(0, 5)
+          .map(([k, v]) => ({ fileId: k, tokens: v })),
+        largestFileToken: Object.values(fileTokens).length
+          ? Math.max(...Object.values(fileTokens))
+          : 0,
+      });
+    } catch {}
+
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Your input (including any attached files) is too large to process. Please remove some attachments or shorten your message and try again.",
+    );
+  }
 
   return { truncatedMessages, chat, isNewChat };
 }

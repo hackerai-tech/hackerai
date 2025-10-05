@@ -29,11 +29,11 @@ export const checkRateLimit = async (
         );
       } else if (subscription === "team") {
         requestLimit = parseInt(
-          process.env.TEAM_AGENT_MODE_RATE_LIMIT_REQUESTS || "60",
+          process.env.TEAM_AGENT_MODE_RATE_LIMIT_REQUESTS || "65",
         );
       } else {
         requestLimit = parseInt(
-          process.env.AGENT_MODE_RATE_LIMIT_REQUESTS || "30",
+          process.env.AGENT_MODE_RATE_LIMIT_REQUESTS || "45",
         );
       }
     } else {
