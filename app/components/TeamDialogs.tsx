@@ -401,14 +401,6 @@ export const InviteAcceptedDialog = ({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) => {
-  React.useEffect(() => {
-    if (open) {
-      console.log(
-        "[InviteAcceptedDialog] ✅ Dialog opened - user accepted team invite!",
-      );
-    }
-  }, [open]);
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
