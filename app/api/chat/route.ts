@@ -206,10 +206,13 @@ export async function POST(req: NextRequest) {
               const toolResults =
                 (lastStep && (lastStep as any).toolResults) || [];
               const wasMemoryUpdate =
-                Array.isArray(toolResults) && toolResults.some(r => r?.toolName === "update_memory");
+                Array.isArray(toolResults) &&
+                toolResults.some((r) => r?.toolName === "update_memory");
 
               if (!wasMemoryUpdate) {
-                return currentSystemPrompt ? { system: currentSystemPrompt } : {};
+                return currentSystemPrompt
+                  ? { system: currentSystemPrompt }
+                  : {};
               }
 
               // Refresh and cache the updated system prompt
