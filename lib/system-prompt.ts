@@ -90,6 +90,29 @@ const getInlineLineNumbersSection = (): string => `<inline_line_numbers>
 Code chunks that you receive (via tool calls or from user) may include inline line numbers in the form LINE_NUMBER|LINE_CONTENT. Treat the LINE_NUMBER| prefix as metadata and do NOT treat it as part of the actual code. LINE_NUMBER is right-aligned number padded with spaces to 6 characters.
 </inline_line_numbers>`;
 
+const getParallelToolCallsSection =
+  (): string => `<maximize_parallel_tool_calls>
+Security assessments often require sequential workflows due to dependencies (e.g., discover targets → scan ports → enumerate services → test vulnerabilities). However, when operations are truly independent, execute them concurrently for efficiency.
+
+USE PARALLEL tool calls when operations are genuinely independent:
+- Scanning multiple unrelated targets or subnets simultaneously
+- Running different reconnaissance tools on the same target (nmap + whatweb + wafw00f)
+- Testing multiple attack vectors that don't interfere with each other
+- Parallel subdomain enumeration or OSINT gathering
+- Concurrent log analysis or report generation from existing data
+- Reading multiple files or searching different directories
+
+USE SEQUENTIAL tool calls when there are dependencies:
+- Target discovery before port scanning
+- Service enumeration before vulnerability testing
+- Authentication before testing authenticated endpoints
+- Initial reconnaissance before targeted exploitation
+- WAF/IDS detection before launching attacks
+- Any operation where subsequent steps depend on prior results
+
+Before executing tools, carefully consider: Do these operations have dependencies, or are they truly independent? Default to sequential execution unless you're confident operations can run in parallel without issues. Limit parallel operations to 3-5 concurrent calls to avoid timeouts.
+</maximize_parallel_tool_calls>`;
+
 const getTaskManagementSection = (): string => `<todo_spec>
 Purpose: Use the todo_write tool to track and manage tasks.
 
@@ -131,8 +154,9 @@ Development Environment:
 - Golang 1.24.2 (commands: go)
 
 Pre-installed Tools:
-- curl, wget, nmap, iputils-ping, whois, traceroute, dnsutils, whatweb, wafw00f, subfinder, gobuster
-- SecLists is pre-installed in /home/user and should be used by default for any fuzzing or wordlist needs
+- Security: curl, wget, nmap, iputils-ping, whois, traceroute, dnsutils, whatweb, wafw00f, subfinder, gobuster
+- SecLists: pre-installed in /home/user and should be used by default for any fuzzing or wordlist needs
+- Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, odfpy, pandoc
 </sandbox_environment>`;
 
 const getToneAndFormattingSection = (): string => `<tone_and_formatting>
@@ -226,6 +250,7 @@ When using markdown in assistant messages, use backticks to format file, directo
     sections.push(getKnowledgeCutoffSection());
   } else {
     sections.push(getToolCallingSection(mode));
+    sections.push(getParallelToolCallsSection());
     sections.push(getContextUnderstandingSection(mode));
     sections.push(getMakingCodeChangesSection(mode));
     sections.push(getGeneralGuidelinesSection());

@@ -14,6 +14,7 @@ import { MessageErrorState } from "./MessageErrorState";
 import { MessageEditor } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { ShimmerText } from "./ShimmerText";
+import { AllFilesDialog } from "./AllFilesDialog";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import { toast } from "sonner";
+import { FileSearch } from "lucide-react";
 
 interface MessagesProps {
   messages: ChatMessage[];
@@ -50,6 +52,7 @@ interface MessagesProps {
   finishReason?: string;
   uploadStatus?: { message: string; isUploading: boolean } | null;
   mode?: "ask" | "agent";
+  chatTitle?: string | null;
 }
 
 export const Messages = ({
@@ -70,6 +73,7 @@ export const Messages = ({
   finishReason,
   uploadStatus,
   mode,
+  chatTitle,
 }: MessagesProps) => {
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
@@ -81,6 +85,9 @@ export const Messages = ({
 
   // Track edit state for messages
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+
+  // Track all files dialog state
+  const [showAllFilesDialog, setShowAllFilesDialog] = useState(false);
 
   // Handle feedback logic
   const {
@@ -149,6 +156,36 @@ export const Messages = ({
     (message: ChatMessage) => extractSavedFilesFromMessage(message as any),
     [],
   );
+
+  // Collect all files from assistant messages only for the dialog
+  const allFiles = useMemo(() => {
+    const files: Array<{
+      part: any;
+      partIndex: number;
+      messageId: string;
+    }> = [];
+
+    messages.forEach((message) => {
+      // Only include files from assistant messages
+      if (message.role === "assistant") {
+        const savedFiles = extractSavedFilesFromMessage(message as any);
+        savedFiles.forEach((file, fileIndex) => {
+          files.push({
+            part: {
+              url: file.downloadUrl,
+              name: file.filename,
+              filename: file.path,
+              mediaType: undefined,
+            },
+            partIndex: fileIndex,
+            messageId: message.id,
+          });
+        });
+      }
+    });
+
+    return files;
+  }, [messages]);
 
   // Handle scroll to load more messages when scrolling to top
   const handleScroll = useCallback(() => {
@@ -323,20 +360,54 @@ export const Messages = ({
               {/* Saved files from tools (shown after message content for assistant) */}
               {!isUser && savedFiles.length > 0 && (
                 <div className="mt-2 flex flex-wrap items-center gap-2 w-full">
-                  {savedFiles.map((file, fileIndex) => (
-                    <FilePartRenderer
-                      key={`${message.id}-saved-file-${fileIndex}`}
-                      part={{
-                        url: file.downloadUrl,
-                        name: file.filename,
-                        filename: file.path,
-                        mediaType: undefined,
-                      }}
-                      partIndex={fileIndex}
-                      messageId={message.id}
-                      totalFileParts={savedFiles.length}
-                    />
-                  ))}
+                  {savedFiles.length > 2 ? (
+                    <>
+                      {/* Show only last file when more than 2 */}
+                      <FilePartRenderer
+                        key={`${message.id}-saved-file-${savedFiles.length - 1}`}
+                        part={{
+                          url: savedFiles[savedFiles.length - 1].downloadUrl,
+                          name: savedFiles[savedFiles.length - 1].filename,
+                          filename: savedFiles[savedFiles.length - 1].path,
+                          mediaType: undefined,
+                        }}
+                        partIndex={savedFiles.length - 1}
+                        messageId={message.id}
+                        totalFileParts={savedFiles.length}
+                      />
+                      {/* View all files button */}
+                      <button
+                        onClick={() => setShowAllFilesDialog(true)}
+                        className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
+                        type="button"
+                        aria-label="View all files"
+                      >
+                        <FileSearch
+                          className="w-4 h-4 text-muted-foreground"
+                          strokeWidth={2}
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          View all files in this task
+                        </span>
+                      </button>
+                    </>
+                  ) : (
+                    /* Show all files when 2 or less */
+                    savedFiles.map((file, fileIndex) => (
+                      <FilePartRenderer
+                        key={`${message.id}-saved-file-${fileIndex}`}
+                        part={{
+                          url: file.downloadUrl,
+                          name: file.filename,
+                          filename: file.path,
+                          mediaType: undefined,
+                        }}
+                        partIndex={fileIndex}
+                        messageId={message.id}
+                        totalFileParts={savedFiles.length}
+                      />
+                    ))
+                  )}
                 </div>
               )}
 
@@ -416,6 +487,14 @@ export const Messages = ({
         {/* Error state */}
         {error && <MessageErrorState error={error} onRetry={onRetry} />}
       </div>
+
+      {/* All Files Dialog */}
+      <AllFilesDialog
+        open={showAllFilesDialog}
+        onOpenChange={setShowAllFilesDialog}
+        files={allFiles}
+        chatTitle={chatTitle}
+      />
     </div>
   );
 };
