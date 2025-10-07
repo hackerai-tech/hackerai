@@ -169,8 +169,9 @@ E2B_API_KEY=${envVars.E2B_API_KEY}
 # OPTIONAL CONFIGURATIONS
 # =============================================================================
 
-# Web Search API Key (Optional - enables web search functionality)
+# Web Search and URL Content Retrieval
 # EXA_API_KEY=your_exa_api_key_here
+# JINA_API_KEY=your_jina_api_key_here
 
 # Rate Limiting (Upstash Redis)
 # UPSTASH_REDIS_REST_URL="https://your-redis-url.upstash.io"
