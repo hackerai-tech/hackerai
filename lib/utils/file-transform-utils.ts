@@ -43,21 +43,24 @@ async function convertUrlToBase64DataUrl(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
 
-    const response = await fetch(url, {
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      console.error(`Failed to fetch file (${response.status}): ${url}`);
-      return url;
+      if (!response.ok) {
+        console.error(`Failed to fetch file (${response.status}): ${url}`);
+        return url;
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const base64Data = buffer.toString("base64");
+
+      return `data:${mediaType};base64,${base64Data}`;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const base64Data = buffer.toString("base64");
-
-    return `data:${mediaType};base64,${base64Data}`;
   } catch (error) {
     console.error("Failed to convert file to base64:", {
       url,
