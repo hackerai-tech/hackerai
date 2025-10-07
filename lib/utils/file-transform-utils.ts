@@ -40,8 +40,16 @@ async function convertUrlToBase64DataUrl(
   if (!url) return url;
 
   try {
-    const response = await fetch(url);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+    const response = await fetch(url, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
+      console.error(`Failed to fetch file (${response.status}): ${url}`);
       return url;
     }
 
@@ -51,7 +59,11 @@ async function convertUrlToBase64DataUrl(
 
     return `data:${mediaType};base64,${base64Data}`;
   } catch (error) {
-    console.error("Failed to convert file to base64:", error);
+    console.error("Failed to convert file to base64:", {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+    });
     return url;
   }
 }
@@ -192,7 +204,19 @@ export async function processMessageFiles(
 
       let finalUrl = file.url;
       if (file.mediaType === "application/pdf") {
-        finalUrl = await convertUrlToBase64DataUrl(file.url, "application/pdf");
+        try {
+          finalUrl = await convertUrlToBase64DataUrl(
+            file.url,
+            "application/pdf",
+          );
+        } catch (error) {
+          console.error("Error converting PDF to base64, using original URL:", {
+            fileId,
+            url: file.url,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // Continue with original URL if conversion fails
+        }
       }
 
       // Update all file parts with the final URL
@@ -228,9 +252,13 @@ export async function processMessageFiles(
       containsPdfFiles,
     };
   } catch (error) {
-    console.error("Failed to transform file URLs:", error);
+    console.error("Failed to transform file URLs:", {
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+    });
+    // Return processed messages even if some transformations failed
     return {
-      messages,
+      messages: updatedMessages,
       hasMediaFiles,
       sandboxFiles: [],
       containsPdfFiles: false,
@@ -331,7 +359,12 @@ async function addDocumentContentToMessages(
       }
     }
   } catch (error) {
-    console.error("Failed to fetch and add document content:", error);
+    console.error("Failed to fetch and add document content:", {
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+      fileIds,
+    });
+    // Continue processing without document content
   }
 }
 
