@@ -361,8 +361,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }, 0);
   }, [uploadedFiles]);
 
-  // Check if any files are currently uploading
-  const isUploadingFiles = uploadedFiles.some((file) => file.uploading);
+  // Check if any files are currently uploading or have errors
+  const isUploadingFiles = uploadedFiles.some(
+    (file) => file.uploading || file.error,
+  );
 
   const addUploadedFile = useCallback((file: UploadedFileState) => {
     setUploadedFiles((prev) => [...prev, file]);

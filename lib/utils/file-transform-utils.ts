@@ -40,18 +40,33 @@ async function convertUrlToBase64DataUrl(
   if (!url) return url;
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      return url;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        console.error(`Failed to fetch file (${response.status}): ${url}`);
+        return url;
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const base64Data = buffer.toString("base64");
+
+      return `data:${mediaType};base64,${base64Data}`;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    const arrayBuffer = await response.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const base64Data = buffer.toString("base64");
-
-    return `data:${mediaType};base64,${base64Data}`;
   } catch (error) {
-    console.error("Failed to convert file to base64:", error);
+    console.error("Failed to convert file to base64:", {
+      url,
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+    });
     return url;
   }
 }
@@ -77,13 +92,14 @@ export async function processMessageFiles(
   sandboxFiles: SandboxFile[];
   containsPdfFiles: boolean;
 }> {
-  if (!messages.length)
+  if (!messages.length) {
     return {
       messages,
       hasMediaFiles: false,
       sandboxFiles: [],
       containsPdfFiles: false,
     };
+  }
 
   // Create a deep copy to avoid mutation
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
@@ -192,7 +208,19 @@ export async function processMessageFiles(
 
       let finalUrl = file.url;
       if (file.mediaType === "application/pdf") {
-        finalUrl = await convertUrlToBase64DataUrl(file.url, "application/pdf");
+        try {
+          finalUrl = await convertUrlToBase64DataUrl(
+            file.url,
+            "application/pdf",
+          );
+        } catch (error) {
+          console.error("Error converting PDF to base64, using original URL:", {
+            fileId,
+            url: file.url,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          // Continue with original URL if conversion fails
+        }
       }
 
       // Update all file parts with the final URL
@@ -228,17 +256,19 @@ export async function processMessageFiles(
       containsPdfFiles,
     };
   } catch (error) {
-    console.error("Failed to transform file URLs:", error);
+    console.error("Failed to transform file URLs:", {
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+    });
+    // Return processed messages even if some transformations failed
     return {
-      messages,
+      messages: updatedMessages,
       hasMediaFiles,
       sandboxFiles: [],
       containsPdfFiles: false,
     };
   }
 }
-
-// removed convertPdfToBase64Url in favor of convertUrlToBase64DataUrl
 
 /**
  * Adds document content to the specific messages where files were attached and removes those file parts
@@ -265,14 +295,21 @@ async function addDocumentContentToMessages(
 
     // Create a map of fileId to content
     const fileContentMap = new Map<string, { name: string; content: string }>();
-    for (const file of fileContents) {
-      if (file.content !== null) {
-        fileContentMap.set(file.id, { name: file.name, content: file.content });
-      }
-    }
+    const unprocessableFiles = new Map<
+      string,
+      { name: string; reason: string }
+    >();
 
-    if (fileContentMap.size === 0) {
-      return;
+    for (const file of fileContents) {
+      if (file.content !== null && file.content.trim().length > 0) {
+        fileContentMap.set(file.id, { name: file.name, content: file.content });
+      } else {
+        unprocessableFiles.set(file.id, {
+          name: file.name,
+          reason:
+            "This file has no readable text content. If you need to process this file, please use agent mode where you can use terminal tools to analyze binary or complex file formats.",
+        });
+      }
     }
 
     // Process each message and add document content where files exist
@@ -285,27 +322,38 @@ async function addDocumentContentToMessages(
         content: string;
       }> = [];
       const fileIdsToRemove = new Set<string>();
+      const unprocessableFilesForThisMessage: Array<{
+        name: string;
+        reason: string;
+      }> = [];
 
       // Collect all documents from file parts in this message
       for (const part of message.parts as any[]) {
-        if (
-          part.type === "file" &&
-          part.fileId &&
-          fileContentMap.has(part.fileId)
-        ) {
-          const fileData = fileContentMap.get(part.fileId)!;
-          documentsForThisMessage.push({
-            id: part.fileId,
-            name: fileData.name,
-            content: fileData.content,
-          });
-          fileIdsToRemove.add(part.fileId);
+        if (part.type === "file" && part.fileId) {
+          // Check if it's an unprocessable file
+          if (unprocessableFiles.has(part.fileId)) {
+            const fileInfo = unprocessableFiles.get(part.fileId)!;
+
+            unprocessableFilesForThisMessage.push(fileInfo);
+            fileIdsToRemove.add(part.fileId);
+          } else if (fileContentMap.has(part.fileId)) {
+            const fileData = fileContentMap.get(part.fileId)!;
+
+            documentsForThisMessage.push({
+              id: part.fileId,
+              name: fileData.name,
+              content: fileData.content,
+            });
+            fileIdsToRemove.add(part.fileId);
+          }
         }
       }
 
-      // If there are documents for this message, add them and remove file parts
+      // Build content to add to message
+      let contentToAdd = "";
+
+      // Add document content if there are processable files
       if (documentsForThisMessage.length > 0) {
-        // Format documents
         const documents = documentsForThisMessage
           .map((file) => {
             return `<document id="${file.id}">
@@ -315,15 +363,36 @@ async function addDocumentContentToMessages(
           })
           .join("\n\n");
 
-        const documentContent = `<documents>\n${documents}\n</documents>`;
+        contentToAdd = `<documents>\n${documents}\n</documents>`;
+      }
 
-        // Add document content as the first part of this message
+      // Add notice about unprocessable files
+      if (unprocessableFilesForThisMessage.length > 0) {
+        const notices = unprocessableFilesForThisMessage
+          .map(
+            (file) => `<document>
+<source>${file.name}</source>
+<document_content>${file.reason}</document_content>
+</document>`,
+          )
+          .join("\n\n");
+
+        if (contentToAdd) {
+          contentToAdd += "\n\n" + notices;
+        } else {
+          contentToAdd = `<documents>\n${notices}\n</documents>`;
+        }
+      }
+
+      // Add the content and remove file parts
+      if (contentToAdd) {
+        // Add content as the first part of this message
         message.parts.unshift({
           type: "text",
-          text: documentContent,
+          text: contentToAdd,
         });
 
-        // Remove the file parts that were converted to documents
+        // Remove the file parts that were processed
         message.parts = message.parts.filter((part: any) => {
           if (part.type !== "file") return true;
           return !fileIdsToRemove.has(part.fileId);
@@ -331,7 +400,12 @@ async function addDocumentContentToMessages(
       }
     }
   } catch (error) {
-    console.error("Failed to fetch and add document content:", error);
+    console.error("Failed to fetch and add document content:", {
+      error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+      fileIds,
+    });
+    // Continue processing without document content
   }
 }
 

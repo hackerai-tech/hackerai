@@ -71,4 +71,5 @@ export type SupportedFileType = "pdf" | "csv" | "json" | "txt" | "md" | "docx";
 export interface ProcessFileOptions {
   fileType: SupportedFileType;
   prepend?: string; // For markdown files
+  fileName?: string; // For file type detection (e.g., .doc vs .docx)
 }
