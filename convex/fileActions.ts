@@ -6,6 +6,8 @@ import { countTokens } from "gpt-tokenizer";
 import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
 import { JSONLoader } from "langchain/document_loaders/fs/json";
+import mammoth from "mammoth";
+import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
 import { internal } from "./_generated/api";
 import type {
@@ -37,7 +39,7 @@ const validateTokenLimit = (
 
 /**
  * Unified file processing function that supports all file types
- * @param file - The file as a Blob or string (for DOCX)
+ * @param file - The file as a Blob
  * @param options - Processing options including file type and optional prepend text
  * @returns Promise<FileItemChunk[]> - Array of processed file chunks
  */
@@ -65,7 +67,7 @@ const processFile = async (
         return await processMarkdownFile(file as Blob, prepend);
 
       case "docx":
-        return await processDocxFile(file as string);
+        return await processDocxFile(file as Blob, options.fileName);
 
       default: {
         // Check if the original file is binary before text conversion
@@ -90,11 +92,8 @@ const processFile = async (
       }
     }
   } catch (error) {
-    throw new Error(
-      `Failed to process ${fileType} file: ${
-        error instanceof Error ? error.message : "Unknown error"
-      }`,
-    );
+    // Throw clean error message without wrapping
+    throw error;
   }
 };
 
@@ -145,6 +144,7 @@ const detectFileType = (
       case "markdown":
         return "md";
       case "docx":
+      case "doc":
         return "docx";
     }
   }
@@ -154,7 +154,7 @@ const detectFileType = (
 
 /**
  * Process file with auto-detection of file type and comprehensive fallback handling
- * @param file - The file as a Blob or string (for DOCX)
+ * @param file - The file as a Blob
  * @param fileName - Optional file name for type detection
  * @param mediaType - Optional media type for additional checks
  * @param prepend - Optional prepend text for markdown files
@@ -178,26 +178,20 @@ const processFileAuto = async (
   }
 
   try {
-    let fileType: SupportedFileType;
-
-    if (typeof file === "string") {
-      // Assume it's a DOCX file if string input
-      fileType = "docx";
-    } else {
-      const detectedType = detectFileType(file, fileName);
-      if (!detectedType) {
-        // Use default processing for unknown file types
-        const chunks = await processFile(file, {
-          fileType: "unknown" as any,
-          prepend,
-        });
-        validateTokenLimit(chunks, fileName || "unknown");
-        return chunks;
-      }
-      fileType = detectedType;
+    const detectedType = detectFileType(file as Blob, fileName);
+    if (!detectedType) {
+      // Use default processing for unknown file types
+      const chunks = await processFile(file, {
+        fileType: "unknown" as any,
+        prepend,
+        fileName,
+      });
+      validateTokenLimit(chunks, fileName || "unknown");
+      return chunks;
     }
+    const fileType = detectedType;
 
-    const chunks = await processFile(file, { fileType, prepend });
+    const chunks = await processFile(file, { fileType, prepend, fileName });
     validateTokenLimit(chunks, fileName || "unknown");
     return chunks;
   } catch (error) {
@@ -334,13 +328,44 @@ const processMarkdownFile = async (
   ];
 };
 
-const processDocxFile = async (text: string): Promise<FileItemChunk[]> => {
-  return [
-    {
-      content: text,
-      tokens: countTokens(text),
-    },
-  ];
+const processDocxFile = async (
+  docx: Blob,
+  fileName?: string,
+): Promise<FileItemChunk[]> => {
+  try {
+    // Determine file type based on extension
+    const extension = fileName?.toLowerCase().split(".").pop();
+    const isLegacyDoc = extension === "doc";
+
+    // Convert Blob to Buffer
+    const buffer = Buffer.from(await docx.arrayBuffer());
+
+    let completeText = "";
+
+    if (isLegacyDoc) {
+      // Use word-extractor for .doc files
+      const extractor = new WordExtractor();
+      const extracted = await extractor.extract(buffer);
+      completeText = extracted.getBody();
+    } else {
+      // Use mammoth for .docx files
+      const result = await mammoth.extractRawText({ buffer });
+      completeText = result.value;
+    }
+
+    const tokens = countTokens(completeText);
+
+    return [
+      {
+        content: completeText,
+        tokens,
+      },
+    ];
+  } catch (error) {
+    // Throw clean, user-friendly error message
+    const errorMsg = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(errorMsg);
+  }
 };
 
 /**
@@ -386,13 +411,15 @@ export const saveFile = action({
     const fileUrl = await ctx.storage.getUrl(args.storageId);
 
     if (!fileUrl) {
-      throw new Error("File not found in storage");
+      throw new Error(
+        `Failed to upload ${args.name}: File not found in storage`,
+      );
     }
 
     const response = await fetch(fileUrl);
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch file: ${response.statusText}`);
+      throw new Error(`Failed to upload ${args.name}: ${response.statusText}`);
     }
 
     const file = await response.blob();
@@ -427,15 +454,16 @@ export const saveFile = action({
           `Token limit exceeded for file "${args.name}". Deleting storage object.`,
         );
         await ctx.storage.delete(args.storageId);
-        throw error; // Re-throw the token limit error
+        throw error; // Re-throw the token limit error (already includes file name)
       }
 
-      // For any other unexpected errors, delete storage and re-throw
+      // For any other unexpected errors, delete storage and wrap with file name
       console.error(
         `Unexpected error processing file "${args.name}". Deleting storage object.`,
       );
       await ctx.storage.delete(args.storageId);
-      throw error;
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      throw new Error(`Failed to upload ${args.name}: ${errorMsg}`);
     }
 
     // Use internal mutation to save to database

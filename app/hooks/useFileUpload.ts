@@ -210,15 +210,19 @@ export const useFileUpload = () => {
       }
     } catch (error) {
       console.error("Failed to upload file:", error);
+
+      const errorMessage =
+        error instanceof Error ? error.message : "Upload failed";
+
       // Update the upload state to error
       updateUploadedFile(uploadIndex, {
         uploading: false,
         uploaded: false,
-        error: error instanceof Error ? error.message : "Upload failed",
+        error: errorMessage,
       });
-      toast.error(
-        `Failed to upload ${file.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+
+      // Backend already wraps error with file name
+      toast.error(errorMessage);
     }
   };
 

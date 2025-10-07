@@ -101,7 +101,13 @@ export const FileUploadPreview = ({
                 className="group text-token-text-primary relative inline-block text-sm"
               >
                 <div
-                  className={`relative overflow-hidden border rounded-2xl ${isImageFile(filePreview.file) ? "bg-background" : "bg-primary"}`}
+                  className={`relative overflow-hidden border rounded-2xl ${
+                    filePreview.error
+                      ? "border-red-500 border-2 bg-red-50 dark:bg-red-950/20"
+                      : isImageFile(filePreview.file)
+                        ? "bg-background"
+                        : "bg-primary"
+                  }`}
                 >
                   <div
                     className={
@@ -117,14 +123,34 @@ export const FileUploadPreview = ({
                         <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-foreground"></div>
                       </div>
                     ) : filePreview.error ? (
-                      <div className="h-full w-full flex items-center justify-center bg-red-50 dark:bg-red-950">
-                        <div className="flex flex-col items-center gap-2 p-2">
-                          <X className="h-6 w-6 text-red-500" />
-                          <span className="text-xs text-red-600 dark:text-red-400 text-center">
-                            Upload failed
-                          </span>
+                      isImageFile(filePreview.file) ? (
+                        <div className="h-full w-full flex items-center justify-center min-h-[100px]">
+                          <div className="flex flex-col items-center gap-2 p-3">
+                            <div className="rounded-full bg-red-500 p-2">
+                              <X className="h-5 w-5 text-white" />
+                            </div>
+                            <span className="text-xs font-semibold text-red-600 dark:text-red-400 text-center">
+                              Upload failed
+                            </span>
+                          </div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className="p-2 w-80">
+                          <div className="flex flex-row items-center gap-2">
+                            <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center bg-red-500">
+                              <X className="h-6 w-6 text-white" />
+                            </div>
+                            <div className="overflow-hidden flex-1">
+                              <div className="truncate font-semibold text-sm">
+                                {filePreview.file.name}
+                              </div>
+                              <div className="text-red-600 dark:text-red-400 font-medium text-xs">
+                                Upload failed
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )
                     ) : filePreview.preview ? (
                       <button
                         className="h-full w-full overflow-hidden relative"
@@ -148,9 +174,13 @@ export const FileUploadPreview = ({
                         )}
                       </button>
                     ) : (
-                      <div className="p-2 w-80 border rounded-lg">
+                      <div className="p-2 w-80">
                         <div className="flex flex-row items-center gap-2">
-                          <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-lg bg-[#FF5588] flex items-center justify-center">
+                          <div
+                            className={`relative h-10 w-10 shrink-0 overflow-hidden rounded-lg flex items-center justify-center ${
+                              filePreview.error ? "bg-red-500" : "bg-[#FF5588]"
+                            }`}
+                          >
                             {filePreview.uploading ? (
                               <Loader2 className="h-6 w-6 text-white animate-spin" />
                             ) : filePreview.error ? (
@@ -159,11 +189,17 @@ export const FileUploadPreview = ({
                               <File className="h-6 w-6 text-white" />
                             )}
                           </div>
-                          <div className="overflow-hidden">
+                          <div className="overflow-hidden flex-1">
                             <div className="truncate font-semibold text-sm">
                               {filePreview.file.name}
                             </div>
-                            <div className="text-muted-foreground truncate text-xs">
+                            <div
+                              className={`truncate text-xs ${
+                                filePreview.error
+                                  ? "text-red-600 dark:text-red-400 font-medium"
+                                  : "text-muted-foreground"
+                              }`}
+                            >
                               {filePreview.error
                                 ? "Upload failed"
                                 : `Document • ${formatFileSize(filePreview.file.size)}`}

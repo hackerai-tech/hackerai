@@ -387,7 +387,11 @@ export const ChatInput = ({
                     </TooltipTrigger>
                     <TooltipContent>
                       <p>
-                        {isUploadingFiles ? "File upload pending" : "Send (⏎)"}
+                        {uploadedFiles.some((f) => f.error)
+                          ? "Remove failed files to send"
+                          : isUploadingFiles
+                            ? "File upload pending"
+                            : "Send (⏎)"}
                       </p>
                     </TooltipContent>
                   </TooltipPrimitive.Root>
