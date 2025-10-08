@@ -37,6 +37,7 @@ You'll need the following accounts:
 **Optional:**
 
 - [Exa](https://exa.ai/) - Web search functionality
+- [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Upstash Redis](https://upstash.com/) - Rate limiting
 - [PostHog](https://posthog.com/) - Analytics
 - [Stripe](https://stripe.com/) - Payment processing

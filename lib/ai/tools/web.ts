@@ -2,9 +2,10 @@ import { tool } from "ai";
 import { z } from "zod";
 import Exa from "exa-js";
 import { ToolContext } from "@/types";
+import { truncateContent } from "@/lib/token-utils";
 
 /**
- * Web tool using Exa API
+ * Web tool using Exa API for search and Jina AI for URL content retrieval
  * Provides search and URL opening capabilities
  */
 export const createWebTool = (context: ToolContext) => {
@@ -55,9 +56,8 @@ open_url(url: str) Opens the given URL and displays it.`,
       url?: string;
     }) => {
       try {
-        const exa = new Exa(process.env.EXA_API_KEY);
-
         if (command === "search") {
+          const exa = new Exa(process.env.EXA_API_KEY);
           if (!query) {
             return "Error: Query is required for search command";
           }
@@ -93,15 +93,37 @@ open_url(url: str) Opens the given URL and displays it.`,
             return "Error: URL is required for open_url command";
           }
 
-          const results = await exa.getContents([url], {
-            text: { maxCharacters: 12000 },
+          if (!process.env.JINA_API_KEY) {
+            throw new Error("JINA_API_KEY environment variable is not set");
+          }
+
+          // Construct the Jina AI reader URL with proper encoding
+          const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
+
+          // Make the request to Jina AI reader
+          const response = await fetch(jinaUrl, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${process.env.JINA_API_KEY}`,
+              "X-Timeout": "30",
+              "X-Base": "final",
+            },
           });
-          return results.results;
+
+          if (!response.ok) {
+            const errorBody = await response.text();
+            return `Error: HTTP ${response.status} - ${errorBody}`;
+          }
+
+          const content = await response.text();
+
+          // Truncate content to 4096 tokens
+          return truncateContent(content);
         }
 
         return "Error: Invalid command";
       } catch (error) {
-        console.error("Exa web tool error:", error);
+        console.error("Web tool error:", error);
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error occurred";
         return `Error performing web operation: ${errorMessage}`;
