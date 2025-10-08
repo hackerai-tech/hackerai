@@ -97,8 +97,8 @@ open_url(url: str) Opens the given URL and displays it.`,
             throw new Error("JINA_API_KEY environment variable is not set");
           }
 
-          // Construct the Jina AI reader URL
-          const jinaUrl = `https://r.jina.ai/${url}`;
+          // Construct the Jina AI reader URL with proper encoding
+          const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
 
           // Make the request to Jina AI reader
           const response = await fetch(jinaUrl, {
