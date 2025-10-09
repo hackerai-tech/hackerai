@@ -6,6 +6,8 @@ import { getStreamContext } from "../../route";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 
+export const maxDuration = 500;
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },

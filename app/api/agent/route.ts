@@ -30,33 +30,11 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { after } from "next/server";
-import { createResumableStreamContext } from "resumable-stream";
 import { setActiveStreamId } from "@/lib/db/actions";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
+import { getStreamContext } from "../chat/route";
 
-export const maxDuration = 60;
-
-let globalStreamContext: any | null = null;
-export function getStreamContext() {
-  if (!globalStreamContext) {
-    try {
-      globalStreamContext = createResumableStreamContext({ waitUntil: after });
-    } catch (error: any) {
-      if (
-        typeof error?.message === "string" &&
-        error.message.includes("REDIS_URL")
-      ) {
-        console.log(
-          " > Resumable streams are disabled due to missing REDIS_URL",
-        );
-      } else {
-        console.warn("Resumable stream context init failed:", error);
-      }
-    }
-  }
-  return globalStreamContext;
-}
+export const maxDuration = 500;
 
 export async function POST(req: NextRequest) {
   try {
