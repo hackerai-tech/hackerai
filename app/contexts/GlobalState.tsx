@@ -111,6 +111,10 @@ interface GlobalStateType {
   teamWelcomeDialogOpen: boolean;
   setTeamWelcomeDialogOpen: (open: boolean) => void;
 
+  // PentestGPT migration confirm dialog state
+  migrateFromPentestgptDialogOpen: boolean;
+  setMigrateFromPentestgptDialogOpen: (open: boolean) => void;
+
   // Register a chat reset function that will be invoked on initializeNewChat
   setChatReset: (fn: (() => void) | null) => void;
 }
@@ -186,6 +190,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get("team-welcome") === "true";
   });
+
+  // Initialize PentestGPT migration confirm dialog from URL parameter
+  const [migrateFromPentestgptDialogOpen, setMigrateFromPentestgptDialogOpen] =
+    useState(() => {
+      if (typeof window === "undefined") return false;
+      const urlParams = new URLSearchParams(window.location.search);
+      return urlParams.get("confirm-migrate-pentestgpt") === "true";
+    });
 
   useEffect(() => {
     // Save state on desktop
@@ -346,6 +358,25 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     };
   }, [teamWelcomeDialogOpen]);
 
+  // Listen for URL changes to sync PentestGPT migration confirm dialog state
+  useEffect(() => {
+    const handleUrlChange = () => {
+      if (typeof window === "undefined") return;
+      const urlParams = new URLSearchParams(window.location.search);
+      const shouldOpen = urlParams.get("confirm-migrate-pentestgpt") === "true";
+
+      if (migrateFromPentestgptDialogOpen !== shouldOpen) {
+        setMigrateFromPentestgptDialogOpen(shouldOpen);
+      }
+    };
+
+    window.addEventListener("popstate", handleUrlChange);
+
+    return () => {
+      window.removeEventListener("popstate", handleUrlChange);
+    };
+  }, [migrateFromPentestgptDialogOpen]);
+
   const clearInput = () => {
     setInput("");
   };
@@ -463,6 +494,24 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, []);
 
+  // Custom setter for PentestGPT migration confirm dialog that also updates URL
+  const setMigrateFromPentestgptDialogOpenWithUrl = useCallback(
+    (open: boolean) => {
+      setMigrateFromPentestgptDialogOpen(open);
+
+      if (typeof window !== "undefined") {
+        const url = new URL(window.location.href);
+        if (open) {
+          url.searchParams.set("confirm-migrate-pentestgpt", "true");
+        } else {
+          url.searchParams.delete("confirm-migrate-pentestgpt");
+        }
+        window.history.replaceState({}, "", url.toString());
+      }
+    },
+    [],
+  );
+
   const value: GlobalStateType = {
     input,
     setInput,
@@ -518,6 +567,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     teamWelcomeDialogOpen,
     setTeamWelcomeDialogOpen: setTeamWelcomeDialogOpenWithUrl,
+
+    migrateFromPentestgptDialogOpen,
+    setMigrateFromPentestgptDialogOpen:
+      setMigrateFromPentestgptDialogOpenWithUrl,
 
     setChatReset,
   };

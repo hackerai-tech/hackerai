@@ -11,6 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
 import { X, ChevronDown } from "lucide-react";
 import {
   proFeatures,
@@ -20,8 +21,9 @@ import {
 import DeleteAccountDialog from "./DeleteAccountDialog";
 
 const AccountTab = () => {
-  const { subscription } = useGlobalState();
+  const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const { isMigrating } = usePentestgptMigration();
 
   const currentPlanFeatures =
     subscription === "team" ? teamFeatures : proFeatures;
@@ -30,9 +32,13 @@ const AccountTab = () => {
     redirectToBillingPortal();
   };
 
+  const handleOpenMigrateConfirm = () => {
+    if (isMigrating) return;
+    setMigrateFromPentestgptDialogOpen(true);
+  };
+
   return (
     <div className="space-y-6 min-h-0">
-      {/* Subscription Section */}
       <div className="border-b py-2">
         <div className="flex items-center justify-between">
           <div>
@@ -97,7 +103,27 @@ const AccountTab = () => {
         </div>
       </div>
 
-      {/* Payment Section - Only show for Pro users */}
+      {subscription === "free" && (
+        <div className="border-b pb-6">
+          <div className="flex items-center justify-between py-3">
+            <div>
+              <div className="font-medium">Migrate from PentestGPT</div>
+              <div className="text-sm text-muted-foreground mt-1">
+                Transfer your active PentestGPT subscription
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleOpenMigrateConfirm}
+              disabled={isMigrating}
+            >
+              {isMigrating ? "Migrating..." : "Migrate"}
+            </Button>
+          </div>
+        </div>
+      )}
+
       {subscription !== "free" && (
         <div>
           <div className="space-y-4">
