@@ -9,8 +9,10 @@ import { Chat } from "./components/chat";
 import PricingDialog from "./components/PricingDialog";
 import TeamPricingDialog from "./components/TeamPricingDialog";
 import { TeamWelcomeDialog } from "./components/TeamDialogs";
+import MigratePentestgptDialog from "./components/MigratePentestgptDialog";
 import { usePricingDialog } from "./hooks/usePricingDialog";
 import { useGlobalState } from "./contexts/GlobalState";
+import { usePentestgptMigration } from "./hooks/usePentestgptMigration";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
@@ -78,9 +80,11 @@ export default function Page() {
     setTeamPricingDialogOpen,
     teamWelcomeDialogOpen,
     setTeamWelcomeDialogOpen,
+    migrateFromPentestgptDialogOpen,
+    setMigrateFromPentestgptDialogOpen,
   } = useGlobalState();
 
-  // Read initial values from URL for team pricing dialog
+  const { isMigrating, migrate } = usePentestgptMigration();
   const { initialSeats, initialPlan } = React.useMemo(() => {
     if (typeof window === "undefined") {
       return { initialSeats: 5, initialPlan: "monthly" as const };
@@ -89,7 +93,6 @@ export default function Page() {
     const urlSeats = urlParams.get("numSeats");
     const urlPlan = urlParams.get("selectedPlan");
 
-    // Validate and parse seats with fallback to 5 if NaN or less than 1
     let seats = 5;
     if (urlSeats) {
       const parsed = parseInt(urlSeats, 10);
@@ -98,7 +101,6 @@ export default function Page() {
       }
     }
 
-    // Normalize plan to either "monthly" or "yearly"
     const plan = (urlPlan === "yearly" ? "yearly" : "monthly") as
       | "monthly"
       | "yearly";
@@ -127,6 +129,12 @@ export default function Page() {
       <TeamWelcomeDialog
         open={teamWelcomeDialogOpen}
         onOpenChange={setTeamWelcomeDialogOpen}
+      />
+      <MigratePentestgptDialog
+        open={migrateFromPentestgptDialogOpen}
+        onOpenChange={setMigrateFromPentestgptDialogOpen}
+        isMigrating={isMigrating}
+        onConfirm={migrate}
       />
     </>
   );

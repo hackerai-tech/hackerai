@@ -11,6 +11,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
 import { X, ChevronDown } from "lucide-react";
 import {
   proFeatures,
@@ -20,65 +21,9 @@ import {
 import DeleteAccountDialog from "./DeleteAccountDialog";
 
 const AccountTab = () => {
-  const { subscription } = useGlobalState();
+  const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
-  const [isMigrating, setIsMigrating] = useState(false);
-  const [migrationMessage, setMigrationMessage] = useState<{
-    type: "success" | "error";
-    text: string;
-  } | null>(null);
-
-  const handleMigratePentestGPT = async () => {
-    setIsMigrating(true);
-    setMigrationMessage(null);
-
-    try {
-      const response = await fetch("/api/migrate-pentestgpt", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setMigrationMessage({
-          type: "error",
-          text: data.message || data.error || "Migration failed",
-        });
-      } else {
-        setMigrationMessage({
-          type: "success",
-          text: "Migration complete. Updating your account...",
-        });
-
-        // Trigger entitlement refresh via URL param and optionally open team welcome
-        try {
-          const url = new URL(window.location.href);
-          url.searchParams.set("refresh", "entitlements");
-          if (data?.showTeamWelcome) {
-            url.searchParams.set("team-welcome", "true");
-          }
-          window.location.replace(url.toString());
-        } catch (error) {
-          console.error("Failed to update URL for entitlement refresh:", error);
-          // Fallback: hit the entitlements endpoint and reload
-          try {
-            await fetch("/api/entitlements", { credentials: "include" });
-          } catch {}
-          window.location.reload();
-        }
-      }
-    } catch (error) {
-      setMigrationMessage({
-        type: "error",
-        text: "An unexpected error occurred during migration",
-      });
-    } finally {
-      setIsMigrating(false);
-    }
-  };
+  const { isMigrating } = usePentestgptMigration();
 
   const currentPlanFeatures =
     subscription === "team" ? teamFeatures : proFeatures;
@@ -87,9 +32,13 @@ const AccountTab = () => {
     redirectToBillingPortal();
   };
 
+  const handleOpenMigrateConfirm = () => {
+    if (isMigrating) return;
+    setMigrateFromPentestgptDialogOpen(true);
+  };
+
   return (
     <div className="space-y-6 min-h-0">
-      {/* Subscription Section */}
       <div className="border-b py-2">
         <div className="flex items-center justify-between">
           <div>
@@ -154,7 +103,6 @@ const AccountTab = () => {
         </div>
       </div>
 
-      {/* Migrate from PentestGPT Section - Only show for Free users */}
       {subscription === "free" && (
         <div className="border-b pb-6">
           <div className="flex items-center justify-between py-3">
@@ -167,27 +115,15 @@ const AccountTab = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={handleMigratePentestGPT}
+              onClick={handleOpenMigrateConfirm}
               disabled={isMigrating}
             >
               {isMigrating ? "Migrating..." : "Migrate"}
             </Button>
           </div>
-          {migrationMessage && (
-            <div
-              className={`mt-3 p-3 rounded-md text-sm ${
-                migrationMessage.type === "success"
-                  ? "bg-green-50 text-green-800 dark:bg-green-900/20 dark:text-green-400"
-                  : "bg-red-50 text-red-800 dark:bg-red-900/20 dark:text-red-400"
-              }`}
-            >
-              {migrationMessage.text}
-            </div>
-          )}
         </div>
       )}
 
-      {/* Payment Section - Only show for Pro users */}
       {subscription !== "free" && (
         <div>
           <div className="space-y-4">
