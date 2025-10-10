@@ -35,7 +35,7 @@ import { createResumableStreamContext } from "resumable-stream";
 import { setActiveStreamId } from "@/lib/db/actions";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 let globalStreamContext: any | null = null;
 export function getStreamContext() {
