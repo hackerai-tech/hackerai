@@ -195,6 +195,7 @@ export const createChatHandler = () => {
             subscription,
             userCustomization,
             temporary,
+            chat?.finish_reason,
           );
 
           const result = streamText({
@@ -227,6 +228,7 @@ export const createChatHandler = () => {
                   subscription,
                   userCustomization,
                   temporary,
+                  chat?.finish_reason,
                 );
 
                 return {
@@ -253,7 +255,6 @@ export const createChatHandler = () => {
                     sort: "price",
                   },
                 }),
-                parallelToolCalls: false,
               },
             },
             headers: getAIHeaders(),
