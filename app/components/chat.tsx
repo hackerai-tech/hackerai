@@ -72,6 +72,7 @@ export const Chat = ({
 
   // Refs to avoid stale closures in callbacks
   const isExistingChatRef = useLatestRef(isExistingChat);
+  const chatModeRef = useLatestRef(chatMode);
 
   // Suppress transient "Chat Not Found" while server creates the chat
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
@@ -140,7 +141,14 @@ export const Chat = ({
     generateId: () => uuidv4(),
     transport: new DefaultChatTransport({
       api: "/api/chat",
-      fetch: fetchWithErrorHandlers,
+      fetch: async (input, init) => {
+        // Dynamically route to correct API based on current mode
+        const url =
+          input === "/api/chat" && chatModeRef.current === "agent"
+            ? "/api/agent"
+            : input;
+        return fetchWithErrorHandlers(url, init);
+      },
       prepareSendMessagesRequest: ({ id, messages, body }) => {
         const {
           messages: normalizedMessages,

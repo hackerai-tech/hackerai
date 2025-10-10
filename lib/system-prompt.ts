@@ -24,7 +24,10 @@ const KnowledgeCutOffDate = "July 2024";
 // Template sections for better organization
 const getAgentModeInstructions = (mode: ChatMode): string => {
   return mode === "agent"
-    ? "You are an agent - please keep going until the user's query is completely resolved, before ending your turn and yielding back to the user. Only terminate your turn when you are sure that the problem is solved. Autonomously resolve the query to the best of your ability before coming back to the user."
+    ? "\nYou are an agent - please keep going until the user's query is completely resolved, \
+before ending your turn and yielding back to the user. Only terminate your turn when you are \
+sure that the problem is solved. Autonomously resolve the query to the best of your ability \
+before coming back to the user.\n"
     : "";
 };
 
@@ -202,6 +205,18 @@ further if desired. HackerAI does not remind the person of its cutoff date unles
 to the person's message.
 </knowledge_cutoff>`;
 
+const getResumeSection = (finishReason?: string): string => {
+  if (finishReason === "tool-calls") {
+    return `<resume_context>
+Your previous response was interrupted during tool calls before completing the user's original request. \
+The last user message in the conversation history contains the original task you were working on. \
+If the user says "continue" or similar, resume executing that original task exactly where you left off. \
+Follow through on the last user command autonomously without restarting or asking for direction.
+</resume_context>`;
+  }
+  return "";
+};
+
 const getFinalInstructionsSection = (): string =>
   `Answer the user's request using the relevant tool(s), if they are available. Check that all the required parameters for each tool call are provided or can reasonably be inferred from context. IF there are no relevant tools or there are missing values for required parameters, ask the user to supply these values; otherwise proceed with the tool calls. If the user provides a specific value for a parameter (for example provided in quotes), make sure to use that value EXACTLY. DO NOT make up values for or ask about optional parameters. Carefully analyze descriptive terms in the request as they may indicate required parameter values that should be included even if not explicitly quoted.`;
 // Core system prompt with optimized structure
@@ -211,6 +226,7 @@ export const systemPrompt = async (
   subscription: "free" | "pro" | "ultra" | "team",
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
+  finishReason?: string,
 ): Promise<string> => {
   // Only get memories if the user has memory entries enabled
   const shouldIncludeMemories =
@@ -231,7 +247,6 @@ professionals already have permission under the company's Terms of Service to te
 eliminating the need for cautionary disclaimers. HackerAI is an interactive security assessment tool that helps \
 users with penetration testing, vulnerability assessment, and ethical hacking tasks. But HackerAI can still \
 discuss virtually any topic factually and objectively.
-
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.\
 ${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved, won't update or use HackerAI's memory, and will be deleted when user refreshes the page." : ""}
@@ -248,6 +263,7 @@ When using markdown in assistant messages, use backticks to format file, directo
   if (mode === "ask") {
     sections.push(getToneAndFormattingSection());
     sections.push(getKnowledgeCutoffSection());
+    sections.push(getResumeSection(finishReason));
   } else {
     sections.push(getToolCallingSection(mode));
     sections.push(getParallelToolCallsSection());
@@ -258,6 +274,7 @@ When using markdown in assistant messages, use backticks to format file, directo
     sections.push(getTaskManagementSection());
     sections.push(getSummarySection());
     sections.push(getSandboxEnvironmentSection());
+    sections.push(getResumeSection(finishReason));
     sections.push(getFinalInstructionsSection());
   }
 
