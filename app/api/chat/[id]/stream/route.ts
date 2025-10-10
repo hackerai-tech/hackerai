@@ -2,7 +2,7 @@ import type { NextRequest } from "next/server";
 import { createUIMessageStream, JsonToSseTransformStream } from "ai";
 import { ChatSDKError } from "@/lib/errors";
 import type { ChatMessage } from "@/types/chat";
-import { getStreamContext } from "../../route";
+import { getStreamContext } from "@/lib/api/chat-handler";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 
