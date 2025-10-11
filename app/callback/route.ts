@@ -16,15 +16,26 @@ export async function GET(request: NextRequest) {
 
   if (redirectPath) cookieStore.delete("post_login_redirect");
 
-  const response = await authHandler(request);
+  try {
+    const response = await authHandler(request);
 
-  if (
-    redirectPath &&
-    isValidLocalPath(redirectPath) &&
-    [302, 307].includes(response.status)
-  ) {
-    return NextResponse.redirect(new URL(redirectPath, request.url));
+    if (
+      redirectPath &&
+      isValidLocalPath(redirectPath) &&
+      [302, 307].includes(response.status)
+    ) {
+      return NextResponse.redirect(new URL(redirectPath, request.url));
+    }
+
+    return response;
+  } catch (error) {
+    const errorMessage = String(error);
+    if (
+      errorMessage.includes("invalid_grant") ||
+      errorMessage.includes("InvalidCharacterError")
+    ) {
+      return NextResponse.redirect(new URL("/", request.url));
+    }
+    throw error;
   }
-
-  return response;
 }
