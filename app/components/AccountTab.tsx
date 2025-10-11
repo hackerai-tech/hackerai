@@ -9,10 +9,11 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
-import { X, ChevronDown } from "lucide-react";
+import { X, ChevronDown, Sparkle } from "lucide-react";
 import {
   proFeatures,
   ultraFeatures,
@@ -61,6 +62,15 @@ const AccountTab = () => {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
+                {subscription === "pro" && (
+                  <>
+                    <DropdownMenuItem onClick={redirectToPricing}>
+                      <Sparkle className="h-4 w-4" />
+                      <span>Upgrade plan</span>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
                 <DropdownMenuItem
                   variant="destructive"
                   onClick={handleCancelSubscription}

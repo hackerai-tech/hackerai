@@ -245,14 +245,14 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
         </DropdownMenuTrigger>
 
         <DropdownMenuContent
-          className="w-56"
-          align="end"
+          className="w-[calc(100%-12px)] rounded-2xl py-1.5"
+          align="start"
           side="top"
           sideOffset={8}
         >
-          <DropdownMenuLabel className="font-normal">
-            <div className="flex items-center space-x-2">
-              <CircleUserRound className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+          <DropdownMenuLabel className="font-normal py-2.5">
+            <div className="flex items-center space-x-2.5">
+              <CircleUserRound className="h-5 w-5 text-muted-foreground flex-shrink-0" />
               <p className="leading-none text-muted-foreground truncate min-w-0">
                 {user.email}
               </p>
@@ -261,13 +261,26 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenuSeparator />
 
-          <DropdownMenuItem onClick={() => setShowCustomizeDialog(true)}>
-            <Settings2 className="mr-2 h-4 w-4 text-foreground" />
+          {subscription === "pro" && (
+            <DropdownMenuItem onClick={redirectToPricing} className="py-2.5">
+              <Sparkle className="mr-2.5 h-5 w-5 text-foreground" />
+              <span>Upgrade Plan</span>
+            </DropdownMenuItem>
+          )}
+
+          <DropdownMenuItem
+            onClick={() => setShowCustomizeDialog(true)}
+            className="py-2.5"
+          >
+            <Settings2 className="mr-2.5 h-5 w-5 text-foreground" />
             <span>Personalization</span>
           </DropdownMenuItem>
 
-          <DropdownMenuItem onClick={() => setShowSettingsDialog(true)}>
-            <Settings className="mr-2 h-4 w-4 text-foreground" />
+          <DropdownMenuItem
+            onClick={() => setShowSettingsDialog(true)}
+            className="py-2.5"
+          >
+            <Settings className="mr-2.5 h-5 w-5 text-foreground" />
             <span>Settings</span>
           </DropdownMenuItem>
 
@@ -275,34 +288,35 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <DropdownMenuItem className="gap-4 cursor-pointer">
-                <LifeBuoy className="h-4 w-4 text-foreground" />
+              <DropdownMenuItem className="gap-4 cursor-pointer py-2.5">
+                <LifeBuoy className="h-5 w-5 text-foreground" />
                 <span>Help</span>
-                <ChevronRight className="ml-auto h-4 w-4" />
+                <ChevronRight className="ml-auto h-5 w-5" />
               </DropdownMenuItem>
             </DropdownMenuTrigger>
             <DropdownMenuContent
               side={isMobile ? "top" : "right"}
               align={isMobile ? "center" : "start"}
               sideOffset={isMobile ? 8 : 4}
+              className="rounded-2xl"
             >
-              <DropdownMenuItem onClick={handleHelpCenter}>
-                <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
+              <DropdownMenuItem onClick={handleHelpCenter} className="py-2.5">
+                <LifeBuoy className="mr-2.5 h-5 w-5 text-foreground" />
                 <span>Help Center</span>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleGitHub}>
-                <Github className="mr-2 h-4 w-4 text-foreground" />
+              <DropdownMenuItem onClick={handleGitHub} className="py-2.5">
+                <Github className="mr-2.5 h-5 w-5 text-foreground" />
                 <span>Source Code</span>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleXCom}>
-                <XIcon className="mr-2 h-4 w-4 text-foreground" />
+              <DropdownMenuItem onClick={handleXCom} className="py-2.5">
+                <XIcon className="mr-2.5 h-5 w-5 text-foreground" />
                 <span>Social</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenuItem onClick={handleLogOut}>
-            <LogOut className="mr-2 h-4 w-4 text-foreground" />
+          <DropdownMenuItem onClick={handleLogOut} className="py-2.5">
+            <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
             <span>Log out</span>
           </DropdownMenuItem>
         </DropdownMenuContent>

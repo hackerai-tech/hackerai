@@ -74,8 +74,8 @@ const AuthenticatedContent = () => {
 
 // Main page component with Convex authentication
 export default function Page() {
-  const { showPricing, handleClosePricing } = usePricingDialog();
   const {
+    subscription,
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,
     teamWelcomeDialogOpen,
@@ -83,6 +83,7 @@ export default function Page() {
     migrateFromPentestgptDialogOpen,
     setMigrateFromPentestgptDialogOpen,
   } = useGlobalState();
+  const { showPricing, handleClosePricing } = usePricingDialog(subscription);
 
   const { isMigrating, migrate } = usePentestgptMigration();
   const { initialSeats, initialPlan } = React.useMemo(() => {

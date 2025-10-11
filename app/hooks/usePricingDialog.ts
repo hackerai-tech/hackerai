@@ -1,12 +1,27 @@
 import { useEffect, useState } from "react";
+import type { SubscriptionTier } from "@/types";
 
-export const usePricingDialog = () => {
+export const usePricingDialog = (subscription?: SubscriptionTier) => {
   const [showPricing, setShowPricing] = useState(false);
 
   useEffect(() => {
     // Check if URL hash is #pricing
     const checkHash = () => {
-      setShowPricing(window.location.hash === "#pricing");
+      const shouldShow = window.location.hash === "#pricing";
+
+      // Don't show pricing dialog for ultra/team users
+      if (shouldShow && (subscription === "ultra" || subscription === "team")) {
+        // Clear the hash
+        window.history.replaceState(
+          null,
+          document.title || "",
+          window.location.pathname + window.location.search,
+        );
+        setShowPricing(false);
+        return;
+      }
+
+      setShowPricing(shouldShow);
     };
 
     // Check on mount
@@ -18,7 +33,7 @@ export const usePricingDialog = () => {
     return () => {
       window.removeEventListener("hashchange", checkHash);
     };
-  }, []);
+  }, [subscription]);
 
   const handleClosePricing = () => {
     setShowPricing(false);
@@ -33,6 +48,10 @@ export const usePricingDialog = () => {
   };
 
   const openPricing = () => {
+    // Don't allow opening pricing for ultra/team users
+    if (subscription === "ultra" || subscription === "team") {
+      return;
+    }
     window.location.hash = "pricing";
   };
 
@@ -44,6 +63,8 @@ export const usePricingDialog = () => {
 };
 
 // Utility function to redirect to pricing (can be used without the hook)
+// Note: This doesn't check subscription tier, so use sparingly
+// Consider using openPricing from the hook instead when possible
 export const redirectToPricing = () => {
   window.location.hash = "pricing";
 };

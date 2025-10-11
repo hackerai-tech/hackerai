@@ -81,14 +81,20 @@ export const checkRateLimit = async (
 
       let cause: string;
 
-      if (subscription !== "free") {
+      if (subscription === "free") {
+        cause = `You've reached your rate limit, please try again after ${timeString}.\n\nUpgrade plan for higher usage limits and more features.`;
+      } else if (subscription === "pro") {
+        if (mode === "agent") {
+          cause = `You've reached your agent mode rate limit, please try again after ${timeString}.\n\nYou can continue using ask mode in the meantime or upgrade to Ultra for even higher limits.`;
+        } else {
+          cause = `You've reached your ask mode rate limit, please try again after ${timeString}.\n\nYou can continue using agent mode in the meantime or upgrade to Ultra for even higher limits.`;
+        }
+      } else {
         if (mode === "agent") {
           cause = `You've reached your agent mode rate limit, please try again after ${timeString}.\n\nYou can continue using ask mode in the meantime.`;
         } else {
           cause = `You've reached your ask mode rate limit, please try again after ${timeString}.\n\nYou can continue using agent mode in the meantime.`;
         }
-      } else {
-        cause = `You've reached your rate limit, please try again after ${timeString}.\n\nUpgrade plan for higher usage limits and more features.`;
       }
 
       throw new ChatSDKError("rate_limit:chat", cause);

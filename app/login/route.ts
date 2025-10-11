@@ -10,7 +10,7 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const intent = url.searchParams.get("intent");
   const confirmMigrate = url.searchParams.get("confirm-migrate-pentestgpt");
-  
+
   const authorizationUrl = await getSignInUrl();
   const response = NextResponse.redirect(authorizationUrl);
 
