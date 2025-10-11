@@ -24,7 +24,6 @@ const formatUnixDate = (ts?: number) =>
 interface SubscriptionDetails {
   paymentMethod: string;
   currentPlan: string;
-  currentAmount: number;
   proratedAmount: number;
   proratedCredit: number;
   totalDue: number;
@@ -68,8 +67,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         setDetails({
           paymentMethod: previewData.paymentMethod,
           currentPlan: previewData.currentPlan,
-          currentAmount: previewData.currentAmount,
-          proratedAmount: previewData.proratedAmount || price,
+          proratedAmount: previewData.proratedAmount ?? price,
           proratedCredit: previewData.proratedCredit,
           totalDue: previewData.totalDue,
           // @ts-expect-error - backend may not send this on older versions
@@ -85,7 +83,6 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         setDetails({
           paymentMethod: "Payment method on file",
           currentPlan: "current",
-          currentAmount: 0,
           proratedAmount: price,
           proratedCredit: 0,
           totalDue: price,

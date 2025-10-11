@@ -245,17 +245,12 @@ export const POST = async (req: NextRequest) => {
     // Return preview details if not confirming
     // Keep full precision (Stripe provides amounts in cents, converted to dollars)
     return NextResponse.json({
-      // Preview
-      targetAmount: Number(targetAmount.toFixed(2)),
-      proratedAmount: Number(proratedAmount.toFixed(2)), // actual prorated charge for remaining time
-      currentAmount: Number(currentAmount.toFixed(2)),
+      proratedAmount: Number(proratedAmount.toFixed(2)),
       proratedCredit: Number(proratedCredit.toFixed(2)),
       totalDue: Number(totalDue.toFixed(2)),
       additionalCredit: Number(additionalCredit.toFixed(2)),
-      // Details (so the client can use a single call)
       paymentMethod: paymentMethodInfo,
       currentPlan: planType,
-      currentInterval: interval,
       // Cycle information (dates are unix seconds)
       currentPeriodStart,
       currentPeriodEnd,
