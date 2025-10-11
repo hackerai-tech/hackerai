@@ -15,6 +15,7 @@ import {
   teamFeatures,
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
+import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
 
 interface PricingDialogProps {
   isOpen: boolean;
@@ -133,6 +134,22 @@ const PlanCard: React.FC<PlanCardProps> = ({
   );
 };
 
+// Pricing configuration - centralized pricing for all plans
+export const PRICING = {
+  pro: {
+    monthly: 20,
+    yearly: 17,
+  },
+  ultra: {
+    monthly: 200,
+    yearly: 166,
+  },
+  team: {
+    monthly: 40,
+    yearly: 33,
+  },
+} as const;
+
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
@@ -140,6 +157,27 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [isYearly, setIsYearly] = React.useState(false);
   const [showTeamPlan, setShowTeamPlan] = React.useState(false);
+  const [showConfirmDialog, setShowConfirmDialog] = React.useState(false);
+  const [pendingUpgrade, setPendingUpgrade] = React.useState<{
+    plan: string;
+    planName: string;
+    price: number;
+  } | null>(null);
+
+  // Auto-close pricing dialog for ultra/team users
+  React.useEffect(() => {
+    if (isOpen && (subscription === "ultra" || subscription === "team")) {
+      onClose();
+    }
+  }, [isOpen, subscription, onClose]);
+
+  // Auto-close team plan view if pro user somehow gets there
+  React.useEffect(() => {
+    if (showTeamPlan && subscription === "pro") {
+      setShowTeamPlan(false);
+    }
+  }, [showTeamPlan, subscription]);
+
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
   };
@@ -158,19 +196,37 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       | "ultra-monthly-plan"
       | "pro-yearly-plan"
       | "ultra-yearly-plan" = "pro-monthly-plan",
+    planName: string,
+    price: number,
   ) => {
-    try {
-      await handleUpgrade(plan);
-      // Don't close dialog on success - let the redirect happen
-    } catch (error) {
-      // Only close on error if needed
-      console.error("Upgrade failed:", error);
+    // If user is free, upgrade directly without confirmation
+    if (subscription === "free") {
+      try {
+        await handleUpgrade(plan);
+        // Don't close dialog on success - let the redirect happen
+      } catch (error) {
+        console.error("Upgrade failed:", error);
+      }
+    } else {
+      // Show confirmation dialog for existing subscribers
+      setPendingUpgrade({ plan, planName, price });
+      setShowConfirmDialog(true);
     }
+  };
+
+  const handleCloseConfirmDialog = () => {
+    setShowConfirmDialog(false);
+    setPendingUpgrade(null);
   };
 
   const handleTeamClick = () => {
     if (!user) {
       handleSignIn();
+      return;
+    }
+
+    // Don't allow Pro users to upgrade to Team plan
+    if (subscription === "pro") {
       return;
     }
 
@@ -227,7 +283,11 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
         onClick: () =>
-          handleUpgradeClick(isYearly ? "pro-yearly-plan" : "pro-monthly-plan"),
+          handleUpgradeClick(
+            isYearly ? "pro-yearly-plan" : "pro-monthly-plan",
+            "Pro",
+            isYearly ? PRICING.pro.yearly : PRICING.pro.monthly,
+          ),
         loading: upgradeLoading,
       };
     } else {
@@ -250,145 +310,192 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         className: "opacity-50 cursor-not-allowed",
         variant: "secondary" as const,
       };
+    } else if (user) {
+      return {
+        text: subscription === "pro" ? "Upgrade to Ultra" : "Get Ultra",
+        disabled: upgradeLoading,
+        className: "",
+        variant: "default" as const,
+        onClick: () =>
+          handleUpgradeClick(
+            isYearly ? "ultra-yearly-plan" : "ultra-monthly-plan",
+            "Ultra",
+            isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly,
+          ),
+        loading: upgradeLoading,
+      };
+    } else {
+      return {
+        text: "Get Ultra",
+        disabled: false,
+        className: "",
+        variant: "default" as const,
+        onClick: handleSignIn,
+      };
     }
-    return {
-      text: user ? "Get Ultra" : "Get Ultra",
-      disabled: upgradeLoading,
-      className: "",
-      variant: "default" as const,
-      onClick: () =>
-        handleUpgradeClick(
-          isYearly ? "ultra-yearly-plan" : "ultra-monthly-plan",
-        ),
-      loading: upgradeLoading,
-    } as const;
   };
 
   const freeButtonConfig = getFreeButtonConfig();
   const proButtonConfig = getProButtonConfig();
   const ultraButtonConfig = getUltraButtonConfig();
 
+  const hasSubscription = subscription !== "free";
+
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent
-        className="!max-w-none !w-screen !h-screen !max-h-none !m-0 !rounded-none !inset-0 !translate-x-0 !translate-y-0 !top-0 !left-0 overflow-y-auto"
-        data-testid="modal-account-payment"
-        showCloseButton={false}
-      >
-        <div className="relative grid grid-cols-[1fr_auto_1fr] px-6 py-4 md:pt-[4.5rem] md:pb-6">
-          <div></div>
-          <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
-            <DialogTitle className="text-3xl font-semibold">
-              Upgrade your plan
-            </DialogTitle>
+    <>
+      <UpgradeConfirmationDialog
+        isOpen={showConfirmDialog}
+        onClose={handleCloseConfirmDialog}
+        planName={pendingUpgrade?.planName || ""}
+        price={pendingUpgrade?.price || 0}
+        targetPlan={pendingUpgrade?.plan || ""}
+      />
+
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent
+          className="!max-w-none !w-screen !h-screen !max-h-none !m-0 !rounded-none !inset-0 !translate-x-0 !translate-y-0 !top-0 !left-0 overflow-y-auto"
+          data-testid="modal-account-payment"
+          showCloseButton={false}
+        >
+          <div className="relative grid grid-cols-[1fr_auto_1fr] px-6 py-4 md:pt-[4.5rem] md:pb-6">
+            <div></div>
+            <div className="my-1 flex flex-col items-center justify-center md:mt-0 md:mb-0">
+              <DialogTitle className="text-3xl font-semibold">
+                Upgrade your plan
+              </DialogTitle>
+            </div>
+            <button
+              onClick={onClose}
+              className="text-foreground justify-self-end opacity-50 transition hover:opacity-75 md:absolute md:end-6 md:top-6"
+            >
+              <X className="h-6 w-6" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="text-foreground justify-self-end opacity-50 transition hover:opacity-75 md:absolute md:end-6 md:top-6"
-          >
-            <X className="h-6 w-6" />
-          </button>
-        </div>
 
-        <div className="mt-2 mb-4 flex justify-center px-6">
-          <BillingFrequencySelector
-            value={isYearly ? "yearly" : "monthly"}
-            onChange={handleBillingChange}
-            isOpen={isOpen}
-          />
-        </div>
+          <div className="mt-2 mb-4 flex justify-center px-6">
+            <BillingFrequencySelector
+              value={isYearly ? "yearly" : "monthly"}
+              onChange={handleBillingChange}
+              isOpen={isOpen}
+            />
+          </div>
 
-        <div className="flex justify-center gap-6 flex-col md:flex-row pb-6">
-          {showTeamPlan ? (
-            <>
-              {/* Free Plan */}
-              <PlanCard
-                planName="Free"
-                price={0}
-                description="Intelligence for everyday tasks"
-                features={freeFeatures}
-                buttonText={freeButtonConfig.text}
-                buttonVariant={freeButtonConfig.variant}
-                buttonClassName={freeButtonConfig.className}
-                onButtonClick={freeButtonConfig.onClick}
-                isButtonDisabled={freeButtonConfig.disabled}
-              />
+          <div className="flex justify-center gap-6 flex-col md:flex-row pb-6">
+            {showTeamPlan ? (
+              <>
+                {/* Show Free Plan if no subscription, Pro Plan if pro subscription */}
+                {!hasSubscription ? (
+                  <PlanCard
+                    planName="Free"
+                    price={0}
+                    description="Intelligence for everyday tasks"
+                    features={freeFeatures}
+                    buttonText={freeButtonConfig.text}
+                    buttonVariant={freeButtonConfig.variant}
+                    buttonClassName={freeButtonConfig.className}
+                    onButtonClick={freeButtonConfig.onClick}
+                    isButtonDisabled={freeButtonConfig.disabled}
+                  />
+                ) : subscription === "pro" ? (
+                  <PlanCard
+                    planName="Pro"
+                    price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
+                    description="More access to advanced intelligence"
+                    features={proFeatures}
+                    buttonText={proButtonConfig.text}
+                    buttonVariant={proButtonConfig.variant}
+                    buttonClassName={proButtonConfig.className}
+                    onButtonClick={proButtonConfig.onClick}
+                    isButtonDisabled={proButtonConfig.disabled}
+                    isButtonLoading={proButtonConfig.loading}
+                  />
+                ) : null}
 
-              {/* Team Plan */}
-              <PlanCard
-                planName="Team"
-                price={isYearly ? 33 : 40}
-                description="Supercharge your team with a secure, collaborative workspace"
-                features={teamFeatures}
-                buttonText={"Get Team"}
-                buttonVariant={"default"}
-                buttonClassName="font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white"
-                onButtonClick={handleTeamClick}
-                isButtonDisabled={false}
-                customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
-                badgeText="RECOMMENDED"
-              />
-            </>
-          ) : (
-            <>
-              {/* Free Plan */}
-              <PlanCard
-                planName="Free"
-                price={0}
-                description="Intelligence for everyday tasks"
-                features={freeFeatures}
-                buttonText={freeButtonConfig.text}
-                buttonVariant={freeButtonConfig.variant}
-                buttonClassName={freeButtonConfig.className}
-                onButtonClick={freeButtonConfig.onClick}
-                isButtonDisabled={freeButtonConfig.disabled}
-              />
+                {/* Team Plan */}
+                <PlanCard
+                  planName="Team"
+                  price={isYearly ? PRICING.team.yearly : PRICING.team.monthly}
+                  description="Supercharge your team with a secure, collaborative workspace"
+                  features={teamFeatures}
+                  buttonText={
+                    subscription === "pro" ? "Upgrade to Team" : "Get Team"
+                  }
+                  buttonVariant={"default"}
+                  buttonClassName="font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white"
+                  onButtonClick={handleTeamClick}
+                  isButtonDisabled={false}
+                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                  badgeText="RECOMMENDED"
+                />
+              </>
+            ) : (
+              <>
+                {/* Free Plan - only show if user doesn't have a subscription */}
+                {!hasSubscription && (
+                  <PlanCard
+                    planName="Free"
+                    price={0}
+                    description="Intelligence for everyday tasks"
+                    features={freeFeatures}
+                    buttonText={freeButtonConfig.text}
+                    buttonVariant={freeButtonConfig.variant}
+                    buttonClassName={freeButtonConfig.className}
+                    onButtonClick={freeButtonConfig.onClick}
+                    isButtonDisabled={freeButtonConfig.disabled}
+                  />
+                )}
 
-              {/* Pro Plan */}
-              <PlanCard
-                planName="Pro"
-                price={isYearly ? 17 : 20}
-                description="More access to advanced intelligence"
-                features={proFeatures}
-                buttonText={proButtonConfig.text}
-                buttonVariant={proButtonConfig.variant}
-                buttonClassName={proButtonConfig.className}
-                onButtonClick={proButtonConfig.onClick}
-                isButtonDisabled={proButtonConfig.disabled}
-                isButtonLoading={proButtonConfig.loading}
-                customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
-                badgeText="POPULAR"
-              />
+                {/* Pro Plan */}
+                <PlanCard
+                  planName="Pro"
+                  price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
+                  description="More access to advanced intelligence"
+                  features={proFeatures}
+                  buttonText={proButtonConfig.text}
+                  buttonVariant={proButtonConfig.variant}
+                  buttonClassName={proButtonConfig.className}
+                  onButtonClick={proButtonConfig.onClick}
+                  isButtonDisabled={proButtonConfig.disabled}
+                  isButtonLoading={proButtonConfig.loading}
+                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                  badgeText="POPULAR"
+                />
 
-              {/* Ultra Plan */}
-              <PlanCard
-                planName="Ultra"
-                price={isYearly ? 166 : 200}
-                description="Full access to the best of HackerAI"
-                features={ultraFeatures}
-                buttonText={ultraButtonConfig.text}
-                buttonVariant={ultraButtonConfig.variant}
-                buttonClassName={ultraButtonConfig.className}
-                isButtonDisabled={ultraButtonConfig.disabled}
-                isButtonLoading={ultraButtonConfig.loading}
-                onButtonClick={ultraButtonConfig.onClick}
-                footerNote="Unlimited subject to abuse guardrails."
-              />
-            </>
+                {/* Ultra Plan */}
+                <PlanCard
+                  planName="Ultra"
+                  price={
+                    isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly
+                  }
+                  description="Full access to the best of HackerAI"
+                  features={ultraFeatures}
+                  buttonText={ultraButtonConfig.text}
+                  buttonVariant={ultraButtonConfig.variant}
+                  buttonClassName={ultraButtonConfig.className}
+                  isButtonDisabled={ultraButtonConfig.disabled}
+                  isButtonLoading={ultraButtonConfig.loading}
+                  onButtonClick={ultraButtonConfig.onClick}
+                  footerNote="Unlimited subject to abuse guardrails."
+                />
+              </>
+            )}
+          </div>
+
+          {/* Hide team plan toggle for Pro users */}
+          {subscription !== "pro" && (
+            <div className="flex justify-center pb-8">
+              <Button
+                variant="secondary"
+                className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
+                onClick={() => setShowTeamPlan((prev) => !prev)}
+              >
+                {showTeamPlan ? "View Individual Plan" : "View Team Plan"}
+              </Button>
+            </div>
           )}
-        </div>
-
-        <div className="flex justify-center pb-8">
-          <Button
-            variant="secondary"
-            className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
-            onClick={() => setShowTeamPlan((prev) => !prev)}
-          >
-            {showTeamPlan ? "View Individual Plan" : "View Team Plan"}
-          </Button>
-        </div>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };
 

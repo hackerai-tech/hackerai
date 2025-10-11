@@ -5,12 +5,14 @@ import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import Loading from "@/components/ui/loading";
 import PricingDialog from "../../components/PricingDialog";
 import { usePricingDialog } from "../../hooks/usePricingDialog";
+import { useGlobalState } from "../../contexts/GlobalState";
 import { use } from "react";
 
 export default function Page(props: { params: Promise<{ id: string }> }) {
   const params = use(props.params);
   const chatId = params.id;
-  const { showPricing, handleClosePricing } = usePricingDialog();
+  const { subscription } = useGlobalState();
+  const { showPricing, handleClosePricing } = usePricingDialog(subscription);
 
   return (
     <>
