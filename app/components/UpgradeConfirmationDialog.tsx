@@ -111,8 +111,8 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         throw new Error(errorData.error || "Failed to update subscription");
       }
 
-      const result = await response.json();
-      console.log("Subscription updated:", result);
+      // const result = await response.json();
+      // console.log("Subscription updated:", result);
 
       // Close dialog
       onClose();

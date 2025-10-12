@@ -337,25 +337,62 @@ export async function getMemoryById({ memoryId }: { memoryId: string }) {
   }
 }
 
-export async function setActiveStreamId({
+export async function startStream({
   chatId,
-  activeStreamId,
+  streamId,
 }: {
   chatId: string;
-  activeStreamId: string | undefined;
+  streamId: string;
 }) {
   try {
-    await convex.mutation(api.chats.setActiveStreamId, {
+    await convex.mutation(api.chats.startStream, {
       serviceKey,
       chatId,
-      activeStreamId,
+      streamId,
+    });
+    return;
+  } catch (error) {
+    throw new ChatSDKError("bad_request:database", "Failed to start stream");
+  }
+}
+
+export async function prepareForNewStream({ chatId }: { chatId: string }) {
+  try {
+    await convex.mutation(api.chats.prepareForNewStream, {
+      serviceKey,
+      chatId,
     });
     return;
   } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to set active stream id",
+      "Failed to prepare for new stream",
     );
+  }
+}
+
+export async function cancelStream({ chatId }: { chatId: string }) {
+  try {
+    await convex.mutation(api.chats.cancelStream, {
+      serviceKey,
+      chatId,
+    });
+    return;
+  } catch (error) {
+    throw new ChatSDKError("bad_request:database", "Failed to cancel stream");
+  }
+}
+
+export async function getCancellationStatus({ chatId }: { chatId: string }) {
+  try {
+    const status = await convex.query(api.chats.getCancellationStatus, {
+      serviceKey,
+      chatId,
+    });
+    return status;
+  } catch (error) {
+    // Silently return null on error for cancellation checks
+    return null;
   }
 }
 

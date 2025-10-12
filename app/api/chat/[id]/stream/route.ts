@@ -5,6 +5,7 @@ import type { ChatMessage } from "@/types/chat";
 import { getStreamContext } from "@/lib/api/chat-handler";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { cancelStream } from "@/lib/db/actions";
 
 export const maxDuration = 500;
 
@@ -110,5 +111,55 @@ export async function GET(
       emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
       { status: 200 },
     );
+  }
+}
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id: chatId } = await params;
+
+  if (!chatId) {
+    return new ChatSDKError("bad_request:api").toResponse();
+  }
+
+  // Authenticate user
+  let userId: string;
+  try {
+    const { getUserID } = await import("@/lib/auth/get-user-id");
+    userId = await getUserID(req);
+  } catch (error) {
+    return new ChatSDKError("unauthorized:chat").toResponse();
+  }
+
+  const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
+
+  // Load chat and enforce ownership
+  let chat: any | null = null;
+  try {
+    chat = await convex.query(api.chats.getChatById, {
+      serviceKey,
+      id: chatId,
+    });
+  } catch {
+    return new ChatSDKError("not_found:chat").toResponse();
+  }
+
+  if (!chat) {
+    return new ChatSDKError("not_found:chat").toResponse();
+  }
+
+  if (chat.user_id !== userId) {
+    return new ChatSDKError("forbidden:chat").toResponse();
+  }
+
+  try {
+    await cancelStream({ chatId });
+    return new Response(null, { status: 200 });
+  } catch (error) {
+    console.error("Failed to cancel stream:", error);
+    return new ChatSDKError("bad_request:database").toResponse();
   }
 }

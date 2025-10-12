@@ -149,7 +149,19 @@ export const useChatHandlers = ({
 
   const handleStop = async () => {
     setIsAutoResuming(false);
+
     stop();
+
+    // Cancel the stream by calling DELETE endpoint
+    if (!temporaryChatsEnabled) {
+      try {
+        await fetch(`/api/chat/${chatId}/stream`, {
+          method: "DELETE",
+        });
+      } catch (error) {
+        console.error("Failed to cancel stream:", error);
+      }
+    }
 
     const lastMessage = messages[messages.length - 1];
     if (

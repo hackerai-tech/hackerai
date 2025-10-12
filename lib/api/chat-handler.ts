@@ -26,7 +26,9 @@ import {
   updateChat,
   getMessagesByChatId,
   getUserCustomization,
-  setActiveStreamId,
+  getCancellationStatus,
+  prepareForNewStream,
+  startStream,
 } from "@/lib/db/actions";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
@@ -34,6 +36,7 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
+import throttle from "throttleit";
 
 let globalStreamContext: any | null = null;
 
@@ -125,9 +128,17 @@ export const createChatHandler = () => {
       const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
 
-      if (!temporary) {
-        await setActiveStreamId({ chatId, activeStreamId: undefined });
-      }
+      const userStopSignal = new AbortController();
+
+      // Throttled cancellation check (max once per second)
+      const checkCancellation = throttle(async () => {
+        if (!temporary) {
+          const status = await getCancellationStatus({ chatId });
+          if (status?.canceled_at) {
+            userStopSignal.abort();
+          }
+        }
+      }, 1000);
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
@@ -241,6 +252,7 @@ export const createChatHandler = () => {
                   : {};
               }
             },
+            abortSignal: userStopSignal.signal,
             providerOptions: {
               openai: {
                 parallelToolCalls: false,
@@ -261,6 +273,7 @@ export const createChatHandler = () => {
             experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(mode === "ask" ? 5 : 10),
             onChunk: async (chunk) => {
+              // Track all tool calls immediately (no throttle)
               if (chunk.chunk.type === "tool-call") {
                 const command = (chunk.chunk.input as any)?.command;
                 if (posthog) {
@@ -270,6 +283,12 @@ export const createChatHandler = () => {
                   });
                 }
               }
+
+              // Check for cancellation (throttled separately)
+              await checkCancellation();
+            },
+            onAbort: () => {
+              console.log("aborted");
             },
             onError: async (error) => {
               console.error("Error:", error);
@@ -310,8 +329,9 @@ export const createChatHandler = () => {
                   });
                 }
 
-                // Clear active stream id when finished
-                await setActiveStreamId({ chatId, activeStreamId: undefined });
+                // Clear both active_stream_id and canceled_at when finished
+                // This is critical for stream resumption and cleanup
+                await prepareForNewStream({ chatId });
               }
             },
           });
@@ -346,7 +366,7 @@ export const createChatHandler = () => {
         const streamContext = getStreamContext();
         if (streamContext) {
           const streamId = uuidv4();
-          await setActiveStreamId({ chatId, activeStreamId: streamId });
+          await startStream({ chatId, streamId });
           const body = await streamContext.resumableStream(streamId, () => sse);
           return new Response(body);
         }

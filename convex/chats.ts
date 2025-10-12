@@ -22,6 +22,7 @@ export const getChatByIdFromClient = query({
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
       active_stream_id: v.optional(v.string()),
+      canceled_at: v.optional(v.number()),
       default_model_slug: v.optional(
         v.union(v.literal("ask"), v.literal("agent")),
       ),
@@ -88,6 +89,7 @@ export const getChatById = query({
       user_id: v.string(),
       finish_reason: v.optional(v.string()),
       active_stream_id: v.optional(v.string()),
+      canceled_at: v.optional(v.number()),
       default_model_slug: v.optional(
         v.union(v.literal("ask"), v.literal("agent")),
       ),
@@ -245,13 +247,14 @@ export const updateChat = mutation({
 });
 
 /**
- * Set or clear the active resumable stream id for a chat (backend only)
+ * Start a stream by setting active_stream_id and clearing canceled_at (backend only)
+ * Atomic single mutation to avoid race with pre-clearing.
  */
-export const setActiveStreamId = mutation({
+export const startStream = mutation({
   args: {
     serviceKey: v.optional(v.string()),
     chatId: v.string(),
-    activeStreamId: v.optional(v.string()),
+    streamId: v.string(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -267,15 +270,121 @@ export const setActiveStreamId = mutation({
       throw new Error("Chat not found");
     }
 
-    const patch: { active_stream_id?: string; update_time: number } = {
+    await ctx.db.patch(chat._id, {
+      active_stream_id: args.streamId,
+      canceled_at: undefined,
       update_time: Date.now(),
-    };
-    if (args.activeStreamId !== undefined) {
-      patch.active_stream_id = args.activeStreamId;
-    }
-    await ctx.db.patch(chat._id, patch);
+    });
 
     return null;
+  },
+});
+
+/**
+ * Prepare chat for a new stream by clearing both active_stream_id and canceled_at (backend only)
+ * Combines both operations in a single atomic mutation
+ */
+export const prepareForNewStream = mutation({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new Error("Chat not found");
+    }
+
+    // Only patch if either field needs to be cleared
+    if (chat.active_stream_id !== undefined || chat.canceled_at !== undefined) {
+      await ctx.db.patch(chat._id, {
+        active_stream_id: undefined,
+        canceled_at: undefined,
+        update_time: Date.now(),
+      });
+    }
+
+    return null;
+  },
+});
+
+/**
+ * Cancel a stream by setting canceled_at and clearing active_stream_id (backend only)
+ * Combines both operations in a single atomic mutation
+ */
+export const cancelStream = mutation({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new Error("Chat not found");
+    }
+
+    // Only patch if needed
+    if (chat.active_stream_id !== undefined || chat.canceled_at === undefined) {
+      await ctx.db.patch(chat._id, {
+        active_stream_id: undefined,
+        canceled_at: Date.now(),
+        update_time: Date.now(),
+      });
+    }
+
+    return null;
+  },
+});
+
+/**
+ * Get only the cancellation status for a chat (backend only)
+ * Optimized for stream cancellation checks
+ */
+export const getCancellationStatus = query({
+  args: { serviceKey: v.optional(v.string()), chatId: v.string() },
+  returns: v.union(
+    v.object({
+      canceled_at: v.optional(v.number()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    try {
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+
+      if (!chat) {
+        return null;
+      }
+
+      return {
+        canceled_at: chat.canceled_at,
+      };
+    } catch (error) {
+      console.error("Failed to get cancellation status:", error);
+      return null;
+    }
   },
 });
 

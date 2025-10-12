@@ -24,13 +24,13 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
 const sanitizeFilenameForTerminal = (filename: string): string => {
   // Remove path separators first
   const basename = filename.split(/[/\\]/g).pop() ?? "file";
-  
+
   // Split into name and extension
   const lastDotIndex = basename.lastIndexOf(".");
   const hasExtension = lastDotIndex > 0;
   const name = hasExtension ? basename.substring(0, lastDotIndex) : basename;
   const ext = hasExtension ? basename.substring(lastDotIndex) : "";
-  
+
   // Replace spaces and special characters
   let sanitized = name
     .replace(/\s+/g, "_") // Replace spaces with underscores
@@ -38,15 +38,15 @@ const sanitizeFilenameForTerminal = (filename: string): string => {
     .replace(/_{2,}/g, "_") // Replace multiple underscores with single
     .replace(/^[._-]+/, "") // Remove leading dots, underscores, or hyphens
     .replace(/[._-]+$/, ""); // Remove trailing dots, underscores, or hyphens
-  
+
   // Fallback if name becomes empty
   if (!sanitized) {
     sanitized = "file";
   }
-  
+
   // Sanitize extension (remove special chars except the leading dot)
   const sanitizedExt = ext.replace(/[^\w.]/g, "");
-  
+
   return sanitized + sanitizedExt;
 };
 
