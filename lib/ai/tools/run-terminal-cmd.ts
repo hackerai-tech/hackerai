@@ -89,13 +89,16 @@ If you are generating files:
         return new Promise((resolve, reject) => {
           let resolved = false;
           let execution: any = null;
+          let handler: ReturnType<typeof createTerminalHandler> | null = null;
 
           // Listen for abort signal
           const onAbort = () => {
             if (!resolved) {
               resolved = true;
-              handler.cleanup();
-              const result = handler.getResult();
+              const result = handler ? handler.getResult() : { stdout: "", stderr: "" };
+              if (handler) {
+                handler.cleanup();
+              }
               resolve({
                 result: {
                   ...result,
@@ -121,9 +124,7 @@ If you are generating files:
             });
           }
 
-          abortSignal?.addEventListener("abort", onAbort, { once: true });
-
-          const handler = createTerminalHandler(
+          handler = createTerminalHandler(
             (output) => createTerminalWriter(output),
             {
               timeoutSeconds: STREAM_TIMEOUT_SECONDS,
@@ -131,8 +132,14 @@ If you are generating files:
                 if (!resolved) {
                   resolved = true;
                   createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
-                  handler.cleanup();
-                  const result = handler.getResult();
+                  // Kill the running process on timeout if exists
+                  if (execution && execution.kill) {
+                    execution.kill().catch(() => {});
+                  }
+                  const result = handler ? handler.getResult() : { stdout: "", stderr: "" };
+                  if (handler) {
+                    handler.cleanup();
+                  }
                   resolve({
                     result: { ...result, exitCode: null },
                   });
@@ -141,12 +148,14 @@ If you are generating files:
             },
           );
 
+          abortSignal?.addEventListener("abort", onAbort, { once: true });
+
           const commonOptions = {
             timeoutMs: MAX_COMMAND_EXECUTION_TIME,
             user: "root" as const,
             cwd: "/home/user",
-            onStdout: handler.stdout,
-            onStderr: handler.stderr,
+            onStdout: handler!.stdout,
+            onStderr: handler!.stderr,
           };
 
           const runPromise = is_background
@@ -159,12 +168,14 @@ If you are generating files:
           runPromise
             .then(async (exec) => {
               execution = exec;
-              handler.cleanup();
+              if (handler) {
+                handler.cleanup();
+              }
 
               if (!resolved) {
                 resolved = true;
                 abortSignal?.removeEventListener("abort", onAbort);
-                const finalResult = handler.getResult();
+                const finalResult = handler ? handler.getResult() : { stdout: "", stderr: "" };
                 resolve({
                   result: {
                     ...exec,
@@ -175,13 +186,15 @@ If you are generating files:
               }
             })
             .catch((error) => {
-              handler.cleanup();
+              if (handler) {
+                handler.cleanup();
+              }
               if (!resolved) {
                 resolved = true;
                 abortSignal?.removeEventListener("abort", onAbort);
                 // Handle CommandExitError as a valid result (non-zero exit code)
                 if (error instanceof CommandExitError) {
-                  const finalResult = handler.getResult();
+                  const finalResult = handler ? handler.getResult() : { stdout: "", stderr: "" };
                   resolve({
                     result: {
                       exitCode: error.exitCode,
