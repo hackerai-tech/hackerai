@@ -3,7 +3,7 @@
 import { action } from "./_generated/server";
 import { v } from "convex/values";
 import { countTokens } from "gpt-tokenizer";
-import { PDFLoader } from "@langchain/community/document_loaders/fs/pdf";
+import { getDocument } from "pdfjs-serverless";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
 import { JSONLoader } from "langchain/document_loaders/fs/json";
 import mammoth from "mammoth";
@@ -195,6 +195,14 @@ const processFileAuto = async (
     validateTokenLimit(chunks, fileName || "unknown");
     return chunks;
   } catch (error) {
+    // Check if this is a token limit error - re-throw immediately without fallback
+    if (
+      error instanceof Error &&
+      error.message.includes("exceeds the maximum token limit")
+    ) {
+      throw error;
+    }
+
     // If processing fails, try simple text decoding as fallback
     console.warn(`Failed to process file with comprehensive logic: ${error}`);
 
@@ -258,9 +266,20 @@ const processFileAuto = async (
 
 // Individual processor functions (internal)
 const processPdfFile = async (pdf: Blob): Promise<FileItemChunk[]> => {
-  const loader = new PDFLoader(pdf);
-  const docs = await loader.load();
-  const completeText = docs.map((doc: any) => doc.pageContent).join(" ");
+  const arrayBuffer = await pdf.arrayBuffer();
+  const typedArray = new Uint8Array(arrayBuffer);
+
+  const doc = await getDocument(typedArray).promise;
+  const textPages: string[] = [];
+
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page = await doc.getPage(i);
+    const textContent = await page.getTextContent();
+    const pageText = textContent.items.map((item: any) => item.str).join(" ");
+    textPages.push(pageText);
+  }
+
+  const completeText = textPages.join(" ");
 
   return [
     {
