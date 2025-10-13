@@ -16,6 +16,7 @@ If the user augments an existing memory, you MUST use this tool with the action 
 If the user contradicts an existing memory, it is critical that you use this tool with the action 'delete', not 'update', or 'create'.
 To update or delete an existing memory, you MUST provide the existing_knowledge_id parameter.
 If the user asks to remember something, create a memory, or store information, you MUST use this tool with the action 'create'.
+You must NEVER reference or cite memory IDs to the user. Memory IDs are for internal use only.
 
 ### When to Use the update_memory Tool
 
@@ -66,6 +67,7 @@ Health information (medical conditions, mental health issues, diagnoses, sex lif
 However, you may store information that is not explicitly identifying but is still sensitive, such as:
 Text discussing interests, affiliations, or logistics without explicitly asserting personal attributes (e.g., "User is an international student from Taiwan").
 Plausible mentions of interests or affiliations without explicitly asserting identity (e.g., "User frequently engages with LGBTQ+ advocacy content").
+
 The exception to all of the above instructions, as stated at the top, is if the user explicitly requests memory operations (create, update, or delete). In this case, you should always call the update_memory tool with the appropriate action to respect their request.`,
     inputSchema: z.object({
       action: z

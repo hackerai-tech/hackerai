@@ -26,8 +26,12 @@ import {
   updateChat,
   getMessagesByChatId,
   getUserCustomization,
-  setActiveStreamId,
+  prepareForNewStream,
+  startStream,
+  startTempStream,
+  deleteTempStreamForBackend,
 } from "@/lib/db/actions";
+import { createCancellationPoller } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
@@ -125,9 +129,27 @@ export const createChatHandler = () => {
       const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
 
-      if (!temporary) {
-        await setActiveStreamId({ chatId, activeStreamId: undefined });
+      const userStopSignal = new AbortController();
+
+      // Start temp stream coordination for temporary chats
+      if (temporary) {
+        try {
+          await startTempStream({ chatId, userId });
+        } catch {
+          // Silently continue; temp coordination is best-effort
+        }
       }
+
+      // Start cancellation poller (works for both regular and temporary chats)
+      let pollerStopped = false;
+      const cancellationPoller = createCancellationPoller({
+        chatId,
+        isTemporary: !!temporary,
+        abortController: userStopSignal,
+        onStop: () => {
+          pollerStopped = true;
+        },
+      });
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
@@ -198,6 +220,8 @@ export const createChatHandler = () => {
             chat?.finish_reason,
           );
 
+          let streamFinishReason: string | undefined;
+
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
@@ -241,6 +265,7 @@ export const createChatHandler = () => {
                   : {};
               }
             },
+            abortSignal: userStopSignal.signal,
             providerOptions: {
               openai: {
                 parallelToolCalls: false,
@@ -261,6 +286,7 @@ export const createChatHandler = () => {
             experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(mode === "ask" ? 5 : 10),
             onChunk: async (chunk) => {
+              // Track all tool calls immediately (no throttle)
               if (chunk.chunk.type === "tool-call") {
                 const command = (chunk.chunk.input as any)?.command;
                 if (posthog) {
@@ -271,65 +297,79 @@ export const createChatHandler = () => {
                 }
               }
             },
+            onFinish: async ({ finishReason }) => {
+              streamFinishReason = finishReason;
+            },
             onError: async (error) => {
               console.error("Error:", error);
-
-              const sandbox = getSandbox();
-              if (sandbox) {
-                await pauseSandbox(sandbox);
-              }
-              await titlePromise;
-            },
-            onFinish: async ({ finishReason }) => {
-              const sandbox = getSandbox();
-              if (sandbox) {
-                await pauseSandbox(sandbox);
-              }
-
-              const generatedTitle = await titlePromise;
-
-              if (!temporary) {
-                const mergedTodos = getTodoManager().mergeWith(
-                  baseTodos,
-                  assistantMessageId,
-                );
-
-                const shouldPersist = regenerate
-                  ? true
-                  : Boolean(
-                      generatedTitle || finishReason || mergedTodos.length > 0,
-                    );
-
-                if (shouldPersist) {
-                  await updateChat({
-                    chatId,
-                    title: generatedTitle,
-                    finishReason,
-                    todos: mergedTodos,
-                    defaultModelSlug: mode,
-                  });
-                }
-
-                // Clear active stream id when finished
-                await setActiveStreamId({ chatId, activeStreamId: undefined });
-              }
             },
           });
 
           writer.merge(
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
-              onFinish: async ({ messages }) => {
-                if (temporary) return;
-                const newFileIds = getFileAccumulator().getAll();
-                for (const message of messages) {
-                  await saveMessage({
-                    chatId,
-                    userId,
-                    message,
-                    extraFileIds:
-                      message.role === "assistant" ? newFileIds : undefined,
-                  });
+              onFinish: async ({ messages, isAborted }) => {
+                // Stop cancellation poller
+                cancellationPoller.stop();
+                pollerStopped = true;
+
+                // Always cleanup sandbox regardless of abort status
+                const sandbox = getSandbox();
+                if (sandbox) {
+                  await pauseSandbox(sandbox);
+                }
+
+                // Always wait for title generation to complete
+                const generatedTitle = await titlePromise;
+
+                if (!temporary) {
+                  const mergedTodos = getTodoManager().mergeWith(
+                    baseTodos,
+                    assistantMessageId,
+                  );
+
+                  const shouldPersist = regenerate
+                    ? true
+                    : Boolean(
+                        generatedTitle ||
+                          streamFinishReason ||
+                          mergedTodos.length > 0,
+                      );
+
+                  if (shouldPersist) {
+                    // updateChat automatically clears stream state (active_stream_id and canceled_at)
+                    await updateChat({
+                      chatId,
+                      title: generatedTitle,
+                      finishReason: streamFinishReason,
+                      todos: mergedTodos,
+                      defaultModelSlug: mode,
+                    });
+                  } else {
+                    // If not persisting, still need to clear stream state
+                    await prepareForNewStream({ chatId });
+                  }
+
+                  const newFileIds = getFileAccumulator().getAll();
+
+                  // If aborted and no files to add, skip message save (frontend already saved)
+                  if (isAborted && (!newFileIds || newFileIds.length === 0)) {
+                    return;
+                  }
+
+                  // Save messages (either full save or just append extraFileIds)
+                  for (const message of messages) {
+                    await saveMessage({
+                      chatId,
+                      userId,
+                      message,
+                      extraFileIds:
+                        message.role === "assistant" ? newFileIds : undefined,
+                    });
+                  }
+                } else {
+                  // For temporary chats, ensure temp stream row is removed backend-side
+                  await deleteTempStreamForBackend({ chatId });
                 }
               },
               sendReasoning: true,
@@ -346,7 +386,7 @@ export const createChatHandler = () => {
         const streamContext = getStreamContext();
         if (streamContext) {
           const streamId = uuidv4();
-          await setActiveStreamId({ chatId, activeStreamId: streamId });
+          await startStream({ chatId, streamId });
           const body = await streamContext.resumableStream(streamId, () => sse);
           return new Response(body);
         }

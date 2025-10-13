@@ -66,6 +66,10 @@ export const useChatHandlers = ({
   const regenerateWithNewContent = useMutation(
     api.messages.regenerateWithNewContent,
   );
+  const cancelStreamMutation = useMutation(api.chats.cancelStreamFromClient);
+  const cancelTempStreamMutation = useMutation(
+    api.tempStreams.cancelTempStreamFromClient,
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -149,24 +153,31 @@ export const useChatHandlers = ({
 
   const handleStop = async () => {
     setIsAutoResuming(false);
+
+    // Stop the stream immediately (client-side abort)
     stop();
 
-    const lastMessage = messages[messages.length - 1];
-    if (
-      !temporaryChatsEnabled &&
-      lastMessage &&
-      lastMessage.role === "assistant"
-    ) {
-      try {
-        await saveAssistantMessage({
+    if (!temporaryChatsEnabled) {
+      // Cancel the stream in database first (sets canceled_at for backend detection)
+      cancelStreamMutation({ chatId }).catch((error) => {
+        console.error("Failed to cancel stream:", error);
+      });
+
+      // Save the current message state immediately to prevent extra tokens from appearing
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.role === "assistant") {
+        saveAssistantMessage({
           id: lastMessage.id,
           chatId,
           role: lastMessage.role,
           parts: lastMessage.parts,
+        }).catch((error) => {
+          console.error("Failed to save message on stop:", error);
         });
-      } catch (error) {
-        console.error("Failed to save message on stop:", error);
       }
+    } else {
+      // Temporary chats: signal cancel via temp stream coordination
+      cancelTempStreamMutation({ chatId }).catch(() => {});
     }
   };
 

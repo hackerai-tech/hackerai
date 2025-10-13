@@ -8,6 +8,7 @@ export default defineSchema({
     user_id: v.string(),
     finish_reason: v.optional(v.string()),
     active_stream_id: v.optional(v.string()),
+    canceled_at: v.optional(v.number()),
     default_model_slug: v.optional(
       v.union(v.literal("ask"), v.literal("agent")),
     ),
@@ -97,4 +98,9 @@ export default defineSchema({
   })
     .index("by_memory_id", ["memory_id"])
     .index("by_user_and_update_time", ["user_id", "update_time"]),
+
+  temp_streams: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
 });

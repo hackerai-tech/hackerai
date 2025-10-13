@@ -337,25 +337,99 @@ export async function getMemoryById({ memoryId }: { memoryId: string }) {
   }
 }
 
-export async function setActiveStreamId({
+export async function startStream({
   chatId,
-  activeStreamId,
+  streamId,
 }: {
   chatId: string;
-  activeStreamId: string | undefined;
+  streamId: string;
 }) {
   try {
-    await convex.mutation(api.chats.setActiveStreamId, {
+    await convex.mutation(api.chats.startStream, {
       serviceKey,
       chatId,
-      activeStreamId,
+      streamId,
+    });
+    return;
+  } catch (error) {
+    throw new ChatSDKError("bad_request:database", "Failed to start stream");
+  }
+}
+
+export async function prepareForNewStream({ chatId }: { chatId: string }) {
+  try {
+    await convex.mutation(api.chats.prepareForNewStream, {
+      serviceKey,
+      chatId,
     });
     return;
   } catch (error) {
     throw new ChatSDKError(
       "bad_request:database",
-      "Failed to set active stream id",
+      "Failed to prepare for new stream",
     );
+  }
+}
+
+export async function getCancellationStatus({ chatId }: { chatId: string }) {
+  try {
+    const status = await convex.query(api.chats.getCancellationStatus, {
+      serviceKey,
+      chatId,
+    });
+    return status;
+  } catch (error) {
+    // Silently return null on error for cancellation checks
+    return null;
+  }
+}
+
+// Temporary chat stream coordination
+export async function startTempStream({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}) {
+  try {
+    await convex.mutation(api.tempStreams.startTempStream, {
+      serviceKey,
+      chatId,
+      userId,
+    });
+  } catch (error) {
+    // Do not throw; temp coordination best-effort
+  }
+}
+
+export async function getTempCancellationStatus({
+  chatId,
+}: {
+  chatId: string;
+}) {
+  try {
+    return await convex.query(api.tempStreams.getTempCancellationStatus, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
+    return null;
+  }
+}
+
+export async function deleteTempStreamForBackend({
+  chatId,
+}: {
+  chatId: string;
+}) {
+  try {
+    await convex.mutation(api.tempStreams.deleteTempStreamForBackend, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
+    // Best-effort cleanup
   }
 }
 

@@ -70,7 +70,7 @@ If you are generating files:
         command: string;
         is_background: boolean;
       },
-      { toolCallId }: { toolCallId: string },
+      { toolCallId, abortSignal },
     ) => {
       try {
         const { sandbox } = await sandboxManager.getSandbox();
@@ -88,8 +88,45 @@ If you are generating files:
 
         return new Promise((resolve, reject) => {
           let resolved = false;
+          let execution: any = null;
+          let handler: ReturnType<typeof createTerminalHandler> | null = null;
 
-          const handler = createTerminalHandler(
+          // Listen for abort signal
+          const onAbort = () => {
+            if (!resolved) {
+              resolved = true;
+              const result = handler
+                ? handler.getResult()
+                : { stdout: "", stderr: "" };
+              if (handler) {
+                handler.cleanup();
+              }
+              resolve({
+                result: {
+                  ...result,
+                  exitCode: null,
+                  error: "Command execution aborted by user",
+                },
+              });
+            }
+            // Kill the running process if exists
+            if (execution && execution.kill) {
+              execution.kill().catch(() => {});
+            }
+          };
+
+          if (abortSignal?.aborted) {
+            return resolve({
+              result: {
+                stdout: "",
+                stderr: "",
+                exitCode: null,
+                error: "Command execution aborted by user",
+              },
+            });
+          }
+
+          handler = createTerminalHandler(
             (output) => createTerminalWriter(output),
             {
               timeoutSeconds: STREAM_TIMEOUT_SECONDS,
@@ -97,8 +134,16 @@ If you are generating files:
                 if (!resolved) {
                   resolved = true;
                   createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
-                  handler.cleanup();
-                  const result = handler.getResult();
+                  // Kill the running process on timeout if exists
+                  if (execution && execution.kill) {
+                    execution.kill().catch(() => {});
+                  }
+                  const result = handler
+                    ? handler.getResult()
+                    : { stdout: "", stderr: "" };
+                  if (handler) {
+                    handler.cleanup();
+                  }
                   resolve({
                     result: { ...result, exitCode: null },
                   });
@@ -107,12 +152,14 @@ If you are generating files:
             },
           );
 
+          abortSignal?.addEventListener("abort", onAbort, { once: true });
+
           const commonOptions = {
             timeoutMs: MAX_COMMAND_EXECUTION_TIME,
             user: "root" as const,
             cwd: "/home/user",
-            onStdout: handler.stdout,
-            onStderr: handler.stderr,
+            onStdout: handler!.stdout,
+            onStderr: handler!.stderr,
           };
 
           const runPromise = is_background
@@ -123,15 +170,21 @@ If you are generating files:
             : sandbox.commands.run(command, commonOptions);
 
           runPromise
-            .then(async (execution) => {
-              handler.cleanup();
+            .then(async (exec) => {
+              execution = exec;
+              if (handler) {
+                handler.cleanup();
+              }
 
               if (!resolved) {
                 resolved = true;
-                const finalResult = handler.getResult();
+                abortSignal?.removeEventListener("abort", onAbort);
+                const finalResult = handler
+                  ? handler.getResult()
+                  : { stdout: "", stderr: "" };
                 resolve({
                   result: {
-                    ...execution,
+                    ...exec,
                     stdout: finalResult.stdout,
                     stderr: finalResult.stderr,
                   },
@@ -139,12 +192,17 @@ If you are generating files:
               }
             })
             .catch((error) => {
-              handler.cleanup();
+              if (handler) {
+                handler.cleanup();
+              }
               if (!resolved) {
                 resolved = true;
+                abortSignal?.removeEventListener("abort", onAbort);
                 // Handle CommandExitError as a valid result (non-zero exit code)
                 if (error instanceof CommandExitError) {
-                  const finalResult = handler.getResult();
+                  const finalResult = handler
+                    ? handler.getResult()
+                    : { stdout: "", stderr: "" };
                   resolve({
                     result: {
                       exitCode: error.exitCode,

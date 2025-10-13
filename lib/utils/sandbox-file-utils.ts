@@ -15,6 +15,42 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
 };
 
 /**
+ * Sanitizes a filename to be terminal-friendly by removing/replacing problematic characters
+ * - Replaces spaces with underscores
+ * - Removes special characters that need escaping
+ * - Preserves file extension
+ * - Ensures the name is valid and readable
+ */
+const sanitizeFilenameForTerminal = (filename: string): string => {
+  // Remove path separators first
+  const basename = filename.split(/[/\\]/g).pop() ?? "file";
+
+  // Split into name and extension
+  const lastDotIndex = basename.lastIndexOf(".");
+  const hasExtension = lastDotIndex > 0;
+  const name = hasExtension ? basename.substring(0, lastDotIndex) : basename;
+  const ext = hasExtension ? basename.substring(lastDotIndex) : "";
+
+  // Replace spaces and special characters
+  let sanitized = name
+    .replace(/\s+/g, "_") // Replace spaces with underscores
+    .replace(/[^\w.-]/g, "") // Remove special characters except word chars, dots, and hyphens
+    .replace(/_{2,}/g, "_") // Replace multiple underscores with single
+    .replace(/^[._-]+/, "") // Remove leading dots, underscores, or hyphens
+    .replace(/[._-]+$/, ""); // Remove trailing dots, underscores, or hyphens
+
+  // Fallback if name becomes empty
+  if (!sanitized) {
+    sanitized = "file";
+  }
+
+  // Sanitize extension (remove special chars except the leading dot)
+  const sanitizedExt = ext.replace(/[^\w.]/g, "");
+
+  return sanitized + sanitizedExt;
+};
+
+/**
  * Collects sandbox files from message parts and appends attachment tags in agent mode
  */
 export const collectSandboxFiles = (
@@ -33,7 +69,7 @@ export const collectSandboxFiles = (
     for (const part of msg.parts as any[]) {
       if (part?.type === "file" && part?.fileId && part?.url) {
         const rawName: string = part.name || part.filename || "file";
-        const sanitizedName = rawName.split(/[/\\]/g).pop() ?? "file";
+        const sanitizedName = sanitizeFilenameForTerminal(rawName);
         const localPath = `/home/user/upload/${sanitizedName}`;
         // Only upload files for the last user message
         if (i === lastUserIdx) {

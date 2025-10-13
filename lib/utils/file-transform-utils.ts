@@ -164,7 +164,11 @@ export async function processMessageFiles(
       removeNonMediaFileParts(updatedMessages);
     } else {
       if (fileIds.length > 0) {
-        await addDocumentContentToMessages(updatedMessages, fileIds);
+        // Filter out media files - they should stay as file parts in ask mode
+        const nonMediaFileIds = filterNonMediaFileIds(updatedMessages, fileIds);
+        if (nonMediaFileIds.length > 0) {
+          await addDocumentContentToMessages(updatedMessages, nonMediaFileIds);
+        }
       }
       // In ask mode, strip audio files entirely to avoid provider errors
       removeAudioFileParts(updatedMessages);
@@ -243,7 +247,11 @@ export async function processMessageFiles(
       removeNonMediaFileParts(updatedMessages);
     } else {
       if (fileIds.length > 0) {
-        await addDocumentContentToMessages(updatedMessages, fileIds);
+        // Filter out media files - they should stay as file parts in ask mode
+        const nonMediaFileIds = filterNonMediaFileIds(updatedMessages, fileIds);
+        if (nonMediaFileIds.length > 0) {
+          await addDocumentContentToMessages(updatedMessages, nonMediaFileIds);
+        }
       }
       // In ask mode, strip audio files entirely to avoid provider errors
       removeAudioFileParts(updatedMessages);
@@ -268,6 +276,37 @@ export async function processMessageFiles(
       containsPdfFiles: false,
     };
   }
+}
+
+/**
+ * Filters out media files (images and PDFs) from the file IDs array.
+ * Returns only non-media file IDs that should be converted to document content.
+ */
+function filterNonMediaFileIds(
+  messages: UIMessage[],
+  fileIds: Id<"files">[],
+): Id<"files">[] {
+  // Build a set of media file IDs from message parts
+  const mediaFileIds = new Set<string>();
+
+  for (const message of messages) {
+    if (!message.parts) continue;
+
+    for (const part of message.parts as any[]) {
+      if (part.type === "file" && part.fileId && part.mediaType) {
+        // Keep images and PDFs as file parts
+        if (
+          isSupportedImageMediaType(part.mediaType) ||
+          part.mediaType === "application/pdf"
+        ) {
+          mediaFileIds.add(part.fileId);
+        }
+      }
+    }
+  }
+
+  // Return only non-media file IDs
+  return fileIds.filter((fileId) => !mediaFileIds.has(fileId));
 }
 
 /**
