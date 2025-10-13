@@ -98,4 +98,9 @@ export default defineSchema({
   })
     .index("by_memory_id", ["memory_id"])
     .index("by_user_and_update_time", ["user_id", "update_time"]),
+
+  temp_streams: defineTable({
+    chat_id: v.string(),
+    user_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
 });

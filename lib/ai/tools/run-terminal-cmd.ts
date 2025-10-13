@@ -70,7 +70,7 @@ If you are generating files:
         command: string;
         is_background: boolean;
       },
-      { toolCallId }: { toolCallId: string },
+      { toolCallId, abortSignal },
     ) => {
       try {
         const { sandbox } = await sandboxManager.getSandbox();
@@ -88,6 +88,40 @@ If you are generating files:
 
         return new Promise((resolve, reject) => {
           let resolved = false;
+          let execution: any = null;
+
+          // Listen for abort signal
+          const onAbort = () => {
+            if (!resolved) {
+              resolved = true;
+              handler.cleanup();
+              const result = handler.getResult();
+              resolve({
+                result: {
+                  ...result,
+                  exitCode: null,
+                  error: "Command execution aborted by user",
+                },
+              });
+            }
+            // Kill the running process if exists
+            if (execution && execution.kill) {
+              execution.kill().catch(() => {});
+            }
+          };
+
+          if (abortSignal?.aborted) {
+            return resolve({
+              result: {
+                stdout: "",
+                stderr: "",
+                exitCode: null,
+                error: "Command execution aborted by user",
+              },
+            });
+          }
+
+          abortSignal?.addEventListener("abort", onAbort, { once: true });
 
           const handler = createTerminalHandler(
             (output) => createTerminalWriter(output),
@@ -123,15 +157,17 @@ If you are generating files:
             : sandbox.commands.run(command, commonOptions);
 
           runPromise
-            .then(async (execution) => {
+            .then(async (exec) => {
+              execution = exec;
               handler.cleanup();
 
               if (!resolved) {
                 resolved = true;
+                abortSignal?.removeEventListener("abort", onAbort);
                 const finalResult = handler.getResult();
                 resolve({
                   result: {
-                    ...execution,
+                    ...exec,
                     stdout: finalResult.stdout,
                     stderr: finalResult.stderr,
                   },
@@ -142,6 +178,7 @@ If you are generating files:
               handler.cleanup();
               if (!resolved) {
                 resolved = true;
+                abortSignal?.removeEventListener("abort", onAbort);
                 // Handle CommandExitError as a valid result (non-zero exit code)
                 if (error instanceof CommandExitError) {
                   const finalResult = handler.getResult();

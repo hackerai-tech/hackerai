@@ -26,10 +26,12 @@ import {
   updateChat,
   getMessagesByChatId,
   getUserCustomization,
-  getCancellationStatus,
   prepareForNewStream,
   startStream,
+  startTempStream,
+  deleteTempStreamForBackend,
 } from "@/lib/db/actions";
+import { createCancellationPoller } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
@@ -129,46 +131,25 @@ export const createChatHandler = () => {
 
       const userStopSignal = new AbortController();
 
-      // Background cancellation poller using a self-scheduling timeout
-      // Ensures no overlapping requests and ~1000ms delay between checks
-      let cancellationTimeoutId: NodeJS.Timeout | null = null;
-      let pollerStopped = false;
-      if (!temporary) {
-        const schedulePoll = () => {
-          if (pollerStopped || userStopSignal.signal.aborted) return;
-          cancellationTimeoutId = setTimeout(async () => {
-            try {
-              const status = await getCancellationStatus({ chatId });
-              if (status?.canceled_at) {
-                userStopSignal.abort();
-                return;
-              }
-            } catch (error) {
-              // Silently ignore errors in background poller
-            } finally {
-              if (!(pollerStopped || userStopSignal.signal.aborted)) {
-                schedulePoll();
-              }
-            }
-          }, 1000);
-        };
-
-        // Kick off first poll
-        schedulePoll();
-
-        // Auto-cleanup when abort is triggered; prevent further scheduling
-        userStopSignal.signal.addEventListener(
-          "abort",
-          () => {
-            pollerStopped = true;
-            if (cancellationTimeoutId) {
-              clearTimeout(cancellationTimeoutId);
-              cancellationTimeoutId = null;
-            }
-          },
-          { once: true },
-        );
+      // Start temp stream coordination for temporary chats
+      if (temporary) {
+        try {
+          await startTempStream({ chatId, userId });
+        } catch {
+          // Silently continue; temp coordination is best-effort
+        }
       }
+
+      // Start cancellation poller (works for both regular and temporary chats)
+      let pollerStopped = false;
+      const cancellationPoller = createCancellationPoller({
+        chatId,
+        isTemporary: !!temporary,
+        abortController: userStopSignal,
+        onStop: () => {
+          pollerStopped = true;
+        },
+      });
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
@@ -328,12 +309,10 @@ export const createChatHandler = () => {
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
-                // Ensure cancellation poller is cleared on finish/cleanup
+                // Stop cancellation poller
+                cancellationPoller.stop();
                 pollerStopped = true;
-                if (cancellationTimeoutId) {
-                  clearTimeout(cancellationTimeoutId);
-                  cancellationTimeoutId = null;
-                }
+
                 // Always cleanup sandbox regardless of abort status
                 const sandbox = getSandbox();
                 if (sandbox) {
@@ -388,6 +367,9 @@ export const createChatHandler = () => {
                         message.role === "assistant" ? newFileIds : undefined,
                     });
                   }
+                } else {
+                  // For temporary chats, ensure temp stream row is removed backend-side
+                  await deleteTempStreamForBackend({ chatId });
                 }
               },
               sendReasoning: true,

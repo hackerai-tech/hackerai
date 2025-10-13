@@ -384,6 +384,55 @@ export async function getCancellationStatus({ chatId }: { chatId: string }) {
   }
 }
 
+// Temporary chat stream coordination
+export async function startTempStream({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}) {
+  try {
+    await convex.mutation(api.tempStreams.startTempStream, {
+      serviceKey,
+      chatId,
+      userId,
+    });
+  } catch (error) {
+    // Do not throw; temp coordination best-effort
+  }
+}
+
+export async function getTempCancellationStatus({
+  chatId,
+}: {
+  chatId: string;
+}) {
+  try {
+    return await convex.query(api.tempStreams.getTempCancellationStatus, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
+    return null;
+  }
+}
+
+export async function deleteTempStreamForBackend({
+  chatId,
+}: {
+  chatId: string;
+}) {
+  try {
+    await convex.mutation(api.tempStreams.deleteTempStreamForBackend, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
+    // Best-effort cleanup
+  }
+}
+
 export async function createMemory({
   userId,
   content,

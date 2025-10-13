@@ -67,6 +67,9 @@ export const useChatHandlers = ({
     api.messages.regenerateWithNewContent,
   );
   const cancelStreamMutation = useMutation(api.chats.cancelStreamFromClient);
+  const cancelTempStreamMutation = useMutation(
+    api.tempStreams.cancelTempStreamFromClient,
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,6 +175,9 @@ export const useChatHandlers = ({
           console.error("Failed to save message on stop:", error);
         });
       }
+    } else {
+      // Temporary chats: signal cancel via temp stream coordination
+      cancelTempStreamMutation({ chatId }).catch(() => {});
     }
   };
 
