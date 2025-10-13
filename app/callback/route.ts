@@ -16,7 +16,19 @@ export async function GET(request: NextRequest) {
 
   if (redirectPath) cookieStore.delete("post_login_redirect");
 
+  const originalError = console.error;
   try {
+    console.error = (...args: unknown[]) => {
+      const message = String(args[0]);
+      if (
+        message.includes("invalid_grant") ||
+        message.includes("InvalidCharacterError")
+      ) {
+        return;
+      }
+      originalError.apply(console, args);
+    };
+
     const response = await authHandler(request);
 
     if (
@@ -37,5 +49,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(new URL("/", request.url));
     }
     throw error;
+  } finally {
+    console.error = originalError;
   }
 }
