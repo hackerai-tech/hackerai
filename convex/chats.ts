@@ -163,6 +163,7 @@ export const saveChat = mutation({
 
 /**
  * Update an existing chat with title and finish reason
+ * Automatically clears active_stream_id and canceled_at for stream cleanup
  */
 export const updateChat = mutation({
   args: {
@@ -214,9 +215,14 @@ export const updateChat = mutation({
           status: "pending" | "in_progress" | "completed" | "cancelled";
           sourceMessageId?: string;
         }>;
+        active_stream_id?: undefined;
+        canceled_at?: undefined;
         update_time: number;
       } = {
         update_time: Date.now(),
+        // Always clear stream state when updating chat (stream is finished)
+        active_stream_id: undefined,
+        canceled_at: undefined,
       };
 
       if (args.title !== undefined) {

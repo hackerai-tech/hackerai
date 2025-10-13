@@ -36,7 +36,6 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
-import throttle from "throttleit";
 
 let globalStreamContext: any | null = null;
 
@@ -130,15 +129,32 @@ export const createChatHandler = () => {
 
       const userStopSignal = new AbortController();
 
-      // Throttled cancellation check (max once per second)
-      const checkCancellation = throttle(async () => {
-        if (!temporary) {
-          const status = await getCancellationStatus({ chatId });
-          if (status?.canceled_at) {
-            userStopSignal.abort();
+      // Background cancellation poller (checks every second, fire-and-forget)
+      let cancellationIntervalId: NodeJS.Timeout | null = null;
+      if (!temporary) {
+        cancellationIntervalId = setInterval(async () => {
+          try {
+            const status = await getCancellationStatus({ chatId });
+            if (status?.canceled_at) {
+              userStopSignal.abort();
+            }
+          } catch (error) {
+            // Silently ignore errors in background poller
           }
-        }
-      }, 1000);
+        }, 1000);
+
+        // Auto-cleanup interval when abort is triggered
+        userStopSignal.signal.addEventListener(
+          "abort",
+          () => {
+            if (cancellationIntervalId) {
+              clearInterval(cancellationIntervalId);
+              cancellationIntervalId = null;
+            }
+          },
+          { once: true },
+        );
+      }
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
@@ -285,9 +301,6 @@ export const createChatHandler = () => {
                   });
                 }
               }
-
-              // Check for cancellation (throttled separately)
-              await checkCancellation();
             },
             onFinish: async ({ finishReason }) => {
               streamFinishReason = finishReason;
@@ -301,6 +314,11 @@ export const createChatHandler = () => {
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
+                // Ensure cancellation poller is cleared on finish/cleanup
+                if (cancellationIntervalId) {
+                  clearInterval(cancellationIntervalId);
+                  cancellationIntervalId = null;
+                }
                 // Always cleanup sandbox regardless of abort status
                 const sandbox = getSandbox();
                 if (sandbox) {
@@ -325,6 +343,7 @@ export const createChatHandler = () => {
                       );
 
                   if (shouldPersist) {
+                    // updateChat automatically clears stream state (active_stream_id and canceled_at)
                     await updateChat({
                       chatId,
                       title: generatedTitle,
@@ -332,11 +351,10 @@ export const createChatHandler = () => {
                       todos: mergedTodos,
                       defaultModelSlug: mode,
                     });
+                  } else {
+                    // If not persisting, still need to clear stream state
+                    await prepareForNewStream({ chatId });
                   }
-
-                  // Clear both active_stream_id and canceled_at when finished
-                  // This is critical for stream resumption and cleanup
-                  await prepareForNewStream({ chatId });
 
                   const newFileIds = getFileAccumulator().getAll();
 

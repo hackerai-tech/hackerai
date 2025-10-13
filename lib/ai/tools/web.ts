@@ -54,7 +54,7 @@ open_url(url: str) Opens the given URL and displays it.`,
       command: "search" | "open_url";
       query?: string;
       url?: string;
-    }) => {
+    }, { abortSignal }) => {
       try {
         if (command === "search") {
           const exa = new Exa(process.env.EXA_API_KEY);
@@ -108,6 +108,7 @@ open_url(url: str) Opens the given URL and displays it.`,
               "X-Timeout": "30",
               "X-Base": "final",
             },
+            signal: abortSignal,
           });
 
           if (!response.ok) {
@@ -123,6 +124,10 @@ open_url(url: str) Opens the given URL and displays it.`,
 
         return "Error: Invalid command";
       } catch (error) {
+        // Handle abort errors gracefully without logging
+        if (error instanceof Error && error.name === "AbortError") {
+          return "Error: Operation aborted";
+        }
         console.error("Web tool error:", error);
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error occurred";
