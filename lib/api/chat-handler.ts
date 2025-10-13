@@ -129,27 +129,41 @@ export const createChatHandler = () => {
 
       const userStopSignal = new AbortController();
 
-      // Background cancellation poller (checks every second, fire-and-forget)
-      let cancellationIntervalId: NodeJS.Timeout | null = null;
+      // Background cancellation poller using a self-scheduling timeout
+      // Ensures no overlapping requests and ~1000ms delay between checks
+      let cancellationTimeoutId: NodeJS.Timeout | null = null;
+      let pollerStopped = false;
       if (!temporary) {
-        cancellationIntervalId = setInterval(async () => {
-          try {
-            const status = await getCancellationStatus({ chatId });
-            if (status?.canceled_at) {
-              userStopSignal.abort();
+        const schedulePoll = () => {
+          if (pollerStopped || userStopSignal.signal.aborted) return;
+          cancellationTimeoutId = setTimeout(async () => {
+            try {
+              const status = await getCancellationStatus({ chatId });
+              if (status?.canceled_at) {
+                userStopSignal.abort();
+                return;
+              }
+            } catch (error) {
+              // Silently ignore errors in background poller
+            } finally {
+              if (!(pollerStopped || userStopSignal.signal.aborted)) {
+                schedulePoll();
+              }
             }
-          } catch (error) {
-            // Silently ignore errors in background poller
-          }
-        }, 1000);
+          }, 1000);
+        };
 
-        // Auto-cleanup interval when abort is triggered
+        // Kick off first poll
+        schedulePoll();
+
+        // Auto-cleanup when abort is triggered; prevent further scheduling
         userStopSignal.signal.addEventListener(
           "abort",
           () => {
-            if (cancellationIntervalId) {
-              clearInterval(cancellationIntervalId);
-              cancellationIntervalId = null;
+            pollerStopped = true;
+            if (cancellationTimeoutId) {
+              clearTimeout(cancellationTimeoutId);
+              cancellationTimeoutId = null;
             }
           },
           { once: true },
@@ -315,9 +329,10 @@ export const createChatHandler = () => {
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
                 // Ensure cancellation poller is cleared on finish/cleanup
-                if (cancellationIntervalId) {
-                  clearInterval(cancellationIntervalId);
-                  cancellationIntervalId = null;
+                pollerStopped = true;
+                if (cancellationTimeoutId) {
+                  clearTimeout(cancellationTimeoutId);
+                  cancellationTimeoutId = null;
                 }
                 // Always cleanup sandbox regardless of abort status
                 const sandbox = getSandbox();

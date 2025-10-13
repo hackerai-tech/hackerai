@@ -46,15 +46,18 @@ open_url(url: str) Opens the given URL and displays it.`,
           "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
         ),
     }),
-    execute: async ({
-      command,
-      query,
-      url,
-    }: {
-      command: "search" | "open_url";
-      query?: string;
-      url?: string;
-    }, { abortSignal }) => {
+    execute: async (
+      {
+        command,
+        query,
+        url,
+      }: {
+        command: "search" | "open_url";
+        query?: string;
+        url?: string;
+      },
+      { abortSignal },
+    ) => {
       try {
         if (command === "search") {
           const exa = new Exa(process.env.EXA_API_KEY);
