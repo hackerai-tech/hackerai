@@ -71,6 +71,35 @@ export const saveMessage = mutation({
         .first();
 
       if (existingMessage) {
+        // If message exists and we have fileIds to add, update it
+        if (args.fileIds && args.fileIds.length > 0) {
+          const currentFileIds = existingMessage.file_ids || [];
+          const newFileIds = args.fileIds.filter(
+            (id) => !currentFileIds.includes(id),
+          );
+
+          if (newFileIds.length > 0) {
+            await ctx.db.patch(existingMessage._id, {
+              file_ids: [...currentFileIds, ...newFileIds],
+              update_time: Date.now(),
+            });
+
+            // Mark new files as linked
+            for (const fileId of newFileIds) {
+              try {
+                const file = await ctx.db.get(fileId);
+                if (file && !file.is_attached) {
+                  await ctx.db.patch(file._id, { is_attached: true });
+                }
+              } catch (error) {
+                console.error(
+                  `Failed to mark file ${fileId} as attached:`,
+                  error,
+                );
+              }
+            }
+          }
+        }
         return null;
       } else {
         const chatExists: boolean = await ctx.runQuery(

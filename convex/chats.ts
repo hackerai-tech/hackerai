@@ -317,18 +317,20 @@ export const prepareForNewStream = mutation({
 });
 
 /**
- * Cancel a stream by setting canceled_at and clearing active_stream_id (backend only)
- * Combines both operations in a single atomic mutation
+ * Cancel a stream from the client (with auth check)
+ * Client-callable version of cancelStream
  */
-export const cancelStream = mutation({
+export const cancelStreamFromClient = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
     chatId: v.string(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    // Verify service role key
-    validateServiceKey(args.serviceKey);
+    // Authenticate user
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
 
     const chat = await ctx.db
       .query("chats")
@@ -337,6 +339,11 @@ export const cancelStream = mutation({
 
     if (!chat) {
       throw new Error("Chat not found");
+    }
+
+    // Verify ownership
+    if (chat.user_id !== identity.subject) {
+      throw new Error("Unauthorized: Chat does not belong to user");
     }
 
     // Only patch if needed

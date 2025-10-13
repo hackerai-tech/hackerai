@@ -209,6 +209,8 @@ export const createChatHandler = () => {
             chat?.finish_reason,
           );
 
+          let streamFinishReason: string | undefined;
+
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
@@ -287,69 +289,72 @@ export const createChatHandler = () => {
               // Check for cancellation (throttled separately)
               await checkCancellation();
             },
-            onAbort: () => {
-              console.log("aborted");
+            onFinish: async ({ finishReason }) => {
+              streamFinishReason = finishReason;
             },
             onError: async (error) => {
               console.error("Error:", error);
-
-              const sandbox = getSandbox();
-              if (sandbox) {
-                await pauseSandbox(sandbox);
-              }
-              await titlePromise;
-            },
-            onFinish: async ({ finishReason }) => {
-              const sandbox = getSandbox();
-              if (sandbox) {
-                await pauseSandbox(sandbox);
-              }
-
-              const generatedTitle = await titlePromise;
-
-              if (!temporary) {
-                const mergedTodos = getTodoManager().mergeWith(
-                  baseTodos,
-                  assistantMessageId,
-                );
-
-                const shouldPersist = regenerate
-                  ? true
-                  : Boolean(
-                      generatedTitle || finishReason || mergedTodos.length > 0,
-                    );
-
-                if (shouldPersist) {
-                  await updateChat({
-                    chatId,
-                    title: generatedTitle,
-                    finishReason,
-                    todos: mergedTodos,
-                    defaultModelSlug: mode,
-                  });
-                }
-
-                // Clear both active_stream_id and canceled_at when finished
-                // This is critical for stream resumption and cleanup
-                await prepareForNewStream({ chatId });
-              }
             },
           });
 
           writer.merge(
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
-              onFinish: async ({ messages }) => {
-                if (temporary) return;
-                const newFileIds = getFileAccumulator().getAll();
-                for (const message of messages) {
-                  await saveMessage({
-                    chatId,
-                    userId,
-                    message,
-                    extraFileIds:
-                      message.role === "assistant" ? newFileIds : undefined,
-                  });
+              onFinish: async ({ messages, isAborted }) => {
+                // Always cleanup sandbox regardless of abort status
+                const sandbox = getSandbox();
+                if (sandbox) {
+                  await pauseSandbox(sandbox);
+                }
+
+                // Always wait for title generation to complete
+                const generatedTitle = await titlePromise;
+
+                if (!temporary) {
+                  const mergedTodos = getTodoManager().mergeWith(
+                    baseTodos,
+                    assistantMessageId,
+                  );
+
+                  const shouldPersist = regenerate
+                    ? true
+                    : Boolean(
+                        generatedTitle ||
+                          streamFinishReason ||
+                          mergedTodos.length > 0,
+                      );
+
+                  if (shouldPersist) {
+                    await updateChat({
+                      chatId,
+                      title: generatedTitle,
+                      finishReason: streamFinishReason,
+                      todos: mergedTodos,
+                      defaultModelSlug: mode,
+                    });
+                  }
+
+                  // Clear both active_stream_id and canceled_at when finished
+                  // This is critical for stream resumption and cleanup
+                  await prepareForNewStream({ chatId });
+
+                  const newFileIds = getFileAccumulator().getAll();
+
+                  // If aborted and no files to add, skip message save (frontend already saved)
+                  if (isAborted && (!newFileIds || newFileIds.length === 0)) {
+                    return;
+                  }
+
+                  // Save messages (either full save or just append extraFileIds)
+                  for (const message of messages) {
+                    await saveMessage({
+                      chatId,
+                      userId,
+                      message,
+                      extraFileIds:
+                        message.role === "assistant" ? newFileIds : undefined,
+                    });
+                  }
                 }
               },
               sendReasoning: true,

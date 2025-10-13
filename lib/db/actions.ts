@@ -371,18 +371,6 @@ export async function prepareForNewStream({ chatId }: { chatId: string }) {
   }
 }
 
-export async function cancelStream({ chatId }: { chatId: string }) {
-  try {
-    await convex.mutation(api.chats.cancelStream, {
-      serviceKey,
-      chatId,
-    });
-    return;
-  } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to cancel stream");
-  }
-}
-
 export async function getCancellationStatus({ chatId }: { chatId: string }) {
   try {
     const status = await convex.query(api.chats.getCancellationStatus, {

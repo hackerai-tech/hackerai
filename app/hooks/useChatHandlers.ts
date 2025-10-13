@@ -66,6 +66,7 @@ export const useChatHandlers = ({
   const regenerateWithNewContent = useMutation(
     api.messages.regenerateWithNewContent,
   );
+  const cancelStreamMutation = useMutation(api.chats.cancelStreamFromClient);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -150,34 +151,26 @@ export const useChatHandlers = ({
   const handleStop = async () => {
     setIsAutoResuming(false);
 
+    // Stop the stream immediately (client-side abort)
     stop();
 
-    // Cancel the stream by calling DELETE endpoint
     if (!temporaryChatsEnabled) {
-      try {
-        await fetch(`/api/chat/${chatId}/stream`, {
-          method: "DELETE",
-        });
-      } catch (error) {
+      // Cancel the stream in database first (sets canceled_at for backend detection)
+      cancelStreamMutation({ chatId }).catch((error) => {
         console.error("Failed to cancel stream:", error);
-      }
-    }
+      });
 
-    const lastMessage = messages[messages.length - 1];
-    if (
-      !temporaryChatsEnabled &&
-      lastMessage &&
-      lastMessage.role === "assistant"
-    ) {
-      try {
-        await saveAssistantMessage({
+      // Save the current message state immediately to prevent extra tokens from appearing
+      const lastMessage = messages[messages.length - 1];
+      if (lastMessage && lastMessage.role === "assistant") {
+        saveAssistantMessage({
           id: lastMessage.id,
           chatId,
           role: lastMessage.role,
           parts: lastMessage.parts,
+        }).catch((error) => {
+          console.error("Failed to save message on stop:", error);
         });
-      } catch (error) {
-        console.error("Failed to save message on stop:", error);
       }
     }
   };
