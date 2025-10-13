@@ -95,7 +95,9 @@ If you are generating files:
           const onAbort = () => {
             if (!resolved) {
               resolved = true;
-              const result = handler ? handler.getResult() : { stdout: "", stderr: "" };
+              const result = handler
+                ? handler.getResult()
+                : { stdout: "", stderr: "" };
               if (handler) {
                 handler.cleanup();
               }
@@ -136,7 +138,9 @@ If you are generating files:
                   if (execution && execution.kill) {
                     execution.kill().catch(() => {});
                   }
-                  const result = handler ? handler.getResult() : { stdout: "", stderr: "" };
+                  const result = handler
+                    ? handler.getResult()
+                    : { stdout: "", stderr: "" };
                   if (handler) {
                     handler.cleanup();
                   }
@@ -175,7 +179,9 @@ If you are generating files:
               if (!resolved) {
                 resolved = true;
                 abortSignal?.removeEventListener("abort", onAbort);
-                const finalResult = handler ? handler.getResult() : { stdout: "", stderr: "" };
+                const finalResult = handler
+                  ? handler.getResult()
+                  : { stdout: "", stderr: "" };
                 resolve({
                   result: {
                     ...exec,
@@ -194,7 +200,9 @@ If you are generating files:
                 abortSignal?.removeEventListener("abort", onAbort);
                 // Handle CommandExitError as a valid result (non-zero exit code)
                 if (error instanceof CommandExitError) {
-                  const finalResult = handler ? handler.getResult() : { stdout: "", stderr: "" };
+                  const finalResult = handler
+                    ? handler.getResult()
+                    : { stdout: "", stderr: "" };
                   resolve({
                     result: {
                       exitCode: error.exitCode,
