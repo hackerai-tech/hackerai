@@ -185,12 +185,17 @@ If you are generating files:
                 const finalResult = handler
                   ? handler.getResult()
                   : { stdout: "", stderr: "" };
-                
+
                 // Track background processes with their output files
                 if (is_background && (exec as any)?.pid) {
                   const pid = (exec as any).pid;
-                  const outputFiles = BackgroundProcessTracker.extractOutputFiles(command);
-                  backgroundProcessTracker.addProcess(pid, command, outputFiles);
+                  const outputFiles =
+                    BackgroundProcessTracker.extractOutputFiles(command);
+                  backgroundProcessTracker.addProcess(
+                    pid,
+                    command,
+                    outputFiles,
+                  );
                 }
 
                 resolve({

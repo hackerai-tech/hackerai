@@ -42,13 +42,13 @@ export class BackgroundProcessTracker {
         user: "root" as const,
         cwd: "/home/user",
       });
-      
+
       const isRunning = result.stdout.includes(pid.toString());
-      
+
       if (!isRunning) {
         this.removeProcess(pid);
       }
-      
+
       return isRunning;
     } catch (error) {
       this.removeProcess(pid);
@@ -61,19 +61,19 @@ export class BackgroundProcessTracker {
    */
   async hasActiveProcessesForFiles(
     sandbox: Sandbox,
-    filePaths: string[]
+    filePaths: string[],
   ): Promise<{ active: boolean; processes: BackgroundProcess[] }> {
     const activeProcesses: BackgroundProcess[] = [];
 
     for (const [pid, process] of this.processes.entries()) {
       const isRunning = await this.checkProcessStatus(sandbox, pid);
-      
+
       if (isRunning) {
         const hasMatchingFile = process.outputFiles.some((outputFile) =>
           filePaths.some((requestedFile) => {
             const normalizedOutput = this.normalizePath(outputFile);
             const normalizedRequested = this.normalizePath(requestedFile);
-            
+
             return (
               normalizedOutput === normalizedRequested ||
               normalizedOutput.endsWith("/" + normalizedRequested) ||
@@ -81,7 +81,7 @@ export class BackgroundProcessTracker {
               normalizedOutput.endsWith(normalizedRequested) ||
               normalizedRequested.endsWith(normalizedOutput)
             );
-          })
+          }),
         );
 
         if (hasMatchingFile) {
@@ -102,12 +102,12 @@ export class BackgroundProcessTracker {
   private normalizePath(path: string): string {
     // Remove leading/trailing spaces and normalize slashes
     let normalized = path.trim().replace(/\/+/g, "/");
-    
+
     // Remove leading ./ if present
     if (normalized.startsWith("./")) {
       normalized = normalized.slice(2);
     }
-    
+
     return normalized;
   }
 
@@ -127,7 +127,7 @@ export class BackgroundProcessTracker {
     for (const pattern of nmapPatterns) {
       let match;
       while ((match = pattern.exec(command)) !== null) {
-        const filename = match[1].replace(/^['"]|['"]$/g, '');
+        const filename = match[1].replace(/^['"]|['"]$/g, "");
         outputFiles.push(filename);
       }
     }
@@ -143,26 +143,23 @@ export class BackgroundProcessTracker {
     // Pattern 3: Shell redirection > file or >> file
     const redirectPattern = /(?:^|[|;&])\s*[^|;&]*?\s+>>?\s+([^\s|;&]+)/g;
     while ((match = redirectPattern.exec(command)) !== null) {
-      const filename = match[1].replace(/^['"]|['"]$/g, '');
+      const filename = match[1].replace(/^['"]|['"]$/g, "");
       outputFiles.push(filename);
     }
 
     // Pattern 4: tee file
     const teePattern = /\|\s*tee\s+([^\s|;&]+)/g;
     while ((match = teePattern.exec(command)) !== null) {
-      const filename = match[1].replace(/^['"]|['"]$/g, '');
+      const filename = match[1].replace(/^['"]|['"]$/g, "");
       outputFiles.push(filename);
     }
 
     // Pattern 5: Generic --output file or -o file
-    const genericPatterns = [
-      /--output\s+([^\s]+)/g,
-      /(?:^|\s)-o\s+([^\s]+)/g,
-    ];
+    const genericPatterns = [/--output\s+([^\s]+)/g, /(?:^|\s)-o\s+([^\s]+)/g];
 
     for (const pattern of genericPatterns) {
       while ((match = pattern.exec(command)) !== null) {
-        const filename = match[1].replace(/^['"]|['"]$/g, '');
+        const filename = match[1].replace(/^['"]|['"]$/g, "");
         outputFiles.push(filename);
       }
     }

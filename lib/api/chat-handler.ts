@@ -31,7 +31,10 @@ import {
   startTempStream,
   deleteTempStreamForBackend,
 } from "@/lib/db/actions";
-import { createCancellationPoller } from "@/lib/utils/stream-cancellation";
+import {
+  createCancellationPoller,
+  createPreemptiveTimeout,
+} from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
@@ -63,6 +66,10 @@ export const getStreamContext = () => {
 
 export const createChatHandler = () => {
   return async (req: NextRequest) => {
+    let preemptiveTimeout:
+      | ReturnType<typeof createPreemptiveTimeout>
+      | undefined;
+
     try {
       const {
         messages,
@@ -130,6 +137,13 @@ export const createChatHandler = () => {
       const assistantMessageId = uuidv4();
 
       const userStopSignal = new AbortController();
+
+      // Set up pre-emptive abort before Vercel timeout
+      preemptiveTimeout = createPreemptiveTimeout({
+        chatId,
+        mode,
+        abortController: userStopSignal,
+      });
 
       // Start temp stream coordination for temporary chats
       if (temporary) {
@@ -312,6 +326,9 @@ export const createChatHandler = () => {
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
+                // Clear pre-emptive timeout
+                preemptiveTimeout?.clear();
+
                 // Stop cancellation poller
                 cancellationPoller.stop();
                 pollerStopped = true;
@@ -355,8 +372,13 @@ export const createChatHandler = () => {
 
                   const newFileIds = getFileAccumulator().getAll();
 
-                  // If aborted and no files to add, skip message save (frontend already saved)
-                  if (isAborted && (!newFileIds || newFileIds.length === 0)) {
+                  // If user aborted (not pre-emptive) and no files to add, skip message save (frontend already saved)
+                  // Pre-emptive aborts should always save to ensure data persistence before timeout
+                  if (
+                    isAborted &&
+                    !preemptiveTimeout?.isPreemptive() &&
+                    (!newFileIds || newFileIds.length === 0)
+                  ) {
                     return;
                   }
 
@@ -398,6 +420,9 @@ export const createChatHandler = () => {
       // Temporary chats do not support resumption; return SSE directly
       return new Response(sse);
     } catch (error) {
+      // Clear timeout if error occurs before onFinish
+      preemptiveTimeout?.clear();
+
       // Handle ChatSDKErrors (including authentication errors)
       if (error instanceof ChatSDKError) {
         return error.toResponse();

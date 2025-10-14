@@ -25,22 +25,22 @@ Usage:
     execute: async ({ files }: { files: string[] }) => {
       try {
         const { sandbox } = await sandboxManager.getSandbox();
-        
+
         const fileUrls: Array<{ path: string; downloadUrl: string }> = [];
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (const filePath of files) {
           // Check if this specific file is being written to by a background process
-          const { active, processes } = await backgroundProcessTracker.hasActiveProcessesForFiles(
-            sandbox,
-            [filePath]
-          );
+          const { active, processes } =
+            await backgroundProcessTracker.hasActiveProcessesForFiles(sandbox, [
+              filePath,
+            ]);
 
           if (active) {
-            const processDetails = processes.map(
-              (p) => `PID ${p.pid}: ${p.command}`
-            ).join(", ");
-            
+            const processDetails = processes
+              .map((p) => `PID ${p.pid}: ${p.command}`)
+              .join(", ");
+
             blockedFiles.push({
               path: filePath,
               reason: `Background process still running: [${processDetails}]`,
@@ -70,10 +70,12 @@ Usage:
           result += `Successfully provided ${fileUrls.length} file(s) to the user`;
         }
         if (blockedFiles.length > 0) {
-          const blockedDetails = blockedFiles.map(
-            (f) => `${f.path}: ${f.reason}`
-          ).join("; ");
-          result += (result ? ". " : "") + `${blockedFiles.length} file(s) could not be retrieved: ${blockedDetails}`;
+          const blockedDetails = blockedFiles
+            .map((f) => `${f.path}: ${f.reason}`)
+            .join("; ");
+          result +=
+            (result ? ". " : "") +
+            `${blockedFiles.length} file(s) could not be retrieved: ${blockedDetails}`;
         }
 
         return {
@@ -89,4 +91,3 @@ Usage:
     },
   });
 };
-
