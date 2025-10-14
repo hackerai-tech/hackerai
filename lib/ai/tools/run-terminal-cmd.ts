@@ -185,11 +185,17 @@ If you are generating files:
                   ? handler.getResult()
                   : { stdout: "", stderr: "" };
                 resolve({
-                  result: {
-                    ...exec,
-                    stdout: finalResult.stdout,
-                    stderr: finalResult.stderr,
-                  },
+                  result: is_background
+                    ? {
+                        pid: (exec as any)?.pid ?? null,
+                        stdout: finalResult.stdout,
+                        stderr: finalResult.stderr,
+                      }
+                    : {
+                        exitCode: 0,
+                        stdout: finalResult.stdout,
+                        stderr: finalResult.stderr,
+                      },
                 });
               }
             })
