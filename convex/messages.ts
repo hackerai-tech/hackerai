@@ -477,6 +477,65 @@ export const getMessagesByChatIdForBackend = query({
 });
 
 /**
+ * Get a page of messages for backend processing (adaptive backfill)
+ */
+export const getMessagesPageForBackend = query({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+    userId: v.string(),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: v.object({
+    page: v.array(
+      v.object({
+        id: v.string(),
+        role: v.union(
+          v.literal("user"),
+          v.literal("assistant"),
+          v.literal("system"),
+        ),
+        parts: v.array(v.any()),
+      }),
+    ),
+    isDone: v.boolean(),
+    continueCursor: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    // Verify chat ownership - if chat doesn't exist, return empty page
+    const chatExists: boolean = await ctx.runQuery(
+      internal.messages.verifyChatOwnership,
+      {
+        chatId: args.chatId,
+        userId: args.userId,
+      },
+    );
+
+    if (!chatExists) {
+      return { page: [], isDone: true, continueCursor: "" };
+    }
+
+    const result = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+      .order("desc")
+      .paginate(args.paginationOpts);
+
+    return {
+      page: result.page.map((message) => ({
+        id: message.id,
+        role: message.role,
+        parts: message.parts,
+      })),
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
+  },
+});
+
+/**
  * Search messages by content and chat titles with full text search
  */
 export const searchMessages = query({
