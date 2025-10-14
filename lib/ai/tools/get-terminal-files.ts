@@ -39,7 +39,7 @@ Usage:
             fileUrls.push({ path: filePath, downloadUrl: saved.url });
           } catch (e) {
             console.error(
-              `[provide-terminal-files] Failed to upload: ${filePath}`,
+              `[get-terminal-files] Failed to upload: ${filePath}`,
               e,
             );
             // Continue with other files even if one fails
@@ -51,7 +51,7 @@ Usage:
           fileUrls,
         };
       } catch (error) {
-        console.error("[provide-terminal-files] Error:", error);
+        console.error("[get-terminal-files] Error:", error);
         return {
           result: `Error providing files: ${error instanceof Error ? error.message : String(error)}`,
           fileUrls: [],

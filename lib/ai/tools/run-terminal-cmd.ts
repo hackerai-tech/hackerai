@@ -23,7 +23,7 @@ In using these tools, adhere to the following guidelines:
 3. If in the same shell, LOOK IN CHAT HISTORY for your current working directory.
 4. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 5. If the command would use a pager, append \` | cat\` to the command.
-6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command.
+6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
 7. Dont include any newlines in the command.
 8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation.
 9. Avoid commands with excessive output; redirect to files when necessary.
@@ -60,7 +60,9 @@ If you are generating files:
         ),
       is_background: z
         .boolean()
-        .describe("Whether the command should be run in the background."),
+        .describe(
+          "Whether the command should be run in the background. Set to FALSE if you need to retrieve output files immediately after with get_terminal_files. Only use TRUE for indefinite processes where you don't need immediate file access.",
+        ),
     }),
     execute: async (
       {
