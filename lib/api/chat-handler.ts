@@ -288,7 +288,10 @@ export const createChatHandler = () => {
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
               if (chunk.chunk.type === "tool-call") {
-                const command = (chunk.chunk.input as any)?.command;
+                const command =
+                  chunk.chunk.toolName === "web"
+                    ? (chunk.chunk.input as any)?.command
+                    : undefined;
                 if (posthog) {
                   posthog.capture({
                     distinctId: userId,
