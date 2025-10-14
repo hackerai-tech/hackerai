@@ -406,26 +406,63 @@ export const saveFile = action({
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
-    // Determine acting user: service role or authenticated user
     let actingUserId: string;
+    let entitlements: Array<string> = [];
+
+    // Service key flow (backend)
     if (args.serviceKey) {
       validateServiceKey(args.serviceKey);
       if (!args.userId) {
         throw new Error("userId is required when using serviceKey");
       }
       actingUserId = args.userId;
+      entitlements = ["ultra-plan"]; // Max limit for service flows
     } else {
+      // User-authenticated flow
       const user = await ctx.auth.getUserIdentity();
       if (!user) {
         throw new Error("Unauthorized: User not authenticated");
       }
       actingUserId = user.subject;
+      entitlements = Array.isArray(user.entitlements)
+        ? user.entitlements.filter(
+            (e: unknown): e is string => typeof e === "string",
+          )
+        : [];
     }
 
-    // Check file upload limit (100 files maximum)
-    await ctx.runQuery(internal.fileStorage.checkFileUploadLimit, {
-      userId: actingUserId,
-    });
+    // Check file limit (Pro: 300, Team: 500, Ultra: 1000, Free: 0)
+    let fileLimit = 0;
+    if (
+      entitlements.includes("ultra-plan") ||
+      entitlements.includes("ultra-monthly-plan") ||
+      entitlements.includes("ultra-yearly-plan")
+    ) {
+      fileLimit = 1000;
+    } else if (entitlements.includes("team-plan")) {
+      fileLimit = 500;
+    } else if (
+      entitlements.includes("pro-plan") ||
+      entitlements.includes("pro-monthly-plan") ||
+      entitlements.includes("pro-yearly-plan")
+    ) {
+      fileLimit = 300;
+    }
+
+    if (fileLimit === 0) {
+      throw new Error("Paid plan required for file uploads");
+    }
+
+    const currentFileCount = await ctx.runQuery(
+      internal.fileStorage.countUserFiles,
+      { userId: actingUserId },
+    );
+
+    if (currentFileCount >= fileLimit) {
+      throw new Error(
+        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
+      );
+    }
 
     const fileUrl = await ctx.storage.getUrl(args.storageId);
 

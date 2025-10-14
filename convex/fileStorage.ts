@@ -28,31 +28,29 @@ export const countUserFiles = internalQuery({
 });
 
 /**
- * Internal query to check if user has reached file upload limit (100 files maximum)
- * Throws an error if limit is exceeded
+ * Determine file limit based on user entitlements
+ * Pro: 300, Team: 500, Ultra: 1000, Free: 0
  */
-export const checkFileUploadLimit = internalQuery({
-  args: {
-    userId: v.string(),
-  },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    const currentFileCount = await ctx.runQuery(
-      internal.fileStorage.countUserFiles,
-      {
-        userId: args.userId,
-      },
-    );
-
-    if (currentFileCount >= 100) {
-      throw new Error(
-        "Upload limit exceeded: Maximum of 100 files allowed per user",
-      );
-    }
-
-    return null;
-  },
-});
+const getFileLimit = (entitlements: Array<string>): number => {
+  if (
+    entitlements.includes("ultra-plan") ||
+    entitlements.includes("ultra-monthly-plan") ||
+    entitlements.includes("ultra-yearly-plan")
+  ) {
+    return 1000;
+  }
+  if (entitlements.includes("team-plan")) {
+    return 500;
+  }
+  if (
+    entitlements.includes("pro-plan") ||
+    entitlements.includes("pro-monthly-plan") ||
+    entitlements.includes("pro-yearly-plan")
+  ) {
+    return 300;
+  }
+  return 0; // Free users
+};
 
 /**
  * Generate upload URL for file storage with authentication
@@ -64,53 +62,47 @@ export const generateUploadUrl = mutation({
   },
   returns: v.string(),
   handler: async (ctx, args) => {
-    // If called with a service key, allow backend flows to upload on behalf of a user
+    let actingUserId: string;
+    let entitlements: Array<string> = [];
+
+    // Service key flow (backend)
     if (args.serviceKey) {
       validateServiceKey(args.serviceKey);
-      const actingUserId = args.userId;
-      if (!actingUserId) {
+      if (!args.userId) {
         throw new Error("userId is required when using serviceKey");
       }
-
-      // Enforce upload limit even for service flows
-      await ctx.runQuery(internal.fileStorage.checkFileUploadLimit, {
-        userId: actingUserId,
-      });
-
-      return await ctx.storage.generateUploadUrl();
+      actingUserId = args.userId;
+      entitlements = ["ultra-plan"]; // Max limit for service flows
+    } else {
+      // User-authenticated flow
+      const user = await ctx.auth.getUserIdentity();
+      if (!user) {
+        throw new Error("Unauthorized: User not authenticated");
+      }
+      actingUserId = user.subject;
+      entitlements = Array.isArray(user.entitlements)
+        ? user.entitlements.filter(
+            (e: unknown): e is string => typeof e === "string",
+          )
+        : [];
     }
 
-    // Default user-authenticated flow
-    const user = await ctx.auth.getUserIdentity();
-
-    if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+    // Check file limit
+    const fileLimit = getFileLimit(entitlements);
+    if (fileLimit === 0) {
+      throw new Error("Paid plan required for file uploads");
     }
 
-    // Check if user has paid entitlement (pro or ultra)
-    const entitlements: Array<string> = Array.isArray(user.entitlements)
-      ? (user.entitlements.filter(
-          (e: unknown): e is string => typeof e === "string",
-        ) as Array<string>)
-      : [];
-    // Consider normalized entitlements ("pro-plan", "ultra-plan", "team-plan") as paid
-    // and keep supporting monthly/yearly legacy keys
-    const isPaid =
-      entitlements.includes("pro-plan") ||
-      entitlements.includes("ultra-plan") ||
-      entitlements.includes("team-plan") ||
-      entitlements.includes("pro-monthly-plan") ||
-      entitlements.includes("ultra-monthly-plan") ||
-      entitlements.includes("pro-yearly-plan") ||
-      entitlements.includes("ultra-yearly-plan");
-    if (!isPaid) {
-      throw new Error("Unauthorized: Paid plan required for file uploads");
-    }
+    const currentFileCount = await ctx.runQuery(
+      internal.fileStorage.countUserFiles,
+      { userId: actingUserId },
+    );
 
-    // Check file upload limit (100 files maximum)
-    await ctx.runQuery(internal.fileStorage.checkFileUploadLimit, {
-      userId: user.subject,
-    });
+    if (currentFileCount >= fileLimit) {
+      throw new Error(
+        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
+      );
+    }
 
     return await ctx.storage.generateUploadUrl();
   },
