@@ -5,12 +5,13 @@ import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
+import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer } = context;
+  const { sandboxManager, writer, backgroundProcessTracker } = context;
 
   return tool({
     description: `PROPOSE a command to run on behalf of the user.
@@ -23,7 +24,7 @@ In using these tools, adhere to the following guidelines:
 3. If in the same shell, LOOK IN CHAT HISTORY for your current working directory.
 4. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 5. If the command would use a pager, append \` | cat\` to the command.
-6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
+6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. Background processes are automatically tracked with their PIDs and output files, so you'll be informed when the process completes before accessing output files. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
 7. Dont include any newlines in the command.
 8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation.
 9. Avoid commands with excessive output; redirect to files when necessary.
@@ -184,6 +185,14 @@ If you are generating files:
                 const finalResult = handler
                   ? handler.getResult()
                   : { stdout: "", stderr: "" };
+                
+                // Track background processes with their output files
+                if (is_background && (exec as any)?.pid) {
+                  const pid = (exec as any).pid;
+                  const outputFiles = BackgroundProcessTracker.extractOutputFiles(command);
+                  backgroundProcessTracker.addProcess(pid, command, outputFiles);
+                }
+
                 resolve({
                   result: is_background
                     ? {
