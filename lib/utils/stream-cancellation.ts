@@ -2,6 +2,7 @@ import {
   getCancellationStatus,
   getTempCancellationStatus,
 } from "@/lib/db/actions";
+import type { ChatMode } from "@/types";
 
 type PollOptions = {
   chatId: string;
@@ -9,6 +10,13 @@ type PollOptions = {
   abortController: AbortController;
   onStop: () => void;
   pollIntervalMs?: number;
+};
+
+type PreemptiveTimeoutOptions = {
+  chatId: string;
+  mode: ChatMode;
+  abortController: AbortController;
+  safetyBuffer?: number;
 };
 
 /**
@@ -77,5 +85,35 @@ export const createCancellationPoller = ({
       }
       abortController.signal.removeEventListener("abort", onAbort);
     },
+  };
+};
+
+/**
+ * Creates a pre-emptive timeout that aborts the stream before Vercel's hard timeout.
+ * This ensures graceful shutdown with proper cleanup and data persistence.
+ */
+export const createPreemptiveTimeout = ({
+  chatId,
+  mode,
+  abortController,
+  safetyBuffer = 10,
+}: PreemptiveTimeoutOptions) => {
+  const maxDuration = mode === "agent" ? 500 : 120;
+  const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
+
+  let isPreemptive = false;
+
+  const timeoutId = setTimeout(() => {
+    console.log(
+      `[Chat ${chatId}] Pre-emptive abort triggered (${safetyBuffer}s before ${maxDuration}s timeout)`,
+    );
+    isPreemptive = true;
+    abortController.abort();
+  }, maxStreamTime);
+
+  return {
+    timeoutId,
+    clear: () => clearTimeout(timeoutId),
+    isPreemptive: () => isPreemptive,
   };
 };

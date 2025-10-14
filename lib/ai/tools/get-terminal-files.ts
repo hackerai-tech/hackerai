@@ -4,7 +4,7 @@ import type { ToolContext } from "@/types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
 
 export const createGetTerminalFiles = (context: ToolContext) => {
-  const { sandboxManager } = context;
+  const { sandboxManager, backgroundProcessTracker } = context;
 
   return tool({
     description: `Share files from the terminal sandbox with the user as downloadable attachments.
@@ -25,9 +25,29 @@ Usage:
     execute: async ({ files }: { files: string[] }) => {
       try {
         const { sandbox } = await sandboxManager.getSandbox();
+
         const fileUrls: Array<{ path: string; downloadUrl: string }> = [];
+        const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (const filePath of files) {
+          // Check if this specific file is being written to by a background process
+          const { active, processes } =
+            await backgroundProcessTracker.hasActiveProcessesForFiles(sandbox, [
+              filePath,
+            ]);
+
+          if (active) {
+            const processDetails = processes
+              .map((p) => `PID ${p.pid}: ${p.command}`)
+              .join(", ");
+
+            blockedFiles.push({
+              path: filePath,
+              reason: `Background process still running: [${processDetails}]`,
+            });
+            continue;
+          }
+
           try {
             const saved = await uploadSandboxFileToConvex({
               sandbox,
@@ -38,20 +58,31 @@ Usage:
             context.fileAccumulator.add(saved.fileId);
             fileUrls.push({ path: filePath, downloadUrl: saved.url });
           } catch (e) {
-            console.error(
-              `[provide-terminal-files] Failed to upload: ${filePath}`,
-              e,
-            );
-            // Continue with other files even if one fails
+            blockedFiles.push({
+              path: filePath,
+              reason: `File not found or upload failed: ${e instanceof Error ? e.message : String(e)}`,
+            });
           }
         }
 
+        let result = "";
+        if (fileUrls.length > 0) {
+          result += `Successfully provided ${fileUrls.length} file(s) to the user`;
+        }
+        if (blockedFiles.length > 0) {
+          const blockedDetails = blockedFiles
+            .map((f) => `${f.path}: ${f.reason}`)
+            .join("; ");
+          result +=
+            (result ? ". " : "") +
+            `${blockedFiles.length} file(s) could not be retrieved: ${blockedDetails}`;
+        }
+
         return {
-          result: `Successfully provided ${fileUrls.length} file(s) to the user`,
+          result: result || "No files were retrieved",
           fileUrls,
         };
       } catch (error) {
-        console.error("[provide-terminal-files] Error:", error);
         return {
           result: `Error providing files: ${error instanceof Error ? error.message : String(error)}`,
           fileUrls: [],

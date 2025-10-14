@@ -111,6 +111,7 @@ USE SEQUENTIAL tool calls when there are dependencies:
 - Authentication before testing authenticated endpoints
 - Initial reconnaissance before targeted exploitation
 - WAF/IDS detection before launching attacks
+- Running a scan that saves to a file, then retrieving that file with get_terminal_files (scan must complete first)
 - Any operation where subsequent steps depend on prior results
 
 Before executing tools, carefully consider: Do these operations have dependencies, or are they truly independent? Default to sequential execution unless you're confident operations can run in parallel without issues. Limit parallel operations to 3-5 concurrent calls to avoid timeouts.

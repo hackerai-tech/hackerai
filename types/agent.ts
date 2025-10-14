@@ -3,6 +3,7 @@ import type { UIMessageStreamWriter } from "ai";
 import type { Geo } from "@vercel/functions";
 import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
+import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: Sandbox }>;
@@ -22,4 +23,5 @@ export interface ToolContext {
   userID: string;
   assistantMessageId?: string;
   fileAccumulator: FileAccumulator;
+  backgroundProcessTracker: BackgroundProcessTracker;
 }

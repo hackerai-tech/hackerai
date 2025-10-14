@@ -1,6 +1,7 @@
 import OpenAI from "openai";
+import { encode, decode } from "gpt-tokenizer";
 
-const MODERATION_CHAR_LIMIT = 1000;
+const MODERATION_TOKEN_LIMIT = 256;
 
 export async function getModerationResult(
   messages: any[],
@@ -15,7 +16,7 @@ export async function getModerationResult(
   const openai = new OpenAI({ apiKey: openaiApiKey });
 
   // Find the last user message that exceeds the minimum length
-  const targetMessage = findTargetMessage(messages, 10);
+  const targetMessage = findTargetMessage(messages, 30);
 
   if (!targetMessage) {
     return { shouldUncensorResponse: false };
@@ -62,12 +63,16 @@ export async function getModerationResult(
 }
 
 function findTargetMessage(messages: any[], minLength: number): any | null {
+  const MIN_FALLBACK_LENGTH = 5;
+  let combinedContent = "";
   let userMessagesChecked = 0;
+  const messagesToCombine: any[] = [];
 
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role === "user") {
       userMessagesChecked++;
+      messagesToCombine.push(message);
 
       // Handle UIMessage format with parts array
       if (message.parts && Array.isArray(message.parts)) {
@@ -76,9 +81,12 @@ function findTargetMessage(messages: any[], minLength: number): any | null {
           .map((part: any) => part.text)
           .join(" ");
 
-        if (textContent.length > minLength) {
-          return message;
-        }
+        combinedContent = textContent + " " + combinedContent;
+      }
+
+      // Check if we've reached the minimum length
+      if (combinedContent.trim().length >= minLength) {
+        return createCombinedMessage(messagesToCombine);
       }
 
       if (userMessagesChecked >= 3) {
@@ -87,7 +95,35 @@ function findTargetMessage(messages: any[], minLength: number): any | null {
     }
   }
 
+  // If we have some content but it's less than minLength, check if it's at least MIN_FALLBACK_LENGTH
+  if (
+    combinedContent.trim().length >= MIN_FALLBACK_LENGTH &&
+    messagesToCombine.length > 0
+  ) {
+    return createCombinedMessage(messagesToCombine);
+  }
+
   return null;
+}
+
+function createCombinedMessage(messages: any[]): any {
+  const combinedParts: any[] = [];
+
+  // Reverse to get chronological order
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.parts && Array.isArray(message.parts)) {
+      const textParts = message.parts.filter(
+        (part: any) => part.type === "text",
+      );
+      combinedParts.push(...textParts);
+    }
+  }
+
+  return {
+    role: "user",
+    parts: combinedParts,
+  };
 }
 
 function prepareInput(message: any): string {
@@ -98,13 +134,21 @@ function prepareInput(message: any): string {
       .map((part: any) => part.text || "")
       .join(" ");
 
-    return textContent.slice(0, MODERATION_CHAR_LIMIT);
+    return truncateByTokens(textContent);
   }
   // Fallback: Handle legacy string content format
   else if (typeof message.content === "string") {
-    return message.content.slice(0, MODERATION_CHAR_LIMIT);
+    return truncateByTokens(message.content);
   }
   return "";
+}
+
+function truncateByTokens(content: string): string {
+  const tokens = encode(content);
+  if (tokens.length <= MODERATION_TOKEN_LIMIT) {
+    return content;
+  }
+  return decode(tokens.slice(0, MODERATION_TOKEN_LIMIT));
 }
 
 function calculateModerationLevel(

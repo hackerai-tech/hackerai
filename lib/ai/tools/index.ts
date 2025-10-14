@@ -13,6 +13,7 @@ import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ToolContext, Todo } from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
+import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 
 // Factory function to create tools with context
 export const createTools = (
@@ -37,6 +38,7 @@ export const createTools = (
 
   const todoManager = new TodoManager(initialTodos);
   const fileAccumulator = new FileAccumulator();
+  const backgroundProcessTracker = new BackgroundProcessTracker();
 
   const context: ToolContext = {
     sandboxManager,
@@ -46,6 +48,7 @@ export const createTools = (
     userID,
     assistantMessageId,
     fileAccumulator,
+    backgroundProcessTracker,
   };
 
   // Create all available tools
