@@ -93,13 +93,25 @@ export const uploadSandboxFiles = async (
 ) => {
   try {
     const sandbox = await ensureSandbox();
-    for (const file of sandboxFiles) {
-      if (!file.url || !file.localPath) continue;
+
+    // Fetch all files in parallel
+    const fileDataPromises = sandboxFiles.map(async (file) => {
+      if (!file.url || !file.localPath) return null;
       const res = await fetch(file.url);
-      if (!res.ok) continue;
+      if (!res.ok) return null;
       const ab = await res.arrayBuffer();
-      await sandbox.files.write(file.localPath, ab);
-    }
+      return { localPath: file.localPath, data: ab };
+    });
+
+    const fileDataResults = await Promise.all(fileDataPromises);
+
+    // Write files in parallel
+    await Promise.all(
+      fileDataResults.map((fileData) => {
+        if (!fileData) return Promise.resolve();
+        return sandbox.files.write(fileData.localPath, fileData.data);
+      }),
+    );
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);
   }
