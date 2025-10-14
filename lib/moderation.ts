@@ -1,6 +1,7 @@
 import OpenAI from "openai";
+import { encode, decode } from "gpt-tokenizer";
 
-const MODERATION_CHAR_LIMIT = 1000;
+const MODERATION_TOKEN_LIMIT = 256;
 
 export async function getModerationResult(
   messages: any[],
@@ -47,8 +48,16 @@ export async function getModerationResult(
       isPro,
     );
 
+    // console.log(
+    //   JSON.stringify(moderation, null, 2),
+    //   moderationLevel,
+    //   hazardCategories,
+    //   shouldUncensorResponse,
+    // );
+
     return { shouldUncensorResponse };
   } catch (_error: any) {
+    // console.error('Error in getModerationResult:', error);
     return { shouldUncensorResponse: false };
   }
 }
@@ -125,13 +134,21 @@ function prepareInput(message: any): string {
       .map((part: any) => part.text || "")
       .join(" ");
 
-    return textContent.slice(0, MODERATION_CHAR_LIMIT);
+    return truncateByTokens(textContent);
   }
   // Fallback: Handle legacy string content format
   else if (typeof message.content === "string") {
-    return message.content.slice(0, MODERATION_CHAR_LIMIT);
+    return truncateByTokens(message.content);
   }
   return "";
+}
+
+function truncateByTokens(content: string): string {
+  const tokens = encode(content);
+  if (tokens.length <= MODERATION_TOKEN_LIMIT) {
+    return content;
+  }
+  return decode(tokens.slice(0, MODERATION_TOKEN_LIMIT));
 }
 
 function calculateModerationLevel(
