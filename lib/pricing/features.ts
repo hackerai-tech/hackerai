@@ -9,6 +9,7 @@ import {
   SquareTerminal,
   CreditCard,
   Users,
+  Code,
 } from "lucide-react";
 
 export type PricingFeature = {
@@ -33,6 +34,7 @@ export const proFeatures: Array<PricingFeature> = [
 export const ultraFeatures: Array<PricingFeature> = [
   { icon: MessagesSquare, text: "Unlimited messages and uploads" },
   { icon: Brain, text: "Maximum memory and context" },
+  { icon: SquareTerminal, text: "Expanded Agent mode" },
   { icon: FlaskConical, text: "Research preview of new features" },
 ];
 
