@@ -13,7 +13,7 @@ export class DefaultSandboxManager implements SandboxManager {
     this.sandbox = initialSandbox || null;
   }
 
-  async getSandbox(): Promise<{
+  async getSandbox(enforceVersion: boolean = false): Promise<{
     sandbox: Sandbox;
   }> {
     if (!this.sandbox) {
@@ -24,6 +24,7 @@ export class DefaultSandboxManager implements SandboxManager {
         },
         {
           initialSandbox: this.sandbox,
+          enforceVersion,
         },
       );
       this.sandbox = result.sandbox;

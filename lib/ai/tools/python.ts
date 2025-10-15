@@ -24,8 +24,8 @@ I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) gi
       { code }: { code: string },
       { toolCallId, abortSignal },
     ) => {
-      // Get the sandbox from the sandbox manager
-      const { sandbox } = await context.sandboxManager.getSandbox();
+      // Get sandbox with version enforcement for Python execution
+      const { sandbox } = await context.sandboxManager.getSandbox(true);
 
       const terminalSessionId = `python-${randomUUID()}`;
       let outputCounter = 0;

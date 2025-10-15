@@ -9,10 +9,11 @@ export const ensureSandboxConnection = async (
   context: SandboxContext,
   options: {
     initialSandbox?: Sandbox | null;
+    enforceVersion?: boolean;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox } = context;
-  const { initialSandbox } = options;
+  const { initialSandbox, enforceVersion = false } = options;
 
   let sandbox = initialSandbox;
 
@@ -22,6 +23,7 @@ export const ensureSandboxConnection = async (
         userID,
         SANDBOX_TEMPLATE,
         BASH_SANDBOX_TIMEOUT,
+        enforceVersion,
       );
       setSandbox(sandbox);
     } catch (error) {

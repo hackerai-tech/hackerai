@@ -6,7 +6,7 @@ import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 
 export interface SandboxManager {
-  getSandbox(): Promise<{ sandbox: Sandbox }>;
+  getSandbox(enforceVersion?: boolean): Promise<{ sandbox: Sandbox }>;
   setSandbox(sandbox: Sandbox): void;
 }
 

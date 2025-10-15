@@ -2,26 +2,38 @@ import { Sandbox } from "@e2b/code-interpreter";
 import { safeWaitUntil } from "@/lib/utils/safe-wait-until";
 
 /**
+ * Current sandbox version identifier.
+ * Used to track sandbox compatibility and trigger automatic migration when Docker templates are updated.
+ * Increment this version when making breaking changes to sandbox configuration or dependencies.
+ * Old sandboxes without this version (or with mismatched versions) will be automatically deleted
+ * and recreated when `enforceVersion: true` is passed to connection functions.
+ */
+const SANDBOX_VERSION = "v2";
+
+/**
  * Creates or connects to a persistent sandbox instance
  * Reuses existing sandboxes when possible to maintain state and improve performance
  *
  * @param userID - User identifier for sandbox ownership
  * @param template - Sandbox environment template name
  * @param timeoutMs - Operation timeout in milliseconds
+ * @param enforceVersion - If true, checks sandbox version and recreates if outdated
  * @returns Connected or newly created sandbox instance
  *
  * Flow:
  * 1. Lists existing sandboxes for the user
- * 2a. If found with "running" state: pause first (3 retries), then resume
- * 2b. If found with "paused" state: resume directly (no retries needed)
- * 3. Pause operations use 5-second delays between retry attempts
- * 4. If pause fails after retries or no sandbox found, creates new one
- * 5. Returns active sandbox ready for use
+ * 2. If enforceVersion is true, validates sandbox version metadata
+ * 3a. If found with "running" state: pause first (3 retries), then resume
+ * 3b. If found with "paused" state: resume directly (no retries needed)
+ * 4. Pause operations use 5-second delays between retry attempts
+ * 5. If pause fails after retries or no sandbox found, creates new one
+ * 6. Returns active sandbox ready for use
  */
 export async function createOrConnectPersistentTerminal(
   userID: string,
   template: string,
   timeoutMs: number,
+  enforceVersion: boolean = false,
 ): Promise<Sandbox> {
   try {
     // Step 1: Look for existing sandbox for this user
@@ -35,12 +47,27 @@ export async function createOrConnectPersistentTerminal(
     });
     const existingSandbox = (await paginator.nextItems())[0];
 
-    // Step 2: Try to reuse existing sandbox if available
-    if (existingSandbox?.sandboxId) {
+    // Step 2: Check version if enforcement is enabled
+    if (
+      enforceVersion &&
+      existingSandbox &&
+      existingSandbox.metadata?.sandboxVersion !== SANDBOX_VERSION
+    ) {
+      console.log(
+        `[${userID}] Sandbox version mismatch (expected ${SANDBOX_VERSION}), deleting old sandbox`,
+      );
+      try {
+        await Sandbox.kill(existingSandbox.sandboxId);
+      } catch (killError) {
+        console.warn(`[${userID}] Failed to kill old sandbox:`, killError);
+      }
+      // Skip to creating new sandbox
+    } else if (existingSandbox?.sandboxId) {
+      // Step 3: Try to reuse existing sandbox if available
       const currentState = existingSandbox.state;
 
       if (currentState === "running") {
-        // Step 3a: If running, get sandbox instance first, then pause and resume
+        // Step 4a: If running, get sandbox instance first, then pause and resume
         try {
           // First, connect to the running sandbox
           const runningSandbox = await Sandbox.connect(
@@ -86,7 +113,7 @@ export async function createOrConnectPersistentTerminal(
           // Fall through to create new sandbox
         }
       } else if (currentState === "paused") {
-        // Step 3b: If already paused, resume directly (no retries needed)
+        // Step 4b: If already paused, resume directly (no retries needed)
         try {
           const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
             timeoutMs,
@@ -120,7 +147,7 @@ export async function createOrConnectPersistentTerminal(
       }
     }
 
-    // Step 4: Create new sandbox (fallback for all failure cases)
+    // Step 5: Create new sandbox (fallback for all failure cases)
     const sandbox = await Sandbox.create(template, {
       timeoutMs,
       // Enable secure mode to generate pre-signed URLs for file downloads
@@ -131,6 +158,7 @@ export async function createOrConnectPersistentTerminal(
         userID,
         template,
         secure: "true",
+        sandboxVersion: SANDBOX_VERSION,
       },
     });
 
