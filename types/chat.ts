@@ -1,5 +1,6 @@
 import { UIMessage } from "ai";
 import { z } from "zod";
+import { Id } from "@/convex/_generated/dataModel";
 
 export type ChatMode = "agent" | "ask";
 
@@ -80,7 +81,7 @@ export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
 
 export type ChatMessage = UIMessage<MessageMetadata> & {
   fileDetails?: Array<{
-    fileId: string;
+    fileId: Id<"files">;
     name: string;
     url: string | null;
   }>;

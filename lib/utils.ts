@@ -3,6 +3,7 @@ import { twMerge } from "tailwind-merge";
 import { ChatSDKError, ErrorCode } from "./errors";
 import { ChatMessage } from "@/types/chat";
 import { UIMessagePart } from "ai";
+import { Id } from "@/convex/_generated/dataModel";
 
 export interface MessageRecord {
   id: string;
@@ -12,7 +13,7 @@ export interface MessageRecord {
     feedbackType: "positive" | "negative";
   } | null;
   fileDetails?: Array<{
-    fileId: string;
+    fileId: Id<"files">;
     name: string;
     url: string | null;
   }>;

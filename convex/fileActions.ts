@@ -20,6 +20,9 @@ import { validateServiceKey } from "./chats";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "../lib/token-utils";
 
+// Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
+const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
+
 /**
  * Validate token count and throw error if exceeds limit
  * @param chunks - Array of file chunks
@@ -476,6 +479,13 @@ export const saveFile = action({
     if (currentFileCount >= fileLimit) {
       throw new Error(
         `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
+      );
+    }
+
+    // Enforce file size limit (20 MB) regardless of skipTokenValidation
+    if (args.size > MAX_FILE_SIZE_BYTES) {
+      throw new Error(
+        `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
       );
     }
 
