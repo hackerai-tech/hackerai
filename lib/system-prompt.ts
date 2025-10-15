@@ -284,7 +284,9 @@ When using markdown in assistant messages, use backticks to format file, directo
 
   if (mode === "ask") {
     sections.push(getToneAndFormattingSection());
-    sections.push(getFileGenerationSection());
+    if (subscription !== "free") {
+      sections.push(getFileGenerationSection());
+    }
     sections.push(getKnowledgeCutoffSection());
     sections.push(getResumeSection(finishReason));
   } else {

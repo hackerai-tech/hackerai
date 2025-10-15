@@ -26,6 +26,7 @@ export const createTools = (
   memoryEnabled: boolean = true,
   isTemporary: boolean = false,
   assistantMessageId?: string,
+  subscription: "free" | "pro" | "team" | "ultra" = "free",
 ) => {
   let sandbox: Sandbox | null = null;
 
@@ -74,7 +75,7 @@ export const createTools = (
       ? {
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
-          python: allTools.python,
+          ...(subscription !== "free" && { python: allTools.python }),
           ...(process.env.EXA_API_KEY && { web: allTools.web }),
         }
       : allTools;
