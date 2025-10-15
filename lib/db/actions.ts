@@ -222,24 +222,26 @@ export async function getMessagesByChatId({
         let truncatedFromLoop: UIMessage[] | null = null;
 
         while (pagesFetched < MAX_PAGES) {
-          const pageResult: { page: UIMessage[]; isDone: boolean; continueCursor: string | null } = await convex.query(
-            api.messages.getMessagesPageForBackend,
-            {
-              serviceKey,
-              chatId,
-              userId,
-              paginationOpts: { numItems: PAGE_SIZE, cursor },
-            },
-          );
+          const pageResult: {
+            page: UIMessage[];
+            isDone: boolean;
+            continueCursor: string | null;
+          } = await convex.query(api.messages.getMessagesPageForBackend, {
+            serviceKey,
+            chatId,
+            userId,
+            paginationOpts: { numItems: PAGE_SIZE, cursor },
+          });
           const { page, isDone, continueCursor: nextCursor } = pageResult;
 
           fetchedDesc = fetchedDesc.concat(page);
           pagesFetched++;
 
           const existingChrono = [...fetchedDesc].reverse();
-          const candidate = regenerate && !isTemporary
-            ? existingChrono
-            : [...existingChrono, ...newMessages];
+          const candidate =
+            regenerate && !isTemporary
+              ? existingChrono
+              : [...existingChrono, ...newMessages];
 
           const trial = await truncateMessagesWithFileTokens(
             candidate,

@@ -119,7 +119,11 @@ export async function truncateMessagesWithPrecomputedTokens(
 ): Promise<UIMessage[]> {
   const maxTokens = getMaxTokensForSubscription(subscription);
   if (precomputedFileTokens) {
-    return truncateMessagesToTokenLimit(messages, precomputedFileTokens, maxTokens);
+    return truncateMessagesToTokenLimit(
+      messages,
+      precomputedFileTokens,
+      maxTokens,
+    );
   }
   const fileIds = extractAllFileIdsFromMessages(messages);
   const fileTokens = await getFileTokensByIds(fileIds);

@@ -1,5 +1,5 @@
 import React from "react";
-import { Minimize2, Edit, Terminal } from "lucide-react";
+import { Minimize2, Edit, Terminal, Code2 } from "lucide-react";
 import { useState } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
@@ -10,7 +10,11 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
-import { isSidebarFile, isSidebarTerminal } from "@/types/chat";
+import {
+  isSidebarFile,
+  isSidebarTerminal,
+  isSidebarPython,
+} from "@/types/chat";
 
 export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
@@ -22,6 +26,7 @@ export const ComputerSidebar: React.FC = () => {
 
   const isFile = isSidebarFile(sidebarContent);
   const isTerminal = isSidebarTerminal(sidebarContent);
+  const isPython = isSidebarPython(sidebarContent);
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -79,6 +84,10 @@ export const ComputerSidebar: React.FC = () => {
       return sidebarContent.isExecuting
         ? "Executing command"
         : "Command executed";
+    } else if (isPython) {
+      return sidebarContent.isExecuting
+        ? "Executing Python"
+        : "Python executed";
     }
     return "Unknown action";
   };
@@ -88,6 +97,8 @@ export const ComputerSidebar: React.FC = () => {
       return <Edit className="w-5 h-5 text-muted-foreground" />;
     } else if (isTerminal) {
       return <Terminal className="w-5 h-5 text-muted-foreground" />;
+    } else if (isPython) {
+      return <Code2 className="w-5 h-5 text-muted-foreground" />;
     }
     return <Edit className="w-5 h-5 text-muted-foreground" />;
   };
@@ -97,6 +108,8 @@ export const ComputerSidebar: React.FC = () => {
       return "Editor";
     } else if (isTerminal) {
       return "Terminal";
+    } else if (isPython) {
+      return "Python";
     }
     return "Tool";
   };
@@ -106,6 +119,8 @@ export const ComputerSidebar: React.FC = () => {
       return sidebarContent.path.split("/").pop() || sidebarContent.path;
     } else if (isTerminal) {
       return sidebarContent.command;
+    } else if (isPython) {
+      return sidebarContent.code.replace(/\n/g, " ");
     }
     return "";
   };
@@ -184,6 +199,11 @@ export const ComputerSidebar: React.FC = () => {
                       size={14}
                       className="text-muted-foreground flex-shrink-0"
                     />
+                  ) : isPython ? (
+                    <Code2
+                      size={14}
+                      className="text-muted-foreground flex-shrink-0"
+                    />
                   ) : (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       {sidebarContent.path.split("/").pop() ||
@@ -197,20 +217,26 @@ export const ComputerSidebar: React.FC = () => {
                   content={
                     isFile
                       ? sidebarContent.content
-                      : sidebarContent.output
-                        ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
-                        : `$ ${sidebarContent.command}`
+                      : isPython
+                        ? sidebarContent.code
+                        : sidebarContent.output
+                          ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
+                          : `$ ${sidebarContent.command}`
                   }
                   filename={
                     isFile
                       ? sidebarContent.path.split("/").pop() || "code.txt"
-                      : "terminal-output.txt"
+                      : isPython
+                        ? "python-code.py"
+                        : "terminal-output.txt"
                   }
                   language={
                     isFile
                       ? sidebarContent.language ||
                         getLanguageFromPath(sidebarContent.path)
-                      : "ansi"
+                      : isPython
+                        ? "python"
+                        : "ansi"
                   }
                   isWrapped={isWrapped}
                   onToggleWrap={handleToggleWrap}
@@ -254,6 +280,36 @@ export const ComputerSidebar: React.FC = () => {
                           variant="sidebar"
                           wrap={isWrapped}
                         />
+                      )}
+                      {isPython && (
+                        <div className="h-full overflow-auto">
+                          <div className="pb-4">
+                            <ComputerCodeBlock
+                              language="python"
+                              wrap={isWrapped}
+                              showButtons={false}
+                            >
+                              {sidebarContent.code}
+                            </ComputerCodeBlock>
+                          </div>
+                          {sidebarContent.output && (
+                            <>
+                              <div className="border-t border-border/30 mb-3" />
+                              <div className="px-4 pb-4">
+                                <div className="text-xs text-muted-foreground font-semibold mb-3">
+                                  Result:
+                                </div>
+                                <ComputerCodeBlock
+                                  language="text"
+                                  wrap={isWrapped}
+                                  showButtons={false}
+                                >
+                                  {sidebarContent.output}
+                                </ComputerCodeBlock>
+                              </div>
+                            </>
+                          )}
+                        </div>
                       )}
                     </div>
                   </div>

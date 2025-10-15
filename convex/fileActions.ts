@@ -24,11 +24,16 @@ import { MAX_TOKENS_FILE } from "../lib/token-utils";
  * Validate token count and throw error if exceeds limit
  * @param chunks - Array of file chunks
  * @param fileName - Name of the file for error reporting
+ * @param skipValidation - Skip token validation (for assistant-generated files)
  */
 const validateTokenLimit = (
   chunks: FileItemChunk[],
   fileName: string,
+  skipValidation: boolean = false,
 ): void => {
+  if (skipValidation) {
+    return; // Skip validation for assistant-generated files
+  }
   const totalTokens = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
   if (totalTokens > MAX_TOKENS_FILE) {
     throw new Error(
@@ -158,6 +163,7 @@ const detectFileType = (
  * @param fileName - Optional file name for type detection
  * @param mediaType - Optional media type for additional checks
  * @param prepend - Optional prepend text for markdown files
+ * @param skipTokenValidation - Skip token validation (for assistant-generated files)
  * @returns Promise<FileItemChunk[]>
  */
 const processFileAuto = async (
@@ -165,6 +171,7 @@ const processFileAuto = async (
   fileName?: string,
   mediaType?: string,
   prepend?: string,
+  skipTokenValidation: boolean = false,
 ): Promise<FileItemChunk[]> => {
   // Check if file is a supported image format - return 0 tokens immediately
   // Unsupported image formats will be processed as files
@@ -186,13 +193,13 @@ const processFileAuto = async (
         prepend,
         fileName,
       });
-      validateTokenLimit(chunks, fileName || "unknown");
+      validateTokenLimit(chunks, fileName || "unknown", skipTokenValidation);
       return chunks;
     }
     const fileType = detectedType;
 
     const chunks = await processFile(file, { fileType, prepend, fileName });
-    validateTokenLimit(chunks, fileName || "unknown");
+    validateTokenLimit(chunks, fileName || "unknown", skipTokenValidation);
     return chunks;
   } catch (error) {
     // Check if this is a token limit error - re-throw immediately without fallback
@@ -224,7 +231,7 @@ const processFileAuto = async (
         const fallbackTokens = countTokens(textContent);
 
         // Check token limit for fallback processing
-        if (fallbackTokens > MAX_TOKENS_FILE) {
+        if (!skipTokenValidation && fallbackTokens > MAX_TOKENS_FILE) {
           throw new Error(
             `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${fallbackTokens}`,
           );
@@ -399,6 +406,7 @@ export const saveFile = action({
     size: v.number(),
     serviceKey: v.optional(v.string()),
     userId: v.optional(v.string()),
+    skipTokenValidation: v.optional(v.boolean()),
   },
   returns: v.object({
     url: v.string(),
@@ -429,6 +437,13 @@ export const saveFile = action({
             (e: unknown): e is string => typeof e === "string",
           )
         : [];
+
+      // Security: Only backend (service key) flows can skip token validation
+      if (args.skipTokenValidation) {
+        throw new Error(
+          "skipTokenValidation is only allowed for backend service flows",
+        );
+      }
     }
 
     // Check file limit (Pro: 300, Team: 500, Ultra: 1000, Free: 0)
@@ -486,7 +501,13 @@ export const saveFile = action({
 
     try {
       // Use the comprehensive file processing for all file types (including auto-detection and default handling)
-      const chunks = await processFileAuto(file, args.name, args.mediaType);
+      const chunks = await processFileAuto(
+        file,
+        args.name,
+        args.mediaType,
+        undefined,
+        args.skipTokenValidation ?? false,
+      );
       tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
 
       // Save content for non-image, non-PDF, non-binary files

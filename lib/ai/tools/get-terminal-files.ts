@@ -26,7 +26,7 @@ Usage:
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
-        const fileUrls: Array<{ path: string; downloadUrl: string }> = [];
+        const fileUrls: Array<{ path: string }> = [];
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (const filePath of files) {
@@ -53,10 +53,11 @@ Usage:
               sandbox,
               userId: context.userID,
               fullPath: filePath,
+              skipTokenValidation: true, // Skip token limits for assistant-generated files
             });
 
             context.fileAccumulator.add(saved.fileId);
-            fileUrls.push({ path: filePath, downloadUrl: saved.url });
+            fileUrls.push({ path: filePath });
           } catch (e) {
             blockedFiles.push({
               path: filePath,
