@@ -1,6 +1,7 @@
 import { query, mutation, internalQuery } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
+import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
 
@@ -180,6 +181,15 @@ export const getMessagesByChatId = query({
           }),
           v.null(),
         ),
+        fileDetails: v.optional(
+          v.array(
+            v.object({
+              fileId: v.id("files"),
+              name: v.string(),
+              url: v.union(v.string(), v.null()),
+            }),
+          ),
+        ),
       }),
     ),
     isDone: v.boolean(),
@@ -210,31 +220,72 @@ export const getMessagesByChatId = query({
         .order("desc")
         .paginate(args.paginationOpts);
 
-      const enhancedMessages = [];
-      for (const message of result.page) {
-        if (message.role === "assistant" && message.feedback_id) {
-          const feedback = await ctx.db.get(message.feedback_id);
+      // OPTIMIZATION: Batch fetch all files and URLs upfront to avoid N+1 queries
 
-          enhancedMessages.push({
-            id: message.id,
-            role: message.role,
-            parts: message.parts,
-            feedback: feedback
-              ? {
-                  feedbackType: feedback.feedback_type as
-                    | "positive"
-                    | "negative",
-                }
-              : null,
-          });
-        } else {
-          enhancedMessages.push({
-            id: message.id,
-            role: message.role,
-            parts: message.parts,
-            feedback: null,
+      // Step 1: Collect all unique file IDs from all messages
+      const allFileIds = new Set<Id<"files">>();
+      for (const message of result.page) {
+        if (message.file_ids && message.file_ids.length > 0) {
+          message.file_ids.forEach((id) => allFileIds.add(id));
+        }
+      }
+
+      // Step 2: Batch fetch all files in parallel
+      const fileIdArray = Array.from(allFileIds);
+      const files = await Promise.all(
+        fileIdArray.map((fileId) => ctx.db.get(fileId)),
+      );
+
+      // Step 3: Batch fetch all storage URLs in parallel
+      const urls = await Promise.all(
+        files.map((file) =>
+          file ? ctx.storage.getUrl(file.storage_id) : null,
+        ),
+      );
+
+      // Step 4: Build file details lookup map for O(1) access
+      const fileDetailsMap = new Map();
+      files.forEach((file, index) => {
+        if (file) {
+          fileDetailsMap.set(fileIdArray[index], {
+            fileId: fileIdArray[index],
+            name: file.name,
+            url: urls[index],
           });
         }
+      });
+
+      // Step 5: Build enhanced messages using the lookup map
+      const enhancedMessages = [];
+      for (const message of result.page) {
+        // Get feedback if exists
+        let feedback = null;
+        if (message.role === "assistant" && message.feedback_id) {
+          const feedbackDoc = await ctx.db.get(message.feedback_id);
+          if (feedbackDoc) {
+            feedback = {
+              feedbackType: feedbackDoc.feedback_type as
+                | "positive"
+                | "negative",
+            };
+          }
+        }
+
+        // Get file details using O(1) lookup
+        let fileDetails = undefined;
+        if (message.file_ids && message.file_ids.length > 0) {
+          fileDetails = message.file_ids
+            .map((fileId) => fileDetailsMap.get(fileId))
+            .filter((detail) => detail !== undefined);
+        }
+
+        enhancedMessages.push({
+          id: message.id,
+          role: message.role,
+          parts: message.parts,
+          feedback,
+          fileDetails,
+        });
       }
 
       return {
@@ -473,6 +524,65 @@ export const getMessagesByChatIdForBackend = query({
       }
       return [];
     }
+  },
+});
+
+/**
+ * Get a page of messages for backend processing (adaptive backfill)
+ */
+export const getMessagesPageForBackend = query({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+    userId: v.string(),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: v.object({
+    page: v.array(
+      v.object({
+        id: v.string(),
+        role: v.union(
+          v.literal("user"),
+          v.literal("assistant"),
+          v.literal("system"),
+        ),
+        parts: v.array(v.any()),
+      }),
+    ),
+    isDone: v.boolean(),
+    continueCursor: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    // Verify chat ownership - if chat doesn't exist, return empty page
+    const chatExists: boolean = await ctx.runQuery(
+      internal.messages.verifyChatOwnership,
+      {
+        chatId: args.chatId,
+        userId: args.userId,
+      },
+    );
+
+    if (!chatExists) {
+      return { page: [], isDone: true, continueCursor: "" };
+    }
+
+    const result = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+      .order("desc")
+      .paginate(args.paginationOpts);
+
+    return {
+      page: result.page.map((message) => ({
+        id: message.id,
+        role: message.role,
+        parts: message.parts,
+      })),
+      isDone: result.isDone,
+      continueCursor: result.continueCursor,
+    };
   },
 });
 

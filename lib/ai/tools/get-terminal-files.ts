@@ -26,7 +26,7 @@ Usage:
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
-        const fileUrls: Array<{ path: string; downloadUrl: string }> = [];
+        const providedFiles: Array<{ path: string }> = [];
         const blockedFiles: Array<{ path: string; reason: string }> = [];
 
         for (const filePath of files) {
@@ -53,10 +53,11 @@ Usage:
               sandbox,
               userId: context.userID,
               fullPath: filePath,
+              skipTokenValidation: true, // Skip token limits for assistant-generated files
             });
 
             context.fileAccumulator.add(saved.fileId);
-            fileUrls.push({ path: filePath, downloadUrl: saved.url });
+            providedFiles.push({ path: filePath });
           } catch (e) {
             blockedFiles.push({
               path: filePath,
@@ -66,8 +67,8 @@ Usage:
         }
 
         let result = "";
-        if (fileUrls.length > 0) {
-          result += `Successfully provided ${fileUrls.length} file(s) to the user`;
+        if (providedFiles.length > 0) {
+          result += `Successfully provided ${providedFiles.length} file(s) to the user`;
         }
         if (blockedFiles.length > 0) {
           const blockedDetails = blockedFiles
@@ -80,12 +81,12 @@ Usage:
 
         return {
           result: result || "No files were retrieved",
-          fileUrls,
+          files: providedFiles,
         };
       } catch (error) {
         return {
           result: `Error providing files: ${error instanceof Error ? error.message : String(error)}`,
-          fileUrls: [],
+          files: [],
         };
       }
     },

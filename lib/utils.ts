@@ -3,6 +3,7 @@ import { twMerge } from "tailwind-merge";
 import { ChatSDKError, ErrorCode } from "./errors";
 import { ChatMessage } from "@/types/chat";
 import { UIMessagePart } from "ai";
+import { Id } from "@/convex/_generated/dataModel";
 
 export interface MessageRecord {
   id: string;
@@ -11,6 +12,11 @@ export interface MessageRecord {
   feedback?: {
     feedbackType: "positive" | "negative";
   } | null;
+  fileDetails?: Array<{
+    fileId: Id<"files">;
+    name: string;
+    url: string | null;
+  }>;
 }
 
 export function cn(...inputs: ClassValue[]) {
@@ -47,5 +53,6 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
     metadata: message.feedback
       ? { feedbackType: message.feedback.feedbackType }
       : undefined,
+    fileDetails: message.fileDetails,
   }));
 }

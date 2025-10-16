@@ -13,7 +13,9 @@ interface TerminalFilesPart {
   input?: { files: string[] };
   output?: {
     result: string;
-    fileUrls: Array<{ path: string; downloadUrl: string }>;
+    files?: Array<{ path: string }>;
+    // Legacy support for old messages
+    fileUrls?: Array<{ path: string; downloadUrl?: string }>;
   };
 }
 
@@ -57,7 +59,9 @@ export const GetTerminalFilesHandler = ({
       );
 
     case "output-available": {
-      const fileCount = filesOutput?.fileUrls?.length || 0;
+      // Support both new (files) and legacy (fileUrls) formats
+      const fileCount =
+        filesOutput?.files?.length || filesOutput?.fileUrls?.length || 0;
       const fileNames = getFileNames(filesInput?.files || []);
 
       return (

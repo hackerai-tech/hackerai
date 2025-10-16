@@ -10,65 +10,48 @@ import {
 
 export const createUpdateMemory = (context: ToolContext) => {
   return tool({
-    description: `The update_memory tool creates, updates, or deletes memories in a persistent knowledge base that allows you to persist information across conversations, so you can deliver more personalized and helpful responses over time. The corresponding user facing feature is known as "memory".
+    description: `The update_memory tool allows you to persist information across conversations, so you can deliver more personalized and helpful responses over time. The corresponding user facing feature is known as "memory".
 
-If the user augments an existing memory, you MUST use this tool with the action 'update'.
-If the user contradicts an existing memory, it is critical that you use this tool with the action 'delete', not 'update', or 'create'.
-To update or delete an existing memory, you MUST provide the existing_knowledge_id parameter.
-If the user asks to remember something, create a memory, or store information, you MUST use this tool with the action 'create'.
-You must NEVER reference or cite memory IDs to the user. Memory IDs are for internal use only.
+Use the action 'create' to store new information, 'update' to augment existing memories (requires existing_knowledge_id), or 'delete' to remove or contradict existing memories (requires existing_knowledge_id). You must NEVER reference or cite memory IDs to the user. Memory IDs are for internal use only.
 
-### When to Use the update_memory Tool
+#### When to use the \`update_memory\` tool
 
-Use the update_memory tool ONLY if:
+Send a message to the \`update_memory\` tool if:
+- The user is requesting for you to save or forget information.
+  - Such a request could use a variety of phrases including, but not limited to: "remember that...", "store this", "add to memory", "note that...", "forget that...", "delete this", etc.
+  - **Anytime** the user message includes one of these phrases or similar, reason about whether they are requesting for you to save or forget information.
+  - **Anytime** you determine that the user is requesting for you to save or forget information, you should **always** call the \`update_memory\` tool, even if the requested information has already been stored, appears extremely trivial or fleeting, etc.
+  - **Anytime** you are unsure whether or not the user is requesting for you to save or forget information, you **must** ask the user for clarification in a follow-up message.
+  - **Anytime** you are going to write a message to the user that includes a phrase such as "noted", "got it", "I'll remember that", or similar, you should make sure to call the \`update_memory\` tool first, before sending this message to the user.
+- The user has shared information that will be useful in future conversations and valid for a long time.
+  - One indicator is if the user says something like "from now on", "in the future", "going forward", etc.
+  - **Anytime** the user shares information that will likely be true for months or years, reason about whether it is worth saving in memory.
+  - User information is worth saving in memory if it is likely to change your future responses in similar situations.
 
-**FOR CREATE ACTION:**
-The user is explicitly requesting to store, save, or remember new information using phrases like:
-- "remember that...", "store this", "save this", "add to memory", "note that...", "please remember...", "make a note that..."
-- "from now on...", "in the future...", "going forward..." (indicating lasting preferences)
-- When you're about to respond with "I'll remember that", "noted", "got it" - you must create the memory first
-- The user shares information that will be useful in future conversations and valid for a long time
-- User information that is likely to change your future responses in similar situations
+#### When **not** to use the \`update_memory\` tool
 
-**FOR UPDATE ACTION:**
-The user is providing new/additional information that augments an existing memory
+Don't store random, trivial, or overly personal facts. In particular, avoid:
+- **Overly-personal** details that could feel creepy.
+- **Short-lived** facts that won't matter soon.
+- **Random** details that lack clear future relevance.
+- **Redundant** information that we already know about the user.
 
-**FOR DELETE ACTION:**
-The user explicitly asks to forget, remove, or delete a memory, or contradicts existing memory information
-
-### When NOT to Use the update_memory Tool
-
-**DO NOT use this tool when:**
-- User is asking ABOUT existing memories (e.g., "do you remember...", "what do you know about...", "tell me my memories", "hey do you remember any of my memories")
-- User is asking questions that reference memory without storing new info
-- User is simply inquiring about what you remember vs. asking you to remember something new
-- The user message is a question rather than a statement to be stored
-- User is testing or checking what information you have (these are queries, not storage requests)
-
-**Additional guidelines - Don't store:**
-Random, trivial, or overly personal facts. In particular, avoid:
-
-Overly-personal details that could feel creepy.
-Short-lived facts that won't matter soon.
-Random details that lack clear future relevance.
-Redundant information that we already know about the user.
 Don't save information pulled from text the user is trying to translate or rewrite.
 
-Never store information that falls into the following sensitive data categories unless clearly requested by the user:
+**Never** store information that falls into the following **sensitive data** categories unless clearly requested by the user:
+- Information that **directly** asserts the user's personal attributes, such as:
+  - Race, ethnicity, or religion
+  - Specific criminal record details (except minor non-criminal legal issues)
+  - Precise geolocation data (street address/coordinates)
+  - Explicit identification of the user's personal attribute (e.g., "User is Latino," "User identifies as Christian," "User is LGBTQ+").
+  - Trade union membership or labor union involvement
+  - Political affiliation or critical/opinionated political views
+  - Health information (medical conditions, mental health issues, diagnoses, sex life)
+- However, you may store information that is not explicitly identifying but is still sensitive, such as:
+  - Text discussing interests, affiliations, or logistics without explicitly asserting personal attributes (e.g., "User is an international student from Taiwan").
+  - Plausible mentions of interests or affiliations without explicitly asserting identity (e.g., "User frequently engages with LGBTQ+ advocacy content").
 
-Information that directly asserts the user's personal attributes, such as:
-Race, ethnicity, or religion
-Specific criminal record details (except minor non-criminal legal issues)
-Precise geolocation data (street address/coordinates)
-Explicit identification of the user's personal attribute (e.g., "User is Latino," "User identifies as Christian," "User is LGBTQ+").
-Trade union membership or labor union involvement
-Political affiliation or critical/opinionated political views
-Health information (medical conditions, mental health issues, diagnoses, sex life)
-However, you may store information that is not explicitly identifying but is still sensitive, such as:
-Text discussing interests, affiliations, or logistics without explicitly asserting personal attributes (e.g., "User is an international student from Taiwan").
-Plausible mentions of interests or affiliations without explicitly asserting identity (e.g., "User frequently engages with LGBTQ+ advocacy content").
-
-The exception to all of the above instructions, as stated at the top, is if the user explicitly requests memory operations (create, update, or delete). In this case, you should always call the update_memory tool with the appropriate action to respect their request.`,
+The exception to **all** of the above instructions, as stated at the top, is if the user explicitly requests that you save or forget information. In this case, you should **always** call the \`update_memory\` tool to respect their request.`,
     inputSchema: z.object({
       action: z
         .enum(["create", "update", "delete"])

@@ -25,6 +25,7 @@ export async function uploadSandboxFileToConvex(args: {
   sandbox: Sandbox;
   userId: string;
   fullPath: string;
+  skipTokenValidation?: boolean;
 }): Promise<UploadedFileInfo> {
   if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
     throw new Error(
@@ -81,6 +82,7 @@ export async function uploadSandboxFileToConvex(args: {
     size: blob.size,
     serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
     userId,
+    skipTokenValidation: args.skipTokenValidation,
   });
 
   return saved as UploadedFileInfo;

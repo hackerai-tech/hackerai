@@ -182,6 +182,7 @@ export const createChatHandler = () => {
             memoryEnabled,
             temporary,
             assistantMessageId,
+            subscription,
           );
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {

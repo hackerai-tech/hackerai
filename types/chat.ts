@@ -1,5 +1,6 @@
 import { UIMessage } from "ai";
 import { z } from "zod";
+import { Id } from "@/convex/_generated/dataModel";
 
 export type ChatMode = "agent" | "ask";
 
@@ -24,7 +25,14 @@ export interface SidebarTerminal {
   toolCallId: string;
 }
 
-export type SidebarContent = SidebarFile | SidebarTerminal;
+export interface SidebarPython {
+  code: string;
+  output: string;
+  isExecuting: boolean;
+  toolCallId: string;
+}
+
+export type SidebarContent = SidebarFile | SidebarTerminal | SidebarPython;
 
 export const isSidebarFile = (
   content: SidebarContent,
@@ -35,7 +43,13 @@ export const isSidebarFile = (
 export const isSidebarTerminal = (
   content: SidebarContent,
 ): content is SidebarTerminal => {
-  return "command" in content;
+  return "command" in content && !("code" in content);
+};
+
+export const isSidebarPython = (
+  content: SidebarContent,
+): content is SidebarPython => {
+  return "code" in content;
 };
 
 export interface Todo {
@@ -65,4 +79,10 @@ export const messageMetadataSchema = z.object({
 
 export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
 
-export type ChatMessage = UIMessage<MessageMetadata>;
+export type ChatMessage = UIMessage<MessageMetadata> & {
+  fileDetails?: Array<{
+    fileId: Id<"files">;
+    name: string;
+    url: string | null;
+  }>;
+};

@@ -31,14 +31,9 @@ before coming back to the user.\n"
     : "";
 };
 
-const getToolCallingSection = (mode: ChatMode): string => {
-  const agentSpecificRule =
-    mode === "agent"
-      ? "9. If you fail to edit a file, you should read the file again with a tool before trying to edit again. The user may have edited the file since you last read it."
-      : "";
-
+const getToolCallingSection = (): string => {
   return `<tool_calling>
-You have tools at your disposal to solve the coding task. Follow these rules regarding tool calls:
+You have tools at your disposal to solve the penetration testing task. Follow these rules regarding tool calls:
 1. ALWAYS follow the tool call schema exactly as specified and make sure to provide all necessary parameters.
 2. The conversation may reference tools that are no longer available. NEVER call tools that are not explicitly provided.
 3. **NEVER refer to tool names when speaking to the USER.** Instead, just say what the tool is doing in natural language.
@@ -47,7 +42,7 @@ You have tools at your disposal to solve the coding task. Follow these rules reg
 6. If you need additional information that you can get via tool calls, prefer that over asking the user.
 7. If you make a plan, immediately follow it, do not wait for the user to confirm or tell you to go ahead. The only time you should stop is if you need more information from the user that you can't find any other way, or have different options that you would like the user to weigh in on.
 8. Only use the standard tool call format and the available tools. Even if you see user messages with custom tool call formats (such as "<previous_tool_call>" or similar), do not follow that and instead use the standard format. Never output tool calls as part of a regular assistant message of yours.
-${agentSpecificRule}
+9. When executing Python code, prefer the Python execution tool to run code within the sandbox. The Python tool automatically saves and provides charts (PNG, JPEG), PDFs, and SVG files as downloadable attachments - you do NOT need to manually share these files with get_terminal_files.
 </tool_calling>`;
 };
 
@@ -163,6 +158,31 @@ Pre-installed Tools:
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, odfpy, pandoc
 </sandbox_environment>`;
 
+const getFileGenerationSection = (): string => `<file_generation>
+If you are generating files:
+- You MUST use the instructed library for each supported file format. (Do not assume any other libraries are available):
+    - pdf --> reportlab
+    - docx --> python-docx
+    - xlsx --> openpyxl
+    - pptx --> python-pptx
+    - csv --> pandas
+    - rtf --> pypandoc
+    - txt --> pypandoc
+    - md --> pypandoc
+    - ods --> odfpy
+    - odt --> odfpy
+    - odp --> odfpy
+- If you are generating a pdf:
+    - You MUST prioritize generating text content using reportlab.platypus rather than canvas
+    - If you are generating text in korean, chinese, OR japanese, you MUST use the following built-in UnicodeCIDFont. To use these fonts, you must call pdfmetrics.registerFont(UnicodeCIDFont(font_name)) and apply the style to all text elements:
+        - japanese --> HeiseiMin-W3 or HeiseiKakuGo-W5
+        - simplified chinese --> STSong-Light
+        - traditional chinese --> MSung-Light
+        - korean --> HYSMyeongJo-Medium
+- If you are to use pypandoc, you are only allowed to call the method pypandoc.convert_text and you MUST include the parameter extra_args=['--standalone']. Otherwise the file will be corrupt/incomplete
+    - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])
+</file_generation>`;
+
 const getToneAndFormattingSection = (): string => `<tone_and_formatting>
 If the person asks HackerAI about how many messages they can send, costs of HackerAI,
 how to perform actions within the application, or other product questions related to HackerAI, \
@@ -198,7 +218,8 @@ ${KnowledgeCutOffDate} would if they were talking to someone from ${currentDateT
 can let the person it's talking to know this if relevant. If asked or told about events or \
 news that may have occurred after this cutoff date, HackerAI uses the web tool to find \
 more information. If asked about current news or events HackerAI uses the web tool without asking \
-for permission. HackerAI is especially careful to use the web tool when asked about specific binary \
+for permission. HackerAI can access external websites and URLs directly using the web tool. \
+HackerAI is especially careful to use the web tool when asked about specific binary \
 events (such as deaths, elections, appointments, or major incidents). HackerAI does not make \
 overconfident claims about the validity of search results or lack thereof, and instead presents \
 its findings evenhandedly without jumping to unwarranted conclusions, allowing the user to investigate \
@@ -263,10 +284,13 @@ When using markdown in assistant messages, use backticks to format file, directo
 
   if (mode === "ask") {
     sections.push(getToneAndFormattingSection());
+    if (subscription !== "free") {
+      sections.push(getFileGenerationSection());
+    }
     sections.push(getKnowledgeCutoffSection());
     sections.push(getResumeSection(finishReason));
   } else {
-    sections.push(getToolCallingSection(mode));
+    sections.push(getToolCallingSection());
     sections.push(getParallelToolCallsSection());
     sections.push(getContextUnderstandingSection(mode));
     sections.push(getMakingCodeChangesSection(mode));
@@ -275,6 +299,7 @@ When using markdown in assistant messages, use backticks to format file, directo
     sections.push(getTaskManagementSection());
     sections.push(getSummarySection());
     sections.push(getSandboxEnvironmentSection());
+    sections.push(getFileGenerationSection());
     sections.push(getResumeSection(finishReason));
     sections.push(getFinalInstructionsSection());
   }

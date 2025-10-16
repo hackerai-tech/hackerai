@@ -22,11 +22,7 @@ If the user explicitly asks you to remember something, politely ask them to go t
   }
 
   if (!memories || memories.length === 0) {
-    return (
-      baseMemoryInstructions +
-      `
-</memories>`
-    );
+    return "";
   }
 
   // Show all memories without sorting

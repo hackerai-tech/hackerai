@@ -24,7 +24,6 @@ import {
   hasTextContent,
   findLastAssistantMessageIndex,
   extractWebSourcesFromMessage,
-  extractSavedFilesFromMessage,
 } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import { toast } from "sonner";
@@ -88,6 +87,13 @@ export const Messages = ({
 
   // Track all files dialog state
   const [showAllFilesDialog, setShowAllFilesDialog] = useState(false);
+  const [dialogFiles, setDialogFiles] = useState<
+    Array<{
+      part: any;
+      partIndex: number;
+      messageId: string;
+    }>
+  >([]);
 
   // Handle feedback logic
   const {
@@ -151,41 +157,26 @@ export const Messages = ({
     [],
   );
 
-  // Extract saved files (memoized adapter)
-  const extractSavedFiles = useCallback(
-    (message: ChatMessage) => extractSavedFilesFromMessage(message as any),
-    [],
-  );
+  // Handler to show all files for a specific message
+  const handleShowAllFiles = useCallback((message: ChatMessage) => {
+    if (!message.fileDetails) return;
 
-  // Collect all files from assistant messages only for the dialog
-  const allFiles = useMemo(() => {
-    const files: Array<{
-      part: any;
-      partIndex: number;
-      messageId: string;
-    }> = [];
+    const files = message.fileDetails
+      .filter((file) => file.url)
+      .map((file, fileIndex) => ({
+        part: {
+          url: file.url!,
+          name: file.name,
+          filename: file.name,
+          mediaType: undefined,
+        },
+        partIndex: fileIndex,
+        messageId: message.id,
+      }));
 
-    messages.forEach((message) => {
-      // Only include files from assistant messages
-      if (message.role === "assistant") {
-        const savedFiles = extractSavedFilesFromMessage(message as any);
-        savedFiles.forEach((file, fileIndex) => {
-          files.push({
-            part: {
-              url: file.downloadUrl,
-              name: file.filename,
-              filename: file.path,
-              mediaType: undefined,
-            },
-            partIndex: fileIndex,
-            messageId: message.id,
-          });
-        });
-      }
-    });
-
-    return files;
-  }, [messages]);
+    setDialogFiles(files);
+    setShowAllFilesDialog(true);
+  }, []);
 
   // Handle scroll to load more messages when scrolling to top
   const handleScroll = useCallback(() => {
@@ -259,8 +250,10 @@ export const Messages = ({
 
           // Get saved files for assistant messages
           const savedFiles =
-            !isUser && (isLastAssistantMessage ? status !== "streaming" : true)
-              ? extractSavedFiles(message)
+            !isUser &&
+            (isLastAssistantMessage ? status !== "streaming" : true) &&
+            message.fileDetails
+              ? message.fileDetails.filter((f) => f.url)
               : [];
 
           return (
@@ -366,9 +359,9 @@ export const Messages = ({
                       <FilePartRenderer
                         key={`${message.id}-saved-file-${savedFiles.length - 1}`}
                         part={{
-                          url: savedFiles[savedFiles.length - 1].downloadUrl,
-                          name: savedFiles[savedFiles.length - 1].filename,
-                          filename: savedFiles[savedFiles.length - 1].path,
+                          url: savedFiles[savedFiles.length - 1].url!,
+                          name: savedFiles[savedFiles.length - 1].name,
+                          filename: savedFiles[savedFiles.length - 1].name,
                           mediaType: undefined,
                         }}
                         partIndex={savedFiles.length - 1}
@@ -377,7 +370,7 @@ export const Messages = ({
                       />
                       {/* View all files button */}
                       <button
-                        onClick={() => setShowAllFilesDialog(true)}
+                        onClick={() => handleShowAllFiles(message)}
                         className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
                         type="button"
                         aria-label="View all files"
@@ -397,9 +390,9 @@ export const Messages = ({
                       <FilePartRenderer
                         key={`${message.id}-saved-file-${fileIndex}`}
                         part={{
-                          url: file.downloadUrl,
-                          name: file.filename,
-                          filename: file.path,
+                          url: file.url!,
+                          name: file.name,
+                          filename: file.name,
                           mediaType: undefined,
                         }}
                         partIndex={fileIndex}
@@ -492,7 +485,7 @@ export const Messages = ({
       <AllFilesDialog
         open={showAllFilesDialog}
         onOpenChange={setShowAllFilesDialog}
-        files={allFiles}
+        files={dialogFiles}
         chatTitle={chatTitle}
       />
     </div>

@@ -108,3 +108,24 @@ export async function truncateMessagesWithFileTokens(
   const maxTokens = getMaxTokensForSubscription(subscription);
   return truncateMessagesToTokenLimit(messages, fileTokens, maxTokens);
 }
+
+/**
+ * Truncate messages using a precomputed fileTokens map when available
+ */
+export async function truncateMessagesWithPrecomputedTokens(
+  messages: UIMessage[],
+  subscription: SubscriptionTier = "pro",
+  precomputedFileTokens?: Record<string, number>,
+): Promise<UIMessage[]> {
+  const maxTokens = getMaxTokensForSubscription(subscription);
+  if (precomputedFileTokens) {
+    return truncateMessagesToTokenLimit(
+      messages,
+      precomputedFileTokens,
+      maxTokens,
+    );
+  }
+  const fileIds = extractAllFileIdsFromMessages(messages);
+  const fileTokens = await getFileTokensByIds(fileIds);
+  return truncateMessagesToTokenLimit(messages, fileTokens, maxTokens);
+}

@@ -212,14 +212,67 @@ export async function getMessagesByChatId({
     // Only fetch existing messages if chat exists
     if (!isNewChat) {
       try {
-        existingMessages = await convex.query(
-          api.messages.getMessagesByChatIdForBackend,
-          {
+        // Adaptive paginated backfill: fetch pages until token budget is hit or cap reached
+        const PAGE_SIZE = 32;
+        const MAX_PAGES = 3;
+
+        let cursor: string | null = null;
+        let pagesFetched = 0;
+        let fetchedDesc: UIMessage[] = [];
+        let truncatedFromLoop: UIMessage[] | null = null;
+
+        while (pagesFetched < MAX_PAGES) {
+          const pageResult: {
+            page: UIMessage[];
+            isDone: boolean;
+            continueCursor: string | null;
+          } = await convex.query(api.messages.getMessagesPageForBackend, {
             serviceKey,
             chatId,
             userId,
-          },
-        );
+            paginationOpts: { numItems: PAGE_SIZE, cursor },
+          });
+          const { page, isDone, continueCursor: nextCursor } = pageResult;
+
+          fetchedDesc = fetchedDesc.concat(page);
+          pagesFetched++;
+
+          const existingChrono = [...fetchedDesc].reverse();
+          const candidate =
+            regenerate && !isTemporary
+              ? existingChrono
+              : [...existingChrono, ...newMessages];
+
+          const trial = await truncateMessagesWithFileTokens(
+            candidate,
+            subscription,
+          );
+          const hitBudget = trial.length < candidate.length;
+          const reachedLimit = isDone || pagesFetched >= MAX_PAGES;
+
+          if (hitBudget || reachedLimit) {
+            truncatedFromLoop = trial;
+            break;
+          }
+
+          cursor = nextCursor || null;
+          if (!cursor) {
+            // No more pages
+            truncatedFromLoop = trial;
+            break;
+          }
+        }
+
+        // If loop didn't run or didn't set, fall back to whatever we accumulated
+        if (!fetchedDesc.length && !truncatedFromLoop) {
+          existingMessages = [];
+        } else if (!truncatedFromLoop) {
+          // Use all fetched messages chronologically as existing
+          existingMessages = [...fetchedDesc].reverse();
+        } else {
+          // We already have a final truncated result; return early
+          return { truncatedMessages: truncatedFromLoop, chat, isNewChat };
+        }
       } catch (error) {
         // If error fetching, use empty array
         console.warn("Failed to fetch existing messages:", error);
