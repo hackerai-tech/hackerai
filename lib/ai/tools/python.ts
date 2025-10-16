@@ -4,6 +4,8 @@ import { randomUUID } from "crypto";
 import { FilesystemEventType } from "@e2b/code-interpreter";
 import type { ToolContext } from "@/types";
 import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import { createTerminalHandler } from "@/lib/utils/terminal-executor";
+import { STREAM_MAX_TOKENS } from "@/lib/token-utils";
 
 const MAX_EXECUTION_TIME_MS = 60 * 1000; // 60 seconds for code execution
 
@@ -45,27 +47,197 @@ I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) gi
         // Directory might already exist, that's fine
       }
 
-      return new Promise(async (resolve) => {
+      return new Promise((resolve) => {
         let resolved = false;
         const results: Array<unknown> = [];
-        const uploadedFiles: Array<{ path: string }> = [];
-        let stdout = "";
-        let stderr = "";
+        const files: Array<{ path: string }> = [];
         const createdFiles = new Set<string>();
+        let watcher: Awaited<ReturnType<typeof sandbox.files.watchDir>> | null =
+          null;
 
-        const onAbort = () => {
+        // Use terminal handler for streaming truncation
+        const handler = createTerminalHandler(writeToTerminal, {
+          maxTokens: STREAM_MAX_TOKENS,
+        });
+
+        const onAbort = async () => {
           if (resolved) return;
           resolved = true;
+
+          handler.cleanup();
+
+          // Clean up watcher on abort
+          if (watcher) {
+            try {
+              await watcher.stop();
+            } catch (e) {
+              console.error(
+                "[Python Tool] Error stopping watcher on abort:",
+                e,
+              );
+            }
+          }
+
+          const result = handler.getResult();
           resolve({
             result: {
-              stdout,
-              stderr,
+              ...result,
               results,
               exitCode: null,
               error: "Command execution aborted by user",
             },
-            fileUrls: uploadedFiles,
+            files,
           });
+        };
+
+        const executeCode = async () => {
+          try {
+            // Create a code context with working directory set to /mnt/data
+            const codeContext = await sandbox.createCodeContext({
+              cwd: OUTPUT_DIR,
+            });
+
+            // Start watching directory for file changes (recursive to catch subdirectories)
+            watcher = await sandbox.files.watchDir(
+              OUTPUT_DIR,
+              (event) => {
+                if (
+                  event.type === FilesystemEventType.CREATE ||
+                  event.type === FilesystemEventType.WRITE
+                ) {
+                  createdFiles.add(event.name);
+                }
+              },
+              { recursive: true },
+            );
+
+            await sandbox.runCode(code, {
+              context: codeContext,
+              timeoutMs: MAX_EXECUTION_TIME_MS,
+              onError: (error: unknown) => {
+                const errorMsg =
+                  typeof error === "string"
+                    ? error
+                    : String((error as any)?.message ?? error);
+                handler.stderr(errorMsg);
+              },
+              onStdout: (data: any) => {
+                // E2B provides { line, error, timestamp } or string; normalize
+                const line =
+                  typeof data === "string" ? data : String(data?.line ?? "");
+                handler.stdout(line);
+              },
+              onStderr: (data: any) => {
+                const line =
+                  typeof data === "string" ? data : String(data?.line ?? "");
+                handler.stderr(line);
+              },
+              onResult: async (result: unknown) => {
+                // Collect results but strip out binary data (handled separately via file watcher)
+                if (result && typeof result === "object") {
+                  const resultCopy: any = { ...result };
+                  // Remove binary data fields - files are uploaded separately via file watcher
+                  delete resultCopy.raw;
+                  delete resultCopy.png;
+                  delete resultCopy.jpeg;
+                  delete resultCopy.pdf;
+                  delete resultCopy.svg;
+                  results.push(resultCopy);
+                } else {
+                  results.push(result);
+                }
+              },
+            });
+
+            if (resolved) return;
+            resolved = true;
+
+            // Wait for file events to be delivered (E2B events are async)
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
+            // Stop watching the directory
+            if (watcher) {
+              try {
+                await watcher.stop();
+              } catch (e) {
+                console.error("[Python Tool] Error stopping watcher:", e);
+              }
+            }
+
+            // Upload files that were created or modified during execution
+            // createdFiles is already a Set, so duplicates are automatically removed
+            try {
+              for (const fileName of createdFiles) {
+                const filePath = `${OUTPUT_DIR}/${fileName}`;
+
+                try {
+                  const saved = await uploadSandboxFileToConvex({
+                    sandbox,
+                    userId: context.userID,
+                    fullPath: filePath,
+                    skipTokenValidation: true, // Skip token limits for assistant-generated files
+                  });
+
+                  context.fileAccumulator.add(saved.fileId);
+                  files.push({
+                    path: fileName,
+                  });
+                } catch (e) {
+                  console.error(
+                    `[Python Tool] Failed to upload ${fileName}:`,
+                    e,
+                  );
+                  const errorLine = `[Failed to upload ${fileName}: ${e instanceof Error ? e.message : String(e)}]\n`;
+                  handler.stderr(errorLine);
+                }
+              }
+            } catch (e) {
+              console.error(`[Python Tool] Error uploading files:`, e);
+              const errorLine = `[Error uploading files: ${e instanceof Error ? e.message : String(e)}]\n`;
+              handler.stderr(errorLine);
+            }
+
+            handler.cleanup();
+            const result = handler.getResult();
+            resolve({
+              result: {
+                ...result,
+                results,
+                exitCode: 0,
+              },
+              files,
+            });
+          } catch (e: any) {
+            if (resolved) return;
+            resolved = true;
+
+            handler.cleanup();
+
+            // Stop watching the directory on error
+            if (watcher) {
+              try {
+                await watcher.stop();
+              } catch (stopError) {
+                console.error(
+                  "[Python Tool] Error stopping watcher on error:",
+                  stopError,
+                );
+              }
+            }
+
+            const result = handler.getResult();
+            resolve({
+              result: {
+                ...result,
+                results,
+                exitCode: null,
+                error: String(e?.message ?? e),
+              },
+              files,
+            });
+          } finally {
+            abortSignal?.removeEventListener("abort", onAbort);
+          }
         };
 
         if (abortSignal?.aborted) {
@@ -74,121 +246,7 @@ I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) gi
         }
 
         abortSignal?.addEventListener("abort", onAbort, { once: true });
-
-        try {
-          // Start watching directory for file changes
-          const watcher = await sandbox.files.watchDir(OUTPUT_DIR, (event) => {
-            if (
-              event.type === FilesystemEventType.CREATE ||
-              event.type === FilesystemEventType.WRITE
-            ) {
-              createdFiles.add(event.name);
-            }
-          });
-
-          await sandbox.runCode(code, {
-            timeoutMs: MAX_EXECUTION_TIME_MS,
-            onError: (error: unknown) => {
-              const errorMsg =
-                typeof error === "string"
-                  ? error
-                  : String((error as any)?.message ?? error);
-              stderr += errorMsg;
-              writeToTerminal(errorMsg);
-            },
-            onStdout: (data: any) => {
-              // E2B provides { line, error, timestamp } or string; normalize
-              const line =
-                typeof data === "string" ? data : String(data?.line ?? "");
-              stdout += line;
-              writeToTerminal(line);
-            },
-            onStderr: (data: any) => {
-              const line =
-                typeof data === "string" ? data : String(data?.line ?? "");
-              stderr += line;
-              writeToTerminal(line);
-            },
-            onResult: async (result: unknown) => {
-              // Collect results but strip out binary data (handled separately via file watcher)
-              if (result && typeof result === "object") {
-                const resultCopy: any = { ...result };
-                // Remove binary data fields - files are uploaded separately via file watcher
-                delete resultCopy.raw;
-                delete resultCopy.png;
-                delete resultCopy.jpeg;
-                delete resultCopy.pdf;
-                delete resultCopy.svg;
-                results.push(resultCopy);
-              } else {
-                results.push(result);
-              }
-            },
-          });
-
-          if (resolved) return;
-          resolved = true;
-
-          // Stop watching the directory
-          await watcher.stop();
-
-          // Upload files that were created or modified during execution
-          // createdFiles is already a Set, so duplicates are automatically removed
-          try {
-            for (const fileName of createdFiles) {
-              const filePath = `${OUTPUT_DIR}/${fileName}`;
-
-              try {
-                const saved = await uploadSandboxFileToConvex({
-                  sandbox,
-                  userId: context.userID,
-                  fullPath: filePath,
-                  skipTokenValidation: true, // Skip token limits for assistant-generated files
-                });
-
-                context.fileAccumulator.add(saved.fileId);
-                uploadedFiles.push({
-                  path: fileName,
-                });
-              } catch (e) {
-                console.error(`[Python Tool] Failed to upload ${fileName}:`, e);
-                const errorLine = `[Failed to upload ${fileName}: ${e instanceof Error ? e.message : String(e)}]\n`;
-                stderr += errorLine;
-                writeToTerminal(errorLine);
-              }
-            }
-          } catch (e) {
-            console.error(`[Python Tool] Error uploading files:`, e);
-            const errorLine = `[Error uploading files: ${e instanceof Error ? e.message : String(e)}]\n`;
-            stderr += errorLine;
-            writeToTerminal(errorLine);
-          }
-
-          resolve({
-            result: {
-              stdout,
-              stderr,
-              results,
-              exitCode: 0,
-            },
-            fileUrls: uploadedFiles,
-          });
-        } catch (e: any) {
-          if (resolved) return;
-          resolved = true;
-          resolve({
-            result: {
-              stdout,
-              stderr,
-              results,
-              exitCode: null,
-              error: String(e?.message ?? e),
-            },
-            fileUrls: uploadedFiles,
-          });
-        } finally {
-          abortSignal?.removeEventListener("abort", onAbort);
-        }
+        executeCode();
       });
     },
   });

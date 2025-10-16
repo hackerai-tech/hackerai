@@ -484,6 +484,15 @@ export const saveFile = action({
 
     // Enforce file size limit (20 MB) regardless of skipTokenValidation
     if (args.size > MAX_FILE_SIZE_BYTES) {
+      // Clean up storage before throwing error
+      try {
+        await ctx.storage.delete(args.storageId);
+      } catch (deleteError) {
+        console.warn(
+          `Failed to delete storage for oversized file "${args.name}":`,
+          deleteError,
+        );
+      }
       throw new Error(
         `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
       );
