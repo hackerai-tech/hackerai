@@ -164,6 +164,7 @@ XAI_API_KEY=${envVars.XAI_API_KEY}
 
 # E2B Sandbox (Required for agent mode - provides secure code execution environment)
 E2B_API_KEY=${envVars.E2B_API_KEY}
+E2B_TEMPLATE=terminal-agent-sandbox
 
 # =============================================================================
 # OPTIONAL CONFIGURATIONS

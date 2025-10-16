@@ -115,21 +115,58 @@ I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) gi
               context: codeContext,
               timeoutMs: MAX_EXECUTION_TIME_MS,
               onError: (error: unknown) => {
-                const errorMsg =
-                  typeof error === "string"
-                    ? error
-                    : String((error as any)?.message ?? error);
+                let errorMsg: string;
+                if (typeof error === "string") {
+                  errorMsg = error;
+                } else if (error && typeof error === "object") {
+                  const errObj = error as any;
+                  if (errObj.message) {
+                    errorMsg = errObj.message;
+                  } else {
+                    try {
+                      errorMsg = JSON.stringify(error, null, 2);
+                    } catch {
+                      errorMsg = String(error);
+                    }
+                  }
+                } else {
+                  errorMsg = String(error);
+                }
                 handler.stderr(errorMsg);
               },
               onStdout: (data: any) => {
                 // E2B provides { line, error, timestamp } or string; normalize
-                const line =
-                  typeof data === "string" ? data : String(data?.line ?? "");
+                let line: string;
+                if (typeof data === "string") {
+                  line = data;
+                } else if (data && typeof data === "object" && "line" in data) {
+                  line = String(data.line);
+                } else if (data && typeof data === "object") {
+                  try {
+                    line = JSON.stringify(data);
+                  } catch {
+                    line = String(data);
+                  }
+                } else {
+                  line = String(data ?? "");
+                }
                 handler.stdout(line);
               },
               onStderr: (data: any) => {
-                const line =
-                  typeof data === "string" ? data : String(data?.line ?? "");
+                let line: string;
+                if (typeof data === "string") {
+                  line = data;
+                } else if (data && typeof data === "object" && "line" in data) {
+                  line = String(data.line);
+                } else if (data && typeof data === "object") {
+                  try {
+                    line = JSON.stringify(data);
+                  } catch {
+                    line = String(data);
+                  }
+                } else {
+                  line = String(data ?? "");
+                }
                 handler.stderr(line);
               },
               onResult: async (result: unknown) => {
@@ -225,13 +262,28 @@ I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) gi
               }
             }
 
+            let errorMsg: string;
+            if (e && typeof e === "object") {
+              if (e.message) {
+                errorMsg = e.message;
+              } else {
+                try {
+                  errorMsg = JSON.stringify(e, null, 2);
+                } catch {
+                  errorMsg = String(e);
+                }
+              }
+            } else {
+              errorMsg = String(e);
+            }
+
             const result = handler.getResult();
             resolve({
               result: {
                 ...result,
                 results,
                 exitCode: null,
-                error: String(e?.message ?? e),
+                error: errorMsg,
               },
               files,
             });

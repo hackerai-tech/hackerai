@@ -1,5 +1,9 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { safeWaitUntil } from "@/lib/utils/safe-wait-until";
+import type { SandboxContext } from "@/types";
+
+const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
+const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
 
 /**
  * Current sandbox version identifier.
@@ -11,37 +15,44 @@ import { safeWaitUntil } from "@/lib/utils/safe-wait-until";
 const SANDBOX_VERSION = "v2";
 
 /**
- * Creates or connects to a persistent sandbox instance
+ * Ensures a sandbox connection is established and maintained
  * Reuses existing sandboxes when possible to maintain state and improve performance
  *
- * @param userID - User identifier for sandbox ownership
- * @param template - Sandbox environment template name
- * @param timeoutMs - Operation timeout in milliseconds
- * @param enforceVersion - If true, checks sandbox version and recreates if outdated
- * @returns Connected or newly created sandbox instance
+ * @param context - Sandbox context containing user ID and state management
+ * @param options - Configuration options for sandbox connection
+ * @returns Connected sandbox instance
  *
  * Flow:
- * 1. Lists existing sandboxes for the user
- * 2. If enforceVersion is true, validates sandbox version metadata
- * 3a. If found with "running" state: pause first (3 retries), then resume
- * 3b. If found with "paused" state: resume directly (no retries needed)
- * 4. Pause operations use 5-second delays between retry attempts
- * 5. If pause fails after retries or no sandbox found, creates new one
- * 6. Returns active sandbox ready for use
+ * 1. Returns existing sandbox if already initialized
+ * 2. Lists existing sandboxes for the user
+ * 3. If enforceVersion is true, validates sandbox version metadata
+ * 4a. If found with "running" state: pause first (3 retries), then resume
+ * 4b. If found with "paused" state: resume directly (no retries needed)
+ * 5. Pause operations use 5-second delays between retry attempts
+ * 6. If pause fails after retries or no sandbox found, creates new one
+ * 7. Returns active sandbox ready for use
  */
-export async function createOrConnectPersistentTerminal(
-  userID: string,
-  template: string,
-  timeoutMs: number,
-  enforceVersion: boolean = false,
-): Promise<Sandbox> {
+export const ensureSandboxConnection = async (
+  context: SandboxContext,
+  options: {
+    initialSandbox?: Sandbox | null;
+    enforceVersion?: boolean;
+  } = {},
+): Promise<{ sandbox: Sandbox }> => {
+  const { userID, setSandbox } = context;
+  const { initialSandbox, enforceVersion = false } = options;
+
+  // Return existing sandbox if already connected
+  if (initialSandbox) {
+    return { sandbox: initialSandbox };
+  }
   try {
     // Step 1: Look for existing sandbox for this user
     const paginator = Sandbox.list({
       query: {
         metadata: {
           userID,
-          template,
+          template: SANDBOX_TEMPLATE,
         },
       },
     });
@@ -101,9 +112,10 @@ export async function createOrConnectPersistentTerminal(
           } else {
             // Now resume the paused sandbox
             const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-              timeoutMs,
+              timeoutMs: BASH_SANDBOX_TIMEOUT,
             });
-            return sandbox;
+            setSandbox(sandbox);
+            return { sandbox };
           }
         } catch (error) {
           console.error(
@@ -116,9 +128,10 @@ export async function createOrConnectPersistentTerminal(
         // Step 4b: If already paused, resume directly (no retries needed)
         try {
           const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-            timeoutMs,
+            timeoutMs: BASH_SANDBOX_TIMEOUT,
           });
-          return sandbox;
+          setSandbox(sandbox);
+          return { sandbox };
         } catch (e) {
           // Handle specific error cases
           if (
@@ -148,26 +161,29 @@ export async function createOrConnectPersistentTerminal(
     }
 
     // Step 5: Create new sandbox (fallback for all failure cases)
-    const sandbox = await Sandbox.create(template, {
-      timeoutMs,
+    const sandbox = await Sandbox.create(SANDBOX_TEMPLATE, {
+      timeoutMs: BASH_SANDBOX_TIMEOUT,
       // Enable secure mode to generate pre-signed URLs for file downloads
       // This allows unauthorized environments (like browsers) to securely access
       // sandbox files through signed URLs with optional expiration times
       secure: true,
       metadata: {
         userID,
-        template,
+        template: SANDBOX_TEMPLATE,
         secure: "true",
         sandboxVersion: SANDBOX_VERSION,
       },
     });
 
-    return sandbox;
+    setSandbox(sandbox);
+    return { sandbox };
   } catch (error) {
-    console.error(`[${userID}] Error in createOrConnectTerminal:`, error);
-    throw error;
+    console.error("Error creating persistent sandbox:", error);
+    throw new Error(
+      `Failed creating persistent sandbox: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
   }
-}
+};
 
 /**
  * Initiates a background task to pause an active sandbox
