@@ -4,9 +4,10 @@ import type { Geo } from "@vercel/functions";
 import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
+import type { ChatMode } from "./chat";
 
 export interface SandboxManager {
-  getSandbox(enforceVersion?: boolean): Promise<{ sandbox: Sandbox }>;
+  getSandbox(): Promise<{ sandbox: Sandbox }>;
   setSandbox(sandbox: Sandbox): void;
 }
 
@@ -24,4 +25,5 @@ export interface ToolContext {
   assistantMessageId?: string;
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
+  mode: ChatMode;
 }

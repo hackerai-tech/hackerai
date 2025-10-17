@@ -1,6 +1,6 @@
 import type { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxManager } from "@/types";
-import { ensureSandboxConnection } from "./sandbox-utils";
+import { ensureSandboxConnection } from "./sandbox";
 
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: Sandbox | null = null;
@@ -13,7 +13,7 @@ export class DefaultSandboxManager implements SandboxManager {
     this.sandbox = initialSandbox || null;
   }
 
-  async getSandbox(enforceVersion: boolean = false): Promise<{
+  async getSandbox(): Promise<{
     sandbox: Sandbox;
   }> {
     if (!this.sandbox) {
@@ -24,7 +24,6 @@ export class DefaultSandboxManager implements SandboxManager {
         },
         {
           initialSandbox: this.sandbox,
-          enforceVersion,
         },
       );
       this.sandbox = result.sandbox;

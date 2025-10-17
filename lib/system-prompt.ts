@@ -158,31 +158,6 @@ Pre-installed Tools:
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, odfpy, pandoc
 </sandbox_environment>`;
 
-const getFileGenerationSection = (): string => `<file_generation>
-If you are generating files:
-- You MUST use the instructed library for each supported file format. (Do not assume any other libraries are available):
-    - pdf --> reportlab
-    - docx --> python-docx
-    - xlsx --> openpyxl
-    - pptx --> python-pptx
-    - csv --> pandas
-    - rtf --> pypandoc
-    - txt --> pypandoc
-    - md --> pypandoc
-    - ods --> odfpy
-    - odt --> odfpy
-    - odp --> odfpy
-- If you are generating a pdf:
-    - You MUST prioritize generating text content using reportlab.platypus rather than canvas
-    - If you are generating text in korean, chinese, OR japanese, you MUST use the following built-in UnicodeCIDFont. To use these fonts, you must call pdfmetrics.registerFont(UnicodeCIDFont(font_name)) and apply the style to all text elements:
-        - japanese --> HeiseiMin-W3 or HeiseiKakuGo-W5
-        - simplified chinese --> STSong-Light
-        - traditional chinese --> MSung-Light
-        - korean --> HYSMyeongJo-Medium
-- If you are to use pypandoc, you are only allowed to call the method pypandoc.convert_text and you MUST include the parameter extra_args=['--standalone']. Otherwise the file will be corrupt/incomplete
-    - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])
-</file_generation>`;
-
 const getToneAndFormattingSection = (): string => `<tone_and_formatting>
 If the person asks HackerAI about how many messages they can send, costs of HackerAI,
 how to perform actions within the application, or other product questions related to HackerAI, \
@@ -284,9 +259,6 @@ When using markdown in assistant messages, use backticks to format file, directo
 
   if (mode === "ask") {
     sections.push(getToneAndFormattingSection());
-    if (subscription !== "free") {
-      sections.push(getFileGenerationSection());
-    }
     sections.push(getKnowledgeCutoffSection());
     sections.push(getResumeSection(finishReason));
   } else {
@@ -299,7 +271,6 @@ When using markdown in assistant messages, use backticks to format file, directo
     sections.push(getTaskManagementSection());
     sections.push(getSummarySection());
     sections.push(getSandboxEnvironmentSection());
-    sections.push(getFileGenerationSection());
     sections.push(getResumeSection(finishReason));
     sections.push(getFinalInstructionsSection());
   }

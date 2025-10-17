@@ -2,7 +2,10 @@ import { tool } from "ai";
 import { z } from "zod";
 import Exa from "exa-js";
 import { ToolContext } from "@/types";
-import { truncateContent } from "@/lib/token-utils";
+import { truncateContent, sliceByTokens } from "@/lib/token-utils";
+
+// Max tokens per search result content field (recommended: 100-300 tokens per result)
+const SEARCH_RESULT_CONTENT_MAX_TOKENS = 250;
 
 /**
  * Web tool using Exa API for search and Jina AI for URL content retrieval
@@ -65,39 +68,83 @@ The \`web\` tool has the following commands:
             return "Error: Query is required for search command";
           }
 
-          let result;
+          let searchResults;
 
           try {
             // Safely access userLocation country
             const country = userLocation?.country;
             const searchOptions = {
               type: "auto" as const,
-              text: {
-                maxCharacters: 2000,
-              },
+              numResults: 10,
               ...(country && { userLocation: country }),
             };
 
             // First attempt with location if available
-            result = await exa.searchAndContents(query, searchOptions);
+            searchResults = await exa.search(query, searchOptions);
           } catch (firstError: any) {
             // Always retry without userLocation as fallback
-            result = await exa.searchAndContents(query, {
+            searchResults = await exa.search(query, {
               type: "auto",
-              text: {
-                maxCharacters: 2000,
-              },
+              numResults: 10,
             });
           }
 
-          return result.results;
+          // Extract URLs from Exa results
+          const urls = searchResults.results.map((result: any) => result.url);
+
+          // Fetch content for each URL using Jina AI (runs in parallel)
+          const contentPromises = urls.map(async (url: string) => {
+            try {
+              const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
+              const response = await fetch(jinaUrl, {
+                method: "GET",
+                headers: {
+                  Authorization: `Bearer ${process.env.JINA_API_KEY}`,
+                  "X-Engine": "direct",
+                  "X-Timeout": "10",
+                  "X-Base": "final",
+                  "X-Token-Budget": "200000",
+                },
+                signal: abortSignal,
+              });
+
+              if (!response.ok) {
+                return null;
+              }
+
+              const content = await response.text();
+              const truncatedContent = sliceByTokens(
+                content,
+                SEARCH_RESULT_CONTENT_MAX_TOKENS,
+              );
+
+              return {
+                url,
+                content: truncatedContent,
+              };
+            } catch (error) {
+              return null;
+            }
+          });
+
+          const contents = await Promise.all(contentPromises);
+
+          // Add text content to Exa results (exclude id and favicon fields)
+          const results = searchResults.results.map(
+            (result: any, index: number) => {
+              const contentData = contents[index];
+              const { id, favicon, ...cleanResult } = result;
+              return {
+                ...cleanResult,
+                text: contentData?.content || null,
+              };
+            },
+          );
+
+          return results;
         } else if (command === "open_url") {
           if (!url) {
             return "Error: URL is required for open_url command";
-          }
-
-          if (!process.env.JINA_API_KEY) {
-            throw new Error("JINA_API_KEY environment variable is not set");
           }
 
           // Construct the Jina AI reader URL with proper encoding
@@ -110,6 +157,7 @@ The \`web\` tool has the following commands:
               Authorization: `Bearer ${process.env.JINA_API_KEY}`,
               "X-Timeout": "30",
               "X-Base": "final",
+              "X-Token-Budget": "200000",
             },
             signal: abortSignal,
           });
@@ -120,9 +168,10 @@ The \`web\` tool has the following commands:
           }
 
           const content = await response.text();
-
           // Truncate content to 4096 tokens
-          return truncateContent(content);
+          const truncated = truncateContent(content);
+
+          return truncated;
         }
 
         return "Error: Invalid command";

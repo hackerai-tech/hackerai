@@ -1,17 +1,17 @@
 import { memo } from "react";
 import { Streamdown } from "streamdown";
 import { CodeHighlight } from "./CodeHighlight";
-import { LinkWithTooltip } from "@/components/ui/link-with-tooltip";
 
-export const MemoizedMarkdown = memo(({ content }: { content: string }) => {
+interface MemoizedMarkdownProps {
+  content: string;
+}
+
+export const MemoizedMarkdown = memo(({ content }: MemoizedMarkdownProps) => {
   return (
     <Streamdown
       components={{
         code: CodeHighlight,
         a({ children, href, ...props }) {
-          if (typeof children === "string" && /^\d+$/.test(children) && href) {
-            return <LinkWithTooltip href={href}>{children}</LinkWithTooltip>;
-          }
           return (
             <a
               href={href}

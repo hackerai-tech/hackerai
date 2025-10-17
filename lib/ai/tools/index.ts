@@ -51,6 +51,7 @@ export const createTools = (
     assistantMessageId,
     fileAccumulator,
     backgroundProcessTracker,
+    mode,
   };
 
   // Create all available tools
@@ -64,9 +65,10 @@ export const createTools = (
     python: createPythonTool(context),
     ...(!isTemporary &&
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
-    ...(process.env.EXA_API_KEY && {
-      web: createWebTool(context),
-    }),
+    ...(process.env.EXA_API_KEY &&
+      process.env.JINA_API_KEY && {
+        web: createWebTool(context),
+      }),
   };
 
   // Filter tools based on mode
@@ -76,7 +78,8 @@ export const createTools = (
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
           ...(subscription !== "free" && { python: allTools.python }),
-          ...(process.env.EXA_API_KEY && { web: allTools.web }),
+          ...(process.env.EXA_API_KEY &&
+            process.env.JINA_API_KEY && { web: allTools.web }),
         }
       : allTools;
 
