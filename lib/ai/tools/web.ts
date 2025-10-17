@@ -103,6 +103,7 @@ The \`web\` tool has the following commands:
                   "X-Engine": "direct",
                   "X-Timeout": "10",
                   "X-Base": "final",
+                  "X-Token-Budget": "200000",
                 },
                 signal: abortSignal,
               });
@@ -156,6 +157,7 @@ The \`web\` tool has the following commands:
               Authorization: `Bearer ${process.env.JINA_API_KEY}`,
               "X-Timeout": "30",
               "X-Base": "final",
+              "X-Token-Budget": "200000",
             },
             signal: abortSignal,
           });
