@@ -51,6 +51,7 @@ export const createTools = (
     assistantMessageId,
     fileAccumulator,
     backgroundProcessTracker,
+    mode,
   };
 
   // Create all available tools

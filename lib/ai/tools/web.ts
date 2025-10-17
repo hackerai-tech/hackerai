@@ -168,9 +168,9 @@ The \`web\` tool has the following commands:
           }
 
           const content = await response.text();
+          // Truncate content to 4096 tokens
           const truncated = truncateContent(content);
 
-          // Truncate content to 4096 tokens
           return truncated;
         }
 

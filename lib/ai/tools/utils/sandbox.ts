@@ -10,7 +10,7 @@ const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
  * Used to track sandbox compatibility and trigger automatic migration when Docker templates are updated.
  * Increment this version when making breaking changes to sandbox configuration or dependencies.
  * Old sandboxes without this version (or with mismatched versions) will be automatically deleted
- * and recreated when `enforceVersion: true` is passed to connection functions.
+ * and recreated on next connection attempt.
  */
 const SANDBOX_VERSION = "v2";
 
@@ -25,7 +25,7 @@ const SANDBOX_VERSION = "v2";
  * Flow:
  * 1. Returns existing sandbox if already initialized
  * 2. Lists existing sandboxes for the user
- * 3. If enforceVersion is true, validates sandbox version metadata
+ * 3. Validates sandbox version metadata (auto-kills old versions)
  * 4a. If found with "running" state: pause first (3 retries), then resume
  * 4b. If found with "paused" state: resume directly (no retries needed)
  * 5. Pause operations use 5-second delays between retry attempts
@@ -36,11 +36,10 @@ export const ensureSandboxConnection = async (
   context: SandboxContext,
   options: {
     initialSandbox?: Sandbox | null;
-    enforceVersion?: boolean;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
   const { userID, setSandbox } = context;
-  const { initialSandbox, enforceVersion = false } = options;
+  const { initialSandbox } = options;
 
   // Return existing sandbox if already connected
   if (initialSandbox) {
@@ -58,9 +57,8 @@ export const ensureSandboxConnection = async (
     });
     const existingSandbox = (await paginator.nextItems())[0];
 
-    // Step 2: Check version if enforcement is enabled
+    // Step 2: Always check version and auto-kill old sandboxes
     if (
-      enforceVersion &&
       existingSandbox &&
       existingSandbox.metadata?.sandboxVersion !== SANDBOX_VERSION
     ) {
