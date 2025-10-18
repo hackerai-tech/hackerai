@@ -3,7 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { RefObject, useRef, useEffect, useState } from "react";
-import { useQuery, usePaginatedQuery } from "convex/react";
+import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
@@ -390,11 +390,29 @@ export const Chat = ({
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });
 
+  // Branch chat handler
+  const branchChatMutation = useMutation(api.messages.branchChat);
+
+  const handleBranchMessage = async (messageId: string) => {
+    try {
+      const newChatId = await branchChatMutation({ messageId });
+      // Navigate to the new chat
+      window.location.href = `/c/${newChatId}`;
+    } catch (error) {
+      console.error("Failed to branch chat:", error);
+      throw error;
+    }
+  };
+
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
   // UI-level temporary chat flag
   const isTempChat = !isExistingChat && temporaryChatsEnabled;
+
+  // Get branched chat info directly from chatData (no additional query needed)
+  const branchedFromChatId = chatData?.branched_from_chat_id;
+  const branchedFromChatTitle = (chatData as any)?.branched_from_title;
 
   // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user
   const isChatNotFound =
@@ -438,6 +456,7 @@ export const Chat = ({
                 chatSidebarOpen={chatSidebarOpen}
                 isExistingChat={isExistingChat}
                 isChatNotFound={isChatNotFound}
+                branchedFromChatTitle={branchedFromChatTitle}
               />
 
               {/* Chat interface */}
@@ -466,6 +485,7 @@ export const Chat = ({
                     onRegenerate={handleRegenerate}
                     onRetry={handleRetry}
                     onEditMessage={handleEditMessage}
+                    onBranchMessage={handleBranchMessage}
                     status={status}
                     error={error || null}
                     resetSidebarAutoOpen={resetSidebarAutoOpenRef}
@@ -477,6 +497,8 @@ export const Chat = ({
                     uploadStatus={uploadStatus}
                     mode={chatMode ?? (chatData as any)?.default_model_slug}
                     chatTitle={chatTitle}
+                    branchedFromChatId={branchedFromChatId}
+                    branchedFromChatTitle={branchedFromChatTitle}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0">

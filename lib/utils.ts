@@ -9,6 +9,7 @@ export interface MessageRecord {
   id: string;
   role: "user" | "assistant" | "system";
   parts: UIMessagePart<any, any>[];
+  source_message_id?: string;
   feedback?: {
     feedbackType: "positive" | "negative";
   } | null;
@@ -50,6 +51,7 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
     id: message.id,
     role: message.role,
     parts: message.parts,
+    sourceMessageId: message.source_message_id,
     metadata: message.feedback
       ? { feedbackType: message.feedback.feedbackType }
       : undefined,

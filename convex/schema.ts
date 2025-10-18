@@ -27,6 +27,7 @@ export default defineSchema({
         }),
       ),
     ),
+    branched_from_chat_id: v.optional(v.string()),
     update_time: v.number(),
   })
     .index("by_chat_id", ["id"])
@@ -49,6 +50,7 @@ export default defineSchema({
     content: v.optional(v.string()),
     file_ids: v.optional(v.array(v.id("files"))),
     feedback_id: v.optional(v.id("feedback")),
+    source_message_id: v.optional(v.string()),
     update_time: v.number(),
   })
     .index("by_message_id", ["id"])

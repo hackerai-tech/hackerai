@@ -175,6 +175,7 @@ export const getMessagesByChatId = query({
           v.literal("system"),
         ),
         parts: v.array(v.any()),
+        source_message_id: v.optional(v.string()),
         feedback: v.union(
           v.object({
             feedbackType: v.union(v.literal("positive"), v.literal("negative")),
@@ -283,6 +284,7 @@ export const getMessagesByChatId = query({
           id: message.id,
           role: message.role,
           parts: message.parts,
+          source_message_id: message.source_message_id,
           feedback,
           fileDetails,
         });
@@ -756,6 +758,103 @@ export const searchMessages = query({
         isDone: true,
         continueCursor: "",
       };
+    }
+  },
+});
+
+/**
+ * Branch chat from a specific message - creates a new chat with messages up to and including the specified message
+ */
+export const branchChat = mutation({
+  args: {
+    messageId: v.string(),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      const message = await ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q) => q.eq("id", args.messageId))
+        .first();
+
+      if (!message) {
+        throw new Error("Message not found");
+      }
+
+      if (message.user_id !== user.subject) {
+        throw new Error("Unauthorized: Message does not belong to user");
+      }
+
+      const chatExists: boolean = await ctx.runQuery(
+        internal.messages.verifyChatOwnership,
+        {
+          chatId: message.chat_id,
+          userId: user.subject,
+        },
+      );
+
+      if (!chatExists) {
+        throw new Error("Chat not found");
+      }
+
+      // Get original chat to copy title
+      const originalChat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
+        .first();
+
+      if (!originalChat) {
+        throw new Error("Original chat not found");
+      }
+
+      // Get all messages up to and including this message using index range
+      const messagesToCopy = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) =>
+          q
+            .eq("chat_id", message.chat_id)
+            .lte("_creationTime", message._creationTime),
+        )
+        .order("asc")
+        .collect();
+
+      // Create new chat with same title as original
+      const newChatId = crypto.randomUUID();
+
+      await ctx.db.insert("chats", {
+        id: newChatId,
+        title: originalChat.title,
+        user_id: user.subject,
+        branched_from_chat_id: message.chat_id,
+        update_time: Date.now(),
+      });
+
+      // Copy messages to new chat
+      for (const msg of messagesToCopy) {
+        const newMessageId = crypto.randomUUID();
+        await ctx.db.insert("messages", {
+          id: newMessageId,
+          chat_id: newChatId,
+          user_id: user.subject,
+          role: msg.role,
+          parts: msg.parts,
+          content: msg.content,
+          file_ids: msg.file_ids,
+          source_message_id: msg.id,
+          update_time: Date.now(),
+        });
+      }
+
+      return newChatId;
+    } catch (error) {
+      console.error("Failed to branch chat:", error);
+      throw error;
     }
   },
 });

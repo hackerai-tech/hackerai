@@ -3,7 +3,7 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, SquarePen, HatGlasses } from "lucide-react";
+import { PanelLeft, Sparkle, SquarePen, HatGlasses, Split } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
@@ -20,10 +20,14 @@ interface ChatHeaderProps {
   hasActiveChat: boolean;
   chatTitle?: string | null;
   id?: string;
-  chatData?: { title?: string } | null | undefined;
+  chatData?:
+    | { title?: string; branched_from_chat_id?: string }
+    | null
+    | undefined;
   chatSidebarOpen?: boolean;
   isExistingChat?: boolean;
   isChatNotFound?: boolean;
+  branchedFromChatTitle?: string;
 }
 
 const ChatHeader: React.FC<ChatHeaderProps> = ({
@@ -35,6 +39,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   chatSidebarOpen = false,
   isExistingChat = false,
   isChatNotFound = false,
+  branchedFromChatTitle,
 }) => {
   const { user, loading } = useAuth();
   const {
@@ -56,6 +61,9 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
 
   // Check if we're currently in a chat (use isExistingChat prop for accurate state)
   const isInChat = isExistingChat;
+
+  // Check if this is a branched chat
+  const isBranchedChat = !!(chatData as any)?.branched_from_chat_id;
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -286,8 +294,26 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                       <HatGlasses className="size-5" />
                     </>
                   ) : (
-                    chatTitle ||
-                    (isExistingChat && chatData === undefined ? "" : "New Chat")
+                    <>
+                      {isBranchedChat && branchedFromChatTitle && (
+                        <TooltipProvider delayDuration={300}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Split className="size-4 flex-shrink-0 text-muted-foreground" />
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p className="text-xs">
+                                Branched from: {branchedFromChatTitle}
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                      {chatTitle ||
+                        (isExistingChat && chatData === undefined
+                          ? ""
+                          : "New Chat")}
+                    </>
                   )}
                 </span>
               </div>
