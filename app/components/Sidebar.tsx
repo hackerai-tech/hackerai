@@ -17,10 +17,9 @@ import {
 import SidebarUserNav from "./SidebarUserNav";
 import SidebarHistory from "./SidebarHistory";
 import SidebarHeaderContent from "./SidebarHeader";
+
 // ChatList component content
 const ChatListContent: FC = () => {
-  const { currentChatId } = useGlobalState();
-
   // Create ref for scroll container
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -31,7 +30,6 @@ const ChatListContent: FC = () => {
     <div className={`h-full overflow-y-auto`} ref={scrollContainerRef}>
       <SidebarHistory
         chats={paginatedChats.results || []}
-        currentChatId={currentChatId}
         paginationStatus={paginatedChats.status}
         loadMore={paginatedChats.loadMore}
         containerRef={scrollContainerRef}

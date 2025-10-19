@@ -41,6 +41,8 @@ export const getChatByIdFromClient = query({
           }),
         ),
       ),
+      branched_from_chat_id: v.optional(v.string()),
+      branched_from_title: v.optional(v.string()),
       update_time: v.number(),
     }),
     v.null(),
@@ -64,6 +66,21 @@ export const getChatByIdFromClient = query({
 
       if (chat.user_id !== identity.subject) {
         return null;
+      }
+
+      // Fetch branched_from_title if this chat is branched from another chat
+      if (chat.branched_from_chat_id) {
+        const branchedFromChat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) =>
+            q.eq("id", chat.branched_from_chat_id!),
+          )
+          .first();
+
+        return {
+          ...chat,
+          branched_from_title: branchedFromChat?.title,
+        };
       }
 
       return chat;
@@ -108,6 +125,7 @@ export const getChatById = query({
           }),
         ),
       ),
+      branched_from_chat_id: v.optional(v.string()),
       update_time: v.number(),
     }),
     v.null(),
@@ -427,8 +445,30 @@ export const getUserChats = query({
         .order("desc") // Most recent first
         .paginate(args.paginationOpts);
 
-      // Transform the page data to include only needed fields
-      return result;
+      // Enhance chats with branched_from_title
+      const enhancedChats = await Promise.all(
+        result.page.map(async (chat) => {
+          if (chat.branched_from_chat_id) {
+            const branchedFromChat = await ctx.db
+              .query("chats")
+              .withIndex("by_chat_id", (q) =>
+                q.eq("id", chat.branched_from_chat_id!),
+              )
+              .first();
+
+            return {
+              ...chat,
+              branched_from_title: branchedFromChat?.title,
+            };
+          }
+          return chat;
+        }),
+      );
+
+      return {
+        ...result,
+        page: enhancedChats,
+      };
     } catch (error) {
       console.error("Failed to get user chats:", error);
       return {
@@ -475,18 +515,21 @@ export const deleteChat = mutation({
         .collect();
 
       for (const message of messages) {
-        // Clean up files associated with this message
-        if (message.file_ids && message.file_ids.length > 0) {
-          for (const storageId of message.file_ids) {
-            try {
-              const file = await ctx.db.get(storageId);
-              if (file) {
-                await ctx.storage.delete(file.storage_id);
-                await ctx.db.delete(file._id);
+        // Skip deleting files for copied messages (they reference original chat files)
+        if (!message.source_message_id) {
+          // Clean up files associated with this message
+          if (message.file_ids && message.file_ids.length > 0) {
+            for (const storageId of message.file_ids) {
+              try {
+                const file = await ctx.db.get(storageId);
+                if (file) {
+                  await ctx.storage.delete(file.storage_id);
+                  await ctx.db.delete(file._id);
+                }
+              } catch (error) {
+                console.error(`Failed to delete file ${storageId}:`, error);
+                // Continue with deletion even if file cleanup fails
               }
-            } catch (error) {
-              console.error(`Failed to delete file ${storageId}:`, error);
-              // Continue with deletion even if file cleanup fails
             }
           }
         }
@@ -601,18 +644,21 @@ export const deleteAllChats = mutation({
           .collect();
 
         for (const message of messages) {
-          // Clean up files associated with this message
-          if (message.file_ids && message.file_ids.length > 0) {
-            for (const storageId of message.file_ids) {
-              try {
-                const file = await ctx.db.get(storageId);
-                if (file) {
-                  await ctx.storage.delete(file.storage_id);
-                  await ctx.db.delete(file._id);
+          // Skip deleting files for copied messages (they reference original chat files)
+          if (!message.source_message_id) {
+            // Clean up files associated with this message
+            if (message.file_ids && message.file_ids.length > 0) {
+              for (const storageId of message.file_ids) {
+                try {
+                  const file = await ctx.db.get(storageId);
+                  if (file) {
+                    await ctx.storage.delete(file.storage_id);
+                    await ctx.db.delete(file._id);
+                  }
+                } catch (error) {
+                  console.error(`Failed to delete file ${storageId}:`, error);
+                  // Continue with deletion even if file cleanup fails
                 }
-              } catch (error) {
-                console.error(`Failed to delete file ${storageId}:`, error);
-                // Continue with deletion even if file cleanup fails
               }
             }
           }

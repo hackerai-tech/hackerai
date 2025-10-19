@@ -7,7 +7,6 @@ import Loading from "@/components/ui/loading";
 
 interface SidebarHistoryProps {
   chats: any[];
-  currentChatId: string | null;
   paginationStatus?:
     | "LoadingFirstPage"
     | "CanLoadMore"
@@ -19,7 +18,6 @@ interface SidebarHistoryProps {
 
 const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   chats,
-  currentChatId,
   paginationStatus,
   loadMore,
   containerRef,
@@ -89,7 +87,8 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
           key={chat._id}
           id={chat.id}
           title={chat.title}
-          isActive={currentChatId === chat.id}
+          isBranched={!!chat.branched_from_chat_id}
+          branchedFromTitle={chat.branched_from_title}
         />
       ))}
 

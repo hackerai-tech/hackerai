@@ -20,17 +20,29 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Ellipsis, Trash2, Edit2 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { Ellipsis, Trash2, Edit2, Split } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 
 interface ChatItemProps {
   id: string;
   title: string;
-  isActive?: boolean;
+  isBranched?: boolean;
+  branchedFromTitle?: string;
 }
 
-const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
+const ChatItem: React.FC<ChatItemProps> = ({
+  id,
+  title,
+  isBranched = false,
+  branchedFromTitle,
+}) => {
   const router = useRouter();
   const [isHovered, setIsHovered] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -190,7 +202,21 @@ const ChatItem: React.FC<ChatItemProps> = ({ id, title, isActive = false }) => {
         }`}
         dir="auto"
       >
-        {title}
+        <span className="flex items-center gap-1.5">
+          {isBranched && branchedFromTitle && (
+            <TooltipProvider delayDuration={300}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Split className="size-3 flex-shrink-0 text-muted-foreground" />
+                </TooltipTrigger>
+                <TooltipContent side="right">
+                  <p className="text-xs">Branched from: {branchedFromTitle}</p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+          {title}
+        </span>
       </div>
 
       <div

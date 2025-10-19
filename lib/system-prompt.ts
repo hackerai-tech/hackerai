@@ -140,6 +140,8 @@ Don't add headings like "Summary:" or "Update:".
 </summary_spec>`;
 
 const getSandboxEnvironmentSection = (): string => `<sandbox_environment>
+IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
+
 System Environment:
 - OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - User: \`root\` (with sudo privileges)

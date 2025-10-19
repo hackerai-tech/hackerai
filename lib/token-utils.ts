@@ -30,16 +30,22 @@ export const TIMEOUT_MESSAGE = (seconds: number) =>
   `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
 
 /**
- * Extracts and counts tokens from message text, reasoning parts, and file tokens
+ * Extracts and counts tokens from message text and file tokens (excluding reasoning blocks)
  */
 const getMessageTokenCountWithFiles = (
   message: UIMessage,
   fileTokens: Record<string, number> = {},
 ): number => {
-  // Count text and reasoning tokens
-  const textTokens = countTokens(JSON.stringify(message.parts));
+  // Filter out reasoning blocks before counting tokens
+  const partsWithoutReasoning = message.parts.filter(
+    (part) => part.type !== "step-start" && part.type !== "reasoning",
+  );
+
+  // Count text tokens (excluding reasoning)
+  const textTokens = countTokens(JSON.stringify(partsWithoutReasoning));
+
   // Count file tokens
-  const fileTokenCount = message.parts
+  const fileTokenCount = partsWithoutReasoning
     .filter((part) => part.type === "file")
     .reduce((total, part) => {
       const fileId = (part as any).fileId;

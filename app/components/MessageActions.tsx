@@ -5,6 +5,7 @@ import {
   Pencil,
   ThumbsUp,
   ThumbsDown,
+  Split,
 } from "lucide-react";
 import { useState } from "react";
 import type { ChatStatus } from "@/types";
@@ -19,6 +20,7 @@ interface MessageActionsProps {
   canRegenerate: boolean;
   onRegenerate: () => void;
   onEdit: () => void;
+  onBranch?: () => void;
   isHovered: boolean;
   isEditing: boolean;
   status: ChatStatus;
@@ -42,6 +44,7 @@ export const MessageActions = ({
   canRegenerate,
   onRegenerate,
   onEdit,
+  onBranch,
   isHovered,
   isEditing,
   status,
@@ -207,6 +210,25 @@ export const MessageActions = ({
                     aria-label="Regenerate response"
                   >
                     <RotateCcw size={16} />
+                  </button>
+                }
+                side="bottom"
+                delayDuration={300}
+              />
+            )}
+
+            {/* Show branch only for assistant messages and not in temporary chats */}
+            {!isUser && onBranch && !isTemporaryChat && (
+              <WithTooltip
+                display={"Branch in new chat"}
+                trigger={
+                  <button
+                    type="button"
+                    onClick={onBranch}
+                    className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                    aria-label="Branch in new chat"
+                  >
+                    <Split size={16} />
                   </button>
                 }
                 side="bottom"

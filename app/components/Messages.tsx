@@ -6,6 +6,7 @@ import {
   useCallback,
   Dispatch,
   SetStateAction,
+  Fragment,
 } from "react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
@@ -15,6 +16,7 @@ import { MessageEditor } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { ShimmerText } from "./ShimmerText";
 import { AllFilesDialog } from "./AllFilesDialog";
+import { BranchIndicator } from "./BranchIndicator";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
@@ -35,6 +37,7 @@ interface MessagesProps {
   onRegenerate: () => void;
   onRetry: () => void;
   onEditMessage: (messageId: string, newContent: string) => Promise<void>;
+  onBranchMessage?: (messageId: string) => Promise<void>;
   status: ChatStatus;
   error: Error | null;
   scrollRef: RefObject<HTMLDivElement | null>;
@@ -52,6 +55,8 @@ interface MessagesProps {
   uploadStatus?: { message: string; isUploading: boolean } | null;
   mode?: "ask" | "agent";
   chatTitle?: string | null;
+  branchedFromChatId?: string;
+  branchedFromChatTitle?: string;
 }
 
 export const Messages = ({
@@ -60,6 +65,7 @@ export const Messages = ({
   onRegenerate,
   onRetry,
   onEditMessage,
+  onBranchMessage,
   status,
   error,
   scrollRef,
@@ -73,10 +79,20 @@ export const Messages = ({
   uploadStatus,
   mode,
   chatTitle,
+  branchedFromChatId,
+  branchedFromChatTitle,
 }: MessagesProps) => {
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
     return findLastAssistantMessageIndex(messages);
+  }, [messages]);
+
+  // Compute the branch boundary: last message that originated from another chat
+  const branchBoundaryIndex = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].sourceMessageId) return i;
+    }
+    return -1;
   }, [messages]);
 
   // Track hover state for all messages
@@ -178,6 +194,21 @@ export const Messages = ({
     setShowAllFilesDialog(true);
   }, []);
 
+  // Handler for branching a message
+  const handleBranchMessage = useCallback(
+    async (messageId: string) => {
+      if (onBranchMessage) {
+        try {
+          await onBranchMessage(messageId);
+        } catch (error) {
+          console.error("Failed to branch message:", error);
+          toast.error("Failed to branch chat. Please try again.");
+        }
+      }
+    },
+    [onBranchMessage],
+  );
+
   // Handle scroll to load more messages when scrolling to top
   const handleScroll = useCallback(() => {
     if (!scrollRef.current || !loadMore || paginationStatus !== "CanLoadMore") {
@@ -256,56 +287,95 @@ export const Messages = ({
               ? message.fileDetails.filter((f) => f.url)
               : [];
 
-          return (
-            <div
-              key={message.id}
-              className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
-              onMouseEnter={() => handleMouseEnter(message.id)}
-              onMouseLeave={handleMouseLeave}
-            >
-              {isEditing && isUser ? (
-                <div className="w-full">
-                  <MessageEditor
-                    initialContent={messageText}
-                    onSave={handleSaveEdit}
-                    onCancel={handleCancelEdit}
-                  />
-                </div>
-              ) : (
-                <div
-                  className={`${
-                    isUser
-                      ? "w-full flex flex-col gap-1 items-end"
-                      : "w-full text-foreground"
-                  } overflow-hidden`}
-                >
-                  {/* Render file parts first for user messages */}
-                  {isUser && fileParts.length > 0 && (
-                    <div className="flex flex-wrap items-center justify-end gap-2 w-full">
-                      {fileParts.map((part, partIndex) => (
-                        <FilePartRenderer
-                          key={`${message.id}-file-${partIndex}`}
-                          part={part}
-                          partIndex={partIndex}
-                          messageId={message.id}
-                          totalFileParts={fileParts.length}
-                        />
-                      ))}
-                    </div>
-                  )}
+          // Check if we should show branch indicator after this message
+          const shouldShowBranchIndicator = Boolean(
+            branchedFromChatId &&
+              branchedFromChatTitle &&
+              branchBoundaryIndex >= 0 &&
+              index === branchBoundaryIndex,
+          );
 
-                  {/* Render text and other parts */}
-                  {nonFileParts.length > 0 && (
-                    <div
-                      className={`${
-                        isUser
-                          ? "max-w-[80%] bg-secondary rounded-[18px] px-4 py-1.5 data-[multiline]:py-3 rounded-se-lg text-primary-foreground border border-border"
-                          : "w-full prose space-y-3 max-w-none dark:prose-invert min-w-0"
-                      } overflow-hidden`}
-                    >
-                      {isUser ? (
-                        <div className="whitespace-pre-wrap">
-                          {nonFileParts.map((part, partIndex) => (
+          return (
+            <Fragment key={message.id}>
+              <div
+                className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
+                onMouseEnter={() => handleMouseEnter(message.id)}
+                onMouseLeave={handleMouseLeave}
+              >
+                {isEditing && isUser ? (
+                  <div className="w-full">
+                    <MessageEditor
+                      initialContent={messageText}
+                      onSave={handleSaveEdit}
+                      onCancel={handleCancelEdit}
+                    />
+                  </div>
+                ) : (
+                  <div
+                    className={`${
+                      isUser
+                        ? "w-full flex flex-col gap-1 items-end"
+                        : "w-full text-foreground"
+                    } overflow-hidden`}
+                  >
+                    {/* Render file parts first for user messages */}
+                    {isUser && fileParts.length > 0 && (
+                      <div className="flex flex-wrap items-center justify-end gap-2 w-full">
+                        {fileParts.map((part, partIndex) => (
+                          <FilePartRenderer
+                            key={`${message.id}-file-${partIndex}`}
+                            part={part}
+                            partIndex={partIndex}
+                            messageId={message.id}
+                            totalFileParts={fileParts.length}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Render text and other parts */}
+                    {nonFileParts.length > 0 && (
+                      <div
+                        className={`${
+                          isUser
+                            ? "max-w-[80%] bg-secondary rounded-[18px] px-4 py-1.5 data-[multiline]:py-3 rounded-se-lg text-primary-foreground border border-border"
+                            : "w-full prose space-y-3 max-w-none dark:prose-invert min-w-0"
+                        } overflow-hidden`}
+                      >
+                        {isUser ? (
+                          <div className="whitespace-pre-wrap">
+                            {nonFileParts.map((part, partIndex) => (
+                              <MessagePartHandler
+                                key={`${message.id}-${partIndex}`}
+                                message={message}
+                                part={part}
+                                partIndex={partIndex}
+                                status={status}
+                              />
+                            ))}
+                          </div>
+                        ) : (
+                          // For assistant messages, render all parts in original order
+                          message.parts.map((part, partIndex) => (
+                            <MessagePartHandler
+                              key={`${message.id}-${partIndex}`}
+                              message={message}
+                              part={part}
+                              partIndex={partIndex}
+                              status={status}
+                              isLastMessage={index === messages.length - 1}
+                            />
+                          ))
+                        )}
+                      </div>
+                    )}
+
+                    {/* For assistant messages without the user-specific styling, render files mixed with content */}
+                    {!isUser &&
+                      fileParts.length > 0 &&
+                      nonFileParts.length === 0 && (
+                        <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden">
+                          {message.parts.map((part, partIndex) => (
                             <MessagePartHandler
                               key={`${message.id}-${partIndex}`}
                               message={message}
@@ -315,156 +385,139 @@ export const Messages = ({
                             />
                           ))}
                         </div>
-                      ) : (
-                        // For assistant messages, render all parts in original order
-                        message.parts.map((part, partIndex) => (
-                          <MessagePartHandler
-                            key={`${message.id}-${partIndex}`}
-                            message={message}
-                            part={part}
-                            partIndex={partIndex}
-                            status={status}
-                            isLastMessage={index === messages.length - 1}
-                          />
-                        ))
                       )}
-                    </div>
-                  )}
-
-                  {/* For assistant messages without the user-specific styling, render files mixed with content */}
-                  {!isUser &&
-                    fileParts.length > 0 &&
-                    nonFileParts.length === 0 && (
-                      <div className="prose space-y-3 max-w-none dark:prose-invert min-w-0 overflow-hidden">
-                        {message.parts.map((part, partIndex) => (
-                          <MessagePartHandler
-                            key={`${message.id}-${partIndex}`}
-                            message={message}
-                            part={part}
-                            partIndex={partIndex}
-                            status={status}
-                          />
-                        ))}
-                      </div>
-                    )}
-                </div>
-              )}
-
-              {/* Saved files from tools (shown after message content for assistant) */}
-              {!isUser && savedFiles.length > 0 && (
-                <div className="mt-2 flex flex-wrap items-center gap-2 w-full">
-                  {savedFiles.length > 2 ? (
-                    <>
-                      {/* Show only last file when more than 2 */}
-                      <FilePartRenderer
-                        key={`${message.id}-saved-file-${savedFiles.length - 1}`}
-                        part={{
-                          url: savedFiles[savedFiles.length - 1].url!,
-                          name: savedFiles[savedFiles.length - 1].name,
-                          filename: savedFiles[savedFiles.length - 1].name,
-                          mediaType: undefined,
-                        }}
-                        partIndex={savedFiles.length - 1}
-                        messageId={message.id}
-                        totalFileParts={savedFiles.length}
-                      />
-                      {/* View all files button */}
-                      <button
-                        onClick={() => handleShowAllFiles(message)}
-                        className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
-                        type="button"
-                        aria-label="View all files"
-                      >
-                        <FileSearch
-                          className="w-4 h-4 text-muted-foreground"
-                          strokeWidth={2}
-                        />
-                        <span className="text-sm text-muted-foreground">
-                          View all files in this task
-                        </span>
-                      </button>
-                    </>
-                  ) : (
-                    /* Show all files when 2 or less */
-                    savedFiles.map((file, fileIndex) => (
-                      <FilePartRenderer
-                        key={`${message.id}-saved-file-${fileIndex}`}
-                        part={{
-                          url: file.url!,
-                          name: file.name,
-                          filename: file.name,
-                          mediaType: undefined,
-                        }}
-                        partIndex={fileIndex}
-                        messageId={message.id}
-                        totalFileParts={savedFiles.length}
-                      />
-                    ))
-                  )}
-                </div>
-              )}
-
-              {/* Loading state */}
-              {shouldShowLoader && (
-                <div className="mt-1 flex justify-start">
-                  <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
-                    <DotsSpinner size="sm" variant="primary" />
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Tool-calls stop notice under last assistant message */}
-              {isLastAssistantMessage &&
-                finishReason === "tool-calls" &&
-                status !== "streaming" && (
-                  <div className="mt-2 w-full">
-                    <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
-                      I automatically stopped after {mode === "ask" ? 5 : 10}{" "}
-                      steps to prevent going off course. Say
-                      &quot;continue&quot; if you&apos;d like me to keep working
-                      on this task.
+                {/* Saved files from tools (shown after message content for assistant) */}
+                {!isUser && savedFiles.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 w-full">
+                    {savedFiles.length > 2 ? (
+                      <>
+                        {/* Show only last file when more than 2 */}
+                        <FilePartRenderer
+                          key={`${message.id}-saved-file-${savedFiles.length - 1}`}
+                          part={{
+                            url: savedFiles[savedFiles.length - 1].url!,
+                            name: savedFiles[savedFiles.length - 1].name,
+                            filename: savedFiles[savedFiles.length - 1].name,
+                            mediaType: undefined,
+                          }}
+                          partIndex={savedFiles.length - 1}
+                          messageId={message.id}
+                          totalFileParts={savedFiles.length}
+                        />
+                        {/* View all files button */}
+                        <button
+                          onClick={() => handleShowAllFiles(message)}
+                          className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
+                          type="button"
+                          aria-label="View all files"
+                        >
+                          <FileSearch
+                            className="w-4 h-4 text-muted-foreground"
+                            strokeWidth={2}
+                          />
+                          <span className="text-sm text-muted-foreground">
+                            View all files in this task
+                          </span>
+                        </button>
+                      </>
+                    ) : (
+                      /* Show all files when 2 or less */
+                      savedFiles.map((file, fileIndex) => (
+                        <FilePartRenderer
+                          key={`${message.id}-saved-file-${fileIndex}`}
+                          part={{
+                            url: file.url!,
+                            name: file.name,
+                            filename: file.name,
+                            mediaType: undefined,
+                          }}
+                          partIndex={fileIndex}
+                          messageId={message.id}
+                          totalFileParts={savedFiles.length}
+                        />
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {/* Loading state */}
+                {shouldShowLoader && (
+                  <div className="mt-1 flex justify-start">
+                    <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
+                      <DotsSpinner size="sm" variant="primary" />
                     </div>
                   </div>
                 )}
 
-              <MessageActions
-                messageText={messageText}
-                isUser={isUser}
-                isLastAssistantMessage={isLastAssistantMessage}
-                canRegenerate={canRegenerate}
-                onRegenerate={onRegenerate}
-                onEdit={() => handleStartEdit(message.id)}
-                isHovered={isHovered}
-                isEditing={isEditing}
-                status={status}
-                onFeedback={(type) => handleFeedback(message.id, type)}
-                existingFeedback={message.metadata?.feedbackType || null}
-                isAwaitingFeedbackDetails={
-                  feedbackInputMessageId === message.id
-                }
-                hasFileContent={hasFileContent}
-                isTemporaryChat={Boolean(isTemporaryChat)}
-                sources={
-                  !isUser
-                    ? isLastAssistantMessage
-                      ? status !== "streaming"
-                        ? extractWebSources(message)
-                        : []
-                      : extractWebSources(message)
-                    : []
-                }
-              />
+                {/* Tool-calls stop notice under last assistant message */}
+                {isLastAssistantMessage &&
+                  finishReason === "tool-calls" &&
+                  status !== "streaming" && (
+                    <div className="mt-2 w-full">
+                      <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
+                        I automatically stopped after {mode === "ask" ? 5 : 10}{" "}
+                        steps to prevent going off course. Say
+                        &quot;continue&quot; if you&apos;d like me to keep
+                        working on this task.
+                      </div>
+                    </div>
+                  )}
 
-              {/* Show feedback input for negative feedback */}
-              {feedbackInputMessageId === message.id && (
-                <div className="w-full">
-                  <FeedbackInput
-                    onSend={handleFeedbackSubmit}
-                    onCancel={handleFeedbackCancel}
-                  />
-                </div>
+                <MessageActions
+                  messageText={messageText}
+                  isUser={isUser}
+                  isLastAssistantMessage={isLastAssistantMessage}
+                  canRegenerate={canRegenerate}
+                  onRegenerate={onRegenerate}
+                  onEdit={() => handleStartEdit(message.id)}
+                  onBranch={
+                    !isUser && onBranchMessage
+                      ? () => handleBranchMessage(message.id)
+                      : undefined
+                  }
+                  isHovered={isHovered}
+                  isEditing={isEditing}
+                  status={status}
+                  onFeedback={(type) => handleFeedback(message.id, type)}
+                  existingFeedback={message.metadata?.feedbackType || null}
+                  isAwaitingFeedbackDetails={
+                    feedbackInputMessageId === message.id
+                  }
+                  hasFileContent={hasFileContent}
+                  isTemporaryChat={Boolean(isTemporaryChat)}
+                  sources={
+                    !isUser
+                      ? isLastAssistantMessage
+                        ? status !== "streaming"
+                          ? extractWebSources(message)
+                          : []
+                        : extractWebSources(message)
+                      : []
+                  }
+                />
+
+                {/* Show feedback input for negative feedback */}
+                {feedbackInputMessageId === message.id && (
+                  <div className="w-full">
+                    <FeedbackInput
+                      onSend={handleFeedbackSubmit}
+                      onCancel={handleFeedbackCancel}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Branch indicator - show after the branched message */}
+              {shouldShowBranchIndicator && (
+                <BranchIndicator
+                  branchedFromChatId={branchedFromChatId!}
+                  branchedFromChatTitle={branchedFromChatTitle!}
+                />
               )}
-            </div>
+            </Fragment>
           );
         })}
 

@@ -85,4 +85,5 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
     name: string;
     url: string | null;
   }>;
+  sourceMessageId?: string;
 };
