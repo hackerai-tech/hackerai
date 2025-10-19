@@ -38,12 +38,12 @@ const getMessageTokenCountWithFiles = (
 ): number => {
   // Filter out reasoning blocks before counting tokens
   const partsWithoutReasoning = message.parts.filter(
-    (part) => part.type !== "step-start" && part.type !== "reasoning"
+    (part) => part.type !== "step-start" && part.type !== "reasoning",
   );
-  
+
   // Count text tokens (excluding reasoning)
   const textTokens = countTokens(JSON.stringify(partsWithoutReasoning));
-  
+
   // Count file tokens
   const fileTokenCount = partsWithoutReasoning
     .filter((part) => part.type === "file")
