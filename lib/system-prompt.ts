@@ -213,6 +213,18 @@ If the user says "continue" or similar, resume executing that original task exac
 Follow through on the last user command autonomously without restarting or asking for direction.
 </resume_context>`;
   }
+
+  if (finishReason === "length") {
+    return `<resume_context>
+Your previous response was interrupted because the output tokens exceeded the model's context limit. \
+The conversation was cut off mid-generation. If the user says "continue" or similar, seamlessly continue \
+from where you left off. Pick up the thought, explanation, or task execution exactly where it stopped \
+without repeating what was already said or restarting from the beginning. IMPORTANT: Divide your response \
+into separate steps to avoid triggering the output limit again. Be more concise and focus on completing \
+one step at a time rather than trying to output everything at once.
+</resume_context>`;
+  }
+
   return "";
 };
 
