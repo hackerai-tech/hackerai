@@ -9,8 +9,9 @@ import {
 } from "@/lib/token-utils";
 
 export type TerminalResult = {
-  stdout: string;
-  stderr: string;
+  output?: string; // New combined output format
+  stdout?: string; // Legacy format for backward compatibility
+  stderr?: string; // Legacy format for backward compatibility
   exitCode?: number | null;
 };
 
@@ -18,7 +19,7 @@ export type TerminalResult = {
  * Simple terminal output handler with token limits and timeout
  */
 export const createTerminalHandler = (
-  onOutput: (output: string, isStderr?: boolean) => void,
+  onOutput: (output: string) => void,
   options: {
     maxTokens?: number;
     timeoutSeconds?: number;
@@ -30,8 +31,7 @@ export const createTerminalHandler = (
   let totalTokens = 0;
   let truncated = false;
   let timedOut = false;
-  let stdout = "";
-  let stderr = "";
+  let combinedOutput = "";
   let timeoutId: NodeJS.Timeout | null = null;
 
   // Set timeout if specified
@@ -42,13 +42,9 @@ export const createTerminalHandler = (
     }, timeoutSeconds * 1000);
   }
 
-  const handleOutput = (output: string, isStderr = false) => {
-    // Always accumulate for final result
-    if (isStderr) {
-      stderr += output;
-    } else {
-      stdout += output;
-    }
+  const handleOutput = (output: string) => {
+    // Accumulate output in chronological order
+    combinedOutput += output;
 
     // Don't stream if truncated or timed out
     if (truncated || timedOut) return;
@@ -66,27 +62,34 @@ export const createTerminalHandler = (
         const contentBudget = remainingTokens - truncationTokens;
         const truncatedOutput = sliceByTokens(output, contentBudget);
         if (truncatedOutput.trim()) {
-          onOutput(truncatedOutput, isStderr);
+          onOutput(truncatedOutput);
           totalTokens += countTokens(truncatedOutput);
         }
       }
 
-      onOutput(TRUNCATION_MESSAGE, isStderr);
+      onOutput(TRUNCATION_MESSAGE);
       return;
     }
 
     totalTokens += tokens;
-    onOutput(output, isStderr);
+    onOutput(output);
   };
 
   return {
-    stdout: (output: string) => handleOutput(output, false),
-    stderr: (output: string) => handleOutput(output, true),
+    stdout: (output: string) => handleOutput(output),
+    stderr: (output: string) => handleOutput(output),
     getResult: (): TerminalResult => {
       const timeoutMsg = timedOut ? TIMEOUT_MESSAGE(timeoutSeconds || 0) : "";
-      const finalStderr = timeoutMsg ? `${stderr}${timeoutMsg}` : stderr;
+      let finalOutput = combinedOutput;
+      if (timeoutMsg) {
+        finalOutput += timeoutMsg;
+      }
 
-      return truncateTerminalOutput(stdout, finalStderr);
+      // Return only new format - legacy support handled on frontend
+      const truncated = truncateTerminalOutput(finalOutput);
+      return {
+        output: truncated.output,
+      };
     },
     cleanup: () => {
       if (timeoutId) {
@@ -100,53 +103,9 @@ export const createTerminalHandler = (
 /**
  * Truncates terminal output to fit within token limits
  */
-export const truncateTerminalOutput = (
-  stdout: string,
-  stderr: string,
-): TerminalResult => {
-  const combined = stdout + stderr;
-  if (countTokens(combined) <= TOOL_DEFAULT_MAX_TOKENS) {
-    return { stdout, stderr };
+export function truncateTerminalOutput(output: string): TerminalResult {
+  if (countTokens(output) <= TOOL_DEFAULT_MAX_TOKENS) {
+    return { output };
   }
-
-  // If only stdout, truncate it
-  if (!stderr) {
-    return { stdout: truncateContent(stdout), stderr: "" };
-  }
-
-  // If only stderr, truncate it
-  if (!stdout) {
-    return { stdout: "", stderr: truncateContent(stderr) };
-  }
-
-  // Both present - split budget proportionally with minimum allocation
-  const stdoutTokens = countTokens(stdout);
-  const stderrTokens = countTokens(stderr);
-  const totalTokens = stdoutTokens + stderrTokens;
-  const truncMsgTokens = countTokens(TRUNCATION_MESSAGE);
-  const budget = TOOL_DEFAULT_MAX_TOKENS - truncMsgTokens;
-
-  if (budget <= 0) return { stdout: "", stderr: TRUNCATION_MESSAGE };
-
-  const minTokens = Math.min(200, Math.floor(budget / 4));
-  let stdoutBudget = Math.floor((stdoutTokens / totalTokens) * budget);
-  let stderrBudget = budget - stdoutBudget;
-
-  // Ensure minimum allocation
-  if (stdoutBudget < minTokens) {
-    stdoutBudget = Math.min(minTokens, stdoutTokens, budget - minTokens);
-    stderrBudget = budget - stdoutBudget;
-  }
-  if (stderrBudget < minTokens) {
-    stderrBudget = Math.min(minTokens, stderrTokens, budget - minTokens);
-    stdoutBudget = budget - stderrBudget;
-  }
-
-  const truncatedStdout = sliceByTokens(stdout, stdoutBudget);
-  const truncatedStderr = sliceByTokens(stderr, stderrBudget);
-
-  return {
-    stdout: truncatedStdout,
-    stderr: `${truncatedStderr}${TRUNCATION_MESSAGE}`,
-  };
-};
+  return { output: truncateContent(output) };
+}

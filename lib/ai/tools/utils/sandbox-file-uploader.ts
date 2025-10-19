@@ -87,3 +87,61 @@ export async function uploadSandboxFileToConvex(args: {
 
   return saved as UploadedFileInfo;
 }
+
+/**
+ * Upload base64-encoded binary data directly to Convex without saving to sandbox
+ */
+export async function uploadBase64ToConvex(args: {
+  base64Data: string;
+  userId: string;
+  fileName: string;
+  mediaType: string;
+  skipTokenValidation?: boolean;
+}): Promise<UploadedFileInfo> {
+  if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
+    throw new Error("NEXT_PUBLIC_CONVEX_URL is required for file uploads");
+  }
+
+  if (!process.env.CONVEX_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "CONVEX_SERVICE_ROLE_KEY is required for file uploads. " +
+        "This is a server-only secret and must never be exposed to the client.",
+    );
+  }
+
+  const { base64Data, userId, fileName, mediaType } = args;
+  const convex = getConvexClient();
+
+  // Convert base64 to blob
+  const binaryString = Buffer.from(base64Data, "base64");
+  const blob = new Blob([binaryString], { type: mediaType });
+
+  const postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
+    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    userId,
+  });
+
+  const uploadRes = await fetch(postUrl, {
+    method: "POST",
+    headers: { "Content-Type": mediaType },
+    body: blob,
+  });
+  if (!uploadRes.ok) {
+    throw new Error(
+      `Upload failed for ${fileName}: ${uploadRes.status} ${uploadRes.statusText}`,
+    );
+  }
+  const { storageId } = (await uploadRes.json()) as { storageId: string };
+
+  const saved = await convex.action(api.fileActions.saveFile, {
+    storageId: storageId as Id<"_storage">,
+    name: fileName,
+    mediaType,
+    size: blob.size,
+    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    userId,
+    skipTokenValidation: args.skipTokenValidation,
+  });
+
+  return saved as UploadedFileInfo;
+}

@@ -75,15 +75,13 @@ In using these tools, adhere to the following guidelines:
           const onAbort = () => {
             if (!resolved) {
               resolved = true;
-              const result = handler
-                ? handler.getResult()
-                : { stdout: "", stderr: "" };
+              const result = handler ? handler.getResult() : { output: "" };
               if (handler) {
                 handler.cleanup();
               }
               resolve({
                 result: {
-                  ...result,
+                  output: result.output,
                   exitCode: null,
                   error: "Command execution aborted by user",
                 },
@@ -98,8 +96,7 @@ In using these tools, adhere to the following guidelines:
           if (abortSignal?.aborted) {
             return resolve({
               result: {
-                stdout: "",
-                stderr: "",
+                output: "",
                 exitCode: null,
                 error: "Command execution aborted by user",
               },
@@ -118,14 +115,12 @@ In using these tools, adhere to the following guidelines:
                   if (execution && execution.kill) {
                     execution.kill().catch(() => {});
                   }
-                  const result = handler
-                    ? handler.getResult()
-                    : { stdout: "", stderr: "" };
+                  const result = handler ? handler.getResult() : { output: "" };
                   if (handler) {
                     handler.cleanup();
                   }
                   resolve({
-                    result: { ...result, exitCode: null },
+                    result: { output: result.output, exitCode: null },
                   });
                 }
               },
@@ -161,7 +156,7 @@ In using these tools, adhere to the following guidelines:
                 abortSignal?.removeEventListener("abort", onAbort);
                 const finalResult = handler
                   ? handler.getResult()
-                  : { stdout: "", stderr: "" };
+                  : { output: "" };
 
                 // Track background processes with their output files
                 if (is_background && (exec as any)?.pid) {
@@ -179,13 +174,11 @@ In using these tools, adhere to the following guidelines:
                   result: is_background
                     ? {
                         pid: (exec as any)?.pid ?? null,
-                        stdout: finalResult.stdout,
-                        stderr: finalResult.stderr,
+                        output: finalResult.output,
                       }
                     : {
                         exitCode: 0,
-                        stdout: finalResult.stdout,
-                        stderr: finalResult.stderr,
+                        output: finalResult.output,
                       },
                 });
               }
@@ -201,12 +194,11 @@ In using these tools, adhere to the following guidelines:
                 if (error instanceof CommandExitError) {
                   const finalResult = handler
                     ? handler.getResult()
-                    : { stdout: "", stderr: "" };
+                    : { output: "" };
                   resolve({
                     result: {
                       exitCode: error.exitCode,
-                      stdout: finalResult.stdout,
-                      stderr: finalResult.stderr,
+                      output: finalResult.output,
                       error: error.message,
                     },
                   });

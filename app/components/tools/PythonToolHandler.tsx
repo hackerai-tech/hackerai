@@ -23,8 +23,9 @@ export const PythonToolHandler = ({
   const pythonInput = input as { code: string };
   const pythonOutput = output as {
     result: {
-      stdout?: string;
-      stderr?: string;
+      output?: string; // New combined output format
+      stdout?: string; // Legacy support
+      stderr?: string; // Legacy support
       results?: any[];
       exitCode?: number | null;
       error?: string;
@@ -47,11 +48,17 @@ export const PythonToolHandler = ({
 
   // Memoize final output computation
   const finalOutput = useMemo(() => {
+    // Prefer new combined output format
+    const newFormatOutput = pythonOutput?.result?.output ?? "";
+
+    // Fall back to legacy stdout+stderr for old messages
     const stdout = pythonOutput?.result?.stdout ?? "";
     const stderr = pythonOutput?.result?.stderr ?? "";
-    const combinedOutput = stdout + stderr;
+    const legacyOutput = stdout + stderr;
+
     return (
-      combinedOutput ||
+      newFormatOutput ||
+      legacyOutput ||
       streamingOutput ||
       (pythonOutput?.result?.error ?? "") ||
       errorText ||

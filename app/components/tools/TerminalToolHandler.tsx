@@ -23,7 +23,9 @@ export const TerminalToolHandler = ({
     command: string;
     is_background: boolean;
   };
-  const terminalOutput = output as { result: CommandResult };
+  const terminalOutput = output as {
+    result: CommandResult & { output?: string };
+  };
 
   const handleOpenInSidebar = () => {
     if (!terminalInput?.command) return;
@@ -38,11 +40,15 @@ export const TerminalToolHandler = ({
       .map((p) => (p as any).data?.terminal || "")
       .join("");
 
+    // Prefer new combined output format, fall back to legacy stdout+stderr for old messages
+    const newFormatOutput = terminalOutput?.result?.output ?? "";
     const stdout = terminalOutput?.result?.stdout ?? "";
     const stderr = terminalOutput?.result?.stderr ?? "";
-    const combinedOutput = stdout + stderr;
+    const legacyOutput = stdout + stderr;
+
     const finalOutput =
-      combinedOutput ||
+      newFormatOutput ||
+      legacyOutput ||
       streamingOutput ||
       (terminalOutput?.result?.error ?? "") ||
       errorText ||

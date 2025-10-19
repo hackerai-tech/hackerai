@@ -3,7 +3,10 @@ import { z } from "zod";
 import { randomUUID } from "crypto";
 import { FilesystemEventType } from "@e2b/code-interpreter";
 import type { ToolContext } from "@/types";
-import { uploadSandboxFileToConvex } from "./utils/sandbox-file-uploader";
+import {
+  uploadSandboxFileToConvex,
+  uploadBase64ToConvex,
+} from "./utils/sandbox-file-uploader";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { STREAM_MAX_TOKENS } from "@/lib/token-utils";
 
@@ -108,9 +111,10 @@ If you are generating files:
           }
 
           const result = handler.getResult();
+
           resolve({
             result: {
-              ...result,
+              output: result.output || "",
               results,
               exitCode: null,
               error: "Command execution aborted by user",
@@ -206,16 +210,154 @@ If you are generating files:
                 handler.stderr(line);
               },
               onResult: async (result: unknown) => {
-                // Collect results but strip out binary data (handled separately via file watcher)
                 if (result && typeof result === "object") {
-                  const resultCopy: any = { ...result };
-                  // Remove binary data fields - files are uploaded separately via file watcher
-                  delete resultCopy.raw;
-                  delete resultCopy.png;
-                  delete resultCopy.jpeg;
-                  delete resultCopy.pdf;
-                  delete resultCopy.svg;
-                  results.push(resultCopy);
+                  const resultObj: any = result;
+
+                  // Check if Python code already saved files explicitly
+                  const hasExplicitFiles = createdFiles.size > 0;
+
+                  // Define supported formats with their metadata
+                  const formats: Array<{
+                    key: string;
+                    extension: string;
+                    mediaType: string;
+                    isBinary: boolean;
+                  }> = [
+                    // Binary formats (base64-encoded)
+                    {
+                      key: "png",
+                      extension: "png",
+                      mediaType: "image/png",
+                      isBinary: true,
+                    },
+                    {
+                      key: "jpeg",
+                      extension: "jpeg",
+                      mediaType: "image/jpeg",
+                      isBinary: true,
+                    },
+                    {
+                      key: "pdf",
+                      extension: "pdf",
+                      mediaType: "application/pdf",
+                      isBinary: true,
+                    },
+
+                    // Text/SVG formats
+                    {
+                      key: "svg",
+                      extension: "svg",
+                      mediaType: "image/svg+xml",
+                      isBinary: false,
+                    },
+                    {
+                      key: "html",
+                      extension: "html",
+                      mediaType: "text/html",
+                      isBinary: false,
+                    },
+                    {
+                      key: "markdown",
+                      extension: "md",
+                      mediaType: "text/markdown",
+                      isBinary: false,
+                    },
+                    {
+                      key: "latex",
+                      extension: "tex",
+                      mediaType: "text/x-latex",
+                      isBinary: false,
+                    },
+                    {
+                      key: "json",
+                      extension: "json",
+                      mediaType: "application/json",
+                      isBinary: false,
+                    },
+                    {
+                      key: "javascript",
+                      extension: "js",
+                      mediaType: "text/javascript",
+                      isBinary: false,
+                    },
+                  ];
+
+                  let uploadedFromResult = false;
+
+                  // Only save data from results if no explicit files were saved
+                  if (!hasExplicitFiles) {
+                    for (const {
+                      key,
+                      extension,
+                      mediaType,
+                      isBinary,
+                    } of formats) {
+                      if (resultObj[key] && resultObj[key] !== undefined) {
+                        try {
+                          const data = resultObj[key];
+                          const timestamp = Date.now();
+                          const fileName = `output_${timestamp}.${extension}`;
+
+                          if (isBinary) {
+                            const saved = await uploadBase64ToConvex({
+                              base64Data: data,
+                              userId: context.userID,
+                              fileName,
+                              mediaType,
+                              skipTokenValidation: true,
+                            });
+
+                            context.fileAccumulator.add(saved.fileId);
+                            files.push({ path: fileName });
+                            uploadedFromResult = true;
+                          } else {
+                            const base64Data = Buffer.from(
+                              data,
+                              "utf-8",
+                            ).toString("base64");
+                            const saved = await uploadBase64ToConvex({
+                              base64Data,
+                              userId: context.userID,
+                              fileName,
+                              mediaType,
+                              skipTokenValidation: true,
+                            });
+
+                            context.fileAccumulator.add(saved.fileId);
+                            files.push({ path: fileName });
+                            uploadedFromResult = true;
+                          }
+                        } catch (e) {
+                          console.error(
+                            `[Python Tool] Failed to upload ${key} data:`,
+                            e,
+                          );
+                          const errorLine = `[Failed to upload ${key}: ${e instanceof Error ? e.message : String(e)}]\n`;
+                          handler.stderr(errorLine);
+                        }
+                      }
+                    }
+                  }
+
+                  // Only store result metadata if we didn't upload files from it
+                  // (chart metadata is redundant if we already uploaded the image)
+                  if (!uploadedFromResult) {
+                    const resultCopy: any = { ...resultObj };
+                    delete resultCopy.raw;
+                    delete resultCopy.png;
+                    delete resultCopy.jpeg;
+                    delete resultCopy.pdf;
+                    delete resultCopy.svg;
+                    delete resultCopy.html;
+                    delete resultCopy.markdown;
+                    delete resultCopy.latex;
+                    delete resultCopy.json;
+                    delete resultCopy.javascript;
+
+                    if (Object.keys(resultCopy).length > 0) {
+                      results.push(resultCopy);
+                    }
+                  }
                 } else {
                   results.push(result);
                 }
@@ -271,9 +413,10 @@ If you are generating files:
 
             handler.cleanup();
             const result = handler.getResult();
+
             resolve({
               result: {
-                ...result,
+                output: result.output || "",
                 results,
                 exitCode: 0,
               },
@@ -313,9 +456,10 @@ If you are generating files:
             }
 
             const result = handler.getResult();
+
             resolve({
               result: {
-                ...result,
+                output: result.output || "",
                 results,
                 exitCode: null,
                 error: errorMsg,
