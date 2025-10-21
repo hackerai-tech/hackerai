@@ -28,6 +28,7 @@ export default defineSchema({
       ),
     ),
     branched_from_chat_id: v.optional(v.string()),
+    latest_summary_id: v.optional(v.id("chat_summaries")),
     update_time: v.number(),
   })
     .index("by_chat_id", ["id"])
@@ -36,6 +37,12 @@ export default defineSchema({
       searchField: "title",
       filterFields: ["user_id"],
     }),
+
+  chat_summaries: defineTable({
+    chat_id: v.string(),
+    summary_text: v.string(),
+    summary_up_to_message_id: v.string(),
+  }).index("by_chat_id", ["chat_id"]),
 
   messages: defineTable({
     id: v.string(),

@@ -43,6 +43,7 @@ export const getChatByIdFromClient = query({
       ),
       branched_from_chat_id: v.optional(v.string()),
       branched_from_title: v.optional(v.string()),
+      latest_summary_id: v.optional(v.id("chat_summaries")),
       update_time: v.number(),
     }),
     v.null(),
@@ -126,6 +127,7 @@ export const getChatById = query({
         ),
       ),
       branched_from_chat_id: v.optional(v.string()),
+      latest_summary_id: v.optional(v.id("chat_summaries")),
       update_time: v.number(),
     }),
     v.null(),
@@ -550,6 +552,34 @@ export const deleteChat = mutation({
         await ctx.db.delete(message._id);
       }
 
+      // Delete chat summaries
+      if (chat.latest_summary_id) {
+        try {
+          await ctx.db.delete(chat.latest_summary_id);
+        } catch (error) {
+          console.error(
+            `Failed to delete summary ${chat.latest_summary_id}:`,
+            error,
+          );
+          // Continue with deletion even if summary cleanup fails
+        }
+      }
+
+      // Delete all historical summaries for this chat
+      const summaries = await ctx.db
+        .query("chat_summaries")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .collect();
+
+      for (const summary of summaries) {
+        try {
+          await ctx.db.delete(summary._id);
+        } catch (error) {
+          console.error(`Failed to delete summary ${summary._id}:`, error);
+          // Continue with deletion even if summary cleanup fails
+        }
+      }
+
       // Delete the chat itself
       await ctx.db.delete(chat._id);
 
@@ -679,6 +709,34 @@ export const deleteAllChats = mutation({
           await ctx.db.delete(message._id);
         }
 
+        // Delete chat summaries
+        if (chat.latest_summary_id) {
+          try {
+            await ctx.db.delete(chat.latest_summary_id);
+          } catch (error) {
+            console.error(
+              `Failed to delete summary ${chat.latest_summary_id}:`,
+              error,
+            );
+            // Continue with deletion even if summary cleanup fails
+          }
+        }
+
+        // Delete all historical summaries for this chat
+        const summaries = await ctx.db
+          .query("chat_summaries")
+          .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+          .collect();
+
+        for (const summary of summaries) {
+          try {
+            await ctx.db.delete(summary._id);
+          } catch (error) {
+            console.error(`Failed to delete summary ${summary._id}:`, error);
+            // Continue with deletion even if summary cleanup fails
+          }
+        }
+
         // Delete the chat itself
         await ctx.db.delete(chat._id);
       }
@@ -687,6 +745,110 @@ export const deleteAllChats = mutation({
     } catch (error) {
       console.error("Failed to delete all chats:", error);
       throw error;
+    }
+  },
+});
+
+/**
+ * Save conversation summary for a chat (backend only, agent mode)
+ * Optimized: stores summary in separate table and references ID in chat
+ */
+export const saveLatestSummary = mutation({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+    summaryText: v.string(),
+    summaryUpToMessageId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    try {
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+
+      if (!chat) {
+        throw new Error("Chat not found");
+      }
+
+      // Delete old summary if it exists
+      if (chat.latest_summary_id) {
+        try {
+          await ctx.db.delete(chat.latest_summary_id);
+        } catch (error) {
+          // Continue anyway - old summary cleanup is not critical
+        }
+      }
+
+      // Insert new summary record
+      const summaryId = await ctx.db.insert("chat_summaries", {
+        chat_id: args.chatId,
+        summary_text: args.summaryText,
+        summary_up_to_message_id: args.summaryUpToMessageId,
+      });
+
+      // Update chat to reference the latest summary (fast ID lookup)
+      await ctx.db.patch(chat._id, {
+        latest_summary_id: summaryId,
+        update_time: Date.now(),
+      });
+
+      return null;
+    } catch (error) {
+      console.error("Failed to save chat summary:", error);
+      throw new Error("Failed to save chat summary");
+    }
+  },
+});
+
+/**
+ * Get latest summary for a chat (backend only)
+ * Optimized: 1 indexed query + 1 ID lookup (2 fast DB operations)
+ */
+export const getLatestSummaryForBackend = query({
+  args: {
+    serviceKey: v.optional(v.string()),
+    chatId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      summary_text: v.string(),
+      summary_up_to_message_id: v.string(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    try {
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+
+      if (!chat || !chat.latest_summary_id) {
+        return null;
+      }
+
+      // Fast ID lookup (single document read)
+      const summary = await ctx.db.get(chat.latest_summary_id);
+
+      if (!summary) {
+        return null;
+      }
+
+      return {
+        summary_text: summary.summary_text,
+        summary_up_to_message_id: summary.summary_up_to_message_id,
+      };
+    } catch (error) {
+      console.error("Failed to get latest summary:", error);
+      return null;
     }
   },
 });

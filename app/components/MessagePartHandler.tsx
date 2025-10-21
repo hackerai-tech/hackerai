@@ -7,6 +7,7 @@ import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
+import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import { ReasoningHandler } from "./ReasoningHandler";
 
@@ -54,6 +55,15 @@ export const MessagePartHandler = ({
           partIndex={partIndex}
           status={status}
           isLastMessage={isLastMessage}
+        />
+      );
+
+    case "data-summarization":
+      return (
+        <SummarizationHandler
+          message={message}
+          part={part}
+          partIndex={partIndex}
         />
       );
 

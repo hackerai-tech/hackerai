@@ -3,7 +3,7 @@ import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
 
 export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_PRO = 32000;
+export const MAX_TOKENS_PRO_AND_TEAM = 32000;
 export const MAX_TOKENS_ULTRA = 100000;
 /**
  * Maximum total tokens allowed across all files
@@ -14,13 +14,14 @@ export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
 ): number => {
   if (subscription === "ultra") return MAX_TOKENS_ULTRA;
-  if (subscription === "pro") return MAX_TOKENS_PRO;
+  if (subscription === "pro" || subscription === "team")
+    return MAX_TOKENS_PRO_AND_TEAM;
   return MAX_TOKENS_FREE;
 };
 
 // Token limits for different contexts
-export const STREAM_MAX_TOKENS = 4096;
-export const TOOL_DEFAULT_MAX_TOKENS = 4096;
+export const STREAM_MAX_TOKENS = 2048;
+export const TOOL_DEFAULT_MAX_TOKENS = 2048;
 
 // Truncation messages
 export const TRUNCATION_MESSAGE = "\n\n[Output truncated because too long]";

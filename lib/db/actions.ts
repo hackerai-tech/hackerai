@@ -16,6 +16,7 @@ import {
 } from "@/lib/token-utils";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
+import { v4 as uuidv4 } from "uuid";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -212,6 +213,11 @@ export async function getMessagesByChatId({
     // Only fetch existing messages if chat exists
     if (!isNewChat) {
       try {
+        // Fetch latest summary only if chat has a summary ID
+        const latestSummary = chat?.latest_summary_id
+          ? await getLatestSummary({ chatId })
+          : null;
+
         // Adaptive paginated backfill: fetch pages until token budget is hit or cap reached
         const PAGE_SIZE = 32;
         const MAX_PAGES = 3;
@@ -270,7 +276,42 @@ export async function getMessagesByChatId({
           // Use all fetched messages chronologically as existing
           existingMessages = [...fetchedDesc].reverse();
         } else {
-          // We already have a final truncated result; return early
+          // Apply summary if it exists (agent mode only)
+          if (latestSummary) {
+            const summaryUpToId = latestSummary.summary_up_to_message_id;
+
+            // Find cutoff index once
+            const cutoffIndex = truncatedFromLoop.findIndex(
+              (m) => m.id === summaryUpToId,
+            );
+
+            // Keep messages that come after the cutoff
+            const messagesAfterCutoff =
+              cutoffIndex >= 0
+                ? truncatedFromLoop.slice(cutoffIndex + 1)
+                : truncatedFromLoop;
+
+            // Create summary message
+            const summaryMessage: UIMessage = {
+              id: uuidv4(),
+              role: "user",
+              parts: [
+                {
+                  type: "text",
+                  text: `<conversation_summary>\n${latestSummary.summary_text}\n</conversation_summary>`,
+                },
+              ],
+            };
+
+            // Return summary + messages after cutoff
+            return {
+              truncatedMessages: [summaryMessage, ...messagesAfterCutoff],
+              chat,
+              isNewChat,
+            };
+          }
+
+          // No summary, return as normal
           return { truncatedMessages: truncatedFromLoop, chat, isNewChat };
         }
       } catch (error) {
@@ -559,5 +600,48 @@ export async function deleteMemory({
       "bad_request:database",
       error instanceof Error ? error.message : "Failed to delete memory",
     );
+  }
+}
+
+export async function saveChatSummary({
+  chatId,
+  summaryText,
+  summaryUpToMessageId,
+}: {
+  chatId: string;
+  summaryText: string;
+  summaryUpToMessageId: string;
+}) {
+  try {
+    await convex.mutation(api.chats.saveLatestSummary, {
+      serviceKey,
+      chatId,
+      summaryText,
+      summaryUpToMessageId,
+    });
+
+    return;
+  } catch (error) {
+    console.error("[DB Actions] Failed to save chat summary", {
+      chatId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to save chat summary",
+    );
+  }
+}
+
+export async function getLatestSummary({ chatId }: { chatId: string }) {
+  try {
+    const summary = await convex.query(api.chats.getLatestSummaryForBackend, {
+      serviceKey,
+      chatId,
+    });
+    return summary;
+  } catch (error) {
+    console.error("[DB Actions] Failed to get latest summary:", error);
+    return null;
   }
 }

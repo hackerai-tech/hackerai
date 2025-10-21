@@ -34,8 +34,7 @@ import { useFileUpload } from "../hooks/useFileUpload";
 import { useEffect, useRef, useState } from "react";
 import {
   countInputTokens,
-  MAX_TOKENS_PRO,
-  MAX_TOKENS_FREE,
+  getMaxTokensForSubscription,
 } from "@/lib/token-utils";
 import { toast } from "sonner";
 import {
@@ -181,8 +180,7 @@ export const ChatInput = ({
           if (pastedText) {
             // Check token limit for the pasted text only based on user plan
             const tokenCount = countInputTokens(pastedText, []);
-            const maxTokens =
-              subscription !== "free" ? MAX_TOKENS_PRO : MAX_TOKENS_FREE;
+            const maxTokens = getMaxTokensForSubscription(subscription);
             if (tokenCount > maxTokens) {
               e.preventDefault();
               const planText =

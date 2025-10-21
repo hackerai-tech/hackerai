@@ -89,9 +89,9 @@ export function extractAllFileIdsFromMessages(
 
 /**
  * Truncate messages with file tokens included - combines file ID extraction,
- * token fetching, and message truncation in one efficient operation
+ * token fetching, and message truncation in one efficient operation.
  * @param messages - Array of messages to truncate
- * @param isPro - Whether the user has a pro plan (affects token limits)
+ * @param subscription - User subscription tier (affects token limits)
  * @returns Truncated messages array
  */
 export async function truncateMessagesWithFileTokens(

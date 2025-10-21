@@ -4,6 +4,7 @@ import {
   stepCountIs,
   streamText,
   UIMessage,
+  UIMessagePart,
   smoothStream,
   JsonToSseTransformStream,
 } from "ai";
@@ -30,6 +31,7 @@ import {
   startStream,
   startTempStream,
   deleteTempStreamForBackend,
+  saveChatSummary,
 } from "@/lib/db/actions";
 import {
   createCancellationPoller,
@@ -41,6 +43,7 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
+import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
 
 let globalStreamContext: any | null = null;
 
@@ -165,6 +168,9 @@ export const createChatHandler = () => {
         },
       });
 
+      // Track summarization events to add to message parts
+      const summarizationParts: UIMessagePart<any, any>[] = [];
+
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
           const {
@@ -236,15 +242,77 @@ export const createChatHandler = () => {
           );
 
           let streamFinishReason: string | undefined;
+          // finalMessages will be set in prepareStep if summarization is needed
+          let finalMessages = processedMessages;
 
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
-            messages: convertToModelMessages(processedMessages),
+            messages: convertToModelMessages(finalMessages),
             tools,
             // Refresh system prompt when memory updates occur, cache and reuse until next update
-            prepareStep: async ({ steps }) => {
+            prepareStep: async ({ steps, stepNumber }) => {
               try {
+                // Run summarization check on first step only (agent mode, non-temporary)
+                if (stepNumber === 0 && mode === "agent" && !temporary) {
+                  const {
+                    needsSummarization,
+                    summarizedMessages,
+                    cutoffMessageId,
+                    summaryText,
+                  } = await checkAndSummarizeIfNeeded(
+                    processedMessages,
+                    subscription,
+                    trackedProvider.languageModel("summarization-model"),
+                  );
+
+                  if (needsSummarization && cutoffMessageId && summaryText) {
+                    // Send summarization started notification (with ID for reconciliation)
+                    const startedEvent = {
+                      type: "data-summarization" as const,
+                      id: "summarization-status",
+                      data: {
+                        status: "started",
+                        message: "Summarizing chat context",
+                      },
+                    };
+                    writer.write(startedEvent);
+
+                    finalMessages = summarizedMessages;
+
+                    // Save the summary metadata to the chat document
+                    await saveChatSummary({
+                      chatId,
+                      summaryText,
+                      summaryUpToMessageId: cutoffMessageId,
+                    });
+
+                    // Send summarization completed notification (same ID = replaces started)
+                    const completedEvent = {
+                      type: "data-summarization" as const,
+                      id: "summarization-status",
+                      data: {
+                        status: "completed",
+                        message: "Chat context summarized",
+                      },
+                    };
+                    writer.write(completedEvent);
+                    // Push only the completed event to parts array for persistence
+                    summarizationParts.push({
+                      type: "data-summarization" as const,
+                      id: "summarization-status",
+                      data: {
+                        status: "completed",
+                        message: "Chat context summarized",
+                      },
+                    });
+                    // Return updated messages for this step
+                    return {
+                      messages: convertToModelMessages(finalMessages),
+                    };
+                  }
+                }
+
                 const lastStep = Array.isArray(steps)
                   ? steps.at(-1)
                   : undefined;
@@ -385,10 +453,20 @@ export const createChatHandler = () => {
 
                   // Save messages (either full save or just append extraFileIds)
                   for (const message of messages) {
+                    // For assistant messages, prepend summarization parts if any
+                    const messageToSave =
+                      message.role === "assistant" &&
+                      summarizationParts.length > 0
+                        ? {
+                            ...message,
+                            parts: [...summarizationParts, ...message.parts],
+                          }
+                        : message;
+
                     await saveMessage({
                       chatId,
                       userId,
-                      message,
+                      message: messageToSave,
                       extraFileIds:
                         message.role === "assistant" ? newFileIds : undefined,
                     });

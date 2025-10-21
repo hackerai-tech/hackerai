@@ -16,6 +16,49 @@ const extractTextFromParts = (parts: any[]): string => {
     .trim();
 };
 
+/**
+ * Helper function to check if deleted messages invalidate the chat summary
+ * Clears latest_summary_id if the summary's cutoff message was deleted
+ */
+const checkAndInvalidateSummary = async (
+  ctx: any,
+  chatId: string,
+  deletedMessageIds: (string | undefined)[],
+) => {
+  const validDeletedIds = deletedMessageIds.filter(
+    (id): id is string => id !== undefined,
+  );
+  if (validDeletedIds.length === 0) return;
+
+  try {
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q: any) => q.eq("id", chatId))
+      .first();
+
+    if (!chat || !chat.latest_summary_id) return;
+
+    // Get the summary to check its cutoff message
+    const summary = await ctx.db.get(chat.latest_summary_id);
+    if (!summary) return;
+
+    // If the summary's cutoff message was deleted, invalidate the summary
+    if (validDeletedIds.includes(summary.summary_up_to_message_id)) {
+      // Clear the summary reference from chat
+      await ctx.db.patch(chat._id, {
+        latest_summary_id: undefined,
+        update_time: Date.now(),
+      });
+
+      // Delete the summary document
+      await ctx.db.delete(chat.latest_summary_id);
+    }
+  } catch (error) {
+    console.error("[Messages] Failed to check/invalidate summary:", error);
+    // Don't throw - summary invalidation is best-effort
+  }
+};
+
 export const verifyChatOwnership = internalQuery({
   args: {
     chatId: v.string(),
@@ -937,6 +980,13 @@ export const regenerateWithNewContent = mutation({
 
         await ctx.db.delete(msg._id);
       }
+
+      // Check if deleted messages invalidate the chat summary
+      await checkAndInvalidateSummary(
+        ctx,
+        message.chat_id,
+        messages.map((m) => m.id),
+      );
 
       return null;
     } catch (error) {

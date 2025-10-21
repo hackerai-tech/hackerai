@@ -13,6 +13,7 @@ const baseProviders = {
   "vision-model": openrouter("qwen/qwen3-vl-235b-a22b-instruct"),
   "vision-model-for-pdfs": openai("gpt-4.1-2025-04-14"),
   "title-generator-model": openai("gpt-4.1-mini-2025-04-14"),
+  "summarization-model": xai("grok-4-fast-non-reasoning"),
 };
 
 export const myProvider = customProvider({
