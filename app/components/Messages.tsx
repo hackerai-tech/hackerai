@@ -17,6 +17,7 @@ import { FeedbackInput } from "./FeedbackInput";
 import { ShimmerText } from "./ShimmerText";
 import { AllFilesDialog } from "./AllFilesDialog";
 import { BranchIndicator } from "./BranchIndicator";
+import { FinishReasonNotice } from "./FinishReasonNotice";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
@@ -452,19 +453,10 @@ export const Messages = ({
                   </div>
                 )}
 
-                {/* Tool-calls stop notice under last assistant message */}
-                {isLastAssistantMessage &&
-                  finishReason === "tool-calls" &&
-                  status !== "streaming" && (
-                    <div className="mt-2 w-full">
-                      <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 border border-border">
-                        I automatically stopped after {mode === "ask" ? 5 : 10}{" "}
-                        steps to prevent going off course. Say
-                        &quot;continue&quot; if you&apos;d like me to keep
-                        working on this task.
-                      </div>
-                    </div>
-                  )}
+                {/* Finish reason notice under last assistant message */}
+                {isLastAssistantMessage && status !== "streaming" && (
+                  <FinishReasonNotice finishReason={finishReason} mode={mode} />
+                )}
 
                 <MessageActions
                   messageText={messageText}
