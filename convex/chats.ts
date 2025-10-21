@@ -778,7 +778,12 @@ export const saveLatestSummary = mutation({
       // Delete old summary if it exists
       if (chat.latest_summary_id) {
         try {
-          await ctx.db.delete(chat.latest_summary_id);
+          const summaryIdToDelete = chat.latest_summary_id;
+          await ctx.db.patch(chat._id, {
+            latest_summary_id: undefined,
+            update_time: Date.now(),
+          });
+          await ctx.db.delete(summaryIdToDelete);
         } catch (error) {
           // Continue anyway - old summary cleanup is not critical
         }
