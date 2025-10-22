@@ -42,7 +42,7 @@ export function extractFileIdsFromParts(
  */
 export async function getFileTokensByIds(
   fileIds: Id<"files">[],
-): Promise<Record<string, number>> {
+): Promise<Record<Id<"files">, number>> {
   if (fileIds.length === 0) {
     return {};
   }
@@ -54,7 +54,7 @@ export async function getFileTokensByIds(
     });
 
     // Create a mapping from fileId to token count
-    const fileTokenMap: Record<string, number> = {};
+    const fileTokenMap: Record<Id<"files">, number> = {};
     for (let i = 0; i < fileIds.length; i++) {
       fileTokenMap[fileIds[i]] = tokens[i] || 0;
     }
@@ -100,7 +100,7 @@ export async function truncateMessagesWithFileTokens(
   subscription: SubscriptionTier = "pro",
   skipFileTokens: boolean = false,
 ): Promise<UIMessage[]> {
-  let fileTokens: Record<string, number> = {};
+  let fileTokens: Record<Id<"files">, number> = {};
 
   if (!skipFileTokens) {
     // Extract file IDs from all messages
@@ -120,7 +120,7 @@ export async function truncateMessagesWithFileTokens(
 export async function truncateMessagesWithPrecomputedTokens(
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
-  precomputedFileTokens?: Record<string, number>,
+  precomputedFileTokens?: Record<Id<"files">, number>,
 ): Promise<UIMessage[]> {
   const maxTokens = getMaxTokensForSubscription(subscription);
   if (precomputedFileTokens) {

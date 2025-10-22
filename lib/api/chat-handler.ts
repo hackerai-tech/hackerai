@@ -44,6 +44,13 @@ import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
+import {
+  writeUploadStartStatus,
+  writeUploadCompleteStatus,
+  writeSummarizationStarted,
+  writeSummarizationCompleted,
+  createSummarizationCompletedPart,
+} from "@/lib/utils/stream-writer-utils";
 
 let globalStreamContext: any | null = null;
 
@@ -193,28 +200,11 @@ export const createChatHandler = () => {
           );
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
-            // Send upload start notification
-            writer.write({
-              type: "data-upload-status",
-              data: {
-                message: "Uploading attachments to the computer",
-                isUploading: true,
-              },
-              transient: true,
-            });
-
+            writeUploadStartStatus(writer);
             try {
               await uploadSandboxFiles(sandboxFiles, ensureSandbox);
             } finally {
-              // Send upload complete notification
-              writer.write({
-                type: "data-upload-status",
-                data: {
-                  message: "",
-                  isUploading: false,
-                },
-                transient: true,
-              });
+              writeUploadCompleteStatus(writer);
             }
           }
 
@@ -271,46 +261,22 @@ export const createChatHandler = () => {
                   );
 
                   if (needsSummarization && cutoffMessageId && summaryText) {
-                    // Send summarization started notification (with ID for reconciliation)
-                    const startedEvent = {
-                      type: "data-summarization" as const,
-                      id: "summarization-status",
-                      data: {
-                        status: "started",
-                        message: "Summarizing chat context",
-                      },
-                    };
-                    writer.write(startedEvent);
+                    writeSummarizationStarted(writer);
 
-                    finalMessages = summarizedMessages;
-                    hasSummarized = true;
-
-                    // Save the summary metadata to the chat document
+                    // Save the summary metadata to the chat document FIRST
                     await saveChatSummary({
                       chatId,
                       summaryText,
                       summaryUpToMessageId: cutoffMessageId,
                     });
 
-                    // Send summarization completed notification (same ID = replaces started)
-                    const completedEvent = {
-                      type: "data-summarization" as const,
-                      id: "summarization-status",
-                      data: {
-                        status: "completed",
-                        message: "Chat context summarized",
-                      },
-                    };
-                    writer.write(completedEvent);
+                    // Only update state after successful save
+                    finalMessages = summarizedMessages;
+                    hasSummarized = true;
+
+                    writeSummarizationCompleted(writer);
                     // Push only the completed event to parts array for persistence
-                    summarizationParts.push({
-                      type: "data-summarization" as const,
-                      id: "summarization-status",
-                      data: {
-                        status: "completed",
-                        message: "Chat context summarized",
-                      },
-                    });
+                    summarizationParts.push(createSummarizationCompletedPart());
                     // Return updated messages for this step
                     return {
                       messages: convertToModelMessages(finalMessages),
@@ -355,13 +321,6 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
-              openai: {
-                parallelToolCalls: false,
-                ...(mode === "agent" && {
-                  reasoningSummary: "detailed",
-                  reasoningEffort: "medium",
-                }),
-              },
               openrouter: {
                 ...(subscription === "free" && {
                   provider: {

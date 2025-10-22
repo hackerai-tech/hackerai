@@ -1,6 +1,7 @@
-import { UIMessage } from "ai";
+import { UIMessage, UIMessagePart } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 
 export const MAX_TOKENS_FREE = 16000;
 export const MAX_TOKENS_PRO_AND_TEAM = 32000;
@@ -34,14 +35,19 @@ export const TIMEOUT_MESSAGE = (seconds: number) =>
  * Count tokens for a single message part
  */
 const countPartTokens = (
-  part: any,
-  fileTokens: Record<string, number> = {},
+  part: UIMessagePart<any, any>,
+  fileTokens: Record<Id<"files">, number> = {},
 ): number => {
-  if (part.type === "text") {
-    return countTokens(part.text || "");
+  if (part.type === "text" && "text" in part) {
+    return countTokens((part as { text?: string }).text || "");
   }
-  if (part.type === "file" && part.fileId && fileTokens[part.fileId]) {
-    return fileTokens[part.fileId];
+  if (
+    part.type === "file" &&
+    "fileId" in part &&
+    (part as { fileId?: Id<"files"> }).fileId
+  ) {
+    const fileId = (part as { fileId: Id<"files"> }).fileId;
+    return fileTokens[fileId] || 0;
   }
   // For tool-call, tool-result, and other part types, count their JSON structure
   return countTokens(JSON.stringify(part));
@@ -52,7 +58,7 @@ const countPartTokens = (
  */
 const getMessageTokenCountWithFiles = (
   message: UIMessage,
-  fileTokens: Record<string, number> = {},
+  fileTokens: Record<Id<"files">, number> = {},
 ): number => {
   // Filter out reasoning blocks before counting tokens
   const partsWithoutReasoning = message.parts.filter(
@@ -73,7 +79,7 @@ const getMessageTokenCountWithFiles = (
  */
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
-  fileTokens: Record<string, number> = {},
+  fileTokens: Record<Id<"files">, number> = {},
   maxTokens: number = MAX_TOKENS_FREE,
 ): UIMessage[] => {
   if (messages.length === 0) return messages;
@@ -102,7 +108,7 @@ export const truncateMessagesToTokenLimit = (
  */
 export const countMessagesTokens = (
   messages: UIMessage[],
-  fileTokens: Record<string, number> = {},
+  fileTokens: Record<Id<"files">, number> = {},
 ): number => {
   return messages.reduce(
     (total, message) =>

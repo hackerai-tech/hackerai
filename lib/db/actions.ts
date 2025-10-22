@@ -280,7 +280,8 @@ export async function getMessagesByChatId({
           // Use all fetched messages chronologically as existing
           existingMessages = [...fetchedDesc].reverse();
         } else {
-          // Apply summary if it exists (agent mode only)
+          // Apply summary if it exists (regardless of current mode)
+          // Note: Summaries are only created in agent mode but provide value in any mode
           if (latestSummary) {
             const summaryUpToId = latestSummary.summary_up_to_message_id;
 
@@ -315,7 +316,7 @@ export async function getMessagesByChatId({
             };
           }
 
-          // No summary, return as normal
+          // No summary injection (ask mode or no summary), return as normal
           return { truncatedMessages: truncatedFromLoop, chat, isNewChat };
         }
       } catch (error) {
