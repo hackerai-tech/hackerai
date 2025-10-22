@@ -17,17 +17,21 @@ export const MessageErrorState = ({
   const isRateLimitError =
     error instanceof ChatSDKError && error.type === "rate_limit";
 
+  // Extract error message - check for cause first, then message
+  const errorMessage = (() => {
+    if (error instanceof ChatSDKError) {
+      return typeof error.cause === "string" ? error.cause : error.message;
+    }
+    return error.message || "An error occurred.";
+  })();
+
   return (
     <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
       <div className="text-destructive text-sm mb-2">
         {isRateLimitError ? (
-          <MemoizedMarkdown
-            content={
-              typeof error.cause === "string" ? error.cause : error.message
-            }
-          />
+          <MemoizedMarkdown content={errorMessage} />
         ) : (
-          <p>An error occurred.</p>
+          <p>{errorMessage}</p>
         )}
       </div>
       <div className="flex gap-2">

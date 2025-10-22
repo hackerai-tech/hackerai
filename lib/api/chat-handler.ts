@@ -434,6 +434,16 @@ export const createChatHandler = () => {
                           }
                         : message;
 
+                    // Skip saving messages with no parts or files
+                    // This prevents saving empty messages on error that would accumulate on retry
+                    if (
+                      (!messageToSave.parts ||
+                        messageToSave.parts.length === 0) &&
+                      (!newFileIds || newFileIds.length === 0)
+                    ) {
+                      continue;
+                    }
+
                     await saveMessage({
                       chatId,
                       userId,
