@@ -194,27 +194,32 @@ export const useChatHandlers = ({
     );
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
-    // Determine messages to send for this regenerate call
-    let messagesForRegenerate: ChatMessage[] = messages;
-
     if (!temporaryChatsEnabled) {
       await deleteLastAssistantMessage({ chatId });
+      // For persisted chats, backend fetches from database - explicitly send no messages
+      regenerate({
+        body: {
+          mode: chatMode,
+          messages: [],
+          todos: cleanedTodos,
+          regenerate: true,
+          temporary: false,
+        },
+      });
     } else {
-      // For temporary chats, do not alter local state; just exclude the last message from the payload
-      messagesForRegenerate =
+      // For temporary chats, send all messages except the last assistant message
+      const messagesForRegenerate =
         messages && messages.length > 0 ? messages.slice(0, -1) : messages;
+      regenerate({
+        body: {
+          mode: chatMode,
+          messages: messagesForRegenerate,
+          todos: cleanedTodos,
+          regenerate: true,
+          temporary: true,
+        },
+      });
     }
-
-    regenerate({
-      body: {
-        mode: chatMode,
-        // Send cleaned todos and current messages so server can filter assistant todos reliably
-        messages: messagesForRegenerate,
-        todos: cleanedTodos,
-        regenerate: true,
-        temporary: temporaryChatsEnabled,
-      },
-    });
   };
 
   const handleRetry = async () => {
@@ -226,16 +231,29 @@ export const useChatHandlers = ({
         .map((t) => t.sourceMessageId as string),
     );
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
-
-    regenerate({
-      body: {
-        mode: chatMode,
-        messages,
-        todos: cleanedTodos,
-        regenerate: true,
-        temporary: temporaryChatsEnabled,
-      },
-    });
+    if (!temporaryChatsEnabled) {
+      // For persisted chats, backend fetches from database - explicitly send no messages
+      regenerate({
+        body: {
+          mode: chatMode,
+          messages: [],
+          todos: cleanedTodos,
+          regenerate: true,
+          temporary: false,
+        },
+      });
+    } else {
+      // For temporary chats, send all messages
+      regenerate({
+        body: {
+          mode: chatMode,
+          messages,
+          todos: cleanedTodos,
+          regenerate: true,
+          temporary: true,
+        },
+      });
+    }
   };
 
   const handleEditMessage = async (messageId: string, newContent: string) => {
@@ -301,14 +319,37 @@ export const useChatHandlers = ({
       return removeTodosBySourceMessages(todos, idsToClean);
     })();
 
-    regenerate({
-      body: {
-        mode: chatMode,
-        todos: cleanedTodosForEdit,
-        regenerate: true,
-        temporary: temporaryChatsEnabled,
-      },
-    });
+    // For persisted chats, backend fetches from database
+    // For temporary chats, send all messages up to and including the edited message
+    if (!temporaryChatsEnabled) {
+      regenerate({
+        body: {
+          mode: chatMode,
+          messages: [],
+          todos: cleanedTodosForEdit,
+          regenerate: true,
+          temporary: false,
+        },
+      });
+    } else {
+      // For temporary chats, send messages up to and including the edited message
+      const messagesUpToEdit = messages.slice(0, editedMessageIndex + 1);
+      const editedMessage = messages[editedMessageIndex];
+      messagesUpToEdit[editedMessageIndex] = {
+        ...editedMessage,
+        parts: [{ type: "text", text: newContent }],
+      };
+
+      regenerate({
+        body: {
+          mode: chatMode,
+          messages: messagesUpToEdit,
+          todos: cleanedTodosForEdit,
+          regenerate: true,
+          temporary: true,
+        },
+      });
+    }
   };
 
   return {
