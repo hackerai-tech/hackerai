@@ -1,9 +1,10 @@
-import { UIMessage } from "ai";
+import { UIMessage, UIMessagePart } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 
 export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_PRO = 32000;
+export const MAX_TOKENS_PRO_AND_TEAM = 32000;
 export const MAX_TOKENS_ULTRA = 100000;
 /**
  * Maximum total tokens allowed across all files
@@ -14,13 +15,14 @@ export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
 ): number => {
   if (subscription === "ultra") return MAX_TOKENS_ULTRA;
-  if (subscription === "pro") return MAX_TOKENS_PRO;
+  if (subscription === "pro" || subscription === "team")
+    return MAX_TOKENS_PRO_AND_TEAM;
   return MAX_TOKENS_FREE;
 };
 
 // Token limits for different contexts
-export const STREAM_MAX_TOKENS = 4096;
-export const TOOL_DEFAULT_MAX_TOKENS = 4096;
+export const STREAM_MAX_TOKENS = 2048;
+export const TOOL_DEFAULT_MAX_TOKENS = 2048;
 
 // Truncation messages
 export const TRUNCATION_MESSAGE = "\n\n[Output truncated because too long]";
@@ -30,29 +32,46 @@ export const TIMEOUT_MESSAGE = (seconds: number) =>
   `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
 
 /**
+ * Count tokens for a single message part
+ */
+const countPartTokens = (
+  part: UIMessagePart<any, any>,
+  fileTokens: Record<Id<"files">, number> = {},
+): number => {
+  if (part.type === "text" && "text" in part) {
+    return countTokens((part as { text?: string }).text || "");
+  }
+  if (
+    part.type === "file" &&
+    "fileId" in part &&
+    (part as { fileId?: Id<"files"> }).fileId
+  ) {
+    const fileId = (part as { fileId: Id<"files"> }).fileId;
+    return fileTokens[fileId] || 0;
+  }
+  // For tool-call, tool-result, and other part types, count their JSON structure
+  return countTokens(JSON.stringify(part));
+};
+
+/**
  * Extracts and counts tokens from message text and file tokens (excluding reasoning blocks)
  */
 const getMessageTokenCountWithFiles = (
   message: UIMessage,
-  fileTokens: Record<string, number> = {},
+  fileTokens: Record<Id<"files">, number> = {},
 ): number => {
   // Filter out reasoning blocks before counting tokens
   const partsWithoutReasoning = message.parts.filter(
     (part) => part.type !== "step-start" && part.type !== "reasoning",
   );
 
-  // Count text tokens (excluding reasoning)
-  const textTokens = countTokens(JSON.stringify(partsWithoutReasoning));
+  // Count tokens for all parts
+  const totalTokens = partsWithoutReasoning.reduce(
+    (sum, part) => sum + countPartTokens(part, fileTokens),
+    0,
+  );
 
-  // Count file tokens
-  const fileTokenCount = partsWithoutReasoning
-    .filter((part) => part.type === "file")
-    .reduce((total, part) => {
-      const fileId = (part as any).fileId;
-      return total + (fileId ? fileTokens[fileId] || 0 : 0);
-    }, 0);
-
-  return textTokens + fileTokenCount;
+  return totalTokens;
 };
 
 /**
@@ -60,10 +79,9 @@ const getMessageTokenCountWithFiles = (
  */
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
-  fileTokens: Record<string, number> = {},
+  fileTokens: Record<Id<"files">, number> = {},
   maxTokens: number = MAX_TOKENS_FREE,
 ): UIMessage[] => {
-  const tokenLimit = maxTokens;
   if (messages.length === 0) return messages;
 
   const result: UIMessage[] = [];
@@ -76,7 +94,7 @@ export const truncateMessagesToTokenLimit = (
       fileTokens,
     );
 
-    if (totalTokens + messageTokens > tokenLimit) break;
+    if (totalTokens + messageTokens > maxTokens) break;
 
     totalTokens += messageTokens;
     result.unshift(messages[i]);
@@ -90,7 +108,7 @@ export const truncateMessagesToTokenLimit = (
  */
 export const countMessagesTokens = (
   messages: UIMessage[],
-  fileTokens: Record<string, number> = {},
+  fileTokens: Record<Id<"files">, number> = {},
 ): number => {
   return messages.reduce(
     (total, message) =>

@@ -4,6 +4,7 @@ import {
   stepCountIs,
   streamText,
   UIMessage,
+  UIMessagePart,
   smoothStream,
   JsonToSseTransformStream,
 } from "ai";
@@ -30,6 +31,7 @@ import {
   startStream,
   startTempStream,
   deleteTempStreamForBackend,
+  saveChatSummary,
 } from "@/lib/db/actions";
 import {
   createCancellationPoller,
@@ -41,6 +43,14 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
+import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
+import {
+  writeUploadStartStatus,
+  writeUploadCompleteStatus,
+  writeSummarizationStarted,
+  writeSummarizationCompleted,
+  createSummarizationCompletedPart,
+} from "@/lib/utils/stream-writer-utils";
 
 let globalStreamContext: any | null = null;
 
@@ -104,6 +114,7 @@ export const createChatHandler = () => {
         newMessages: messages,
         regenerate,
         isTemporary: temporary,
+        mode,
       });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -165,6 +176,9 @@ export const createChatHandler = () => {
         },
       });
 
+      // Track summarization events to add to message parts
+      const summarizationParts: UIMessagePart<any, any>[] = [];
+
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
           const {
@@ -186,28 +200,11 @@ export const createChatHandler = () => {
           );
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
-            // Send upload start notification
-            writer.write({
-              type: "data-upload-status",
-              data: {
-                message: "Uploading attachments to the computer",
-                isUploading: true,
-              },
-              transient: true,
-            });
-
+            writeUploadStartStatus(writer);
             try {
               await uploadSandboxFiles(sandboxFiles, ensureSandbox);
             } finally {
-              // Send upload complete notification
-              writer.write({
-                type: "data-upload-status",
-                data: {
-                  message: "",
-                  isUploading: false,
-                },
-                transient: true,
-              });
+              writeUploadCompleteStatus(writer);
             }
           }
 
@@ -236,15 +233,57 @@ export const createChatHandler = () => {
           );
 
           let streamFinishReason: string | undefined;
+          // finalMessages will be set in prepareStep if summarization is needed
+          let finalMessages = processedMessages;
+          let hasSummarized = false;
 
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
-            messages: convertToModelMessages(processedMessages),
+            messages: convertToModelMessages(finalMessages),
             tools,
             // Refresh system prompt when memory updates occur, cache and reuse until next update
-            prepareStep: async ({ steps }) => {
+            prepareStep: async ({ steps, messages }) => {
               try {
+                // Run summarization check on every step (agent mode, non-temporary)
+                // but only summarize once
+                if (mode === "agent" && !temporary && !hasSummarized) {
+                  const {
+                    needsSummarization,
+                    summarizedMessages,
+                    cutoffMessageId,
+                    summaryText,
+                  } = await checkAndSummarizeIfNeeded(
+                    messages,
+                    finalMessages,
+                    subscription,
+                    trackedProvider.languageModel("summarization-model"),
+                  );
+
+                  if (needsSummarization && cutoffMessageId && summaryText) {
+                    writeSummarizationStarted(writer);
+
+                    // Save the summary metadata to the chat document FIRST
+                    await saveChatSummary({
+                      chatId,
+                      summaryText,
+                      summaryUpToMessageId: cutoffMessageId,
+                    });
+
+                    // Only update state after successful save
+                    finalMessages = summarizedMessages;
+                    hasSummarized = true;
+
+                    writeSummarizationCompleted(writer);
+                    // Push only the completed event to parts array for persistence
+                    summarizationParts.push(createSummarizationCompletedPart());
+                    // Return updated messages for this step
+                    return {
+                      messages: convertToModelMessages(finalMessages),
+                    };
+                  }
+                }
+
                 const lastStep = Array.isArray(steps)
                   ? steps.at(-1)
                   : undefined;
@@ -282,13 +321,6 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
-              openai: {
-                parallelToolCalls: false,
-                ...(mode === "agent" && {
-                  reasoningSummary: "detailed",
-                  reasoningEffort: "medium",
-                }),
-              },
               openrouter: {
                 ...(subscription === "free" && {
                   provider: {
@@ -385,10 +417,20 @@ export const createChatHandler = () => {
 
                   // Save messages (either full save or just append extraFileIds)
                   for (const message of messages) {
+                    // For assistant messages, prepend summarization parts if any
+                    const messageToSave =
+                      message.role === "assistant" &&
+                      summarizationParts.length > 0
+                        ? {
+                            ...message,
+                            parts: [...summarizationParts, ...message.parts],
+                          }
+                        : message;
+
                     await saveMessage({
                       chatId,
                       userId,
-                      message,
+                      message: messageToSave,
                       extraFileIds:
                         message.role === "assistant" ? newFileIds : undefined,
                     });

@@ -84,7 +84,6 @@ If you are generating files:
       return new Promise((resolve) => {
         let resolved = false;
         const results: Array<unknown> = [];
-        const files: Array<{ path: string }> = [];
         const createdFiles = new Set<string>();
         let watcher: Awaited<ReturnType<typeof sandbox.files.watchDir>> | null =
           null;
@@ -121,7 +120,6 @@ If you are generating files:
               exitCode: null,
               error: "Command execution aborted by user",
             },
-            files,
           });
         };
 
@@ -310,7 +308,6 @@ If you are generating files:
                             });
 
                             context.fileAccumulator.add(saved.fileId);
-                            files.push({ path: fileName });
                             uploadedFromResult = true;
                           } else {
                             const base64Data = Buffer.from(
@@ -326,7 +323,6 @@ If you are generating files:
                             });
 
                             context.fileAccumulator.add(saved.fileId);
-                            files.push({ path: fileName });
                             uploadedFromResult = true;
                           }
                         } catch (e) {
@@ -395,9 +391,6 @@ If you are generating files:
                   });
 
                   context.fileAccumulator.add(saved.fileId);
-                  files.push({
-                    path: fileName,
-                  });
                 } catch (e) {
                   console.error(
                     `[Python Tool] Failed to upload ${fileName}:`,
@@ -422,7 +415,6 @@ If you are generating files:
                 results,
                 exitCode: 0,
               },
-              files,
             });
           } catch (e: any) {
             if (resolved) return;
@@ -466,7 +458,6 @@ If you are generating files:
                 exitCode: null,
                 error: errorMsg,
               },
-              files,
             });
           } finally {
             abortSignal?.removeEventListener("abort", onAbort);

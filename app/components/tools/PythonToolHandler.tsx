@@ -110,15 +110,6 @@ export const PythonToolHandler = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSidebarActive, codePreview, finalOutput, isExecuting]);
 
-  // Get file information for display
-  // Support both new (files) and legacy (fileUrls) formats
-  const fileCount =
-    pythonOutput?.files?.length || pythonOutput?.fileUrls?.length || 0;
-  const hasFiles = fileCount > 0;
-  const fileInfo = hasFiles
-    ? ` (${fileCount} file${fileCount !== 1 ? "s" : ""} saved)`
-    : "";
-
   switch (state) {
     case "input-streaming":
       return status === "streaming" ? (
@@ -153,7 +144,7 @@ export const PythonToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Code2 />}
-          action={`Executed Python${fileInfo}`}
+          action="Executed Python"
           target={codePreview}
           isClickable={true}
           onClick={handleOpenInSidebar}
@@ -165,7 +156,7 @@ export const PythonToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Code2 />}
-          action={`Executed Python${fileInfo}`}
+          action="Executed Python"
           target={codePreview}
           isClickable={true}
           onClick={handleOpenInSidebar}

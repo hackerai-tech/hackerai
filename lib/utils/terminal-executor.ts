@@ -85,7 +85,6 @@ export const createTerminalHandler = (
         finalOutput += timeoutMsg;
       }
 
-      // Return only new format - legacy support handled on frontend
       const truncated = truncateTerminalOutput(finalOutput);
       return {
         output: truncated.output,

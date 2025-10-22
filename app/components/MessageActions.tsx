@@ -57,6 +57,7 @@ export const MessageActions = ({
 }: MessageActionsProps) => {
   const [copied, setCopied] = useState(false);
   const [isSourcesOpen, setIsSourcesOpen] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
 
   const getFaviconUrl = (domain: string) => {
     return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
@@ -87,12 +88,24 @@ export const MessageActions = ({
     }
   };
 
+  const handleRegenerate = () => {
+    if (isRegenerating) return;
+    setIsRegenerating(true);
+    onRegenerate();
+  };
+
   // Don't show actions for last assistant message when it's loading/streaming
   const isLastAssistantLoading =
     isLastAssistantMessage &&
     (status === "submitted" || status === "streaming");
   const shouldShowActions =
     !isLastAssistantLoading && !isEditing && (isUser ? isHovered : true); // Always show for assistant, only on hover for user
+
+  // Reset isRegenerating when status changes back to idle
+  const isLoading = status === "submitted" || status === "streaming";
+  if (!isLoading && isRegenerating) {
+    setIsRegenerating(false);
+  }
 
   return (
     <div
@@ -204,8 +217,8 @@ export const MessageActions = ({
                 trigger={
                   <button
                     type="button"
-                    onClick={onRegenerate}
-                    disabled={!canRegenerate}
+                    onClick={handleRegenerate}
+                    disabled={!canRegenerate || isRegenerating}
                     className="p-1.5 opacity-70 hover:opacity-100 disabled:opacity-50 transition-opacity rounded hover:bg-secondary text-muted-foreground"
                     aria-label="Regenerate response"
                   >

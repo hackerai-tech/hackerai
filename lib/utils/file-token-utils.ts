@@ -42,7 +42,7 @@ export function extractFileIdsFromParts(
  */
 export async function getFileTokensByIds(
   fileIds: Id<"files">[],
-): Promise<Record<string, number>> {
+): Promise<Record<Id<"files">, number>> {
   if (fileIds.length === 0) {
     return {};
   }
@@ -54,7 +54,7 @@ export async function getFileTokensByIds(
     });
 
     // Create a mapping from fileId to token count
-    const fileTokenMap: Record<string, number> = {};
+    const fileTokenMap: Record<Id<"files">, number> = {};
     for (let i = 0; i < fileIds.length; i++) {
       fileTokenMap[fileIds[i]] = tokens[i] || 0;
     }
@@ -89,20 +89,25 @@ export function extractAllFileIdsFromMessages(
 
 /**
  * Truncate messages with file tokens included - combines file ID extraction,
- * token fetching, and message truncation in one efficient operation
+ * token fetching, and message truncation in one efficient operation.
  * @param messages - Array of messages to truncate
- * @param isPro - Whether the user has a pro plan (affects token limits)
+ * @param subscription - User subscription tier (affects token limits)
+ * @param skipFileTokens - Skip file token counting (for agent mode where files go to sandbox)
  * @returns Truncated messages array
  */
 export async function truncateMessagesWithFileTokens(
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
+  skipFileTokens: boolean = false,
 ): Promise<UIMessage[]> {
-  // Extract file IDs from all messages
-  const fileIds = extractAllFileIdsFromMessages(messages);
+  let fileTokens: Record<Id<"files">, number> = {};
 
-  // Fetch file tokens for all file IDs
-  const fileTokens = await getFileTokensByIds(fileIds);
+  if (!skipFileTokens) {
+    // Extract file IDs from all messages
+    const fileIds = extractAllFileIdsFromMessages(messages);
+    // Fetch file tokens for all file IDs
+    fileTokens = await getFileTokensByIds(fileIds);
+  }
 
   // Truncate messages with file tokens included
   const maxTokens = getMaxTokensForSubscription(subscription);
@@ -115,7 +120,7 @@ export async function truncateMessagesWithFileTokens(
 export async function truncateMessagesWithPrecomputedTokens(
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
-  precomputedFileTokens?: Record<string, number>,
+  precomputedFileTokens?: Record<Id<"files">, number>,
 ): Promise<UIMessage[]> {
   const maxTokens = getMaxTokensForSubscription(subscription);
   if (precomputedFileTokens) {
