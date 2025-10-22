@@ -1,6 +1,12 @@
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import TextareaAutosize from "react-textarea-autosize";
+import { useGlobalState } from "../contexts/GlobalState";
+import {
+  countInputTokens,
+  getMaxTokensForSubscription,
+} from "@/lib/token-utils";
+import { toast } from "sonner";
 
 interface MessageEditorProps {
   initialContent: string;
@@ -13,6 +19,7 @@ export const MessageEditor = ({
   onSave,
   onCancel,
 }: MessageEditorProps) => {
+  const { subscription } = useGlobalState();
   const [content, setContent] = useState(initialContent);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -29,9 +36,22 @@ export const MessageEditor = ({
   }, []);
 
   const handleSave = () => {
-    if (content.trim()) {
-      onSave(content.trim());
+    const trimmedContent = content.trim();
+    if (!trimmedContent) return;
+
+    // Check token limit for edited content based on user plan
+    const tokenCount = countInputTokens(trimmedContent, []);
+    const maxTokens = getMaxTokensForSubscription(subscription);
+
+    if (tokenCount > maxTokens) {
+      const planText = subscription !== "free" ? "" : " (Free plan limit)";
+      toast.error("Message is too long", {
+        description: `Your edited message is too large (${tokenCount.toLocaleString()} tokens). Maximum is ${maxTokens.toLocaleString()} tokens${planText}.`,
+      });
+      return;
     }
+
+    onSave(trimmedContent);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {

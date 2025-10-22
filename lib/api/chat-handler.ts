@@ -107,6 +107,7 @@ export const createChatHandler = () => {
         newMessages: messages,
         regenerate,
         isTemporary: temporary,
+        mode,
       });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -244,6 +245,7 @@ export const createChatHandler = () => {
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
+          let hasSummarized = false;
 
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
@@ -251,17 +253,19 @@ export const createChatHandler = () => {
             messages: convertToModelMessages(finalMessages),
             tools,
             // Refresh system prompt when memory updates occur, cache and reuse until next update
-            prepareStep: async ({ steps, stepNumber }) => {
+            prepareStep: async ({ steps, messages }) => {
               try {
-                // Run summarization check on first step only (agent mode, non-temporary)
-                if (stepNumber === 0 && mode === "agent" && !temporary) {
+                // Run summarization check on every step (agent mode, non-temporary)
+                // but only summarize once
+                if (mode === "agent" && !temporary && !hasSummarized) {
                   const {
                     needsSummarization,
                     summarizedMessages,
                     cutoffMessageId,
                     summaryText,
                   } = await checkAndSummarizeIfNeeded(
-                    processedMessages,
+                    messages,
+                    finalMessages,
                     subscription,
                     trackedProvider.languageModel("summarization-model"),
                   );
@@ -279,6 +283,7 @@ export const createChatHandler = () => {
                     writer.write(startedEvent);
 
                     finalMessages = summarizedMessages;
+                    hasSummarized = true;
 
                     // Save the summary metadata to the chat document
                     await saveChatSummary({

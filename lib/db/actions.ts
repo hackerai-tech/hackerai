@@ -192,6 +192,7 @@ export async function getMessagesByChatId({
   regenerate,
   subscription,
   isTemporary,
+  mode,
 }: {
   chatId: string;
   userId: string;
@@ -199,6 +200,7 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
+  mode?: "ask" | "agent";
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -252,7 +254,9 @@ export async function getMessagesByChatId({
           const trial = await truncateMessagesWithFileTokens(
             candidate,
             subscription,
+            mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
           );
+
           const hitBudget = trial.length < candidate.length;
           const reachedLimit = isDone || pagesFetched >= MAX_PAGES;
 
@@ -336,6 +340,7 @@ export async function getMessagesByChatId({
   const truncatedMessages = await truncateMessagesWithFileTokens(
     allMessages,
     subscription,
+    mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
   );
 
   if (!truncatedMessages || truncatedMessages.length === 0) {

@@ -31,6 +31,23 @@ export const TIMEOUT_MESSAGE = (seconds: number) =>
   `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
 
 /**
+ * Count tokens for a single message part
+ */
+const countPartTokens = (
+  part: any,
+  fileTokens: Record<string, number> = {},
+): number => {
+  if (part.type === "text") {
+    return countTokens(part.text || "");
+  }
+  if (part.type === "file" && part.fileId && fileTokens[part.fileId]) {
+    return fileTokens[part.fileId];
+  }
+  // For tool-call, tool-result, and other part types, count their JSON structure
+  return countTokens(JSON.stringify(part));
+};
+
+/**
  * Extracts and counts tokens from message text and file tokens (excluding reasoning blocks)
  */
 const getMessageTokenCountWithFiles = (
@@ -42,18 +59,13 @@ const getMessageTokenCountWithFiles = (
     (part) => part.type !== "step-start" && part.type !== "reasoning",
   );
 
-  // Count text tokens (excluding reasoning)
-  const textTokens = countTokens(JSON.stringify(partsWithoutReasoning));
+  // Count tokens for all parts
+  const totalTokens = partsWithoutReasoning.reduce(
+    (sum, part) => sum + countPartTokens(part, fileTokens),
+    0,
+  );
 
-  // Count file tokens
-  const fileTokenCount = partsWithoutReasoning
-    .filter((part) => part.type === "file")
-    .reduce((total, part) => {
-      const fileId = (part as any).fileId;
-      return total + (fileId ? fileTokens[fileId] || 0 : 0);
-    }, 0);
-
-  return textTokens + fileTokenCount;
+  return totalTokens;
 };
 
 /**
@@ -64,7 +76,6 @@ export const truncateMessagesToTokenLimit = (
   fileTokens: Record<string, number> = {},
   maxTokens: number = MAX_TOKENS_FREE,
 ): UIMessage[] => {
-  const tokenLimit = maxTokens;
   if (messages.length === 0) return messages;
 
   const result: UIMessage[] = [];
@@ -77,7 +88,7 @@ export const truncateMessagesToTokenLimit = (
       fileTokens,
     );
 
-    if (totalTokens + messageTokens > tokenLimit) break;
+    if (totalTokens + messageTokens > maxTokens) break;
 
     totalTokens += messageTokens;
     result.unshift(messages[i]);
