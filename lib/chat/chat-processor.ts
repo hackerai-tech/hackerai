@@ -13,6 +13,7 @@ export function selectModel(
   mode: ChatMode,
   containsMediaFiles: boolean,
   containsPdfFiles: boolean,
+  subscription: SubscriptionTier,
 ): string {
   // Prefer a dedicated PDF vision model for PDFs in ask mode
   if (containsPdfFiles && mode === "ask") {
@@ -28,7 +29,11 @@ export function selectModel(
   }
 
   // Otherwise, choose based on mode
-  return mode === "ask" ? "ask-model" : "agent-model";
+  return mode === "ask"
+    ? subscription === "free"
+      ? "ask-mode-free"
+      : "ask-model"
+    : "agent-model";
 }
 
 /**
@@ -85,7 +90,12 @@ export async function processChatMessages({
   } = await processMessageFiles(messages, mode);
 
   // Select the appropriate model
-  const selectedModel = selectModel(mode, containsMediaFiles, containsPdfFiles);
+  const selectedModel = selectModel(
+    mode,
+    containsMediaFiles,
+    containsPdfFiles,
+    subscription,
+  );
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(

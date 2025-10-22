@@ -328,6 +328,13 @@ export const createChatHandler = () => {
                   },
                 }),
               },
+              gateway: {
+                ...(subscription === "free" && {
+                  gateway: {
+                    order: ["novita", "deepinfra", "baseten"],
+                  },
+                }),
+              },
             },
             headers: getAIHeaders(),
             experimental_transform: smoothStream({ chunking: "word" }),
