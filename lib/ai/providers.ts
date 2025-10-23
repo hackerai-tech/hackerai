@@ -2,14 +2,13 @@ import { customProvider } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 import { openai } from "@ai-sdk/openai";
 import { xai } from "@ai-sdk/xai";
-// import { gateway } from "@ai-sdk/gateway";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
   "ask-model": openrouter("qwen/qwen3-coder"),
-  // "ask-model-free": gateway("google/gemini-2.5-flash-preview-09-2025"),
+  "ask-model-free": openrouter("qwen/qwen3-235b-a22b-2507"),
   "agent-model": xai("grok-code-fast-1"),
   "agent-model-with-vision": xai("grok-4-fast-reasoning"),
   "vision-model": openrouter("qwen/qwen3-vl-235b-a22b-instruct"),
