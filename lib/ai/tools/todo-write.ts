@@ -139,7 +139,6 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
             id: z.string().describe("Unique identifier for the todo item"),
             content: z
               .string()
-              .optional()
               .describe("The description/content of the todo item"),
             status: z
               .enum(["pending", "in_progress", "completed", "cancelled"])

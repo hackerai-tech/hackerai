@@ -440,6 +440,21 @@ export const saveAssistantMessage = mutation({
 export const deleteLastAssistantMessage = mutation({
   args: {
     chatId: v.string(),
+    todos: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          content: v.string(),
+          status: v.union(
+            v.literal("pending"),
+            v.literal("in_progress"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+          ),
+          sourceMessageId: v.optional(v.string()),
+        }),
+      ),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -498,6 +513,21 @@ export const deleteLastAssistantMessage = mutation({
         }
 
         await ctx.db.delete(lastAssistantMessage._id);
+      }
+
+      // Update todos in the same transaction if provided
+      if (args.todos !== undefined) {
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+          .first();
+
+        if (chat && chat.user_id === user.subject) {
+          await ctx.db.patch(chat._id, {
+            todos: args.todos,
+            update_time: Date.now(),
+          });
+        }
       }
 
       return null;

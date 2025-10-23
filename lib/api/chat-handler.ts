@@ -236,6 +236,7 @@ export const createChatHandler = () => {
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let hasSummarized = false;
+
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
