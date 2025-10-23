@@ -29,11 +29,12 @@ export function selectModel(
   }
 
   // Otherwise, choose based on mode
-  return mode === "ask"
-    ? subscription === "free"
-      ? "ask-mode-free"
-      : "ask-model"
-    : "agent-model";
+  // return mode === "ask"
+  //   ? subscription === "free"
+  //     ? "ask-model-free"
+  //     : "ask-model"
+  //   : "agent-model";
+  return mode === "ask" ? "ask-model" : "agent-model";
 }
 
 /**

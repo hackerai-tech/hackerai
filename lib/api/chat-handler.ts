@@ -327,14 +327,14 @@ export const createChatHandler = () => {
                   },
                 }),
               },
-              gateway: {
-                ...(subscription === "free" && {
-                  gateway: {
-                    order: ["novita", "deepinfra"],
-                    only: ["novita", "deepinfra"],
-                  },
-                }),
-              },
+              // gateway: {
+              //   ...(subscription === "free" && {
+              //     gateway: {
+              //       order: ["novita", "deepinfra"],
+              //       only: ["novita", "deepinfra"],
+              //     },
+              //   }),
+              // },
             },
             headers: getAIHeaders(),
             experimental_transform: smoothStream({ chunking: "word" }),
