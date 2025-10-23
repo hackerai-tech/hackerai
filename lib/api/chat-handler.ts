@@ -236,7 +236,6 @@ export const createChatHandler = () => {
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let hasSummarized = false;
-
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
@@ -325,13 +324,6 @@ export const createChatHandler = () => {
                 ...(subscription === "free" && {
                   provider: {
                     sort: "price",
-                  },
-                }),
-              },
-              gateway: {
-                ...(subscription === "free" && {
-                  gateway: {
-                    order: ["novita", "deepinfra", "baseten"],
                   },
                 }),
               },
@@ -433,6 +425,16 @@ export const createChatHandler = () => {
                             parts: [...summarizationParts, ...message.parts],
                           }
                         : message;
+
+                    // Skip saving messages with no parts or files
+                    // This prevents saving empty messages on error that would accumulate on retry
+                    if (
+                      (!messageToSave.parts ||
+                        messageToSave.parts.length === 0) &&
+                      (!newFileIds || newFileIds.length === 0)
+                    ) {
+                      continue;
+                    }
 
                     await saveMessage({
                       chatId,
