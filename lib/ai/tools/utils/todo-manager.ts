@@ -37,7 +37,7 @@ export class TodoManager {
     // Deduplicate incoming todos by id (keep last occurrence)
     const seenIds = new Map<string, number>();
     const uniqueTodos: (Partial<Todo> & { id: string })[] = [];
-    
+
     for (let i = 0; i < newTodos.length; i++) {
       const prevIndex = seenIds.get(newTodos[i].id);
       if (prevIndex !== undefined) {
@@ -47,7 +47,7 @@ export class TodoManager {
         uniqueTodos.push(newTodos[i]);
       }
     }
-    
+
     if (!merge) {
       // Replace all assistant-sourced todos; preserve manual ones across runs
       this.todos = this.todos.filter((t) => !t.sourceMessageId);

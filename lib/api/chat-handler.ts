@@ -331,7 +331,7 @@ export const createChatHandler = () => {
             },
             headers: getAIHeaders(),
             experimental_transform: smoothStream({ chunking: "word" }),
-            stopWhen: stepCountIs(mode === "ask" ? 5 : 10),
+            stopWhen: stepCountIs(mode === "ask" ? 5 : 20),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
               if (chunk.chunk.type === "tool-call") {
@@ -348,7 +348,12 @@ export const createChatHandler = () => {
               }
             },
             onFinish: async ({ finishReason }) => {
-              streamFinishReason = finishReason;
+              // If preemptive timeout triggered, use "timeout" as finish reason
+              if (preemptiveTimeout?.isPreemptive()) {
+                streamFinishReason = "timeout";
+              } else {
+                streamFinishReason = finishReason;
+              }
             },
             onError: async (error) => {
               console.error("Error:", error);

@@ -13,9 +13,18 @@ export const FinishReasonNotice = ({
     if (finishReason === "tool-calls") {
       return (
         <>
-          I automatically stopped after {mode === "ask" ? 5 : 10} steps to
-          prevent going off course. Say &quot;continue&quot; if you&apos;d like
-          me to keep working on this task.
+          I automatically stopped to prevent going off course. Say
+          &quot;continue&quot; if you&apos;d like me to keep working on this
+          task.
+        </>
+      );
+    }
+
+    if (finishReason === "timeout") {
+      return (
+        <>
+          I had to stop due to the time limit. Say &quot;continue&quot; if
+          you&apos;d like me to keep working on this task.
         </>
       );
     }

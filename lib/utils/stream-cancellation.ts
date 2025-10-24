@@ -98,7 +98,7 @@ export const createPreemptiveTimeout = ({
   abortController,
   safetyBuffer = 10,
 }: PreemptiveTimeoutOptions) => {
-  const maxDuration = mode === "agent" ? 500 : 120;
+  const maxDuration = mode === "agent" ? 800 : 180;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
 
   let isPreemptive = false;

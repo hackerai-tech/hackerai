@@ -377,6 +377,7 @@ export const cancelStreamFromClient = mutation({
       await ctx.db.patch(chat._id, {
         active_stream_id: undefined,
         canceled_at: Date.now(),
+        finish_reason: undefined,
         update_time: Date.now(),
       });
     }

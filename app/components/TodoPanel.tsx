@@ -14,12 +14,12 @@ interface TodoPanelProps {
 export const TodoPanel = ({ status }: TodoPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const { todos, setIsTodoPanelExpanded } = useGlobalState();
-  
+
   // Deduplicate todos by id (keep first occurrence)
   const uniqueTodos = todos.filter(
-    (todo, index, self) => index === self.findIndex((t) => t.id === todo.id)
+    (todo, index, self) => index === self.findIndex((t) => t.id === todo.id),
   );
-  
+
   const stats = getTodoStats(uniqueTodos);
 
   // Don't show panel if no todos exist

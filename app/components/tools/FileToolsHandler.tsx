@@ -13,11 +13,13 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderReadFileTool = () => {
     const { toolCallId, state, input, output } = part;
-    const readInput = input as {
-      target_file: string;
-      offset?: number;
-      limit?: number;
-    } | undefined;
+    const readInput = input as
+      | {
+          target_file: string;
+          offset?: number;
+          limit?: number;
+        }
+      | undefined;
 
     const getFileRange = () => {
       if (!readInput) return "";
@@ -49,7 +51,11 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
             key={toolCallId}
             icon={<FileText />}
             action="Reading"
-            target={readInput ? `${readInput.target_file}${getFileRange()}` : undefined}
+            target={
+              readInput
+                ? `${readInput.target_file}${getFileRange()}`
+                : undefined
+            }
             isShimmer={true}
           />
         ) : null;
@@ -101,10 +107,12 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderWriteFileTool = () => {
     const { toolCallId, state, input, output } = part;
-    const writeInput = input as {
-      file_path: string;
-      contents: string;
-    } | undefined;
+    const writeInput = input as
+      | {
+          file_path: string;
+          contents: string;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -161,10 +169,12 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderDeleteFileTool = () => {
     const { toolCallId, state, input, output } = part;
-    const deleteInput = input as {
-      target_file: string;
-      explanation: string;
-    } | undefined;
+    const deleteInput = input as
+      | {
+          target_file: string;
+          explanation: string;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -207,12 +217,14 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderSearchReplaceTool = () => {
     const { toolCallId, state, input, output } = part;
-    const searchReplaceInput = input as {
-      file_path: string;
-      old_string: string;
-      new_string: string;
-      replace_all?: boolean;
-    } | undefined;
+    const searchReplaceInput = input as
+      | {
+          file_path: string;
+          old_string: string;
+          new_string: string;
+          replace_all?: boolean;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -258,14 +270,16 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderMultiEditTool = () => {
     const { toolCallId, state, input, output } = part;
-    const multiEditInput = input as {
-      file_path: string;
-      edits: Array<{
-        old_string: string;
-        new_string: string;
-        replace_all?: boolean;
-      }>;
-    } | undefined;
+    const multiEditInput = input as
+      | {
+          file_path: string;
+          edits: Array<{
+            old_string: string;
+            new_string: string;
+            replace_all?: boolean;
+          }>;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -282,7 +296,11 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={multiEditInput ? `Making ${multiEditInput.edits.length} edits to` : "Making edits"}
+            action={
+              multiEditInput
+                ? `Making ${multiEditInput.edits.length} edits to`
+                : "Making edits"
+            }
             target={multiEditInput?.file_path}
             isShimmer={true}
           />
