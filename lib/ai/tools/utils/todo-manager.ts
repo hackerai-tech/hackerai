@@ -34,13 +34,27 @@ export class TodoManager {
     newTodos: (Partial<Todo> & { id: string })[],
     merge: boolean = false,
   ): Todo[] {
+    // Deduplicate incoming todos by id (keep last occurrence)
+    const seenIds = new Map<string, number>();
+    const uniqueTodos: (Partial<Todo> & { id: string })[] = [];
+    
+    for (let i = 0; i < newTodos.length; i++) {
+      const prevIndex = seenIds.get(newTodos[i].id);
+      if (prevIndex !== undefined) {
+        uniqueTodos[prevIndex] = newTodos[i];
+      } else {
+        seenIds.set(newTodos[i].id, uniqueTodos.length);
+        uniqueTodos.push(newTodos[i]);
+      }
+    }
+    
     if (!merge) {
       // Replace all assistant-sourced todos; preserve manual ones across runs
       this.todos = this.todos.filter((t) => !t.sourceMessageId);
       this.hasCreatedPlanThisRun = true;
     }
 
-    for (const todo of newTodos) {
+    for (const todo of uniqueTodos) {
       // Defensive check - should never happen with proper typing, but provides clear error
       if (!todo.id) {
         throw new Error("Todo must have an id");
