@@ -14,10 +14,16 @@ interface TodoPanelProps {
 export const TodoPanel = ({ status }: TodoPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const { todos, setIsTodoPanelExpanded } = useGlobalState();
-  const stats = getTodoStats(todos);
+  
+  // Deduplicate todos by id (keep first occurrence)
+  const uniqueTodos = todos.filter(
+    (todo, index, self) => index === self.findIndex((t) => t.id === todo.id)
+  );
+  
+  const stats = getTodoStats(uniqueTodos);
 
   // Don't show panel if no todos exist
-  const hasTodos = todos.length > 0;
+  const hasTodos = uniqueTodos.length > 0;
 
   // Reflect expansion to global state
   useEffect(() => {
@@ -90,7 +96,7 @@ export const TodoPanel = ({ status }: TodoPanelProps) => {
       {/* Todo List - Collapsible */}
       {isExpanded && (
         <div className="border-t border-border px-4 py-3 space-y-2 max-h-[200px] overflow-y-auto">
-          {todos.map((todo) => (
+          {uniqueTodos.map((todo) => (
             <SharedTodoItem key={todo.id} todo={todo} />
           ))}
         </div>
