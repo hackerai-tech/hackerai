@@ -160,10 +160,28 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
       }>;
     }) => {
       try {
+        // Deduplicate todos by id (keep last occurrence to respect latest updates)
+        const seenIds = new Map<string, number>();
+        const uniqueTodos = [];
+        
+        for (let i = 0; i < todos.length; i++) {
+          const prevIndex = seenIds.get(todos[i].id);
+          if (prevIndex !== undefined) {
+            // Replace previous occurrence with this one
+            uniqueTodos[prevIndex] = todos[i];
+          } else {
+            seenIds.set(todos[i].id, uniqueTodos.length);
+            uniqueTodos.push(todos[i]);
+          }
+        }
+        
+        // Use deduplicated todos for the rest of the operation
+        const processedTodos = uniqueTodos;
+
         // Runtime validation for non-merge operations
         if (!merge) {
-          for (let i = 0; i < todos.length; i++) {
-            const todo = todos[i];
+          for (let i = 0; i < processedTodos.length; i++) {
+            const todo = processedTodos[i];
             if (!todo.content || todo.content.trim() === "") {
               throw new Error(
                 `Todo at index ${i} is missing required content field`,
@@ -175,14 +193,14 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
         // If incoming payload looks like partial updates (missing content fields), switch to merge to avoid replacing the whole plan.
         const shouldMerge =
           merge ||
-          todos.some((t) => t.content === undefined || t.content === null);
+          processedTodos.some((t) => t.content === undefined || t.content === null);
 
         // Update backend state first
         const updatedTodos = todoManager.setTodos(
           // When creating a plan (shouldMerge=false), stamp todos with assistantMessageId
           shouldMerge || !assistantMessageId
-            ? todos
-            : todos.map((t) => ({ ...t, sourceMessageId: assistantMessageId })),
+            ? processedTodos
+            : processedTodos.map((t) => ({ ...t, sourceMessageId: assistantMessageId })),
           shouldMerge,
         );
 
