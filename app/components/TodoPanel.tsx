@@ -15,9 +15,9 @@ export const TodoPanel = ({ status }: TodoPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const { todos, setIsTodoPanelExpanded } = useGlobalState();
 
-  // Deduplicate todos by id (keep first occurrence)
-  const uniqueTodos = todos.filter(
-    (todo, index, self) => index === self.findIndex((t) => t.id === todo.id),
+  // Deduplicate todos by id (keep last occurrence, consistent with backend)
+  const uniqueTodos = Array.from(
+    new Map(todos.map((todo) => [todo.id, todo])).values(),
   );
 
   const stats = getTodoStats(uniqueTodos);

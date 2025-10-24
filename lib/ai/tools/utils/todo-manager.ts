@@ -35,18 +35,9 @@ export class TodoManager {
     merge: boolean = false,
   ): Todo[] {
     // Deduplicate incoming todos by id (keep last occurrence)
-    const seenIds = new Map<string, number>();
-    const uniqueTodos: (Partial<Todo> & { id: string })[] = [];
-
-    for (let i = 0; i < newTodos.length; i++) {
-      const prevIndex = seenIds.get(newTodos[i].id);
-      if (prevIndex !== undefined) {
-        uniqueTodos[prevIndex] = newTodos[i];
-      } else {
-        seenIds.set(newTodos[i].id, uniqueTodos.length);
-        uniqueTodos.push(newTodos[i]);
-      }
-    }
+    const uniqueTodos = Array.from(
+      new Map(newTodos.map((todo) => [todo.id, todo])).values(),
+    );
 
     if (!merge) {
       // Replace all assistant-sourced todos; preserve manual ones across runs
