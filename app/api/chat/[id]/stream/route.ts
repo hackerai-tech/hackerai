@@ -6,7 +6,7 @@ import { getStreamContext } from "@/lib/api/chat-handler";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 
-export const maxDuration = 500;
+export const maxDuration = 800;
 
 export async function GET(
   req: NextRequest,

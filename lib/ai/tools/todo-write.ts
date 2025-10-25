@@ -139,7 +139,6 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
             id: z.string().describe("Unique identifier for the todo item"),
             content: z
               .string()
-              .optional()
               .describe("The description/content of the todo item"),
             status: z
               .enum(["pending", "in_progress", "completed", "cancelled"])
@@ -178,7 +177,7 @@ When in doubt, use this tool. Proactive task management demonstrates attentivene
           merge ||
           todos.some((t) => t.content === undefined || t.content === null);
 
-        // Update backend state first
+        // Update backend state first (TodoManager handles deduplication)
         const updatedTodos = todoManager.setTodos(
           // When creating a plan (shouldMerge=false), stamp todos with assistantMessageId
           shouldMerge || !assistantMessageId

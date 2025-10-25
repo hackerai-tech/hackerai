@@ -13,13 +13,16 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderReadFileTool = () => {
     const { toolCallId, state, input, output } = part;
-    const readInput = input as {
-      target_file: string;
-      offset?: number;
-      limit?: number;
-    };
+    const readInput = input as
+      | {
+          target_file: string;
+          offset?: number;
+          limit?: number;
+        }
+      | undefined;
 
     const getFileRange = () => {
+      if (!readInput) return "";
       if (readInput.offset && readInput.limit) {
         return ` L${readInput.offset}-${readInput.offset + readInput.limit - 1}`;
       }
@@ -48,11 +51,16 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
             key={toolCallId}
             icon={<FileText />}
             action="Reading"
-            target={`${readInput.target_file}${getFileRange()}`}
+            target={
+              readInput
+                ? `${readInput.target_file}${getFileRange()}`
+                : undefined
+            }
             isShimmer={true}
           />
         ) : null;
       case "output-available": {
+        if (!readInput) return null;
         const readOutput = output as { result: string };
 
         const handleOpenInSidebar = () => {
@@ -99,10 +107,12 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderWriteFileTool = () => {
     const { toolCallId, state, input, output } = part;
-    const writeInput = input as {
-      file_path: string;
-      contents: string;
-    };
+    const writeInput = input as
+      | {
+          file_path: string;
+          contents: string;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -120,11 +130,12 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
             key={toolCallId}
             icon={<FilePlus />}
             action="Writing to"
-            target={writeInput.file_path}
+            target={writeInput?.file_path}
             isShimmer={true}
           />
         ) : null;
       case "output-available":
+        if (!writeInput) return null;
         return (
           <ToolBlock
             key={toolCallId}
@@ -158,10 +169,12 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderDeleteFileTool = () => {
     const { toolCallId, state, input, output } = part;
-    const deleteInput = input as {
-      target_file: string;
-      explanation: string;
-    };
+    const deleteInput = input as
+      | {
+          target_file: string;
+          explanation: string;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -179,11 +192,12 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
             key={toolCallId}
             icon={<FileMinus />}
             action="Deleting"
-            target={deleteInput.target_file}
+            target={deleteInput?.target_file}
             isShimmer={true}
           />
         ) : null;
       case "output-available": {
+        if (!deleteInput) return null;
         const deleteOutput = output as { result: string };
         const isSuccess = deleteOutput.result.includes("Successfully deleted");
 
@@ -203,12 +217,14 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderSearchReplaceTool = () => {
     const { toolCallId, state, input, output } = part;
-    const searchReplaceInput = input as {
-      file_path: string;
-      old_string: string;
-      new_string: string;
-      replace_all?: boolean;
-    };
+    const searchReplaceInput = input as
+      | {
+          file_path: string;
+          old_string: string;
+          new_string: string;
+          replace_all?: boolean;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -226,13 +242,14 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
             key={toolCallId}
             icon={<FilePen />}
             action={
-              searchReplaceInput.replace_all ? "Replacing all in" : "Editing"
+              searchReplaceInput?.replace_all ? "Replacing all in" : "Editing"
             }
-            target={searchReplaceInput.file_path}
+            target={searchReplaceInput?.file_path}
             isShimmer={true}
           />
         ) : null;
       case "output-available": {
+        if (!searchReplaceInput) return null;
         const searchReplaceOutput = output as { result: string };
         const isSuccess =
           searchReplaceOutput.result.includes("Successfully made");
@@ -253,14 +270,16 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
 
   const renderMultiEditTool = () => {
     const { toolCallId, state, input, output } = part;
-    const multiEditInput = input as {
-      file_path: string;
-      edits: Array<{
-        old_string: string;
-        new_string: string;
-        replace_all?: boolean;
-      }>;
-    };
+    const multiEditInput = input as
+      | {
+          file_path: string;
+          edits: Array<{
+            old_string: string;
+            new_string: string;
+            replace_all?: boolean;
+          }>;
+        }
+      | undefined;
 
     switch (state) {
       case "input-streaming":
@@ -277,12 +296,17 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={`Making ${multiEditInput.edits.length} edits to`}
-            target={multiEditInput.file_path}
+            action={
+              multiEditInput
+                ? `Making ${multiEditInput.edits.length} edits to`
+                : "Making edits"
+            }
+            target={multiEditInput?.file_path}
             isShimmer={true}
           />
         ) : null;
       case "output-available": {
+        if (!multiEditInput) return null;
         const multiEditOutput = output as { result: string };
         const isSuccess = multiEditOutput.result.includes(
           "Successfully applied",

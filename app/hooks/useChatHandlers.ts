@@ -184,18 +184,21 @@ export const useChatHandlers = ({
   const handleRegenerate = async () => {
     setIsAutoResuming(false);
 
-    // Always remove all assistant-sourced todos before regeneration.
-    // This ensures that if the new run yields no todos, old assistant todos won't persist.
-    const cleanedTodos = removeTodosBySourceMessages(
-      todos,
-      todos
-        .filter((t) => t.sourceMessageId)
-        .map((t) => t.sourceMessageId as string),
-    );
+    // Remove only todos from the last assistant message being regenerated.
+    // This ensures that if the new run yields no todos, old assistant todos won't persist,
+    // while preserving todos from previous assistant messages.
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    const lastAssistantId = lastAssistant?.id;
+    const cleanedTodos = lastAssistantId
+      ? removeTodosBySourceMessages(todos, [lastAssistantId])
+      : todos;
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
     if (!temporaryChatsEnabled) {
-      await deleteLastAssistantMessage({ chatId });
+      // Delete last assistant message and update todos in a single transaction
+      await deleteLastAssistantMessage({ chatId, todos: cleanedTodos });
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
         body: {
