@@ -43,6 +43,8 @@ import {
   upsertDraft,
   removeDraft,
 } from "@/lib/utils/client-storage";
+import { RateLimitWarning } from "./RateLimitWarning";
+import type { ChatMode, SubscriptionTier } from "@/types";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -55,6 +57,13 @@ interface ChatInputProps {
   hideStop?: boolean;
   isNewChat?: boolean;
   clearDraftOnSubmit?: boolean;
+  rateLimitWarning?: {
+    remaining: number;
+    resetTime: Date;
+    mode: ChatMode;
+    subscription: SubscriptionTier;
+  };
+  onDismissRateLimitWarning?: () => void;
 }
 
 export const ChatInput = ({
@@ -68,6 +77,8 @@ export const ChatInput = ({
   hideStop = false,
   isNewChat = false,
   clearDraftOnSubmit = true,
+  rateLimitWarning,
+  onDismissRateLimitWarning,
 }: ChatInputProps) => {
   const {
     input,
@@ -208,6 +219,17 @@ export const ChatInput = ({
   return (
     <div className={`relative px-4 ${isCentered ? "" : "pb-3"}`}>
       <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+        {/* Rate Limit Warning */}
+        {rateLimitWarning && onDismissRateLimitWarning && (
+          <RateLimitWarning
+            remaining={rateLimitWarning.remaining}
+            resetTime={rateLimitWarning.resetTime}
+            mode={rateLimitWarning.mode}
+            subscription={rateLimitWarning.subscription}
+            onDismiss={onDismissRateLimitWarning}
+          />
+        )}
+
         {/* Todo Panel */}
         <TodoPanel status={status} />
 

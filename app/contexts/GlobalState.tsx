@@ -88,6 +88,10 @@ interface GlobalStateType {
   subscription: SubscriptionTier;
   isCheckingProPlan: boolean;
 
+  // Rate limit warning dismissal state
+  hasUserDismissedRateLimitWarning: boolean;
+  setHasUserDismissedRateLimitWarning: (dismissed: boolean) => void;
+
   // Utility methods
   clearInput: () => void;
   clearUploadedFiles: () => void;
@@ -172,6 +176,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
+
+  // Rate limit warning dismissal state (persists across chat switches)
+  const [
+    hasUserDismissedRateLimitWarning,
+    setHasUserDismissedRateLimitWarning,
+  ] = useState(false);
+
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -573,6 +584,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       setMigrateFromPentestgptDialogOpenWithUrl,
 
     setChatReset,
+
+    hasUserDismissedRateLimitWarning,
+    setHasUserDismissedRateLimitWarning,
   };
 
   return (

@@ -1,6 +1,7 @@
 import "server-only";
 
 import { UIMessagePart } from "ai";
+import type { ChatMode, SubscriptionTier } from "@/types";
 
 type StreamWriter = {
   write: (data: any) => void;
@@ -63,3 +64,20 @@ export const createSummarizationCompletedPart = (): UIMessagePart<
     message: "Chat context summarized",
   },
 });
+
+// Rate limit warning notifications
+export const writeRateLimitWarning = (
+  writer: StreamWriter,
+  data: {
+    remaining: number;
+    resetTime: string; // ISO date string
+    mode: ChatMode;
+    subscription: SubscriptionTier;
+  },
+): void => {
+  writer.write({
+    type: "data-rate-limit-warning",
+    data,
+    transient: true,
+  });
+};

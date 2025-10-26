@@ -22,7 +22,7 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Todo, ChatMessage } from "@/types";
+import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -44,6 +44,12 @@ export const Chat = ({
     message: string;
     isUploading: boolean;
   } | null>(null);
+  const [rateLimitWarning, setRateLimitWarning] = useState<{
+    remaining: number;
+    resetTime: Date;
+    mode: ChatMode;
+    subscription: SubscriptionTier;
+  } | null>(null);
 
   const {
     chatTitle,
@@ -59,6 +65,8 @@ export const Chat = ({
     currentChatId,
     temporaryChatsEnabled,
     setChatReset,
+    hasUserDismissedRateLimitWarning,
+    setHasUserDismissedRateLimitWarning,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -78,6 +86,10 @@ export const Chat = ({
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
 
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
+  // Use global state ref so streaming callback reads latest value
+  const hasUserDismissedWarningRef = useLatestRef(
+    hasUserDismissedRateLimitWarning,
+  );
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -182,6 +194,24 @@ export const Chat = ({
           isUploading: boolean;
         };
         setUploadStatus(uploadData.isUploading ? uploadData : null);
+      }
+      if (dataPart.type === "data-rate-limit-warning") {
+        const warningData = dataPart.data as {
+          remaining: number;
+          resetTime: string;
+          mode: ChatMode;
+          subscription: SubscriptionTier;
+        };
+
+        // Only show or update warning if user hasn't dismissed it
+        if (!hasUserDismissedWarningRef.current) {
+          setRateLimitWarning({
+            remaining: warningData.remaining,
+            resetTime: new Date(warningData.resetTime),
+            mode: warningData.mode,
+            subscription: warningData.subscription,
+          });
+        }
       }
     },
     onToolCall: ({ toolCall }) => {
@@ -390,6 +420,12 @@ export const Chat = ({
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });
 
+  // Rate limit warning dismiss handler
+  const handleDismissRateLimitWarning = () => {
+    setRateLimitWarning(null);
+    setHasUserDismissedRateLimitWarning(true);
+  };
+
   // Branch chat handler
   const branchChatMutation = useMutation(api.messages.branchChat);
 
@@ -542,6 +578,12 @@ export const Chat = ({
                               isAtBottom={isAtBottom}
                               onScrollToBottom={handleScrollToBottom}
                               isNewChat={!isExistingChat}
+                              rateLimitWarning={
+                                rateLimitWarning ? rateLimitWarning : undefined
+                              }
+                              onDismissRateLimitWarning={
+                                handleDismissRateLimitWarning
+                              }
                             />
                           </div>
                         )}
@@ -567,6 +609,10 @@ export const Chat = ({
                       isAtBottom={isAtBottom}
                       onScrollToBottom={handleScrollToBottom}
                       isNewChat={!isExistingChat}
+                      rateLimitWarning={
+                        rateLimitWarning ? rateLimitWarning : undefined
+                      }
+                      onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     />
                   )}
               </div>
