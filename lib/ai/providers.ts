@@ -7,7 +7,7 @@ import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
-  "ask-model": openrouter("qwen/qwen3-coder"),
+  "ask-model": openrouter("qwen/qwen3-coder:exacto"),
   "ask-model-free": openrouter("qwen/qwen3-235b-a22b-2507"),
   "agent-model": xai("grok-code-fast-1"),
   "agent-model-with-vision": xai("grok-4-fast-reasoning"),

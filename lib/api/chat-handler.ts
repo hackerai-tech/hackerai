@@ -336,11 +336,13 @@ export const createChatHandler = () => {
             abortSignal: userStopSignal.signal,
             providerOptions: {
               openrouter: {
-                ...(subscription === "free" && {
-                  provider: {
-                    sort: "price",
-                  },
-                }),
+                provider: {
+                  ...(subscription === "free"
+                    ? {
+                        sort: "price",
+                      }
+                    : { sort: "latency" }),
+                },
               },
             },
             headers: getAIHeaders(),
