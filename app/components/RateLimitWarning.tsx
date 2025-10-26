@@ -22,59 +22,13 @@ const formatTimeUntil = (resetTime: Date): string => {
   const hoursUntil = Math.floor(timeDiff / (1000 * 60 * 60));
   const minutesUntil = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
 
-  // For short durations (< 6 hours), show relative time
-  if (hoursUntil < 6) {
-    if (hoursUntil === 0) {
-      return `in ${minutesUntil} ${minutesUntil === 1 ? "minute" : "minutes"}`;
-    }
-    if (minutesUntil === 0) {
-      return `in ${hoursUntil} ${hoursUntil === 1 ? "hour" : "hours"}`;
-    }
-    return `in ${hoursUntil}h ${minutesUntil}m`;
+  if (hoursUntil === 0) {
+    return `in ${minutesUntil} ${minutesUntil === 1 ? "minute" : "minutes"}`;
   }
-
-  // For longer durations, show the actual time
-  const hours = resetTime.getHours();
-  const minutes = resetTime.getMinutes();
-  const ampm = hours >= 12 ? "PM" : "AM";
-  const displayHours = hours % 12 || 12;
-  const displayMinutes = minutes.toString().padStart(2, "0");
-  const timeStr = `${displayHours}:${displayMinutes} ${ampm}`;
-
-  // Check if it's today or tomorrow by creating tomorrow's date
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const dayAfter = new Date(tomorrow);
-  dayAfter.setDate(dayAfter.getDate() + 1);
-
-  const resetDate = new Date(resetTime);
-  resetDate.setHours(0, 0, 0, 0);
-
-  if (resetDate.getTime() === today.getTime()) {
-    return `${timeStr} today`;
+  if (minutesUntil === 0) {
+    return `in ${hoursUntil} ${hoursUntil === 1 ? "hour" : "hours"}`;
   }
-  if (resetDate.getTime() === tomorrow.getTime()) {
-    return `${timeStr} tomorrow`;
-  }
-
-  // For dates further out, include the date
-  const monthNames = [
-    "Jan",
-    "Feb",
-    "Mar",
-    "Apr",
-    "May",
-    "Jun",
-    "Jul",
-    "Aug",
-    "Sep",
-    "Oct",
-    "Nov",
-    "Dec",
-  ];
-  return `${timeStr} on ${monthNames[resetTime.getMonth()]} ${resetTime.getDate()}`;
+  return `in ${hoursUntil}h ${minutesUntil}m`;
 };
 
 export const RateLimitWarning = ({
