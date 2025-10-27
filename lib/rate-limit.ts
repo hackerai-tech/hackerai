@@ -1,20 +1,25 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { ChatSDKError } from "@/lib/errors";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SubscriptionTier, RateLimitInfo } from "@/types";
 
 // Check rate limit for a specific user
 export const checkRateLimit = async (
   userId: string,
   mode: ChatMode,
   subscription: SubscriptionTier,
-): Promise<void> => {
+): Promise<RateLimitInfo> => {
   // Check if Redis is configured
   const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
   const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
   if (!redisUrl || !redisToken) {
-    return;
+    // Return default info when Redis is not configured (no rate limiting)
+    return {
+      remaining: 999,
+      resetTime: new Date(Date.now() + 5 * 60 * 60 * 1000),
+      limit: 999,
+    };
   }
 
   try {
@@ -60,7 +65,7 @@ export const checkRateLimit = async (
 
     // Use mode-specific key for rate limiting
     const rateLimitKey = `${userId}:${mode}:${subscription}`;
-    const { success, reset } = await ratelimit.limit(rateLimitKey);
+    const { success, reset, remaining } = await ratelimit.limit(rateLimitKey);
 
     if (!success) {
       const resetTime = new Date(reset);
@@ -99,6 +104,13 @@ export const checkRateLimit = async (
 
       throw new ChatSDKError("rate_limit:chat", cause);
     }
+
+    // Return rate limit info
+    return {
+      remaining,
+      resetTime: new Date(reset),
+      limit: requestLimit,
+    };
   } catch (error) {
     // If it's already our ChatSDKError, re-throw it
     if (error instanceof ChatSDKError) {

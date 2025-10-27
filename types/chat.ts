@@ -87,3 +87,9 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
   }>;
   sourceMessageId?: string;
 };
+
+export type RateLimitInfo = {
+  remaining: number;
+  resetTime: Date;
+  limit: number;
+};

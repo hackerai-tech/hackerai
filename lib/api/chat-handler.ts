@@ -50,6 +50,7 @@ import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
   createSummarizationCompletedPart,
+  writeRateLimitWarning,
 } from "@/lib/utils/stream-writer-utils";
 
 let globalStreamContext: any | null = null;
@@ -133,7 +134,7 @@ export const createChatHandler = () => {
         });
       }
 
-      await checkRateLimit(userId, mode, subscription);
+      const rateLimitInfo = await checkRateLimit(userId, mode, subscription);
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -181,6 +182,19 @@ export const createChatHandler = () => {
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
+          // Send rate limit warning if at or below threshold
+          const isPaidUser = subscription !== "free";
+          const warningThreshold = isPaidUser ? 10 : 5;
+
+          if (rateLimitInfo.remaining <= warningThreshold) {
+            writeRateLimitWarning(writer, {
+              remaining: rateLimitInfo.remaining,
+              resetTime: rateLimitInfo.resetTime.toISOString(),
+              mode,
+              subscription,
+            });
+          }
+
           const {
             tools,
             getSandbox,
@@ -322,11 +336,13 @@ export const createChatHandler = () => {
             abortSignal: userStopSignal.signal,
             providerOptions: {
               openrouter: {
-                ...(subscription === "free" && {
-                  provider: {
-                    sort: "price",
-                  },
-                }),
+                provider: {
+                  ...(subscription === "free"
+                    ? {
+                        sort: "price",
+                      }
+                    : { sort: "latency" }),
+                },
               },
             },
             headers: getAIHeaders(),
