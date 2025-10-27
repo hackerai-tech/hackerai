@@ -22,6 +22,9 @@ const formatTimeUntil = (resetTime: Date): string => {
   const hoursUntil = Math.floor(timeDiff / (1000 * 60 * 60));
   const minutesUntil = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
 
+  if (hoursUntil === 0 && minutesUntil === 0) {
+    return "in less than a minute";
+  }
   if (hoursUntil === 0) {
     return `in ${minutesUntil} ${minutesUntil === 1 ? "minute" : "minutes"}`;
   }
@@ -45,7 +48,7 @@ export const RateLimitWarning = ({
   const message =
     remaining === 0
       ? `You've reached your ${mode} mode limit. It resets ${timeString}.`
-      : `You have ${remaining} ${remaining === 1 ? "response" : "responses"} from ${mode} mode remaining until it resets ${timeString}.`;
+      : `You have ${remaining} ${remaining === 1 ? "response" : "responses"} in ${mode} mode remaining until it resets ${timeString}.`;
 
   return (
     <div className="mb-2 px-3 py-2.5 bg-input-chat border border-black/8 dark:border-border rounded-lg flex items-center justify-between gap-2">
