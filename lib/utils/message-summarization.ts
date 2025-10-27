@@ -122,13 +122,28 @@ export const checkAndSummarizeIfNeeded = async (
     const result = await generateText({
       model: languageModel,
       system:
-        "Summarize the following conversation concisely, preserving key context, decisions, technical details, and important information. The summary should be comprehensive but significantly shorter than the original.",
+        "You are an agent performing context condensation for a security agent. Your job is to compress scan data while preserving ALL operationally critical information for continuing the security assessment.\n\n" +
+        "CRITICAL ELEMENTS TO PRESERVE:\n" +
+        "- Discovered vulnerabilities and potential attack vectors\n" +
+        "- Scan results and tool outputs (compressed but maintaining key findings)\n" +
+        "- Access credentials, tokens, or authentication details found\n" +
+        "- System architecture insights and potential weak points\n" +
+        "- Progress made in the assessment\n" +
+        "- Failed attempts and dead ends (to avoid duplication)\n" +
+        "- Any decisions made about the testing approach\n\n" +
+        "COMPRESSION GUIDELINES:\n" +
+        "- Preserve exact technical details (URLs, paths, parameters, payloads)\n" +
+        "- Summarize verbose tool outputs while keeping critical findings\n" +
+        "- Maintain version numbers, specific technologies identified\n" +
+        "- Keep exact error messages that might indicate vulnerabilities\n" +
+        "- Compress repetitive or similar findings into consolidated form\n\n" +
+        "Remember: Another security agent will use this summary to continue the assessment. They must be able to pick up exactly where you left off without losing any operational advantage or context needed to find vulnerabilities.",
       messages: [
         ...convertToModelMessages(messagesToSummarize),
         {
           role: "user",
           content:
-            "Please provide a concise summary of the above conversation.",
+            "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point.",
         },
       ],
     });
@@ -145,7 +160,7 @@ export const checkAndSummarizeIfNeeded = async (
     parts: [
       {
         type: "text",
-        text: `<conversation_summary>\n${summaryText}\n</conversation_summary>`,
+        text: `<context_summary>\n${summaryText}\n</context_summary>`,
       },
     ],
   };
