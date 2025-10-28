@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import ShikiHighlighter, { isInlineCode, type Element } from "react-shiki";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
+import { isLanguageSupported, ShikiErrorBoundary } from "@/lib/utils/shiki";
 
 interface CodeHighlightProps {
   className?: string | undefined;
@@ -22,6 +23,11 @@ export const CodeHighlight = ({
   const [isWrapped, setIsWrapped] = useState(false);
 
   const isInline: boolean | undefined = node ? isInlineCode(node) : undefined;
+
+  // Check if language is supported by Shiki
+  const shouldUsePlainText = useMemo(() => {
+    return !isLanguageSupported(language);
+  }, [language]);
 
   const handleToggleWrap = () => {
     setIsWrapped(!isWrapped);
@@ -52,21 +58,47 @@ export const CodeHighlight = ({
 
       {/* Code content */}
       <div className="overflow-hidden">
-        <ShikiHighlighter
-          language={language}
-          theme="houston"
-          delay={150}
-          addDefaultStyles={false}
-          showLanguage={false}
-          className={`shiki not-prose relative bg-card text-sm font-[450] text-card-foreground [&_pre]:!bg-transparent [&_pre]:px-[1em] [&_pre]:py-[1em] [&_pre]:rounded-none [&_pre]:m-0 ${
-            isWrapped
-              ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible"
-              : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
-          }`}
-          {...props}
-        >
-          {codeContent}
-        </ShikiHighlighter>
+        {shouldUsePlainText ? (
+          <pre
+            className={`shiki not-prose relative bg-card text-sm font-[450] text-card-foreground px-[1em] py-[1em] rounded-none m-0 ${
+              isWrapped
+                ? "whitespace-pre-wrap break-words overflow-visible"
+                : "overflow-x-auto max-w-full"
+            }`}
+          >
+            <code>{codeContent}</code>
+          </pre>
+        ) : (
+          <ShikiErrorBoundary
+            fallback={
+              <pre
+                className={`shiki not-prose relative bg-card text-sm font-[450] text-card-foreground px-[1em] py-[1em] rounded-none m-0 ${
+                  isWrapped
+                    ? "whitespace-pre-wrap break-words overflow-visible"
+                    : "overflow-x-auto max-w-full"
+                }`}
+              >
+                <code>{codeContent}</code>
+              </pre>
+            }
+          >
+            <ShikiHighlighter
+              language={language}
+              theme="houston"
+              delay={150}
+              addDefaultStyles={false}
+              showLanguage={false}
+              className={`shiki not-prose relative bg-card text-sm font-[450] text-card-foreground [&_pre]:!bg-transparent [&_pre]:px-[1em] [&_pre]:py-[1em] [&_pre]:rounded-none [&_pre]:m-0 ${
+                isWrapped
+                  ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible"
+                  : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
+              }`}
+              {...props}
+            >
+              {codeContent}
+            </ShikiHighlighter>
+          </ShikiErrorBoundary>
+        )}
       </div>
     </div>
   ) : (
