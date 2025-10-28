@@ -71,23 +71,6 @@ async function getXaiApiKey(): Promise<string> {
   return await getXaiApiKey();
 }
 
-async function getAiGatewayApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting AI Gateway API Key")}`);
-  console.log(
-    "You can find your AI Gateway API Key at: https://vercel.com/docs/ai-gateway",
-  );
-  const key = await question("Enter your AI Gateway API Key: ");
-
-  if (key.startsWith("vck_")) {
-    return key;
-  }
-
-  console.log(chalk.red("Invalid AI Gateway API Key format"));
-  console.log('AI Gateway keys should start with "vck_"');
-
-  return await getAiGatewayApiKey();
-}
-
 async function getE2bApiKey(): Promise<string> {
   console.log(`\n${chalk.bold("Getting E2B API Key for Agent mode")}`);
   console.log(
@@ -178,7 +161,6 @@ NEXT_PUBLIC_WORKOS_REDIRECT_URI=${envVars.NEXT_PUBLIC_WORKOS_REDIRECT_URI}
 OPENROUTER_API_KEY=${envVars.OPENROUTER_API_KEY}
 OPENAI_API_KEY=${envVars.OPENAI_API_KEY}
 XAI_API_KEY=${envVars.XAI_API_KEY}
-AI_GATEWAY_API_KEY=${envVars.AI_GATEWAY_API_KEY}
 
 # E2B Sandbox (Required for agent mode - provides secure code execution environment)
 E2B_API_KEY=${envVars.E2B_API_KEY}
@@ -275,7 +257,6 @@ async function main() {
   const OPENROUTER_API_KEY = await getOpenRouterApiKey();
   const OPENAI_API_KEY = await getOpenAiApiKey();
   const XAI_API_KEY = await getXaiApiKey();
-  const AI_GATEWAY_API_KEY = await getAiGatewayApiKey();
   const E2B_API_KEY = await getE2bApiKey();
 
   // Get WorkOS configuration
@@ -296,7 +277,6 @@ async function main() {
     OPENROUTER_API_KEY,
     OPENAI_API_KEY,
     XAI_API_KEY,
-    AI_GATEWAY_API_KEY,
     E2B_API_KEY,
     WORKOS_API_KEY,
     WORKOS_CLIENT_ID,

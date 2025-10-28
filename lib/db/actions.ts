@@ -303,7 +303,7 @@ export async function getMessagesByChatId({
               parts: [
                 {
                   type: "text",
-                  text: `<conversation_summary>\n${latestSummary.summary_text}\n</conversation_summary>`,
+                  text: `<context_summary>\n${latestSummary.summary_text}\n</context_summary>`,
                 },
               ],
             };

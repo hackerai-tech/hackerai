@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Download, Copy, Check, WrapText } from "lucide-react";
 import ShikiHighlighter from "react-shiki";
+import { isLanguageSupported, ShikiErrorBoundary } from "@/lib/utils/shiki";
 import {
   Tooltip,
   TooltipTrigger,
@@ -25,6 +26,11 @@ export const ComputerCodeBlock = ({
   const codeContent = String(children);
   const [copied, setCopied] = useState(false);
   const [isWrapped, setIsWrapped] = useState(wrap);
+
+  // Check if language is supported by Shiki
+  const shouldUsePlainText = useMemo(() => {
+    return !isLanguageSupported(language);
+  }, [language]);
 
   const handleCopy = async () => {
     try {
@@ -145,20 +151,46 @@ export const ComputerCodeBlock = ({
 
       {/* Code content - takes full available space */}
       <div className="h-full w-full overflow-auto">
-        <ShikiHighlighter
-          language={language}
-          theme="houston"
-          delay={150}
-          addDefaultStyles={false}
-          showLanguage={false}
-          className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full [&_pre]:!bg-transparent [&_pre]:px-[0.5em] [&_pre]:py-[0.5em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:h-full [&_pre]:w-full [&_pre]:min-h-full [&_pre]:min-w-0 ${
-            wrap
-              ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible [&_pre]:word-break-break-word"
-              : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
-          }`}
-        >
-          {codeContent}
-        </ShikiHighlighter>
+        {shouldUsePlainText ? (
+          <pre
+            className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full px-[0.5em] py-[0.5em] rounded-none m-0 min-h-full min-w-0 ${
+              wrap
+                ? "whitespace-pre-wrap break-words overflow-visible word-break-break-word"
+                : "overflow-x-auto max-w-full"
+            }`}
+          >
+            <code>{codeContent}</code>
+          </pre>
+        ) : (
+          <ShikiErrorBoundary
+            fallback={
+              <pre
+                className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full px-[0.5em] py-[0.5em] rounded-none m-0 min-h-full min-w-0 ${
+                  wrap
+                    ? "whitespace-pre-wrap break-words overflow-visible word-break-break-word"
+                    : "overflow-x-auto max-w-full"
+                }`}
+              >
+                <code>{codeContent}</code>
+              </pre>
+            }
+          >
+            <ShikiHighlighter
+              language={language}
+              theme="houston"
+              delay={150}
+              addDefaultStyles={false}
+              showLanguage={false}
+              className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full [&_pre]:!bg-transparent [&_pre]:px-[0.5em] [&_pre]:py-[0.5em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:h-full [&_pre]:w-full [&_pre]:min-h-full [&_pre]:min-w-0 ${
+                wrap
+                  ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible [&_pre]:word-break-break-word"
+                  : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
+              }`}
+            >
+              {codeContent}
+            </ShikiHighlighter>
+          </ShikiErrorBoundary>
+        )}
       </div>
     </div>
   );
