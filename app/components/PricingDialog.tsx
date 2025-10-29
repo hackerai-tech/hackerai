@@ -199,16 +199,16 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     planName: string,
     price: number,
   ) => {
-    // If user is free, upgrade directly without confirmation
+    // If user is free, upgrade directly using checkout
     if (subscription === "free") {
       try {
-        await handleUpgrade(plan);
+        await handleUpgrade(plan, undefined, undefined, subscription);
         // Don't close dialog on success - let the redirect happen
       } catch (error) {
         console.error("Upgrade failed:", error);
       }
     } else {
-      // Show confirmation dialog for existing subscribers
+      // For existing subscribers, show confirmation dialog with upgrade details
       setPendingUpgrade({ plan, planName, price });
       setShowConfirmDialog(true);
     }

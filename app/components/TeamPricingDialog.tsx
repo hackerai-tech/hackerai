@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useUpgrade } from "../hooks/useUpgrade";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useGlobalState } from "../contexts/GlobalState";
 
 interface TeamPricingDialogProps {
   isOpen: boolean;
@@ -25,6 +26,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
   initialPlan = "monthly",
 }) => {
   const { user } = useAuth();
+  const { subscription } = useGlobalState();
   const { upgradeLoading, upgradeError, handleUpgrade, setUpgradeError } =
     useUpgrade();
   const [billingPeriod, setBillingPeriod] = React.useState<
@@ -67,7 +69,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
 
     const planKey =
       billingPeriod === "yearly" ? "team-yearly-plan" : "team-monthly-plan";
-    await handleUpgrade(planKey, undefined, seats);
+    await handleUpgrade(planKey, undefined, seats, subscription);
   };
 
   // Sync state with URL (only after initial state is loaded from URL/props)

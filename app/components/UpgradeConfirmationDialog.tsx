@@ -43,12 +43,14 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   const [details, setDetails] = useState<SubscriptionDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string>("");
 
   useEffect(() => {
     const fetchDetails = async () => {
       if (!isOpen) return;
 
       setLoadingDetails(true);
+      setError("");
       try {
         // Single API call: preview + current details in one response
         const previewRes = await fetch("/api/subscription-details", {
@@ -97,6 +99,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
 
   const handleConfirmPayment = async () => {
     setConfirming(true);
+    setError("");
     try {
       const response = await fetch("/api/subscription-details", {
         method: "POST",
@@ -106,31 +109,40 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         body: JSON.stringify({ plan: targetPlan, confirm: true }),
       });
 
+      const result = await response.json();
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to update subscription");
+        // Handle error without throwing (cleaner console)
+        setError(result.error || "Failed to update subscription");
+        setConfirming(false);
+        return;
       }
 
-      // const result = await response.json();
-      // console.log("Subscription updated:", result);
+      if (result.success) {
+        // Subscription updated successfully
+        onClose();
 
-      // Close dialog
-      onClose();
-
-      // Redirect with refresh=entitlements to trigger entitlement sync
-      setTimeout(() => {
-        const url = new URL(window.location.href);
-        url.searchParams.set("refresh", "entitlements");
-        window.location.href = url.toString();
-      }, 500);
+        // Redirect with refresh=entitlements to trigger entitlement sync
+        setTimeout(() => {
+          const url = new URL(window.location.href);
+          url.searchParams.set("refresh", "entitlements");
+          url.hash = ""; // Remove #pricing hash if present
+          window.location.href = url.toString();
+        }, 500);
+      } else if (result.requiresPayment && result.invoiceUrl) {
+        // Payment failed, redirect to invoice payment page
+        window.location.href = result.invoiceUrl;
+      } else {
+        setError(result.message || "Failed to update subscription");
+        setConfirming(false);
+      }
     } catch (error) {
       console.error("Error confirming payment:", error);
-      alert(
+      setError(
         error instanceof Error
           ? error.message
           : "Failed to update subscription. Please try again.",
       );
-    } finally {
       setConfirming(false);
     }
   };
@@ -258,6 +270,13 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
             </>
           )}
 
+          {/* Error Message */}
+          {error && (
+            <div className="p-4 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-lg">
+              <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex items-center justify-end gap-3 pt-2">
             <Button
@@ -282,7 +301,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
                   Processing...
                 </>
               ) : (
-                "Pay now"
+                "Confirm and pay"
               )}
             </Button>
           </div>
