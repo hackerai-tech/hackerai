@@ -30,6 +30,7 @@ import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
+import { useS3FileUrls } from "../hooks/useS3FileUrls";
 
 export const Chat = ({
   chatId: routeChatId,
@@ -265,6 +266,9 @@ export const Chat = ({
     resumeStream,
     setMessages,
   });
+
+  // Enhance messages with S3 presigned URLs for file attachments
+  const messagesWithS3Urls = useS3FileUrls(messages);
 
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
@@ -516,7 +520,7 @@ export const Chat = ({
                   <Messages
                     scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                     contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                    messages={messages}
+                    messages={messagesWithS3Urls}
                     setMessages={setMessages}
                     onRegenerate={handleRegenerate}
                     onRetry={handleRetry}

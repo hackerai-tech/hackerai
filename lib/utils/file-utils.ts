@@ -1,38 +1,44 @@
 import { FileMessagePart, UploadedFileState } from "@/types/file";
-import { Id } from "@/convex/_generated/dataModel";
+// import { Id } from "@/convex/_generated/dataModel";
 
 /**
- * Upload a single file to Convex storage and return file ID and URL
+ * Upload a single file to S3 and return file ID and URL
  */
-export async function uploadSingleFileToConvex(
+export async function uploadSingleFileToS3(
   file: File,
-  generateUploadUrl: () => Promise<string>,
   saveFile: (args: {
-    storageId: Id<"_storage">;
+    s3Key: string;
     name: string;
     mediaType: string;
     size: number;
   }) => Promise<{ url: string; fileId: string; tokens: number }>,
+  generateS3UploadUrl: (args: {
+    fileName: string;
+    contentType: string;
+  }) => Promise<{ uploadUrl: string; s3Key: string }>,
 ): Promise<{ fileId: string; url: string; tokens: number }> {
-  // Step 1: Get upload URL
-  const postUrl = await generateUploadUrl();
+  // Step 1: Get S3 upload URL and key via Convex action
+  const { uploadUrl, s3Key } = await generateS3UploadUrl({
+    fileName: file.name,
+    contentType: file.type,
+  });
 
-  // Step 2: Upload file to Convex storage
-  const result = await fetch(postUrl, {
-    method: "POST",
+  // Step 2: Upload file to S3 using presigned URL
+  const uploadResult = await fetch(uploadUrl, {
+    method: "PUT",
     headers: { "Content-Type": file.type },
     body: file,
   });
 
-  if (!result.ok) {
-    throw new Error(`Failed to upload file ${file.name}: ${result.statusText}`);
+  if (!uploadResult.ok) {
+    throw new Error(
+      `Failed to upload file ${file.name}: ${uploadResult.statusText}`,
+    );
   }
-
-  const { storageId } = await result.json();
 
   // Step 3: Save file metadata to database and get URL, file ID, and tokens
   const { url, fileId, tokens } = await saveFile({
-    storageId,
+    s3Key,
     name: file.name,
     mediaType: file.type,
     size: file.size,
@@ -40,6 +46,47 @@ export async function uploadSingleFileToConvex(
 
   return { fileId, url, tokens };
 }
+
+/**
+ * Upload a single file to Convex storage and return file ID and URL
+ * @deprecated Legacy method for backward compatibility
+ */
+// export async function uploadSingleFileToConvex(
+//   file: File,
+//   generateUploadUrl: () => Promise<string>,
+//   saveFile: (args: {
+//     storageId: Id<"_storage">;
+//     name: string;
+//     mediaType: string;
+//     size: number;
+//   }) => Promise<{ url: string; fileId: string; tokens: number }>,
+// ): Promise<{ fileId: string; url: string; tokens: number }> {
+//   // Step 1: Get upload URL
+//   const postUrl = await generateUploadUrl();
+
+//   // Step 2: Upload file to Convex storage
+//   const result = await fetch(postUrl, {
+//     method: "POST",
+//     headers: { "Content-Type": file.type },
+//     body: file,
+//   });
+
+//   if (!result.ok) {
+//     throw new Error(`Failed to upload file ${file.name}: ${result.statusText}`);
+//   }
+
+//   const { storageId } = await result.json();
+
+//   // Step 3: Save file metadata to database and get URL, file ID, and tokens
+//   const { url, fileId, tokens } = await saveFile({
+//     storageId,
+//     name: file.name,
+//     mediaType: file.type,
+//     size: file.size,
+//   });
+
+//   return { fileId, url, tokens };
+// }
 
 /**
  * Create file message part from uploaded file state (includes fileId and URL)

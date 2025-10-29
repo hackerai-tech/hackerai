@@ -4,7 +4,7 @@ import { useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
-  uploadSingleFileToConvex,
+  uploadSingleFileToS3,
   validateFile,
   createFileMessagePartFromUploadedFile,
 } from "@/lib/utils/file-utils";
@@ -29,14 +29,10 @@ export const useFileUpload = () => {
   const [showDragOverlay, setShowDragOverlay] = useState(false);
   const dragCounterRef = useRef(0);
 
-  const generateUploadUrl = useMutation(api.fileStorage.generateUploadUrl);
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
-
-  // Wrap Convex mutation to match `() => Promise<string>` signature expected by the util
-  const generateUploadUrlFn = useCallback(
-    () => generateUploadUrl({}),
-    [generateUploadUrl],
+  const generateS3UploadUrlAction = useAction(
+    api.fileActions.generateS3UploadUrlAction,
   );
 
   // Helper function to check and validate files before processing
@@ -180,10 +176,11 @@ export const useFileUpload = () => {
 
   const uploadFileToConvex = async (file: File, uploadIndex: number) => {
     try {
-      const { fileId, url, tokens } = await uploadSingleFileToConvex(
+      const { fileId, url, tokens } = await uploadSingleFileToS3(
         file,
-        generateUploadUrlFn,
         saveFile,
+        ({ fileName, contentType }) =>
+          generateS3UploadUrlAction({ fileName, contentType }),
       );
 
       // Check token limit before updating state
@@ -243,7 +240,7 @@ export const useFileUpload = () => {
   const handleRemoveFile = async (indexToRemove: number) => {
     const uploadedFile = uploadedFiles[indexToRemove];
 
-    // If the file was uploaded to Convex, delete it from storage
+    // If the file was uploaded to storage, delete it
     if (uploadedFile?.fileId) {
       try {
         await deleteFile({
