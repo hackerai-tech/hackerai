@@ -1,6 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
+import { internal } from "./_generated/api";
 
 export function validateServiceKey(serviceKey?: string): void {
   if (serviceKey && serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -526,7 +527,19 @@ export const deleteChat = mutation({
               try {
                 const file = await ctx.db.get(storageId);
                 if (file) {
-                  await ctx.storage.delete(file.storage_id);
+                  // Delete from appropriate storage (handle both Convex and S3)
+                  if (file.storage_id) {
+                    // Legacy Convex storage
+                    await ctx.storage.delete(file.storage_id);
+                  }
+                  if ((file as any).s3_key) {
+                    // Schedule S3 object deletion via internal action (Node runtime)
+                    await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3Object, {
+                      s3Key: (file as any).s3_key,
+                    });
+                  }
+
+                  // Delete database record
                   await ctx.db.delete(file._id);
                 }
               } catch (error) {
@@ -683,7 +696,19 @@ export const deleteAllChats = mutation({
                 try {
                   const file = await ctx.db.get(storageId);
                   if (file) {
-                    await ctx.storage.delete(file.storage_id);
+                    // Delete from appropriate storage (handle both Convex and S3)
+                    if (file.storage_id) {
+                      // Legacy Convex storage
+                      await ctx.storage.delete(file.storage_id);
+                    }
+                    if ((file as any).s3_key) {
+                      // Schedule S3 object deletion via internal action (Node runtime)
+                      await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3Object, {
+                        s3Key: (file as any).s3_key,
+                      });
+                    }
+
+                    // Delete database record
                     await ctx.db.delete(file._id);
                   }
                 } catch (error) {

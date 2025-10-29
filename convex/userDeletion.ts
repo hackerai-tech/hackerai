@@ -1,5 +1,6 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 
 /**
  * Delete all Convex data for the authenticated user in correct dependency order.
@@ -97,14 +98,32 @@ export const deleteAllUserData = mutation({
       await Promise.all(
         files.map(async (file) => {
           try {
-            try {
-              await ctx.storage.delete(file.storage_id);
-            } catch (e) {
-              console.warn(
-                "Failed to delete storage blob:",
-                file.storage_id,
-                e,
-              );
+            // Delete from appropriate storage (handle both Convex and S3)
+            if (file.storage_id) {
+              // Legacy Convex storage
+              try {
+                await ctx.storage.delete(file.storage_id);
+              } catch (e) {
+                console.warn(
+                  "Failed to delete storage blob:",
+                  file.storage_id,
+                  e,
+                );
+              }
+            }
+            if ((file as any).s3_key) {
+              // Schedule S3 object deletion via internal action (Node runtime)
+              try {
+                await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3Object, {
+                  s3Key: (file as any).s3_key,
+                });
+              } catch (e) {
+                console.warn(
+                  "Failed to schedule S3 deletion:",
+                  (file as any).s3_key,
+                  e,
+                );
+              }
             }
             await ctx.db.delete(file._id);
           } catch (error) {
