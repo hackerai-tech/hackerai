@@ -16,6 +16,7 @@ export const useUpgrade = () => {
       | "team-yearly-plan",
     e?: React.MouseEvent<HTMLButtonElement | HTMLDivElement>,
     quantity?: number,
+    currentSubscription?: "free" | "pro" | "ultra" | "team",
   ) => {
     e?.preventDefault();
 
@@ -42,31 +43,65 @@ export const useUpgrade = () => {
         requestBody.quantity = quantity;
       }
 
-      const res = await fetch("/api/subscribe", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
+      // Use regular checkout for new subscriptions (free users)
+      if (!currentSubscription || currentSubscription === "free") {
+        const res = await fetch("/api/subscribe", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestBody),
+        });
 
-      // Check if response is ok, if not throw error with status and body
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(`HTTP ${res.status}: ${text}`);
-      }
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`HTTP ${res.status}: ${text}`);
+        }
 
-      const { error, url } = await res.json();
+        const { error, url } = await res.json();
 
-      if (url) {
-        window.location.href = url;
-        return;
-      }
+        if (url) {
+          window.location.href = url;
+          return;
+        }
 
-      if (error) {
-        setUpgradeError(`Error: ${error}`);
+        if (error) {
+          setUpgradeError(`Error: ${error}`);
+        } else {
+          setUpgradeError("Unknown error creating checkout session");
+        }
       } else {
-        setUpgradeError("Unknown error creating checkout session");
+        // For existing subscribers, use immediate subscription update
+        // This prevents the "free credit" exploit
+        const res = await fetch("/api/subscription-details", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ plan: planKey, confirm: true }),
+        });
+
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`HTTP ${res.status}: ${text}`);
+        }
+
+        const result = await res.json();
+
+        if (result.success) {
+          // Subscription updated successfully, refresh to show new plan
+          const url = new URL(window.location.href);
+          url.searchParams.set("refresh", "entitlements");
+          url.hash = ""; // Remove #pricing hash if present
+          window.location.href = url.toString();
+        } else if (result.invoiceUrl) {
+          // Payment failed, redirect to invoice payment page
+          window.location.href = result.invoiceUrl;
+        } else if (result.error) {
+          setUpgradeError(`Error: ${result.error}`);
+        } else {
+          setUpgradeError("Unknown error updating subscription");
+        }
       }
     } catch (err) {
       // Surface real error messages when err is an Error

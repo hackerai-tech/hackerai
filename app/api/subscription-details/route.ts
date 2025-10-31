@@ -226,18 +226,142 @@ export const POST = async (req: NextRequest) => {
             },
           );
 
+          // Get the latest invoice to check payment status
+          const latestInvoiceId =
+            typeof updatedSubscription.latest_invoice === "string"
+              ? updatedSubscription.latest_invoice
+              : updatedSubscription.latest_invoice?.id;
+
+          if (latestInvoiceId) {
+            let invoice = await stripe.invoices.retrieve(latestInvoiceId, {
+              expand: ["payment_intent"],
+            });
+
+            // If invoice is still being processed, finalize it
+            if (invoice.status === "draft") {
+              invoice = await stripe.invoices.finalizeInvoice(latestInvoiceId, {
+                expand: ["payment_intent"],
+              });
+            }
+
+            // Check if invoice needs payment or user action
+            if (invoice.status !== "paid") {
+              // Check if payment requires additional action (e.g., 3D Secure)
+              const paymentIntent =
+                typeof (invoice as any).payment_intent === "object"
+                  ? (invoice as any).payment_intent
+                  : null;
+              if (paymentIntent && paymentIntent.status === "requires_action") {
+                return NextResponse.json({
+                  success: false,
+                  requiresPayment: true,
+                  invoiceUrl: invoice.hosted_invoice_url,
+                  message:
+                    "Payment requires additional authentication. Please complete the verification to activate your new plan.",
+                });
+              }
+
+              // For any other non-paid status
+              return NextResponse.json({
+                success: false,
+                requiresPayment: true,
+                invoiceUrl: invoice.hosted_invoice_url,
+                message:
+                  "Payment requires attention. Please complete payment to activate your new plan.",
+              });
+            }
+          }
+
           return NextResponse.json({
             success: true,
             message: "Subscription updated successfully",
             subscriptionId: updatedSubscription.id,
           });
         } catch (updateError) {
-          console.error("Error updating subscription:", updateError);
-          const errorMessage =
-            updateError instanceof Error
-              ? updateError.message
-              : "Failed to update subscription";
-          return NextResponse.json({ error: errorMessage }, { status: 500 });
+          console.error("Error updating subscription:", {
+            error: updateError,
+            userId,
+            subscriptionId: subscription.id,
+            targetPlan,
+            customerId: matchingCustomer.id,
+            timestamp: new Date().toISOString(),
+          });
+
+          // Handle specific Stripe errors with user-friendly messages
+          if (updateError instanceof Error) {
+            const errorMessage = updateError.message;
+
+            // No payment method attached
+            if (
+              errorMessage.includes("no attached payment source") ||
+              errorMessage.includes("default payment method")
+            ) {
+              console.error(
+                "Subscription upgrade failed - no payment method:",
+                {
+                  userId,
+                  customerId: matchingCustomer.id,
+                  targetPlan,
+                  errorMessage,
+                },
+              );
+              return NextResponse.json(
+                {
+                  error:
+                    "No payment method found. Please add a payment method to your account before upgrading.",
+                  requiresPaymentMethod: true,
+                },
+                { status: 400 },
+              );
+            }
+
+            // Card declined
+            if (
+              errorMessage.includes("card was declined") ||
+              errorMessage.includes("insufficient funds")
+            ) {
+              console.error("Subscription upgrade failed - payment declined:", {
+                userId,
+                customerId: matchingCustomer.id,
+                targetPlan,
+                errorMessage,
+              });
+              return NextResponse.json(
+                {
+                  error:
+                    "Your payment method was declined. Please update your payment method and try again.",
+                },
+                { status: 400 },
+              );
+            }
+
+            // Generic Stripe error
+            console.error("Subscription upgrade failed - Stripe error:", {
+              userId,
+              customerId: matchingCustomer.id,
+              targetPlan,
+              errorMessage,
+            });
+            return NextResponse.json(
+              {
+                error: errorMessage,
+              },
+              { status: 500 },
+            );
+          }
+
+          console.error("Subscription upgrade failed - unknown error:", {
+            userId,
+            customerId: matchingCustomer.id,
+            targetPlan,
+            error: updateError,
+          });
+          return NextResponse.json(
+            {
+              error: "Failed to update subscription. Please try again.",
+            },
+            { status: 500 },
+          );
         }
       }
     }

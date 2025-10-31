@@ -77,7 +77,7 @@ export const createTools = (
       ? {
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
-          ...(subscription !== "free" && { python: allTools.python }),
+          // ...(subscription !== "free" && { python: allTools.python }),
           ...(process.env.EXA_API_KEY &&
             process.env.JINA_API_KEY && { web: allTools.web }),
         }
