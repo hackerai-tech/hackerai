@@ -68,6 +68,15 @@ pnpm run setup
 
 ### Start the development server
 
+This runs both Next.js and Convex dev servers:
+
 ```bash
 pnpm run dev
+```
+
+Or run them separately in two terminals:
+
+```bash
+pnpm run dev:next
+pnpm run dev:convex
 ```

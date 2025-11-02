@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
+    "dev": "concurrently \"next dev --turbopack\" \"npx convex dev\"",
+    "dev:next": "next dev --turbopack",
+    "dev:convex": "npx convex dev",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
@@ -85,6 +87,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/word-extractor": "^1.0.6",
+    "concurrently": "^9.2.1",
     "eslint": "^9",
     "eslint-config-next": "16.0.0",
     "prettier": "^3.6.2",
