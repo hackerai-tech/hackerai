@@ -57,14 +57,10 @@ const FilePartRendererComponent = ({
         return;
       }
 
-    // If we have storageId, wait for URL to be fetched
-    if (part.storageId) {
-      if (downloadUrl) {
+      // If we have storageId, wait for URL to be fetched
+      if (part.storageId && downloadUrl) {
         await handleDownload(downloadUrl, fileName);
-      } else {
-        toast.info("Generating download link...");
       }
-    }
     },
     [part.url, part.storageId, downloadUrl, handleDownload],
   );
