@@ -10,7 +10,7 @@ import React, {
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import type { ChatMode, SidebarContent } from "@/types/chat";
+import type { ChatMode, SidebarContent, QueuedMessage } from "@/types/chat";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -22,6 +22,8 @@ import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
 import { readChatMode, writeChatMode } from "@/lib/utils/client-storage";
+import { v4 as uuidv4 } from "uuid";
+import { toast } from "sonner";
 
 interface GlobalStateType {
   // Input state
@@ -91,6 +93,16 @@ interface GlobalStateType {
   // Rate limit warning dismissal state
   hasUserDismissedRateLimitWarning: boolean;
   setHasUserDismissedRateLimitWarning: (dismissed: boolean) => void;
+
+  // Message queue state (for Agent mode)
+  messageQueue: QueuedMessage[];
+  queueMessage: (
+    text: string,
+    files?: Array<{ file: File; fileId: string; url: string }>,
+  ) => void;
+  removeQueuedMessage: (id: string) => void;
+  clearQueue: () => void;
+  dequeueNext: () => QueuedMessage | null;
 
   // Utility methods
   clearInput: () => void;
@@ -182,6 +194,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
   ] = useState(false);
+
+  // Message queue state (for Agent mode queueing)
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -425,6 +440,48 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
 
+  // Message queue handlers
+  const queueMessage = useCallback(
+    (text: string, files?: Array<{ file: File; fileId: string; url: string }>) => {
+      setMessageQueue((prev) => {
+        // Limit queue size to 10 messages
+        if (prev.length >= 10) {
+          toast.error("Queue is full", {
+            description: "Please wait for queued messages to send before adding more.",
+          });
+          return prev;
+        }
+
+        const newMessage: QueuedMessage = {
+          id: uuidv4(),
+          text,
+          files,
+          timestamp: Date.now(),
+        };
+        return [...prev, newMessage];
+      });
+    },
+    [],
+  );
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    setMessageQueue([]);
+  }, []);
+
+  const dequeueNext = useCallback((): QueuedMessage | null => {
+    let nextMessage: QueuedMessage | null = null;
+    setMessageQueue((prev) => {
+      if (prev.length === 0) return prev;
+      nextMessage = prev[0];
+      return prev.slice(1);
+    });
+    return nextMessage;
+  }, []);
+
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
     setIsSwitchingChats(true);
     setCurrentChatId(chatId);
@@ -587,6 +644,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
+
+    messageQueue,
+    queueMessage,
+    removeQueuedMessage,
+    clearQueue,
+    dequeueNext,
   };
 
   return (

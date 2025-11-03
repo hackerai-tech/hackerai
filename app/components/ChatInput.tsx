@@ -28,6 +28,7 @@ import { redirectToPricing } from "../hooks/usePricingDialog";
 import { TodoPanel } from "./TodoPanel";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "./FileUploadPreview";
+import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { AttachmentButton } from "./AttachmentButton";
 import { useFileUpload } from "../hooks/useFileUpload";
@@ -49,6 +50,7 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
   onStop: () => void;
+  onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
   hasMessages?: boolean;
@@ -69,6 +71,7 @@ interface ChatInputProps {
 export const ChatInput = ({
   onSubmit,
   onStop,
+  onSendNow,
   status,
   isCentered = false,
   hasMessages = false,
@@ -89,6 +92,8 @@ export const ChatInput = ({
     isUploadingFiles,
     subscription,
     isCheckingProPlan,
+    messageQueue,
+    removeQueuedMessage,
   } = useGlobalState();
   const {
     fileInputRef,
@@ -241,6 +246,16 @@ export const ChatInput = ({
           />
         )}
 
+        {/* Queued Messages Panel - only shown in Agent mode */}
+        {messageQueue.length > 0 && chatMode === "agent" && (
+          <QueuedMessagesPanel
+            messages={messageQueue}
+            onSendNow={onSendNow}
+            onDelete={removeQueuedMessage}
+            isStreaming={status === "streaming"}
+          />
+        )}
+
         {/* Hidden File Input */}
         <input
           ref={fileInputRef}
@@ -252,7 +267,7 @@ export const ChatInput = ({
         />
 
         <div
-          className={`flex flex-col gap-3 transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+          className={`flex flex-col gap-3 transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${(uploadedFiles && uploadedFiles.length > 0) || (messageQueue.length > 0 && chatMode === "agent") ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
         >
           <div className="overflow-y-auto pl-4 pr-2">
             <TextareaAutosize
