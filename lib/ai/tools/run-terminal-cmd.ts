@@ -6,6 +6,7 @@ import type { ToolContext } from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
+import { terminateProcessReliably } from "./utils/process-termination";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
@@ -70,9 +71,10 @@ In using these tools, adhere to the following guidelines:
           let resolved = false;
           let execution: any = null;
           let handler: ReturnType<typeof createTerminalHandler> | null = null;
+          let processId: number | null = null; // Store PID for all processes
 
           // Listen for abort signal
-          const onAbort = () => {
+          const onAbort = async () => {
             if (!resolved) {
               resolved = true;
               const result = handler ? handler.getResult() : { output: "" };
@@ -82,14 +84,15 @@ In using these tools, adhere to the following guidelines:
               resolve({
                 result: {
                   output: result.output,
-                  exitCode: null,
+                  exitCode: 130, // Standard SIGINT exit code
                   error: "Command execution aborted by user",
                 },
               });
             }
-            // Kill the running process if exists
+
+            // Kill the running process with verification and fallback
             if (execution && execution.kill) {
-              execution.kill().catch(() => {});
+              await terminateProcessReliably(sandbox, execution, processId);
             }
           };
 
@@ -113,7 +116,9 @@ In using these tools, adhere to the following guidelines:
                   createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
                   // Kill the running process on timeout if exists
                   if (execution && execution.kill) {
-                    execution.kill().catch(() => {});
+                    terminateProcessReliably(sandbox, execution, processId).catch((error) => {
+                      console.error("[Terminal Command] Error during timeout kill:", error);
+                    });
                   }
                   const result = handler ? handler.getResult() : { output: "" };
                   if (handler) {
@@ -147,6 +152,19 @@ In using these tools, adhere to the following guidelines:
           runPromise
             .then(async (exec) => {
               execution = exec;
+
+              // Capture PID for all processes (background and non-background)
+              if ((exec as any)?.pid) {
+                processId = (exec as any).pid;
+                console.log(
+                  `[Terminal Command] Process started with PID ${processId}: ${command.slice(0, 50)}${command.length > 50 ? "..." : ""}`,
+                );
+              } else {
+                console.log(
+                  `[Terminal Command] Process started without PID: ${command.slice(0, 50)}${command.length > 50 ? "..." : ""}`,
+                );
+              }
+
               if (handler) {
                 handler.cleanup();
               }
@@ -159,12 +177,11 @@ In using these tools, adhere to the following guidelines:
                   : { output: "" };
 
                 // Track background processes with their output files
-                if (is_background && (exec as any)?.pid) {
-                  const pid = (exec as any).pid;
+                if (is_background && processId) {
                   const outputFiles =
                     BackgroundProcessTracker.extractOutputFiles(command);
                   backgroundProcessTracker.addProcess(
-                    pid,
+                    processId,
                     command,
                     outputFiles,
                   );
