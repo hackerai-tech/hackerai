@@ -2,15 +2,6 @@ import { generateObject, UIMessage, UIMessageStreamWriter } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
 
-export const getAIHeaders = () => ({
-  "HTTP-Referer":
-    process.env.NODE_ENV === "development"
-      ? "https://test.hackerai.co"
-      : "https://hackerai.co",
-  "X-Title":
-    process.env.NODE_ENV === "development" ? "HackerAI-Dev" : "HackerAI",
-});
-
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
 
@@ -58,7 +49,6 @@ export const generateTitleFromUserMessage = async (
     schema: z.object({
       title: z.string().describe("The generated title (3-5 words)"),
     }),
-    headers: getAIHeaders(),
     messages: [
       {
         role: "user",

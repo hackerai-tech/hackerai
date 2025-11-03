@@ -24,6 +24,7 @@ export interface FilePart {
   name?: string;
   filename?: string;
   mediaType?: string;
+  storageId?: string; // Storage ID for on-demand URL fetching (non-image files)
 }
 
 // Props for FilePartRenderer component

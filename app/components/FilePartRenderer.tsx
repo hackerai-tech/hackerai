@@ -1,8 +1,11 @@
 import Image from "next/image";
 import React, { useState, memo, useMemo, useCallback } from "react";
+import { useConvex } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
 import { AlertCircle, File, Download } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
+import { toast } from "sonner";
 
 const FilePartRendererComponent = ({
   part,
@@ -10,13 +13,16 @@ const FilePartRendererComponent = ({
   messageId,
   totalFileParts = 1,
 }: FilePartRendererProps) => {
+  const convex = useConvex();
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
     alt: string;
   } | null>(null);
+  const [downloadingFile, setDownloadingFile] = useState(false);
 
   const handleDownload = useCallback(async (url: string, fileName: string) => {
     try {
+      setDownloadingFile(true);
       const response = await fetch(url);
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
@@ -31,9 +37,42 @@ const FilePartRendererComponent = ({
       URL.revokeObjectURL(blobUrl);
     } catch (error) {
       console.error("Error downloading file:", error);
+      toast.error("Failed to download file");
       window.open(url, "_blank", "noopener,noreferrer");
+    } finally {
+      setDownloadingFile(false);
     }
   }, []);
+
+  const handleNonImageFileClick = useCallback(
+    async (fileName: string) => {
+      // If we have URL directly, use it
+      if (part.url) {
+        await handleDownload(part.url, fileName);
+        return;
+      }
+
+      // If we have storageId, fetch URL on-demand
+      if (part.storageId) {
+        try {
+          const downloadUrl = await convex.query(
+            api.fileStorage.getFileDownloadUrl,
+            { storageId: part.storageId },
+          );
+
+          if (downloadUrl) {
+            await handleDownload(downloadUrl, fileName);
+          } else {
+            toast.error("Failed to get download URL");
+          }
+        } catch (error) {
+          console.error("Error fetching download URL:", error);
+          toast.error("Failed to download file");
+        }
+      }
+    },
+    [part.url, part.storageId, convex, handleDownload],
+  );
 
   // Memoize file preview component to prevent unnecessary re-renders
   const FilePreviewCard = useMemo(() => {
@@ -43,12 +82,14 @@ const FilePartRendererComponent = ({
       fileName,
       subtitle,
       url,
+      storageId,
     }: {
       partId: string;
       icon: React.ReactNode;
       fileName: string;
       subtitle: string;
       url?: string;
+      storageId?: string;
     }) => {
       const content = (
         <div className="flex flex-row items-center gap-2">
@@ -63,7 +104,7 @@ const FilePartRendererComponent = ({
               {subtitle}
             </div>
           </div>
-          {url && (
+          {(url || storageId) && (
             <div className="flex items-center justify-center w-6 h-6 rounded-md border border-border opacity-0 group-hover:opacity-100 transition-opacity">
               <Download className="w-4 h-4 text-muted-foreground" />
             </div>
@@ -71,12 +112,13 @@ const FilePartRendererComponent = ({
         </div>
       );
 
-      if (url) {
+      if (url || storageId) {
         return (
           <button
             key={partId}
-            onClick={() => handleDownload(url, fileName)}
-            className="group p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background hover:bg-secondary transition-colors cursor-pointer"
+            onClick={() => handleNonImageFileClick(fileName)}
+            disabled={downloadingFile}
+            className="group p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background hover:bg-secondary transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             type="button"
             aria-label={`Download ${fileName}`}
           >
@@ -96,29 +138,43 @@ const FilePartRendererComponent = ({
     };
     PreviewCard.displayName = "FilePreviewCard";
     return PreviewCard;
-  }, [handleDownload]);
+  }, [handleNonImageFileClick, downloadingFile]);
 
   // Memoize ConvexFilePart to prevent unnecessary re-renders
   const ConvexFilePart = memo(
     ({ part, partId }: { part: FilePart; partId: string }) => {
-      // All new files should have URLs directly available
+      // For images, we should have URL directly; for other files, we might have storageId
       const actualUrl = part.url;
 
-      if (!actualUrl) {
-        // Error state for files without URLs
+      if (!actualUrl && !part.storageId) {
+        // Error state for files without URLs or storageId
         return (
           <FilePreviewCard
             partId={partId}
             icon={<AlertCircle className="h-6 w-6 text-red-500" />}
             fileName={part.name || part.filename || "Unknown file"}
-            subtitle="File URL not available"
+            subtitle="File not available"
             url={undefined}
+            storageId={undefined}
           />
         );
       }
 
-      // Handle image files
+      // Handle image files - they should always have URL
       if (part.mediaType?.startsWith("image/")) {
+        if (!actualUrl) {
+          return (
+            <FilePreviewCard
+              partId={partId}
+              icon={<AlertCircle className="h-6 w-6 text-red-500" />}
+              fileName={part.name || part.filename || "Unknown image"}
+              subtitle="Image URL not available"
+              url={undefined}
+              storageId={undefined}
+            />
+          );
+        }
+
         const altText = part.name || `Uploaded image ${partIndex + 1}`;
         const isMultipleImages = totalFileParts > 1;
 
@@ -164,7 +220,7 @@ const FilePartRendererComponent = ({
         );
       }
 
-      // Handle all non-image files with the new UI
+      // Handle all non-image files with the new UI (use storageId if no URL)
       return (
         <FilePreviewCard
           partId={partId}
@@ -172,6 +228,7 @@ const FilePartRendererComponent = ({
           fileName={part.name || part.filename || "Document"}
           subtitle="Document"
           url={actualUrl}
+          storageId={part.storageId}
         />
       );
     },
@@ -183,8 +240,8 @@ const FilePartRendererComponent = ({
   const renderedFilePart = useMemo(() => {
     const partId = `${messageId}-file-${partIndex}`;
 
-    // Check if this is a file part with either URL or fileId
-    if (part.url || part.fileId) {
+    // Check if this is a file part with either URL, storageId, or fileId
+    if (part.url || part.storageId || part.fileId) {
       return <ConvexFilePart part={part} partId={partId} />;
     }
 
@@ -196,9 +253,17 @@ const FilePartRendererComponent = ({
         fileName={part.name || part.filename || "Unknown file"}
         subtitle="Document"
         url={part.url}
+        storageId={part.storageId}
       />
     );
-  }, [messageId, partIndex, part.url, part.fileId, FilePreviewCard]);
+  }, [
+    messageId,
+    partIndex,
+    part.url,
+    part.storageId,
+    part.fileId,
+    FilePreviewCard,
+  ]);
 
   return (
     <>
@@ -226,6 +291,7 @@ export const FilePartRenderer = memo(
       prevProps.partIndex === nextProps.partIndex &&
       prevProps.totalFileParts === nextProps.totalFileParts &&
       prevProps.part.url === nextProps.part.url &&
+      prevProps.part.storageId === nextProps.part.storageId &&
       prevProps.part.fileId === nextProps.part.fileId &&
       prevProps.part.name === nextProps.part.name &&
       prevProps.part.filename === nextProps.part.filename &&

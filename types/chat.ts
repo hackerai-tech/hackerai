@@ -83,7 +83,9 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
   fileDetails?: Array<{
     fileId: Id<"files">;
     name: string;
-    url: string | null;
+    mediaType?: string;
+    url?: string | null;
+    storageId?: string;
   }>;
   sourceMessageId?: string;
 };
