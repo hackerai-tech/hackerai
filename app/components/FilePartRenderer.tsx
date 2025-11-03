@@ -1,6 +1,6 @@
 import Image from "next/image";
 import React, { useState, memo, useMemo, useCallback } from "react";
-import { useQuery } from "convex/react";
+import { useConvex } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
 import { AlertCircle, File, Download } from "lucide-react";
@@ -13,17 +13,12 @@ const FilePartRendererComponent = ({
   messageId,
   totalFileParts = 1,
 }: FilePartRendererProps) => {
+  const convex = useConvex();
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
     alt: string;
   } | null>(null);
   const [downloadingFile, setDownloadingFile] = useState(false);
-
-  // Only fetch URL for non-image files that have storageId when needed
-  const downloadUrl = useQuery(
-    api.fileStorage.getFileDownloadUrl,
-    part.storageId && !part.url ? { storageId: part.storageId } : "skip",
-  );
 
   const handleDownload = useCallback(async (url: string, fileName: string) => {
     try {
@@ -57,12 +52,26 @@ const FilePartRendererComponent = ({
         return;
       }
 
-      // If we have storageId, wait for URL to be fetched
-      if (part.storageId && downloadUrl) {
-        await handleDownload(downloadUrl, fileName);
+      // If we have storageId, fetch URL on-demand
+      if (part.storageId) {
+        try {
+          const downloadUrl = await convex.query(
+            api.fileStorage.getFileDownloadUrl,
+            { storageId: part.storageId },
+          );
+
+          if (downloadUrl) {
+            await handleDownload(downloadUrl, fileName);
+          } else {
+            toast.error("Failed to get download URL");
+          }
+        } catch (error) {
+          console.error("Error fetching download URL:", error);
+          toast.error("Failed to download file");
+        }
       }
     },
-    [part.url, part.storageId, downloadUrl, handleDownload],
+    [part.url, part.storageId, convex, handleDownload],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
@@ -108,7 +117,7 @@ const FilePartRendererComponent = ({
           <button
             key={partId}
             onClick={() => handleNonImageFileClick(fileName)}
-            disabled={downloadingFile || (!url && !downloadUrl)}
+            disabled={downloadingFile}
             className="group p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background hover:bg-secondary transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             type="button"
             aria-label={`Download ${fileName}`}
@@ -129,7 +138,7 @@ const FilePartRendererComponent = ({
     };
     PreviewCard.displayName = "FilePreviewCard";
     return PreviewCard;
-  }, [handleNonImageFileClick, downloadingFile, downloadUrl]);
+  }, [handleNonImageFileClick, downloadingFile]);
 
   // Memoize ConvexFilePart to prevent unnecessary re-renders
   const ConvexFilePart = memo(
