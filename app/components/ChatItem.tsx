@@ -56,6 +56,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setChatSidebarOpen,
     initializeNewChat,
     initializeChat,
+    chatTitle: globalChatTitle,
+    currentChatId,
   } = useGlobalState();
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
@@ -63,6 +65,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   // Check if this chat is currently active based on URL
   const isCurrentlyActive = window.location.pathname === `/c/${id}`;
+  
+  // Use global state title for current chat to show real-time updates
+  const isCurrentChat = currentChatId === id;
+  const displayTitle = isCurrentChat && globalChatTitle ? globalChatTitle : title;
 
   const handleClick = () => {
     // Don't navigate if dialog is open or dropdown is open
@@ -123,7 +129,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     e.stopPropagation();
     // Close dropdown first, then open dialog with a small delay to avoid focus conflicts
     setIsDropdownOpen(false);
-    setEditTitle(title); // Set the current title when opening dialog
+    setEditTitle(displayTitle); // Set the current title when opening dialog
 
     // Small delay to ensure dropdown is fully closed before opening dialog
     setTimeout(() => {
@@ -135,9 +141,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
     const trimmedTitle = editTitle.trim();
 
     // Don't save if title is empty or unchanged
-    if (!trimmedTitle || trimmedTitle === title) {
+    if (!trimmedTitle || trimmedTitle === displayTitle) {
       setShowRenameDialog(false);
-      setEditTitle(title); // Reset to original title
+      setEditTitle(displayTitle); // Reset to original title
       return;
     }
 
@@ -147,7 +153,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       setShowRenameDialog(false);
     } catch (error) {
       console.error("Failed to rename chat:", error);
-      setEditTitle(title); // Reset to original title on error
+      setEditTitle(displayTitle); // Reset to original title on error
     } finally {
       setIsRenaming(false);
     }
@@ -155,7 +161,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleCancelRename = () => {
     setShowRenameDialog(false);
-    setEditTitle(title); // Reset to original title
+    setEditTitle(displayTitle); // Reset to original title
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
@@ -189,10 +195,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
       onMouseLeave={() => setIsHovered(false)}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
-      title={title}
+      title={displayTitle}
       role="button"
       tabIndex={0}
-      aria-label={`Open chat: ${title}`}
+      aria-label={`Open chat: ${displayTitle}`}
     >
       <div
         className={`mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium ${
@@ -215,7 +221,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               </Tooltip>
             </TooltipProvider>
           )}
-          {title}
+          {displayTitle}
         </span>
       </div>
 
