@@ -2,7 +2,7 @@ import { RefObject, useEffect, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
-import type { ChatMessage } from "@/types";
+import type { ChatMessage, ChatStatus } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
@@ -24,6 +24,7 @@ interface UseChatHandlersProps {
   ) => void;
   isExistingChat: boolean;
   activateChatLocally: () => void;
+  status: ChatStatus;
 }
 
 export const useChatHandlers = ({
@@ -36,6 +37,7 @@ export const useChatHandlers = ({
   setMessages,
   isExistingChat,
   activateChatLocally,
+  status,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -51,6 +53,9 @@ export const useChatHandlers = ({
     isUploadingFiles,
     subscription,
     temporaryChatsEnabled,
+    queueMessage,
+    messageQueue,
+    removeQueuedMessage,
   } = useGlobalState();
 
   // Avoid stale closure on temporary flag
@@ -81,6 +86,23 @@ export const useChatHandlers = ({
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
+      // If streaming in Agent mode, queue the message instead of sending
+      if (status === "streaming" && chatMode === "agent") {
+        const validFiles = uploadedFiles.filter(
+          (file) => file.uploaded && file.url && file.fileId,
+        );
+        queueMessage(
+          input,
+          validFiles.map((f) => ({
+            file: f.file,
+            fileId: f.fileId!,
+            url: f.url!,
+          })),
+        );
+        clearInput();
+        clearUploadedFiles();
+        return;
+      }
       // Check token limit before sending based on user plan
       const tokenCount = countInputTokens(input, uploadedFiles);
       const maxTokens = getMaxTokensForSubscription(subscription);
@@ -355,11 +377,71 @@ export const useChatHandlers = ({
     }
   };
 
+  const handleSendNow = async (messageId: string) => {
+    const message = messageQueue.find((m) => m.id === messageId);
+    if (!message) return;
+
+    // Stop current stream first
+    await handleStop();
+
+    // Remove the message from queue
+    removeQueuedMessage(messageId);
+
+    // Wait for status to become ready before sending
+    // This will be handled by a polling mechanism
+    const waitForReady = new Promise<void>((resolve) => {
+      const checkInterval = setInterval(() => {
+        if (status === "ready") {
+          clearInterval(checkInterval);
+          resolve();
+        }
+      }, 100);
+
+      // Timeout after 5 seconds
+      setTimeout(() => {
+        clearInterval(checkInterval);
+        resolve();
+      }, 5000);
+    });
+
+    await waitForReady();
+
+    // Now send the message
+    const validFiles = message.files || [];
+    try {
+      sendMessage(
+        {
+          text: message.text || undefined,
+          files:
+            validFiles.length > 0
+              ? validFiles.map((f) => ({
+                  type: "file" as const,
+                  filename: f.file.name,
+                  mediaType: f.file.type,
+                  url: f.url,
+                  fileId: f.fileId,
+                }))
+              : undefined,
+        },
+        {
+          body: {
+            mode: chatMode,
+            todos,
+            temporary: temporaryChatsEnabled,
+          },
+        },
+      );
+    } catch (error) {
+      console.error("Failed to send queued message:", error);
+    }
+  };
+
   return {
     handleSubmit,
     handleStop,
     handleRegenerate,
     handleRetry,
     handleEditMessage,
+    handleSendNow,
   };
 };
