@@ -19,7 +19,6 @@ import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
-import { getAIHeaders } from "@/lib/actions";
 import { NextRequest } from "next/server";
 import {
   handleInitialChatAndUserMessage,
@@ -345,7 +344,6 @@ export const createChatHandler = () => {
                 },
               },
             },
-            headers: getAIHeaders(),
             experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(mode === "ask" ? 5 : 20),
             onChunk: async (chunk) => {
