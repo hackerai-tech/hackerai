@@ -57,6 +57,7 @@ interface ChatInputProps {
   hideStop?: boolean;
   isNewChat?: boolean;
   clearDraftOnSubmit?: boolean;
+  chatId?: string;
   rateLimitWarning?: {
     remaining: number;
     resetTime: Date;
@@ -77,6 +78,7 @@ export const ChatInput = ({
   hideStop = false,
   isNewChat = false,
   clearDraftOnSubmit = true,
+  chatId,
   rateLimitWarning,
   onDismissRateLimitWarning,
 }: ChatInputProps) => {
@@ -100,6 +102,9 @@ export const ChatInput = ({
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isGenerating = status === "submitted" || status === "streaming";
+
+  // Compute draft ID: use chatId if available, otherwise use NULL_THREAD_DRAFT_ID for new chats
+  const draftId = chatId || NULL_THREAD_DRAFT_ID;
 
   // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
   useEffect(() => {
@@ -132,9 +137,9 @@ export const ChatInput = ({
       (input.trim() || uploadedFiles.length > 0)
     ) {
       onSubmit(e);
-      if (isNewChat && clearDraftOnSubmit) {
+      if (clearDraftOnSubmit) {
         // Remove draft immediately and clear input on next tick to avoid race with onSubmit
-        removeDraft(NULL_THREAD_DRAFT_ID);
+        removeDraft(draftId);
         setTimeout(() => setInput(""), 0);
       }
     }
@@ -157,26 +162,29 @@ export const ChatInput = ({
     [isGenerating, onStop],
   );
 
-  // Load initial draft for new (non-id) chats
+  // Load draft when draftId changes (chat switch or mount)
   useEffect(() => {
-    if (!isNewChat) return;
-    const content = getDraftContentById(NULL_THREAD_DRAFT_ID);
-    if (content && !input) setInput(content);
-  }, [isNewChat]);
+    const content = getDraftContentById(draftId);
+    // Only restore if input is empty to avoid overwriting user's current typing
+    if (content && !input) {
+      setInput(content);
+    }
+  }, [draftId, setInput]);
 
-  // Persist draft as user types for new (non-id) chats
+  // Auto-save draft as user types with 500ms debounce
   useEffect(() => {
-    if (!isNewChat) return;
     const handle = window.setTimeout(() => {
-      if (input) {
-        upsertDraft(NULL_THREAD_DRAFT_ID, input);
+      if (input.trim()) {
+        // Save draft if there's content
+        upsertDraft(draftId, input);
       } else {
-        removeDraft(NULL_THREAD_DRAFT_ID);
+        // Remove draft if input is cleared
+        removeDraft(draftId);
       }
-    }, 600);
+    }, 500); // Changed from 600ms to 500ms as per issue requirements
 
     return () => window.clearTimeout(handle);
-  }, [input, isNewChat]);
+  }, [input, draftId]);
 
   // Handle paste events for file uploads and token validation
   useEffect(() => {

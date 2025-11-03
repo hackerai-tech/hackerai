@@ -578,6 +578,7 @@ export const Chat = ({
                               isAtBottom={isAtBottom}
                               onScrollToBottom={handleScrollToBottom}
                               isNewChat={!isExistingChat}
+                              chatId={chatId}
                               rateLimitWarning={
                                 rateLimitWarning ? rateLimitWarning : undefined
                               }
@@ -609,6 +610,7 @@ export const Chat = ({
                       isAtBottom={isAtBottom}
                       onScrollToBottom={handleScrollToBottom}
                       isNewChat={!isExistingChat}
+                      chatId={chatId}
                       rateLimitWarning={
                         rateLimitWarning ? rateLimitWarning : undefined
                       }
