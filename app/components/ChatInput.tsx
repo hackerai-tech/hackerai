@@ -165,10 +165,9 @@ export const ChatInput = ({
   // Load draft when draftId changes (chat switch or mount)
   useEffect(() => {
     const content = getDraftContentById(draftId);
-    // Only restore if input is empty to avoid overwriting user's current typing
-    if (content && !input) {
-      setInput(content);
-    }
+    // Always restore draft when switching chats (when draftId changes)
+    // This ensures each chat loads its own draft content
+    setInput(content || "");
   }, [draftId, setInput]);
 
   // Auto-save draft as user types with 500ms debounce
