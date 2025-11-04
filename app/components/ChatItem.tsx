@@ -29,6 +29,7 @@ import {
 import { Ellipsis, Trash2, Edit2, Split } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import { removeDraft } from "@/lib/utils/client-storage";
 
 interface ChatItemProps {
   id: string;
@@ -104,6 +105,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
     try {
       await deleteChat({ chatId: id });
 
+      // Remove draft from localStorage immediately after successful deletion
+      removeDraft(id);
+
       // If we're deleting the currently active chat, navigate to home
       if (isCurrentlyActive) {
         initializeNewChat();
@@ -113,6 +117,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
       // Treat not found as success, and swallow other errors to avoid user noise
       const message = String(error?.message || error);
       if (message.includes("Chat not found")) {
+        // Even if chat not found in DB, still clean up draft
+        removeDraft(id);
         if (isCurrentlyActive) {
           initializeNewChat();
           router.push("/");
