@@ -103,8 +103,10 @@ export const ChatInput = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isGenerating = status === "submitted" || status === "streaming";
 
-  // Compute draft ID: use chatId if available, otherwise use NULL_THREAD_DRAFT_ID for new chats
-  const draftId = chatId || NULL_THREAD_DRAFT_ID;
+  // Compute draft ID:
+  // - For new chats (no messages yet): use "new" key so draft is preserved when navigating
+  // - For existing chats or chats with messages: use chatId for chat-specific drafts
+  const draftId = isNewChat ? "new" : (chatId || NULL_THREAD_DRAFT_ID);
 
   // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
   useEffect(() => {

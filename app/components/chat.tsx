@@ -30,6 +30,7 @@ import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
+import { removeDraft } from "@/lib/utils/client-storage";
 
 export const Chat = ({
   chatId: routeChatId,
@@ -246,6 +247,8 @@ export const Chat = ({
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
       if (!isExistingChatRef.current && !isTemporaryChat) {
         setIsExistingChat(true);
+        // Clear the "new" draft when transitioning from new chat to existing chat
+        removeDraft("new");
       }
     },
     onError: (error) => {
