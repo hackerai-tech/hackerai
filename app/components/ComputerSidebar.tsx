@@ -1,8 +1,8 @@
 import React from "react";
 import { Minimize2, Edit, Terminal, Code2 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useProcessContext } from "../contexts/ProcessContext";
+import { useTerminalProcess } from "../contexts/useTerminalProcess";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
@@ -19,8 +19,17 @@ import {
 
 export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
-  const { registerProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
   const [isWrapped, setIsWrapped] = useState(true);
+
+  // Handle terminal process state (registration, status, kill)
+  const terminalData = sidebarContent && isSidebarTerminal(sidebarContent)
+    ? {
+        isBackground: sidebarContent.isBackground,
+        pid: sidebarContent.pid,
+        command: sidebarContent.command,
+      }
+    : null;
+  const { isRunning, isKilling, handleKill, statusBadge } = useTerminalProcess(terminalData);
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -120,21 +129,6 @@ export const ComputerSidebar: React.FC = () => {
     return "";
   };
 
-  // Register background processes for tracking (only once per PID)
-  useEffect(() => {
-    if (
-      sidebarContent &&
-      isSidebarTerminal(sidebarContent) &&
-      sidebarContent.isBackground &&
-      sidebarContent.pid &&
-      sidebarContent.command
-    ) {
-      registerProcess(sidebarContent.pid, sidebarContent.command);
-    }
-    // Only depend on PID change, not on sidebarContent or registerProcess
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sidebarContent?.pid]);
-
   // Early return after all hooks are called
   if (!sidebarOpen || !sidebarContent) {
     return null;
@@ -144,16 +138,6 @@ export const ComputerSidebar: React.FC = () => {
   const isFile = isSidebarFile(sidebarContent);
   const isTerminal = isSidebarTerminal(sidebarContent);
   const isPython = isSidebarPython(sidebarContent);
-
-  // Get PID for terminal commands
-  const pid = isTerminal && sidebarContent.isBackground && sidebarContent.pid
-    ? sidebarContent.pid
-    : null;
-
-  const handleKillProcess = async () => {
-    if (!pid) return;
-    await killProcess(pid);
-  };
 
   const handleClose = () => {
     closeSidebar();
@@ -217,29 +201,29 @@ export const ComputerSidebar: React.FC = () => {
                     </span>
                   </div>
                   {/* Status badge for background processes */}
-                  {isTerminal && sidebarContent.isBackground && pid && isProcessRunning(pid) && (
+                  {statusBadge === "running" && (
                     <>
                       <span className="flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-600 dark:text-green-400 flex-shrink-0">
                         <span className="w-1.5 h-1.5 rounded-full bg-green-600 dark:bg-green-400 animate-pulse"></span>
-                        {isProcessKilling(pid) ? "Killing..." : "Running"}
+                        {isKilling ? "Killing..." : "Running"}
                       </span>
                       <span
-                        onClick={handleKillProcess}
+                        onClick={handleKill}
                         className={`w-4 h-4 bg-red-500 hover:bg-red-600 rounded-sm flex items-center justify-center transition-all cursor-pointer ${
-                          isProcessKilling(pid) ? "opacity-50 cursor-not-allowed" : ""
+                          isKilling ? "opacity-50 cursor-not-allowed" : ""
                         }`}
-                        title={isProcessKilling(pid) ? "Killing process..." : "Kill process"}
+                        title={isKilling ? "Killing process..." : "Kill process"}
                         role="button"
-                        aria-label={isProcessKilling(pid) ? "Killing process..." : "Kill process"}
+                        aria-label={isKilling ? "Killing process..." : "Kill process"}
                         tabIndex={0}
                         onKeyDown={(e) => {
-                          if ((e.key === "Enter" || e.key === " ") && !isProcessKilling(pid)) {
+                          if ((e.key === "Enter" || e.key === " ") && !isKilling) {
                             e.preventDefault();
-                            handleKillProcess();
+                            handleKill();
                           }
                         }}
                       >
-                        {isProcessKilling(pid) ? (
+                        {isKilling ? (
                           <span className="w-2.5 h-2.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
                         ) : (
                           <span className="text-white text-[10px] font-bold leading-none">×</span>
@@ -338,7 +322,7 @@ export const ComputerSidebar: React.FC = () => {
                           isExecuting={sidebarContent.isExecuting}
                           isBackground={sidebarContent.isBackground}
                           pid={sidebarContent.pid}
-                          isProcessRunning={sidebarContent.pid ? isProcessRunning(sidebarContent.pid) : null}
+                          isProcessRunning={sidebarContent.pid ? isRunning : null}
                           status={
                             sidebarContent.isExecuting ? "streaming" : "ready"
                           }

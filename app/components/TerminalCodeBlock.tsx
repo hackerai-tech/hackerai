@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Terminal } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { ShimmerText } from "./ShimmerText";
+import { getProcessStatusText } from "../contexts/useTerminalProcess";
 
 interface TerminalCodeBlockProps {
   command: string;
@@ -215,14 +216,9 @@ export const TerminalCodeBlock = ({
   // Build terminal content with background process info if applicable
   let terminalContent = `$ ${command}`;
   if (isBackground && pid && variant === "sidebar") {
-    // Show different message based on process status
-    if (isProcessRunning === true) {
-      terminalContent += `\nRunning in background (PID: ${pid})`;
-    } else if (isProcessRunning === false) {
-      terminalContent += `\nCompleted (was PID: ${pid})`;
-    } else {
-      // null means we haven't checked yet
-      terminalContent += `\nRan in background (PID: ${pid})`;
+    const statusText = getProcessStatusText(isProcessRunning, pid);
+    if (statusText) {
+      terminalContent += `\n${statusText}`;
     }
   }
   if (output) {

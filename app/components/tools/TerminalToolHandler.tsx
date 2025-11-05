@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React from "react";
 import { UIMessage } from "@ai-sdk/react";
 import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import { useProcessContext } from "../../contexts/ProcessContext";
+import { useTerminalProcess } from "../../contexts/useTerminalProcess";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 
 interface TerminalToolHandlerProps {
@@ -19,7 +19,6 @@ export const TerminalToolHandler = ({
   status,
 }: TerminalToolHandlerProps) => {
   const { openSidebar } = useGlobalState();
-  const { registerProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
   const { toolCallId, state, input, output, errorText } = part;
   const terminalInput = input as {
     command: string;
@@ -34,14 +33,12 @@ export const TerminalToolHandler = ({
     ? terminalOutput.result.pid
     : null;
 
-  // Register background processes for tracking (only once per PID)
-  useEffect(() => {
-    if (terminalInput?.is_background && pid && terminalInput?.command) {
-      registerProcess(pid, terminalInput.command);
-    }
-    // Only depend on PID change to prevent re-registration on every render
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid]);
+  // Handle terminal process state (registration, status, kill)
+  const { isKilling, handleKill, statusBadge } = useTerminalProcess({
+    isBackground: terminalInput?.is_background,
+    pid: pid,
+    command: terminalInput?.command,
+  });
 
   const handleOpenInSidebar = () => {
     if (!terminalInput?.command) return;
@@ -89,20 +86,8 @@ export const TerminalToolHandler = ({
     }
   };
 
-  const handleKillProcess = async () => {
-    if (!pid) return;
-    await killProcess(pid);
-  };
-
   // Format command display
   const commandDisplay = terminalInput?.command || "";
-
-  // Determine status badge based on process running state from context
-  const processRunning = pid ? isProcessRunning(pid) : false;
-  const processKilling = pid ? isProcessKilling(pid) : false;
-  const statusBadge = terminalInput?.is_background && pid && processRunning
-    ? ("running" as const)
-    : null;
 
   switch (state) {
     case "input-streaming":
@@ -126,8 +111,8 @@ export const TerminalToolHandler = ({
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
           statusBadge={statusBadge}
-          onKill={statusBadge === "running" ? handleKillProcess : undefined}
-          isKilling={processKilling}
+          onKill={statusBadge === "running" ? handleKill : undefined}
+          isKilling={isKilling}
         />
       );
     case "output-available":
@@ -141,8 +126,8 @@ export const TerminalToolHandler = ({
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
           statusBadge={statusBadge}
-          onKill={statusBadge === "running" ? handleKillProcess : undefined}
-          isKilling={processKilling}
+          onKill={statusBadge === "running" ? handleKill : undefined}
+          isKilling={isKilling}
         />
       );
     case "output-error":
@@ -156,8 +141,8 @@ export const TerminalToolHandler = ({
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
           statusBadge={statusBadge}
-          onKill={statusBadge === "running" ? handleKillProcess : undefined}
-          isKilling={processKilling}
+          onKill={statusBadge === "running" ? handleKill : undefined}
+          isKilling={isKilling}
         />
       );
     default:
