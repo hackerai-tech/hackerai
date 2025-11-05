@@ -30,7 +30,7 @@ interface ProcessContextType {
 
 const ProcessContext = createContext<ProcessContextType | undefined>(undefined);
 
-const POLL_INTERVAL = 5000; // 5 seconds
+const POLL_INTERVAL = 1000; // 1 second
 
 export function ProcessProvider({ children }: { children: React.ReactNode }) {
   const [processes, setProcesses] = useState<Map<number, TrackedProcess>>(
