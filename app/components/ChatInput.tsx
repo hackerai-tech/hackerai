@@ -137,12 +137,16 @@ export const ChatInput = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Allow submission if there's text input or files attached, and no files are uploading
-    if (
-      status === "ready" &&
-      !isUploadingFiles &&
-      (input.trim() || uploadedFiles.length > 0)
-    ) {
+    // Allow submission if:
+    // - (status is ready) OR (status is streaming AND in agent mode for queueing)
+    // - files are not uploading
+    // - there's text input or files attached
+    const canSubmit =
+      ((status === "ready" || (status === "streaming" && chatMode === "agent")) &&
+        !isUploadingFiles &&
+        (input.trim() || uploadedFiles.length > 0));
+
+    if (canSubmit) {
       onSubmit(e);
       if (clearDraftOnSubmit) {
         // Remove draft immediately and clear input on next tick to avoid race with onSubmit
@@ -218,7 +222,7 @@ export const ChatInput = ({
           }
         }
 
-        const filesProcessed = await handlePasteEvent(e);
+        await handlePasteEvent(e);
         // If files were processed, the event.preventDefault() is already called
         // in handlePasteEvent, so no additional action needed here
       }
@@ -381,18 +385,68 @@ export const ChatInput = ({
               </DropdownMenu>
             </div>
             <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
-              {isGenerating && !hideStop ? (
+              {isGenerating && !hideStop && chatMode === "agent" ? (
+                // Agent mode during streaming: show both stop button and submit button
+                <>
+                  <TooltipPrimitive.Root>
+                    <TooltipTrigger asChild>
+                      <Button
+                        type="button"
+                        onClick={onStop}
+                        variant="ghost"
+                        className="rounded-full p-0 w-8 h-8 min-w-0 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
+                        aria-label="Stop generation"
+                      >
+                        <Square
+                          className="w-[15px] h-[15px]"
+                          fill="currentColor"
+                        />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Stop (⌃C)</p>
+                    </TooltipContent>
+                  </TooltipPrimitive.Root>
+                  <form onSubmit={handleSubmit}>
+                    <TooltipPrimitive.Root>
+                      <TooltipTrigger asChild>
+                        <div className="inline-block">
+                          <Button
+                            type="submit"
+                            disabled={
+                              status === "submitted" ||
+                              isUploadingFiles ||
+                              (!input.trim() && uploadedFiles.length === 0)
+                            }
+                            variant="default"
+                            className="rounded-full p-0 w-8 h-8 min-w-0 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
+                            aria-label="Queue message"
+                          >
+                            <ArrowUp size={15} strokeWidth={3} />
+                          </Button>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>
+                          {uploadedFiles.some((f) => f.error)
+                            ? "Remove failed files to queue"
+                            : isUploadingFiles
+                              ? "File upload pending"
+                              : "Queue message (⏎)"}
+                        </p>
+                      </TooltipContent>
+                    </TooltipPrimitive.Root>
+                  </form>
+                </>
+              ) : isGenerating && !hideStop ? (
+                // Ask mode: show only stop button during streaming
                 <TooltipPrimitive.Root>
                   <TooltipTrigger asChild>
                     <Button
                       type="button"
                       onClick={onStop}
                       variant="ghost"
-                      className={`rounded-full p-0 w-8 h-8 min-w-0 ${
-                        chatMode === "agent"
-                          ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
-                          : "bg-muted hover:bg-muted/70 text-foreground"
-                      }`}
+                      className="rounded-full p-0 w-8 h-8 min-w-0 bg-muted hover:bg-muted/70 text-foreground"
                       aria-label="Stop generation"
                     >
                       <Square
@@ -406,6 +460,7 @@ export const ChatInput = ({
                   </TooltipContent>
                 </TooltipPrimitive.Root>
               ) : (
+                // Not streaming: show only submit button
                 <form onSubmit={handleSubmit}>
                   <TooltipPrimitive.Root>
                     <TooltipTrigger asChild>
