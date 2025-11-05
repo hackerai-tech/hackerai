@@ -22,12 +22,16 @@ export interface TrackedProcess {
 
 interface ProcessContextType {
   processes: Map<number, TrackedProcess>;
-  addProcess: (pid: number, command: string) => void;
-  removeProcess: (pid: number) => void;
-  getProcess: (pid: number) => TrackedProcess | undefined;
+  // Core process management
+  registerProcess: (pid: number, command: string, maxAgeMs?: number) => void;
+  // Process state queries
   isProcessRunning: (pid: number) => boolean;
   isProcessKilling: (pid: number) => boolean;
+  // Process actions
   killProcess: (pid: number) => Promise<boolean>;
+  // Internal (exposed for edge cases)
+  removeProcess: (pid: number) => void;
+  getProcess: (pid: number) => TrackedProcess | undefined;
   refreshProcesses: () => Promise<void>;
 }
 
@@ -134,18 +138,44 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
     }
   }, [processes]);
 
-  const addProcess = useCallback((pid: number, command: string) => {
-    setProcesses((prev) => {
-      const updated = new Map(prev);
-      updated.set(pid, {
-        pid,
-        command,
-        startTime: Date.now(),
-        running: true,
+  const registerProcess = useCallback(
+    (pid: number, command: string, maxAgeMs: number = 20 * 60 * 1000) => {
+      // Validate inputs
+      if (!pid || typeof pid !== "number" || pid <= 0) {
+        console.warn("[Process Context] Invalid PID:", pid);
+        return;
+      }
+
+      if (!command || typeof command !== "string" || !command.trim()) {
+        console.warn("[Process Context] Invalid command:", command);
+        return;
+      }
+
+      // Check if process already registered
+      const existing = processes.get(pid);
+      if (existing) {
+        // Already tracking this process
+        return;
+      }
+
+      // Don't track very old processes (likely timed out on E2B)
+      const now = Date.now();
+
+      setProcesses((prev) => {
+        const updated = new Map(prev);
+        updated.set(pid, {
+          pid,
+          command: command.trim(),
+          startTime: now,
+          running: true,
+        });
+        return updated;
       });
-      return updated;
-    });
-  }, []);
+
+      console.log(`[Process Context] Registered process ${pid}: ${command.slice(0, 50)}...`);
+    },
+    [processes],
+  );
 
   const removeProcess = useCallback((pid: number) => {
     setProcesses((prev) => {
@@ -253,7 +283,7 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
 
   const value: ProcessContextType = {
     processes,
-    addProcess,
+    registerProcess,
     removeProcess,
     getProcess,
     isProcessRunning,

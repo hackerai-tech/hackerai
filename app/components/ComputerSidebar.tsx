@@ -19,7 +19,7 @@ import {
 
 export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
-  const { addProcess, getProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
+  const { registerProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
   const [isWrapped, setIsWrapped] = useState(true);
 
   const getLanguageFromPath = (filePath: string): string => {
@@ -120,21 +120,18 @@ export const ComputerSidebar: React.FC = () => {
     return "";
   };
 
-  // Add background processes to the shared context for tracking
+  // Register background processes for tracking
   useEffect(() => {
     if (
-      !sidebarContent ||
-      !isSidebarTerminal(sidebarContent) ||
-      !sidebarContent.isBackground ||
-      !sidebarContent.pid ||
-      !sidebarContent.command
+      sidebarContent &&
+      isSidebarTerminal(sidebarContent) &&
+      sidebarContent.isBackground &&
+      sidebarContent.pid &&
+      sidebarContent.command
     ) {
-      return;
+      registerProcess(sidebarContent.pid, sidebarContent.command);
     }
-
-    // Add process to shared context (will be polled automatically)
-    addProcess(sidebarContent.pid, sidebarContent.command);
-  }, [sidebarContent, addProcess]);
+  }, [sidebarContent, registerProcess]);
 
   // Early return after all hooks are called
   if (!sidebarOpen || !sidebarContent) {

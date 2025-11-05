@@ -19,7 +19,7 @@ export const TerminalToolHandler = ({
   status,
 }: TerminalToolHandlerProps) => {
   const { openSidebar } = useGlobalState();
-  const { addProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
+  const { registerProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
   const { toolCallId, state, input, output, errorText } = part;
   const terminalInput = input as {
     command: string;
@@ -34,25 +34,12 @@ export const TerminalToolHandler = ({
     ? terminalOutput.result.pid
     : null;
 
-  // Add background processes to the shared context for tracking
+  // Register background processes for tracking
   useEffect(() => {
-    if (!terminalInput?.is_background || !pid || !terminalInput?.command) {
-      return;
+    if (terminalInput?.is_background && pid && terminalInput?.command) {
+      registerProcess(pid, terminalInput.command);
     }
-
-    // Get message creation timestamp
-    const messageTimestamp = (message as any).createdAt ? new Date((message as any).createdAt).getTime() : Date.now();
-    const MAX_PROCESS_AGE = 20 * 60 * 1000; // Don't track processes older than 20 minutes
-
-    // Don't track if message is too old (process would have timed out on E2B)
-    const messageAge = Date.now() - messageTimestamp;
-    if (messageAge > MAX_PROCESS_AGE) {
-      return;
-    }
-
-    // Add process to shared context (will be polled automatically)
-    addProcess(pid, terminalInput.command);
-  }, [pid, terminalInput?.is_background, terminalInput?.command, message, addProcess]);
+  }, [pid, terminalInput?.is_background, terminalInput?.command, registerProcess]);
 
   const handleOpenInSidebar = () => {
     if (!terminalInput?.command) return;
