@@ -142,6 +142,8 @@ export const Chat = ({
 
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
+  // Ref to track when "Send Now" is actively processing to prevent auto-processing interference
+  const isSendingNowRef = useRef(false);
 
   const {
     messages,
@@ -400,6 +402,7 @@ export const Chat = ({
       status === "ready" &&
       messageQueue.length > 0 &&
       !isProcessingQueue &&
+      !isSendingNowRef.current && // Don't auto-process if "Send Now" is active
       chatMode === "agent"
     ) {
       setIsProcessingQueue(true);
@@ -409,7 +412,7 @@ export const Chat = ({
         // Send the message with files if available
         sendMessage(
           {
-            text: nextMessage.text || undefined,
+            text: nextMessage.text,
             files: nextMessage.files
               ? nextMessage.files.map((f) => ({
                   type: "file" as const,
@@ -443,21 +446,27 @@ export const Chat = ({
     temporaryChatsEnabledRef,
   ]);
 
+  // Keep a ref to the latest messageQueue to avoid stale closures
+  const messageQueueRef = useRef(messageQueue);
+  useEffect(() => {
+    messageQueueRef.current = messageQueue;
+  }, [messageQueue]);
+
   // Clear queue when switching from Agent to Ask mode
   useEffect(() => {
-    if (chatMode === "ask" && messageQueue.length > 0) {
+    if (chatMode === "ask" && messageQueueRef.current.length > 0) {
       clearQueue();
     }
-  }, [chatMode, messageQueue.length, clearQueue]);
+  }, [chatMode, clearQueue]);
 
   // Clear queue when navigating to a different chat
   useEffect(() => {
     return () => {
-      if (messageQueue.length > 0) {
+      if (messageQueueRef.current.length > 0) {
         clearQueue();
       }
     };
-  }, [chatId, messageQueue.length, clearQueue]);
+  }, [chatId, clearQueue]);
 
   // Document-level drag and drop listeners encapsulated in a hook
   useDocumentDragAndDrop({
@@ -489,6 +498,7 @@ export const Chat = ({
       setAwaitingServerChat(true);
     },
     status,
+    isSendingNowRef,
   });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });

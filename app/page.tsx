@@ -49,6 +49,7 @@ const UnauthenticatedContent = () => {
               <ChatInput
                 onSubmit={handleSubmit}
                 onStop={handleStop}
+                onSendNow={() => {}}
                 status="ready"
                 isCentered={true}
                 isNewChat={true}

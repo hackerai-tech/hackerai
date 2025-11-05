@@ -25,6 +25,7 @@ interface UseChatHandlersProps {
   isExistingChat: boolean;
   activateChatLocally: () => void;
   status: ChatStatus;
+  isSendingNowRef: RefObject<boolean>;
 }
 
 export const useChatHandlers = ({
@@ -38,6 +39,7 @@ export const useChatHandlers = ({
   isExistingChat,
   activateChatLocally,
   status,
+  isSendingNowRef,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -56,6 +58,7 @@ export const useChatHandlers = ({
     queueMessage,
     messageQueue,
     removeQueuedMessage,
+    clearQueue,
   } = useGlobalState();
 
   // Avoid stale closure on temporary flag
@@ -178,6 +181,11 @@ export const useChatHandlers = ({
 
     // Stop the stream immediately (client-side abort)
     stop();
+
+    // Clear any queued messages in Agent mode
+    if (chatMode === "agent" && messageQueue.length > 0) {
+      clearQueue();
+    }
 
     if (!temporaryChatsEnabled) {
       // Cancel the stream in database first (sets canceled_at for backend detection)
@@ -381,58 +389,92 @@ export const useChatHandlers = ({
     const message = messageQueue.find((m) => m.id === messageId);
     if (!message) return;
 
-    // Stop current stream first
-    await handleStop();
+    // Set flag to prevent auto-processing from interfering
+    isSendingNowRef.current = true;
 
-    // Remove the message from queue
-    removeQueuedMessage(messageId);
+    try {
+      // Remove the message from queue FIRST (before stopping)
+      removeQueuedMessage(messageId);
 
-    // Wait for status to become ready before sending
-    // This will be handled by a polling mechanism
-    const waitForReady = new Promise<void>((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (status === "ready") {
+      // Stop the stream - replicate handleStop logic but WITHOUT clearing the queue
+      setIsAutoResuming(false);
+      stop(); // Client-side abort
+
+      // Cancel stream in database
+      if (!temporaryChatsEnabled) {
+        cancelStreamMutation({ chatId }).catch((error) => {
+          console.error("Failed to cancel stream:", error);
+        });
+
+        // Save the current message state immediately
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.role === "assistant") {
+          saveAssistantMessage({
+            id: lastMessage.id,
+            chatId,
+            role: lastMessage.role,
+            parts: lastMessage.parts,
+          }).catch((error) => {
+            console.error("Failed to save message on stop:", error);
+          });
+        }
+      } else {
+        // Temporary chats: signal cancel via temp stream coordination
+        cancelTempStreamMutation({ chatId }).catch(() => {});
+      }
+
+      // Wait for status to become ready before sending
+      const waitForReady = new Promise<void>((resolve) => {
+        const checkInterval = setInterval(() => {
+          if (status === "ready") {
+            clearInterval(checkInterval);
+            resolve();
+          }
+        }, 100);
+
+        // Timeout after 5 seconds
+        setTimeout(() => {
           clearInterval(checkInterval);
           resolve();
-        }
-      }, 100);
+        }, 5000);
+      });
 
-      // Timeout after 5 seconds
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        resolve();
-      }, 5000);
-    });
+      await waitForReady;
 
-    await waitForReady();
+      // Now send the message
+      const validFiles = message.files || [];
+      const messagePayload: any = {};
 
-    // Now send the message
-    const validFiles = message.files || [];
-    try {
-      sendMessage(
-        {
-          text: message.text || undefined,
-          files:
-            validFiles.length > 0
-              ? validFiles.map((f) => ({
-                  type: "file" as const,
-                  filename: f.file.name,
-                  mediaType: f.file.type,
-                  url: f.url,
-                  fileId: f.fileId,
-                }))
-              : undefined,
+      // Only add text if it exists
+      if (message.text) {
+        messagePayload.text = message.text;
+      }
+
+      // Only add files if they exist
+      if (validFiles.length > 0) {
+        messagePayload.files = validFiles.map((f) => ({
+          type: "file" as const,
+          filename: f.file.name,
+          mediaType: f.file.type,
+          url: f.url,
+          fileId: f.fileId,
+        }));
+      }
+
+      sendMessage(messagePayload, {
+        body: {
+          mode: chatMode,
+          todos,
+          temporary: temporaryChatsEnabled,
         },
-        {
-          body: {
-            mode: chatMode,
-            todos,
-            temporary: temporaryChatsEnabled,
-          },
-        },
-      );
+      });
     } catch (error) {
       console.error("Failed to send queued message:", error);
+    } finally {
+      // Clear flag after a brief delay to allow status to change
+      setTimeout(() => {
+        isSendingNowRef.current = false;
+      }, 200);
     }
   };
 
