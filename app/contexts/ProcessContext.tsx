@@ -30,7 +30,8 @@ interface ProcessContextType {
 
 const ProcessContext = createContext<ProcessContextType | undefined>(undefined);
 
-const POLL_INTERVAL = 1000; // 1 second
+const POLL_INTERVAL = 5000; // 5 seconds
+const POLL_TIMEOUT = 5000; // 5 seconds timeout
 
 export function ProcessProvider({ children }: { children: React.ReactNode }) {
   const [processes, setProcesses] = useState<Map<number, TrackedProcess>>(
@@ -56,6 +57,10 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
+      // Create abort controller for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), POLL_TIMEOUT);
+
       const response = await fetch("/api/check-processes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -65,7 +70,10 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
             command: p.command,
           })),
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (response.ok) {
         const data = await response.json();
@@ -112,7 +120,12 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
         });
       }
     } catch (error) {
-      console.error("[Process Context] Error checking processes:", error);
+      // Ignore abort errors (timeout is expected behavior)
+      if (error instanceof Error && error.name === "AbortError") {
+        console.warn("[Process Context] Process check timed out after 5s");
+      } else {
+        console.error("[Process Context] Error checking processes:", error);
+      }
     } finally {
       isPollingRef.current = false;
     }
