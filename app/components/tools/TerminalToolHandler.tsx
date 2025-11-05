@@ -19,7 +19,7 @@ export const TerminalToolHandler = ({
   status,
 }: TerminalToolHandlerProps) => {
   const { openSidebar } = useGlobalState();
-  const { addProcess, isProcessRunning } = useProcessContext();
+  const { addProcess, isProcessRunning, refreshProcesses } = useProcessContext();
   const { toolCallId, state, input, output, errorText } = part;
   const terminalInput = input as {
     command: string;
@@ -117,7 +117,8 @@ export const TerminalToolHandler = ({
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
-          // Process status will be updated by the context's polling
+          // Immediately refresh process status instead of waiting for next poll
+          await refreshProcesses();
         }
       }
     } catch (error) {

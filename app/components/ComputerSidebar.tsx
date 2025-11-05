@@ -19,7 +19,7 @@ import {
 
 export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
-  const { addProcess, getProcess, isProcessRunning } = useProcessContext();
+  const { addProcess, getProcess, isProcessRunning, refreshProcesses } = useProcessContext();
   const [isWrapped, setIsWrapped] = useState(true);
   const [isKilling, setIsKilling] = useState(false);
 
@@ -167,7 +167,8 @@ export const ComputerSidebar: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
-          // Process will be updated by the context's polling
+          // Immediately refresh process status instead of waiting for next poll
+          await refreshProcesses();
         }
       }
     } catch (error) {
