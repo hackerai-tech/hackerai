@@ -11,6 +11,8 @@ interface TerminalCodeBlockProps {
   isExecuting?: boolean;
   status?: "ready" | "submitted" | "streaming" | "error";
   isBackground?: boolean;
+  pid?: number | null;
+  isProcessRunning?: boolean | null;
   variant?: "default" | "sidebar";
   wrap?: boolean;
 }
@@ -198,6 +200,8 @@ export const TerminalCodeBlock = ({
   isExecuting = false,
   status,
   isBackground = false,
+  pid = null,
+  isProcessRunning = null,
   variant = "default",
   wrap = false,
 }: TerminalCodeBlockProps) => {
@@ -208,8 +212,23 @@ export const TerminalCodeBlock = ({
     setIsWrapped(wrap);
   }, [wrap]);
 
-  // Combine command and output for full terminal session
-  const terminalContent = output ? `$ ${command}\n${output}` : `$ ${command}`;
+  // Build terminal content with background process info if applicable
+  let terminalContent = `$ ${command}`;
+  if (isBackground && pid && variant === "sidebar") {
+    // Show different message based on process status
+    if (isProcessRunning === true) {
+      terminalContent += `\nRunning in background (PID: ${pid})`;
+    } else if (isProcessRunning === false) {
+      terminalContent += `\nCompleted (was PID: ${pid})`;
+    } else {
+      // null means we haven't checked yet
+      terminalContent += `\nRan in background (PID: ${pid})`;
+    }
+  }
+  if (output) {
+    terminalContent += `\n${output}`;
+  }
+
   const displayContent = output || "";
 
   // For non-sidebar variant, keep the original terminal look

@@ -24,7 +24,7 @@ export const TerminalToolHandler = ({
     is_background: boolean;
   };
   const terminalOutput = output as {
-    result: CommandResult & { output?: string };
+    result: CommandResult & { output?: string; pid?: number };
   };
 
   // State for tracking background process status
@@ -44,7 +44,7 @@ export const TerminalToolHandler = ({
     }
 
     // Get message creation timestamp
-    const messageTimestamp = message.createdAt ? new Date(message.createdAt).getTime() : Date.now();
+    const messageTimestamp = (message as any).createdAt ? new Date((message as any).createdAt).getTime() : Date.now();
     const MAX_PROCESS_AGE = 20 * 60 * 1000; // Don't poll processes older than 20 minutes
 
     // Don't even start polling if message is too old (process would have timed out on E2B)

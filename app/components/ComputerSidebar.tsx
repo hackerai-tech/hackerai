@@ -1,6 +1,6 @@
 import React from "react";
 import { Minimize2, Edit, Terminal, Code2 } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
@@ -20,6 +20,11 @@ export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
   const [isWrapped, setIsWrapped] = useState(true);
 
+  // State for tracking background process status
+  const [isProcessRunning, setIsProcessRunning] = useState<boolean | null>(null);
+  const [isKilling, setIsKilling] = useState(false);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
   if (!sidebarOpen || !sidebarContent) {
     return null;
   }
@@ -27,6 +32,11 @@ export const ComputerSidebar: React.FC = () => {
   const isFile = isSidebarFile(sidebarContent);
   const isTerminal = isSidebarTerminal(sidebarContent);
   const isPython = isSidebarPython(sidebarContent);
+
+  // Get PID for terminal commands
+  const pid = isTerminal && sidebarContent.isBackground && sidebarContent.pid
+    ? sidebarContent.pid
+    : null;
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -81,9 +91,10 @@ export const ComputerSidebar: React.FC = () => {
       };
       return actionMap[sidebarContent.action || "reading"];
     } else if (isTerminal) {
-      return sidebarContent.isExecuting
+      const baseText = sidebarContent.isExecuting
         ? "Executing command"
         : "Command executed";
+      return sidebarContent.isBackground ? `${baseText} (background)` : baseText;
     } else if (isPython) {
       return sidebarContent.isExecuting
         ? "Executing Python"
@@ -123,6 +134,82 @@ export const ComputerSidebar: React.FC = () => {
       return sidebarContent.code.replace(/\n/g, " ");
     }
     return "";
+  };
+
+  // Poll API to check if background process is still running
+  useEffect(() => {
+    if (!isTerminal || !sidebarContent.isBackground || !pid || !sidebarContent.command) {
+      return;
+    }
+
+    // Initial check
+    const checkProcessStatus = async () => {
+      try {
+        const response = await fetch("/api/check-process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pid,
+            command: sidebarContent.command,
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setIsProcessRunning(data.running);
+
+          // Stop polling if process is no longer running
+          if (!data.running && pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        }
+      } catch (error) {
+        console.error("Error checking process status:", error);
+      }
+    };
+
+    // Check immediately
+    checkProcessStatus();
+
+    // Set up polling every 5 seconds
+    pollIntervalRef.current = setInterval(checkProcessStatus, 5000);
+
+    // Cleanup on unmount
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, [pid, isTerminal, sidebarContent]);
+
+  const handleKillProcess = async () => {
+    if (!pid || isKilling) return;
+
+    setIsKilling(true);
+
+    try {
+      const response = await fetch("/api/kill-process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pid }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setIsProcessRunning(false);
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error killing process:", error);
+    } finally {
+      setIsKilling(false);
+    }
   };
 
   const handleClose = () => {
@@ -176,14 +263,47 @@ export const ComputerSidebar: React.FC = () => {
                   HackerAI is using{" "}
                   <span className="text-foreground">{getToolName()}</span>
                 </div>
-                <div
-                  title={`${getActionText()} ${getDisplayTarget()}`}
-                  className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
-                >
-                  {getActionText()}
-                  <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                    <code>{getDisplayTarget()}</code>
-                  </span>
+                <div className="flex items-center gap-1">
+                  <div
+                    title={`${getActionText()} ${getDisplayTarget()}`}
+                    className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
+                  >
+                    {getActionText()}
+                    <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
+                      <code>{getDisplayTarget()}</code>
+                    </span>
+                  </div>
+                  {/* Status badge for background processes */}
+                  {isTerminal && sidebarContent.isBackground && pid && isProcessRunning && (
+                    <>
+                      <span className="flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-600 dark:text-green-400 flex-shrink-0">
+                        <span className="w-1.5 h-1.5 rounded-full bg-green-600 dark:bg-green-400 animate-pulse"></span>
+                        {isKilling ? "Killing..." : "Running"}
+                      </span>
+                      <span
+                        onClick={handleKillProcess}
+                        className={`w-4 h-4 bg-red-500 hover:bg-red-600 rounded-sm flex items-center justify-center transition-all cursor-pointer ${
+                          isKilling ? "opacity-50 cursor-not-allowed" : ""
+                        }`}
+                        title={isKilling ? "Killing process..." : "Kill process"}
+                        role="button"
+                        aria-label={isKilling ? "Killing process..." : "Kill process"}
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if ((e.key === "Enter" || e.key === " ") && !isKilling) {
+                            e.preventDefault();
+                            handleKillProcess();
+                          }
+                        }}
+                      >
+                        {isKilling ? (
+                          <span className="w-2.5 h-2.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                        ) : (
+                          <span className="text-white text-[10px] font-bold leading-none">×</span>
+                        )}
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -274,6 +394,8 @@ export const ComputerSidebar: React.FC = () => {
                           output={sidebarContent.output}
                           isExecuting={sidebarContent.isExecuting}
                           isBackground={sidebarContent.isBackground}
+                          pid={sidebarContent.pid}
+                          isProcessRunning={isProcessRunning}
                           status={
                             sidebarContent.isExecuting ? "streaming" : "ready"
                           }
