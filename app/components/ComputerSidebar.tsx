@@ -19,9 +19,8 @@ import {
 
 export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
-  const { addProcess, getProcess, isProcessRunning, refreshProcesses } = useProcessContext();
+  const { addProcess, getProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
   const [isWrapped, setIsWrapped] = useState(true);
-  const [isKilling, setIsKilling] = useState(false);
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -153,29 +152,8 @@ export const ComputerSidebar: React.FC = () => {
     : null;
 
   const handleKillProcess = async () => {
-    if (!pid || isKilling) return;
-
-    setIsKilling(true);
-
-    try {
-      const response = await fetch("/api/kill-process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pid }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success) {
-          // Immediately refresh process status instead of waiting for next poll
-          await refreshProcesses();
-        }
-      }
-    } catch (error) {
-      console.error("Error killing process:", error);
-    } finally {
-      setIsKilling(false);
-    }
+    if (!pid) return;
+    await killProcess(pid);
   };
 
   const handleClose = () => {
@@ -244,25 +222,25 @@ export const ComputerSidebar: React.FC = () => {
                     <>
                       <span className="flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-600 dark:text-green-400 flex-shrink-0">
                         <span className="w-1.5 h-1.5 rounded-full bg-green-600 dark:bg-green-400 animate-pulse"></span>
-                        {isKilling ? "Killing..." : "Running"}
+                        {isProcessKilling(pid) ? "Killing..." : "Running"}
                       </span>
                       <span
                         onClick={handleKillProcess}
                         className={`w-4 h-4 bg-red-500 hover:bg-red-600 rounded-sm flex items-center justify-center transition-all cursor-pointer ${
-                          isKilling ? "opacity-50 cursor-not-allowed" : ""
+                          isProcessKilling(pid) ? "opacity-50 cursor-not-allowed" : ""
                         }`}
-                        title={isKilling ? "Killing process..." : "Kill process"}
+                        title={isProcessKilling(pid) ? "Killing process..." : "Kill process"}
                         role="button"
-                        aria-label={isKilling ? "Killing process..." : "Kill process"}
+                        aria-label={isProcessKilling(pid) ? "Killing process..." : "Kill process"}
                         tabIndex={0}
                         onKeyDown={(e) => {
-                          if ((e.key === "Enter" || e.key === " ") && !isKilling) {
+                          if ((e.key === "Enter" || e.key === " ") && !isProcessKilling(pid)) {
                             e.preventDefault();
                             handleKillProcess();
                           }
                         }}
                       >
-                        {isKilling ? (
+                        {isProcessKilling(pid) ? (
                           <span className="w-2.5 h-2.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
                         ) : (
                           <span className="text-white text-[10px] font-bold leading-none">×</span>

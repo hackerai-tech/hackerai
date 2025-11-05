@@ -19,7 +19,7 @@ export const TerminalToolHandler = ({
   status,
 }: TerminalToolHandlerProps) => {
   const { openSidebar } = useGlobalState();
-  const { addProcess, isProcessRunning, refreshProcesses } = useProcessContext();
+  const { addProcess, isProcessRunning, isProcessKilling, killProcess } = useProcessContext();
   const { toolCallId, state, input, output, errorText } = part;
   const terminalInput = input as {
     command: string;
@@ -28,8 +28,6 @@ export const TerminalToolHandler = ({
   const terminalOutput = output as {
     result: CommandResult & { output?: string; pid?: number };
   };
-
-  const [isKilling, setIsKilling] = useState(false);
 
   // Extract PID from background process output
   const pid = terminalInput?.is_background && terminalOutput?.result?.pid
@@ -103,29 +101,8 @@ export const TerminalToolHandler = ({
   };
 
   const handleKillProcess = async () => {
-    if (!pid || isKilling) return;
-
-    setIsKilling(true);
-
-    try {
-      const response = await fetch("/api/kill-process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pid }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success) {
-          // Immediately refresh process status instead of waiting for next poll
-          await refreshProcesses();
-        }
-      }
-    } catch (error) {
-      console.error("Error killing process:", error);
-    } finally {
-      setIsKilling(false);
-    }
+    if (!pid) return;
+    await killProcess(pid);
   };
 
   // Format command display
@@ -133,6 +110,7 @@ export const TerminalToolHandler = ({
 
   // Determine status badge based on process running state from context
   const processRunning = pid ? isProcessRunning(pid) : false;
+  const processKilling = pid ? isProcessKilling(pid) : false;
   const statusBadge = terminalInput?.is_background && pid && processRunning
     ? ("running" as const)
     : null;
@@ -160,7 +138,7 @@ export const TerminalToolHandler = ({
           onKeyDown={handleKeyDown}
           statusBadge={statusBadge}
           onKill={statusBadge === "running" ? handleKillProcess : undefined}
-          isKilling={isKilling}
+          isKilling={processKilling}
         />
       );
     case "output-available":
@@ -175,7 +153,7 @@ export const TerminalToolHandler = ({
           onKeyDown={handleKeyDown}
           statusBadge={statusBadge}
           onKill={statusBadge === "running" ? handleKillProcess : undefined}
-          isKilling={isKilling}
+          isKilling={processKilling}
         />
       );
     case "output-error":
@@ -190,7 +168,7 @@ export const TerminalToolHandler = ({
           onKeyDown={handleKeyDown}
           statusBadge={statusBadge}
           onKill={statusBadge === "running" ? handleKillProcess : undefined}
-          isKilling={isKilling}
+          isKilling={processKilling}
         />
       );
     default:

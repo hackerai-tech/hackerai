@@ -17,6 +17,7 @@ export interface TrackedProcess {
   actualCommand?: string;
   commandMatches?: boolean;
   lastChecked?: number;
+  isKilling?: boolean;
 }
 
 interface ProcessContextType {
@@ -25,6 +26,8 @@ interface ProcessContextType {
   removeProcess: (pid: number) => void;
   getProcess: (pid: number) => TrackedProcess | undefined;
   isProcessRunning: (pid: number) => boolean;
+  isProcessKilling: (pid: number) => boolean;
+  killProcess: (pid: number) => Promise<boolean>;
   refreshProcesses: () => Promise<void>;
 }
 
@@ -166,6 +169,59 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
     [processes],
   );
 
+  const isProcessKilling = useCallback(
+    (pid: number) => {
+      return processes.get(pid)?.isKilling ?? false;
+    },
+    [processes],
+  );
+
+  const killProcess = useCallback(
+    async (pid: number): Promise<boolean> => {
+      // Set killing state
+      setProcesses((prev) => {
+        const updated = new Map(prev);
+        const process = updated.get(pid);
+        if (process) {
+          updated.set(pid, { ...process, isKilling: true });
+        }
+        return updated;
+      });
+
+      try {
+        const response = await fetch("/api/kill-process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pid }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success) {
+            // Immediately refresh process status
+            await refreshProcesses();
+            return true;
+          }
+        }
+        return false;
+      } catch (error) {
+        console.error("Error killing process:", error);
+        return false;
+      } finally {
+        // Clear killing state
+        setProcesses((prev) => {
+          const updated = new Map(prev);
+          const process = updated.get(pid);
+          if (process) {
+            updated.set(pid, { ...process, isKilling: false });
+          }
+          return updated;
+        });
+      }
+    },
+    [refreshProcesses],
+  );
+
   // Set up polling
   useEffect(() => {
     if (processes.size === 0) {
@@ -201,6 +257,8 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
     removeProcess,
     getProcess,
     isProcessRunning,
+    isProcessKilling,
+    killProcess,
     refreshProcesses,
   };
 
