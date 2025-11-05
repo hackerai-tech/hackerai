@@ -18,6 +18,7 @@ export interface TrackedProcess {
   commandMatches?: boolean;
   lastChecked?: number;
   isKilling?: boolean;
+  scheduledForDeletion?: boolean;
 }
 
 interface ProcessContextType {
@@ -109,13 +110,23 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
                 lastChecked: now,
               });
 
-              // Remove processes that are no longer running
-              if (!result.running) {
+              // Schedule deletion for processes that are no longer running
+              // Only schedule once to prevent multiple timeouts
+              if (!result.running && !existing.scheduledForDeletion) {
+                console.log(`[Process Context] Process ${result.pid} completed, scheduling deletion in 2s`);
+
+                // Mark as scheduled
+                updated.set(result.pid, {
+                  ...updated.get(result.pid)!,
+                  scheduledForDeletion: true,
+                });
+
                 // Keep them for a brief period for UI feedback
                 setTimeout(() => {
                   setProcesses((current) => {
                     const newMap = new Map(current);
                     newMap.delete(result.pid);
+                    console.log(`[Process Context] Process ${result.pid} removed from tracking`);
                     return newMap;
                   });
                 }, 2000);
@@ -155,6 +166,10 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
       const existing = processes.get(pid);
       if (existing) {
         // Already tracking this process
+        // Don't re-register if it's scheduled for deletion
+        if (existing.scheduledForDeletion) {
+          console.log(`[Process Context] Process ${pid} already completed and scheduled for cleanup, skipping re-registration`);
+        }
         return;
       }
 
