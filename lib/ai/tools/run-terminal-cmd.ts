@@ -136,6 +136,11 @@ In using these tools, adhere to the following guidelines:
 
                 createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
 
+                // For foreground commands, attempt to discover PID if not already known
+                if (!processId && !is_background) {
+                  processId = await findProcessPid(sandbox, command);
+                }
+
                 // Attempt to kill the running process on timeout
                 if ((execution && execution.kill) || processId) {
                   try {

@@ -12,12 +12,23 @@ export async function findProcessPid(
   sandbox: Sandbox,
   command: string,
 ): Promise<number | null> {
-  const commandFirstWord = command.split(" ")[0];
+  const normalizedCommand = command.trim();
+  if (!normalizedCommand) {
+    console.warn("[PID Discovery] Command string empty after trimming");
+    return null;
+  }
+
+  // Use a meaningful portion of the command for better matching
+  // Limit to first 100 chars to avoid issues with very long commands
+  const searchPattern = normalizedCommand.slice(0, 100);
+  // Escape single quotes for shell safety: replace ' with '\''
+  const escapedPattern = searchPattern.replace(/'/g, "'\\''");
 
   try {
-    // Try pgrep first (most reliable)
+    // Try pgrep with full command pattern (more accurate than just first word)
+    // pgrep -f matches against the full command line
     const pgrepResult = await sandbox.commands.run(
-      `pgrep -f "${commandFirstWord}"`,
+      `pgrep -f '${escapedPattern}'`,
       {
         user: "root" as const,
         cwd: "/home/user",
@@ -32,24 +43,26 @@ export async function findProcessPid(
         .filter((p) => !isNaN(p));
 
       if (pids.length > 0) {
-        // Get the most recent PID (highest number)
+        // Get the most recent PID (highest number, likely the actual process vs parent shells)
         const pid = Math.max(...pids);
         console.log(
-          `[PID Discovery] Found process '${commandFirstWord}' with PID ${pid}`,
+          `[PID Discovery] Found process matching '${searchPattern.slice(0, 50)}...' with PID ${pid}`,
         );
         return pid;
       }
     }
   } catch (error) {
     console.warn(
-      `[PID Discovery] pgrep failed for '${commandFirstWord}':`,
+      `[PID Discovery] pgrep failed for '${searchPattern.slice(0, 50)}...':`,
       error,
     );
 
-    // Fallback: try using ps
+    // Fallback: use ps with full command line matching
     try {
+      // ps -eo pid,cmd shows PID and full command
+      // This is more accurate than ps aux which truncates commands
       const psResult = await sandbox.commands.run(
-        `ps aux | grep "${commandFirstWord}" | grep -v grep | awk '{print $2}' | head -1`,
+        `ps -eo pid,cmd | grep '${escapedPattern}' | grep -v grep | awk '{print $1}' | head -1`,
         {
           user: "root" as const,
           cwd: "/home/user",
@@ -60,18 +73,18 @@ export async function findProcessPid(
         const pid = parseInt(psResult.stdout.trim());
         if (!isNaN(pid)) {
           console.log(
-            `[PID Discovery] Found process '${commandFirstWord}' with PID ${pid} (using ps fallback)`,
+            `[PID Discovery] Found process matching '${searchPattern.slice(0, 50)}...' with PID ${pid} (using ps fallback)`,
           );
           return pid;
         }
       }
     } catch (psError) {
       console.error(
-        `[PID Discovery] Both pgrep and ps failed for '${commandFirstWord}'`,
+        `[PID Discovery] Both pgrep and ps failed for '${searchPattern.slice(0, 50)}...'`,
       );
     }
   }
 
-  console.warn(`[PID Discovery] Could not find PID for '${commandFirstWord}'`);
+  console.warn(`[PID Discovery] Could not find PID for '${searchPattern.slice(0, 50)}...'`);
   return null;
 }
