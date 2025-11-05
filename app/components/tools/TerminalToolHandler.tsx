@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
@@ -26,6 +26,85 @@ export const TerminalToolHandler = ({
   const terminalOutput = output as {
     result: CommandResult & { output?: string };
   };
+
+  // State for tracking background process status
+  const [isProcessRunning, setIsProcessRunning] = useState<boolean | null>(null);
+  const [isKilling, setIsKilling] = useState(false);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Extract PID from background process output
+  const pid = terminalInput?.is_background && terminalOutput?.result?.pid
+    ? terminalOutput.result.pid
+    : null;
+
+  // Poll API to check if background process is still running
+  useEffect(() => {
+    if (!terminalInput?.is_background || !pid || !terminalInput?.command) {
+      return;
+    }
+
+    // Get message creation timestamp
+    const messageTimestamp = message.createdAt ? new Date(message.createdAt).getTime() : Date.now();
+    const MAX_PROCESS_AGE = 20 * 60 * 1000; // Don't poll processes older than 20 minutes
+
+    // Don't even start polling if message is too old (process would have timed out on E2B)
+    const messageAge = Date.now() - messageTimestamp;
+    if (messageAge > MAX_PROCESS_AGE) {
+      setIsProcessRunning(false);
+      return;
+    }
+
+    // Initial check
+    const checkProcessStatus = async () => {
+      try {
+        // Double-check message age on each poll
+        const currentAge = Date.now() - messageTimestamp;
+        if (currentAge > MAX_PROCESS_AGE) {
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+          setIsProcessRunning(false);
+          return;
+        }
+
+        const response = await fetch("/api/check-process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pid,
+            command: terminalInput.command,
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setIsProcessRunning(data.running);
+
+          // Stop polling if process is no longer running
+          if (!data.running && pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        }
+      } catch (error) {
+        console.error("Error checking process status:", error);
+      }
+    };
+
+    // Check immediately
+    checkProcessStatus();
+
+    // Set up polling every 5 seconds
+    pollIntervalRef.current = setInterval(checkProcessStatus, 5000);
+
+    // Cleanup on unmount
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  }, [pid, terminalInput?.is_background, terminalInput?.command]);
 
   const handleOpenInSidebar = () => {
     if (!terminalInput?.command) return;
@@ -59,6 +138,7 @@ export const TerminalToolHandler = ({
       output: finalOutput,
       isExecuting: state === "input-available" && status === "streaming",
       isBackground: terminalInput.is_background,
+      pid: terminalOutput?.result?.pid ?? null,
       toolCallId: toolCallId,
     };
 
@@ -71,6 +151,49 @@ export const TerminalToolHandler = ({
       handleOpenInSidebar();
     }
   };
+
+  const handleKillProcess = async () => {
+    if (!pid || isKilling) return;
+
+    setIsKilling(true);
+
+    try {
+      const response = await fetch("/api/kill-process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pid }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          // Immediately update UI to show process is killed
+          setIsProcessRunning(false);
+          // Stop polling
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current);
+            pollIntervalRef.current = null;
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error killing process:", error);
+    } finally {
+      setIsKilling(false);
+    }
+  };
+
+  // Format command display
+  const commandDisplay = terminalInput?.command || "";
+
+  // Determine status badge based on process running state
+  const statusBadge = terminalInput?.is_background && pid
+    ? isProcessRunning === true
+      ? ("running" as const)
+      : isProcessRunning === false
+        ? null // Process completed
+        : ("running" as const) // Initially assume running while polling
+    : null;
 
   switch (state) {
     case "input-streaming":
@@ -88,11 +211,14 @@ export const TerminalToolHandler = ({
           key={toolCallId}
           icon={<Terminal />}
           action={status === "streaming" ? "Executing" : "Executed"}
-          target={terminalInput?.command || ""}
+          target={commandDisplay}
           isShimmer={status === "streaming"}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
+          statusBadge={statusBadge}
+          onKill={statusBadge === "running" ? handleKillProcess : undefined}
+          isKilling={isKilling}
         />
       );
     case "output-available":
@@ -101,10 +227,13 @@ export const TerminalToolHandler = ({
           key={toolCallId}
           icon={<Terminal />}
           action="Executed"
-          target={terminalInput?.command || ""}
+          target={commandDisplay}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
+          statusBadge={statusBadge}
+          onKill={statusBadge === "running" ? handleKillProcess : undefined}
+          isKilling={isKilling}
         />
       );
     case "output-error":
@@ -113,10 +242,13 @@ export const TerminalToolHandler = ({
           key={toolCallId}
           icon={<Terminal />}
           action="Executed"
-          target={terminalInput?.command || ""}
+          target={commandDisplay}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
+          statusBadge={statusBadge}
+          onKill={statusBadge === "running" ? handleKillProcess : undefined}
+          isKilling={isKilling}
         />
       );
     default:
