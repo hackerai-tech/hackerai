@@ -1,6 +1,7 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
+import { ChatSDKError } from "@/lib/errors";
 
 export const maxDuration = 60;
 
@@ -164,6 +165,11 @@ export async function POST(req: NextRequest) {
       );
     }
   } catch (error) {
+    // Handle authentication errors with proper 401 status
+    if (error instanceof ChatSDKError) {
+      return error.toResponse();
+    }
+
     console.error("Error checking process status:", error);
     return new Response(
       JSON.stringify({ error: "Failed to check process status" }),

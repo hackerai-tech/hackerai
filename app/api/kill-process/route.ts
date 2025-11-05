@@ -2,6 +2,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { NextRequest } from "next/server";
 import { forceKillProcess } from "@/lib/ai/tools/utils/process-termination";
+import { ChatSDKError } from "@/lib/errors";
 
 export const maxDuration = 60;
 
@@ -87,6 +88,11 @@ export async function POST(req: NextRequest) {
       },
     );
   } catch (error) {
+    // Handle authentication errors with proper 401 status
+    if (error instanceof ChatSDKError) {
+      return error.toResponse();
+    }
+
     console.error("Error killing process:", error);
     return new Response(
       JSON.stringify({ error: "Failed to kill process" }),
