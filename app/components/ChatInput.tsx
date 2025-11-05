@@ -111,7 +111,7 @@ export const ChatInput = ({
   // Compute draft ID:
   // - For new chats (no messages yet): use "new" key so draft is preserved when navigating
   // - For existing chats or chats with messages: use chatId for chat-specific drafts
-  const draftId = isNewChat ? "new" : (chatId || NULL_THREAD_DRAFT_ID);
+  const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
 
   // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
   useEffect(() => {
@@ -142,9 +142,10 @@ export const ChatInput = ({
     // - files are not uploading
     // - there's text input or files attached
     const canSubmit =
-      ((status === "ready" || (status === "streaming" && chatMode === "agent")) &&
-        !isUploadingFiles &&
-        (input.trim() || uploadedFiles.length > 0));
+      (status === "ready" ||
+        (status === "streaming" && chatMode === "agent")) &&
+      !isUploadingFiles &&
+      (input.trim() || uploadedFiles.length > 0);
 
     if (canSubmit) {
       onSubmit(e);
@@ -251,14 +252,6 @@ export const ChatInput = ({
         {/* Todo Panel */}
         <TodoPanel status={status} />
 
-        {/* File Upload Preview */}
-        {uploadedFiles && uploadedFiles.length > 0 && (
-          <FileUploadPreview
-            uploadedFiles={uploadedFiles}
-            onRemoveFile={handleRemoveFile}
-          />
-        )}
-
         {/* Queued Messages Panel - only shown in Agent mode */}
         {messageQueue.length > 0 && chatMode === "agent" && (
           <QueuedMessagesPanel
@@ -266,6 +259,14 @@ export const ChatInput = ({
             onSendNow={onSendNow}
             onDelete={removeQueuedMessage}
             isStreaming={status === "streaming"}
+          />
+        )}
+
+        {/* File Upload Preview */}
+        {uploadedFiles && uploadedFiles.length > 0 && (
+          <FileUploadPreview
+            uploadedFiles={uploadedFiles}
+            onRemoveFile={handleRemoveFile}
           />
         )}
 
@@ -280,7 +281,7 @@ export const ChatInput = ({
         />
 
         <div
-          className={`flex flex-col gap-3 transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${(uploadedFiles && uploadedFiles.length > 0) || (messageQueue.length > 0 && chatMode === "agent") ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+          className={`flex flex-col gap-3 transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
         >
           <div className="overflow-y-auto pl-4 pr-2">
             <TextareaAutosize
@@ -385,68 +386,19 @@ export const ChatInput = ({
               </DropdownMenu>
             </div>
             <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
-              {isGenerating && !hideStop && chatMode === "agent" ? (
-                // Agent mode during streaming: show both stop button and submit button
-                <>
-                  <TooltipPrimitive.Root>
-                    <TooltipTrigger asChild>
-                      <Button
-                        type="button"
-                        onClick={onStop}
-                        variant="ghost"
-                        className="rounded-full p-0 w-8 h-8 min-w-0 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
-                        aria-label="Stop generation"
-                      >
-                        <Square
-                          className="w-[15px] h-[15px]"
-                          fill="currentColor"
-                        />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>Stop (⌃C)</p>
-                    </TooltipContent>
-                  </TooltipPrimitive.Root>
-                  <form onSubmit={handleSubmit}>
-                    <TooltipPrimitive.Root>
-                      <TooltipTrigger asChild>
-                        <div className="inline-block">
-                          <Button
-                            type="submit"
-                            disabled={
-                              status === "submitted" ||
-                              isUploadingFiles ||
-                              (!input.trim() && uploadedFiles.length === 0)
-                            }
-                            variant="default"
-                            className="rounded-full p-0 w-8 h-8 min-w-0 bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
-                            aria-label="Queue message"
-                          >
-                            <ArrowUp size={15} strokeWidth={3} />
-                          </Button>
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>
-                          {uploadedFiles.some((f) => f.error)
-                            ? "Remove failed files to queue"
-                            : isUploadingFiles
-                              ? "File upload pending"
-                              : "Queue message (⏎)"}
-                        </p>
-                      </TooltipContent>
-                    </TooltipPrimitive.Root>
-                  </form>
-                </>
-              ) : isGenerating && !hideStop ? (
-                // Ask mode: show only stop button during streaming
+              {isGenerating && !hideStop ? (
+                // Show only stop button during streaming for both modes
                 <TooltipPrimitive.Root>
                   <TooltipTrigger asChild>
                     <Button
                       type="button"
                       onClick={onStop}
                       variant="ghost"
-                      className="rounded-full p-0 w-8 h-8 min-w-0 bg-muted hover:bg-muted/70 text-foreground"
+                      className={`rounded-full p-0 w-8 h-8 min-w-0 ${
+                        chatMode === "agent"
+                          ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
+                          : "bg-muted hover:bg-muted/70 text-foreground"
+                      }`}
                       aria-label="Stop generation"
                     >
                       <Square

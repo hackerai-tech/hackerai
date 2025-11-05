@@ -451,12 +451,16 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Message queue handlers
   const queueMessage = useCallback(
-    (text: string, files?: Array<{ file: File; fileId: string; url: string }>) => {
+    (
+      text: string,
+      files?: Array<{ file: File; fileId: string; url: string }>,
+    ) => {
       setMessageQueue((prev) => {
         // Limit queue size to 10 messages
         if (prev.length >= 10) {
           toast.error("Queue is full", {
-            description: "Please wait for queued messages to send before adding more.",
+            description:
+              "Please wait for queued messages to send before adding more.",
           });
           return prev;
         }
