@@ -70,7 +70,7 @@ export const Chat = ({
     setHasUserDismissedRateLimitWarning,
   } = useGlobalState();
 
-  const { clearAllProcesses } = useProcessContext();
+  const { setCurrentChatId } = useProcessContext();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
@@ -119,10 +119,10 @@ export const Chat = ({
     }
   }, [routeChatId, currentChatId, setChatTitle]);
 
-  // Clear all processes when chat changes
+  // Update process context with current chatId (loads/saves from localStorage)
   useEffect(() => {
-    clearAllProcesses();
-  }, [chatId, clearAllProcesses]);
+    setCurrentChatId(chatId);
+  }, [chatId, setCurrentChatId]);
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(

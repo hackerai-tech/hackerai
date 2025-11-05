@@ -25,6 +25,7 @@ interface ProcessContextType {
   // Core process management
   registerProcess: (pid: number, command: string, maxAgeMs?: number) => void;
   clearAllProcesses: () => void;
+  setCurrentChatId: (chatId: string | null) => void;
   // Process state queries
   isProcessRunning: (pid: number) => boolean;
   isProcessKilling: (pid: number) => boolean;
@@ -40,11 +41,39 @@ const ProcessContext = createContext<ProcessContextType | undefined>(undefined);
 
 const POLL_INTERVAL = 5000; // 5 seconds
 const POLL_TIMEOUT = 5000; // 5 seconds timeout
+const STORAGE_KEY_PREFIX = "process-context-";
+
+// Helper functions for localStorage
+function saveProcessesToStorage(chatId: string, processes: Map<number, TrackedProcess>) {
+  try {
+    const processArray = Array.from(processes.entries());
+    localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}${chatId}`,
+      JSON.stringify(processArray)
+    );
+  } catch (error) {
+    console.warn("[Process Context] Failed to save to localStorage:", error);
+  }
+}
+
+function loadProcessesFromStorage(chatId: string): Map<number, TrackedProcess> {
+  try {
+    const stored = localStorage.getItem(`${STORAGE_KEY_PREFIX}${chatId}`);
+    if (!stored) return new Map();
+
+    const processArray: [number, TrackedProcess][] = JSON.parse(stored);
+    return new Map(processArray);
+  } catch (error) {
+    console.warn("[Process Context] Failed to load from localStorage:", error);
+    return new Map();
+  }
+}
 
 export function ProcessProvider({ children }: { children: React.ReactNode }) {
   const [processes, setProcesses] = useState<Map<number, TrackedProcess>>(
     new Map(),
   );
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isPollingRef = useRef(false);
 
@@ -184,8 +213,31 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
 
   const clearAllProcesses = useCallback(() => {
     console.log("[Process Context] Clearing all processes (chat change/reset)");
+    // Save current state before clearing
+    if (currentChatId) {
+      saveProcessesToStorage(currentChatId, processes);
+    }
     setProcesses(new Map());
-  }, []);
+  }, [currentChatId, processes]);
+
+  const handleSetCurrentChatId = useCallback((chatId: string | null) => {
+    // Save current chat's state before switching
+    if (currentChatId && processes.size > 0) {
+      console.log(`[Process Context] Saving ${processes.size} processes for chat ${currentChatId}`);
+      saveProcessesToStorage(currentChatId, processes);
+    }
+
+    // Load new chat's state
+    if (chatId) {
+      const loadedProcesses = loadProcessesFromStorage(chatId);
+      console.log(`[Process Context] Loaded ${loadedProcesses.size} processes for chat ${chatId}`);
+      setProcesses(loadedProcesses);
+    } else {
+      setProcesses(new Map());
+    }
+
+    setCurrentChatId(chatId);
+  }, [currentChatId, processes]);
 
   const getProcess = useCallback(
     (pid: number) => {
@@ -254,6 +306,13 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
     [refreshProcesses],
   );
 
+  // Save to localStorage whenever processes change
+  useEffect(() => {
+    if (currentChatId && processes.size > 0) {
+      saveProcessesToStorage(currentChatId, processes);
+    }
+  }, [currentChatId, processes]);
+
   // Set up polling
   useEffect(() => {
     if (processes.size === 0) {
@@ -287,6 +346,7 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
     processes,
     registerProcess,
     clearAllProcesses,
+    setCurrentChatId: handleSetCurrentChatId,
     removeProcess,
     getProcess,
     isProcessRunning,
