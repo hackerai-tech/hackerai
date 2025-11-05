@@ -7,6 +7,7 @@ import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
+import { findProcessPid } from "./utils/pid-discovery";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
@@ -73,34 +74,52 @@ In using these tools, adhere to the following guidelines:
           let handler: ReturnType<typeof createTerminalHandler> | null = null;
           let processId: number | null = null; // Store PID for all processes
 
-          // Listen for abort signal
+          // Handle abort signal
           const onAbort = async () => {
-            if (!resolved) {
-              resolved = true;
-              const result = handler ? handler.getResult() : { output: "" };
-              if (handler) {
-                handler.cleanup();
-              }
-              resolve({
-                result: {
-                  output: result.output,
-                  exitCode: 130, // Standard SIGINT exit code
-                  error: "Command execution aborted by user",
-                },
-              });
+            if (resolved) {
+              return;
             }
 
-            // Kill the running process with verification and fallback
-            if (execution && execution.kill) {
-              await terminateProcessReliably(sandbox, execution, processId);
+            console.log(
+              `[Terminal Command] Abort signal received for: ${command.slice(0, 50)}${command.length > 50 ? "..." : ""}`,
+            );
+
+            // For foreground commands, attempt to discover PID if not already known
+            if (!processId && !is_background) {
+              processId = await findProcessPid(sandbox, command);
             }
+
+            // Terminate the process if we have a way to do so
+            if ((execution && execution.kill) || processId) {
+              await terminateProcessReliably(sandbox, execution, processId);
+            } else {
+              console.warn(
+                "[Terminal Command] Cannot kill process: no execution handle or PID available",
+              );
+            }
+
+            // Clean up and resolve
+            resolved = true;
+            const result = handler ? handler.getResult() : { output: "" };
+            if (handler) {
+              handler.cleanup();
+            }
+
+            resolve({
+              result: {
+                output: result.output,
+                exitCode: 130, // Standard SIGINT exit code
+                error: "Command execution aborted by user",
+              },
+            });
           };
 
+          // Check if already aborted before starting
           if (abortSignal?.aborted) {
             return resolve({
               result: {
                 output: "",
-                exitCode: null,
+                exitCode: 130,
                 error: "Command execution aborted by user",
               },
             });
@@ -110,28 +129,38 @@ In using these tools, adhere to the following guidelines:
             (output) => createTerminalWriter(output),
             {
               timeoutSeconds: STREAM_TIMEOUT_SECONDS,
-              onTimeout: () => {
-                if (!resolved) {
-                  resolved = true;
-                  createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
-                  // Kill the running process on timeout if exists
-                  if (execution && execution.kill) {
-                    terminateProcessReliably(sandbox, execution, processId).catch((error) => {
-                      console.error("[Terminal Command] Error during timeout kill:", error);
-                    });
-                  }
-                  const result = handler ? handler.getResult() : { output: "" };
-                  if (handler) {
-                    handler.cleanup();
-                  }
-                  resolve({
-                    result: { output: result.output, exitCode: null },
-                  });
+              onTimeout: async () => {
+                if (resolved) {
+                  return;
                 }
+
+                createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
+
+                // Attempt to kill the running process on timeout
+                if ((execution && execution.kill) || processId) {
+                  try {
+                    await terminateProcessReliably(sandbox, execution, processId);
+                  } catch (error) {
+                    console.error(
+                      "[Terminal Command] Error during timeout termination:",
+                      error,
+                    );
+                  }
+                }
+
+                resolved = true;
+                const result = handler ? handler.getResult() : { output: "" };
+                if (handler) {
+                  handler.cleanup();
+                }
+                resolve({
+                  result: { output: result.output, exitCode: null },
+                });
               },
             },
           );
 
+          // Register abort listener
           abortSignal?.addEventListener("abort", onAbort, { once: true });
 
           const commonOptions = {
@@ -142,6 +171,7 @@ In using these tools, adhere to the following guidelines:
             onStderr: handler!.stderr,
           };
 
+          // Execute command (background or foreground)
           const runPromise = is_background
             ? sandbox.commands.run(command, {
                 ...commonOptions,
@@ -153,15 +183,11 @@ In using these tools, adhere to the following guidelines:
             .then(async (exec) => {
               execution = exec;
 
-              // Capture PID for all processes (background and non-background)
-              if ((exec as any)?.pid) {
+              // Capture PID for background processes
+              if (is_background && (exec as any)?.pid) {
                 processId = (exec as any).pid;
                 console.log(
-                  `[Terminal Command] Process started with PID ${processId}: ${command.slice(0, 50)}${command.length > 50 ? "..." : ""}`,
-                );
-              } else {
-                console.log(
-                  `[Terminal Command] Process started without PID: ${command.slice(0, 50)}${command.length > 50 ? "..." : ""}`,
+                  `[Terminal Command] Background process started with PID ${processId}`,
                 );
               }
 

@@ -95,7 +95,7 @@ export async function forceKillProcess(
  * First tries graceful kill, then verifies, then force kills if needed.
  *
  * @param sandbox - The E2B sandbox instance
- * @param execution - The execution object with kill() method
+ * @param execution - The execution object with kill() method (optional for foreground commands)
  * @param pid - Process ID (if available)
  * @returns Promise<void>
  */
@@ -104,10 +104,25 @@ export async function terminateProcessReliably(
   execution: any,
   pid: number | null | undefined,
 ): Promise<void> {
-  // If no execution object or PID, nothing to do
+  // If we have PID but no execution object (foreground commands during abort), use direct kill
+  if (pid && (!execution || !execution.kill)) {
+    console.log(
+      `[Process Termination] PID ${pid}: No execution handle, using direct kill`,
+    );
+    await forceKillProcess(sandbox, pid);
+    const finalCheck = await verifyProcessTerminated(sandbox, pid, 2, 150);
+    if (!finalCheck) {
+      console.error(
+        `[Process Termination] PID ${pid}: Process still running after direct kill!`,
+      );
+    }
+    return;
+  }
+
+  // If no way to kill, nothing to do
   if (!execution || !execution.kill) {
     console.log(
-      "[Process Termination] No execution object or kill method available",
+      "[Process Termination] No execution object, kill method, or PID available",
     );
     return;
   }
