@@ -1,10 +1,10 @@
 import React from "react";
 import { Minimize2, Edit, Terminal, Code2 } from "lucide-react";
 import { useState } from "react";
-import { useGlobalState } from "../contexts/GlobalState";
-import { useTerminalProcess } from "../contexts/useTerminalProcess";
-import { ComputerCodeBlock } from "./ComputerCodeBlock";
-import { TerminalCodeBlock } from "./TerminalCodeBlock";
+import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useTerminalProcess } from "@/app/contexts/useTerminalProcess";
+import { ComputerCodeBlock } from "@/app/components/ComputerCodeBlock";
+import { TerminalCodeBlock } from "@/app/components/TerminalCodeBlock";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import {
   Tooltip,

@@ -77,11 +77,13 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
   const currentChatIdRef = useRef<string | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const isPollingRef = useRef(false);
+  const processesRef = useRef(processes);
 
-  // Keep ref in sync with state
+  // Keep refs in sync with state
   useEffect(() => {
     currentChatIdRef.current = currentChatId;
-  }, [currentChatId]);
+    processesRef.current = processes;
+  }, [currentChatId, processes]);
 
   const refreshProcesses = useCallback(async () => {
     // Prevent concurrent polling
@@ -92,9 +94,9 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
     isPollingRef.current = true;
 
     try {
-      // Get current processes from state at time of execution
+      // Get current processes from ref (always fresh, avoids stale closure)
       // Only poll processes that are still running
-      const currentProcesses = Array.from(processes.values()).filter(
+      const currentProcesses = Array.from(processesRef.current.values()).filter(
         (p) => p.running,
       );
 
@@ -168,7 +170,7 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
     } finally {
       isPollingRef.current = false;
     }
-  }, [processes]);
+  }, []); // Stable callback - reads fresh data from processesRef
 
   const registerProcess = useCallback(
     (pid: number, command: string) => {
