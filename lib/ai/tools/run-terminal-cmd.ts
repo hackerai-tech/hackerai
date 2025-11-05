@@ -90,11 +90,18 @@ In using these tools, adhere to the following guidelines:
             }
 
             // Terminate the process if we have a way to do so
-            if ((execution && execution.kill) || processId) {
-              await terminateProcessReliably(sandbox, execution, processId);
-            } else {
-              console.warn(
-                "[Terminal Command] Cannot kill process: no execution handle or PID available",
+            try {
+              if ((execution && execution.kill) || processId) {
+                await terminateProcessReliably(sandbox, execution, processId);
+              } else {
+                console.warn(
+                  "[Terminal Command] Cannot kill process: no execution handle or PID available",
+                );
+              }
+            } catch (error) {
+              console.error(
+                "[Terminal Command] Error during abort termination:",
+                error,
               );
             }
 

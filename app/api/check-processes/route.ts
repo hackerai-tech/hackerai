@@ -15,13 +15,6 @@ export async function POST(req: NextRequest) {
   try {
     const { userId } = await getUserIDAndPro(req);
 
-    if (!userId) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
     const body = await req.json();
     const { processes } = body;
 
@@ -118,12 +111,17 @@ export async function POST(req: NextRequest) {
     // Check all processes at once using batch checker
     const results = await checkProcessesBatch(sandbox, requests);
 
+    // Build a lookup map for O(1) access
+    const requestMap = new Map(
+      requests.map((r) => [r.pid, r.expectedCommand]),
+    );
+
     return new Response(
       JSON.stringify({
         results: results.map((result) => ({
           pid: result.pid,
           running: result.running,
-          command: requests.find((r) => r.pid === result.pid)?.expectedCommand,
+          command: requestMap.get(result.pid),
           actualCommand: result.actualCommand,
           commandMatches: result.commandMatches,
           message: result.running

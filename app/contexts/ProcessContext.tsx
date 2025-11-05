@@ -23,7 +23,7 @@ export interface TrackedProcess {
 interface ProcessContextType {
   processes: Map<number, TrackedProcess>;
   // Core process management
-  registerProcess: (pid: number, command: string, maxAgeMs?: number) => void;
+  registerProcess: (pid: number, command: string) => void;
   clearAllProcesses: () => void;
   setCurrentChatId: (chatId: string | null) => void;
   // Process state queries
@@ -171,7 +171,7 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
   }, [processes]);
 
   const registerProcess = useCallback(
-    (pid: number, command: string, maxAgeMs: number = 20 * 60 * 1000) => {
+    (pid: number, command: string) => {
       // Validate inputs
       if (!pid || typeof pid !== "number" || pid <= 0) {
         console.warn("[Process Context] Invalid PID:", pid);
@@ -183,18 +183,16 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
         return;
       }
 
-      // Check if process already registered
-      const existing = processes.get(pid);
-      if (existing) {
-        // Already tracking this process
-        return;
-      }
-
-      // Don't track very old processes (likely timed out on E2B)
-      const now = Date.now();
-
       setProcesses((prev) => {
+        // Check if process already registered
+        const existing = prev.get(pid);
+        if (existing) {
+          // Already tracking this process
+          return prev;
+        }
+
         const updated = new Map(prev);
+        const now = Date.now();
         updated.set(pid, {
           pid,
           command: command.trim(),
@@ -206,7 +204,7 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
 
       console.log(`[Process Context] Registered process ${pid}: ${command.slice(0, 50)}...`);
     },
-    [processes],
+    [],
   );
 
   const removeProcess = useCallback((pid: number) => {

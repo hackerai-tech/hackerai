@@ -208,7 +208,10 @@ export const ComputerSidebar: React.FC = () => {
                         {isKilling ? "Killing..." : "Running"}
                       </span>
                       <span
-                        onClick={handleKill}
+                        onClick={() => {
+                          if (isKilling) return;
+                          handleKill();
+                        }}
                         className={`w-4 h-4 bg-red-500 hover:bg-red-600 rounded-sm flex items-center justify-center transition-all cursor-pointer ${
                           isKilling ? "opacity-50 cursor-not-allowed" : ""
                         }`}
