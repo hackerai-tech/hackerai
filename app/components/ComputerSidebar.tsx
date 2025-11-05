@@ -25,19 +25,6 @@ export const ComputerSidebar: React.FC = () => {
   const [isKilling, setIsKilling] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  if (!sidebarOpen || !sidebarContent) {
-    return null;
-  }
-
-  const isFile = isSidebarFile(sidebarContent);
-  const isTerminal = isSidebarTerminal(sidebarContent);
-  const isPython = isSidebarPython(sidebarContent);
-
-  // Get PID for terminal commands
-  const pid = isTerminal && sidebarContent.isBackground && sidebarContent.pid
-    ? sidebarContent.pid
-    : null;
-
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
     const languageMap: Record<string, string> = {
@@ -138,9 +125,17 @@ export const ComputerSidebar: React.FC = () => {
 
   // Poll API to check if background process is still running
   useEffect(() => {
-    if (!isTerminal || !sidebarContent.isBackground || !pid || !sidebarContent.command) {
+    if (
+      !sidebarContent ||
+      !isSidebarTerminal(sidebarContent) ||
+      !sidebarContent.isBackground ||
+      !sidebarContent.pid ||
+      !sidebarContent.command
+    ) {
       return;
     }
+
+    const pid = sidebarContent.pid;
 
     // Initial check
     const checkProcessStatus = async () => {
@@ -181,7 +176,22 @@ export const ComputerSidebar: React.FC = () => {
         clearInterval(pollIntervalRef.current);
       }
     };
-  }, [pid, isTerminal, sidebarContent]);
+  }, [sidebarContent]);
+
+  // Early return after all hooks are called
+  if (!sidebarOpen || !sidebarContent) {
+    return null;
+  }
+
+  // These values are safe to compute after the early return check
+  const isFile = isSidebarFile(sidebarContent);
+  const isTerminal = isSidebarTerminal(sidebarContent);
+  const isPython = isSidebarPython(sidebarContent);
+
+  // Get PID for terminal commands
+  const pid = isTerminal && sidebarContent.isBackground && sidebarContent.pid
+    ? sidebarContent.pid
+    : null;
 
   const handleKillProcess = async () => {
     if (!pid || isKilling) return;
