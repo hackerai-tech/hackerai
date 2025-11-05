@@ -57,7 +57,41 @@ export class BackgroundProcessTracker {
   }
 
   /**
+   * Check status of all tracked processes at once (batch operation).
+   * Much more efficient than checking processes one by one.
+   */
+  async checkAllProcessesStatus(
+    sandbox: Sandbox,
+  ): Promise<Map<number, boolean>> {
+    const { checkProcessesBatch } = await import("./batch-process-checker");
+
+    const requests = Array.from(this.processes.values()).map((proc) => ({
+      pid: proc.pid,
+      expectedCommand: proc.command,
+    }));
+
+    if (requests.length === 0) {
+      return new Map();
+    }
+
+    const results = await checkProcessesBatch(sandbox, requests);
+    const statusMap = new Map<number, boolean>();
+
+    for (const result of results) {
+      statusMap.set(result.pid, result.running && (result.commandMatches ?? false));
+
+      // Remove processes that are no longer running or don't match
+      if (!result.running || !result.commandMatches) {
+        this.removeProcess(result.pid);
+      }
+    }
+
+    return statusMap;
+  }
+
+  /**
    * Check if any tracked processes are writing to the requested files
+   * Uses batch checking for efficiency
    */
   async hasActiveProcessesForFiles(
     sandbox: Sandbox,
@@ -65,8 +99,11 @@ export class BackgroundProcessTracker {
   ): Promise<{ active: boolean; processes: BackgroundProcess[] }> {
     const activeProcesses: BackgroundProcess[] = [];
 
+    // Check all processes at once
+    const statusMap = await this.checkAllProcessesStatus(sandbox);
+
     for (const [pid, process] of this.processes.entries()) {
-      const isRunning = await this.checkProcessStatus(sandbox, pid);
+      const isRunning = statusMap.get(pid) ?? false;
 
       if (isRunning) {
         const hasMatchingFile = process.outputFiles.some((outputFile) =>

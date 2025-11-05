@@ -1,7 +1,8 @@
 import React from "react";
 import { Minimize2, Edit, Terminal, Code2 } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useProcessContext } from "../contexts/ProcessContext";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
@@ -18,12 +19,9 @@ import {
 
 export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
+  const { addProcess, getProcess, isProcessRunning } = useProcessContext();
   const [isWrapped, setIsWrapped] = useState(true);
-
-  // State for tracking background process status
-  const [isProcessRunning, setIsProcessRunning] = useState<boolean | null>(null);
   const [isKilling, setIsKilling] = useState(false);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -123,7 +121,7 @@ export const ComputerSidebar: React.FC = () => {
     return "";
   };
 
-  // Poll API to check if background process is still running
+  // Add background processes to the shared context for tracking
   useEffect(() => {
     if (
       !sidebarContent ||
@@ -135,48 +133,9 @@ export const ComputerSidebar: React.FC = () => {
       return;
     }
 
-    const pid = sidebarContent.pid;
-
-    // Initial check
-    const checkProcessStatus = async () => {
-      try {
-        const response = await fetch("/api/check-process", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            pid,
-            command: sidebarContent.command,
-          }),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          setIsProcessRunning(data.running);
-
-          // Stop polling if process is no longer running
-          if (!data.running && pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
-        }
-      } catch (error) {
-        console.error("Error checking process status:", error);
-      }
-    };
-
-    // Check immediately
-    checkProcessStatus();
-
-    // Set up polling every 5 seconds
-    pollIntervalRef.current = setInterval(checkProcessStatus, 5000);
-
-    // Cleanup on unmount
-    return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-      }
-    };
-  }, [sidebarContent]);
+    // Add process to shared context (will be polled automatically)
+    addProcess(sidebarContent.pid, sidebarContent.command);
+  }, [sidebarContent, addProcess]);
 
   // Early return after all hooks are called
   if (!sidebarOpen || !sidebarContent) {
@@ -208,11 +167,7 @@ export const ComputerSidebar: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         if (data.success) {
-          setIsProcessRunning(false);
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
-            pollIntervalRef.current = null;
-          }
+          // Process will be updated by the context's polling
         }
       }
     } catch (error) {
@@ -284,7 +239,7 @@ export const ComputerSidebar: React.FC = () => {
                     </span>
                   </div>
                   {/* Status badge for background processes */}
-                  {isTerminal && sidebarContent.isBackground && pid && isProcessRunning && (
+                  {isTerminal && sidebarContent.isBackground && pid && isProcessRunning(pid) && (
                     <>
                       <span className="flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-600 dark:text-green-400 flex-shrink-0">
                         <span className="w-1.5 h-1.5 rounded-full bg-green-600 dark:bg-green-400 animate-pulse"></span>
@@ -405,7 +360,7 @@ export const ComputerSidebar: React.FC = () => {
                           isExecuting={sidebarContent.isExecuting}
                           isBackground={sidebarContent.isBackground}
                           pid={sidebarContent.pid}
-                          isProcessRunning={isProcessRunning}
+                          isProcessRunning={sidebarContent.pid ? isProcessRunning(sidebarContent.pid) : null}
                           status={
                             sidebarContent.isExecuting ? "streaming" : "ready"
                           }
