@@ -280,12 +280,12 @@ export const Messages = ({
             status === "streaming" &&
             !messageHasTextContent;
 
-          // Get saved files for assistant messages
+          // Get saved files for assistant messages (include files with url or storageId)
           const savedFiles =
             !isUser &&
             (isLastAssistantMessage ? status !== "streaming" : true) &&
             message.fileDetails
-              ? message.fileDetails.filter((f) => f.url)
+              ? message.fileDetails.filter((f) => f.url || f.storageId)
               : [];
 
           // Check if we should show branch indicator after this message
@@ -399,10 +399,15 @@ export const Messages = ({
                         <FilePartRenderer
                           key={`${message.id}-saved-file-${savedFiles.length - 1}`}
                           part={{
-                            url: savedFiles[savedFiles.length - 1].url!,
+                            url:
+                              savedFiles[savedFiles.length - 1].url ??
+                              undefined,
+                            storageId:
+                              savedFiles[savedFiles.length - 1].storageId,
                             name: savedFiles[savedFiles.length - 1].name,
                             filename: savedFiles[savedFiles.length - 1].name,
-                            mediaType: undefined,
+                            mediaType:
+                              savedFiles[savedFiles.length - 1].mediaType,
                           }}
                           partIndex={savedFiles.length - 1}
                           messageId={message.id}
@@ -430,10 +435,11 @@ export const Messages = ({
                         <FilePartRenderer
                           key={`${message.id}-saved-file-${fileIndex}`}
                           part={{
-                            url: file.url!,
+                            url: file.url ?? undefined,
+                            storageId: file.storageId,
                             name: file.name,
                             filename: file.name,
-                            mediaType: undefined,
+                            mediaType: file.mediaType,
                           }}
                           partIndex={fileIndex}
                           messageId={message.id}

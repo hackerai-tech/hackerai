@@ -113,3 +113,34 @@ export const clearAllDrafts = (): void => {
     // ignore
   }
 };
+
+/**
+ * Removes drafts older than 7 days
+ * Called on app initialization to prevent localStorage bloat
+ */
+export const cleanupExpiredDrafts = (): void => {
+  if (!isBrowser()) return;
+
+  try {
+    const store = readDraftStore();
+    const now = Date.now();
+    const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+    // Filter out drafts older than 7 days
+    const validDrafts = store.drafts.filter((draft) => {
+      const age = now - draft.timestamp;
+      return age < SEVEN_DAYS_MS;
+    });
+
+    // Only write if we actually removed drafts (avoid unnecessary writes)
+    if (validDrafts.length !== store.drafts.length) {
+      writeDraftStore({ ...store, drafts: validDrafts });
+      console.log(
+        `[Draft Cleanup] Removed ${store.drafts.length - validDrafts.length} expired drafts`,
+      );
+    }
+  } catch (error) {
+    // Silently fail - cleanup is not critical
+    console.warn("[Draft Cleanup] Failed to cleanup expired drafts:", error);
+  }
+};

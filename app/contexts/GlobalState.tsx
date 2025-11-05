@@ -21,9 +21,13 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Doc } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
-import { readChatMode, writeChatMode } from "@/lib/utils/client-storage";
 import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
+import {
+  readChatMode,
+  writeChatMode,
+  cleanupExpiredDrafts,
+} from "@/lib/utils/client-storage";
 
 interface GlobalStateType {
   // Input state
@@ -236,6 +240,11 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     prevIsMobile.current = isMobile;
   }, [chatSidebarOpen, isMobile]);
+
+  // Cleanup expired drafts on app initialization (once per session)
+  useEffect(() => {
+    cleanupExpiredDrafts();
+  }, []); // Empty dependency array = runs once on mount
 
   // Derive subscription tier from current token entitlements
   // Prefer normalized entitlements ("pro-plan", "ultra-plan"); fall back to monthly/yearly keys for backward compatibility
@@ -485,8 +494,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
     setIsSwitchingChats(true);
     setCurrentChatId(chatId);
-    // Clear text input only - preserve uploaded files across chat switches
-    setInput("");
+    // Don't clear input here - let ChatInput restore draft automatically
+    // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
     setIsTodoPanelExpanded(false);
   }, []);

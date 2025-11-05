@@ -10,6 +10,44 @@ import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 
 /**
+ * Get download URL for a file by storageId (on-demand for non-image files)
+ */
+export const getFileDownloadUrl = query({
+  args: {
+    storageId: v.string(),
+  },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    try {
+      // Query all user's files and find the one with matching storage_id
+      const userFiles = await ctx.db
+        .query("files")
+        .withIndex("by_user_id", (q) => q.eq("user_id", user.subject))
+        .collect();
+
+      const file = userFiles.find((f) => f.storage_id === args.storageId);
+
+      if (!file) {
+        throw new Error("File not found");
+      }
+
+      // Generate and return signed URL
+      const url = await ctx.storage.getUrl(args.storageId);
+      return url;
+    } catch (error) {
+      console.error("Failed to get file download URL:", error);
+      throw error;
+    }
+  },
+});
+
+/**
  * Internal query to count files for a user
  */
 export const countUserFiles = internalQuery({

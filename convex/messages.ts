@@ -230,7 +230,9 @@ export const getMessagesByChatId = query({
             v.object({
               fileId: v.id("files"),
               name: v.string(),
-              url: v.union(v.string(), v.null()),
+              mediaType: v.optional(v.string()),
+              url: v.optional(v.union(v.string(), v.null())),
+              storageId: v.optional(v.string()),
             }),
           ),
         ),
@@ -280,21 +282,29 @@ export const getMessagesByChatId = query({
         fileIdArray.map((fileId) => ctx.db.get(fileId)),
       );
 
-      // Step 3: Batch fetch all storage URLs in parallel
+      // Step 3: Batch fetch storage URLs for images only
       const urls = await Promise.all(
-        files.map((file) =>
-          file ? ctx.storage.getUrl(file.storage_id) : null,
-        ),
+        files.map((file) => {
+          if (!file) return null;
+          // Only fetch URL for images, others will use storageId
+          if (file.media_type?.startsWith("image/")) {
+            return ctx.storage.getUrl(file.storage_id);
+          }
+          return null;
+        }),
       );
 
       // Step 4: Build file details lookup map for O(1) access
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
         if (file) {
+          const isImage = file.media_type?.startsWith("image/");
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,
-            url: urls[index],
+            mediaType: file.media_type,
+            url: isImage ? urls[index] : undefined,
+            storageId: !isImage ? file.storage_id : undefined,
           });
         }
       });
