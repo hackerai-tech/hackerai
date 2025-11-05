@@ -8,6 +8,8 @@ import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
 import { findProcessPid } from "./utils/pid-discovery";
+import { retryWithBackoff } from "./utils/retry-with-backoff";
+import { waitForSandboxReady } from "./utils/sandbox-health";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
@@ -56,6 +58,10 @@ In using these tools, adhere to the following guidelines:
     ) => {
       try {
         const { sandbox } = await sandboxManager.getSandbox();
+
+        // Wait for sandbox to be ready before executing commands
+        // This prevents wasting retry attempts on a sandbox that's being recreated
+        await waitForSandboxReady(sandbox);
 
         const terminalSessionId = `terminal-${randomUUID()}`;
         let outputCounter = 0;
@@ -183,13 +189,36 @@ In using these tools, adhere to the following guidelines:
             onStderr: handler!.stderr,
           };
 
-          // Execute command (background or foreground)
+          // Execute command with retry logic for transient failures
+          // Sandbox readiness already checked, so these retries handle race conditions
+          // Retries: 6 attempts with exponential backoff (500ms, 1s, 2s, 4s, 8s, 16s) + jitter (±50ms)
           const runPromise = is_background
-            ? sandbox.commands.run(command, {
-                ...commonOptions,
-                background: true,
-              })
-            : sandbox.commands.run(command, commonOptions);
+            ? retryWithBackoff(
+                () =>
+                  sandbox.commands.run(command, {
+                    ...commonOptions,
+                    background: true,
+                  }),
+                {
+                  maxRetries: 6,
+                  baseDelayMs: 500,
+                  jitterMs: 50,
+                  isPermanentError: () => false, // Retry all errors
+                  logger: (message, error) =>
+                    console.warn(`[Terminal Command] ${message}`, error),
+                },
+              )
+            : retryWithBackoff(
+                () => sandbox.commands.run(command, commonOptions),
+                {
+                  maxRetries: 6,
+                  baseDelayMs: 500,
+                  jitterMs: 50,
+                  isPermanentError: () => false, // Retry all errors
+                  logger: (message, error) =>
+                    console.warn(`[Terminal Command] ${message}`, error),
+                },
+              );
 
           runPromise
             .then(async (exec) => {

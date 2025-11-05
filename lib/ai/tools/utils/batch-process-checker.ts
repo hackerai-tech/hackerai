@@ -124,8 +124,22 @@ export async function checkProcessesBatch(
   sandbox: Sandbox,
   requests: ProcessCheckRequest[],
 ): Promise<ProcessCheckResult[]> {
-  // Get all processes once
-  const processMap = await getAllProcesses(sandbox);
+  let processMap: Map<number, string>;
+
+  try {
+    // Get all processes once
+    processMap = await getAllProcesses(sandbox);
+  } catch (error) {
+    // If sandbox is unavailable, mark all processes as not running
+    console.warn(
+      "[Batch Process Checker] Failed to fetch processes:",
+      error instanceof Error ? error.message : error,
+    );
+    return requests.map((request) => ({
+      pid: request.pid,
+      running: false,
+    }));
+  }
 
   // Check each requested process against the map
   return requests.map((request) => {
