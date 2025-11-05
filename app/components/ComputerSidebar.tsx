@@ -120,7 +120,7 @@ export const ComputerSidebar: React.FC = () => {
     return "";
   };
 
-  // Register background processes for tracking
+  // Register background processes for tracking (only once per PID)
   useEffect(() => {
     if (
       sidebarContent &&
@@ -131,7 +131,9 @@ export const ComputerSidebar: React.FC = () => {
     ) {
       registerProcess(sidebarContent.pid, sidebarContent.command);
     }
-  }, [sidebarContent, registerProcess]);
+    // Only depend on PID change, not on sidebarContent or registerProcess
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebarContent?.pid]);
 
   // Early return after all hooks are called
   if (!sidebarOpen || !sidebarContent) {

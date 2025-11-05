@@ -18,13 +18,13 @@ export interface TrackedProcess {
   commandMatches?: boolean;
   lastChecked?: number;
   isKilling?: boolean;
-  scheduledForDeletion?: boolean;
 }
 
 interface ProcessContextType {
   processes: Map<number, TrackedProcess>;
   // Core process management
   registerProcess: (pid: number, command: string, maxAgeMs?: number) => void;
+  clearAllProcesses: () => void;
   // Process state queries
   isProcessRunning: (pid: number) => boolean;
   isProcessKilling: (pid: number) => boolean;
@@ -58,7 +58,10 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
 
     try {
       // Get current processes from state at time of execution
-      const currentProcesses = Array.from(processes.values());
+      // Only poll processes that are still running
+      const currentProcesses = Array.from(processes.values()).filter(
+        (p) => p.running,
+      );
 
       if (currentProcesses.length === 0) {
         isPollingRef.current = false;
@@ -110,26 +113,9 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
                 lastChecked: now,
               });
 
-              // Schedule deletion for processes that are no longer running
-              // Only schedule once to prevent multiple timeouts
-              if (!result.running && !existing.scheduledForDeletion) {
-                console.log(`[Process Context] Process ${result.pid} completed, scheduling deletion in 2s`);
-
-                // Mark as scheduled
-                updated.set(result.pid, {
-                  ...updated.get(result.pid)!,
-                  scheduledForDeletion: true,
-                });
-
-                // Keep them for a brief period for UI feedback
-                setTimeout(() => {
-                  setProcesses((current) => {
-                    const newMap = new Map(current);
-                    newMap.delete(result.pid);
-                    console.log(`[Process Context] Process ${result.pid} removed from tracking`);
-                    return newMap;
-                  });
-                }, 2000);
+              // Log completion but don't auto-delete
+              if (!result.running && existing.running) {
+                console.log(`[Process Context] Process ${result.pid} completed (will stay in memory until chat cleared)`);
               }
             }
           }
@@ -166,10 +152,6 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
       const existing = processes.get(pid);
       if (existing) {
         // Already tracking this process
-        // Don't re-register if it's scheduled for deletion
-        if (existing.scheduledForDeletion) {
-          console.log(`[Process Context] Process ${pid} already completed and scheduled for cleanup, skipping re-registration`);
-        }
         return;
       }
 
@@ -198,6 +180,11 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
       updated.delete(pid);
       return updated;
     });
+  }, []);
+
+  const clearAllProcesses = useCallback(() => {
+    console.log("[Process Context] Clearing all processes (chat change/reset)");
+    setProcesses(new Map());
   }, []);
 
   const getProcess = useCallback(
@@ -299,6 +286,7 @@ export function ProcessProvider({ children }: { children: React.ReactNode }) {
   const value: ProcessContextType = {
     processes,
     registerProcess,
+    clearAllProcesses,
     removeProcess,
     getProcess,
     isProcessRunning,

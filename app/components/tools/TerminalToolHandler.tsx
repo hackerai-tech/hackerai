@@ -34,12 +34,14 @@ export const TerminalToolHandler = ({
     ? terminalOutput.result.pid
     : null;
 
-  // Register background processes for tracking
+  // Register background processes for tracking (only once per PID)
   useEffect(() => {
     if (terminalInput?.is_background && pid && terminalInput?.command) {
       registerProcess(pid, terminalInput.command);
     }
-  }, [pid, terminalInput?.is_background, terminalInput?.command, registerProcess]);
+    // Only depend on PID change to prevent re-registration on every render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid]);
 
   const handleOpenInSidebar = () => {
     if (!terminalInput?.command) return;
