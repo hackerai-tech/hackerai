@@ -43,10 +43,11 @@ export async function waitForSandboxReady(
       jitterMs: 100,
       isPermanentError: () => false, // Retry all errors - sandbox might be starting
       logger: (message, error) => {
-        console.log(`[Sandbox Health] ${message}`, error);
+        // Only log final failure (when it gives up)
+        if (message.includes("failed after")) {
+          console.error(`[Sandbox Health] ${message}`, error);
+        }
       },
     },
   );
-
-  console.log("[Sandbox Health] Sandbox is ready and responsive");
 }
