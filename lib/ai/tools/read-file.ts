@@ -46,7 +46,9 @@ Usage:
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
-        const fileContent = await sandbox.files.read(target_file);
+        const fileContent = await sandbox.files.read(target_file, {
+          user: "user" as const,
+        });
 
         if (!fileContent || fileContent.trim() === "") {
           return { result: "File is empty." };

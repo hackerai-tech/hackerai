@@ -6,6 +6,10 @@ import type { ToolContext } from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
+import { terminateProcessReliably } from "./utils/process-termination";
+import { findProcessPid } from "./utils/pid-discovery";
+import { retryWithBackoff } from "./utils/retry-with-backoff";
+import { waitForSandboxReady } from "./utils/sandbox-health";
 
 const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
@@ -55,6 +59,10 @@ In using these tools, adhere to the following guidelines:
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
+        // Wait for sandbox to be ready before executing commands
+        // This prevents wasting retry attempts on a sandbox that's being recreated
+        await waitForSandboxReady(sandbox);
+
         const terminalSessionId = `terminal-${randomUUID()}`;
         let outputCounter = 0;
 
@@ -70,34 +78,61 @@ In using these tools, adhere to the following guidelines:
           let resolved = false;
           let execution: any = null;
           let handler: ReturnType<typeof createTerminalHandler> | null = null;
+          let processId: number | null = null; // Store PID for all processes
 
-          // Listen for abort signal
-          const onAbort = () => {
-            if (!resolved) {
-              resolved = true;
-              const result = handler ? handler.getResult() : { output: "" };
-              if (handler) {
-                handler.cleanup();
+          // Handle abort signal
+          const onAbort = async () => {
+            if (resolved) {
+              return;
+            }
+
+            // Set resolved IMMEDIATELY to prevent race with retry logic
+            // This must happen before we kill the process, otherwise the error
+            // from the killed process might trigger retries
+            resolved = true;
+
+            // For foreground commands, attempt to discover PID if not already known
+            if (!processId && !is_background) {
+              processId = await findProcessPid(sandbox, command);
+            }
+
+            // Terminate the current process
+            try {
+              if ((execution && execution.kill) || processId) {
+                await terminateProcessReliably(sandbox, execution, processId);
+              } else {
+                console.warn(
+                  "[Terminal Command] Cannot kill process: no execution handle or PID available",
+                );
               }
-              resolve({
-                result: {
-                  output: result.output,
-                  exitCode: null,
-                  error: "Command execution aborted by user",
-                },
-              });
+            } catch (error) {
+              console.error(
+                "[Terminal Command] Error during abort termination:",
+                error,
+              );
             }
-            // Kill the running process if exists
-            if (execution && execution.kill) {
-              execution.kill().catch(() => {});
+
+            // Clean up and resolve
+            const result = handler ? handler.getResult() : { output: "" };
+            if (handler) {
+              handler.cleanup();
             }
+
+            resolve({
+              result: {
+                output: result.output,
+                exitCode: 130, // Standard SIGINT exit code
+                error: "Command execution aborted by user",
+              },
+            });
           };
 
+          // Check if already aborted before starting
           if (abortSignal?.aborted) {
             return resolve({
               result: {
                 output: "",
-                exitCode: null,
+                exitCode: 130,
                 error: "Command execution aborted by user",
               },
             });
@@ -107,46 +142,136 @@ In using these tools, adhere to the following guidelines:
             (output) => createTerminalWriter(output),
             {
               timeoutSeconds: STREAM_TIMEOUT_SECONDS,
-              onTimeout: () => {
-                if (!resolved) {
-                  resolved = true;
-                  createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
-                  // Kill the running process on timeout if exists
-                  if (execution && execution.kill) {
-                    execution.kill().catch(() => {});
-                  }
-                  const result = handler ? handler.getResult() : { output: "" };
-                  if (handler) {
-                    handler.cleanup();
-                  }
-                  resolve({
-                    result: { output: result.output, exitCode: null },
-                  });
+              onTimeout: async () => {
+                if (resolved) {
+                  return;
                 }
+
+                createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
+
+                // For foreground commands, attempt to discover PID if not already known
+                if (!processId && !is_background) {
+                  processId = await findProcessPid(sandbox, command);
+                }
+
+                // Attempt to kill the running process on timeout
+                if ((execution && execution.kill) || processId) {
+                  try {
+                    await terminateProcessReliably(
+                      sandbox,
+                      execution,
+                      processId,
+                    );
+                  } catch (error) {
+                    console.error(
+                      "[Terminal Command] Error during timeout termination:",
+                      error,
+                    );
+                  }
+                }
+
+                resolved = true;
+                const result = handler ? handler.getResult() : { output: "" };
+                if (handler) {
+                  handler.cleanup();
+                }
+                resolve({
+                  result: { output: result.output, exitCode: null },
+                });
               },
             },
           );
 
+          // Register abort listener
           abortSignal?.addEventListener("abort", onAbort, { once: true });
 
           const commonOptions = {
             timeoutMs: MAX_COMMAND_EXECUTION_TIME,
             user: "root" as const,
             cwd: "/home/user",
-            onStdout: handler!.stdout,
-            onStderr: handler!.stderr,
+            ...(is_background
+              ? {}
+              : {
+                  onStdout: handler!.stdout,
+                  onStderr: handler!.stderr,
+                }),
           };
 
+          // Determine if an error is a permanent command failure (don't retry)
+          // vs a transient sandbox issue (do retry)
+          const isPermanentError = (error: unknown): boolean => {
+            // Command exit errors are permanent (command ran but failed)
+            if (error instanceof CommandExitError) {
+              return true;
+            }
+
+            if (error instanceof Error) {
+              // Signal errors (like "signal: killed") are permanent - they occur when
+              // a process is terminated externally (e.g., by our abort handler).
+              // We must not retry these as the termination was intentional.
+              if (error.message.includes("signal:")) {
+                return true;
+              }
+
+              // Sandbox termination errors are permanent
+              return (
+                error.name === "NotFoundError" ||
+                error.message.includes("not running anymore") ||
+                error.message.includes("Sandbox not found")
+              );
+            }
+
+            return false;
+          };
+
+          // Execute command with retry logic for transient failures
+          // Sandbox readiness already checked, so these retries handle race conditions
+          // Retries: 6 attempts with exponential backoff (500ms, 1s, 2s, 4s, 8s, 16s) + jitter (±50ms)
           const runPromise = is_background
-            ? sandbox.commands.run(command, {
-                ...commonOptions,
-                background: true,
-              })
-            : sandbox.commands.run(command, commonOptions);
+            ? retryWithBackoff(
+                () =>
+                  sandbox.commands.run(command, {
+                    ...commonOptions,
+                    background: true,
+                  }),
+                {
+                  maxRetries: 6,
+                  baseDelayMs: 500,
+                  jitterMs: 50,
+                  isPermanentError,
+                  logger: (message, error) => {
+                    // Don't log if we've already resolved via abort handler
+                    if (!resolved) {
+                      console.warn(`[Terminal Command] ${message}`, error);
+                    }
+                  },
+                },
+              )
+            : retryWithBackoff(
+                () => sandbox.commands.run(command, commonOptions),
+                {
+                  maxRetries: 6,
+                  baseDelayMs: 500,
+                  jitterMs: 50,
+                  isPermanentError,
+                  logger: (message, error) => {
+                    // Don't log if we've already resolved via abort handler
+                    if (!resolved) {
+                      console.warn(`[Terminal Command] ${message}`, error);
+                    }
+                  },
+                },
+              );
 
           runPromise
             .then(async (exec) => {
               execution = exec;
+
+              // Capture PID for background processes
+              if (is_background && (exec as any)?.pid) {
+                processId = (exec as any).pid;
+              }
+
               if (handler) {
                 handler.cleanup();
               }
@@ -159,12 +284,14 @@ In using these tools, adhere to the following guidelines:
                   : { output: "" };
 
                 // Track background processes with their output files
-                if (is_background && (exec as any)?.pid) {
-                  const pid = (exec as any).pid;
+                if (is_background && processId) {
+                  const backgroundOutput = `Background process started with PID: ${processId}\n`;
+                  createTerminalWriter(backgroundOutput);
+
                   const outputFiles =
                     BackgroundProcessTracker.extractOutputFiles(command);
                   backgroundProcessTracker.addProcess(
-                    pid,
+                    processId,
                     command,
                     outputFiles,
                   );
@@ -173,8 +300,8 @@ In using these tools, adhere to the following guidelines:
                 resolve({
                   result: is_background
                     ? {
-                        pid: (exec as any)?.pid ?? null,
-                        output: finalResult.output,
+                        pid: processId,
+                        output: `Background process started with PID: ${processId ?? "unknown"}\n`,
                       }
                     : {
                         exitCode: 0,

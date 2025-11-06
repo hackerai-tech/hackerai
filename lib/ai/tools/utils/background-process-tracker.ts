@@ -58,6 +58,7 @@ export class BackgroundProcessTracker {
 
   /**
    * Check if any tracked processes are writing to the requested files
+   * Uses batch checking for efficiency
    */
   async hasActiveProcessesForFiles(
     sandbox: Sandbox,
@@ -65,6 +66,7 @@ export class BackgroundProcessTracker {
   ): Promise<{ active: boolean; processes: BackgroundProcess[] }> {
     const activeProcesses: BackgroundProcess[] = [];
 
+    // Check each process individually
     for (const [pid, process] of this.processes.entries()) {
       const isRunning = await this.checkProcessStatus(sandbox, pid);
 

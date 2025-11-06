@@ -49,7 +49,9 @@ Usage:
 
         try {
           // Read the file content
-          const fileContent = await sandbox.files.read(file_path);
+          const fileContent = await sandbox.files.read(file_path, {
+            user: "user" as const,
+          });
 
           // Validate that old_string and new_string are different
           if (old_string === new_string) {
@@ -89,7 +91,9 @@ Usage:
           }
 
           // Write the updated content back to the file
-          await sandbox.files.write(file_path, updatedContent);
+          await sandbox.files.write(file_path, updatedContent, {
+            user: "user" as const,
+          });
 
           const action = replace_all ? "replacements" : "replacement";
           return {
