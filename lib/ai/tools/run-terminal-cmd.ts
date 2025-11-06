@@ -189,6 +189,26 @@ In using these tools, adhere to the following guidelines:
             onStderr: handler!.stderr,
           };
 
+          // Determine if an error is a permanent command failure (don't retry)
+          // vs a transient sandbox issue (do retry)
+          const isPermanentError = (error: unknown): boolean => {
+            // Command exit errors are permanent (command ran but failed)
+            if (error instanceof CommandExitError) {
+              return true;
+            }
+
+            // Sandbox termination errors are permanent (use default detection)
+            if (error instanceof Error) {
+              return (
+                error.name === "NotFoundError" ||
+                error.message.includes("not running anymore") ||
+                error.message.includes("Sandbox not found")
+              );
+            }
+
+            return false;
+          };
+
           // Execute command with retry logic for transient failures
           // Sandbox readiness already checked, so these retries handle race conditions
           // Retries: 6 attempts with exponential backoff (500ms, 1s, 2s, 4s, 8s, 16s) + jitter (±50ms)
@@ -203,7 +223,7 @@ In using these tools, adhere to the following guidelines:
                   maxRetries: 6,
                   baseDelayMs: 500,
                   jitterMs: 50,
-                  isPermanentError: () => false, // Retry all errors
+                  isPermanentError,
                   logger: (message, error) =>
                     console.warn(`[Terminal Command] ${message}`, error),
                 },
@@ -214,7 +234,7 @@ In using these tools, adhere to the following guidelines:
                   maxRetries: 6,
                   baseDelayMs: 500,
                   jitterMs: 50,
-                  isPermanentError: () => false, // Retry all errors
+                  isPermanentError,
                   logger: (message, error) =>
                     console.warn(`[Terminal Command] ${message}`, error),
                 },
