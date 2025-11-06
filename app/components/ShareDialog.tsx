@@ -45,15 +45,26 @@ export const ShareDialog = ({
 
   useEffect(() => {
     if (open) {
+      // Reset all states when dialog opens
+      setError("");
+      setCopied(false);
+      setIsGenerating(false);
+      setIsUpdating(false);
+      setIsUnsharing(false);
+
       // If already shared, set the URL immediately
       if (existingShareId) {
         const url = `${window.location.origin}/share/${existingShareId}`;
         setShareUrl(url);
         setShareDate(existingShareDate);
+      } else {
+        // Reset URL and date if not shared
+        setShareUrl("");
+        setShareDate(undefined);
       }
       // Don't auto-share - let user click a button to create share
     }
-  }, [open, existingShareId]);
+  }, [open, existingShareId, existingShareDate]);
 
   const generateShareLink = async () => {
     setIsGenerating(true);
@@ -154,6 +165,9 @@ export const ShareDialog = ({
     setShareUrl("");
     setError("");
     setCopied(false);
+    setIsGenerating(false);
+    setIsUpdating(false);
+    setIsUnsharing(false);
     onOpenChange(false);
   };
 

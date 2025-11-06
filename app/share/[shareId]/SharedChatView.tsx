@@ -9,8 +9,8 @@ interface SharedChatViewProps {
   shareId: string;
 }
 
-// UUID v4 format validation regex
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// UUID format validation regex (matches v4 and other UUID versions)
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function SharedChatView({ shareId }: SharedChatViewProps) {
   // Validate shareId format before making database query
