@@ -12,7 +12,6 @@ export const json = (data: unknown, init?: ResponseInit) =>
 export const extractErrorMessage = (err: unknown): string => {
   if (typeof err === "string") return err;
   if (err && typeof err === "object" && "message" in err) {
-     
     return (err as any).message ?? "";
   }
   return "";
@@ -31,7 +30,7 @@ export const isUnauthorizedError = (err: unknown): boolean => {
 export const isRateLimitError = (err: unknown): boolean => {
   const normalized = extractErrorMessage(err).toLowerCase();
   // Detect common 429 shapes and WorkOS SDK message
-   
+
   const statusCode = (err as any)?.status;
   return (
     statusCode === 429 ||

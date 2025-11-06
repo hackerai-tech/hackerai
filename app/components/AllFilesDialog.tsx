@@ -132,7 +132,7 @@ const AllFilesDialog = ({
     if (!open) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectionMode(false);
-       
+
       setSelectedFiles(new Set());
     }
   }, [open]);
