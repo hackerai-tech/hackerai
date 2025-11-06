@@ -67,10 +67,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
   // Check if this chat is currently active based on URL
   const isCurrentlyActive = window.location.pathname === `/c/${id}`;
 
-  // Use global state title for current chat to show real-time updates
-  const isCurrentChat = currentChatId === id;
+  // Use global state title only for the currently active chat (based on URL, not global state)
+  // to show real-time updates while avoiding flashing the wrong title during navigation
   const displayTitle =
-    isCurrentChat && globalChatTitle ? globalChatTitle : title;
+    isCurrentlyActive && globalChatTitle ? globalChatTitle : title;
 
   const handleClick = () => {
     // Don't navigate if dialog is open or dropdown is open
