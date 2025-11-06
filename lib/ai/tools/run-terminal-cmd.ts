@@ -95,7 +95,7 @@ In using these tools, adhere to the following guidelines:
               processId = await findProcessPid(sandbox, command);
             }
 
-            // Terminate the process if we have a way to do so
+            // Terminate the current process
             try {
               if ((execution && execution.kill) || processId) {
                 await terminateProcessReliably(sandbox, execution, processId);
