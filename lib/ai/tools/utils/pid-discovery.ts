@@ -45,9 +45,6 @@ export async function findProcessPid(
       if (pids.length > 0) {
         // Get the most recent PID (highest number, likely the actual process vs parent shells)
         const pid = Math.max(...pids);
-        console.log(
-          `[PID Discovery] Found process matching '${searchPattern.slice(0, 50)}...' with PID ${pid}`,
-        );
         return pid;
       }
     }
@@ -72,9 +69,6 @@ export async function findProcessPid(
       if (psResult.stdout?.trim()) {
         const pid = parseInt(psResult.stdout.trim());
         if (!isNaN(pid)) {
-          console.log(
-            `[PID Discovery] Found process matching '${searchPattern.slice(0, 50)}...' with PID ${pid} (using ps fallback)`,
-          );
           return pid;
         }
       }

@@ -27,11 +27,6 @@ export async function verifyProcessTerminated(
       const isRunning = result.stdout.includes(pid.toString());
 
       if (!isRunning) {
-        if (attempt > 1) {
-          console.log(
-            `[Process Termination] PID ${pid}: Verified terminated after ${attempt} attempts`,
-          );
-        }
         return true; // Process successfully terminated
       }
 
@@ -40,10 +35,7 @@ export async function verifyProcessTerminated(
         await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     } catch (error) {
-      // Command error usually means process doesn't exist
-      console.log(
-        `[Process Termination] PID ${pid}: Process not found (attempt ${attempt})`,
-      );
+      // Command error usually means process doesn't exist (successful kill)
       return true;
     }
   }
@@ -67,14 +59,10 @@ export async function forceKillProcess(
   pid: number,
 ): Promise<boolean> {
   try {
-    console.log(`[Process Termination] PID ${pid}: Attempting force kill (SIGKILL)`);
-
     // Use E2B's native kill method which uses SIGKILL
     const killed = await sandbox.commands.kill(pid);
 
-    if (killed) {
-      console.log(`[Process Termination] PID ${pid}: Force kill successful`);
-    } else {
+    if (!killed) {
       console.warn(
         `[Process Termination] PID ${pid}: Force kill returned false (process may not exist)`,
       );
@@ -106,9 +94,6 @@ export async function terminateProcessReliably(
 ): Promise<void> {
   // If we have PID but no execution object (foreground commands during abort), use direct kill
   if (pid && (!execution || !execution.kill)) {
-    console.log(
-      `[Process Termination] PID ${pid}: No execution handle, using direct kill`,
-    );
     await forceKillProcess(sandbox, pid);
     const finalCheck = await verifyProcessTerminated(sandbox, pid, 2, 150);
     if (!finalCheck) {
@@ -121,17 +106,11 @@ export async function terminateProcessReliably(
 
   // If no way to kill, nothing to do
   if (!execution || !execution.kill) {
-    console.log(
-      "[Process Termination] No execution object, kill method, or PID available",
-    );
     return;
   }
 
   try {
     // Step 1: Try graceful kill via execution.kill()
-    console.log(
-      `[Process Termination] ${pid ? `PID ${pid}` : "Unknown PID"}: Attempting graceful kill`,
-    );
     await execution.kill();
 
     // Step 2: If we have a PID, verify termination
@@ -152,15 +131,7 @@ export async function terminateProcessReliably(
             `[Process Termination] PID ${pid}: Process still running after force kill!`,
           );
         }
-      } else {
-        console.log(
-          `[Process Termination] PID ${pid}: Graceful kill succeeded`,
-        );
       }
-    } else {
-      console.log(
-        "[Process Termination] No PID available for verification, graceful kill attempted",
-      );
     }
   } catch (error) {
     console.error(

@@ -91,10 +91,6 @@ In using these tools, adhere to the following guidelines:
             // from the killed process might trigger retries
             resolved = true;
 
-            console.log(
-              `[Terminal Command] Abort signal received for: ${command.slice(0, 50)}${command.length > 50 ? "..." : ""}`,
-            );
-
             // For foreground commands, attempt to discover PID if not already known
             if (!processId && !is_background) {
               processId = await findProcessPid(sandbox, command);
@@ -235,8 +231,12 @@ In using these tools, adhere to the following guidelines:
                   baseDelayMs: 500,
                   jitterMs: 50,
                   isPermanentError,
-                  logger: (message, error) =>
-                    console.warn(`[Terminal Command] ${message}`, error),
+                  logger: (message, error) => {
+                    // Don't log if we've already resolved via abort handler
+                    if (!resolved) {
+                      console.warn(`[Terminal Command] ${message}`, error);
+                    }
+                  },
                 },
               )
             : retryWithBackoff(
@@ -246,8 +246,12 @@ In using these tools, adhere to the following guidelines:
                   baseDelayMs: 500,
                   jitterMs: 50,
                   isPermanentError,
-                  logger: (message, error) =>
-                    console.warn(`[Terminal Command] ${message}`, error),
+                  logger: (message, error) => {
+                    // Don't log if we've already resolved via abort handler
+                    if (!resolved) {
+                      console.warn(`[Terminal Command] ${message}`, error);
+                    }
+                  },
                 },
               );
 
@@ -258,9 +262,6 @@ In using these tools, adhere to the following guidelines:
               // Capture PID for background processes
               if (is_background && (exec as any)?.pid) {
                 processId = (exec as any).pid;
-                console.log(
-                  `[Terminal Command] Background process started with PID ${processId}`,
-                );
               }
 
               if (handler) {
