@@ -86,6 +86,11 @@ In using these tools, adhere to the following guidelines:
               return;
             }
 
+            // Set resolved IMMEDIATELY to prevent race with retry logic
+            // This must happen before we kill the process, otherwise the error
+            // from the killed process might trigger retries
+            resolved = true;
+
             console.log(
               `[Terminal Command] Abort signal received for: ${command.slice(0, 50)}${command.length > 50 ? "..." : ""}`,
             );
@@ -112,7 +117,6 @@ In using these tools, adhere to the following guidelines:
             }
 
             // Clean up and resolve
-            resolved = true;
             const result = handler ? handler.getResult() : { output: "" };
             if (handler) {
               handler.cleanup();
@@ -197,8 +201,15 @@ In using these tools, adhere to the following guidelines:
               return true;
             }
 
-            // Sandbox termination errors are permanent (use default detection)
             if (error instanceof Error) {
+              // Signal errors (like "signal: killed") are permanent - they occur when
+              // a process is terminated externally (e.g., by our abort handler).
+              // We must not retry these as the termination was intentional.
+              if (error.message.includes("signal:")) {
+                return true;
+              }
+
+              // Sandbox termination errors are permanent
               return (
                 error.name === "NotFoundError" ||
                 error.message.includes("not running anymore") ||
