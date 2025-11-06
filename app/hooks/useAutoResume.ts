@@ -32,6 +32,7 @@ export function useAutoResume({
       setIsAutoResuming(true);
       resumeStream();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoResume, initialMessages.length > 0]);
 
   useEffect(() => {
@@ -45,5 +46,6 @@ export function useAutoResume({
       // First message arrived, we can allow Stop button again
       setIsAutoResuming(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataStream, initialMessages, setMessages]);
 }

@@ -8,6 +8,7 @@ import {
   Split,
 } from "lucide-react";
 import { useState } from "react";
+import Image from "next/image";
 import type { ChatStatus } from "@/types";
 import { WithTooltip } from "@/components/ui/with-tooltip";
 import { Button } from "@/components/ui/button";
@@ -268,12 +269,13 @@ export const MessageActions = ({
                       className="border-background bg-background flex items-center overflow-clip rounded-full -ms-1.5 first:me-0 border-2 group-hover/footnote:border-muted relative"
                     >
                       <div className="relative inline-block shrink-0">
-                        <img
+                        <Image
                           alt=""
                           width={20}
                           height={20}
                           className="w-5 h-5 rounded-full shadow-[inset_0_0_0_1px_rgba(0,0,0,0.05)] duration-200 motion-safe:transition-opacity opacity-100"
                           src={getFaviconUrl(domain)}
+                          unoptimized
                         />
                       </div>
                     </div>

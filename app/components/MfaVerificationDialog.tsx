@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -102,10 +103,13 @@ const MfaVerificationDialog = ({
                 <>
                   {/* QR Code */}
                   <div className="p-3 bg-white rounded-lg">
-                    <img
+                    <Image
                       src={enrollmentData.factor.qrCode}
                       alt="QR Code for 2FA setup"
                       className="w-32 h-32"
+                      width={128}
+                      height={128}
+                      unoptimized
                     />
                   </div>
 

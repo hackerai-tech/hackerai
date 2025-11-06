@@ -107,10 +107,7 @@ export default function Page() {
       | "yearly";
 
     return { initialSeats: seats, initialPlan: plan };
-  }, [
-    typeof window !== "undefined" ? window.location.search : "",
-    teamPricingDialogOpen,
-  ]);
+  }, [typeof window !== "undefined" ? window.location.search : ""]);
 
   return (
     <>

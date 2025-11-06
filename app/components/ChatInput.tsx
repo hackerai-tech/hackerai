@@ -223,6 +223,7 @@ export const ChatInput = ({
     return () => {
       document.removeEventListener("paste", handlePaste);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handlePasteEvent]);
 
   return (

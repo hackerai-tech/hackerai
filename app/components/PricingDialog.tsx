@@ -183,10 +183,12 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   };
 
   const handleSignIn = () => {
+    // eslint-disable-next-line react-hooks/immutability
     window.location.href = "/login";
   };
 
   const handleSignUp = () => {
+    // eslint-disable-next-line react-hooks/immutability
     window.location.href = "/signup";
   };
 
