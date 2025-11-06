@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { SharedLinksTab } from "./SharedLinksTab";
 
 const DataControlsTab = () => {
   const { subscription } = useGlobalState();
@@ -65,6 +66,14 @@ const DataControlsTab = () => {
 
   return (
     <div className="space-y-6 min-h-0">
+      {/* Shared Links Section */}
+      <div>
+        <SharedLinksTab />
+      </div>
+
+      {/* Divider */}
+      <div className="border-t" />
+
       {/* Delete All Chats Section */}
       <div>
         <div className="flex items-center justify-between py-3">
