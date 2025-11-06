@@ -32,7 +32,9 @@ Usage:
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
-        await sandbox.files.write(file_path, contents);
+        await sandbox.files.write(file_path, contents, {
+          user: "user" as const,
+        });
 
         return {
           result: `Successfully wrote ${contents.split("\n").length} lines to ${file_path}`,
