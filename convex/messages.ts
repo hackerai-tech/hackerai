@@ -1052,3 +1052,90 @@ export const regenerateWithNewContent = mutation({
     }
   },
 });
+
+/**
+ * Get messages for a shared chat (PUBLIC - no auth required).
+ *
+ * SECURITY FEATURES:
+ * 1. No authentication required - anyone with share link can access
+ * 2. Only returns messages for chats that are shared (have share_id)
+ * 3. FROZEN CONTENT: Only returns messages up to share_date
+ * 4. Strips user_id from response (anonymity)
+ * 5. Replaces file/image parts with placeholders (no file URLs exposed)
+ *
+ * This implements the "frozen share" concept: when a chat is shared,
+ * the shared link only shows messages that existed at share time.
+ * New messages added after sharing are NOT visible until user updates the share.
+ *
+ * @param chatId - The ID of the chat to get messages for
+ * @returns Array of messages (up to share_date) with files/images as placeholders
+ */
+export const getSharedMessages = query({
+  args: { chatId: v.string() },
+  returns: v.array(
+    v.object({
+      id: v.string(),
+      role: v.union(
+        v.literal("user"),
+        v.literal("assistant"),
+        v.literal("system"),
+      ),
+      parts: v.array(v.any()),
+      content: v.optional(v.string()),
+      update_time: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    try {
+      // CRITICAL SECURITY CHECK: Verify the chat is actually shared
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+
+      // Return empty array if chat doesn't exist or isn't shared
+      if (!chat || !chat.share_id || !chat.share_date) {
+        return [];
+      }
+
+      // Get all messages for this chat
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .order("asc")
+        .collect();
+
+      // FROZEN CONTENT: Filter messages to only those created/updated before share_date
+      // This ensures new messages added after sharing are not visible
+      const frozenMessages = messages.filter(
+        (msg) => msg.update_time <= chat.share_date!,
+      );
+
+      // Strip sensitive data and replace files with placeholders
+      return frozenMessages.map((msg) => ({
+        id: msg.id,
+        role: msg.role,
+        content: msg.content,
+        update_time: msg.update_time,
+        // Process parts to replace files/images with placeholders
+        parts: msg.parts.map((part: any) => {
+          // Replace file references with placeholder
+          if (part.type === "file" || part.type === "image") {
+            return {
+              type: part.type,
+              placeholder: true,
+              // SECURITY: Do NOT include url, storage_id, file_id, or name
+            };
+          }
+          // Keep text parts as-is
+          return part;
+        }),
+        // SECURITY: user_id is NOT included in response (anonymity)
+      }));
+    } catch (error) {
+      console.error("Failed to get shared messages:", error);
+      // Return empty array on error (fail secure)
+      return [];
+    }
+  },
+});
