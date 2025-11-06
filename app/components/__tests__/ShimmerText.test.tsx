@@ -1,11 +1,7 @@
 import { describe, it, expect } from '@jest/globals';
 import { render, screen } from '@testing-library/react';
 import React from 'react';
-
-// Simple mock component for testing
-const ShimmerText = ({ children, className }: { children: React.ReactNode; className?: string }) => {
-  return <span className={className}>{children}</span>;
-};
+import { ShimmerText } from '../ShimmerText';
 
 describe('ShimmerText', () => {
   it('should render children text', () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from '@jest/globals';
 import { cn, convertToUIMessages } from '../utils';
 import type { MessageRecord } from '../utils';
+import type { Id } from '@/convex/_generated/dataModel';
 
 describe('utils', () => {
   describe('cn', () => {
@@ -70,7 +71,7 @@ describe('utils', () => {
           parts: [{ type: 'text', text: 'Check this file' }],
           fileDetails: [
             {
-              fileId: 'file1' as any,
+              fileId: 'file1' as Id<'files'>,
               name: 'document.pdf',
               url: 'https://example.com/document.pdf',
             },

@@ -20,6 +20,7 @@ jest.mock('@/lib/utils/client-storage', () => ({
 
 // Mock Convex hooks used by useFileUpload
 jest.mock('convex/react', () => ({
+  useAuth: () => ({ user: null, entitlements: [] }),
   useMutation: () => jest.fn(),
   useAction: () => jest.fn(),
   useQuery: () => undefined,
