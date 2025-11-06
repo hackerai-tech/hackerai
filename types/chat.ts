@@ -95,14 +95,3 @@ export type RateLimitInfo = {
   resetTime: Date;
   limit: number;
 };
-
-export interface QueuedMessage {
-  id: string;
-  text: string;
-  files?: Array<{
-    file: File;
-    fileId: string;
-    url: string;
-  }>;
-  timestamp: number;
-}
