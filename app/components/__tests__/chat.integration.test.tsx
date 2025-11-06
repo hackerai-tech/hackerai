@@ -1,9 +1,9 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
-import { render, screen, waitFor, act } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { render, screen } from "@testing-library/react";
 
-// ===== IMPORTANT: Mock all child components and dependencies BEFORE importing Chat =====
+// ===== IMPORTANT: Mock all dependencies BEFORE importing Chat =====
+// These mocks are hoisted by Jest
 
 // Mock @ai-sdk/react
 const mockSendMessage = jest.fn();
@@ -25,7 +25,6 @@ jest.mock("@ai-sdk/react", () => ({
   })),
 }));
 
-// Mock external hooks and utilities
 jest.mock("react-hotkeys-hook", () => ({
   useHotkeys: jest.fn(),
 }));
@@ -33,8 +32,6 @@ jest.mock("react-hotkeys-hook", () => ({
 jest.mock("@/hooks/use-mobile", () => ({
   useIsMobile: jest.fn(() => false),
 }));
-
-// next/navigation is mocked via __mocks__/next/navigation.ts
 
 jest.mock("@/lib/utils/client-storage", () => ({
   NULL_THREAD_DRAFT_ID: "null-thread",
@@ -78,7 +75,6 @@ jest.mock("../../hooks/useChatHandlers", () => ({
     handleRegenerate: jest.fn(),
     handleRetry: jest.fn(),
     handleEditMessage: jest.fn(),
-    handleSendNow: jest.fn(),
   }),
 }));
 
@@ -95,7 +91,6 @@ jest.mock("../../hooks/useAutoResume", () => ({
   useAutoResume: jest.fn(),
 }));
 
-// Mock all complex nested components that use problematic hooks
 jest.mock("../SidebarHeader", () => ({
   __esModule: true,
   default: () => <div data-testid="sidebar-header">Sidebar Header</div>,
@@ -117,32 +112,16 @@ jest.mock("../MemoizedMarkdown", () => ({
   ),
 }));
 
-// Mock all child components to avoid complex dependency chains
 jest.mock("../Messages", () => ({
-  Messages: ({ messages, status }: any) => (
+  Messages: ({ messages }: any) => (
     <div data-testid="messages-component">
-      <div data-testid="message-count">{messages.length}</div>
-      <div data-testid="status">{status}</div>
+      {messages.length} messages
     </div>
   ),
 }));
 
 jest.mock("../ChatInput", () => ({
-  ChatInput: (props: any) => (
-    <div data-testid="chat-input-component">
-      <button
-        data-testid="submit-button"
-        onClick={() => props.onSubmit && props.onSubmit({ text: "test message" })}
-      >
-        Submit
-      </button>
-      <button data-testid="stop-button" onClick={props.onStop}>
-        Stop
-      </button>
-      <div data-testid="input-status">{props.status}</div>
-      <div data-testid="is-new-chat">{props.isNewChat ? "new" : "existing"}</div>
-    </div>
-  ),
+  ChatInput: () => <div data-testid="chat-input">ChatInput</div>,
 }));
 
 jest.mock("../ComputerSidebar", () => ({
@@ -151,27 +130,13 @@ jest.mock("../ComputerSidebar", () => ({
 
 jest.mock("../ChatHeader", () => ({
   __esModule: true,
-  default: (props: any) => (
-    <div data-testid="chat-header">
-      <div data-testid="chat-title">{props.chatTitle || "No title"}</div>
-      <div data-testid="is-existing-chat">
-        {props.isExistingChat ? "existing" : "new"}
-      </div>
-      <div data-testid="is-chat-not-found">
-        {props.isChatNotFound ? "not-found" : "found"}
-      </div>
-    </div>
-  ),
+  default: () => <div data-testid="chat-header">Chat Header</div>,
 }));
 
-// Mock Sidebar completely to avoid importing its dependencies
-jest.mock("../Sidebar", () => {
-  const React = require("react");
-  return {
-    __esModule: true,
-    default: () => React.createElement("div", { "data-testid": "main-sidebar" }, "Main Sidebar"),
-  };
-});
+jest.mock("../Sidebar", () => ({
+  __esModule: true,
+  default: () => <div data-testid="main-sidebar">Main Sidebar</div>,
+}));
 
 jest.mock("../Footer", () => ({
   __esModule: true,
@@ -191,24 +156,11 @@ jest.mock("@/components/ui/sidebar", () => ({
   SidebarProvider: ({ children }: any) => <div>{children}</div>,
 }));
 
-// ===== NOW import the components after all mocks are set up =====
+// ===== NOW import components =====
 import { Chat } from "../chat";
-import { GlobalStateProvider } from "@/app/contexts/GlobalState";
-import { DataStreamProvider } from "../DataStreamProvider";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { TestWrapper } from "../testUtils";
 
-// Test wrapper with all required providers
-const TestWrapper = ({ children }: { children: ReactNode }) => {
-  return (
-    <GlobalStateProvider>
-      <DataStreamProvider>
-        <TooltipProvider>{children}</TooltipProvider>
-      </DataStreamProvider>
-    </GlobalStateProvider>
-  );
-};
-
-describe("Chat - Integration Tests", () => {
+describe("Chat Component Integration", () => {
   let mockUseChat: jest.Mock;
 
   beforeEach(() => {
@@ -216,7 +168,6 @@ describe("Chat - Integration Tests", () => {
     const { useChat } = require("@ai-sdk/react");
     mockUseChat = useChat as jest.Mock;
 
-    // Reset to default mock implementation
     mockUseChat.mockReturnValue({
       messages: [],
       sendMessage: mockSendMessage,
@@ -229,58 +180,31 @@ describe("Chat - Integration Tests", () => {
     });
   });
 
-  describe("Chat Initialization", () => {
-    it("should render new chat with welcome message when no chatId provided", () => {
-      const { container } = render(
+  describe("Basic Rendering", () => {
+    it("should render new chat with welcome message", () => {
+      render(
         <TestWrapper>
           <Chat autoResume={false} />
         </TestWrapper>
       );
 
-      // Component should render successfully
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
       expect(screen.getByText("HackerAI")).toBeInTheDocument();
       expect(screen.getByText("Your AI pentest assistant")).toBeInTheDocument();
     });
 
-    it("should render existing chat when chatId provided", () => {
-      const { container } = render(
-        <TestWrapper>
-          <Chat chatId="test-chat-id" autoResume={false} />
-        </TestWrapper>
-      );
-
-      // Component should render without errors
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
-    });
-
     it("should render with provided chatId", () => {
-      const chatId = "test-chat-123";
-
       const { container } = render(
         <TestWrapper>
-          <Chat chatId={chatId} autoResume={false} />
+          <Chat chatId="test-chat-123" autoResume={false} />
         </TestWrapper>
       );
 
-      // Component should render successfully with chatId
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
-    });
-
-    it("should render with generated UUID for new chat", () => {
-      const { container } = render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>
-      );
-
-      // Component should render successfully
       expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
     });
   });
 
   describe("Message Display", () => {
-    it("should render when chat has messages", () => {
+    it("should render with existing messages", () => {
       mockUseChat.mockReturnValue({
         messages: [
           { id: "1", role: "user", content: "Hello" },
@@ -301,54 +225,12 @@ describe("Chat - Integration Tests", () => {
         </TestWrapper>
       );
 
-      // Component should render with messages
       expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
-    });
-
-    it("should show welcome screen when no messages", () => {
-      render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>
-      );
-
-      expect(screen.getByText("HackerAI")).toBeInTheDocument();
     });
   });
 
-  describe("Message Sending", () => {
-    it("should render without errors", () => {
-      const { container } = render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>
-      );
-
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
-    });
-
-    it("should render during streaming status", () => {
-      mockUseChat.mockReturnValue({
-        messages: [{ id: "1", role: "assistant", content: "Streaming..." }],
-        sendMessage: mockSendMessage,
-        setMessages: mockSetMessages,
-        status: "streaming",
-        stop: mockStop,
-        error: null,
-        regenerate: mockRegenerate,
-        resumeStream: mockResumeStream,
-      });
-
-      const { container } = render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>
-      );
-
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
-    });
-
-    it("should handle streaming state properly", () => {
+  describe("Streaming State", () => {
+    it("should handle streaming status", () => {
       mockUseChat.mockReturnValue({
         messages: [{ id: "1", role: "assistant", content: "Streaming..." }],
         sendMessage: mockSendMessage,
@@ -371,7 +253,7 @@ describe("Chat - Integration Tests", () => {
   });
 
   describe("Error Handling", () => {
-    it("should handle error state and still render", () => {
+    it("should render when error occurs", () => {
       const testError = new Error("Test error");
       mockUseChat.mockReturnValue({
         messages: [],
@@ -384,33 +266,18 @@ describe("Chat - Integration Tests", () => {
         resumeStream: mockResumeStream,
       });
 
-      const { container } = render(
+      render(
         <TestWrapper>
           <Chat autoResume={false} />
         </TestWrapper>
       );
 
-      // Component should still render despite error
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
       expect(screen.getByText("HackerAI")).toBeInTheDocument();
     });
   });
 
-  describe("Chat Not Found", () => {
-    it("should render without crashing when chatId is provided", () => {
-      const { container } = render(
-        <TestWrapper>
-          <Chat chatId="non-existent-chat" autoResume={false} />
-        </TestWrapper>
-      );
-
-      // Component should render without crashing even with non-existent chatId
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
-    });
-  });
-
-  describe("Sidebar Integration", () => {
-    it("should render main sidebar on desktop", () => {
+  describe("Sidebar Behavior", () => {
+    it("should render sidebar on desktop", () => {
       const { useIsMobile } = require("@/hooks/use-mobile");
       (useIsMobile as jest.Mock).mockReturnValue(false);
 
@@ -420,9 +287,7 @@ describe("Chat - Integration Tests", () => {
         </TestWrapper>
       );
 
-      // Sidebar should be rendered on desktop (check for sidebar wrapper class)
-      const sidebarWrapper = container.querySelector('[data-slot="sidebar-wrapper"]');
-      expect(sidebarWrapper).toBeInTheDocument();
+      expect(container.querySelector('[data-slot="sidebar-wrapper"]')).toBeInTheDocument();
     });
 
     it("should not render desktop sidebar on mobile", () => {
@@ -436,20 +301,6 @@ describe("Chat - Integration Tests", () => {
       );
 
       expect(screen.queryByTestId("main-sidebar")).not.toBeInTheDocument();
-    });
-  });
-
-  describe("Chat Lifecycle", () => {
-    it("should initialize and render properly", () => {
-      const { container } = render(
-        <TestWrapper>
-          <Chat autoResume={false} />
-        </TestWrapper>
-      );
-
-      // Component should render successfully
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
-      expect(screen.getByText("HackerAI")).toBeInTheDocument();
     });
   });
 });
