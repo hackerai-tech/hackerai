@@ -26,16 +26,19 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Ellipsis, Trash2, Edit2, Split } from "lucide-react";
+import { Ellipsis, Trash2, Edit2, Split, Share2 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { removeDraft } from "@/lib/utils/client-storage";
+import { ShareDialog } from "./ShareDialog";
 
 interface ChatItemProps {
   id: string;
   title: string;
   isBranched?: boolean;
   branchedFromTitle?: string;
+  shareId?: string;
+  shareDate?: number;
 }
 
 const ChatItem: React.FC<ChatItemProps> = ({
@@ -43,11 +46,14 @@ const ChatItem: React.FC<ChatItemProps> = ({
   title,
   isBranched = false,
   branchedFromTitle,
+  shareId,
+  shareDate,
 }) => {
   const router = useRouter();
   const [isHovered, setIsHovered] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
+  const [showShareDialog, setShowShareDialog] = useState(false);
   const [editTitle, setEditTitle] = useState(title);
   const [isRenaming, setIsRenaming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -141,6 +147,18 @@ const ChatItem: React.FC<ChatItemProps> = ({
     // Small delay to ensure dropdown is fully closed before opening dialog
     setTimeout(() => {
       setShowRenameDialog(true);
+    }, 50);
+  };
+
+  const handleShare = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Close dropdown first, then open share dialog
+    setIsDropdownOpen(false);
+
+    // Small delay to ensure dropdown is fully closed before opening dialog
+    setTimeout(() => {
+      setShowShareDialog(true);
     }, 50);
   };
 
@@ -265,6 +283,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
               <Edit2 className="mr-2 h-4 w-4" />
               Rename
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={handleShare}>
+              <Share2 className="mr-2 h-4 w-4" />
+              Share
+            </DropdownMenuItem>
             <DropdownMenuItem
               onClick={handleDelete}
               className="text-destructive focus:text-destructive"
@@ -317,6 +339,16 @@ const ChatItem: React.FC<ChatItemProps> = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Share Dialog */}
+      <ShareDialog
+        open={showShareDialog}
+        onOpenChange={setShowShareDialog}
+        chatId={id}
+        chatTitle={displayTitle}
+        existingShareId={shareId}
+        existingShareDate={shareDate}
+      />
     </div>
   );
 };
