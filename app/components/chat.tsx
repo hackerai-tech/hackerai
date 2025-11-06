@@ -68,9 +68,6 @@ export const Chat = ({
     setChatReset,
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
-    messageQueue,
-    dequeueNext,
-    clearQueue,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -140,11 +137,6 @@ export const Chat = ({
     paginatedMessages.results && paginatedMessages.results.length > 0
       ? convertToUIMessages([...paginatedMessages.results].reverse())
       : [];
-
-  // State to prevent double-processing of queue
-  const [isProcessingQueue, setIsProcessingQueue] = useState(false);
-  // Ref to track when "Send Now" is actively processing to prevent auto-processing interference
-  const isSendingNowRef = useRef(false);
 
   const {
     messages,
@@ -399,78 +391,6 @@ export const Chat = ({
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Automatic queue processing - send next queued message when ready
-  useEffect(() => {
-    if (
-      status === "ready" &&
-      messageQueue.length > 0 &&
-      !isProcessingQueue &&
-      !isSendingNowRef.current && // Don't auto-process if "Send Now" is active
-      chatMode === "agent"
-    ) {
-      setIsProcessingQueue(true);
-      const nextMessage = dequeueNext();
-
-      if (nextMessage) {
-        // Send the message with files if available
-        sendMessage(
-          {
-            text: nextMessage.text,
-            files: nextMessage.files
-              ? nextMessage.files.map((f) => ({
-                  type: "file" as const,
-                  filename: f.file.name,
-                  mediaType: f.file.type,
-                  url: f.url,
-                  fileId: f.fileId,
-                }))
-              : undefined,
-          },
-          {
-            body: {
-              mode: chatMode,
-              todos: [],
-              temporary: temporaryChatsEnabledRef.current,
-            },
-          },
-        );
-      }
-
-      // Reset processing flag after brief delay
-      setTimeout(() => setIsProcessingQueue(false), 100);
-    }
-  }, [
-    status,
-    messageQueue.length,
-    isProcessingQueue,
-    chatMode,
-    dequeueNext,
-    sendMessage,
-    temporaryChatsEnabledRef,
-  ]);
-
-  // Keep a ref to the latest messageQueue to avoid stale closures
-  const messageQueueRef = useRef(messageQueue);
-  useEffect(() => {
-    messageQueueRef.current = messageQueue;
-  }, [messageQueue]);
-
-  // Clear queue when switching from Agent to Ask mode
-  useEffect(() => {
-    if (chatMode === "ask" && messageQueueRef.current.length > 0) {
-      clearQueue();
-    }
-  }, [chatMode, clearQueue]);
-
-  // Clear queue when navigating to a different chat
-  useEffect(() => {
-    return () => {
-      if (messageQueueRef.current.length > 0) {
-        clearQueue();
-      }
-    };
-  }, [chatId, clearQueue]);
-
   // Document-level drag and drop listeners encapsulated in a hook
   useDocumentDragAndDrop({
     handleDragEnter,
@@ -486,7 +406,6 @@ export const Chat = ({
     handleRegenerate,
     handleRetry,
     handleEditMessage,
-    handleSendNow,
   } = useChatHandlers({
     chatId,
     messages,
@@ -500,8 +419,6 @@ export const Chat = ({
       setIsExistingChat(true);
       setAwaitingServerChat(true);
     },
-    status,
-    isSendingNowRef,
   });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });
@@ -657,7 +574,6 @@ export const Chat = ({
                             <ChatInput
                               onSubmit={handleSubmit}
                               onStop={handleStop}
-                              onSendNow={handleSendNow}
                               status={status}
                               hideStop={isAutoResuming}
                               isCentered={true}
@@ -691,7 +607,6 @@ export const Chat = ({
                     <ChatInput
                       onSubmit={handleSubmit}
                       onStop={handleStop}
-                      onSendNow={handleSendNow}
                       status={status}
                       hideStop={isAutoResuming}
                       hasMessages={hasMessages}

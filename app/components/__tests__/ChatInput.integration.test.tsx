@@ -47,7 +47,6 @@ const TestWrapper = ({ children }: { children: ReactNode }) => {
 describe('ChatInput - Integration Tests', () => {
   const mockOnSubmit = jest.fn();
   const mockOnStop = jest.fn();
-  const mockOnSendNow = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -60,7 +59,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -76,7 +74,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -92,7 +89,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="streaming"
           />
         </TestWrapper>
@@ -108,7 +104,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="streaming"
           />
         </TestWrapper>
@@ -126,7 +121,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -148,7 +142,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -170,7 +163,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -185,7 +177,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="streaming"
           />
         </TestWrapper>
@@ -203,7 +194,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -219,7 +209,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="submitted"
           />
         </TestWrapper>
@@ -235,7 +224,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -258,7 +246,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
           />
         </TestWrapper>
@@ -286,7 +273,6 @@ describe('ChatInput - Integration Tests', () => {
             <ChatInput
               onSubmit={mockOnSubmit}
               onStop={mockOnStop}
-              onSendNow={mockOnSendNow}
               status="ready"
               rateLimitWarning={{
                 remaining: 5,
@@ -311,7 +297,6 @@ describe('ChatInput - Integration Tests', () => {
           <ChatInput
             onSubmit={mockOnSubmit}
             onStop={mockOnStop}
-            onSendNow={mockOnSendNow}
             status="ready"
             hasMessages={true}
             isAtBottom={false}

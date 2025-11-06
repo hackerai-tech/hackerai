@@ -2,7 +2,7 @@ import { RefObject, useEffect, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
-import type { ChatMessage, ChatStatus } from "@/types";
+import type { ChatMessage } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
@@ -24,8 +24,6 @@ interface UseChatHandlersProps {
   ) => void;
   isExistingChat: boolean;
   activateChatLocally: () => void;
-  status: ChatStatus;
-  isSendingNowRef: RefObject<boolean>;
 }
 
 export const useChatHandlers = ({
@@ -38,8 +36,6 @@ export const useChatHandlers = ({
   setMessages,
   isExistingChat,
   activateChatLocally,
-  status,
-  isSendingNowRef,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -55,10 +51,6 @@ export const useChatHandlers = ({
     isUploadingFiles,
     subscription,
     temporaryChatsEnabled,
-    queueMessage,
-    messageQueue,
-    removeQueuedMessage,
-    clearQueue,
   } = useGlobalState();
 
   // Avoid stale closure on temporary flag
@@ -89,23 +81,6 @@ export const useChatHandlers = ({
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
-      // If streaming in Agent mode, queue the message instead of sending
-      if (status === "streaming" && chatMode === "agent") {
-        const validFiles = uploadedFiles.filter(
-          (file) => file.uploaded && file.url && file.fileId,
-        );
-        queueMessage(
-          input,
-          validFiles.map((f) => ({
-            file: f.file,
-            fileId: f.fileId!,
-            url: f.url!,
-          })),
-        );
-        clearInput();
-        clearUploadedFiles();
-        return;
-      }
       // Check token limit before sending based on user plan
       const tokenCount = countInputTokens(input, uploadedFiles);
       const maxTokens = getMaxTokensForSubscription(subscription);
@@ -181,11 +156,6 @@ export const useChatHandlers = ({
 
     // Stop the stream immediately (client-side abort)
     stop();
-
-    // Clear any queued messages in Agent mode
-    if (chatMode === "agent" && messageQueue.length > 0) {
-      clearQueue();
-    }
 
     if (!temporaryChatsEnabled) {
       // Cancel the stream in database first (sets canceled_at for backend detection)
@@ -385,105 +355,11 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleSendNow = async (messageId: string) => {
-    const message = messageQueue.find((m) => m.id === messageId);
-    if (!message) return;
-
-    // Set flag to prevent auto-processing from interfering
-    isSendingNowRef.current = true;
-
-    try {
-      // Remove the message from queue FIRST (before stopping)
-      removeQueuedMessage(messageId);
-
-      // Stop the stream - replicate handleStop logic but WITHOUT clearing the queue
-      setIsAutoResuming(false);
-      stop(); // Client-side abort
-
-      // Cancel stream in database
-      if (!temporaryChatsEnabled) {
-        cancelStreamMutation({ chatId }).catch((error) => {
-          console.error("Failed to cancel stream:", error);
-        });
-
-        // Save the current message state immediately
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage && lastMessage.role === "assistant") {
-          saveAssistantMessage({
-            id: lastMessage.id,
-            chatId,
-            role: lastMessage.role,
-            parts: lastMessage.parts,
-          }).catch((error) => {
-            console.error("Failed to save message on stop:", error);
-          });
-        }
-      } else {
-        // Temporary chats: signal cancel via temp stream coordination
-        cancelTempStreamMutation({ chatId }).catch(() => {});
-      }
-
-      // Wait for status to become ready before sending
-      const waitForReady = new Promise<void>((resolve) => {
-        const checkInterval = setInterval(() => {
-          if (status === "ready") {
-            clearInterval(checkInterval);
-            resolve();
-          }
-        }, 100);
-
-        // Timeout after 5 seconds
-        setTimeout(() => {
-          clearInterval(checkInterval);
-          resolve();
-        }, 5000);
-      });
-
-      await waitForReady;
-
-      // Now send the message
-      const validFiles = message.files || [];
-      const messagePayload: any = {};
-
-      // Only add text if it exists
-      if (message.text) {
-        messagePayload.text = message.text;
-      }
-
-      // Only add files if they exist
-      if (validFiles.length > 0) {
-        messagePayload.files = validFiles.map((f) => ({
-          type: "file" as const,
-          filename: f.file.name,
-          mediaType: f.file.type,
-          url: f.url,
-          fileId: f.fileId,
-        }));
-      }
-
-      sendMessage(messagePayload, {
-        body: {
-          mode: chatMode,
-          todos,
-          temporary: temporaryChatsEnabled,
-        },
-      });
-    } catch (error) {
-      console.error("Failed to send queued message:", error);
-    } finally {
-      // Clear flag after a brief delay to allow status to change
-      setTimeout(() => {
-        isSendingNowRef.current = false;
-      }, 200);
-    }
-  };
-
   return {
     handleSubmit,
     handleStop,
     handleRegenerate,
     handleRetry,
     handleEditMessage,
-    handleSendNow,
   };
 };
