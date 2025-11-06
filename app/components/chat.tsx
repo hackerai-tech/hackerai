@@ -244,6 +244,7 @@ export const Chat = ({
     onFinish: () => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
+      setUploadStatus(null);
       // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
