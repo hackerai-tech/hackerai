@@ -79,6 +79,8 @@ export async function findProcessPid(
     }
   }
 
-  console.warn(`[PID Discovery] Could not find PID for '${searchPattern.slice(0, 50)}...'`);
+  console.warn(
+    `[PID Discovery] Could not find PID for '${searchPattern.slice(0, 50)}...'`,
+  );
   return null;
 }

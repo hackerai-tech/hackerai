@@ -157,7 +157,11 @@ In using these tools, adhere to the following guidelines:
                 // Attempt to kill the running process on timeout
                 if ((execution && execution.kill) || processId) {
                   try {
-                    await terminateProcessReliably(sandbox, execution, processId);
+                    await terminateProcessReliably(
+                      sandbox,
+                      execution,
+                      processId,
+                    );
                   } catch (error) {
                     console.error(
                       "[Terminal Command] Error during timeout termination:",
@@ -185,8 +189,12 @@ In using these tools, adhere to the following guidelines:
             timeoutMs: MAX_COMMAND_EXECUTION_TIME,
             user: "root" as const,
             cwd: "/home/user",
-            onStdout: handler!.stdout,
-            onStderr: handler!.stderr,
+            ...(is_background
+              ? {}
+              : {
+                  onStdout: handler!.stdout,
+                  onStderr: handler!.stderr,
+                }),
           };
 
           // Determine if an error is a permanent command failure (don't retry)
@@ -277,6 +285,9 @@ In using these tools, adhere to the following guidelines:
 
                 // Track background processes with their output files
                 if (is_background && processId) {
+                  const backgroundOutput = `Background process started with PID: ${processId}\n`;
+                  createTerminalWriter(backgroundOutput);
+
                   const outputFiles =
                     BackgroundProcessTracker.extractOutputFiles(command);
                   backgroundProcessTracker.addProcess(
@@ -289,8 +300,8 @@ In using these tools, adhere to the following guidelines:
                 resolve({
                   result: is_background
                     ? {
-                        pid: (exec as any)?.pid ?? null,
-                        output: finalResult.output,
+                        pid: processId,
+                        output: `Background process started with PID: ${processId ?? "unknown"}\n`,
                       }
                     : {
                         exitCode: 0,

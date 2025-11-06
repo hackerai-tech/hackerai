@@ -56,7 +56,6 @@ export class BackgroundProcessTracker {
     }
   }
 
-
   /**
    * Check if any tracked processes are writing to the requested files
    * Uses batch checking for efficiency
