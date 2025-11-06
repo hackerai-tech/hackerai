@@ -8,7 +8,7 @@
     "dev:convex": "npx convex dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint app lib types __mocks__ --ext .ts,.tsx,.js,.jsx",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
