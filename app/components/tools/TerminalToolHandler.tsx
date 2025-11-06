@@ -4,7 +4,6 @@ import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import { useTerminalProcess } from "../../contexts/useTerminalProcess";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 
 interface TerminalToolHandlerProps {
@@ -25,20 +24,8 @@ export const TerminalToolHandler = ({
     is_background: boolean;
   };
   const terminalOutput = output as {
-    result: CommandResult & { output?: string; pid?: number };
+    result: CommandResult & { output?: string };
   };
-
-  // Extract PID from background process output
-  const pid = terminalInput?.is_background && terminalOutput?.result?.pid
-    ? terminalOutput.result.pid
-    : null;
-
-  // Handle terminal process state (registration, status, kill)
-  const { isKilling, handleKill, statusBadge } = useTerminalProcess({
-    isBackground: terminalInput?.is_background,
-    pid: pid,
-    command: terminalInput?.command,
-  });
 
   const handleOpenInSidebar = () => {
     if (!terminalInput?.command) return;
@@ -72,7 +59,6 @@ export const TerminalToolHandler = ({
       output: finalOutput,
       isExecuting: state === "input-available" && status === "streaming",
       isBackground: terminalInput.is_background,
-      pid: terminalOutput?.result?.pid ?? null,
       toolCallId: toolCallId,
     };
 
@@ -85,9 +71,6 @@ export const TerminalToolHandler = ({
       handleOpenInSidebar();
     }
   };
-
-  // Format command display
-  const commandDisplay = terminalInput?.command || "";
 
   switch (state) {
     case "input-streaming":
@@ -105,14 +88,11 @@ export const TerminalToolHandler = ({
           key={toolCallId}
           icon={<Terminal />}
           action={status === "streaming" ? "Executing" : "Executed"}
-          target={commandDisplay}
+          target={terminalInput?.command || ""}
           isShimmer={status === "streaming"}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
-          statusBadge={statusBadge}
-          onKill={statusBadge === "running" ? handleKill : undefined}
-          isKilling={isKilling}
         />
       );
     case "output-available":
@@ -121,13 +101,10 @@ export const TerminalToolHandler = ({
           key={toolCallId}
           icon={<Terminal />}
           action="Executed"
-          target={commandDisplay}
+          target={terminalInput?.command || ""}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
-          statusBadge={statusBadge}
-          onKill={statusBadge === "running" ? handleKill : undefined}
-          isKilling={isKilling}
         />
       );
     case "output-error":
@@ -136,13 +113,10 @@ export const TerminalToolHandler = ({
           key={toolCallId}
           icon={<Terminal />}
           action="Executed"
-          target={commandDisplay}
+          target={terminalInput?.command || ""}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
-          statusBadge={statusBadge}
-          onKill={statusBadge === "running" ? handleKill : undefined}
-          isKilling={isKilling}
         />
       );
     default:

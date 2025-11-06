@@ -15,7 +15,6 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
-import { useProcessContext } from "../contexts/ProcessContext";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
@@ -70,8 +69,6 @@ export const Chat = ({
     setHasUserDismissedRateLimitWarning,
   } = useGlobalState();
 
-  const { setCurrentChatId } = useProcessContext();
-
   // Simple logic: use route chatId if provided, otherwise generate new one
   const [chatId, setChatId] = useState<string>(() => {
     return routeChatId || uuidv4();
@@ -118,11 +115,6 @@ export const Chat = ({
       return;
     }
   }, [routeChatId, currentChatId, setChatTitle]);
-
-  // Update process context with current chatId (loads/saves from localStorage)
-  useEffect(() => {
-    setCurrentChatId(chatId);
-  }, [chatId, setCurrentChatId]);
 
   // Use paginated query to load messages in batches of 28
   const paginatedMessages = usePaginatedQuery(

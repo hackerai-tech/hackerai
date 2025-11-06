@@ -1,10 +1,9 @@
 import React from "react";
 import { Minimize2, Edit, Terminal, Code2 } from "lucide-react";
 import { useState } from "react";
-import { useGlobalState } from "@/app/contexts/GlobalState";
-import { useTerminalProcess } from "@/app/contexts/useTerminalProcess";
-import { ComputerCodeBlock } from "@/app/components/ComputerCodeBlock";
-import { TerminalCodeBlock } from "@/app/components/TerminalCodeBlock";
+import { useGlobalState } from "../contexts/GlobalState";
+import { ComputerCodeBlock } from "./ComputerCodeBlock";
+import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import {
   Tooltip,
@@ -21,15 +20,13 @@ export const ComputerSidebar: React.FC = () => {
   const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
   const [isWrapped, setIsWrapped] = useState(true);
 
-  // Handle terminal process state (registration, status, kill)
-  const terminalData = sidebarContent && isSidebarTerminal(sidebarContent)
-    ? {
-        isBackground: sidebarContent.isBackground,
-        pid: sidebarContent.pid,
-        command: sidebarContent.command,
-      }
-    : null;
-  const { isRunning, isKilling, handleKill, statusBadge } = useTerminalProcess(terminalData);
+  if (!sidebarOpen || !sidebarContent) {
+    return null;
+  }
+
+  const isFile = isSidebarFile(sidebarContent);
+  const isTerminal = isSidebarTerminal(sidebarContent);
+  const isPython = isSidebarPython(sidebarContent);
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -84,10 +81,9 @@ export const ComputerSidebar: React.FC = () => {
       };
       return actionMap[sidebarContent.action || "reading"];
     } else if (isTerminal) {
-      const baseText = sidebarContent.isExecuting
+      return sidebarContent.isExecuting
         ? "Executing command"
         : "Command executed";
-      return sidebarContent.isBackground ? `${baseText} (background)` : baseText;
     } else if (isPython) {
       return sidebarContent.isExecuting
         ? "Executing Python"
@@ -128,16 +124,6 @@ export const ComputerSidebar: React.FC = () => {
     }
     return "";
   };
-
-  // Early return after all hooks are called
-  if (!sidebarOpen || !sidebarContent) {
-    return null;
-  }
-
-  // These values are safe to compute after the early return check
-  const isFile = isSidebarFile(sidebarContent);
-  const isTerminal = isSidebarTerminal(sidebarContent);
-  const isPython = isSidebarPython(sidebarContent);
 
   const handleClose = () => {
     closeSidebar();
@@ -190,50 +176,14 @@ export const ComputerSidebar: React.FC = () => {
                   HackerAI is using{" "}
                   <span className="text-foreground">{getToolName()}</span>
                 </div>
-                <div className="flex items-center gap-1">
-                  <div
-                    title={`${getActionText()} ${getDisplayTarget()}`}
-                    className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
-                  >
-                    {getActionText()}
-                    <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                      <code>{getDisplayTarget()}</code>
-                    </span>
-                  </div>
-                  {/* Status badge for background processes */}
-                  {statusBadge === "running" && (
-                    <>
-                      <span className="flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded-md bg-green-500/10 text-green-600 dark:text-green-400 flex-shrink-0">
-                        <span className="w-1.5 h-1.5 rounded-full bg-green-600 dark:bg-green-400 animate-pulse"></span>
-                        {isKilling ? "Killing..." : "Running"}
-                      </span>
-                      <span
-                        onClick={() => {
-                          if (isKilling) return;
-                          handleKill();
-                        }}
-                        className={`w-4 h-4 bg-red-500 hover:bg-red-600 rounded-sm flex items-center justify-center transition-all cursor-pointer ${
-                          isKilling ? "opacity-50 cursor-not-allowed" : ""
-                        }`}
-                        title={isKilling ? "Killing process..." : "Kill process"}
-                        role="button"
-                        aria-label={isKilling ? "Killing process..." : "Kill process"}
-                        tabIndex={0}
-                        onKeyDown={(e) => {
-                          if ((e.key === "Enter" || e.key === " ") && !isKilling) {
-                            e.preventDefault();
-                            handleKill();
-                          }
-                        }}
-                      >
-                        {isKilling ? (
-                          <span className="w-2.5 h-2.5 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
-                        ) : (
-                          <span className="text-white text-[10px] font-bold leading-none">×</span>
-                        )}
-                      </span>
-                    </>
-                  )}
+                <div
+                  title={`${getActionText()} ${getDisplayTarget()}`}
+                  className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
+                >
+                  {getActionText()}
+                  <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
+                    <code>{getDisplayTarget()}</code>
+                  </span>
                 </div>
               </div>
             </div>
@@ -324,8 +274,6 @@ export const ComputerSidebar: React.FC = () => {
                           output={sidebarContent.output}
                           isExecuting={sidebarContent.isExecuting}
                           isBackground={sidebarContent.isBackground}
-                          pid={sidebarContent.pid}
-                          isProcessRunning={sidebarContent.pid ? isRunning : null}
                           status={
                             sidebarContent.isExecuting ? "streaming" : "ready"
                           }

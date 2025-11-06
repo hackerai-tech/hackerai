@@ -5,7 +5,6 @@ import "./globals.css";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { GlobalStateProvider } from "./contexts/GlobalState";
-import { ProcessProvider } from "./contexts/ProcessContext";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { PostHogProvider } from "./providers";
@@ -95,18 +94,16 @@ export default function RootLayout({
 }>) {
   const content = (
     <GlobalStateProvider>
-      <ProcessProvider>
-        <PostHogProvider>
-          <DataStreamProvider>
-            <TodoBlockProvider>
-              <TooltipProvider>
-                {children}
-                <Toaster />
-              </TooltipProvider>
-            </TodoBlockProvider>
-          </DataStreamProvider>
-        </PostHogProvider>
-      </ProcessProvider>
+      <PostHogProvider>
+        <DataStreamProvider>
+          <TodoBlockProvider>
+            <TooltipProvider>
+              {children}
+              <Toaster />
+            </TooltipProvider>
+          </TodoBlockProvider>
+        </DataStreamProvider>
+      </PostHogProvider>
     </GlobalStateProvider>
   );
 
