@@ -114,9 +114,7 @@ jest.mock("../MemoizedMarkdown", () => ({
 
 jest.mock("../Messages", () => ({
   Messages: ({ messages }: any) => (
-    <div data-testid="messages-component">
-      {messages.length} messages
-    </div>
+    <div data-testid="messages-component">{messages.length} messages</div>
   ),
 }));
 
@@ -185,7 +183,7 @@ describe("Chat Component Integration", () => {
       render(
         <TestWrapper>
           <Chat autoResume={false} />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       expect(screen.getByText("HackerAI")).toBeInTheDocument();
@@ -196,10 +194,12 @@ describe("Chat Component Integration", () => {
       const { container } = render(
         <TestWrapper>
           <Chat chatId="test-chat-123" autoResume={false} />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
+      expect(
+        container.querySelector(".h-full.bg-background"),
+      ).toBeInTheDocument();
     });
   });
 
@@ -222,10 +222,12 @@ describe("Chat Component Integration", () => {
       const { container } = render(
         <TestWrapper>
           <Chat autoResume={false} />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
+      expect(
+        container.querySelector(".h-full.bg-background"),
+      ).toBeInTheDocument();
     });
   });
 
@@ -245,10 +247,12 @@ describe("Chat Component Integration", () => {
       const { container } = render(
         <TestWrapper>
           <Chat autoResume={false} />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(container.querySelector(".h-full.bg-background")).toBeInTheDocument();
+      expect(
+        container.querySelector(".h-full.bg-background"),
+      ).toBeInTheDocument();
     });
   });
 
@@ -269,7 +273,7 @@ describe("Chat Component Integration", () => {
       render(
         <TestWrapper>
           <Chat autoResume={false} />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       expect(screen.getByText("HackerAI")).toBeInTheDocument();
@@ -284,10 +288,12 @@ describe("Chat Component Integration", () => {
       const { container } = render(
         <TestWrapper>
           <Chat autoResume={false} />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
-      expect(container.querySelector('[data-slot="sidebar-wrapper"]')).toBeInTheDocument();
+      expect(
+        container.querySelector('[data-slot="sidebar-wrapper"]'),
+      ).toBeInTheDocument();
     });
 
     it("should not render desktop sidebar on mobile", () => {
@@ -297,7 +303,7 @@ describe("Chat Component Integration", () => {
       render(
         <TestWrapper>
           <Chat autoResume={false} />
-        </TestWrapper>
+        </TestWrapper>,
       );
 
       expect(screen.queryByTestId("main-sidebar")).not.toBeInTheDocument();

@@ -1,48 +1,45 @@
-const nextJest = require('next/jest')
+const nextJest = require("next/jest");
 
 const createJestConfig = nextJest({
   // Provide the path to your Next.js app to load next.config.js and .env files in your test environment
-  dir: './',
-})
+  dir: "./",
+});
 
 // Add any custom config to be passed to Jest
 const customJestConfig = {
-  setupFilesAfterEnv: ['<rootDir>/jest.setup.js'],
-  testEnvironment: 'jest-environment-jsdom',
+  setupFilesAfterEnv: ["<rootDir>/jest.setup.js"],
+  testEnvironment: "jest-environment-jsdom",
   moduleNameMapper: {
-    '^jose$': '<rootDir>/__mocks__/jose.ts',
-    '^@workos-inc/node$': '<rootDir>/__mocks__/workos-node.ts',
-    '^@workos-inc/authkit-nextjs$': '<rootDir>/__mocks__/workos-authkit.ts',
-    '^@workos-inc/authkit-nextjs/components$': '<rootDir>/__mocks__/workos.ts',
-    '^stripe$': '<rootDir>/__mocks__/stripe.ts',
-    '^@/(.*)$': '<rootDir>/$1',
-    '^convex/react$': '<rootDir>/__mocks__/convex-react.ts',
-    '^uuid$': '<rootDir>/__mocks__/uuid.ts',
-    '^react-hotkeys-hook$': '<rootDir>/__mocks__/react-hotkeys-hook.ts',
-    '^react-markdown$': '<rootDir>/__mocks__/react-markdown.tsx',
-    '^streamdown$': '<rootDir>/__mocks__/streamdown.tsx',
-    '^react-shiki$': '<rootDir>/__mocks__/react-shiki.tsx',
-    '^shiki/langs$': '<rootDir>/__mocks__/shiki.ts',
-    '^shiki$': '<rootDir>/__mocks__/shiki.ts',
-    '^use-stick-to-bottom$': '<rootDir>/__mocks__/use-stick-to-bottom.ts',
+    "^jose$": "<rootDir>/__mocks__/jose.ts",
+    "^@workos-inc/node$": "<rootDir>/__mocks__/workos-node.ts",
+    "^@workos-inc/authkit-nextjs$": "<rootDir>/__mocks__/workos-authkit.ts",
+    "^@workos-inc/authkit-nextjs/components$": "<rootDir>/__mocks__/workos.ts",
+    "^stripe$": "<rootDir>/__mocks__/stripe.ts",
+    "^@/(.*)$": "<rootDir>/$1",
+    "^convex/react$": "<rootDir>/__mocks__/convex-react.ts",
+    "^uuid$": "<rootDir>/__mocks__/uuid.ts",
+    "^react-hotkeys-hook$": "<rootDir>/__mocks__/react-hotkeys-hook.ts",
+    "^react-markdown$": "<rootDir>/__mocks__/react-markdown.tsx",
+    "^streamdown$": "<rootDir>/__mocks__/streamdown.tsx",
+    "^react-shiki$": "<rootDir>/__mocks__/react-shiki.tsx",
+    "^shiki/langs$": "<rootDir>/__mocks__/shiki.ts",
+    "^shiki$": "<rootDir>/__mocks__/shiki.ts",
+    "^use-stick-to-bottom$": "<rootDir>/__mocks__/use-stick-to-bottom.ts",
   },
   transformIgnorePatterns: [
-    'node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop)/)',
+    "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop)/)",
   ],
-  testMatch: [
-    '**/__tests__/**/*.[jt]s?(x)',
-    '**/?(*.)+(spec|test).[jt]s?(x)',
-  ],
+  testMatch: ["**/__tests__/**/*.[jt]s?(x)", "**/?(*.)+(spec|test).[jt]s?(x)"],
   collectCoverageFrom: [
-    'app/**/*.{js,jsx,ts,tsx}',
-    'convex/**/*.{js,jsx,ts,tsx}',
-    '!**/*.d.ts',
-    '!**/node_modules/**',
-    '!**/.next/**',
-    '!**/coverage/**',
-    '!**/dist/**',
+    "app/**/*.{js,jsx,ts,tsx}",
+    "convex/**/*.{js,jsx,ts,tsx}",
+    "!**/*.d.ts",
+    "!**/node_modules/**",
+    "!**/.next/**",
+    "!**/coverage/**",
+    "!**/dist/**",
   ],
-  coverageReporters: ['text', 'json-summary', 'lcov'],
+  coverageReporters: ["text", "json-summary", "lcov"],
   coverageThreshold: {
     global: {
       statements: 0,
@@ -51,7 +48,7 @@ const customJestConfig = {
       lines: 0,
     },
   },
-}
+};
 
 // createJestConfig is exported this way to ensure that next/jest can load the Next.js config which is async
-module.exports = createJestConfig(customJestConfig)
+module.exports = createJestConfig(customJestConfig);

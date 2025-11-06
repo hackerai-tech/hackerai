@@ -98,20 +98,18 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   // Handle search results updates
   useEffect(() => {
     if (searchResults.status === "LoadingFirstPage") {
-       
       setIsSearching(true);
-       
+
       setAllResults([]);
     } else if (
       searchResults.status === "CanLoadMore" ||
       searchResults.status === "Exhausted"
     ) {
-       
       setIsSearching(false);
 
       if (searchResults.results) {
         // Use all accumulated results from the paginated query
-         
+
         setAllResults(searchResults.results);
       }
     }
@@ -120,9 +118,8 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   // Reset results when query changes
   useEffect(() => {
     if (!debouncedQuery.trim()) {
-       
       setAllResults([]);
-       
+
       setIsSearching(false);
     }
   }, [debouncedQuery]);

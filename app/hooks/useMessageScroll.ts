@@ -15,7 +15,6 @@ export const useMessageScroll = () => {
       if (options?.instant) {
         const scrollContainer = stickToBottom.scrollRef.current;
         if (scrollContainer) {
-           
           scrollContainer.scrollTop = scrollContainer.scrollHeight;
         }
         return true;

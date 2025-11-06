@@ -11,7 +11,7 @@ export const useAction = () => mockAction;
 // Create stable reference for paginated query results
 const stablePaginatedResult = {
   results: [],
-  status: 'Exhausted' as const,
+  status: "Exhausted" as const,
   loadMore: jest.fn(),
   isLoading: false,
 };

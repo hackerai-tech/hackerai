@@ -152,7 +152,7 @@ export const Chat = ({
     messages: initialMessages,
     experimental_throttle: 100,
     generateId: () => uuidv4(),
-     
+
     transport: new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
@@ -186,7 +186,7 @@ export const Chat = ({
         };
       },
     }),
-     
+
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
       if (dataPart.type === "data-title")
