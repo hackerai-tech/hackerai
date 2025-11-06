@@ -125,6 +125,65 @@ export const useFileUpload = () => {
     [],
   );
 
+  // Upload file to Convex storage
+  const uploadFileToConvex = useCallback(
+    async (file: File, uploadIndex: number) => {
+      try {
+        const { fileId, url, tokens } = await uploadSingleFileToConvex(
+          file,
+          generateUploadUrlFn,
+          saveFile,
+        );
+
+        // Check token limit before updating state
+        const currentTotal = getTotalTokens();
+        const newTotal = currentTotal + tokens;
+
+        if (newTotal > MAX_TOKENS_FILE) {
+          // Exceeds limit - delete file from storage and remove from upload list
+          deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
+          removeUploadedFile(uploadIndex);
+
+          toast.error(
+            `${file.name} exceeds token limit (${newTotal}/${MAX_TOKENS_FILE})`,
+          );
+        } else {
+          // Within limits - set success state with tokens
+          updateUploadedFile(uploadIndex, {
+            tokens,
+            uploading: false,
+            uploaded: true,
+            fileId,
+            url,
+          });
+        }
+      } catch (error) {
+        console.error("Failed to upload file:", error);
+
+        const errorMessage =
+          error instanceof Error ? error.message : "Upload failed";
+
+        // Update the upload state to error
+        updateUploadedFile(uploadIndex, {
+          uploading: false,
+          uploaded: false,
+          error: errorMessage,
+        });
+
+        // Backend already wraps error with file name
+        toast.error(errorMessage);
+      }
+    },
+    [
+      generateUploadUrlFn,
+      saveFile,
+      getTotalTokens,
+      deleteFile,
+      removeUploadedFile,
+      updateUploadedFile,
+    ],
+  );
+
   // Helper function to start file uploads
   const startFileUploads = useCallback(
     (files: File[]) => {
@@ -142,7 +201,7 @@ export const useFileUpload = () => {
         uploadFileToConvex(file, startingIndex + index);
       });
     },
-    [uploadedFiles.length, addUploadedFile],
+    [uploadedFiles.length, addUploadedFile, uploadFileToConvex],
   );
 
   // Unified file processing function
@@ -177,54 +236,6 @@ export const useFileUpload = () => {
       uploadedFiles.length,
     ],
   );
-
-  const uploadFileToConvex = async (file: File, uploadIndex: number) => {
-    try {
-      const { fileId, url, tokens } = await uploadSingleFileToConvex(
-        file,
-        generateUploadUrlFn,
-        saveFile,
-      );
-
-      // Check token limit before updating state
-      const currentTotal = getTotalTokens();
-      const newTotal = currentTotal + tokens;
-
-      if (newTotal > MAX_TOKENS_FILE) {
-        // Exceeds limit - delete file from storage and remove from upload list
-        deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
-        removeUploadedFile(uploadIndex);
-
-        toast.error(
-          `${file.name} exceeds token limit (${newTotal}/${MAX_TOKENS_FILE})`,
-        );
-      } else {
-        // Within limits - set success state with tokens
-        updateUploadedFile(uploadIndex, {
-          tokens,
-          uploading: false,
-          uploaded: true,
-          fileId,
-          url,
-        });
-      }
-    } catch (error) {
-      console.error("Failed to upload file:", error);
-
-      const errorMessage =
-        error instanceof Error ? error.message : "Upload failed";
-
-      // Update the upload state to error
-      updateUploadedFile(uploadIndex, {
-        uploading: false,
-        uploaded: false,
-        error: errorMessage,
-      });
-
-      // Backend already wraps error with file name
-      toast.error(errorMessage);
-    }
-  };
 
   const handleFileUploadEvent = async (
     event: React.ChangeEvent<HTMLInputElement>,

@@ -75,6 +75,7 @@ export const FileUploadPreview = ({
     if (uploadedFiles && uploadedFiles.length > 0) {
       loadPreviews();
     } else {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFilePreviews([]);
       // Don't clear cache when no files - we might get the same files back
     }
