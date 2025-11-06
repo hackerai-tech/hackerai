@@ -4,9 +4,11 @@ export const CompactEncrypt = jest.fn();
 export const jwtVerify = jest.fn();
 export const SignJWT = jest.fn();
 
-export default {
+const mockJose = {
   compactDecrypt,
   CompactEncrypt,
   jwtVerify,
   SignJWT,
 };
+
+export default mockJose;

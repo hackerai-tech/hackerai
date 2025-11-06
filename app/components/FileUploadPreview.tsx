@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { X, File, Loader2 } from "lucide-react";
 import { useEffect, useState, useCallback, useRef } from "react";
+import Image from "next/image";
 import {
   fileToBase64,
   formatFileSize,
@@ -162,10 +163,12 @@ export const FileUploadPreview = ({
                           )
                         }
                       >
-                        <img
+                        <Image
                           src={filePreview.preview}
                           alt={filePreview.file.name}
                           className="h-full w-full object-cover"
+                          fill
+                          unoptimized
                         />
                         {/* Upload overlay - show spinner overlay on top of image while uploading */}
                         {filePreview.uploading && (

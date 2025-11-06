@@ -98,7 +98,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   // Handle search results updates
   useEffect(() => {
     if (searchResults.status === "LoadingFirstPage") {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       setIsSearching(true);
        
       setAllResults([]);
@@ -120,7 +120,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   // Reset results when query changes
   useEffect(() => {
     if (!debouncedQuery.trim()) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
+       
       setAllResults([]);
        
       setIsSearching(false);
@@ -169,6 +169,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         observerRef.current.disconnect();
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     searchResults.status,
     debouncedQuery,

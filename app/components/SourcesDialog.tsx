@@ -1,4 +1,5 @@
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import Image from "next/image";
 
 interface Source {
   title?: string;
@@ -63,12 +64,13 @@ export const SourcesDialog = ({
                       className="hover:bg-secondary flex flex-col gap-1 rounded-xl px-3 py-2.5"
                     >
                       <div className="line-clamp-1 flex h-6 items-center gap-2 text-xs">
-                        <img
+                        <Image
                           alt=""
-                          width={20}
-                          height={20}
+                          width={16}
+                          height={16}
                           className="bg-background rounded-full object-cover w-4 h-4"
                           src={getFaviconUrl(domain)}
+                          unoptimized
                         />
                         {displayHost}
                       </div>

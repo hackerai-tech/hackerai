@@ -236,6 +236,7 @@ export const Messages = ({
 
     scrollElement.addEventListener("scroll", handleScroll);
     return () => scrollElement.removeEventListener("scroll", handleScroll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleScroll]);
 
   return (

@@ -256,6 +256,7 @@ const FilePartRendererComponent = ({
         storageId={part.storageId}
       />
     );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     messageId,
     partIndex,

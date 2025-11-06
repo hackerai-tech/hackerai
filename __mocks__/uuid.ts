@@ -5,6 +5,8 @@ export const v4 = () => {
   return `test-uuid-${counter}`;
 };
 
-export default {
+const mockUuid = {
   v4,
 };
+
+export default mockUuid;

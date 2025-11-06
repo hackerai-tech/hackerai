@@ -10,9 +10,11 @@ export const getSignInUrl = jest.fn().mockResolvedValue("https://sign-in.url");
 export const getSignUpUrl = jest.fn().mockResolvedValue("https://sign-up.url");
 export const signOut = jest.fn().mockResolvedValue(undefined);
 
-export default {
+const mockWorkosAuthkit = {
   getUser,
   getSignInUrl,
   getSignUpUrl,
   signOut,
 };
+
+export default mockWorkosAuthkit;

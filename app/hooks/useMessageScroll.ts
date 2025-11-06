@@ -15,7 +15,7 @@ export const useMessageScroll = () => {
       if (options?.instant) {
         const scrollContainer = stickToBottom.scrollRef.current;
         if (scrollContainer) {
-          // eslint-disable-next-line react-hooks/immutability
+           
           scrollContainer.scrollTop = scrollContainer.scrollHeight;
         }
         return true;
@@ -26,6 +26,7 @@ export const useMessageScroll = () => {
         preserveScrollPosition: !options?.force,
       });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [stickToBottom.scrollToBottom, stickToBottom.scrollRef],
   );
 

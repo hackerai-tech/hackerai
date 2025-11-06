@@ -12,7 +12,7 @@ export const bundledLanguagesInfo = [
 export const createHighlighter = jest.fn();
 export const getHighlighter = jest.fn();
 
-export default {
+const mockShiki = {
   bundledLanguages,
   bundledLanguagesAlias,
   bundledLanguagesBase,
@@ -20,3 +20,5 @@ export default {
   createHighlighter,
   getHighlighter,
 };
+
+export default mockShiki;
