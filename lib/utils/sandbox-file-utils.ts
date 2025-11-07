@@ -109,7 +109,9 @@ export const uploadSandboxFiles = async (
     await Promise.all(
       fileDataResults.map((fileData) => {
         if (!fileData) return Promise.resolve();
-        return sandbox.files.write(fileData.localPath, fileData.data);
+        return sandbox.files.write(fileData.localPath, fileData.data, {
+          user: "user" as const,
+        });
       }),
     );
   } catch (e) {

@@ -99,6 +99,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   useEffect(() => {
     if (searchResults.status === "LoadingFirstPage") {
       setIsSearching(true);
+
       setAllResults([]);
     } else if (
       searchResults.status === "CanLoadMore" ||
@@ -108,6 +109,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
       if (searchResults.results) {
         // Use all accumulated results from the paginated query
+
         setAllResults(searchResults.results);
       }
     }
@@ -117,6 +119,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
   useEffect(() => {
     if (!debouncedQuery.trim()) {
       setAllResults([]);
+
       setIsSearching(false);
     }
   }, [debouncedQuery]);
@@ -163,6 +166,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
         observerRef.current.disconnect();
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     searchResults.status,
     debouncedQuery,

@@ -25,6 +25,7 @@ export const useMessageScroll = () => {
         preserveScrollPosition: !options?.force,
       });
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [stickToBottom.scrollToBottom, stickToBottom.scrollRef],
   );
 

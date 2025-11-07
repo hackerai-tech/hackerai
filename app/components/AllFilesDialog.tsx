@@ -127,10 +127,12 @@ const AllFilesDialog = ({
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
 
-  // Reset selection when dialog opens/closes
+  // Reset selection when dialog closes
   useEffect(() => {
     if (!open) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectionMode(false);
+
       setSelectedFiles(new Set());
     }
   }, [open]);

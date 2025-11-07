@@ -36,7 +36,7 @@ export const DeleteAccountDialog = ({
   const lastSignInAtIso: string | null = useMemo(() => {
     if (!user) return null;
     // WorkOS user has lastSignInAt ISO string when available
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     const value = (user as any)?.lastSignInAt as string | undefined;
     return value ?? null;
   }, [user]);

@@ -19,6 +19,7 @@ export const ImageViewer = ({
 
   // Reset loading state when imageSrc changes
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsImageLoading(true);
   }, [imageSrc]);
 
