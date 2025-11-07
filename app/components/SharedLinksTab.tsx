@@ -28,10 +28,15 @@ const SharedLinksTab = () => {
   const [unshareTarget, setUnshareTarget] = useState<string | null>(null);
   const [isUnsharing, setIsUnsharing] = useState(false);
 
-  const handleCopyLink = (shareId: string, chatTitle: string) => {
+  const handleCopyLink = async (shareId: string, chatTitle: string) => {
     const shareUrl = `${window.location.origin}/share/${shareId}`;
-    navigator.clipboard.writeText(shareUrl);
-    toast.success(`Link copied for "${chatTitle}"`);
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      toast.success(`Link copied for "${chatTitle}"`);
+    } catch (error) {
+      console.error("Failed to copy share link:", error);
+      toast.error("Unable to copy link. Please copy manually.");
+    }
   };
 
   const handleOpenShare = (shareId: string) => {
