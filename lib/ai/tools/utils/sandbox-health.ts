@@ -8,13 +8,13 @@ import { retryWithBackoff } from "./retry-with-backoff";
  * sandbox is truly ready, not just "running" but unresponsive.
  *
  * @param sandbox - Sandbox instance to check
- * @param maxRetries - Maximum number of health check attempts (default: 10)
+ * @param maxRetries - Maximum number of health check attempts (default: 5)
  * @returns Promise that resolves when sandbox is ready
  * @throws Error if sandbox doesn't become ready after all retries
  */
 export async function waitForSandboxReady(
   sandbox: Sandbox,
-  maxRetries: number = 10,
+  maxRetries: number = 5,
 ): Promise<void> {
   await retryWithBackoff(
     async () => {
@@ -39,7 +39,7 @@ export async function waitForSandboxReady(
     },
     {
       maxRetries,
-      baseDelayMs: 1000, // 1s, 2s, 4s, 8s, 16s, 32s... (~63s total for 10 retries)
+      baseDelayMs: 1000, // 1s, 2s, 4s, 8s, 16s (~31s total for 5 retries)
       jitterMs: 100,
       isPermanentError: () => false, // Retry all errors - sandbox might be starting
       logger: (message, error) => {
