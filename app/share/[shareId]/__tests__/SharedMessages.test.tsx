@@ -92,7 +92,8 @@ describe("SharedMessages", () => {
       ];
 
       render(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      expect(screen.getByText("Document")).toBeInTheDocument();
+      const documentTexts = screen.getAllByText("Document");
+      expect(documentTexts).toHaveLength(2); // Title and subtitle
     });
 
     it("should show placeholder for uploaded image", () => {
@@ -106,7 +107,8 @@ describe("SharedMessages", () => {
       ];
 
       render(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      expect(screen.getByText("Image")).toBeInTheDocument();
+      const imageTexts = screen.getAllByText("Image");
+      expect(imageTexts).toHaveLength(2); // Title and subtitle
     });
   });
 
@@ -366,7 +368,8 @@ describe("SharedMessages", () => {
 
       render(<SharedMessages messages={messages} shareDate={mockShareDate} />);
       expect(screen.getByText("Here's the document you requested")).toBeInTheDocument();
-      expect(screen.getByText("Document")).toBeInTheDocument();
+      const documentTexts = screen.getAllByText("Document");
+      expect(documentTexts).toHaveLength(2); // Title and subtitle
     });
   });
 });
