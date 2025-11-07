@@ -71,11 +71,25 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
       );
     }
 
-    // File/Image placeholder
+    // File/Image placeholder - show nice icon card
     if ((part.type === "file" || part.type === "image") && part.placeholder) {
+      const isImage = part.type === "image";
       return (
-        <div key={idx} className="text-sm text-muted-foreground italic">
-          Uploaded a file
+        <div key={idx} className="flex-1 min-w-0 max-w-[300px]">
+          <div className="rounded-[15px] px-[10px] py-[6px] border border-border bg-muted/20 inline-flex max-w-full gap-[4px] items-center relative h-[36px] overflow-hidden">
+            <div className="w-[40px] h-[40px] rounded-[10px] bg-muted flex items-center justify-center flex-shrink-0 text-muted-foreground">
+              {isImage ? (
+                <ImageIcon className="h-5 w-5" />
+              ) : (
+                <FileIcon className="h-5 w-5" />
+              )}
+            </div>
+            <div className="max-w-[100%] truncate relative top-[-1px] ml-1">
+              <span className="text-[13px] text-foreground">
+                {isImage ? "Image" : "Document"}
+              </span>
+            </div>
+          </div>
         </div>
       );
     }

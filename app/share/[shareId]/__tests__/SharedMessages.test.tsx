@@ -92,7 +92,21 @@ describe("SharedMessages", () => {
       ];
 
       render(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      expect(screen.getByText("Uploaded a file")).toBeInTheDocument();
+      expect(screen.getByText("Document")).toBeInTheDocument();
+    });
+
+    it("should show placeholder for uploaded image", () => {
+      const messages = [
+        {
+          id: "1",
+          role: "user" as const,
+          parts: [{ type: "image", placeholder: true }],
+          update_time: mockShareDate,
+        },
+      ];
+
+      render(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      expect(screen.getByText("Image")).toBeInTheDocument();
     });
   });
 
@@ -352,7 +366,7 @@ describe("SharedMessages", () => {
 
       render(<SharedMessages messages={messages} shareDate={mockShareDate} />);
       expect(screen.getByText("Here's the document you requested")).toBeInTheDocument();
-      expect(screen.getByText("Uploaded a file")).toBeInTheDocument();
+      expect(screen.getByText("Document")).toBeInTheDocument();
     });
   });
 });
