@@ -131,6 +131,8 @@ export const getChatById = query({
       ),
       branched_from_chat_id: v.optional(v.string()),
       latest_summary_id: v.optional(v.id("chat_summaries")),
+      share_id: v.optional(v.string()),
+      share_date: v.optional(v.number()),
       update_time: v.number(),
     }),
     v.null(),
