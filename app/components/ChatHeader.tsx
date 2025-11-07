@@ -1,9 +1,9 @@
 "use client";
 
-import React, { useState } from "react";
+import React from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, SquarePen, HatGlasses, Split, Share2 } from "lucide-react";
+import { PanelLeft, Sparkle, SquarePen, HatGlasses, Split } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";
@@ -14,7 +14,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ShareDialog } from "./ShareDialog";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -22,12 +21,7 @@ interface ChatHeaderProps {
   chatTitle?: string | null;
   id?: string;
   chatData?:
-    | {
-        title?: string;
-        branched_from_chat_id?: string;
-        share_id?: string;
-        share_date?: number;
-      }
+    | { title?: string; branched_from_chat_id?: string }
     | null
     | undefined;
   chatSidebarOpen?: boolean;
@@ -61,7 +55,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   // Removed useUpgrade hook - we now redirect to pricing dialog instead
   const router = useRouter();
   const isMobile = useIsMobile();
-  const [showShareDialog, setShowShareDialog] = useState(false);
 
   // Show sidebar toggle for logged-in users
   const showSidebarToggle = user && !loading;
@@ -70,7 +63,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   const isInChat = isExistingChat;
 
   // Check if this is a branched chat
-  const isBranchedChat = !!chatData?.branched_from_chat_id;
+  const isBranchedChat = !!(chatData as any)?.branched_from_chat_id;
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -271,16 +264,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   // Show chat header when there are messages or active chat
   if (hasMessages || hasActiveChat) {
     return (
-      <>
-        <ShareDialog
-          open={showShareDialog}
-          onOpenChange={setShowShareDialog}
-          chatId={id || ""}
-          chatTitle={chatTitle || ""}
-          existingShareId={chatData?.share_id}
-          existingShareDate={chatData?.share_date}
-        />
-        <div className="px-4 bg-background flex-shrink-0">
+      <div className="px-4 bg-background flex-shrink-0">
         <div className="sm:min-w-[390px] flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">
           <div className="flex items-center flex-1">
             <div className="relative flex items-center">
@@ -333,27 +317,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   )}
                 </span>
               </div>
-              {/* Share button - only show for existing chats that aren't temporary */}
-              {isExistingChat && !temporaryChatsEnabled && id && chatTitle && (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        aria-label="Share chat"
-                        onClick={() => setShowShareDialog(true)}
-                        className="h-7 w-7 flex-shrink-0"
-                      >
-                        <Share2 className="size-4" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>Share chat</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              )}
             </div>
           </div>
           <div className="flex-1 flex justify-end">
@@ -373,8 +336,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               )}
           </div>
         </div>
-        </div>
-      </>
+      </div>
     );
   }
 
