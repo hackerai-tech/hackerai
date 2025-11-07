@@ -17,7 +17,9 @@
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:ci": "jest --ci --coverage --maxWorkers=2",
-    "prepare": "husky"
+    "prepare": "husky",
+    "e2b:build:dev": "npx tsx e2b/build.dev.ts",
+    "e2b:build:prod": "npx tsx e2b/build.prod.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.64",
@@ -54,6 +56,7 @@
     "clsx": "^2.1.1",
     "convex": "^1.28.2",
     "date-fns": "^4.1.0",
+    "e2b": "^2.6.3",
     "exa-js": "^2.0.0",
     "gpt-tokenizer": "^3.2.0",
     "isbinaryfile": "^5.0.6",
@@ -100,6 +103,7 @@
     "@types/react-dom": "^19",
     "@types/word-extractor": "^1.0.6",
     "concurrently": "^9.2.1",
+    "dotenv": "^17.2.3",
     "eslint": "^9",
     "eslint-config-next": "16.0.1",
     "husky": "^9.1.7",
