@@ -202,7 +202,7 @@ export const ShareDialog = ({
               <div className="bg-muted/50 rounded-md p-4 text-sm text-muted-foreground">
                 <p>
                   Create a public link to share this conversation. The share will
-                  be a snapshot of messages up to now. Files and images won't be
+                  be a snapshot of messages up to now. Files and images won&apos;t be
                   included for privacy.
                 </p>
               </div>

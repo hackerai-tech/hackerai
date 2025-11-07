@@ -4,6 +4,7 @@ import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { SharedMessages } from "./SharedMessages";
 import { Loader2, AlertCircle } from "lucide-react";
+import Link from "next/link";
 
 interface SharedChatViewProps {
   shareId: string;
@@ -61,7 +62,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
           <AlertCircle className="h-12 w-12 text-muted-foreground" />
           <h1 className="text-2xl font-semibold">Chat not found</h1>
           <p className="text-sm text-muted-foreground">
-            This shared chat doesn't exist or is no longer available. It may
+            This shared chat doesn&apos;t exist or is no longer available. It may
             have been unshared by the owner.
           </p>
         </div>
@@ -81,12 +82,12 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
                 Shared conversation • Read-only
               </p>
             </div>
-            <a
+            <Link
               href="/"
               className="text-sm text-primary hover:underline"
             >
               Try HackerAI
-            </a>
+            </Link>
           </div>
         </div>
       </header>
@@ -111,9 +112,9 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
           </p>
           <p className="mt-2">
             Powered by{" "}
-            <a href="/" className="text-primary hover:underline">
+            <Link href="/" className="text-primary hover:underline">
               HackerAI
-            </a>
+            </Link>
           </p>
         </div>
       </footer>
