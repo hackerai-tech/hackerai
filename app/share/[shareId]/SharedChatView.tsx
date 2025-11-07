@@ -112,7 +112,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
           </p>
           <p className="mt-2">
             Powered by{" "}
-            <Link href="/" className="text-primary hover:underline">
+            <Link href="/" className="text-white hover:underline">
               HackerAI
             </Link>
           </p>
