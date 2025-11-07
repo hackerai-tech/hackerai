@@ -1137,11 +1137,13 @@ export const getSharedMessages = query({
         // Process parts to replace files/images with placeholders
         parts: msg.parts.map((part: any) => {
           // Replace file references with placeholder
-          if (part.type === "file" || part.type === "image") {
+          if (part.type === "file") {
+            // Determine if it's an image based on mediaType
+            const isImage = part.mediaType?.startsWith("image/");
             return {
-              type: part.type,
+              type: isImage ? "image" : "file",
               placeholder: true,
-              // SECURITY: Do NOT include url, storage_id, file_id, or name
+              // SECURITY: Do NOT include url, storage_id, file_id, name, or mediaType
             };
           }
           // Keep text parts as-is
