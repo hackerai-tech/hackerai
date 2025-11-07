@@ -14,7 +14,6 @@ export default authkitMiddleware({
       "/privacy-policy",
       "/terms-of-service",
       "/manifest.json",
-      "/share/:path*", // Allow public access to shared chats
     ],
   },
 });
