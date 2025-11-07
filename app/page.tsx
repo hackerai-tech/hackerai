@@ -87,12 +87,12 @@ export default function Page() {
   const { showPricing, handleClosePricing } = usePricingDialog(subscription);
 
   const { isMigrating, migrate } = usePentestgptMigration();
-
+  const searchParams = typeof window !== "undefined" ? window.location.search : "";
   const { initialSeats, initialPlan } = React.useMemo(() => {
     if (typeof window === "undefined") {
       return { initialSeats: 5, initialPlan: "monthly" as const };
     }
-    const urlParams = new URLSearchParams(window.location.search);
+    const urlParams = new URLSearchParams(searchParams);
     const urlSeats = urlParams.get("numSeats");
     const urlPlan = urlParams.get("selectedPlan");
 
@@ -109,7 +109,7 @@ export default function Page() {
       | "yearly";
 
     return { initialSeats: seats, initialPlan: plan };
-  }, []); // Only compute once on mount - URL params don't change
+  }, [searchParams]);
 
   return (
     <>

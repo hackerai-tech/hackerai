@@ -70,7 +70,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   const isInChat = isExistingChat;
 
   // Check if this is a branched chat
-  const isBranchedChat = !!(chatData as any)?.branched_from_chat_id;
+  const isBranchedChat = !!chatData?.branched_from_chat_id;
 
   const handleSignIn = () => {
     window.location.href = "/login";
@@ -277,8 +277,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           onOpenChange={setShowShareDialog}
           chatId={id || ""}
           chatTitle={chatTitle || ""}
-          existingShareId={(chatData as any)?.share_id}
-          existingShareDate={(chatData as any)?.share_date}
+          existingShareId={chatData?.share_id}
+          existingShareDate={chatData?.share_date}
         />
         <div className="px-4 bg-background flex-shrink-0">
         <div className="sm:min-w-[390px] flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">
