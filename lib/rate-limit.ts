@@ -27,14 +27,14 @@ export const checkRateLimit = async (
     let requestLimit: number;
 
     if (mode === "agent") {
-      // Agent mode is only for paid users; ultra gets higher cap
+      // Agent mode is only for paid users;
       if (subscription === "ultra") {
         requestLimit = parseInt(
-          process.env.ULTRA_AGENT_MODE_RATE_LIMIT_REQUESTS || "90",
+          process.env.ULTRA_AGENT_MODE_RATE_LIMIT_REQUESTS || "135",
         );
       } else if (subscription === "team") {
         requestLimit = parseInt(
-          process.env.TEAM_AGENT_MODE_RATE_LIMIT_REQUESTS || "65",
+          process.env.TEAM_AGENT_MODE_RATE_LIMIT_REQUESTS || "90",
         );
       } else {
         requestLimit = parseInt(
@@ -42,7 +42,6 @@ export const checkRateLimit = async (
         );
       }
     } else {
-      // Regular ask mode limits with ultra and team tiers
       if (subscription === "ultra") {
         requestLimit = parseInt(process.env.ULTRA_RATE_LIMIT_REQUESTS || "240");
       } else if (subscription === "team") {
