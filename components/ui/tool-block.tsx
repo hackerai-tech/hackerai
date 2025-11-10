@@ -1,5 +1,5 @@
 import React from "react";
-import { ShimmerText } from "@/app/components/ShimmerText";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 
 interface ToolBlockProps {
   icon: React.ReactNode;
@@ -42,13 +42,19 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
           {icon}
         </div>
         <div className="max-w-[100%] truncate text-muted-foreground relative top-[-1px]">
-          <span className="text-[13px]">
-            {isShimmer ? <ShimmerText>{action}</ShimmerText> : action}
-          </span>
-          {target && (
-            <span className="text-[12px] font-mono ml-[6px] text-muted-foreground/70">
-              {target}
-            </span>
+          {isShimmer ? (
+            <Shimmer className="text-[13px]">
+              {target ? `${action} ${target}` : action}
+            </Shimmer>
+          ) : (
+            <>
+              <span className="text-[13px]">{action}</span>
+              {target && (
+                <span className="text-[12px] font-mono ml-[6px] text-muted-foreground/70">
+                  {target}
+                </span>
+              )}
+            </>
           )}
         </div>
       </button>
