@@ -57,7 +57,6 @@
     "convex": "^1.29.0",
     "date-fns": "^4.1.0",
     "e2b": "^2.6.4",
-    "exa-js": "^2.0.0",
     "gpt-tokenizer": "^3.4.0",
     "isbinaryfile": "^5.0.6",
     "jszip": "^3.10.1",

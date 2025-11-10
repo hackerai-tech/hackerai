@@ -112,9 +112,6 @@ importers:
       e2b:
         specifier: ^2.6.4
         version: 2.6.4
-      exa-js:
-        specifier: ^2.0.0
-        version: 2.0.0(ws@8.18.3)
       gpt-tokenizer:
         specifier: ^3.4.0
         version: 3.4.0
@@ -5503,12 +5500,6 @@ packages:
         integrity: sha512-dcKFX3jn0MpIaXjisoRvexIJVEKzaq7z2rZKxf+MSr9TkdmHmsU4m2lcLojrj/FHl8mk5VxMmYA+ftRkP/3oKQ==,
       }
 
-  cross-fetch@4.1.0:
-    resolution:
-      {
-        integrity: sha512-uKm5PU+MHTootlWEY+mZ4vvXoCn4fLQxT9dSc1sXVMSFkINTJVN8cAQROpwcKm8bJ/c7rgZVIBWzH5T78sNZZw==,
-      }
-
   cross-spawn@7.0.6:
     resolution:
       {
@@ -6487,12 +6478,6 @@ packages:
         integrity: sha512-Vo1ab+QXPzZ4tCa8SwIHJFaSzy4R6SHf7BY79rFBDf0idraZWAkYrDjDj8uWaSm3S2TK+hJ7/t1CEmZ7jXw+pg==,
       }
     engines: { node: ">=18.0.0" }
-
-  exa-js@2.0.0:
-    resolution:
-      {
-        integrity: sha512-0ISBNu+S4b6x5BAFeVx3/NXQe74qjXmxIMYZRftEeeTQ6Dx/Y4e/OBVclqE1BhT+GGWmcbNkuXCi/h7LoW7ysg==,
-      }
 
   execa@5.1.1:
     resolution:
@@ -9134,21 +9119,6 @@ packages:
         integrity: sha512-rPiZhzC3wXwE59YQMRDodUwwT9FZ9nNBwQQfsd1wfdtlKEyCdRV0avrTcSZ5xlIvGRVPd/cx6ZN45ECmS39xvg==,
       }
 
-  openai@5.23.1:
-    resolution:
-      {
-        integrity: sha512-APxMtm5mln4jhKhAr0d5zP9lNsClx4QwJtg8RUvYSSyxYCTHLNJnLEcSHbJ6t0ori8Pbr9HZGfcPJ7LEy73rvQ==,
-      }
-    hasBin: true
-    peerDependencies:
-      ws: ^8.18.0
-      zod: ^3.23.8
-    peerDependenciesMeta:
-      ws:
-        optional: true
-      zod:
-        optional: true
-
   openai@6.8.1:
     resolution:
       {
@@ -11545,12 +11515,6 @@ packages:
     engines: { node: ">=18.0.0" }
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
-
-  zod@3.25.76:
-    resolution:
-      {
-        integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==,
-      }
 
   zod@4.1.12:
     resolution:
@@ -14648,12 +14612,6 @@ snapshots:
 
   create-require@1.1.1: {}
 
-  cross-fetch@4.1.0:
-    dependencies:
-      node-fetch: 2.7.0
-    transitivePeerDependencies:
-      - encoding
-
   cross-spawn@7.0.6:
     dependencies:
       path-key: 3.1.1
@@ -15409,17 +15367,6 @@ snapshots:
   events@3.3.0: {}
 
   eventsource-parser@3.0.6: {}
-
-  exa-js@2.0.0(ws@8.18.3):
-    dependencies:
-      cross-fetch: 4.1.0
-      dotenv: 16.4.7
-      openai: 5.23.1(ws@8.18.3)(zod@3.25.76)
-      zod: 3.25.76
-      zod-to-json-schema: 3.24.6(zod@3.25.76)
-    transitivePeerDependencies:
-      - encoding
-      - ws
 
   execa@5.1.1:
     dependencies:
@@ -17465,11 +17412,6 @@ snapshots:
       regex: 6.0.1
       regex-recursion: 6.0.2
 
-  openai@5.23.1(ws@8.18.3)(zod@3.25.76):
-    optionalDependencies:
-      ws: 8.18.3
-      zod: 3.25.76
-
   openai@6.8.1(ws@8.18.3)(zod@4.1.12):
     optionalDependencies:
       ws: 8.18.3
@@ -19057,10 +18999,6 @@ snapshots:
 
   yocto-queue@0.1.0: {}
 
-  zod-to-json-schema@3.24.6(zod@3.25.76):
-    dependencies:
-      zod: 3.25.76
-
   zod-to-json-schema@3.24.6(zod@4.1.12):
     dependencies:
       zod: 4.1.12
@@ -19068,8 +19006,6 @@ snapshots:
   zod-validation-error@4.0.2(zod@4.1.12):
     dependencies:
       zod: 4.1.12
-
-  zod@3.25.76: {}
 
   zod@4.1.12: {}
 

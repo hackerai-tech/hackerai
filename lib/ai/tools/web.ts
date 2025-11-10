@@ -1,6 +1,5 @@
 import { tool } from "ai";
 import { z } from "zod";
-import Exa from "exa-js";
 import { ToolContext } from "@/types";
 import { truncateContent, sliceByTokens } from "@/lib/token-utils";
 
@@ -63,7 +62,6 @@ The \`web\` tool has the following commands:
     ) => {
       try {
         if (command === "search") {
-          const exa = new Exa(process.env.EXA_API_KEY);
           if (!query) {
             return "Error: Query is required for search command";
           }
@@ -73,20 +71,59 @@ The \`web\` tool has the following commands:
           try {
             // Safely access userLocation country
             const country = userLocation?.country;
-            const searchOptions = {
-              type: "auto" as const,
-              numResults: 10,
-              ...(country && { userLocation: country }),
-            };
-
-            // First attempt with location if available
-            searchResults = await exa.search(query, searchOptions);
-          } catch (firstError: any) {
-            // Always retry without userLocation as fallback
-            searchResults = await exa.search(query, {
+            const searchBody: any = {
+              query,
               type: "auto",
               numResults: 10,
+            };
+
+            if (country) {
+              searchBody.userLocation = country;
+            }
+
+            // First attempt with location if available
+            const response = await fetch("https://api.exa.ai/search", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-api-key": process.env.EXA_API_KEY || "",
+              },
+              body: JSON.stringify(searchBody),
+              signal: abortSignal,
             });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(
+                `Exa API error: ${response.status} - ${errorText}`,
+              );
+            }
+
+            searchResults = await response.json();
+          } catch (firstError: any) {
+            // Always retry without userLocation as fallback
+            const response = await fetch("https://api.exa.ai/search", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-api-key": process.env.EXA_API_KEY || "",
+              },
+              body: JSON.stringify({
+                query,
+                type: "auto",
+                numResults: 10,
+              }),
+              signal: abortSignal,
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(
+                `Exa API error: ${response.status} - ${errorText}`,
+              );
+            }
+
+            searchResults = await response.json();
           }
 
           // Extract URLs from Exa results
@@ -129,13 +166,22 @@ The \`web\` tool has the following commands:
 
           const contents = await Promise.all(contentPromises);
 
-          // Add text content to Exa results (exclude id and favicon fields)
+          // Add text content to Exa results (exclude id, favicon, and null fields from Exa)
           const results = searchResults.results.map(
             (result: any, index: number) => {
               const contentData = contents[index];
               const { id, favicon, ...cleanResult } = result;
+
+              // Filter out null/undefined values from Exa results only
+              const filteredExaResult = Object.fromEntries(
+                Object.entries(cleanResult).filter(
+                  ([_, value]) => value !== null && value !== undefined,
+                ),
+              );
+
+              // Add text field (can be null)
               return {
-                ...cleanResult,
+                ...filteredExaResult,
                 text: contentData?.content || null,
               };
             },
