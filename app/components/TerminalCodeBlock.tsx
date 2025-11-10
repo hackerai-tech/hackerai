@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Terminal } from "lucide-react";
 import { codeToHtml } from "shiki";
-import { ShimmerText } from "./ShimmerText";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 
 interface TerminalCodeBlockProps {
   command: string;
@@ -171,9 +171,9 @@ const AnsiCodeBlock = ({
   if (!htmlContent && (isRendering || code)) {
     return (
       <div className="px-4 py-4 text-muted-foreground">
-        <ShimmerText>
+        <Shimmer>
           {isStreaming ? "Processing output..." : "Rendering output..."}
-        </ShimmerText>
+        </Shimmer>
       </div>
     );
   }
@@ -241,7 +241,7 @@ export const TerminalCodeBlock = ({
           <div className="flex-1 min-h-0 overflow-hidden">
             {isExecuting && !output && status === "streaming" ? (
               <div className="px-4 py-4 text-muted-foreground">
-                <ShimmerText>Executing command</ShimmerText>
+                <Shimmer>Executing command</Shimmer>
               </div>
             ) : (
               <AnsiCodeBlock
@@ -265,7 +265,7 @@ export const TerminalCodeBlock = ({
       <div className="h-full w-full overflow-auto">
         {isExecuting && !output && status === "streaming" ? (
           <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
-            <ShimmerText>Executing command</ShimmerText>
+            <Shimmer>Executing command</Shimmer>
           </div>
         ) : (
           <AnsiCodeBlock

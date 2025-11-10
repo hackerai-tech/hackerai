@@ -1,6 +1,6 @@
 import { UIMessage } from "@ai-sdk/react";
 import { WandSparkles } from "lucide-react";
-import { ShimmerText } from "../ShimmerText";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 
 interface SummarizationHandlerProps {
   message: UIMessage;
@@ -20,7 +20,7 @@ export const SummarizationHandler = ({
     >
       <WandSparkles className="w-4 h-4 text-muted-foreground" />
       {part.data.status === "started" ? (
-        <ShimmerText className="text-sm">{part.data.message}...</ShimmerText>
+        <Shimmer className="text-sm">{`${part.data.message}...`}</Shimmer>
       ) : (
         <span className="text-sm text-muted-foreground">
           {part.data.message}

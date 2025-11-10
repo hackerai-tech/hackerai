@@ -154,10 +154,12 @@ Development Environment:
 - Node.js 20.19.4 (commands: node, npm)
 - Golang 1.24.2 (commands: go)
 
-Pre-installed Tools:
-- Security: curl, wget, nmap, iputils-ping, whois, traceroute, dnsutils, whatweb, wafw00f, subfinder, gobuster
-- SecLists: pre-installed in /home/user and should be used by default for any fuzzing or wordlist needs
-- Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, odfpy, pandoc
+Pre-installed Pentesting Tools:
+- Network Scanning: nmap, naabu (port scanner), httpx (HTTP prober), subfinder (subdomain enum)
+- Web Fuzzing: gobuster, dirsearch (directory/file discovery), arjun (parameter discovery)
+- Recon: whatweb, wafw00f (WAF detection), whois, traceroute, dnsutils
+- Specialized: jwt_tool (JWT manipulation), sqlmap (SQL injection), SecLists (/home/user/SecLists)
+- Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc
 </sandbox_environment>`;
 
 const getToneAndFormattingSection = (): string => `<tone_and_formatting>
