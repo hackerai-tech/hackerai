@@ -134,6 +134,8 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
 
   /**
    * Fetch URLs for new files that need them
+   * OPTIMIZATION: Only fetch URLs for IMAGE files on load
+   * Non-image files will be fetched on-demand when user clicks download
    */
   useEffect(() => {
     // Collect all fileIds that need URLs (have null url and not already cached/pending)
@@ -144,29 +146,33 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
       if (message.fileDetails) {
         for (const fileDetail of message.fileDetails) {
           // Check if this file has a null URL (S3-backed) and needs fetching
+          // OPTIMIZATION: Only fetch URLs for images on page load
+          const isImage = fileDetail.mediaType?.startsWith("image/");
           if (
             fileDetail.fileId &&
             fileDetail.url === null &&
+            isImage &&
             !urlCache.has(fileDetail.fileId) &&
             !pendingFetchRef.current.has(fileDetail.fileId)
           ) {
             fileIdsNeedingUrls.push(fileDetail.fileId);
             pendingFetchRef.current.add(fileDetail.fileId);
             cacheMissCount++;
-            console.log(`[S3 Cache] MISS - fileId: ${fileDetail.fileId}`);
+            console.log(`[S3 Cache] MISS (image) - fileId: ${fileDetail.fileId}`);
           }
         }
       }
     }
 
     if (fileIdsNeedingUrls.length > 0) {
-      console.log(`[S3 Cache] Fetching URLs for ${cacheMissCount} uncached files`);
+      console.log(`[S3 Cache] Fetching URLs for ${cacheMissCount} uncached IMAGE files`);
       fetchUrls(fileIdsNeedingUrls);
     }
   }, [messages, urlCache, fetchUrls]);
 
   /**
    * Check for URLs that need refresh (in a useEffect to avoid side effects during render)
+   * OPTIMIZATION: Only refresh URLs for IMAGE files (since we only cache them)
    */
   useEffect(() => {
     const idsToRefresh: Array<Id<"files">> = [];
@@ -174,13 +180,15 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
     for (const message of messages) {
       if (message.fileDetails) {
         for (const fileDetail of message.fileDetails) {
-          if (fileDetail.fileId && fileDetail.url === null) {
+          // OPTIMIZATION: Only check images (we only cache image URLs)
+          const isImage = fileDetail.mediaType?.startsWith("image/");
+          if (fileDetail.fileId && fileDetail.url === null && isImage) {
             const cached = urlCache.get(fileDetail.fileId);
             if (cached && needsRefresh(cached)) {
               if (!pendingFetchRef.current.has(fileDetail.fileId)) {
                 const timeUntilExpiry = cached.expiresAt - Date.now();
                 const minutesUntilExpiry = Math.floor(timeUntilExpiry / 60000);
-                console.log(`[S3 Cache] REFRESH needed - fileId: ${fileDetail.fileId}, expires in ${minutesUntilExpiry}m`);
+                console.log(`[S3 Cache] REFRESH needed (image) - fileId: ${fileDetail.fileId}, expires in ${minutesUntilExpiry}m`);
                 idsToRefresh.push(fileDetail.fileId);
                 pendingFetchRef.current.add(fileDetail.fileId);
               }
@@ -191,53 +199,106 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
     }
 
     if (idsToRefresh.length > 0) {
-      console.log(`[S3 Cache] Refreshing ${idsToRefresh.length} expiring URLs from messages`);
+      console.log(`[S3 Cache] Refreshing ${idsToRefresh.length} expiring IMAGE URLs from messages`);
       fetchUrls(idsToRefresh);
     }
   }, [messages, urlCache, needsRefresh, fetchUrls]);
 
   /**
    * Enhance messages with cached URLs
+   * OPTIMIZATION: Only enhance IMAGE files (we only cache image URLs)
+   * Non-image files keep url: null and will be fetched on-demand when clicked
+   *
+   * Processes BOTH message.fileDetails (assistant messages) AND message.parts (user messages)
    */
   const enhancedMessages: ChatMessage[] = useMemo(() => {
     let cacheHitCount = 0;
     let cacheMissCount = 0;
-    let totalS3Files = 0;
+    let totalS3Images = 0;
 
     const result = messages.map((message) => {
-      if (!message.fileDetails) return message;
+      // Process fileDetails (assistant messages)
+      const enhancedFileDetails = message.fileDetails?.map((fileDetail) => {
+        // OPTIMIZATION: Only enhance images (we only cache image URLs)
+        const isImage = fileDetail.mediaType?.startsWith("image/");
 
-      const enhancedFileDetails = message.fileDetails.map((fileDetail) => {
-        // If file has null URL and we have a cached URL, use it
-        if (fileDetail.fileId && fileDetail.url === null) {
-          totalS3Files++;
+        console.log(`[S3 Cache] Processing fileDetail - fileId: ${fileDetail.fileId}, name: ${fileDetail.name}, mediaType: "${fileDetail.mediaType}", isImage: ${isImage}, url type: ${typeof fileDetail.url}, url is null: ${fileDetail.url === null}`);
+
+        // If file has null URL and is an image, check cache
+        if (fileDetail.fileId && fileDetail.url === null && isImage) {
+          totalS3Images++;
           const cached = urlCache.get(fileDetail.fileId);
           if (cached) {
             cacheHitCount++;
             const timeUntilExpiry = cached.expiresAt - Date.now();
             const minutesUntilExpiry = Math.floor(timeUntilExpiry / 60000);
-            console.log(`[S3 Cache] HIT - fileId: ${fileDetail.fileId}, expires in ${minutesUntilExpiry}m`);
+            console.log(`[S3 Cache] HIT (image) - fileId: ${fileDetail.fileId}, expires in ${minutesUntilExpiry}m`);
             return { ...fileDetail, url: cached.url };
           } else {
             cacheMissCount++;
             // Miss will be logged in the fetch effect
           }
         }
+
+        // For non-images with null URL, keep url: null (will be fetched on-demand)
+        if (fileDetail.fileId && fileDetail.url === null && !isImage) {
+          console.log(`[S3 Cache] SKIP fileDetail (non-image) - fileId: ${fileDetail.fileId}, name: ${fileDetail.name}, keeping url: null for lazy loading`);
+        }
+
         return fileDetail;
+      });
+
+      // Process parts (user messages)
+      // OPTIMIZATION: Set non-image file URLs to null for lazy loading
+      const enhancedParts = message.parts.map((part): any => {
+        if (part.type === "file") {
+          const filePart = part as any; // Type assertion for extended file part with fileId
+          const isImage = filePart.mediaType?.startsWith("image/");
+
+          console.log(`[S3 Cache] Processing part - fileId: ${filePart.fileId}, name: ${filePart.name}, mediaType: "${filePart.mediaType}", isImage: ${isImage}, url type: ${typeof filePart.url}`);
+
+          // For S3 files with fileId
+          if (filePart.fileId) {
+            // Images: fetch from cache
+            if (isImage && filePart.url) {
+              totalS3Images++;
+              const cached = urlCache.get(filePart.fileId);
+              if (cached) {
+                cacheHitCount++;
+                const timeUntilExpiry = cached.expiresAt - Date.now();
+                const minutesUntilExpiry = Math.floor(timeUntilExpiry / 60000);
+                console.log(`[S3 Cache] HIT part (image) - fileId: ${filePart.fileId}, expires in ${minutesUntilExpiry}m`);
+                return { ...filePart, url: cached.url };
+              } else {
+                cacheMissCount++;
+                console.log(`[S3 Cache] MISS part (image) - fileId: ${filePart.fileId}, setting url to null for fetch`);
+                return { ...filePart, url: null };
+              }
+            }
+
+            // Non-images: set URL to null for lazy loading
+            if (!isImage && filePart.url) {
+              console.log(`[S3 Cache] Setting part URL to null (non-image) - fileId: ${filePart.fileId}, name: ${filePart.name}, for lazy loading`);
+              return { ...filePart, url: null };
+            }
+          }
+        }
+        return part;
       });
 
       return {
         ...message,
+        parts: enhancedParts as any,
         fileDetails: enhancedFileDetails,
       };
     });
 
-    if (totalS3Files > 0) {
-      const hitRate = ((cacheHitCount / totalS3Files) * 100).toFixed(1);
-      console.log(`[S3 Cache] Stats - Total: ${totalS3Files}, Hits: ${cacheHitCount}, Misses: ${cacheMissCount}, Hit Rate: ${hitRate}%`);
+    if (totalS3Images > 0) {
+      const hitRate = ((cacheHitCount / totalS3Images) * 100).toFixed(1);
+      console.log(`[S3 Cache] Stats - Total S3 Images: ${totalS3Images}, Hits: ${cacheHitCount}, Misses: ${cacheMissCount}, Hit Rate: ${hitRate}%`);
     }
 
-    return result;
+    return result as ChatMessage[];
   }, [messages, urlCache]);
 
   return enhancedMessages;

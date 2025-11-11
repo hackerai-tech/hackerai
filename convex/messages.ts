@@ -301,6 +301,14 @@ export const getMessagesByChatId = query({
         if (file) {
           const isImage = file.media_type?.startsWith("image/");
           const urlValue = urls[index]; // null for S3, URL string for Convex storage
+          const hasS3Key = !!file.s3_key;
+          const hasStorageId = !!file.storage_id;
+
+          console.log(`[Messages] Building file details - fileId: ${fileIdArray[index]}, name: ${file.name}, mediaType: "${file.media_type}", isImage: ${isImage}, hasS3Key: ${hasS3Key}, hasStorageId: ${hasStorageId}, urlValue type: ${typeof urlValue}`);
+
+          const finalUrl = isImage ? urlValue : (file.s3_key ? null : undefined);
+
+          console.log(`[Messages] File URL decision - fileId: ${fileIdArray[index]}, isImage: ${isImage}, hasS3Key: ${hasS3Key}, finalUrl: ${typeof finalUrl === 'string' ? 'string' : finalUrl}`);
 
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
@@ -308,7 +316,7 @@ export const getMessagesByChatId = query({
             mediaType: file.media_type,
             // For images: always include URL (null for S3, string for Convex)
             // For non-images: include URL if it's an S3 file (null), otherwise undefined
-            url: isImage ? urlValue : (file.s3_key ? null : undefined),
+            url: finalUrl,
             storageId: !isImage ? file.storage_id : undefined,
           });
         }
