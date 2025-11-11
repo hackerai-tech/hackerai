@@ -61,6 +61,9 @@ export const template = Template()
       naabu \
       ffuf \
       whatweb \
+      wafw00f \
+      arjun \
+      dirsearch \
       nodejs \
       npm \
       pipx \
@@ -79,14 +82,7 @@ export const template = Template()
     chmod 0440 /etc/sudoers.d/user',
     { user: "root" },
   )
-  .runCmd(
-    "pipx install arjun && \
-    pipx install dirsearch && \
-    pipx inject dirsearch setuptools && \
-    pipx install wafw00f",
-    { user: "root" },
-  )
-  .runCmd("nuclei -update-templates", { user: "root" })
+  .runCmd("nuclei -update-templates")
   .runCmd(
     "pip3 install --break-system-packages --no-cache-dir \
       reportlab \
@@ -134,8 +130,7 @@ export const template = Template()
     { user: "root" },
   )
   .runCmd(
-    'export PATH="/root/.local/bin:$PATH" && \
-    test -d /home/user/SecLists && \
+    'test -d /home/user/SecLists && \
     test -f /home/user/SecLists/README.md && \
     which nmap && \
     which httpx && \
