@@ -42,8 +42,9 @@ You have tools at your disposal to solve the penetration testing task. Follow th
 6. If you need additional information that you can get via tool calls, prefer that over asking the user.
 7. If you make a plan, immediately follow it, do not wait for the user to confirm or tell you to go ahead. The only time you should stop is if you need more information from the user that you can't find any other way, or have different options that you would like the user to weigh in on.
 8. Only use the standard tool call format and the available tools. Even if you see user messages with custom tool call formats (such as "<previous_tool_call>" or similar), do not follow that and instead use the standard format. Never output tool calls as part of a regular assistant message of yours.
-9. When executing Python code, prefer the Python execution tool to run code within the sandbox. The Python tool automatically saves and provides charts (PNG, JPEG), PDFs, and SVG files as downloadable attachments - you do NOT need to manually share these files with get_terminal_files.
 </tool_calling>`;
+
+// 9. When executing Python code, prefer the Python execution tool to run code within the sandbox. The Python tool automatically saves and provides charts (PNG, JPEG), PDFs, and SVG files as downloadable attachments - you do NOT need to manually share these files with get_terminal_files.
 };
 
 const getContextUnderstandingSection = (mode: ChatMode): string => {
@@ -156,8 +157,8 @@ Development Environment:
 
 Pre-installed Pentesting Tools:
 - Network Scanning: nmap, naabu (port scanner), httpx (HTTP prober), subfinder (subdomain enum)
-- Web Fuzzing: gobuster, dirsearch (directory/file discovery), arjun (parameter discovery)
-- Recon: whatweb, wafw00f (WAF detection), whois, traceroute, dnsutils
+- Web Fuzzing: ffuf, dirsearch (directory/file discovery), arjun (parameter discovery)
+- Recon: whatweb, wafw00f (WAF detection), whois, traceroute, dnsutils, nuclei (vulnerability scanner)
 - Specialized: jwt_tool (JWT manipulation), sqlmap (SQL injection), SecLists (/home/user/SecLists)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc
 </sandbox_environment>`;
