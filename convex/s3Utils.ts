@@ -28,7 +28,8 @@ import { S3_URL_LIFETIME_SECONDS } from "../lib/constants/s3";
 // =============================================================================
 
 /**
- * Validate required environment variables at module load
+ * Lazy validation of required environment variables
+ * Only validates when S3 operations are actually attempted
  */
 const validateEnvironment = (): void => {
   const required = [
@@ -43,18 +44,34 @@ const validateEnvironment = (): void => {
   if (missing.length > 0) {
     throw new Error(
       `Missing required S3 environment variables: ${missing.join(", ")}. ` +
-        `Please configure these in your Convex environment settings.`,
+        `Please configure these in your Convex environment settings or disable S3 storage.`,
     );
   }
 };
 
-// Validate on module load
-validateEnvironment();
+/**
+ * Lazy getters for environment variables
+ * These will only throw errors when accessed, not on module load
+ */
+const getAwsRegion = (): string => {
+  validateEnvironment();
+  return process.env.AWS_S3_REGION!;
+};
 
-const AWS_REGION = process.env.AWS_S3_REGION!;
-const AWS_ACCESS_KEY_ID = process.env.AWS_S3_ACCESS_KEY_ID!;
-const AWS_SECRET_ACCESS_KEY = process.env.AWS_S3_SECRET_ACCESS_KEY!;
-const BUCKET_NAME = process.env.AWS_S3_BUCKET_NAME!;
+const getAwsAccessKeyId = (): string => {
+  validateEnvironment();
+  return process.env.AWS_S3_ACCESS_KEY_ID!;
+};
+
+const getAwsSecretAccessKey = (): string => {
+  validateEnvironment();
+  return process.env.AWS_S3_SECRET_ACCESS_KEY!;
+};
+
+const getBucketName = (): string => {
+  validateEnvironment();
+  return process.env.AWS_S3_BUCKET_NAME!;
+};
 
 // =============================================================================
 // TYPES
@@ -81,13 +98,14 @@ interface S3ErrorContext {
 /**
  * Create S3 client with validated credentials
  * Client is created fresh for each operation to avoid connection pooling issues
+ * Validates environment variables on first use (lazy validation)
  */
 export const createS3Client = (): S3Client => {
   return new S3Client({
-    region: AWS_REGION,
+    region: getAwsRegion(),
     credentials: {
-      accessKeyId: AWS_ACCESS_KEY_ID,
-      secretAccessKey: AWS_SECRET_ACCESS_KEY,
+      accessKeyId: getAwsAccessKeyId(),
+      secretAccessKey: getAwsSecretAccessKey(),
     },
     maxAttempts: 1, // We handle retries manually for better control
   });
@@ -285,7 +303,7 @@ export const generateS3DownloadUrl = async (
     async () => {
       const client = createS3Client();
       const command = new GetObjectCommand({
-        Bucket: BUCKET_NAME,
+        Bucket: getBucketName(),
         Key: s3Key,
       });
 
@@ -295,7 +313,7 @@ export const generateS3DownloadUrl = async (
     },
     {
       operation: "generateDownloadUrl",
-      bucket: BUCKET_NAME,
+      bucket: getBucketName(),
       key: s3Key,
     },
   );
@@ -328,6 +346,7 @@ export const generateS3DownloadUrls = async (
   console.log(`[S3] Expiration: ${expiresInSeconds}s (${Math.floor(expiresInSeconds / 60)}m)`);
 
   const client = createS3Client();
+  const bucketName = getBucketName();
   const result: Record<string, string> = {};
 
   await Promise.all(
@@ -335,12 +354,12 @@ export const generateS3DownloadUrls = async (
       // Each URL generation gets its own retry logic
       const url = await withRetry(
         async () => {
-          const command = new GetObjectCommand({ Bucket: BUCKET_NAME, Key: key });
+          const command = new GetObjectCommand({ Bucket: bucketName, Key: key });
           return await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
         },
         {
           operation: "generateDownloadUrl",
-          bucket: BUCKET_NAME,
+          bucket: bucketName,
           key,
         },
       );
@@ -389,7 +408,7 @@ export const generateS3UploadUrl = async (
     async () => {
       const client = createS3Client();
       const command = new PutObjectCommand({
-        Bucket: BUCKET_NAME,
+        Bucket: getBucketName(),
         Key: s3Key,
         ContentType: normalizedContentType,
       });
@@ -400,7 +419,7 @@ export const generateS3UploadUrl = async (
     },
     {
       operation: "generateUploadUrl",
-      bucket: BUCKET_NAME,
+      bucket: getBucketName(),
       key: s3Key,
     },
   );
@@ -426,7 +445,7 @@ export const deleteS3File = async (s3Key: string): Promise<void> => {
     async () => {
       const client = createS3Client();
       const command = new DeleteObjectCommand({
-        Bucket: BUCKET_NAME,
+        Bucket: getBucketName(),
         Key: s3Key,
       });
 
@@ -434,7 +453,7 @@ export const deleteS3File = async (s3Key: string): Promise<void> => {
     },
     {
       operation: "deleteFile",
-      bucket: BUCKET_NAME,
+      bucket: getBucketName(),
       key: s3Key,
     },
   );
@@ -463,7 +482,7 @@ export const deleteS3Files = async (s3Keys: string[]): Promise<void> => {
     async () => {
       const client = createS3Client();
       const command = new DeleteObjectsCommand({
-        Bucket: BUCKET_NAME,
+        Bucket: getBucketName(),
         Delete: {
           Objects: s3Keys.map((key) => ({ Key: key })),
           Quiet: true, // Don't return info about deleted objects
@@ -474,7 +493,7 @@ export const deleteS3Files = async (s3Keys: string[]): Promise<void> => {
     },
     {
       operation: "deleteFiles",
-      bucket: BUCKET_NAME,
+      bucket: getBucketName(),
     },
   );
 
@@ -500,7 +519,7 @@ export const getS3FileContent = async (s3Key: string): Promise<Buffer> => {
     async () => {
       const client = createS3Client();
       const command = new GetObjectCommand({
-        Bucket: BUCKET_NAME,
+        Bucket: getBucketName(),
         Key: s3Key,
       });
 
@@ -555,7 +574,7 @@ export const getS3FileContent = async (s3Key: string): Promise<Buffer> => {
     },
     {
       operation: "getFileContent",
-      bucket: BUCKET_NAME,
+      bucket: getBucketName(),
       key: s3Key,
     },
   );
