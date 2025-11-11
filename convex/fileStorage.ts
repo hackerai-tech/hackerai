@@ -6,7 +6,7 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./chats";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 
 /**
