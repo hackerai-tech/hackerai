@@ -25,6 +25,12 @@ const customJestConfig = {
     "^shiki/langs$": "<rootDir>/__mocks__/shiki.ts",
     "^shiki$": "<rootDir>/__mocks__/shiki.ts",
     "^use-stick-to-bottom$": "<rootDir>/__mocks__/use-stick-to-bottom.ts",
+    "^gpt-tokenizer$": "<rootDir>/__mocks__/gpt-tokenizer.ts",
+    "^pdfjs-serverless$": "<rootDir>/__mocks__/pdfjs-serverless.ts",
+    "^mammoth$": "<rootDir>/__mocks__/mammoth.ts",
+    "^word-extractor$": "<rootDir>/__mocks__/word-extractor.ts",
+    "^isbinaryfile$": "<rootDir>/__mocks__/isbinaryfile.ts",
+    "^@langchain/community/document_loaders/fs/csv$": "<rootDir>/__mocks__/@langchain/community/document_loaders/fs/csv.ts",
   },
   transformIgnorePatterns: [
     "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop)/)",
