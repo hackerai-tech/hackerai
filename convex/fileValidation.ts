@@ -12,6 +12,8 @@
 
 "use node";
 
+import { MAX_FILE_SIZE_BYTES } from "../lib/constants/s3";
+
 // =============================================================================
 // FILE SIGNATURES (Magic Numbers)
 // =============================================================================
@@ -184,12 +186,12 @@ export function isAllowedMimeType(mimeType: string): boolean {
  * Validate file size
  *
  * @param size - File size in bytes
- * @param maxSizeBytes - Maximum allowed size (default: 20MB)
+ * @param maxSizeBytes - Maximum allowed size (default: 20MB from S3_CONFIG)
  * @returns Error message if invalid, null if valid
  */
 export function validateFileSize(
   size: number,
-  maxSizeBytes: number = 20 * 1024 * 1024,
+  maxSizeBytes: number = MAX_FILE_SIZE_BYTES,
 ): string | null {
   if (size <= 0) {
     return "File size must be greater than 0";

@@ -26,9 +26,7 @@ import {
 import { processFileAuto } from "./fileProcessing";
 import { validateFile, getFileTypeName } from "./fileValidation";
 import { MAX_TOKENS_FILE } from "../lib/token-utils";
-
-// Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
-const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
+import { MAX_FILE_SIZE_BYTES } from "../lib/constants/s3";
 
 /**
  * Validate token count and throw error if exceeds limit
@@ -369,7 +367,7 @@ export const saveFile = action({
       console.log(`[FileActions] Using service key authentication`);
       validateServiceKey(args.serviceKey);
       if (!args.userId) {
-        throw new Error("userId is required when using serviceKey");
+        throw new Error("Invalid request: userId is required when using serviceKey");
       }
       actingUserId = args.userId;
       entitlements = ["ultra-plan"]; // Max limit for service flows
@@ -421,7 +419,7 @@ export const saveFile = action({
 
     if (fileLimit === 0) {
       console.error(`[FileActions] No paid plan - upload rejected`);
-      throw new Error("Paid plan required for file uploads");
+      throw new Error("Unauthorized: Paid plan required for file uploads");
     }
 
     const currentFileCount = await ctx.runQuery(
@@ -434,7 +432,7 @@ export const saveFile = action({
     if (currentFileCount >= fileLimit) {
       console.error(`[FileActions] File limit exceeded: ${currentFileCount}/${fileLimit}`);
       throw new Error(
-        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
+        `Limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
       );
     }
 
@@ -539,7 +537,7 @@ export const saveFile = action({
       console.log(`[FileActions] Fetched file from Convex storage - size: ${file.size} bytes`);
     } else {
       console.error(`[FileActions] No storage method provided`);
-      throw new Error("Either storageId or s3Key must be provided");
+      throw new Error("Invalid request: Either storageId or s3Key must be provided");
     }
 
     // Calculate token size using the comprehensive file processing logic
@@ -697,7 +695,7 @@ export const generateS3UploadUrlAction = action({
 
     if (fileLimit === 0) {
       console.error(`[FileActions] Upload rejected: No paid plan`);
-      throw new Error("Paid plan required for file uploads");
+      throw new Error("Unauthorized: Paid plan required for file uploads");
     }
 
     // Current file count via public query
@@ -709,7 +707,7 @@ export const generateS3UploadUrlAction = action({
     if (current >= fileLimit) {
       console.error(`[FileActions] Upload limit exceeded: ${current}/${fileLimit}`);
       throw new Error(
-        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
+        `Limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
       );
     }
 
@@ -784,7 +782,7 @@ export const generateS3DownloadUrlsAction = action({
       const file = files[i];
       if (!file) {
         console.error(`[FileActions] File not found - fileId: ${args.fileIds[i]}`);
-        throw new Error("File not found");
+        throw new Error("File not found or access denied");
       }
       if (file.user_id !== user.subject) {
         console.error(`[FileActions] Unauthorized access attempt - fileId: ${args.fileIds[i]}, file owner: ${file.user_id}, requesting user: ${user.subject}`);
@@ -792,7 +790,7 @@ export const generateS3DownloadUrlsAction = action({
       }
       if (!file.s3_key) {
         console.error(`[FileActions] File not in S3 - fileId: ${args.fileIds[i]}`);
-        throw new Error("File is not stored in S3");
+        throw new Error("Invalid request: File is not stored in S3");
       }
     }
 

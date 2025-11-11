@@ -15,12 +15,10 @@ import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { ChatMessage } from "@/types";
-
-// URL expiration buffer: refresh URLs this many seconds before they expire
-const URL_EXPIRATION_BUFFER_SECONDS = 300; // 5 minutes
-
-// S3 presigned URLs expire after this many seconds (must match server setting)
-const URL_LIFETIME_SECONDS = 3600; // 1 hour
+import {
+  S3_URL_LIFETIME_SECONDS,
+  S3_URL_EXPIRATION_BUFFER_SECONDS,
+} from "@/lib/constants/s3";
 
 interface CachedUrl {
   url: string;
@@ -47,7 +45,7 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
   const needsRefresh = useCallback((cached: CachedUrl): boolean => {
     const now = Date.now();
     const timeUntilExpiry = cached.expiresAt - now;
-    return timeUntilExpiry < URL_EXPIRATION_BUFFER_SECONDS * 1000;
+    return timeUntilExpiry < S3_URL_EXPIRATION_BUFFER_SECONDS * 1000;
   }, []);
 
   /**
@@ -69,14 +67,14 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
         setUrlCache((prev) => {
           const next = new Map(prev);
           for (const result of results) {
-            const expiresAt = now + URL_LIFETIME_SECONDS * 1000;
+            const expiresAt = now + S3_URL_LIFETIME_SECONDS * 1000;
             next.set(result.fileId, {
               url: result.url,
               fetchedAt: now,
               expiresAt,
             });
             pendingFetchRef.current.delete(result.fileId);
-            console.log(`[S3 Cache] Cached URL for ${result.fileId} (expires in ${URL_LIFETIME_SECONDS / 60}m)`);
+            console.log(`[S3 Cache] Cached URL for ${result.fileId} (expires in ${S3_URL_LIFETIME_SECONDS / 60}m)`);
           }
           console.log(`[S3 Cache] Cache size: ${next.size} URLs`);
           return next;

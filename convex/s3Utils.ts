@@ -21,6 +21,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import type { Readable } from "stream";
+import { S3_URL_LIFETIME_SECONDS } from "../lib/constants/s3";
 
 // =============================================================================
 // CONFIGURATION & VALIDATION
@@ -262,12 +263,12 @@ export const generateS3Key = (userId: string, fileName: string): string => {
  * Generate a presigned URL for downloading a file from S3
  *
  * @param s3Key - S3 object key
- * @param expiresInSeconds - URL expiration time (default: 3600 = 1 hour)
+ * @param expiresInSeconds - URL expiration time (default: 1 hour from S3_CONFIG)
  * @returns Presigned download URL
  */
 export const generateS3DownloadUrl = async (
   s3Key: string,
-  expiresInSeconds: number = 3600,
+  expiresInSeconds: number = S3_URL_LIFETIME_SECONDS,
 ): Promise<string> => {
   console.log(`[S3] generateS3DownloadUrl called - key: ${s3Key}, expires: ${expiresInSeconds}s`);
 
@@ -306,12 +307,12 @@ export const generateS3DownloadUrl = async (
  * Generate presigned download URLs for multiple S3 keys in parallel
  *
  * @param s3Keys - Array of S3 object keys
- * @param expiresInSeconds - URL expiration time (default: 3600 = 1 hour)
+ * @param expiresInSeconds - URL expiration time (default: 1 hour from S3_CONFIG)
  * @returns Map of s3Key -> presigned URL
  */
 export const generateS3DownloadUrls = async (
   s3Keys: Array<string>,
-  expiresInSeconds: number = 3600,
+  expiresInSeconds: number = S3_URL_LIFETIME_SECONDS,
 ): Promise<Record<string, string>> => {
   if (!Array.isArray(s3Keys)) {
     throw new Error("Invalid s3Keys: must be an array");
@@ -356,13 +357,13 @@ export const generateS3DownloadUrls = async (
  *
  * @param s3Key - S3 object key
  * @param contentType - MIME type of the file
- * @param expiresInSeconds - URL expiration time (default: 3600 = 1 hour)
+ * @param expiresInSeconds - URL expiration time (default: 1 hour from S3_CONFIG)
  * @returns Presigned upload URL
  */
 export const generateS3UploadUrl = async (
   s3Key: string,
   contentType: string,
-  expiresInSeconds: number = 3600,
+  expiresInSeconds: number = S3_URL_LIFETIME_SECONDS,
 ): Promise<string> => {
   console.log(`[S3] generateS3UploadUrl called - key: ${s3Key}, contentType: ${contentType}, expires: ${expiresInSeconds}s`);
 
