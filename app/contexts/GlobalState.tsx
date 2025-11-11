@@ -24,7 +24,7 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
-import type { Doc } from "@/convex/_generated/dataModel";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
@@ -107,7 +107,7 @@ interface GlobalStateType {
   messageQueue: QueuedMessage[];
   queueMessage: (
     text: string,
-    files?: Array<{ file: File; fileId: string; url: string }>,
+    files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
   ) => void;
   removeQueuedMessage: (id: string) => void;
   clearQueue: () => void;
@@ -479,7 +479,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const queueMessage = useCallback(
     (
       text: string,
-      files?: Array<{ file: File; fileId: string; url: string }>,
+      files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
     ) => {
       setMessageQueue((prev) => {
         // Limit queue size to 10 messages
