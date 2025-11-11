@@ -12,7 +12,7 @@ const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
  * Old sandboxes without this version (or with mismatched versions) will be automatically deleted
  * and recreated on next connection attempt.
  */
-const SANDBOX_VERSION = "v2";
+const SANDBOX_VERSION = "v4";
 
 /**
  * Ensures a sandbox connection is established and maintained

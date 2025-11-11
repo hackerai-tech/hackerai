@@ -32,7 +32,33 @@ In using these tools, adhere to the following guidelines:
 7. Dont include any newlines in the command.
 8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation.
 9. Avoid commands with excessive output; redirect to files when necessary.
-10. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.`,
+10. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
+
+When making charts for the user: 1) never use seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never set any specific colors – unless explicitly asked to by the user.
+I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never, ever, specify colors or matplotlib styles – unless explicitly asked to by the user
+
+If you are generating files:
+- You MUST use the instructed library for each supported file format. (Do not assume any other libraries are available):
+    - pdf --> reportlab
+    - docx --> python-docx
+    - xlsx --> openpyxl
+    - pptx --> python-pptx
+    - csv --> pandas
+    - rtf --> pypandoc
+    - txt --> pypandoc
+    - md --> pypandoc
+    - ods --> odfpy
+    - odt --> odfpy
+    - odp --> odfpy
+- If you are generating a pdf:
+    - You MUST prioritize generating text content using reportlab.platypus rather than canvas
+    - If you are generating text in korean, chinese, OR japanese, you MUST use the following built-in UnicodeCIDFont. To use these fonts, you must call pdfmetrics.registerFont(UnicodeCIDFont(font_name)) and apply the style to all text elements:
+        - japanese --> HeiseiMin-W3 or HeiseiKakuGo-W5
+        - simplified chinese --> STSong-Light
+        - traditional chinese --> MSung-Light
+        - korean --> HYSMyeongJo-Medium
+- If you are to use pypandoc, you are only allowed to call the method pypandoc.convert_text and you MUST include the parameter extra_args=['--standalone']. Otherwise the file will be corrupt/incomplete
+    - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])`,
     inputSchema: z.object({
       command: z.string().describe("The terminal command to execute"),
       explanation: z
