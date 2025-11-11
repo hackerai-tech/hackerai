@@ -76,7 +76,7 @@ export const collectSandboxFiles = (
           sandboxFiles.push({ url: part.url, localPath });
         }
         tags.push(
-          `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
+          `\`<attachment filename="${sanitizedName}" local_path="${localPath}" />\``,
         );
       }
     }
