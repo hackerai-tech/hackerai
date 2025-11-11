@@ -22,8 +22,10 @@ import {
   generateS3Key,
   generateS3UploadUrl,
   generateS3DownloadUrls,
+  getS3FileContent,
 } from "./s3Utils";
 import { processFileAuto } from "./fileProcessing";
+import { validateFile, getFileTypeName } from "./fileValidation";
 
 // Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -309,6 +311,40 @@ export const saveFile = action({
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
+    // =========================================================================
+    // STEP 1: Normalize and validate file metadata
+    // =========================================================================
+    // Normalize empty MIME types to application/octet-stream
+    // This happens when browsers don't recognize file types (e.g., .md, .log, etc.)
+    const normalizedMediaType = args.mediaType.trim().length === 0
+      ? "application/octet-stream"
+      : args.mediaType;
+
+    const validation = validateFile(args.name, normalizedMediaType, args.size);
+    if (!validation.isValid) {
+      // Clean up storage before throwing error
+      if (args.storageId) {
+        try {
+          await ctx.storage.delete(args.storageId);
+        } catch (e) {
+          console.warn("Failed to delete storage after validation error:", e);
+        }
+      }
+      if (args.s3Key) {
+        try {
+          await ctx.runAction(internal.s3Cleanup.deleteS3Object, {
+            s3Key: args.s3Key,
+          });
+        } catch (e) {
+          console.warn("Failed to delete S3 object after validation error:", e);
+        }
+      }
+      throw new Error(validation.error);
+    }
+
+    // =========================================================================
+    // STEP 2: Authentication & Authorization
+    // =========================================================================
     let actingUserId: string;
     let entitlements: Array<string> = [];
 
@@ -404,17 +440,38 @@ export const saveFile = action({
       );
     }
 
+    // =========================================================================
+    // STEP 4: Fetch file content and verify signature
+    // =========================================================================
     let fileUrl: string;
     let file: Blob;
+    let buffer: Buffer | null = null;
 
     // Handle both S3 and legacy Convex storage
     if (args.s3Key) {
       // S3 storage: fetch file from S3 using Convex-compatible utils
-      const { getS3FileContent, generateS3DownloadUrl } = await import(
-        "./s3Utils"
-      );
+      const { generateS3DownloadUrl } = await import("./s3Utils");
       fileUrl = await generateS3DownloadUrl(args.s3Key);
-      const buffer = await getS3FileContent(args.s3Key);
+      buffer = await getS3FileContent(args.s3Key);
+
+      // Verify file signature matches declared MIME type (first 8KB is sufficient)
+      const { verifyFileSignature } = await import("./fileValidation");
+      const signatureBuffer = buffer.slice(0, 8192); // First 8KB for signature check
+      if (!verifyFileSignature(signatureBuffer, args.mediaType)) {
+        // Clean up S3 file before throwing error
+        try {
+          await ctx.runAction(internal.s3Cleanup.deleteS3Object, {
+            s3Key: args.s3Key,
+          });
+        } catch (e) {
+          console.warn("Failed to delete S3 object after signature check:", e);
+        }
+        throw new Error(
+          `File "${args.name}" content does not match declared type "${getFileTypeName(args.mediaType)}". ` +
+            `Possible file type spoofing detected. Please ensure the file is a valid ${getFileTypeName(args.mediaType)}.`,
+        );
+      }
+
       // Create a standalone ArrayBuffer copy to satisfy BlobPart typing
       const copy = new Uint8Array(buffer.byteLength);
       copy.set(

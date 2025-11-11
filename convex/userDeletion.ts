@@ -125,6 +125,7 @@ export const deleteAllUserData = mutation({
                 );
               }
             }
+
             await ctx.db.delete(file._id);
           } catch (error) {
             console.error(`Failed to delete file record ${file._id}:`, error);

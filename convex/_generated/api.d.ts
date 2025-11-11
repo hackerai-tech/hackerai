@@ -14,6 +14,7 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileProcessing from "../fileProcessing.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as fileValidation from "../fileValidation.js";
 import type * as memories from "../memories.js";
 import type * as messages from "../messages.js";
 import type * as s3Cleanup from "../s3Cleanup.js";
@@ -35,6 +36,7 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileProcessing: typeof fileProcessing;
   fileStorage: typeof fileStorage;
+  fileValidation: typeof fileValidation;
   memories: typeof memories;
   messages: typeof messages;
   s3Cleanup: typeof s3Cleanup;

@@ -49,7 +49,7 @@ export async function uploadSingleFileToS3(
 
 /**
  * Upload a single file to Convex storage and return file ID and URL
- * Legacy method for backward compatibility
+ * Legacy method for backward compatibility when S3 is disabled
  */
 export async function uploadSingleFileToConvex(
   file: File,
