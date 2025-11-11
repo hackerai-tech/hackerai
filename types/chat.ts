@@ -106,3 +106,5 @@ export interface QueuedMessage {
   }>;
   timestamp: number;
 }
+
+export type QueueBehavior = "queue" | "stop-and-send";

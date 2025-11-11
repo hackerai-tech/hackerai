@@ -26,6 +26,7 @@ interface UseChatHandlersProps {
   activateChatLocally: () => void;
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
+  hasManuallyStoppedRef: RefObject<boolean>;
 }
 
 export const useChatHandlers = ({
@@ -40,6 +41,7 @@ export const useChatHandlers = ({
   activateChatLocally,
   status,
   isSendingNowRef,
+  hasManuallyStoppedRef,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -59,6 +61,7 @@ export const useChatHandlers = ({
     messageQueue,
     removeQueuedMessage,
     clearQueue,
+    queueBehavior,
   } = useGlobalState();
 
   // Avoid stale closure on temporary flag
@@ -82,6 +85,10 @@ export const useChatHandlers = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsAutoResuming(false);
+    
+    // Reset manual stop flag when user submits a new message
+    hasManuallyStoppedRef.current = false;
+    
     // Prevent submission if files are still uploading
     if (isUploadingFiles) {
       return;
@@ -89,22 +96,52 @@ export const useChatHandlers = ({
     // Allow submission if there's text input or uploaded files
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
-      // If streaming in Agent mode, queue the message instead of sending
+      // If streaming in Agent mode, check queue behavior
       if (status === "streaming" && chatMode === "agent") {
         const validFiles = uploadedFiles.filter(
           (file) => file.uploaded && file.url && file.fileId,
         );
-        queueMessage(
-          input,
-          validFiles.map((f) => ({
-            file: f.file,
-            fileId: f.fileId!,
-            url: f.url!,
-          })),
-        );
-        clearInput();
-        clearUploadedFiles();
-        return;
+
+        if (queueBehavior === "queue") {
+          // Queue the message - will auto-send after current response completes
+          queueMessage(
+            input,
+            validFiles.map((f) => ({
+              file: f.file,
+              fileId: f.fileId!,
+              url: f.url!,
+            })),
+          );
+          clearInput();
+          clearUploadedFiles();
+          return;
+        } else if (queueBehavior === "stop-and-send") {
+          // Immediately stop current stream and send right away
+          stop();
+
+          // Cancel the stream in database and save current message state
+          if (!temporaryChatsEnabledRef.current) {
+            cancelStreamMutation({ chatId }).catch((error) => {
+              console.error("Failed to cancel stream:", error);
+            });
+
+            const lastMessage = messages[messages.length - 1];
+            if (lastMessage && lastMessage.role === "assistant") {
+              saveAssistantMessage({
+                id: lastMessage.id,
+                chatId,
+                role: lastMessage.role,
+                parts: lastMessage.parts,
+              }).catch((error) => {
+                console.error("Failed to save message on stop:", error);
+              });
+            }
+          } else {
+            // Temporary chats: signal cancel via temp stream coordination
+            cancelTempStreamMutation({ chatId }).catch(() => {});
+          }
+          // Continue to send the new message immediately below (don't return)
+        }
       }
       // Check token limit before sending based on user plan
       const tokenCount = countInputTokens(input, uploadedFiles);
@@ -179,13 +216,14 @@ export const useChatHandlers = ({
   const handleStop = async () => {
     setIsAutoResuming(false);
 
+    // Set manual stop flag to prevent auto-processing of queue
+    hasManuallyStoppedRef.current = true;
+
     // Stop the stream immediately (client-side abort)
     stop();
 
-    // Clear any queued messages in Agent mode
-    if (chatMode === "agent" && messageQueue.length > 0) {
-      clearQueue();
-    }
+    // Don't clear queued messages - let them remain in the queue
+    // User can manually delete them if needed
 
     if (!temporaryChatsEnabled) {
       // Cancel the stream in database first (sets canceled_at for backend detection)
@@ -391,6 +429,9 @@ export const useChatHandlers = ({
 
     // Set flag to prevent auto-processing from interfering
     isSendingNowRef.current = true;
+    
+    // Reset manual stop flag when using Send Now
+    hasManuallyStoppedRef.current = false;
 
     try {
       // Remove the message from queue FIRST (before stopping)

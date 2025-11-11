@@ -1,13 +1,28 @@
 import { Button } from "@/components/ui/button";
-import { Trash, ArrowUp, ChevronDown, ChevronRight } from "lucide-react";
-import type { QueuedMessage } from "@/types/chat";
+import {
+  Trash,
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  MoreHorizontal,
+  Check,
+} from "lucide-react";
+import type { QueuedMessage, QueueBehavior } from "@/types/chat";
 import { useState } from "react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 interface QueuedMessagesPanelProps {
   messages: QueuedMessage[];
   onSendNow: (messageId: string) => void;
   onDelete: (messageId: string) => void;
   isStreaming: boolean;
+  queueBehavior?: QueueBehavior;
+  onQueueBehaviorChange?: (behavior: QueueBehavior) => void;
 }
 
 export const QueuedMessagesPanel = ({
@@ -15,6 +30,8 @@ export const QueuedMessagesPanel = ({
   onSendNow,
   onDelete,
   isStreaming,
+  queueBehavior = "queue",
+  onQueueBehaviorChange,
 }: QueuedMessagesPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
@@ -25,6 +42,14 @@ export const QueuedMessagesPanel = ({
   const handleToggleExpand = () => {
     setIsExpanded(!isExpanded);
   };
+
+  const queueBehaviorOptions: Array<{
+    value: QueueBehavior;
+    label: string;
+  }> = [
+    { value: "queue", label: "Queue after current message" },
+    { value: "stop-and-send", label: "Stop & send right away" },
+  ];
 
   return (
     <div className="mx-4 rounded-[22px_22px_0px_0px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border border-b-0 bg-input-chat">
@@ -55,6 +80,37 @@ export const QueuedMessagesPanel = ({
             </h3>
           </div>
         </button>
+
+        {/* Settings Dropdown */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 w-7 p-0"
+              aria-label="Queue settings"
+            >
+              <MoreHorizontal className="w-4 h-4 text-muted-foreground" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56">
+            <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+              When to send follow-ups
+            </div>
+            {queueBehaviorOptions.map((option) => (
+              <DropdownMenuItem
+                key={option.value}
+                onClick={() => onQueueBehaviorChange?.(option.value)}
+                className="flex items-center justify-between cursor-pointer"
+              >
+                <span>{option.label}</span>
+                {queueBehavior === option.value && (
+                  <Check className="w-4 h-4" />
+                )}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {/* Message List - Collapsible */}

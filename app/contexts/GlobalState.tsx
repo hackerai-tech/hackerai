@@ -10,7 +10,12 @@ import React, {
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import type { ChatMode, SidebarContent, QueuedMessage } from "@/types/chat";
+import type {
+  ChatMode,
+  SidebarContent,
+  QueuedMessage,
+  QueueBehavior,
+} from "@/types/chat";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -108,6 +113,10 @@ interface GlobalStateType {
   clearQueue: () => void;
   dequeueNext: () => QueuedMessage | null;
 
+  // Queue behavior preference
+  queueBehavior: QueueBehavior;
+  setQueueBehavior: (behavior: QueueBehavior) => void;
+
   // Utility methods
   clearInput: () => void;
   clearUploadedFiles: () => void;
@@ -201,6 +210,23 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Message queue state (for Agent mode queueing)
   const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+
+  // Queue behavior preference (persisted to localStorage)
+  const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
+    if (typeof window === "undefined") return "queue";
+    const saved = localStorage.getItem("queue-behavior");
+    if (saved === "queue" || saved === "stop-and-send") {
+      return saved;
+    }
+    return "queue"; // Default: queue after current message completes
+  });
+
+  // Persist queue behavior to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("queue-behavior", queueBehavior);
+    }
+  }, [queueBehavior]);
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -663,6 +689,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     removeQueuedMessage,
     clearQueue,
     dequeueNext,
+
+    queueBehavior,
+    setQueueBehavior: setQueueBehaviorState,
   };
 
   return (

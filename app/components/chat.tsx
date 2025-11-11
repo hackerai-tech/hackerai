@@ -71,6 +71,7 @@ export const Chat = ({
     messageQueue,
     dequeueNext,
     clearQueue,
+    queueBehavior,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -145,6 +146,8 @@ export const Chat = ({
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
   // Ref to track when "Send Now" is actively processing to prevent auto-processing interference
   const isSendingNowRef = useRef(false);
+  // Ref to track if user manually stopped - prevents auto-processing until new message submitted
+  const hasManuallyStoppedRef = useRef(false);
 
   const {
     messages,
@@ -406,7 +409,9 @@ export const Chat = ({
       messageQueue.length > 0 &&
       !isProcessingQueue &&
       !isSendingNowRef.current && // Don't auto-process if "Send Now" is active
-      chatMode === "agent"
+      !hasManuallyStoppedRef.current && // Don't auto-process if user manually stopped
+      chatMode === "agent" &&
+      queueBehavior === "queue" // Only auto-process in queue mode
     ) {
       setIsProcessingQueue(true);
       const nextMessage = dequeueNext();
@@ -447,6 +452,7 @@ export const Chat = ({
     dequeueNext,
     sendMessage,
     temporaryChatsEnabledRef,
+    queueBehavior,
   ]);
 
   // Keep a ref to the latest messageQueue to avoid stale closures
@@ -502,6 +508,7 @@ export const Chat = ({
     },
     status,
     isSendingNowRef,
+    hasManuallyStoppedRef,
   });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });

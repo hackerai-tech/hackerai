@@ -96,6 +96,8 @@ export const ChatInput = ({
     isCheckingProPlan,
     messageQueue,
     removeQueuedMessage,
+    queueBehavior,
+    setQueueBehavior,
   } = useGlobalState();
   const {
     fileInputRef,
@@ -259,6 +261,8 @@ export const ChatInput = ({
             onSendNow={onSendNow}
             onDelete={removeQueuedMessage}
             isStreaming={status === "streaming"}
+            queueBehavior={queueBehavior}
+            onQueueBehaviorChange={setQueueBehavior}
           />
         )}
 
