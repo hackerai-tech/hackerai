@@ -2,7 +2,20 @@
  * Tests for S3 Utilities
  *
  * @module convex/__tests__/s3Utils.test.ts
+ *
+ * Note: S3 environment variables are mocked in jest.setup.js
  */
+
+// Mock the AWS SDK to avoid actual AWS calls
+jest.mock("@aws-sdk/client-s3", () => ({
+  S3Client: jest.fn().mockImplementation(() => ({})),
+  PutObjectCommand: jest.fn(),
+  GetObjectCommand: jest.fn(),
+}));
+
+jest.mock("@aws-sdk/s3-request-presigner", () => ({
+  getSignedUrl: jest.fn().mockResolvedValue("https://mock-signed-url.com"),
+}));
 
 import { describe, it, expect } from "@jest/globals";
 import { generateS3Key } from "../s3Utils";
@@ -26,7 +39,8 @@ describe("s3Utils", () => {
       const key = generateS3Key(userId, fileName);
 
       // Special characters should be replaced with underscores
-      expect(key).toMatch(/uploads\/user_123\/\d+-[a-z0-9]+-my_file__1________\.pdf$/);
+      // "my file (1) @ #$%^&*.pdf" becomes "my_file__1__________" (spaces and special chars → underscores)
+      expect(key).toMatch(/uploads\/user_123\/\d+-[a-z0-9]+-my_file__1__________\.pdf$/);
     });
 
     it("should limit file name length to 100 characters", () => {

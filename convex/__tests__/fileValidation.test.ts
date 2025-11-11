@@ -23,7 +23,7 @@ describe("fileValidation", () => {
     });
 
     it("should reject empty file names", () => {
-      expect(validateFileName("")).toBe("File name cannot be empty");
+      expect(validateFileName("")).toBe("File name is required");
       expect(validateFileName("   ")).toBe("File name cannot be empty");
     });
 

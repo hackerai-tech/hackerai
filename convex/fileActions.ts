@@ -5,11 +5,10 @@ import { v } from "convex/values";
 import { countTokens } from "gpt-tokenizer";
 import { getDocument } from "pdfjs-serverless";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
-import { JSONLoader } from "langchain/document_loaders/fs/json";
 import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type {
   FileItemChunk,
   SupportedFileType,
@@ -26,6 +25,7 @@ import {
 } from "./s3Utils";
 import { processFileAuto } from "./fileProcessing";
 import { validateFile, getFileTypeName } from "./fileValidation";
+import { MAX_TOKENS_FILE } from "../lib/token-utils";
 
 // Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -206,9 +206,13 @@ const processCsvFile = async (csv: Blob): Promise<FileItemChunk[]> => {
 };
 
 const processJsonFile = async (json: Blob): Promise<FileItemChunk[]> => {
-  const loader = new JSONLoader(json);
-  const docs = await loader.load();
-  const completeText = docs.map((doc) => doc.pageContent).join(" ");
+  const fileBuffer = Buffer.from(await json.arrayBuffer());
+  const textDecoder = new TextDecoder("utf-8");
+  const jsonText = textDecoder.decode(fileBuffer);
+
+  // Parse and stringify to ensure valid JSON and format consistently
+  const parsedJson = JSON.parse(jsonText);
+  const completeText = JSON.stringify(parsedJson, null, 2);
 
   return [
     {

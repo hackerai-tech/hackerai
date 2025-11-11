@@ -10,7 +10,7 @@
  * @module app/hooks/useS3FileUrls
  */
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -152,36 +152,57 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
   }, [messages, urlCache, fetchUrls]);
 
   /**
-   * Enhance messages with cached URLs
+   * Check for URLs that need refresh (in a useEffect to avoid side effects during render)
    */
-  const enhancedMessages: ChatMessage[] = messages.map((message) => {
-    if (!message.fileDetails) return message;
+  useEffect(() => {
+    const idsToRefresh: Array<Id<"files">> = [];
 
-    const enhancedFileDetails = message.fileDetails.map((fileDetail) => {
-      // If file has null URL and we have a cached URL, use it
-      if (fileDetail.fileId && fileDetail.url === null) {
-        const cached = urlCache.get(fileDetail.fileId);
-        if (cached) {
-          // Check if URL is expired or expiring soon
-          if (needsRefresh(cached)) {
-            // URL is expiring - trigger refresh if not already pending
-            if (!pendingFetchRef.current.has(fileDetail.fileId)) {
-              pendingFetchRef.current.add(fileDetail.fileId);
-              fetchUrls([fileDetail.fileId]);
+    for (const message of messages) {
+      if (message.fileDetails) {
+        for (const fileDetail of message.fileDetails) {
+          if (fileDetail.fileId && fileDetail.url === null) {
+            const cached = urlCache.get(fileDetail.fileId);
+            if (cached && needsRefresh(cached)) {
+              if (!pendingFetchRef.current.has(fileDetail.fileId)) {
+                idsToRefresh.push(fileDetail.fileId);
+                pendingFetchRef.current.add(fileDetail.fileId);
+              }
             }
           }
-
-          return { ...fileDetail, url: cached.url };
         }
       }
-      return fileDetail;
-    });
+    }
 
-    return {
-      ...message,
-      fileDetails: enhancedFileDetails,
-    };
-  });
+    if (idsToRefresh.length > 0) {
+      console.log(`[S3] Refreshing ${idsToRefresh.length} expiring URLs from messages`);
+      fetchUrls(idsToRefresh);
+    }
+  }, [messages, urlCache, needsRefresh, fetchUrls]);
+
+  /**
+   * Enhance messages with cached URLs
+   */
+  const enhancedMessages: ChatMessage[] = useMemo(() => {
+    return messages.map((message) => {
+      if (!message.fileDetails) return message;
+
+      const enhancedFileDetails = message.fileDetails.map((fileDetail) => {
+        // If file has null URL and we have a cached URL, use it
+        if (fileDetail.fileId && fileDetail.url === null) {
+          const cached = urlCache.get(fileDetail.fileId);
+          if (cached) {
+            return { ...fileDetail, url: cached.url };
+          }
+        }
+        return fileDetail;
+      });
+
+      return {
+        ...message,
+        fileDetails: enhancedFileDetails,
+      };
+    });
+  }, [messages, urlCache]);
 
   return enhancedMessages;
 };

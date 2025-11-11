@@ -5,6 +5,10 @@ import { ReadableStream, TransformStream } from "stream/web";
 
 // Mock environment variables
 process.env.NEXT_PUBLIC_CONVEX_URL = "https://test.convex.cloud";
+process.env.AWS_S3_REGION = "us-east-1";
+process.env.AWS_S3_ACCESS_KEY_ID = "test-access-key";
+process.env.AWS_S3_SECRET_ACCESS_KEY = "test-secret-key";
+process.env.AWS_S3_BUCKET_NAME = "test-bucket";
 
 // Polyfill TextEncoder/TextDecoder for gpt-tokenizer
 global.TextEncoder = TextEncoder;
