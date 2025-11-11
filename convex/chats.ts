@@ -665,7 +665,7 @@ export const renameChat = mutation({
 export const deleteAllChats = mutation({
   args: {},
   returns: v.null(),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {

@@ -166,13 +166,12 @@ export const createChatHandler = () => {
       }
 
       // Start cancellation poller (works for both regular and temporary chats)
-      let pollerStopped = false;
       const cancellationPoller = createCancellationPoller({
         chatId,
         isTemporary: !!temporary,
         abortController: userStopSignal,
         onStop: () => {
-          pollerStopped = true;
+          // Poller stopped
         },
       });
 
@@ -209,7 +208,6 @@ export const createChatHandler = () => {
             memoryEnabled,
             temporary,
             assistantMessageId,
-            subscription,
           );
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
@@ -383,7 +381,6 @@ export const createChatHandler = () => {
 
                 // Stop cancellation poller
                 cancellationPoller.stop();
-                pollerStopped = true;
 
                 // Always cleanup sandbox regardless of abort status
                 const sandbox = getSandbox();

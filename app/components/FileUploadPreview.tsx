@@ -9,7 +9,6 @@ import {
 } from "@/lib/utils/file-utils";
 import { ImageViewer } from "./ImageViewer";
 import {
-  UploadedFileState,
   FileUploadPreviewProps,
   FilePreview,
 } from "@/types/file";

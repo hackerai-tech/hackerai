@@ -100,7 +100,6 @@ export async function processChatMessages({
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(
     messagesWithUrls,
-    subscription === "pro" || subscription === "ultra",
   );
 
   // If moderation allows, add authorization message

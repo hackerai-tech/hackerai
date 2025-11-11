@@ -96,7 +96,7 @@ export const getUserCustomization = query({
       updated_at: v.number(),
     }),
   ),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       return null;

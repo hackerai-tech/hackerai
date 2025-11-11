@@ -1,6 +1,4 @@
 "use client";
-
-import React from "react";
 import { Trash2 } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";

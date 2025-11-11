@@ -9,7 +9,6 @@ import {
   SquareTerminal,
   CreditCard,
   Users,
-  Code,
 } from "lucide-react";
 
 export type PricingFeature = {

@@ -281,7 +281,7 @@ export const getUserMemories = query({
       update_time: v.number(),
     }),
   ),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new Error("Unauthorized: User not authenticated");
@@ -358,7 +358,7 @@ export const deleteUserMemory = mutation({
 export const deleteAllUserMemories = mutation({
   args: {},
   returns: v.null(),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new Error("Unauthorized: User not authenticated");

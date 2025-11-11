@@ -213,7 +213,7 @@ export const ChatInput = ({
           }
         }
 
-        const filesProcessed = await handlePasteEvent(e);
+        await handlePasteEvent(e);
         // If files were processed, the event.preventDefault() is already called
         // in handlePasteEvent, so no additional action needed here
       }

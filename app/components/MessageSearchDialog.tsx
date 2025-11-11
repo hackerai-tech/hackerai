@@ -246,7 +246,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     return content.slice(0, maxLength) + "...";
   };
 
-  const getMatchIcon = (matchType: "message" | "title" | "both") => {
+  const getMatchIcon = () => {
     // Use consistent MessageSquare icon for all match types
     return (
       <MessageSquare size={16} className="text-muted-foreground shrink-0" />
@@ -367,7 +367,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                   >
                     <div className="flex items-start justify-between gap-3 mb-2">
                       <div className="flex items-center gap-3 min-w-0">
-                        {getMatchIcon(message.match_type)}
+                        {getMatchIcon()}
                         <span className="text-sm font-medium truncate">
                           {highlightSearchTerm(
                             message.chat_title || "Untitled Chat",

@@ -1,4 +1,3 @@
-import React from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { TodoBlock } from "@/components/ui/todo-block";

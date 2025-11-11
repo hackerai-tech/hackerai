@@ -106,7 +106,7 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
   };
 
   const renderWriteFileTool = () => {
-    const { toolCallId, state, input, output } = part;
+    const { toolCallId, state, input } = part;
     const writeInput = input as
       | {
           file_path: string;

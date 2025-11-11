@@ -26,7 +26,6 @@ export const createTools = (
   memoryEnabled: boolean = true,
   isTemporary: boolean = false,
   assistantMessageId?: string,
-  subscription: "free" | "pro" | "team" | "ultra" = "free",
 ) => {
   let sandbox: Sandbox | null = null;
 

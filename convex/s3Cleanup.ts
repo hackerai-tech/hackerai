@@ -10,7 +10,7 @@ import { v } from "convex/values";
 export const deleteS3Object = internalAction({
   args: { s3Key: v.string() },
   returns: v.null(),
-  handler: async (ctx, args) => {
+  handler: async (_ctx, args) => {
     const { deleteS3File } = await import("./s3Utils");
     try {
       await deleteS3File(args.s3Key);
@@ -28,7 +28,7 @@ export const deleteS3Object = internalAction({
 export const deleteS3Objects = internalAction({
   args: { s3Keys: v.array(v.string()) },
   returns: v.null(),
-  handler: async (ctx, args) => {
+  handler: async (_ctx, args) => {
     if (args.s3Keys.length === 0) return null;
 
     const { deleteS3Files } = await import("./s3Utils");

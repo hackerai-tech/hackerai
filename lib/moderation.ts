@@ -5,7 +5,6 @@ const MODERATION_TOKEN_LIMIT = 256;
 
 export async function getModerationResult(
   messages: any[],
-  isPro: boolean,
 ): Promise<{ shouldUncensorResponse: boolean }> {
   const openaiApiKey = process.env.OPENAI_API_KEY;
 
@@ -45,7 +44,6 @@ export async function getModerationResult(
     const shouldUncensorResponse = determineShouldUncensorResponse(
       moderationLevel,
       hazardCategories,
-      isPro,
     );
 
     // console.log(
@@ -165,7 +163,6 @@ function calculateModerationLevel(
 function determineShouldUncensorResponse(
   moderationLevel: number,
   hazardCategories: string[],
-  isPro: boolean,
 ): boolean {
   const forbiddenCategories = [
     "sexual",

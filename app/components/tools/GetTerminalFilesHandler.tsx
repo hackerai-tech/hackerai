@@ -1,4 +1,3 @@
-import React from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FileDown } from "lucide-react";
 import type { ChatStatus } from "@/types/chat";

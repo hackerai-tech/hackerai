@@ -324,7 +324,6 @@ export const Chat = ({
           (t: Todo) => !t.sourceMessageId,
         );
 
-        const prevManual: Todo[] = [];
         // We can't access previous value directly here without functional setter.
         // Fallback: since server is source of truth, treat incoming manual todos as updates only for ids we already have.
         // The actual merge of manual todos will be handled elsewhere when tool updates come in.

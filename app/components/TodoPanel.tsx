@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ChatStatus } from "@/types";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -11,7 +11,7 @@ interface TodoPanelProps {
   status: ChatStatus;
 }
 
-export const TodoPanel = ({ status }: TodoPanelProps) => {
+export const TodoPanel = ({}: TodoPanelProps) => {
   const [isExpanded, setIsExpanded] = useState(false);
   const { todos, setIsTodoPanelExpanded } = useGlobalState();
 

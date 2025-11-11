@@ -34,7 +34,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   hasMessages,
   hasActiveChat,
   chatTitle,
-  id,
   chatData,
   chatSidebarOpen = false,
   isExistingChat = false,

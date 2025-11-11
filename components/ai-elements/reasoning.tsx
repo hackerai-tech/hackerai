@@ -8,7 +8,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
-import { createContext, memo, useContext, useEffect, useRef } from "react";
+import { createContext, memo, useContext, useEffect } from "react";
 import type { ComponentProps } from "react";
 import { useStickToBottom } from "use-stick-to-bottom";
 

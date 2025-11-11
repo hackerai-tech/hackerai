@@ -10,7 +10,7 @@ import {
   createFileMessagePartFromUploadedFile,
 } from "@/lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "@/lib/token-utils";
-import { FileProcessingResult, FileSource } from "@/types/file";
+import { FileProcessingResult } from "@/types/file";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 
@@ -91,7 +91,6 @@ export const useFileUpload = () => {
   const showProcessingFeedback = useCallback(
     (
       result: FileProcessingResult,
-      source: FileSource,
       hasRemainingSlots: boolean = true,
     ) => {
       const messages: string[] = [];
@@ -242,7 +241,7 @@ export const useFileUpload = () => {
 
   // Unified file processing function
   const processFiles = useCallback(
-    async (files: File[], source: FileSource) => {
+    async (files: File[]) => {
       // Check if user has pro plan for file uploads
       if (subscription === "free") {
         toast.error("Upgrade plan to upload files.");
@@ -257,7 +256,7 @@ export const useFileUpload = () => {
       const hasRemainingSlots = remainingSlots > 0;
 
       // Show feedback messages
-      showProcessingFeedback(result, source, hasRemainingSlots);
+      showProcessingFeedback(result, hasRemainingSlots);
 
       // Start uploads for valid files
       if (result.validFiles.length > 0 && hasRemainingSlots) {
@@ -279,7 +278,7 @@ export const useFileUpload = () => {
     const selectedFiles = event.target.files;
     if (!selectedFiles || selectedFiles.length === 0) return;
 
-    await processFiles(Array.from(selectedFiles), "upload");
+    await processFiles(Array.from(selectedFiles));
 
     // Clear the input
     if (fileInputRef.current) {
@@ -332,7 +331,7 @@ export const useFileUpload = () => {
     // Prevent default paste behavior to avoid pasting file names as text
     event.preventDefault();
 
-    await processFiles(files, "paste");
+    await processFiles(files);
     return true;
   };
 
@@ -404,7 +403,7 @@ export const useFileUpload = () => {
       const files = e.dataTransfer?.files;
       if (!files || files.length === 0) return;
 
-      await processFiles(Array.from(files), "drop");
+      await processFiles(Array.from(files));
     },
     [processFiles],
   );

@@ -5,7 +5,6 @@ interface FinishReasonNoticeProps {
 
 export const FinishReasonNotice = ({
   finishReason,
-  mode,
 }: FinishReasonNoticeProps) => {
   if (!finishReason) return null;
 

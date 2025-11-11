@@ -58,7 +58,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
     initializeNewChat,
     initializeChat,
     chatTitle: globalChatTitle,
-    currentChatId,
   } = useGlobalState();
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
