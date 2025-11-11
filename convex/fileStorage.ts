@@ -6,7 +6,7 @@ import {
 } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./chats";
-import { internal } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 
 /**
@@ -147,6 +147,34 @@ export const generateUploadUrl = mutation({
 });
 
 /**
+ * Get single file by ID (for backend processing)
+ */
+export const getFile = query({
+  args: {
+    fileId: v.id("files"),
+  },
+  returns: v.union(
+    v.object({
+      _id: v.id("files"),
+      _creationTime: v.number(),
+      storage_id: v.optional(v.id("_storage")),
+      s3_key: v.optional(v.string()),
+      user_id: v.string(),
+      name: v.string(),
+      media_type: v.string(),
+      size: v.number(),
+      file_token_size: v.number(),
+      content: v.optional(v.string()),
+      is_attached: v.boolean(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.fileId);
+  },
+});
+
+/**
  * Get multiple file URLs from file IDs using service key (for backend processing)
  */
 export const getFileUrlsByFileIds = query({
@@ -159,14 +187,23 @@ export const getFileUrlsByFileIds = query({
     // Verify service role key
     validateServiceKey(args.serviceKey);
 
-    // Get file records from database to extract storage IDs
+    // Get file records from database to extract storage IDs or S3 keys
     const files = await Promise.all(
       args.fileIds.map((fileId) => ctx.db.get(fileId)),
     );
 
-    // Get URLs from storage using the storage IDs
+    // Get URLs - for S3 files, return null (URLs should be generated via API route)
+    // For legacy Convex storage files, get URL from storage
     const urls = await Promise.all(
-      files.map((file) => (file ? ctx.storage.getUrl(file.storage_id) : null)),
+      files.map((file) => {
+        if (!file) return null;
+        // Legacy Convex storage
+        if (file.storage_id) {
+          return ctx.storage.getUrl(file.storage_id);
+        }
+        // S3 files return null - URLs should be generated via API route
+        return null;
+      }),
     );
 
     return urls;
@@ -174,7 +211,7 @@ export const getFileUrlsByFileIds = query({
 });
 
 /**
- * Delete file from storage by storage ID
+ * Delete file from storage by file ID
  */
 export const deleteFile = mutation({
   args: {
@@ -198,7 +235,17 @@ export const deleteFile = mutation({
       throw new Error("Unauthorized: File does not belong to user");
     }
 
-    await ctx.storage.delete(file.storage_id);
+    // Delete from appropriate storage
+    if (file.storage_id) {
+      // Legacy Convex storage
+      await ctx.storage.delete(file.storage_id);
+    }
+    if ((file as any).s3_key) {
+      // Schedule S3 object deletion via internal action (Node runtime)
+      await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3Object, {
+        s3Key: (file as any).s3_key,
+      });
+    }
 
     await ctx.db.delete(args.fileId);
 
@@ -282,14 +329,42 @@ export const getFileContentByFileIds = query({
 });
 
 /**
- * Internal mutation: purge unattached files older than cutoff
+ * Internal mutation: delete file records from DB (after storage cleanup)
  */
-export const purgeExpiredUnattachedFiles = internalMutation({
+export const deleteFileRecords = internalMutation({
+  args: {
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.object({ deletedCount: v.number() }),
+  handler: async (ctx, args) => {
+    let deletedCount = 0;
+    for (const fileId of args.fileIds) {
+      try {
+        await ctx.db.delete(fileId);
+        deletedCount++;
+      } catch (e) {
+        console.warn("Failed to delete file record:", fileId, e);
+      }
+    }
+    return { deletedCount };
+  },
+});
+
+/**
+ * Internal query: get unattached files older than cutoff for cleanup
+ */
+export const getUnattachedFiles = internalQuery({
   args: {
     cutoffTimeMs: v.number(),
     limit: v.optional(v.number()),
   },
-  returns: v.object({ deletedCount: v.number() }),
+  returns: v.array(
+    v.object({
+      _id: v.id("files"),
+      storage_id: v.optional(v.id("_storage")),
+      s3_key: v.optional(v.string()),
+    }),
+  ),
   handler: async (ctx, args) => {
     const limit = args.limit ?? 100;
 
@@ -301,18 +376,11 @@ export const purgeExpiredUnattachedFiles = internalMutation({
       .order("asc")
       .take(limit);
 
-    let deletedCount = 0;
-    for (const file of candidates) {
-      try {
-        await ctx.storage.delete(file.storage_id);
-      } catch (e) {
-        console.warn("Failed to delete storage blob:", file.storage_id, e);
-      }
-      await ctx.db.delete(file._id);
-      deletedCount++;
-    }
-
-    return { deletedCount };
+    return candidates.map((file) => ({
+      _id: file._id,
+      storage_id: file.storage_id,
+      s3_key: file.s3_key,
+    }));
   },
 });
 
@@ -322,7 +390,8 @@ export const purgeExpiredUnattachedFiles = internalMutation({
  */
 export const saveFileToDb = internalMutation({
   args: {
-    storageId: v.id("_storage"),
+    storageId: v.optional(v.id("_storage")),
+    s3Key: v.optional(v.string()),
     userId: v.string(),
     name: v.string(),
     mediaType: v.string(),
@@ -334,6 +403,7 @@ export const saveFileToDb = internalMutation({
   handler: async (ctx, args) => {
     const fileId = await ctx.db.insert("files", {
       storage_id: args.storageId,
+      s3_key: args.s3Key,
       user_id: args.userId,
       name: args.name,
       media_type: args.mediaType,

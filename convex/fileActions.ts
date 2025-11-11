@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { countTokens } from "gpt-tokenizer";
 import { getDocument } from "pdfjs-serverless";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
+import { JSONLoader } from "langchain/document_loaders/fs/json";
 import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
@@ -17,7 +18,12 @@ import type {
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./chats";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
-import { MAX_TOKENS_FILE } from "../lib/token-utils";
+import {
+  generateS3Key,
+  generateS3UploadUrl,
+  generateS3DownloadUrls,
+} from "./s3Utils";
+import { processFileAuto } from "./fileProcessing";
 
 // Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -159,120 +165,6 @@ const detectFileType = (
   return null;
 };
 
-/**
- * Process file with auto-detection of file type and comprehensive fallback handling
- * @param file - The file as a Blob
- * @param fileName - Optional file name for type detection
- * @param mediaType - Optional media type for additional checks
- * @param prepend - Optional prepend text for markdown files
- * @param skipTokenValidation - Skip token validation (for assistant-generated files)
- * @returns Promise<FileItemChunk[]>
- */
-const processFileAuto = async (
-  file: Blob | string,
-  fileName?: string,
-  mediaType?: string,
-  prepend?: string,
-  skipTokenValidation: boolean = false,
-): Promise<FileItemChunk[]> => {
-  // Check if file is a supported image format - return 0 tokens immediately
-  // Unsupported image formats will be processed as files
-  if (mediaType && isSupportedImageMediaType(mediaType)) {
-    return [
-      {
-        content: "",
-        tokens: 0,
-      },
-    ];
-  }
-
-  try {
-    const detectedType = detectFileType(file as Blob, fileName);
-    if (!detectedType) {
-      // Use default processing for unknown file types
-      const chunks = await processFile(file, {
-        fileType: "unknown" as any,
-        prepend,
-        fileName,
-      });
-      validateTokenLimit(chunks, fileName || "unknown", skipTokenValidation);
-      return chunks;
-    }
-    const fileType = detectedType;
-
-    const chunks = await processFile(file, { fileType, prepend, fileName });
-    validateTokenLimit(chunks, fileName || "unknown", skipTokenValidation);
-    return chunks;
-  } catch (error) {
-    // Check if this is a token limit error - re-throw immediately without fallback
-    if (
-      error instanceof Error &&
-      error.message.includes("exceeds the maximum token limit")
-    ) {
-      throw error;
-    }
-
-    // If processing fails, try simple text decoding as fallback
-    console.warn(`Failed to process file with comprehensive logic: ${error}`);
-
-    // Check if file is a supported image format - return 0 tokens
-    // Unsupported image formats will fall through to text processing
-    if (mediaType && isSupportedImageMediaType(mediaType)) {
-      return [
-        {
-          content: "",
-          tokens: 0,
-        },
-      ];
-    } else if (mediaType && mediaType.startsWith("text/")) {
-      try {
-        const blob = file as Blob;
-        const fileBuffer = Buffer.from(await blob.arrayBuffer());
-        const textDecoder = new TextDecoder("utf-8");
-        const textContent = textDecoder.decode(fileBuffer);
-        const fallbackTokens = countTokens(textContent);
-
-        // Check token limit for fallback processing
-        if (!skipTokenValidation && fallbackTokens > MAX_TOKENS_FILE) {
-          throw new Error(
-            `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${fallbackTokens}`,
-          );
-        }
-
-        return [
-          {
-            content: textContent,
-            tokens: fallbackTokens,
-          },
-        ];
-      } catch (textError) {
-        // Check if this is a token limit error
-        if (
-          textError instanceof Error &&
-          textError.message.includes("exceeds the maximum token limit")
-        ) {
-          throw textError; // Re-throw token limit errors
-        }
-        console.warn(`Failed to decode file as text: ${textError}`);
-        return [
-          {
-            content: "",
-            tokens: 0,
-          },
-        ];
-      }
-    }
-
-    // For other file types that failed processing, return 0 tokens
-    return [
-      {
-        content: "",
-        tokens: 0,
-      },
-    ];
-  }
-};
-
 // Individual processor functions (internal)
 const processPdfFile = async (pdf: Blob): Promise<FileItemChunk[]> => {
   const arrayBuffer = await pdf.arrayBuffer();
@@ -312,11 +204,9 @@ const processCsvFile = async (csv: Blob): Promise<FileItemChunk[]> => {
 };
 
 const processJsonFile = async (json: Blob): Promise<FileItemChunk[]> => {
-  const fileBuffer = Buffer.from(await json.arrayBuffer());
-  const textDecoder = new TextDecoder("utf-8");
-  const jsonText = textDecoder.decode(fileBuffer);
-  const parsedJson = JSON.parse(jsonText);
-  const completeText = JSON.stringify(parsedJson, null, 2);
+  const loader = new JSONLoader(json);
+  const docs = await loader.load();
+  const completeText = docs.map((doc) => doc.pageContent).join(" ");
 
   return [
     {
@@ -404,7 +294,8 @@ const processDocxFile = async (
  */
 export const saveFile = action({
   args: {
-    storageId: v.id("_storage"),
+    storageId: v.optional(v.id("_storage")),
+    s3Key: v.optional(v.string()),
     name: v.string(),
     mediaType: v.string(),
     size: v.number(),
@@ -486,34 +377,70 @@ export const saveFile = action({
     // Enforce file size limit (20 MB) regardless of skipTokenValidation
     if (args.size > MAX_FILE_SIZE_BYTES) {
       // Clean up storage before throwing error
-      try {
-        await ctx.storage.delete(args.storageId);
-      } catch (deleteError) {
-        console.warn(
-          `Failed to delete storage for oversized file "${args.name}":`,
-          deleteError,
-        );
+      if (args.storageId) {
+        try {
+          await ctx.storage.delete(args.storageId);
+        } catch (deleteError) {
+          console.warn(
+            `Failed to delete storage for oversized file "${args.name}":`,
+            deleteError,
+          );
+        }
+      }
+      if (args.s3Key) {
+        try {
+          await ctx.runAction(internal.s3Cleanup.deleteS3Object, {
+            s3Key: args.s3Key,
+          });
+        } catch (deleteError) {
+          console.warn(
+            `Failed to delete S3 object for oversized file "${args.name}":`,
+            deleteError,
+          );
+        }
       }
       throw new Error(
         `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
       );
     }
 
-    const fileUrl = await ctx.storage.getUrl(args.storageId);
+    let fileUrl: string;
+    let file: Blob;
 
-    if (!fileUrl) {
-      throw new Error(
-        `Failed to upload ${args.name}: File not found in storage`,
+    // Handle both S3 and legacy Convex storage
+    if (args.s3Key) {
+      // S3 storage: fetch file from S3 using Convex-compatible utils
+      const { getS3FileContent, generateS3DownloadUrl } = await import(
+        "./s3Utils"
       );
+      fileUrl = await generateS3DownloadUrl(args.s3Key);
+      const buffer = await getS3FileContent(args.s3Key);
+      // Create a standalone ArrayBuffer copy to satisfy BlobPart typing
+      const copy = new Uint8Array(buffer.byteLength);
+      copy.set(
+        new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength),
+      );
+      const ab = copy.buffer as ArrayBuffer;
+      file = new Blob([ab], { type: args.mediaType });
+    } else if (args.storageId) {
+      // Legacy Convex storage
+      const convexUrl = await ctx.storage.getUrl(args.storageId);
+      if (!convexUrl) {
+        throw new Error(
+          `Failed to upload ${args.name}: File not found in storage`,
+        );
+      }
+      fileUrl = convexUrl;
+      const response = await fetch(convexUrl);
+      if (!response.ok) {
+        throw new Error(
+          `Failed to upload ${args.name}: ${response.statusText}`,
+        );
+      }
+      file = await response.blob();
+    } else {
+      throw new Error("Either storageId or s3Key must be provided");
     }
-
-    const response = await fetch(fileUrl);
-
-    if (!response.ok) {
-      throw new Error(`Failed to upload ${args.name}: ${response.statusText}`);
-    }
-
-    const file = await response.blob();
 
     // Calculate token size using the comprehensive file processing logic
     let tokenSize = 0;
@@ -550,7 +477,21 @@ export const saveFile = action({
         console.error(
           `Token limit exceeded for file "${args.name}". Deleting storage object.`,
         );
-        await ctx.storage.delete(args.storageId);
+        if (args.storageId) {
+          await ctx.storage.delete(args.storageId);
+        }
+        if (args.s3Key) {
+          try {
+            await ctx.runAction(internal.s3Cleanup.deleteS3Object, {
+              s3Key: args.s3Key,
+            });
+          } catch (deleteError) {
+            console.warn(
+              `Failed to delete S3 object after token limit for "${args.name}":`,
+              deleteError,
+            );
+          }
+        }
         throw error; // Re-throw the token limit error (already includes file name)
       }
 
@@ -558,7 +499,21 @@ export const saveFile = action({
       console.error(
         `Unexpected error processing file "${args.name}". Deleting storage object.`,
       );
-      await ctx.storage.delete(args.storageId);
+      if (args.storageId) {
+        await ctx.storage.delete(args.storageId);
+      }
+      if (args.s3Key) {
+        try {
+          await ctx.runAction(internal.s3Cleanup.deleteS3Object, {
+            s3Key: args.s3Key,
+          });
+        } catch (deleteError) {
+          console.warn(
+            `Failed to delete S3 object after unexpected error for "${args.name}":`,
+            deleteError,
+          );
+        }
+      }
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
       throw new Error(`Failed to upload ${args.name}: ${errorMsg}`);
     }
@@ -566,6 +521,7 @@ export const saveFile = action({
     // Use internal mutation to save to database
     const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
       storageId: args.storageId,
+      s3Key: args.s3Key,
       userId: actingUserId,
       name: args.name,
       mediaType: args.mediaType,
@@ -580,5 +536,143 @@ export const saveFile = action({
       fileId,
       tokens: tokenSize,
     };
+  },
+});
+/**
+ * Generate S3 presigned upload URL via Convex (replaces Next.js API route)
+ */
+export const generateS3UploadUrlAction = action({
+  args: {
+    fileName: v.string(),
+    contentType: v.string(),
+  },
+  returns: v.object({ uploadUrl: v.string(), s3Key: v.string() }),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    // Entitlements from session
+    const entitlements: Array<string> = Array.isArray(user.entitlements)
+      ? (user.entitlements.filter(
+          (e: unknown): e is string => typeof e === "string",
+        ) as Array<string>)
+      : [];
+
+    // File limit (mirror logic in fileStorage)
+    let fileLimit = 0;
+    if (
+      entitlements.includes("ultra-plan") ||
+      entitlements.includes("ultra-monthly-plan") ||
+      entitlements.includes("ultra-yearly-plan")
+    ) {
+      fileLimit = 1000;
+    } else if (entitlements.includes("team-plan")) {
+      fileLimit = 500;
+    } else if (
+      entitlements.includes("pro-plan") ||
+      entitlements.includes("pro-monthly-plan") ||
+      entitlements.includes("pro-yearly-plan")
+    ) {
+      fileLimit = 300;
+    }
+
+    if (fileLimit === 0) {
+      throw new Error("Paid plan required for file uploads");
+    }
+
+    // Current file count via public query
+    const current = await ctx.runQuery(internal.fileStorage.countUserFiles, {
+      userId: user.subject,
+    });
+    if (current >= fileLimit) {
+      throw new Error(
+        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
+      );
+    }
+
+    // Generate key + presigned URL
+    const s3Key = generateS3Key(user.subject, args.fileName);
+    const uploadUrl = await generateS3UploadUrl(s3Key, args.contentType);
+    return { uploadUrl, s3Key };
+  },
+});
+
+/**
+ * Generate S3 presigned download URLs for multiple files in one call
+ */
+export const generateS3DownloadUrlsAction = action({
+  args: {
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.array(
+    v.object({
+      fileId: v.id("files"),
+      url: v.string(),
+    }),
+  ),
+  handler: async (
+    ctx,
+    args,
+  ): Promise<Array<{ fileId: Id<"files">; url: string }>> => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    // Load files and validate ownership + S3 storage
+    type FileRecord = {
+      _id: Id<"files">;
+      _creationTime: number;
+      storage_id?: Id<"_storage"> | undefined;
+      s3_key?: string | undefined;
+      user_id: string;
+      name: string;
+      media_type: string;
+      size: number;
+      file_token_size: number;
+      content?: string | undefined;
+      is_attached: boolean;
+    } | null;
+
+    const files: Array<FileRecord> = await Promise.all(
+      args.fileIds.map(
+        (fileId) =>
+          ctx.runQuery(api.fileStorage.getFile, {
+            fileId,
+          }) as Promise<FileRecord>,
+      ),
+    );
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!file) {
+        throw new Error("File not found");
+      }
+      if (file.user_id !== user.subject) {
+        throw new Error("Unauthorized: File does not belong to user");
+      }
+      if (!file.s3_key) {
+        throw new Error("File is not stored in S3");
+      }
+    }
+
+    const s3Keys: Array<string> = files.map((f) => (f as any).s3_key as string);
+
+    try {
+      const keyToUrl = await generateS3DownloadUrls(s3Keys);
+
+      return args.fileIds.map((fileId, idx) => ({
+        fileId,
+        url: keyToUrl[s3Keys[idx]],
+      }));
+    } catch (error) {
+      console.error("Failed to generate S3 download URLs:", error);
+      console.error("S3 Keys:", s3Keys);
+      throw new Error(
+        `Failed to generate presigned URLs: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    }
   },
 });

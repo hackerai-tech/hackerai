@@ -4,6 +4,7 @@ import { useMutation, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
+  uploadSingleFileToS3,
   uploadSingleFileToConvex,
   validateFile,
   createFileMessagePartFromUploadedFile,
@@ -29,15 +30,15 @@ export const useFileUpload = () => {
   const [showDragOverlay, setShowDragOverlay] = useState(false);
   const dragCounterRef = useRef(0);
 
-  const generateUploadUrl = useMutation(api.fileStorage.generateUploadUrl);
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
-
-  // Wrap Convex mutation to match `() => Promise<string>` signature expected by the util
-  const generateUploadUrlFn = useCallback(
-    () => generateUploadUrl({}),
-    [generateUploadUrl],
+  const generateS3UploadUrlAction = useAction(
+    api.fileActions.generateS3UploadUrlAction,
   );
+  const generateConvexUploadUrl = useMutation(api.fileStorage.generateUploadUrl);
+
+  // Feature flag: Check if S3 storage is enabled
+  const useS3Storage = process.env.NEXT_PUBLIC_USE_S3_STORAGE === "true";
 
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
@@ -125,15 +126,37 @@ export const useFileUpload = () => {
     [],
   );
 
-  // Upload file to Convex storage
-  const uploadFileToConvex = useCallback(
+  // Upload file to storage (routes to S3 or Convex based on feature flag)
+  const uploadFileToStorage = useCallback(
     async (file: File, uploadIndex: number) => {
       try {
-        const { fileId, url, tokens } = await uploadSingleFileToConvex(
-          file,
-          generateUploadUrlFn,
-          saveFile,
-        );
+        let fileId: string;
+        let url: string;
+        let tokens: number;
+
+        // Route to S3 or legacy Convex storage based on feature flag
+        if (useS3Storage) {
+          // S3 storage path
+          const result = await uploadSingleFileToS3(
+            file,
+            saveFile,
+            ({ fileName, contentType }) =>
+              generateS3UploadUrlAction({ fileName, contentType }),
+          );
+          fileId = result.fileId;
+          url = result.url;
+          tokens = result.tokens;
+        } else {
+          // Legacy Convex storage path
+          const result = await uploadSingleFileToConvex(
+            file,
+            () => generateConvexUploadUrl({}),
+            saveFile,
+          );
+          fileId = result.fileId;
+          url = result.url;
+          tokens = result.tokens;
+        }
 
         // Check token limit before updating state
         const currentTotal = getTotalTokens();
@@ -175,8 +198,10 @@ export const useFileUpload = () => {
       }
     },
     [
-      generateUploadUrlFn,
+      useS3Storage,
       saveFile,
+      generateS3UploadUrlAction,
+      generateConvexUploadUrl,
       getTotalTokens,
       deleteFile,
       removeUploadedFile,
@@ -198,10 +223,10 @@ export const useFileUpload = () => {
         });
 
         // Start upload in background with correct index
-        uploadFileToConvex(file, startingIndex + index);
+        uploadFileToStorage(file, startingIndex + index);
       });
     },
-    [uploadedFiles.length, addUploadedFile, uploadFileToConvex],
+    [uploadedFiles.length, addUploadedFile, uploadFileToStorage],
   );
 
   // Unified file processing function
@@ -254,7 +279,7 @@ export const useFileUpload = () => {
   const handleRemoveFile = async (indexToRemove: number) => {
     const uploadedFile = uploadedFiles[indexToRemove];
 
-    // If the file was uploaded to Convex, delete it from storage
+    // If the file was uploaded to storage, delete it
     if (uploadedFile?.fileId) {
       try {
         await deleteFile({

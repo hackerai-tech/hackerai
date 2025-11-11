@@ -70,7 +70,8 @@ export default defineSchema({
     }),
 
   files: defineTable({
-    storage_id: v.id("_storage"),
+    storage_id: v.optional(v.id("_storage")), // Legacy: Convex storage
+    s3_key: v.optional(v.string()), // New: S3 storage key
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),

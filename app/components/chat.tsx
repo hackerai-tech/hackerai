@@ -27,10 +27,11 @@ import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
-import { useAutoResume } from "../hooks/useAutoResume";
-import { useLatestRef } from "../hooks/useLatestRef";
-import { useDataStream } from "./DataStreamProvider";
+import { useAutoResume } from "@/app/hooks/useAutoResume";
+import { useLatestRef } from "@/app/hooks/useLatestRef";
+import { useDataStream } from "@/app/components/DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
+import { useS3FileUrls } from "@/app/hooks/useS3FileUrls";
 
 export const Chat = ({
   chatId: routeChatId,
@@ -271,6 +272,9 @@ export const Chat = ({
     resumeStream,
     setMessages,
   });
+
+  // Enhance messages with S3 presigned URLs for file attachments
+  const messagesWithS3Urls = useS3FileUrls(messages);
 
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
@@ -523,7 +527,7 @@ export const Chat = ({
                   <Messages
                     scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                     contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                    messages={messages}
+                    messages={messagesWithS3Urls}
                     setMessages={setMessages}
                     onRegenerate={handleRegenerate}
                     onRetry={handleRetry}

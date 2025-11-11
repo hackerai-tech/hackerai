@@ -282,15 +282,16 @@ export const getMessagesByChatId = query({
         fileIdArray.map((fileId) => ctx.db.get(fileId)),
       );
 
-      // Step 3: Batch fetch storage URLs for images only
+      // Step 3: Batch fetch all storage URLs in parallel
+      // For legacy Convex files use storage_id; for S3 files (s3_key) return null
       const urls = await Promise.all(
         files.map((file) => {
-          if (!file) return null;
-          // Only fetch URL for images, others will use storageId
-          if (file.media_type?.startsWith("image/")) {
+          if (!file) return Promise.resolve(null);
+          if (file.storage_id) {
             return ctx.storage.getUrl(file.storage_id);
           }
-          return null;
+          // S3-backed files do not have a Convex storage URL; client will fetch via API
+          return Promise.resolve<string | null>(null);
         }),
       );
 
@@ -509,15 +510,24 @@ export const deleteLastAssistantMessage = mutation({
           lastAssistantMessage.file_ids &&
           lastAssistantMessage.file_ids.length > 0
         ) {
-          for (const storageId of lastAssistantMessage.file_ids) {
+          for (const fileId of lastAssistantMessage.file_ids) {
             try {
-              const file = await ctx.db.get(storageId);
+              const file = await ctx.db.get(fileId);
               if (file) {
-                await ctx.storage.delete(file.storage_id);
+                if (file.storage_id) {
+                  await ctx.storage.delete(file.storage_id);
+                }
+                if (file.s3_key) {
+                  await ctx.scheduler.runAfter(
+                    0,
+                    internal.s3Cleanup.deleteS3Object,
+                    { s3Key: (file as any).s3_key },
+                  );
+                }
                 await ctx.db.delete(file._id);
               }
             } catch (error) {
-              console.error(`Failed to delete file ${storageId}:`, error);
+              console.error(`Failed to delete file ${fileId}:`, error);
             }
           }
         }
@@ -1003,13 +1013,21 @@ export const regenerateWithNewContent = mutation({
         )
         .collect();
 
+      // Collect all S3 keys for batch deletion
+      const s3Keys: Array<string> = [];
+
       for (const msg of messages) {
         if (msg.file_ids && msg.file_ids.length > 0) {
           for (const fileId of msg.file_ids) {
             try {
               const file = await ctx.db.get(fileId);
               if (file) {
-                await ctx.storage.delete(file.storage_id);
+                if (file.storage_id) {
+                  await ctx.storage.delete(file.storage_id);
+                }
+                if (file.s3_key) {
+                  s3Keys.push(file.s3_key);
+                }
                 await ctx.db.delete(file._id);
               }
             } catch (error) {
@@ -1019,6 +1037,13 @@ export const regenerateWithNewContent = mutation({
         }
 
         await ctx.db.delete(msg._id);
+      }
+
+      // Batch delete all S3 files
+      if (s3Keys.length > 0) {
+        await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3Objects, {
+          s3Keys,
+        });
       }
 
       // Check if deleted messages invalidate the chat summary
