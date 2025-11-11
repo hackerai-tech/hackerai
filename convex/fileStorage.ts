@@ -34,7 +34,7 @@ export const getFileDownloadUrl = query({
       const file = userFiles.find((f) => f.storage_id === args.storageId);
 
       if (!file) {
-        throw new Error("File not found");
+        throw new Error("File not found or access denied");
       }
 
       // Generate and return signed URL
@@ -107,7 +107,7 @@ export const generateUploadUrl = mutation({
     if (args.serviceKey) {
       validateServiceKey(args.serviceKey);
       if (!args.userId) {
-        throw new Error("userId is required when using serviceKey");
+        throw new Error("Invalid request: userId is required when using serviceKey");
       }
       actingUserId = args.userId;
       entitlements = ["ultra-plan"]; // Max limit for service flows
@@ -128,7 +128,7 @@ export const generateUploadUrl = mutation({
     // Check file limit
     const fileLimit = getFileLimit(entitlements);
     if (fileLimit === 0) {
-      throw new Error("Paid plan required for file uploads");
+      throw new Error("Unauthorized: Paid plan required for file uploads");
     }
 
     const currentFileCount = await ctx.runQuery(
@@ -138,7 +138,7 @@ export const generateUploadUrl = mutation({
 
     if (currentFileCount >= fileLimit) {
       throw new Error(
-        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
+        `Limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
       );
     }
 
@@ -228,7 +228,7 @@ export const deleteFile = mutation({
     const file = await ctx.db.get(args.fileId);
 
     if (!file) {
-      throw new Error("File not found");
+      throw new Error("File not found or access denied");
     }
 
     if (file.user_id !== user.subject) {
