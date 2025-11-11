@@ -60,7 +60,6 @@ export const useChatHandlers = ({
     queueMessage,
     messageQueue,
     removeQueuedMessage,
-    clearQueue,
     queueBehavior,
   } = useGlobalState();
 
@@ -108,7 +107,7 @@ export const useChatHandlers = ({
             input,
             validFiles.map((f) => ({
               file: f.file,
-              fileId: f.fileId!,
+              fileId: f.fileId! as Id<"files">,
               url: f.url!,
             })),
           );
