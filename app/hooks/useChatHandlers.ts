@@ -85,10 +85,10 @@ export const useChatHandlers = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsAutoResuming(false);
-    
+
     // Reset manual stop flag when user submits a new message
     hasManuallyStoppedRef.current = false;
-    
+
     // Prevent submission if files are still uploading
     if (isUploadingFiles) {
       return;
@@ -429,7 +429,7 @@ export const useChatHandlers = ({
 
     // Set flag to prevent auto-processing from interfering
     isSendingNowRef.current = true;
-    
+
     // Reset manual stop flag when using Send Now
     hasManuallyStoppedRef.current = false;
 
@@ -464,25 +464,7 @@ export const useChatHandlers = ({
         cancelTempStreamMutation({ chatId }).catch(() => {});
       }
 
-      // Wait for status to become ready before sending
-      const waitForReady = new Promise<void>((resolve) => {
-        const checkInterval = setInterval(() => {
-          if (status === "ready") {
-            clearInterval(checkInterval);
-            resolve();
-          }
-        }, 100);
-
-        // Timeout after 5 seconds
-        setTimeout(() => {
-          clearInterval(checkInterval);
-          resolve();
-        }, 5000);
-      });
-
-      await waitForReady;
-
-      // Now send the message
+      // Send the message immediately (no need to wait for status)
       const validFiles = message.files || [];
       const messagePayload: any = {};
 

@@ -101,7 +101,7 @@ export interface QueuedMessage {
   text: string;
   files?: Array<{
     file: File;
-    fileId: string;
+    fileId: Id<"files">;
     url: string;
   }>;
   timestamp: number;

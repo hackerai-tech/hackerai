@@ -72,6 +72,7 @@ export const Chat = ({
     dequeueNext,
     clearQueue,
     queueBehavior,
+    todos,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -95,6 +96,8 @@ export const Chat = ({
   const hasUserDismissedWarningRef = useLatestRef(
     hasUserDismissedRateLimitWarning,
   );
+  // Use ref for todos to avoid stale closures in auto-send
+  const todosRef = useLatestRef(todos);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -434,7 +437,7 @@ export const Chat = ({
           {
             body: {
               mode: chatMode,
-              todos: [],
+              todos: todosRef.current,
               temporary: temporaryChatsEnabledRef.current,
             },
           },
