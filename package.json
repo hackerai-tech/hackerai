@@ -19,7 +19,8 @@
     "test:ci": "jest --ci --coverage --maxWorkers=2",
     "prepare": "husky",
     "e2b:build:dev": "npx tsx e2b/build.dev.ts",
-    "e2b:build:prod": "npx tsx e2b/build.prod.ts"
+    "e2b:build:prod": "npx tsx e2b/build.prod.ts",
+    "s3:validate": "npx tsx scripts/validate-s3-security.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.64",
