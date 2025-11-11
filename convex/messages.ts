@@ -300,11 +300,15 @@ export const getMessagesByChatId = query({
       files.forEach((file, index) => {
         if (file) {
           const isImage = file.media_type?.startsWith("image/");
+          const urlValue = urls[index]; // null for S3, URL string for Convex storage
+
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,
             mediaType: file.media_type,
-            url: isImage ? urls[index] : undefined,
+            // For images: always include URL (null for S3, string for Convex)
+            // For non-images: include URL if it's an S3 file (null), otherwise undefined
+            url: isImage ? urlValue : (file.s3_key ? null : undefined),
             storageId: !isImage ? file.storage_id : undefined,
           });
         }
