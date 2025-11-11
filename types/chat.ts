@@ -22,6 +22,7 @@ export interface SidebarTerminal {
   output: string;
   isExecuting: boolean;
   isBackground?: boolean;
+  pid?: number | null;
   toolCallId: string;
 }
 

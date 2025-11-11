@@ -166,6 +166,7 @@ export const Chat = ({
     messages: initialMessages,
     experimental_throttle: 100,
     generateId: () => uuidv4(),
+
     transport: new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
@@ -199,6 +200,7 @@ export const Chat = ({
         };
       },
     }),
+
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
       if (dataPart.type === "data-title")
@@ -256,6 +258,7 @@ export const Chat = ({
     onFinish: () => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
+      setUploadStatus(null);
       // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
@@ -353,6 +356,7 @@ export const Chat = ({
         hasInitializedModeFromChatRef.current = true;
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     chatData,
     setChatTitle,

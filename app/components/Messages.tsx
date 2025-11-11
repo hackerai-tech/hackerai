@@ -14,7 +14,7 @@ import { FilePartRenderer } from "./FilePartRenderer";
 import { MessageErrorState } from "./MessageErrorState";
 import { MessageEditor } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
-import { ShimmerText } from "./ShimmerText";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { AllFilesDialog } from "./AllFilesDialog";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
@@ -236,6 +236,7 @@ export const Messages = ({
 
     scrollElement.addEventListener("scroll", handleScroll);
     return () => scrollElement.removeEventListener("scroll", handleScroll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleScroll]);
 
   return (
@@ -522,9 +523,9 @@ export const Messages = ({
         {/* Upload status - shown where assistant response will appear */}
         {uploadStatus?.isUploading && (
           <div className="flex flex-col items-start">
-            <ShimmerText className="text-sm">
-              {uploadStatus.message}...
-            </ShimmerText>
+            <Shimmer className="text-sm">
+              {`${uploadStatus.message}...`}
+            </Shimmer>
           </div>
         )}
 
