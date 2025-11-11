@@ -17,32 +17,47 @@ export async function uploadSingleFileToS3(
     contentType: string;
   }) => Promise<{ uploadUrl: string; s3Key: string }>,
 ): Promise<{ fileId: string; url: string; tokens: number }> {
+  console.log(`[Client] uploadSingleFileToS3 - file: ${file.name}, size: ${file.size}, type: ${file.type}`);
+
   // Step 1: Get S3 upload URL and key via Convex action
+  console.log(`[Client] Step 1: Requesting presigned upload URL from server...`);
   const { uploadUrl, s3Key } = await generateS3UploadUrl({
     fileName: file.name,
     contentType: file.type,
   });
+  console.log(`[Client] Received presigned URL - s3Key: ${s3Key}`);
+  console.log(`[Client] Upload URL preview: ${uploadUrl.substring(0, 100)}...`);
 
   // Step 2: Upload file to S3 using presigned URL
+  console.log(`[Client] Step 2: Uploading file to S3...`);
+  const uploadStartTime = Date.now();
   const uploadResult = await fetch(uploadUrl, {
     method: "PUT",
     headers: { "Content-Type": file.type },
     body: file,
   });
+  const uploadDuration = Date.now() - uploadStartTime;
+
+  console.log(`[Client] S3 upload complete - status: ${uploadResult.status}, duration: ${uploadDuration}ms`);
 
   if (!uploadResult.ok) {
+    console.error(`[Client] S3 upload failed - status: ${uploadResult.status}, statusText: ${uploadResult.statusText}`);
     throw new Error(
       `Failed to upload file ${file.name}: ${uploadResult.statusText}`,
     );
   }
 
   // Step 3: Save file metadata to database and get URL, file ID, and tokens
+  console.log(`[Client] Step 3: Saving file metadata to database...`);
   const { url, fileId, tokens } = await saveFile({
     s3Key,
     name: file.name,
     mediaType: file.type,
     size: file.size,
   });
+
+  console.log(`[Client] File metadata saved - fileId: ${fileId}, tokens: ${tokens}`);
+  console.log(`[Client] Download URL preview: ${url.substring(0, 100)}...`);
 
   return { fileId, url, tokens };
 }

@@ -58,26 +58,33 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
       if (fileIds.length === 0) return;
 
       try {
-        console.log(`[S3] Fetching URLs for ${fileIds.length} files`);
+        console.log(`[S3 Cache] Fetching URLs for ${fileIds.length} files - fileIds: [${fileIds.join(", ")}]`);
+        const fetchStartTime = Date.now();
         const results = await generateS3Urls({ fileIds });
+        const fetchDuration = Date.now() - fetchStartTime;
         const now = Date.now();
+
+        console.log(`[S3 Cache] Fetch complete - ${results.length} URLs fetched in ${fetchDuration}ms`);
 
         setUrlCache((prev) => {
           const next = new Map(prev);
           for (const result of results) {
+            const expiresAt = now + URL_LIFETIME_SECONDS * 1000;
             next.set(result.fileId, {
               url: result.url,
               fetchedAt: now,
-              expiresAt: now + URL_LIFETIME_SECONDS * 1000,
+              expiresAt,
             });
             pendingFetchRef.current.delete(result.fileId);
+            console.log(`[S3 Cache] Cached URL for ${result.fileId} (expires in ${URL_LIFETIME_SECONDS / 60}m)`);
           }
+          console.log(`[S3 Cache] Cache size: ${next.size} URLs`);
           return next;
         });
 
-        console.log(`[S3] Successfully cached ${results.length} URLs`);
+        console.log(`[S3 Cache] Successfully cached ${results.length} URLs`);
       } catch (error) {
-        console.error("[S3] Failed to fetch URLs:", error);
+        console.error("[S3 Cache] Failed to fetch URLs:", error);
         // Clear pending state on error so we can retry
         for (const fileId of fileIds) {
           pendingFetchRef.current.delete(fileId);
@@ -95,13 +102,16 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
 
     for (const [fileId, cached] of urlCache.entries()) {
       if (needsRefresh(cached) && !pendingFetchRef.current.has(fileId)) {
+        const timeUntilExpiry = cached.expiresAt - Date.now();
+        const minutesUntilExpiry = Math.floor(timeUntilExpiry / 60000);
+        console.log(`[S3 Cache] REFRESH (periodic) - fileId: ${fileId}, expires in ${minutesUntilExpiry}m`);
         idsToRefresh.push(fileId as Id<"files">);
         pendingFetchRef.current.add(fileId);
       }
     }
 
     if (idsToRefresh.length > 0) {
-      console.log(`[S3] Refreshing ${idsToRefresh.length} expiring URLs`);
+      console.log(`[S3 Cache] Periodic refresh - ${idsToRefresh.length} URLs expiring soon`);
       fetchUrls(idsToRefresh);
     }
   }, [urlCache, needsRefresh, fetchUrls]);
@@ -128,6 +138,7 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
   useEffect(() => {
     // Collect all fileIds that need URLs (have null url and not already cached/pending)
     const fileIdsNeedingUrls: Array<Id<"files">> = [];
+    let cacheMissCount = 0;
 
     for (const message of messages) {
       if (message.fileDetails) {
@@ -141,12 +152,15 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
           ) {
             fileIdsNeedingUrls.push(fileDetail.fileId);
             pendingFetchRef.current.add(fileDetail.fileId);
+            cacheMissCount++;
+            console.log(`[S3 Cache] MISS - fileId: ${fileDetail.fileId}`);
           }
         }
       }
     }
 
     if (fileIdsNeedingUrls.length > 0) {
+      console.log(`[S3 Cache] Fetching URLs for ${cacheMissCount} uncached files`);
       fetchUrls(fileIdsNeedingUrls);
     }
   }, [messages, urlCache, fetchUrls]);
@@ -164,6 +178,9 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
             const cached = urlCache.get(fileDetail.fileId);
             if (cached && needsRefresh(cached)) {
               if (!pendingFetchRef.current.has(fileDetail.fileId)) {
+                const timeUntilExpiry = cached.expiresAt - Date.now();
+                const minutesUntilExpiry = Math.floor(timeUntilExpiry / 60000);
+                console.log(`[S3 Cache] REFRESH needed - fileId: ${fileDetail.fileId}, expires in ${minutesUntilExpiry}m`);
                 idsToRefresh.push(fileDetail.fileId);
                 pendingFetchRef.current.add(fileDetail.fileId);
               }
@@ -174,7 +191,7 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
     }
 
     if (idsToRefresh.length > 0) {
-      console.log(`[S3] Refreshing ${idsToRefresh.length} expiring URLs from messages`);
+      console.log(`[S3 Cache] Refreshing ${idsToRefresh.length} expiring URLs from messages`);
       fetchUrls(idsToRefresh);
     }
   }, [messages, urlCache, needsRefresh, fetchUrls]);
@@ -183,15 +200,27 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
    * Enhance messages with cached URLs
    */
   const enhancedMessages: ChatMessage[] = useMemo(() => {
-    return messages.map((message) => {
+    let cacheHitCount = 0;
+    let cacheMissCount = 0;
+    let totalS3Files = 0;
+
+    const result = messages.map((message) => {
       if (!message.fileDetails) return message;
 
       const enhancedFileDetails = message.fileDetails.map((fileDetail) => {
         // If file has null URL and we have a cached URL, use it
         if (fileDetail.fileId && fileDetail.url === null) {
+          totalS3Files++;
           const cached = urlCache.get(fileDetail.fileId);
           if (cached) {
+            cacheHitCount++;
+            const timeUntilExpiry = cached.expiresAt - Date.now();
+            const minutesUntilExpiry = Math.floor(timeUntilExpiry / 60000);
+            console.log(`[S3 Cache] HIT - fileId: ${fileDetail.fileId}, expires in ${minutesUntilExpiry}m`);
             return { ...fileDetail, url: cached.url };
+          } else {
+            cacheMissCount++;
+            // Miss will be logged in the fetch effect
           }
         }
         return fileDetail;
@@ -202,6 +231,13 @@ export const useS3FileUrls = (messages: ChatMessage[]) => {
         fileDetails: enhancedFileDetails,
       };
     });
+
+    if (totalS3Files > 0) {
+      const hitRate = ((cacheHitCount / totalS3Files) * 100).toFixed(1);
+      console.log(`[S3 Cache] Stats - Total: ${totalS3Files}, Hits: ${cacheHitCount}, Misses: ${cacheMissCount}, Hit Rate: ${hitRate}%`);
+    }
+
+    return result;
   }, [messages, urlCache]);
 
   return enhancedMessages;

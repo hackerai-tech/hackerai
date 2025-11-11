@@ -315,6 +315,10 @@ export const saveFile = action({
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
+    console.log(`[FileActions] saveFile called - name: ${args.name}, size: ${args.size}, mediaType: ${args.mediaType}`);
+    console.log(`[FileActions] Storage method: ${args.s3Key ? `S3 (key: ${args.s3Key})` : `Convex (id: ${args.storageId})`}`);
+    console.log(`[FileActions] skipTokenValidation: ${args.skipTokenValidation ?? false}`);
+
     // =========================================================================
     // STEP 1: Normalize and validate file metadata
     // =========================================================================
@@ -324,11 +328,16 @@ export const saveFile = action({
       ? "application/octet-stream"
       : args.mediaType;
 
+    console.log(`[FileActions] Normalized mediaType: ${normalizedMediaType}`);
+
     const validation = validateFile(args.name, normalizedMediaType, args.size);
     if (!validation.isValid) {
+      console.error(`[FileActions] Validation failed: ${validation.error}`);
+
       // Clean up storage before throwing error
       if (args.storageId) {
         try {
+          console.log(`[FileActions] Cleaning up Convex storage: ${args.storageId}`);
           await ctx.storage.delete(args.storageId);
         } catch (e) {
           console.warn("Failed to delete storage after validation error:", e);
@@ -336,6 +345,7 @@ export const saveFile = action({
       }
       if (args.s3Key) {
         try {
+          console.log(`[FileActions] Cleaning up S3 object: ${args.s3Key}`);
           await ctx.runAction(internal.s3Cleanup.deleteS3Object, {
             s3Key: args.s3Key,
           });
@@ -346,6 +356,8 @@ export const saveFile = action({
       throw new Error(validation.error);
     }
 
+    console.log(`[FileActions] File validation passed`);
+
     // =========================================================================
     // STEP 2: Authentication & Authorization
     // =========================================================================
@@ -354,6 +366,7 @@ export const saveFile = action({
 
     // Service key flow (backend)
     if (args.serviceKey) {
+      console.log(`[FileActions] Using service key authentication`);
       validateServiceKey(args.serviceKey);
       if (!args.userId) {
         throw new Error("userId is required when using serviceKey");
@@ -361,9 +374,11 @@ export const saveFile = action({
       actingUserId = args.userId;
       entitlements = ["ultra-plan"]; // Max limit for service flows
     } else {
+      console.log(`[FileActions] Using user authentication`);
       // User-authenticated flow
       const user = await ctx.auth.getUserIdentity();
       if (!user) {
+        console.error(`[FileActions] User not authenticated`);
         throw new Error("Unauthorized: User not authenticated");
       }
       actingUserId = user.subject;
@@ -375,11 +390,14 @@ export const saveFile = action({
 
       // Security: Only backend (service key) flows can skip token validation
       if (args.skipTokenValidation) {
+        console.error(`[FileActions] skipTokenValidation not allowed for user flows`);
         throw new Error(
           "skipTokenValidation is only allowed for backend service flows",
         );
       }
     }
+
+    console.log(`[FileActions] Acting user: ${actingUserId}, Entitlements: ${entitlements.join(", ")}`);
 
     // Check file limit (Pro: 300, Team: 500, Ultra: 1000, Free: 0)
     let fileLimit = 0;
@@ -399,7 +417,10 @@ export const saveFile = action({
       fileLimit = 300;
     }
 
+    console.log(`[FileActions] User file limit: ${fileLimit}`);
+
     if (fileLimit === 0) {
+      console.error(`[FileActions] No paid plan - upload rejected`);
       throw new Error("Paid plan required for file uploads");
     }
 
@@ -408,7 +429,10 @@ export const saveFile = action({
       { userId: actingUserId },
     );
 
+    console.log(`[FileActions] Current file count: ${currentFileCount}/${fileLimit}`);
+
     if (currentFileCount >= fileLimit) {
+      console.error(`[FileActions] File limit exceeded: ${currentFileCount}/${fileLimit}`);
       throw new Error(
         `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
       );
@@ -447,21 +471,29 @@ export const saveFile = action({
     // =========================================================================
     // STEP 4: Fetch file content and verify signature
     // =========================================================================
+    console.log(`[FileActions] Fetching file content...`);
     let fileUrl: string;
     let file: Blob;
     let buffer: Buffer | null = null;
 
     // Handle both S3 and legacy Convex storage
     if (args.s3Key) {
+      console.log(`[FileActions] Using S3 storage - key: ${args.s3Key}`);
       // S3 storage: fetch file from S3 using Convex-compatible utils
       const { generateS3DownloadUrl } = await import("./s3Utils");
       fileUrl = await generateS3DownloadUrl(args.s3Key);
+      console.log(`[FileActions] Generated download URL for ${args.s3Key}`);
+
       buffer = await getS3FileContent(args.s3Key);
+      console.log(`[FileActions] Fetched file content from S3 - size: ${buffer.length} bytes`);
 
       // Verify file signature matches declared MIME type (first 8KB is sufficient)
       const { verifyFileSignature } = await import("./fileValidation");
       const signatureBuffer = buffer.slice(0, 8192); // First 8KB for signature check
+      console.log(`[FileActions] Verifying file signature for ${args.mediaType}...`);
+
       if (!verifyFileSignature(signatureBuffer, args.mediaType)) {
+        console.error(`[FileActions] File signature verification failed for ${args.name}`);
         // Clean up S3 file before throwing error
         try {
           await ctx.runAction(internal.s3Cleanup.deleteS3Object, {
@@ -476,6 +508,8 @@ export const saveFile = action({
         );
       }
 
+      console.log(`[FileActions] File signature verified successfully`);
+
       // Create a standalone ArrayBuffer copy to satisfy BlobPart typing
       const copy = new Uint8Array(buffer.byteLength);
       copy.set(
@@ -484,9 +518,11 @@ export const saveFile = action({
       const ab = copy.buffer as ArrayBuffer;
       file = new Blob([ab], { type: args.mediaType });
     } else if (args.storageId) {
+      console.log(`[FileActions] Using Convex storage - id: ${args.storageId}`);
       // Legacy Convex storage
       const convexUrl = await ctx.storage.getUrl(args.storageId);
       if (!convexUrl) {
+        console.error(`[FileActions] File not found in Convex storage`);
         throw new Error(
           `Failed to upload ${args.name}: File not found in storage`,
         );
@@ -494,16 +530,20 @@ export const saveFile = action({
       fileUrl = convexUrl;
       const response = await fetch(convexUrl);
       if (!response.ok) {
+        console.error(`[FileActions] Failed to fetch from Convex storage: ${response.statusText}`);
         throw new Error(
           `Failed to upload ${args.name}: ${response.statusText}`,
         );
       }
       file = await response.blob();
+      console.log(`[FileActions] Fetched file from Convex storage - size: ${file.size} bytes`);
     } else {
+      console.error(`[FileActions] No storage method provided`);
       throw new Error("Either storageId or s3Key must be provided");
     }
 
     // Calculate token size using the comprehensive file processing logic
+    console.log(`[FileActions] Processing file to calculate tokens...`);
     let tokenSize = 0;
     let fileContent: string | undefined = undefined;
 
@@ -517,6 +557,7 @@ export const saveFile = action({
         args.skipTokenValidation ?? false,
       );
       tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
+      console.log(`[FileActions] File processed - tokens: ${tokenSize}, chunks: ${chunks.length}`);
 
       // Save content for non-image, non-PDF, non-binary files
       // Note: Unsupported image formats will have content extracted, so we check for supported images
@@ -580,6 +621,9 @@ export const saveFile = action({
     }
 
     // Use internal mutation to save to database
+    console.log(`[FileActions] Saving file to database...`);
+    console.log(`[FileActions] File metadata - userId: ${actingUserId}, tokens: ${tokenSize}, hasContent: ${!!fileContent}`);
+
     const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
       storageId: args.storageId,
       s3Key: args.s3Key,
@@ -590,6 +634,9 @@ export const saveFile = action({
       fileTokenSize: tokenSize,
       content: fileContent,
     })) as Id<"files">;
+
+    console.log(`[FileActions] File saved successfully - fileId: ${fileId}`);
+    console.log(`[FileActions] Returning file URL: ${fileUrl.substring(0, 100)}...`);
 
     // Return the file URL, database file ID, and token count
     return {
@@ -609,10 +656,15 @@ export const generateS3UploadUrlAction = action({
   },
   returns: v.object({ uploadUrl: v.string(), s3Key: v.string() }),
   handler: async (ctx, args) => {
+    console.log(`[FileActions] generateS3UploadUrlAction called - fileName: ${args.fileName}, contentType: ${args.contentType}`);
+
     const user = await ctx.auth.getUserIdentity();
     if (!user) {
+      console.error(`[FileActions] Unauthorized: User not authenticated`);
       throw new Error("Unauthorized: User not authenticated");
     }
+
+    console.log(`[FileActions] User authenticated - userId: ${user.subject}`);
 
     // Entitlements from session
     const entitlements: Array<string> = Array.isArray(user.entitlements)
@@ -620,6 +672,8 @@ export const generateS3UploadUrlAction = action({
           (e: unknown): e is string => typeof e === "string",
         ) as Array<string>)
       : [];
+
+    console.log(`[FileActions] User entitlements: ${entitlements.join(", ")}`);
 
     // File limit (mirror logic in fileStorage)
     let fileLimit = 0;
@@ -639,7 +693,10 @@ export const generateS3UploadUrlAction = action({
       fileLimit = 300;
     }
 
+    console.log(`[FileActions] User file limit: ${fileLimit}`);
+
     if (fileLimit === 0) {
+      console.error(`[FileActions] Upload rejected: No paid plan`);
       throw new Error("Paid plan required for file uploads");
     }
 
@@ -647,7 +704,10 @@ export const generateS3UploadUrlAction = action({
     const current = await ctx.runQuery(internal.fileStorage.countUserFiles, {
       userId: user.subject,
     });
+    console.log(`[FileActions] Current file count: ${current}/${fileLimit}`);
+
     if (current >= fileLimit) {
+      console.error(`[FileActions] Upload limit exceeded: ${current}/${fileLimit}`);
       throw new Error(
         `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
       );
@@ -656,6 +716,10 @@ export const generateS3UploadUrlAction = action({
     // Generate key + presigned URL
     const s3Key = generateS3Key(user.subject, args.fileName);
     const uploadUrl = await generateS3UploadUrl(s3Key, args.contentType);
+
+    console.log(`[FileActions] Successfully generated upload URL - s3Key: ${s3Key}`);
+    console.log(`[FileActions] Upload URL preview: ${uploadUrl.substring(0, 100)}...`);
+
     return { uploadUrl, s3Key };
   },
 });
@@ -677,10 +741,16 @@ export const generateS3DownloadUrlsAction = action({
     ctx,
     args,
   ): Promise<Array<{ fileId: Id<"files">; url: string }>> => {
+    console.log(`[FileActions] generateS3DownloadUrlsAction called - fileIds: [${args.fileIds.join(", ")}]`);
+    console.log(`[FileActions] Generating download URLs for ${args.fileIds.length} files`);
+
     const user = await ctx.auth.getUserIdentity();
     if (!user) {
+      console.error(`[FileActions] Unauthorized: User not authenticated`);
       throw new Error("Unauthorized: User not authenticated");
     }
+
+    console.log(`[FileActions] User authenticated - userId: ${user.subject}`);
 
     // Load files and validate ownership + S3 storage
     type FileRecord = {
@@ -697,6 +767,7 @@ export const generateS3DownloadUrlsAction = action({
       is_attached: boolean;
     } | null;
 
+    console.log(`[FileActions] Loading file records from database...`);
     const files: Array<FileRecord> = await Promise.all(
       args.fileIds.map(
         (fileId) =>
@@ -706,31 +777,47 @@ export const generateS3DownloadUrlsAction = action({
       ),
     );
 
+    console.log(`[FileActions] Loaded ${files.length} file records`);
+    console.log(`[FileActions] Validating file ownership and S3 storage...`);
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       if (!file) {
+        console.error(`[FileActions] File not found - fileId: ${args.fileIds[i]}`);
         throw new Error("File not found");
       }
       if (file.user_id !== user.subject) {
+        console.error(`[FileActions] Unauthorized access attempt - fileId: ${args.fileIds[i]}, file owner: ${file.user_id}, requesting user: ${user.subject}`);
         throw new Error("Unauthorized: File does not belong to user");
       }
       if (!file.s3_key) {
+        console.error(`[FileActions] File not in S3 - fileId: ${args.fileIds[i]}`);
         throw new Error("File is not stored in S3");
       }
     }
 
+    console.log(`[FileActions] All files validated successfully`);
+
     const s3Keys: Array<string> = files.map((f) => (f as any).s3_key as string);
+    console.log(`[FileActions] S3 keys to fetch: [${s3Keys.join(", ")}]`);
 
     try {
+      console.log(`[FileActions] Calling generateS3DownloadUrls...`);
       const keyToUrl = await generateS3DownloadUrls(s3Keys);
 
-      return args.fileIds.map((fileId, idx) => ({
+      console.log(`[FileActions] Successfully generated ${Object.keys(keyToUrl).length} download URLs`);
+
+      const result = args.fileIds.map((fileId, idx) => ({
         fileId,
         url: keyToUrl[s3Keys[idx]],
       }));
+
+      console.log(`[FileActions] Returning ${result.length} file URLs to client`);
+
+      return result;
     } catch (error) {
-      console.error("Failed to generate S3 download URLs:", error);
-      console.error("S3 Keys:", s3Keys);
+      console.error("[FileActions] Failed to generate S3 download URLs:", error);
+      console.error("[FileActions] S3 Keys:", s3Keys);
       throw new Error(
         `Failed to generate presigned URLs: ${error instanceof Error ? error.message : "Unknown error"}`,
       );

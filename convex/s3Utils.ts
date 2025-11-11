@@ -229,6 +229,8 @@ async function withRetry<T>(
  * @returns S3 key string
  */
 export const generateS3Key = (userId: string, fileName: string): string => {
+  console.log(`[S3] generateS3Key called - userId: ${userId}, fileName: ${fileName}`);
+
   // Validate inputs
   if (!userId || typeof userId !== "string" || userId.trim().length === 0) {
     throw new Error("Invalid userId: must be a non-empty string");
@@ -246,7 +248,10 @@ export const generateS3Key = (userId: string, fileName: string): string => {
     .replace(/[^a-zA-Z0-9._-]/g, "_")
     .substring(0, 100);
 
-  return `uploads/${userId}/${timestamp}-${random}-${sanitized}`;
+  const key = `uploads/${userId}/${timestamp}-${random}-${sanitized}`;
+  console.log(`[S3] Generated S3 key: ${key}`);
+
+  return key;
 };
 
 // =============================================================================
@@ -264,6 +269,8 @@ export const generateS3DownloadUrl = async (
   s3Key: string,
   expiresInSeconds: number = 3600,
 ): Promise<string> => {
+  console.log(`[S3] generateS3DownloadUrl called - key: ${s3Key}, expires: ${expiresInSeconds}s`);
+
   // Validate inputs
   if (!s3Key || typeof s3Key !== "string" || s3Key.trim().length === 0) {
     throw new Error("Invalid s3Key: must be a non-empty string");
@@ -273,7 +280,7 @@ export const generateS3DownloadUrl = async (
     throw new Error("Invalid expiresInSeconds: must be between 1 and 604800 (7 days)");
   }
 
-  return withRetry(
+  const url = await withRetry(
     async () => {
       const client = createS3Client();
       const command = new GetObjectCommand({
@@ -281,7 +288,9 @@ export const generateS3DownloadUrl = async (
         Key: s3Key,
       });
 
-      return await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
+      const signedUrl = await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
+      console.log(`[S3] Generated download URL for ${s3Key} (expires in ${expiresInSeconds}s)`);
+      return signedUrl;
     },
     {
       operation: "generateDownloadUrl",
@@ -289,6 +298,8 @@ export const generateS3DownloadUrl = async (
       key: s3Key,
     },
   );
+
+  return url;
 };
 
 /**
@@ -353,6 +364,8 @@ export const generateS3UploadUrl = async (
   contentType: string,
   expiresInSeconds: number = 3600,
 ): Promise<string> => {
+  console.log(`[S3] generateS3UploadUrl called - key: ${s3Key}, contentType: ${contentType}, expires: ${expiresInSeconds}s`);
+
   // Validate inputs
   if (!s3Key || typeof s3Key !== "string" || s3Key.trim().length === 0) {
     throw new Error("Invalid s3Key: must be a non-empty string");
@@ -371,7 +384,7 @@ export const generateS3UploadUrl = async (
     throw new Error("Invalid expiresInSeconds: must be between 1 and 3600 (1 hour)");
   }
 
-  return withRetry(
+  const url = await withRetry(
     async () => {
       const client = createS3Client();
       const command = new PutObjectCommand({
@@ -380,7 +393,9 @@ export const generateS3UploadUrl = async (
         ContentType: normalizedContentType,
       });
 
-      return await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
+      const signedUrl = await getSignedUrl(client, command, { expiresIn: expiresInSeconds });
+      console.log(`[S3] Generated upload URL for ${s3Key} with contentType ${normalizedContentType} (expires in ${expiresInSeconds}s)`);
+      return signedUrl;
     },
     {
       operation: "generateUploadUrl",
@@ -388,6 +403,8 @@ export const generateS3UploadUrl = async (
       key: s3Key,
     },
   );
+
+  return url;
 };
 
 // =============================================================================
@@ -472,6 +489,8 @@ export const deleteS3Files = async (s3Keys: string[]): Promise<void> => {
  * @returns File content as Buffer
  */
 export const getS3FileContent = async (s3Key: string): Promise<Buffer> => {
+  console.log(`[S3] getS3FileContent called - key: ${s3Key}`);
+
   if (!s3Key || typeof s3Key !== "string" || s3Key.trim().length === 0) {
     throw new Error("Invalid s3Key: must be a non-empty string");
   }
@@ -484,8 +503,11 @@ export const getS3FileContent = async (s3Key: string): Promise<Buffer> => {
         Key: s3Key,
       });
 
+      console.log(`[S3] Fetching file content for ${s3Key}`);
       const response = await client.send(command);
       const body: any = response.Body;
+
+      console.log(`[S3] Received response for ${s3Key}, ContentLength: ${response.ContentLength}, ContentType: ${response.ContentType}`);
 
       if (!body) {
         throw new Error("S3 object has no body");

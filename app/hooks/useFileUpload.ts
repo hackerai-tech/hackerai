@@ -129,6 +129,9 @@ export const useFileUpload = () => {
   // Upload file to storage (routes to S3 or Convex based on feature flag)
   const uploadFileToStorage = useCallback(
     async (file: File, uploadIndex: number) => {
+      console.log(`[Client] uploadFileToStorage - file: ${file.name}, size: ${file.size}, type: ${file.type}, index: ${uploadIndex}`);
+      console.log(`[Client] Storage method: ${useS3Storage ? 'S3' : 'Convex'}`);
+
       try {
         let fileId: string;
         let url: string;
@@ -136,6 +139,7 @@ export const useFileUpload = () => {
 
         // Route to S3 or legacy Convex storage based on feature flag
         if (useS3Storage) {
+          console.log(`[Client] Starting S3 upload for ${file.name}...`);
           // S3 storage path
           const result = await uploadSingleFileToS3(
             file,
@@ -146,7 +150,9 @@ export const useFileUpload = () => {
           fileId = result.fileId;
           url = result.url;
           tokens = result.tokens;
+          console.log(`[Client] S3 upload complete - fileId: ${fileId}, tokens: ${tokens}`);
         } else {
+          console.log(`[Client] Starting Convex upload for ${file.name}...`);
           // Legacy Convex storage path
           const result = await uploadSingleFileToConvex(
             file,
@@ -156,13 +162,17 @@ export const useFileUpload = () => {
           fileId = result.fileId;
           url = result.url;
           tokens = result.tokens;
+          console.log(`[Client] Convex upload complete - fileId: ${fileId}, tokens: ${tokens}`);
         }
 
         // Check token limit before updating state
         const currentTotal = getTotalTokens();
         const newTotal = currentTotal + tokens;
 
+        console.log(`[Client] Token check - current: ${currentTotal}, new file: ${tokens}, total: ${newTotal}, limit: ${MAX_TOKENS_FILE}`);
+
         if (newTotal > MAX_TOKENS_FILE) {
+          console.error(`[Client] Token limit exceeded - deleting file ${fileId}`);
           // Exceeds limit - delete file from storage and remove from upload list
           deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
           removeUploadedFile(uploadIndex);
@@ -171,6 +181,7 @@ export const useFileUpload = () => {
             `${file.name} exceeds token limit (${newTotal}/${MAX_TOKENS_FILE})`,
           );
         } else {
+          console.log(`[Client] Upload successful - updating state for ${file.name}`);
           // Within limits - set success state with tokens
           updateUploadedFile(uploadIndex, {
             tokens,
@@ -181,7 +192,7 @@ export const useFileUpload = () => {
           });
         }
       } catch (error) {
-        console.error("Failed to upload file:", error);
+        console.error(`[Client] Failed to upload file ${file.name}:`, error);
 
         const errorMessage =
           error instanceof Error ? error.message : "Upload failed";
