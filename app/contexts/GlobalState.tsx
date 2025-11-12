@@ -10,7 +10,12 @@ import React, {
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import type { ChatMode, SidebarContent } from "@/types/chat";
+import type {
+  ChatMode,
+  SidebarContent,
+  QueuedMessage,
+  QueueBehavior,
+} from "@/types/chat";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -19,8 +24,10 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
-import type { Doc } from "@/convex/_generated/dataModel";
+import type { Doc, Id } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
+import { v4 as uuidv4 } from "uuid";
+import { toast } from "sonner";
 import {
   readChatMode,
   writeChatMode,
@@ -95,6 +102,20 @@ interface GlobalStateType {
   // Rate limit warning dismissal state
   hasUserDismissedRateLimitWarning: boolean;
   setHasUserDismissedRateLimitWarning: (dismissed: boolean) => void;
+
+  // Message queue state (for Agent mode)
+  messageQueue: QueuedMessage[];
+  queueMessage: (
+    text: string,
+    files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
+  ) => void;
+  removeQueuedMessage: (id: string) => void;
+  clearQueue: () => void;
+  dequeueNext: () => QueuedMessage | null;
+
+  // Queue behavior preference
+  queueBehavior: QueueBehavior;
+  setQueueBehavior: (behavior: QueueBehavior) => void;
 
   // Utility methods
   clearInput: () => void;
@@ -186,6 +207,26 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
   ] = useState(false);
+
+  // Message queue state (for Agent mode queueing)
+  const [messageQueue, setMessageQueue] = useState<QueuedMessage[]>([]);
+
+  // Queue behavior preference (persisted to localStorage)
+  const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
+    if (typeof window === "undefined") return "queue";
+    const saved = localStorage.getItem("queue-behavior");
+    if (saved === "queue" || saved === "stop-and-send") {
+      return saved;
+    }
+    return "queue"; // Default: queue after current message completes
+  });
+
+  // Persist queue behavior to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("queue-behavior", queueBehavior);
+    }
+  }, [queueBehavior]);
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -434,6 +475,52 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
 
+  // Message queue handlers
+  const queueMessage = useCallback(
+    (
+      text: string,
+      files?: Array<{ file: File; fileId: Id<"files">; url: string }>,
+    ) => {
+      setMessageQueue((prev) => {
+        // Limit queue size to 10 messages
+        if (prev.length >= 10) {
+          toast.error("Queue is full", {
+            description:
+              "Please wait for queued messages to send before adding more.",
+          });
+          return prev;
+        }
+
+        const newMessage: QueuedMessage = {
+          id: uuidv4(),
+          text,
+          files,
+          timestamp: Date.now(),
+        };
+        return [...prev, newMessage];
+      });
+    },
+    [],
+  );
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setMessageQueue((prev) => prev.filter((msg) => msg.id !== id));
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    setMessageQueue([]);
+  }, []);
+
+  const dequeueNext = useCallback((): QueuedMessage | null => {
+    let nextMessage: QueuedMessage | null = null;
+    setMessageQueue((prev) => {
+      if (prev.length === 0) return prev;
+      nextMessage = prev[0];
+      return prev.slice(1);
+    });
+    return nextMessage;
+  }, []);
+
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
     setIsSwitchingChats(true);
     setCurrentChatId(chatId);
@@ -596,6 +683,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     hasUserDismissedRateLimitWarning,
     setHasUserDismissedRateLimitWarning,
+
+    messageQueue,
+    queueMessage,
+    removeQueuedMessage,
+    clearQueue,
+    dequeueNext,
+
+    queueBehavior,
+    setQueueBehavior: setQueueBehaviorState,
   };
 
   return (

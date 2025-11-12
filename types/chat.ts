@@ -96,3 +96,16 @@ export type RateLimitInfo = {
   resetTime: Date;
   limit: number;
 };
+
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  files?: Array<{
+    file: File;
+    fileId: Id<"files">;
+    url: string;
+  }>;
+  timestamp: number;
+}
+
+export type QueueBehavior = "queue" | "stop-and-send";

@@ -28,6 +28,7 @@ import { redirectToPricing } from "../hooks/usePricingDialog";
 import { TodoPanel } from "./TodoPanel";
 import type { ChatStatus } from "@/types";
 import { FileUploadPreview } from "./FileUploadPreview";
+import { QueuedMessagesPanel } from "./QueuedMessagesPanel";
 import { ScrollToBottomButton } from "./ScrollToBottomButton";
 import { AttachmentButton } from "./AttachmentButton";
 import { useFileUpload } from "../hooks/useFileUpload";
@@ -49,6 +50,7 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
   onStop: () => void;
+  onSendNow: (messageId: string) => void;
   status: ChatStatus;
   isCentered?: boolean;
   hasMessages?: boolean;
@@ -70,6 +72,7 @@ interface ChatInputProps {
 export const ChatInput = ({
   onSubmit,
   onStop,
+  onSendNow,
   status,
   isCentered = false,
   hasMessages = false,
@@ -91,6 +94,10 @@ export const ChatInput = ({
     isUploadingFiles,
     subscription,
     isCheckingProPlan,
+    messageQueue,
+    removeQueuedMessage,
+    queueBehavior,
+    setQueueBehavior,
   } = useGlobalState();
   const {
     fileInputRef,
@@ -132,12 +139,17 @@ export const ChatInput = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Allow submission if there's text input or files attached, and no files are uploading
-    if (
-      status === "ready" &&
+    // Allow submission if:
+    // - (status is ready) OR (status is streaming AND in agent mode for queueing)
+    // - files are not uploading
+    // - there's text input or files attached
+    const canSubmit =
+      (status === "ready" ||
+        (status === "streaming" && chatMode === "agent")) &&
       !isUploadingFiles &&
-      (input.trim() || uploadedFiles.length > 0)
-    ) {
+      (input.trim() || uploadedFiles.length > 0);
+
+    if (canSubmit) {
       onSubmit(e);
       if (clearDraftOnSubmit) {
         // Remove draft immediately and clear input on next tick to avoid race with onSubmit
@@ -213,7 +225,7 @@ export const ChatInput = ({
           }
         }
 
-        const filesProcessed = await handlePasteEvent(e);
+        await handlePasteEvent(e);
         // If files were processed, the event.preventDefault() is already called
         // in handlePasteEvent, so no additional action needed here
       }
@@ -242,6 +254,18 @@ export const ChatInput = ({
 
         {/* Todo Panel */}
         <TodoPanel status={status} />
+
+        {/* Queued Messages Panel - only shown in Agent mode */}
+        {messageQueue.length > 0 && chatMode === "agent" && (
+          <QueuedMessagesPanel
+            messages={messageQueue}
+            onSendNow={onSendNow}
+            onDelete={removeQueuedMessage}
+            isStreaming={status === "streaming"}
+            queueBehavior={queueBehavior}
+            onQueueBehaviorChange={setQueueBehavior}
+          />
+        )}
 
         {/* File Upload Preview */}
         {uploadedFiles && uploadedFiles.length > 0 && (
@@ -368,6 +392,7 @@ export const ChatInput = ({
             </div>
             <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
               {isGenerating && !hideStop ? (
+                // Show only stop button during streaming for both modes
                 <TooltipPrimitive.Root>
                   <TooltipTrigger asChild>
                     <Button
@@ -392,6 +417,7 @@ export const ChatInput = ({
                   </TooltipContent>
                 </TooltipPrimitive.Root>
               ) : (
+                // Not streaming: show only submit button
                 <form onSubmit={handleSubmit}>
                   <TooltipPrimitive.Root>
                     <TooltipTrigger asChild>

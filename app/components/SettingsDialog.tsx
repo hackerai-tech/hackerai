@@ -8,6 +8,7 @@ import {
   CircleUserRound,
   Database,
   Users,
+  Infinity,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
@@ -17,6 +18,7 @@ import { PersonalizationTab } from "@/app/components/PersonalizationTab";
 import { AccountTab } from "@/app/components/AccountTab";
 import { DataControlsTab } from "@/app/components/DataControlsTab";
 import { TeamTab } from "@/app/components/TeamTab";
+import { AgentsTab } from "@/app/components/AgentsTab";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
@@ -36,6 +38,7 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
     { id: "Personalization", label: "Personalization", icon: Settings },
     { id: "Security", label: "Security", icon: Shield },
     { id: "Data controls", label: "Data controls", icon: Database },
+    { id: "Agents", label: "Agents", icon: Infinity },
   ];
 
   const teamTab = { id: "Team", label: "Team", icon: Users };
@@ -145,6 +148,8 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                 {activeTab === "Security" && <SecurityTab />}
 
                 {activeTab === "Data controls" && <DataControlsTab />}
+
+                {activeTab === "Agents" && <AgentsTab />}
 
                 {activeTab === "Team" && <TeamTab />}
 
