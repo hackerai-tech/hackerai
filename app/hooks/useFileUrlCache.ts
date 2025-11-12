@@ -54,7 +54,8 @@ export function useFileUrlCache(messages: ChatMessage[]) {
   // Prefetch image URLs for messages
   useEffect(() => {
     async function prefetchImageUrls() {
-      // Collect all S3 image files from all messages
+      // Track seen fileIds within this run to avoid duplicates
+      const seenInThisRun = new Set<string>();
       const s3ImageFiles: Array<{
         fileId: Id<"files">;
         mediaType: string;
@@ -68,16 +69,19 @@ export function useFileUrlCache(messages: ChatMessage[]) {
           // 1. Have an S3 key (not Convex storage)
           // 2. Are supported image types
           // 3. Haven't been prefetched yet
+          // 4. Haven't been seen in this run
           if (
             file.s3Key &&
             file.mediaType &&
             isSupportedImageMediaType(file.mediaType) &&
-            !prefetchedIdsRef.current.has(file.fileId)
+            !prefetchedIdsRef.current.has(file.fileId) &&
+            !seenInThisRun.has(file.fileId)
           ) {
             s3ImageFiles.push({
               fileId: file.fileId,
               mediaType: file.mediaType,
             });
+            seenInThisRun.add(file.fileId);
           }
         }
       }
@@ -93,12 +97,14 @@ export function useFileUrlCache(messages: ChatMessage[]) {
             part.mediaType &&
             isSupportedImageMediaType(part.mediaType) &&
             typeof part.fileId === "string" &&
-            !prefetchedIdsRef.current.has(part.fileId)
+            !prefetchedIdsRef.current.has(part.fileId) &&
+            !seenInThisRun.has(part.fileId)
           ) {
             s3ImageFiles.push({
               fileId: part.fileId as Id<"files">,
               mediaType: part.mediaType,
             });
+            seenInThisRun.add(part.fileId);
           }
         }
       }
@@ -108,7 +114,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
         return;
       }
 
-      // Batch fetch URLs
+      // Batch fetch URLs with deduplicated fileIds
       try {
         const fileIds = s3ImageFiles.map((f) => f.fileId);
         const urlMap = await getFileUrlsBatchAction({ fileIds });

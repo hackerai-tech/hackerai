@@ -7,7 +7,6 @@ import { AlertCircle, File, Download } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
-import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
 
 const FilePartRendererComponent = ({
   part,
