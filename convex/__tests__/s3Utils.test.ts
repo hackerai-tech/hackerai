@@ -22,7 +22,9 @@ describe("s3Utils", () => {
 
       const s3Key = generateS3Key(userId, fileName);
 
-      expect(s3Key).toMatch(/^users\/user123\/\d+-test-uuid-\d+-test\.pdf$/);
+      // Format: users/{userId}/{timestamp}-{uuid}.{ext}
+      // UUID is mocked as "test-uuid-{counter}" in tests
+      expect(s3Key).toMatch(/^users\/user123\/\d+-test-uuid-\d+\.pdf$/);
     });
 
     it("should generate unique keys for same user and filename", async () => {
@@ -88,9 +90,9 @@ describe("s3Utils", () => {
       expect(result).toHaveProperty("uploadUrl");
       expect(result).toHaveProperty("s3Key");
       expect(result.uploadUrl).toBe("https://s3.amazonaws.com/signed-url");
-      expect(result.s3Key).toMatch(
-        /^users\/user123\/\d+-test-uuid-\d+-test\.pdf$/,
-      );
+      // Format: users/{userId}/{timestamp}-{uuid}.{ext}
+      // UUID is mocked as "test-uuid-{counter}" in tests
+      expect(result.s3Key).toMatch(/^users\/user123\/\d+-test-uuid-\d+\.pdf$/);
       expect(mockGetSignedUrl).toHaveBeenCalled();
     });
 

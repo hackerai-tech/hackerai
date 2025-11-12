@@ -41,12 +41,18 @@ export function getS3Client(): S3Client {
 
 /**
  * Generate unique S3 key with user prefix
- * Format: users/{userId}/{timestamp}-{uuid}-{fileName}
+ * Format: users/{userId}/{timestamp}-{uuid}.{ext}
+ * Only uses file extension from fileName, UUID ensures uniqueness
  */
 export function generateS3Key(userId: string, fileName: string): string {
   const timestamp = Date.now();
   const uuid = uuidv4();
-  return `${S3_USER_FILES_PREFIX}/${userId}/${timestamp}-${uuid}-${fileName}`;
+  
+  // Extract file extension, default to empty string if none
+  const lastDotIndex = fileName.lastIndexOf(".");
+  const extension = lastDotIndex !== -1 ? fileName.substring(lastDotIndex) : "";
+  
+  return `${S3_USER_FILES_PREFIX}/${userId}/${timestamp}-${uuid}${extension}`;
 }
 
 /**
