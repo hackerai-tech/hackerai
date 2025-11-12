@@ -87,7 +87,8 @@ export const getFileUrlAction = action({
 
     try {
       // Get file record using internal query
-      const file = await ctx.runQuery(internal.fileStorage.getFileById, {
+      // TODO: Remove type assertion once circular dependency is resolved
+      const file = await ctx.runQuery((internal as any).fileStorage.getFileById, {
         fileId: args.fileId,
       });
 
@@ -173,7 +174,8 @@ export const getFileUrlsBatchAction = action({
     for (const fileId of args.fileIds) {
       try {
         // Get file record using internal query
-        const file = await ctx.runQuery(internal.fileStorage.getFileById, {
+        // TODO: Remove type assertion once circular dependency is resolved
+        const file = await ctx.runQuery((internal as any).fileStorage.getFileById, {
           fileId,
         });
 
