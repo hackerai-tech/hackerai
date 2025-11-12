@@ -88,7 +88,9 @@ describe("s3Utils", () => {
       expect(result).toHaveProperty("uploadUrl");
       expect(result).toHaveProperty("s3Key");
       expect(result.uploadUrl).toBe("https://s3.amazonaws.com/signed-url");
-      expect(result.s3Key).toMatch(/^users\/user123\/\d+-test-uuid-\d+-test\.pdf$/);
+      expect(result.s3Key).toMatch(
+        /^users\/user123\/\d+-test-uuid-\d+-test\.pdf$/,
+      );
       expect(mockGetSignedUrl).toHaveBeenCalled();
     });
 

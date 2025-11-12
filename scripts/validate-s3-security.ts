@@ -115,7 +115,7 @@ async function validateS3Client(): Promise<ValidationResult> {
     await s3Client.send(
       new HeadBucketCommand({
         Bucket: bucketName,
-      })
+      }),
     );
 
     return {
@@ -151,7 +151,7 @@ async function validateBucketEncryption(): Promise<ValidationResult> {
     const response = await s3Client.send(
       new GetBucketEncryptionCommand({
         Bucket: bucketName,
-      })
+      }),
     );
 
     const hasEncryption =
@@ -216,7 +216,7 @@ async function validatePublicAccessBlock(): Promise<ValidationResult> {
     const response = await s3Client.send(
       new GetPublicAccessBlockCommand({
         Bucket: bucketName,
-      })
+      }),
     );
 
     const config = response.PublicAccessBlockConfiguration;
@@ -230,7 +230,8 @@ async function validatePublicAccessBlock(): Promise<ValidationResult> {
       return {
         name: "Public Access Block",
         passed: true,
-        message: "All public access is blocked (BlockPublicAcls, BlockPublicPolicy, IgnorePublicAcls, RestrictPublicBuckets).",
+        message:
+          "All public access is blocked (BlockPublicAcls, BlockPublicPolicy, IgnorePublicAcls, RestrictPublicBuckets).",
       };
     } else {
       return {
@@ -280,7 +281,7 @@ async function validateCorsConfiguration(): Promise<ValidationResult> {
     const response = await s3Client.send(
       new GetBucketCorsCommand({
         Bucket: bucketName,
-      })
+      }),
     );
 
     const hasCorsRules = response.CORSRules && response.CORSRules.length > 0;
@@ -294,10 +295,9 @@ async function validateCorsConfiguration(): Promise<ValidationResult> {
         name: "CORS Configuration",
         passed: true,
         message: `CORS is configured with ${rules.length} rule(s). Allowed origins: ${allowedOrigins.join(", ")}. Allowed methods: ${allowedMethods.join(", ")}.`,
-        warning:
-          allowedOrigins.includes("*")
-            ? "CORS allows all origins (*). Consider restricting to specific application domains."
-            : undefined,
+        warning: allowedOrigins.includes("*")
+          ? "CORS allows all origins (*). Consider restricting to specific application domains."
+          : undefined,
       };
     } else {
       return {
@@ -482,9 +482,11 @@ async function main() {
 
   // Only continue if environment variables are valid
   if (!envResult.passed) {
-    console.log("❌ Validation failed: Missing required environment variables.");
     console.log(
-      "Please configure AWS S3 credentials in .env.local and try again."
+      "❌ Validation failed: Missing required environment variables.",
+    );
+    console.log(
+      "Please configure AWS S3 credentials in .env.local and try again.",
     );
     process.exit(1);
   }
@@ -547,19 +549,17 @@ async function main() {
 
   if (failed > 0) {
     console.log(
-      "❌ Validation failed. Please address the issues above and run again."
+      "❌ Validation failed. Please address the issues above and run again.",
     );
     process.exit(1);
   } else if (warnings > 0) {
     console.log(
-      "⚠️  Validation passed with warnings. Please review the warnings above."
+      "⚠️  Validation passed with warnings. Please review the warnings above.",
     );
     process.exit(0);
   } else {
     console.log("✅ All validation checks passed!");
-    console.log(
-      "Your S3 configuration is properly set up and secure."
-    );
+    console.log("Your S3 configuration is properly set up and secure.");
     process.exit(0);
   }
 }

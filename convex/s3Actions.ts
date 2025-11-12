@@ -27,7 +27,9 @@ export const generateS3UploadUrlAction = action({
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthenticated: User must be logged in to upload files");
+      throw new Error(
+        "Unauthenticated: User must be logged in to upload files",
+      );
     }
 
     // Validate inputs
@@ -47,7 +49,7 @@ export const generateS3UploadUrlAction = action({
       const { uploadUrl, s3Key } = await generateS3UploadUrl(
         args.fileName,
         args.contentType,
-        userId
+        userId,
       );
 
       return { uploadUrl, s3Key };
@@ -55,7 +57,7 @@ export const generateS3UploadUrlAction = action({
       console.error("Failed to generate S3 upload URL:", error);
       throw new Error(
         "Failed to generate upload URL: " +
-        (error instanceof Error ? error.message : "Unknown error")
+          (error instanceof Error ? error.message : "Unknown error"),
       );
     }
   },
@@ -82,15 +84,20 @@ export const getFileUrlAction = action({
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthenticated: User must be logged in to access files");
+      throw new Error(
+        "Unauthenticated: User must be logged in to access files",
+      );
     }
 
     try {
       // Get file record using internal query
       // TODO: Remove type assertion once circular dependency is resolved
-      const file = await ctx.runQuery((internal as any).fileStorage.getFileById, {
-        fileId: args.fileId,
-      });
+      const file = await ctx.runQuery(
+        (internal as any).fileStorage.getFileById,
+        {
+          fileId: args.fileId,
+        },
+      );
 
       if (!file) {
         throw new Error("File not found");
@@ -98,7 +105,9 @@ export const getFileUrlAction = action({
 
       // Verify user has access to this file
       if (file.user_id !== identity.subject) {
-        throw new Error("Access denied: You do not have permission to access this file");
+        throw new Error(
+          "Access denied: You do not have permission to access this file",
+        );
       }
 
       // Enforce storage invariant: exactly one storage reference
@@ -110,7 +119,9 @@ export const getFileUrlAction = action({
       }
 
       if (hasS3Key && hasStorageId) {
-        throw new Error("File has both S3 and Convex storage references (invalid state)");
+        throw new Error(
+          "File has both S3 and Convex storage references (invalid state)",
+        );
       }
 
       // Generate appropriate URL based on storage type
@@ -129,7 +140,7 @@ export const getFileUrlAction = action({
       console.error("Failed to get file URL:", error);
       throw new Error(
         "Failed to get file URL: " +
-        (error instanceof Error ? error.message : "Unknown error")
+          (error instanceof Error ? error.message : "Unknown error"),
       );
     }
   },
@@ -157,14 +168,16 @@ export const getFileUrlsBatchAction = action({
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthenticated: User must be logged in to access files");
+      throw new Error(
+        "Unauthenticated: User must be logged in to access files",
+      );
     }
 
     // Enforce batch size limit
     const MAX_BATCH_SIZE = 50;
     if (args.fileIds.length > MAX_BATCH_SIZE) {
       throw new Error(
-        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`
+        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
       );
     }
 
@@ -175,9 +188,12 @@ export const getFileUrlsBatchAction = action({
       try {
         // Get file record using internal query
         // TODO: Remove type assertion once circular dependency is resolved
-        const file = await ctx.runQuery((internal as any).fileStorage.getFileById, {
-          fileId,
-        });
+        const file = await ctx.runQuery(
+          (internal as any).fileStorage.getFileById,
+          {
+            fileId,
+          },
+        );
 
         // Skip if file not found
         if (!file) {

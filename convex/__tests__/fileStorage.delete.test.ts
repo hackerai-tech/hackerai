@@ -93,7 +93,7 @@ describe("fileStorage - deleteFile", () => {
       const { deleteFile } = await import("../fileStorage");
 
       await expect(
-        deleteFile.handler(mockCtx, { fileId: testFileId })
+        deleteFile.handler(mockCtx, { fileId: testFileId }),
       ).rejects.toThrow("Unauthorized: User not authenticated");
 
       expect(mockCtx.db.get).not.toHaveBeenCalled();
@@ -106,7 +106,7 @@ describe("fileStorage - deleteFile", () => {
       const { deleteFile } = await import("../fileStorage");
 
       await expect(
-        deleteFile.handler(mockCtx, { fileId: testFileId })
+        deleteFile.handler(mockCtx, { fileId: testFileId }),
       ).rejects.toThrow("File not found");
 
       expect(mockCtx.db.delete).not.toHaveBeenCalled();
@@ -119,7 +119,7 @@ describe("fileStorage - deleteFile", () => {
       const { deleteFile } = await import("../fileStorage");
 
       await expect(
-        deleteFile.handler(mockCtx, { fileId: testFileId })
+        deleteFile.handler(mockCtx, { fileId: testFileId }),
       ).rejects.toThrow("Unauthorized: File does not belong to user");
 
       expect(mockCtx.db.delete).not.toHaveBeenCalled();
@@ -141,7 +141,7 @@ describe("fileStorage - deleteFile", () => {
       expect(mockCtx.scheduler.runAfter).toHaveBeenCalledWith(
         0,
         "internal.s3Cleanup.deleteS3ObjectAction",
-        { s3Key: mockFile.s3_key }
+        { s3Key: mockFile.s3_key },
       );
 
       // Verify Convex storage delete was not called
@@ -156,13 +156,13 @@ describe("fileStorage - deleteFile", () => {
       mockFile.storage_id = undefined;
       mockCtx.db.get.mockResolvedValue(mockFile);
       mockCtx.scheduler.runAfter.mockRejectedValue(
-        new Error("Scheduler error")
+        new Error("Scheduler error"),
       );
 
       const { deleteFile } = await import("../fileStorage");
 
       await expect(
-        deleteFile.handler(mockCtx, { fileId: testFileId })
+        deleteFile.handler(mockCtx, { fileId: testFileId }),
       ).rejects.toThrow("Scheduler error");
 
       // DB delete should not be called if scheduler fails
@@ -195,13 +195,13 @@ describe("fileStorage - deleteFile", () => {
       mockFile.s3_key = undefined;
       mockCtx.db.get.mockResolvedValue(mockFile);
       mockCtx.storage.delete.mockRejectedValue(
-        new Error("Storage delete failed")
+        new Error("Storage delete failed"),
       );
 
       const { deleteFile } = await import("../fileStorage");
 
       await expect(
-        deleteFile.handler(mockCtx, { fileId: testFileId })
+        deleteFile.handler(mockCtx, { fileId: testFileId }),
       ).rejects.toThrow("Storage delete failed");
 
       // DB delete should not be called if storage delete fails
@@ -221,7 +221,7 @@ describe("fileStorage - deleteFile", () => {
 
       // Should warn about missing storage reference
       expect(console.warn).toHaveBeenCalledWith(
-        expect.stringContaining("has neither s3_key nor storage_id")
+        expect.stringContaining("has neither s3_key nor storage_id"),
       );
 
       // Should not attempt storage deletion

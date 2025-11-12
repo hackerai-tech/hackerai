@@ -204,11 +204,9 @@ export const deleteFile = mutation({
     // Delete from appropriate storage
     if (file.s3_key) {
       // Schedule S3 deletion using the cleanup action
-      await ctx.scheduler.runAfter(
-        0,
-        internal.s3Cleanup.deleteS3ObjectAction,
-        { s3Key: file.s3_key },
-      );
+      await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
+        s3Key: file.s3_key,
+      });
     } else if (file.storage_id) {
       // Delete from Convex storage
       await ctx.storage.delete(file.storage_id);
@@ -343,10 +341,7 @@ export const purgeExpiredUnattachedFiles = internalMutation({
           );
         }
       } catch (e) {
-        console.error(
-          `Failed to delete storage for file ${file._id}:`,
-          e,
-        );
+        console.error(`Failed to delete storage for file ${file._id}:`, e);
       }
 
       // Delete database record regardless of storage deletion result

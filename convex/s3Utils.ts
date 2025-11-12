@@ -76,7 +76,8 @@ export async function generateS3UploadUrl(
   } catch (error) {
     console.error("Failed to generate S3 upload URL:", error);
     throw new Error(
-      "Failed to generate upload URL: " + (error instanceof Error ? error.message : "Unknown error")
+      "Failed to generate upload URL: " +
+        (error instanceof Error ? error.message : "Unknown error"),
     );
   }
 }
@@ -102,7 +103,8 @@ export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
   } catch (error) {
     console.error("Failed to generate S3 download URL:", error);
     throw new Error(
-      "Failed to generate download URL: " + (error instanceof Error ? error.message : "Unknown error")
+      "Failed to generate download URL: " +
+        (error instanceof Error ? error.message : "Unknown error"),
     );
   }
 }
@@ -124,7 +126,8 @@ export async function deleteS3Object(s3Key: string): Promise<void> {
   } catch (error) {
     console.error("Failed to delete S3 object:", error);
     throw new Error(
-      "Failed to delete S3 object: " + (error instanceof Error ? error.message : "Unknown error")
+      "Failed to delete S3 object: " +
+        (error instanceof Error ? error.message : "Unknown error"),
     );
   }
 }

@@ -23,9 +23,8 @@ describe("s3Actions", () => {
   describe("generateS3UploadUrlAction", () => {
     it("should generate upload URL for authenticated user", async () => {
       const { generateS3UploadUrl } = await import("../s3Utils");
-      const mockGenerateS3UploadUrl = generateS3UploadUrl as jest.MockedFunction<
-        typeof generateS3UploadUrl
-      >;
+      const mockGenerateS3UploadUrl =
+        generateS3UploadUrl as jest.MockedFunction<typeof generateS3UploadUrl>;
 
       mockGenerateS3UploadUrl.mockResolvedValue({
         uploadUrl: "https://s3.amazonaws.com/test-upload-url",
@@ -57,7 +56,7 @@ describe("s3Actions", () => {
       expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
         "test.pdf",
         "application/pdf",
-        "user123"
+        "user123",
       );
     });
 
@@ -75,7 +74,7 @@ describe("s3Actions", () => {
         generateS3UploadUrlAction.handler(mockCtx, {
           fileName: "test.pdf",
           contentType: "application/pdf",
-        })
+        }),
       ).rejects.toThrow("Unauthenticated");
     });
 
@@ -96,7 +95,7 @@ describe("s3Actions", () => {
         generateS3UploadUrlAction.handler(mockCtx, {
           fileName: "",
           contentType: "application/pdf",
-        })
+        }),
       ).rejects.toThrow("Invalid fileName");
     });
 
@@ -117,7 +116,7 @@ describe("s3Actions", () => {
         generateS3UploadUrlAction.handler(mockCtx, {
           fileName: "test.pdf",
           contentType: "",
-        })
+        }),
       ).rejects.toThrow("Invalid contentType");
     });
 
@@ -138,18 +137,17 @@ describe("s3Actions", () => {
         generateS3UploadUrlAction.handler(mockCtx, {
           fileName: "   ",
           contentType: "application/pdf",
-        })
+        }),
       ).rejects.toThrow("Invalid fileName");
     });
 
     it("should handle S3 utility errors gracefully", async () => {
       const { generateS3UploadUrl } = await import("../s3Utils");
-      const mockGenerateS3UploadUrl = generateS3UploadUrl as jest.MockedFunction<
-        typeof generateS3UploadUrl
-      >;
+      const mockGenerateS3UploadUrl =
+        generateS3UploadUrl as jest.MockedFunction<typeof generateS3UploadUrl>;
 
       mockGenerateS3UploadUrl.mockRejectedValue(
-        new Error("S3 service unavailable")
+        new Error("S3 service unavailable"),
       );
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
@@ -168,15 +166,14 @@ describe("s3Actions", () => {
         generateS3UploadUrlAction.handler(mockCtx, {
           fileName: "test.pdf",
           contentType: "application/pdf",
-        })
+        }),
       ).rejects.toThrow("Failed to generate upload URL");
     });
 
     it("should accept various file types", async () => {
       const { generateS3UploadUrl } = await import("../s3Utils");
-      const mockGenerateS3UploadUrl = generateS3UploadUrl as jest.MockedFunction<
-        typeof generateS3UploadUrl
-      >;
+      const mockGenerateS3UploadUrl =
+        generateS3UploadUrl as jest.MockedFunction<typeof generateS3UploadUrl>;
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
 
@@ -209,7 +206,7 @@ describe("s3Actions", () => {
         expect(mockGenerateS3UploadUrl).toHaveBeenCalledWith(
           testCase.fileName,
           testCase.contentType,
-          "user123"
+          "user123",
         );
       }
     });
@@ -218,12 +215,13 @@ describe("s3Actions", () => {
   describe("getFileUrlAction", () => {
     it("should generate presigned URL for S3 file", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const mockGenerateS3DownloadUrl = generateS3DownloadUrl as jest.MockedFunction<
-        typeof generateS3DownloadUrl
-      >;
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
 
       mockGenerateS3DownloadUrl.mockResolvedValue(
-        "https://s3.amazonaws.com/test-bucket/presigned-download-url"
+        "https://s3.amazonaws.com/test-bucket/presigned-download-url",
       );
 
       const { getFileUrlAction } = await import("../s3Actions");
@@ -259,8 +257,12 @@ describe("s3Actions", () => {
         fileId: mockFileId,
       });
 
-      expect(result).toBe("https://s3.amazonaws.com/test-bucket/presigned-download-url");
-      expect(mockGenerateS3DownloadUrl).toHaveBeenCalledWith("users/user123/123-uuid-test.pdf");
+      expect(result).toBe(
+        "https://s3.amazonaws.com/test-bucket/presigned-download-url",
+      );
+      expect(mockGenerateS3DownloadUrl).toHaveBeenCalledWith(
+        "users/user123/123-uuid-test.pdf",
+      );
     });
 
     it("should return Convex URL for legacy file", async () => {
@@ -290,7 +292,9 @@ describe("s3Actions", () => {
         },
         runQuery: jest.fn().mockResolvedValue(mockFile),
         storage: {
-          getUrl: jest.fn().mockResolvedValue("https://convex.cloud/storage/file-url"),
+          getUrl: jest
+            .fn()
+            .mockResolvedValue("https://convex.cloud/storage/file-url"),
         },
       } as any;
 
@@ -312,7 +316,7 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlAction.handler(mockCtx, { fileId: "file123" as any })
+        getFileUrlAction.handler(mockCtx, { fileId: "file123" as any }),
       ).rejects.toThrow("Unauthenticated");
     });
 
@@ -330,7 +334,7 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlAction.handler(mockCtx, { fileId: "file123" as any })
+        getFileUrlAction.handler(mockCtx, { fileId: "file123" as any }),
       ).rejects.toThrow("File not found");
     });
 
@@ -362,7 +366,7 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlAction.handler(mockCtx, { fileId: mockFileId })
+        getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
       ).rejects.toThrow("Access denied");
     });
 
@@ -394,7 +398,7 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlAction.handler(mockCtx, { fileId: mockFileId })
+        getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
       ).rejects.toThrow("File has no storage reference");
     });
 
@@ -426,18 +430,19 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlAction.handler(mockCtx, { fileId: mockFileId })
+        getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
       ).rejects.toThrow("File has both S3 and Convex storage references");
     });
 
     it("should handle S3 download URL generation errors", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const mockGenerateS3DownloadUrl = generateS3DownloadUrl as jest.MockedFunction<
-        typeof generateS3DownloadUrl
-      >;
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
 
       mockGenerateS3DownloadUrl.mockRejectedValue(
-        new Error("S3 service unavailable")
+        new Error("S3 service unavailable"),
       );
 
       const { getFileUrlAction } = await import("../s3Actions");
@@ -470,7 +475,7 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlAction.handler(mockCtx, { fileId: mockFileId })
+        getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
       ).rejects.toThrow("Failed to get file URL");
     });
 
@@ -506,7 +511,7 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlAction.handler(mockCtx, { fileId: mockFileId })
+        getFileUrlAction.handler(mockCtx, { fileId: mockFileId }),
       ).rejects.toThrow("Failed to generate Convex storage URL");
     });
   });
@@ -514,9 +519,10 @@ describe("s3Actions", () => {
   describe("getFileUrlsBatchAction", () => {
     it("should generate URLs for multiple S3 files", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const mockGenerateS3DownloadUrl = generateS3DownloadUrl as jest.MockedFunction<
-        typeof generateS3DownloadUrl
-      >;
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
 
       mockGenerateS3DownloadUrl
         .mockResolvedValueOnce("https://s3.amazonaws.com/file1-url")
@@ -598,11 +604,14 @@ describe("s3Actions", () => {
 
     it("should generate URLs for mixed S3 and Convex files", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const mockGenerateS3DownloadUrl = generateS3DownloadUrl as jest.MockedFunction<
-        typeof generateS3DownloadUrl
-      >;
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
 
-      mockGenerateS3DownloadUrl.mockResolvedValue("https://s3.amazonaws.com/file1-url");
+      mockGenerateS3DownloadUrl.mockResolvedValue(
+        "https://s3.amazonaws.com/file1-url",
+      );
 
       const { getFileUrlsBatchAction } = await import("../s3Actions");
 
@@ -647,7 +656,9 @@ describe("s3Actions", () => {
           .mockResolvedValueOnce(mockFile1)
           .mockResolvedValueOnce(mockFile2),
         storage: {
-          getUrl: jest.fn().mockResolvedValue("https://convex.cloud/storage/file2-url"),
+          getUrl: jest
+            .fn()
+            .mockResolvedValue("https://convex.cloud/storage/file2-url"),
         },
       } as any;
 
@@ -663,11 +674,14 @@ describe("s3Actions", () => {
 
     it("should skip files user doesn't own (access control)", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const mockGenerateS3DownloadUrl = generateS3DownloadUrl as jest.MockedFunction<
-        typeof generateS3DownloadUrl
-      >;
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
 
-      mockGenerateS3DownloadUrl.mockResolvedValue("https://s3.amazonaws.com/file1-url");
+      mockGenerateS3DownloadUrl.mockResolvedValue(
+        "https://s3.amazonaws.com/file1-url",
+      );
 
       const { getFileUrlsBatchAction } = await import("../s3Actions");
 
@@ -729,11 +743,14 @@ describe("s3Actions", () => {
 
     it("should skip files not found", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const mockGenerateS3DownloadUrl = generateS3DownloadUrl as jest.MockedFunction<
-        typeof generateS3DownloadUrl
-      >;
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
 
-      mockGenerateS3DownloadUrl.mockResolvedValue("https://s3.amazonaws.com/file1-url");
+      mockGenerateS3DownloadUrl.mockResolvedValue(
+        "https://s3.amazonaws.com/file1-url",
+      );
 
       const { getFileUrlsBatchAction } = await import("../s3Actions");
 
@@ -858,9 +875,10 @@ describe("s3Actions", () => {
 
     it("should handle partial failures gracefully", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const mockGenerateS3DownloadUrl = generateS3DownloadUrl as jest.MockedFunction<
-        typeof generateS3DownloadUrl
-      >;
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
 
       mockGenerateS3DownloadUrl
         .mockResolvedValueOnce("https://s3.amazonaws.com/file1-url")
@@ -951,7 +969,7 @@ describe("s3Actions", () => {
       } as any;
 
       await expect(
-        getFileUrlsBatchAction.handler(mockCtx, { fileIds: ["file1" as any] })
+        getFileUrlsBatchAction.handler(mockCtx, { fileIds: ["file1" as any] }),
       ).rejects.toThrow("Unauthenticated");
     });
 
@@ -971,7 +989,7 @@ describe("s3Actions", () => {
       const fileIds = Array.from({ length: 51 }, (_, i) => `file${i}` as any);
 
       await expect(
-        getFileUrlsBatchAction.handler(mockCtx, { fileIds })
+        getFileUrlsBatchAction.handler(mockCtx, { fileIds }),
       ).rejects.toThrow("Batch size exceeds limit");
     });
 

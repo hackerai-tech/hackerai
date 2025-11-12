@@ -49,9 +49,7 @@ export function createFileMessagePart(
   uploadedFile: UploadedFileState,
 ): FileMessagePart {
   if (!uploadedFile.fileId) {
-    throw new Error(
-      "File must have fileId to create message part",
-    );
+    throw new Error("File must have fileId to create message part");
   }
 
   return {

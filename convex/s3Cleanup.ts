@@ -46,7 +46,7 @@ export const deleteS3ObjectsBatchAction = internalAction({
   returns: v.null(),
   handler: async (ctx, args) => {
     const results = await Promise.allSettled(
-      args.s3Keys.map((key) => deleteS3Object(key))
+      args.s3Keys.map((key) => deleteS3Object(key)),
     );
 
     const failed = results.filter((r) => r.status === "rejected");

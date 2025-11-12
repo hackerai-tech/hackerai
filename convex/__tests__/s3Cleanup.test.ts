@@ -1,4 +1,11 @@
-import { describe, it, expect, jest, beforeEach, afterEach } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 
 // Mock dependencies
 jest.mock("../s3Utils");
@@ -42,7 +49,7 @@ describe("s3Cleanup", () => {
 
       expect(mockDeleteS3Object).toHaveBeenCalledWith(args.s3Key);
       expect(console.log).toHaveBeenCalledWith(
-        `Successfully deleted S3 object: ${args.s3Key}`
+        `Successfully deleted S3 object: ${args.s3Key}`,
       );
     });
 
@@ -74,12 +81,12 @@ describe("s3Cleanup", () => {
 
       // Should not throw
       await expect(
-        deleteS3ObjectAction.handler(mockCtx, args)
+        deleteS3ObjectAction.handler(mockCtx, args),
       ).resolves.not.toThrow();
 
       expect(console.error).toHaveBeenCalledWith(
         `Failed to delete S3 object: ${args.s3Key}`,
-        mockError
+        mockError,
       );
     });
   });
@@ -141,7 +148,7 @@ describe("s3Cleanup", () => {
 
       expect(mockDeleteS3Object).toHaveBeenCalledTimes(3);
       expect(console.error).toHaveBeenCalledWith(
-        "Failed to delete 1 S3 objects"
+        "Failed to delete 1 S3 objects",
       );
     });
 
@@ -159,17 +166,14 @@ describe("s3Cleanup", () => {
 
       const mockCtx = {};
       const args = {
-        s3Keys: [
-          "users/user123/file1.pdf",
-          "users/user123/file2.pdf",
-        ],
+        s3Keys: ["users/user123/file1.pdf", "users/user123/file2.pdf"],
       };
 
       await deleteS3ObjectsBatchAction.handler(mockCtx, args);
 
       expect(mockDeleteS3Object).toHaveBeenCalledTimes(2);
       expect(console.error).toHaveBeenCalledWith(
-        "Failed to delete 2 S3 objects"
+        "Failed to delete 2 S3 objects",
       );
     });
 
@@ -203,15 +207,12 @@ describe("s3Cleanup", () => {
 
       const mockCtx = {};
       const args = {
-        s3Keys: [
-          "users/user123/file1.pdf",
-          "users/user123/file2.pdf",
-        ],
+        s3Keys: ["users/user123/file1.pdf", "users/user123/file2.pdf"],
       };
 
       // Should not throw
       await expect(
-        deleteS3ObjectsBatchAction.handler(mockCtx, args)
+        deleteS3ObjectsBatchAction.handler(mockCtx, args),
       ).resolves.not.toThrow();
     });
   });

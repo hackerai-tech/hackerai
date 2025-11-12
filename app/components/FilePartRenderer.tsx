@@ -33,7 +33,6 @@ const FilePartRendererComponent = ({
     setUrlError(null);
 
     async function fetchUrl() {
-
       // Only fetch URLs eagerly for images (they display inline)
       // Non-images will be fetched lazily when user clicks download button
       const isImage = part.mediaType?.startsWith("image/");
@@ -180,7 +179,15 @@ const FilePartRendererComponent = ({
         toast.error("Failed to fetch download URL");
       }
     },
-    [fileUrl, handleDownload, part.fileId, part.storageId, fileUrlCache, getFileUrlAction, convex],
+    [
+      fileUrl,
+      handleDownload,
+      part.fileId,
+      part.storageId,
+      fileUrlCache,
+      getFileUrlAction,
+      convex,
+    ],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders

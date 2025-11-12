@@ -1,4 +1,11 @@
-import { describe, it, expect, jest, beforeEach, afterEach } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
 
 // Mock dependencies
 jest.mock("../_generated/server", () => ({
@@ -120,7 +127,7 @@ describe("userDeletion", () => {
         "deleteS3ObjectsBatchAction",
         {
           s3Keys: ["users/user123/file1.pdf", "users/user123/file2.jpg"],
-        }
+        },
       );
 
       // Verify Convex storage file was deleted
@@ -133,7 +140,7 @@ describe("userDeletion", () => {
 
       // Verify success log
       expect(console.log).toHaveBeenCalledWith(
-        "Scheduled deletion of 2 S3 objects for user user123"
+        "Scheduled deletion of 2 S3 objects for user user123",
       );
     });
 
@@ -273,7 +280,7 @@ describe("userDeletion", () => {
       expect(mockScheduler.runAfter).toHaveBeenCalledWith(
         0,
         "deleteS3ObjectsBatchAction",
-        { s3Keys: ["users/user456/file1.pdf"] }
+        { s3Keys: ["users/user456/file1.pdf"] },
       );
 
       // Verify Convex storage delete was NOT called
@@ -344,13 +351,13 @@ describe("userDeletion", () => {
 
       // Should not throw even if S3 cleanup scheduling fails
       await expect(
-        deleteAllUserData.handler(mockCtx, {})
+        deleteAllUserData.handler(mockCtx, {}),
       ).resolves.not.toThrow();
 
       // Verify error was logged
       expect(console.error).toHaveBeenCalledWith(
         "Failed to schedule S3 batch deletion:",
-        expect.any(Error)
+        expect.any(Error),
       );
 
       // Verify file record was still deleted
@@ -420,14 +427,14 @@ describe("userDeletion", () => {
 
       // Should not throw
       await expect(
-        deleteAllUserData.handler(mockCtx, {})
+        deleteAllUserData.handler(mockCtx, {}),
       ).resolves.not.toThrow();
 
       // Verify warning was logged
       expect(console.warn).toHaveBeenCalledWith(
         "Failed to delete storage blob:",
         "storage123",
-        expect.any(Error)
+        expect.any(Error),
       );
 
       // Verify file record was still deleted
@@ -501,7 +508,7 @@ describe("userDeletion", () => {
       };
 
       await expect(deleteAllUserData.handler(mockCtx, {})).rejects.toThrow(
-        "Unauthorized: User not authenticated"
+        "Unauthorized: User not authenticated",
       );
     });
   });

@@ -22,7 +22,9 @@ const URL_CACHE_EXPIRATION = 50 * 60 * 1000; // 50 minutes (S3 URLs expire in 1 
  * - Automatically cleans up expired URLs
  */
 export function useFileUrlCache(messages: ChatMessage[]) {
-  const getFileUrlsBatchAction = useAction(api.s3Actions.getFileUrlsBatchAction);
+  const getFileUrlsBatchAction = useAction(
+    api.s3Actions.getFileUrlsBatchAction,
+  );
   const urlCacheRef = useRef<Map<string, CachedUrl>>(new Map());
   const prefetchedIdsRef = useRef<Set<string>>(new Set());
 
@@ -129,21 +131,24 @@ export function useFileUrlCache(messages: ChatMessage[]) {
 
   // Cleanup expired URLs periodically
   useEffect(() => {
-    const cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      const entriesToDelete: string[] = [];
+    const cleanupInterval = setInterval(
+      () => {
+        const now = Date.now();
+        const entriesToDelete: string[] = [];
 
-      for (const [fileId, cached] of urlCacheRef.current.entries()) {
-        if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
-          entriesToDelete.push(fileId);
+        for (const [fileId, cached] of urlCacheRef.current.entries()) {
+          if (now - cached.timestamp > URL_CACHE_EXPIRATION) {
+            entriesToDelete.push(fileId);
+          }
         }
-      }
 
-      for (const fileId of entriesToDelete) {
-        urlCacheRef.current.delete(fileId);
-        prefetchedIdsRef.current.delete(fileId);
-      }
-    }, 5 * 60 * 1000); // Clean up every 5 minutes
+        for (const fileId of entriesToDelete) {
+          urlCacheRef.current.delete(fileId);
+          prefetchedIdsRef.current.delete(fileId);
+        }
+      },
+      5 * 60 * 1000,
+    ); // Clean up every 5 minutes
 
     return () => clearInterval(cleanupInterval);
   }, []);

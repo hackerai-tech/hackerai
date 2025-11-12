@@ -136,9 +136,11 @@ export const deleteAllUserData = mutation({
           await ctx.scheduler.runAfter(
             0,
             internal.s3Cleanup.deleteS3ObjectsBatchAction,
-            { s3Keys }
+            { s3Keys },
           );
-          console.log(`Scheduled deletion of ${s3Keys.length} S3 objects for user ${user.subject}`);
+          console.log(
+            `Scheduled deletion of ${s3Keys.length} S3 objects for user ${user.subject}`,
+          );
         } catch (error) {
           console.error("Failed to schedule S3 batch deletion:", error);
           // Don't fail user deletion on S3 cleanup errors
