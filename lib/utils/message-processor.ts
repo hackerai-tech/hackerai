@@ -46,6 +46,8 @@ interface DataPart {
  * 3. Removes data-terminal parts to clean up the message structure
  * 4. Prepares the last user message for backend to reduce payload size
  *
+ * Performance optimization: Early exits if no assistant messages or no changes needed
+ *
  * @param messages - Array of UI messages to normalize
  * @returns Object with normalized messages, last message array, and hasChanges flag
  */
@@ -56,6 +58,25 @@ export const normalizeMessages = (
   lastMessage: ChatMessage[];
   hasChanges: boolean;
 } => {
+  // Early return for empty messages
+  if (!messages || messages.length === 0) {
+    return { messages: [], lastMessage: [], hasChanges: false };
+  }
+
+  // Quick check: if no assistant messages, skip processing
+  const hasAssistantMessages = messages.some((m) => m.role === "assistant");
+  if (!hasAssistantMessages) {
+    const lastUserMessage = messages
+      .slice()
+      .reverse()
+      .find((msg) => msg.role === "user");
+    return {
+      messages,
+      lastMessage: lastUserMessage ? [lastUserMessage] : [],
+      hasChanges: false,
+    };
+  }
+
   let hasChanges = false;
   const normalizedMessages = messages.map((message) => {
     // Only process assistant messages
@@ -126,10 +147,12 @@ export const normalizeMessages = (
       hasChanges = true;
     }
 
-    return {
-      ...message,
-      parts: processedParts,
-    };
+    return messageChanged
+      ? {
+          ...message,
+          parts: processedParts,
+        }
+      : message;
   });
 
   // Prepare last message array with only the last user message

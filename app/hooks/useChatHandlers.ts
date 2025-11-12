@@ -11,6 +11,7 @@ import {
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStream } from "@/app/components/DataStreamProvider";
+import { normalizeMessages } from "@/lib/utils/message-processor";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -221,30 +222,47 @@ export const useChatHandlers = ({
     // Stop the stream immediately (client-side abort)
     stop();
 
-    // Don't clear queued messages - let them remain in the queue
-    // User can manually delete them if needed
+    // Early return if no messages to process
+    if (messages.length === 0) return;
 
-    if (!temporaryChatsEnabled) {
-      // Cancel the stream in database first (sets canceled_at for backend detection)
-      cancelStreamMutation({ chatId }).catch((error) => {
-        console.error("Failed to cancel stream:", error);
-      });
+    try {
+      // Normalize messages to mark incomplete tools as interrupted/completed
+      // This removes shimmer effect from any tools that were in-progress
+      const { messages: normalizedMessages, hasChanges } =
+        normalizeMessages(messages);
 
-      // Save the current message state immediately to prevent extra tokens from appearing
-      const lastMessage = messages[messages.length - 1];
-      if (lastMessage && lastMessage.role === "assistant") {
-        saveAssistantMessage({
-          id: lastMessage.id,
-          chatId,
-          role: lastMessage.role,
-          parts: lastMessage.parts,
-        }).catch((error) => {
-          console.error("Failed to save message on stop:", error);
-        });
+      // Update local state if changes were made
+      if (hasChanges) {
+        setMessages(normalizedMessages);
       }
-    } else {
-      // Temporary chats: signal cancel via temp stream coordination
-      cancelTempStreamMutation({ chatId }).catch(() => {});
+
+      // Don't clear queued messages - let them remain in the queue
+      // User can manually delete them if needed
+
+      if (!temporaryChatsEnabled) {
+        // Cancel the stream in database first (sets canceled_at for backend detection)
+        await cancelStreamMutation({ chatId }).catch((error) => {
+          console.error("Failed to cancel stream:", error);
+        });
+
+        // Save the normalized message state to database (with interrupted tools marked as completed)
+        const lastMessage = normalizedMessages[normalizedMessages.length - 1];
+        if (lastMessage?.role === "assistant") {
+          await saveAssistantMessage({
+            id: lastMessage.id,
+            chatId,
+            role: lastMessage.role,
+            parts: lastMessage.parts,
+          }).catch((error) => {
+            console.error("Failed to save message on stop:", error);
+          });
+        }
+      } else {
+        // Temporary chats: signal cancel via temp stream coordination
+        await cancelTempStreamMutation({ chatId }).catch(() => {});
+      }
+    } catch (error) {
+      console.error("Error in handleStop:", error);
     }
   };
 
@@ -440,30 +458,41 @@ export const useChatHandlers = ({
       setIsAutoResuming(false);
       stop(); // Client-side abort
 
-      // Cancel stream in database
-      if (!temporaryChatsEnabled) {
-        cancelStreamMutation({ chatId }).catch((error) => {
-          console.error("Failed to cancel stream:", error);
-        });
+      // Normalize messages to mark incomplete tools as interrupted/completed
+      if (messages.length > 0) {
+        const { messages: normalizedMessages, hasChanges } =
+          normalizeMessages(messages);
 
-        // Save the current message state immediately
-        const lastMessage = messages[messages.length - 1];
-        if (lastMessage && lastMessage.role === "assistant") {
-          saveAssistantMessage({
-            id: lastMessage.id,
-            chatId,
-            role: lastMessage.role,
-            parts: lastMessage.parts,
-          }).catch((error) => {
-            console.error("Failed to save message on stop:", error);
-          });
+        // Update local state if changes were made
+        if (hasChanges) {
+          setMessages(normalizedMessages);
         }
-      } else {
-        // Temporary chats: signal cancel via temp stream coordination
-        cancelTempStreamMutation({ chatId }).catch(() => {});
+
+        // Cancel stream and save normalized message state
+        if (!temporaryChatsEnabled) {
+          await cancelStreamMutation({ chatId }).catch((error) => {
+            console.error("Failed to cancel stream:", error);
+          });
+
+          // Save the normalized message state to database
+          const lastMessage = normalizedMessages[normalizedMessages.length - 1];
+          if (lastMessage?.role === "assistant") {
+            await saveAssistantMessage({
+              id: lastMessage.id,
+              chatId,
+              role: lastMessage.role,
+              parts: lastMessage.parts,
+            }).catch((error) => {
+              console.error("Failed to save message on stop:", error);
+            });
+          }
+        } else {
+          // Temporary chats: signal cancel via temp stream coordination
+          await cancelTempStreamMutation({ chatId }).catch(() => {});
+        }
       }
 
-      // Send the message immediately (no need to wait for status)
+      // Send the queued message immediately
       const validFiles = message.files || [];
       const messagePayload: any = {};
 
