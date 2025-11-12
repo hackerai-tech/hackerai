@@ -4,7 +4,6 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
-import { generateS3DownloadUrl } from "./s3Utils";
 
 /**
  * Extract text content from message parts for search and display
@@ -284,36 +283,18 @@ export const getMessagesByChatId = query({
         fileIdArray.map((fileId) => ctx.db.get(fileId)),
       );
 
-      // Step 3: Batch fetch storage URLs for images only
-      const urls = await Promise.all(
-        files.map(async (file) => {
-          if (!file) return null;
-          // Only fetch URL for images, others will use storageId or s3Key
-          if (file.media_type?.startsWith("image/")) {
-            // Handle both S3 and Convex storage
-            if (file.s3_key) {
-              // S3 file: Generate presigned URL
-              return await generateS3DownloadUrl(file.s3_key);
-            } else if (file.storage_id) {
-              // Convex file: Use Convex storage URL
-              return await ctx.storage.getUrl(file.storage_id);
-            }
-          }
-          return null;
-        }),
-      );
-
-      // Step 4: Build file details lookup map for O(1) access
+      // Step 3: Build file details lookup map for O(1) access
+      // DON'T generate URLs here - they expire and get cached with the query!
+      // Frontend will fetch URLs on-demand via actions (avoids stale cached URLs)
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
         if (file) {
-          const isImage = file.media_type?.startsWith("image/");
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,
             mediaType: file.media_type,
-            url: isImage ? urls[index] : undefined,
-            storageId: !isImage ? file.storage_id : undefined,
+            // url: removed - generate on-demand to avoid caching expired URLs
+            storageId: file.storage_id,
             s3Key: file.s3_key,
           });
         }

@@ -6,7 +6,9 @@ export interface FileMessagePart {
   fileId: string; // Database file ID for backend operations
   name: string;
   size: number;
-  url: string; // Always include URL for immediate rendering
+  // DON'T store URL in message parts - S3 URLs expire!
+  // URLs are generated on-demand via fileId
+  // url: string;
 }
 
 export interface UploadedFileState {

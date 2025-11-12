@@ -112,7 +112,7 @@ export async function processMessageFiles(
   const filesToProcess = new Map<
     string,
     {
-      url?: string;
+      url?: string; // Populated dynamically during processing, not from parts
       mediaType?: string;
       positions: Array<{ messageIndex: number; partIndex: number }>;
     }
@@ -134,15 +134,15 @@ export async function processMessageFiles(
           }
         }
 
+        // Files no longer have URLs in parts - they're fetched on-demand
+        // Process PDFs and images (URLs will be fetched when needed)
         const shouldProcess =
           part.mediaType === "application/pdf" ||
-          !part.url ||
-          !part.url.startsWith("http");
+          (part.mediaType && isSupportedImageMediaType(part.mediaType));
 
         if (shouldProcess) {
           if (!filesToProcess.has(part.fileId)) {
             filesToProcess.set(part.fileId, {
-              url: part.url,
               mediaType: part.mediaType,
               positions: [],
             });
