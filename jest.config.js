@@ -25,6 +25,8 @@ const customJestConfig = {
     "^shiki/langs$": "<rootDir>/__mocks__/shiki.ts",
     "^shiki$": "<rootDir>/__mocks__/shiki.ts",
     "^use-stick-to-bottom$": "<rootDir>/__mocks__/use-stick-to-bottom.ts",
+    "^@aws-sdk/client-s3$": "<rootDir>/__mocks__/@aws-sdk/client-s3.ts",
+    "^@aws-sdk/s3-request-presigner$": "<rootDir>/__mocks__/@aws-sdk/s3-request-presigner.ts",
   },
   transformIgnorePatterns: [
     "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop)/)",

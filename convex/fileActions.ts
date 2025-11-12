@@ -9,6 +9,7 @@ import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
 import { internal } from "./_generated/api";
+import { generateS3DownloadUrl } from "./s3Utils";
 import type {
   FileItemChunk,
   SupportedFileType,
@@ -404,7 +405,8 @@ const processDocxFile = async (
  */
 export const saveFile = action({
   args: {
-    storageId: v.id("_storage"),
+    storageId: v.optional(v.id("_storage")),
+    s3Key: v.optional(v.string()),
     name: v.string(),
     mediaType: v.string(),
     size: v.number(),
@@ -418,6 +420,13 @@ export const saveFile = action({
     tokens: v.number(),
   }),
   handler: async (ctx, args) => {
+    // Storage invariant validation: exactly one of storageId or s3Key must be provided
+    if (!args.storageId && !args.s3Key) {
+      throw new Error("Must provide either storageId or s3Key");
+    }
+    if (args.storageId && args.s3Key) {
+      throw new Error("Cannot provide both storageId and s3Key");
+    }
     let actingUserId: string;
     let entitlements: Array<string> = [];
 
@@ -487,7 +496,15 @@ export const saveFile = action({
     if (args.size > MAX_FILE_SIZE_BYTES) {
       // Clean up storage before throwing error
       try {
-        await ctx.storage.delete(args.storageId);
+        if (args.s3Key) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: args.s3Key },
+          );
+        } else if (args.storageId) {
+          await ctx.storage.delete(args.storageId);
+        }
       } catch (deleteError) {
         console.warn(
           `Failed to delete storage for oversized file "${args.name}":`,
@@ -499,7 +516,15 @@ export const saveFile = action({
       );
     }
 
-    const fileUrl = await ctx.storage.getUrl(args.storageId);
+    // Get file content from appropriate storage
+    let fileUrl: string | null;
+    if (args.s3Key) {
+      // Fetch from S3
+      fileUrl = await generateS3DownloadUrl(args.s3Key);
+    } else {
+      // Get from Convex storage
+      fileUrl = await ctx.storage.getUrl(args.storageId!);
+    }
 
     if (!fileUrl) {
       throw new Error(
@@ -550,7 +575,15 @@ export const saveFile = action({
         console.error(
           `Token limit exceeded for file "${args.name}". Deleting storage object.`,
         );
-        await ctx.storage.delete(args.storageId);
+        if (args.s3Key) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: args.s3Key },
+          );
+        } else if (args.storageId) {
+          await ctx.storage.delete(args.storageId);
+        }
         throw error; // Re-throw the token limit error (already includes file name)
       }
 
@@ -558,7 +591,15 @@ export const saveFile = action({
       console.error(
         `Unexpected error processing file "${args.name}". Deleting storage object.`,
       );
-      await ctx.storage.delete(args.storageId);
+      if (args.s3Key) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.s3Cleanup.deleteS3ObjectAction,
+          { s3Key: args.s3Key },
+        );
+      } else if (args.storageId) {
+        await ctx.storage.delete(args.storageId);
+      }
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
       throw new Error(`Failed to upload ${args.name}: ${errorMsg}`);
     }
@@ -566,6 +607,7 @@ export const saveFile = action({
     // Use internal mutation to save to database
     const fileId = (await ctx.runMutation(internal.fileStorage.saveFileToDb, {
       storageId: args.storageId,
+      s3Key: args.s3Key,
       userId: actingUserId,
       name: args.name,
       mediaType: args.mediaType,

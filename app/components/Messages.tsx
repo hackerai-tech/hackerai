@@ -22,6 +22,8 @@ import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
 import { useFeedback } from "../hooks/useFeedback";
+import { useImageUrlCache } from "../hooks/useImageUrlCache";
+import { ImageUrlCacheProvider } from "../contexts/ImageUrlCacheContext";
 import {
   extractMessageText,
   hasTextContent,
@@ -83,6 +85,9 @@ export const Messages = ({
   branchedFromChatId,
   branchedFromChatTitle,
 }: MessagesProps) => {
+  // Prefetch and cache image URLs for better performance
+  const { getCachedUrl } = useImageUrlCache(messages);
+
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
     return findLastAssistantMessageIndex(messages);
@@ -240,11 +245,12 @@ export const Messages = ({
   }, [handleScroll]);
 
   return (
-    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
-      <div
-        ref={contentRef}
-        className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
-      >
+    <ImageUrlCacheProvider getCachedUrl={getCachedUrl}>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
+        <div
+          ref={contentRef}
+          className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
+        >
         {/* Loading indicator at top when loading more messages */}
         {paginationStatus === "LoadingMore" && (
           <div className="flex justify-center py-2">
@@ -405,6 +411,8 @@ export const Messages = ({
                               undefined,
                             storageId:
                               savedFiles[savedFiles.length - 1].storageId,
+                            fileId: savedFiles[savedFiles.length - 1].fileId,
+                            s3Key: savedFiles[savedFiles.length - 1].s3Key,
                             name: savedFiles[savedFiles.length - 1].name,
                             filename: savedFiles[savedFiles.length - 1].name,
                             mediaType:
@@ -438,6 +446,8 @@ export const Messages = ({
                           part={{
                             url: file.url ?? undefined,
                             storageId: file.storageId,
+                            fileId: file.fileId,
+                            s3Key: file.s3Key,
                             name: file.name,
                             filename: file.name,
                             mediaType: file.mediaType,
@@ -531,15 +541,16 @@ export const Messages = ({
 
         {/* Error state */}
         {error && <MessageErrorState error={error} onRetry={onRetry} />}
-      </div>
+        </div>
 
-      {/* All Files Dialog */}
-      <AllFilesDialog
-        open={showAllFilesDialog}
-        onOpenChange={setShowAllFilesDialog}
-        files={dialogFiles}
-        chatTitle={chatTitle}
-      />
-    </div>
+        {/* All Files Dialog */}
+        <AllFilesDialog
+          open={showAllFilesDialog}
+          onOpenChange={setShowAllFilesDialog}
+          files={dialogFiles}
+          chatTitle={chatTitle}
+        />
+      </div>
+    </ImageUrlCacheProvider>
   );
 };

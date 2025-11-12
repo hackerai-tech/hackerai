@@ -513,7 +513,16 @@ export const deleteLastAssistantMessage = mutation({
             try {
               const file = await ctx.db.get(storageId);
               if (file) {
-                await ctx.storage.delete(file.storage_id);
+                // Delete from appropriate storage
+                if (file.s3_key) {
+                  await ctx.scheduler.runAfter(
+                    0,
+                    internal.s3Cleanup.deleteS3ObjectAction,
+                    { s3Key: file.s3_key },
+                  );
+                } else if (file.storage_id) {
+                  await ctx.storage.delete(file.storage_id);
+                }
                 await ctx.db.delete(file._id);
               }
             } catch (error) {
@@ -1009,7 +1018,16 @@ export const regenerateWithNewContent = mutation({
             try {
               const file = await ctx.db.get(fileId);
               if (file) {
-                await ctx.storage.delete(file.storage_id);
+                // Delete from appropriate storage
+                if (file.s3_key) {
+                  await ctx.scheduler.runAfter(
+                    0,
+                    internal.s3Cleanup.deleteS3ObjectAction,
+                    { s3Key: file.s3_key },
+                  );
+                } else if (file.storage_id) {
+                  await ctx.storage.delete(file.storage_id);
+                }
                 await ctx.db.delete(file._id);
               }
             } catch (error) {

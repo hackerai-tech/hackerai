@@ -1,3 +1,5 @@
+import { Id } from "@/convex/_generated/dataModel";
+
 export interface FileMessagePart {
   type: "file";
   mediaType: string;
@@ -20,11 +22,12 @@ export interface UploadedFileState {
 // File part interface for rendering components
 export interface FilePart {
   url?: string;
-  fileId?: string;
+  fileId?: Id<"files">; // Database file ID for fetching URLs via action
   name?: string;
   filename?: string;
   mediaType?: string;
-  storageId?: string; // Storage ID for on-demand URL fetching (non-image files)
+  storageId?: string; // Storage ID for on-demand URL fetching (Convex files)
+  s3Key?: string; // S3 key for on-demand URL fetching (S3 files)
 }
 
 // Props for FilePartRenderer component

@@ -29,6 +29,8 @@ export default defineSchema({
     ),
     branched_from_chat_id: v.optional(v.string()),
     latest_summary_id: v.optional(v.id("chat_summaries")),
+    share_id: v.optional(v.string()),
+    share_date: v.optional(v.number()),
     update_time: v.number(),
   })
     .index("by_chat_id", ["id"])
@@ -70,7 +72,10 @@ export default defineSchema({
     }),
 
   files: defineTable({
-    storage_id: v.id("_storage"),
+    // Legacy field for Convex storage (existing files)
+    storage_id: v.optional(v.id("_storage")),
+    // New field for S3 storage
+    s3_key: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),
@@ -80,7 +85,8 @@ export default defineSchema({
     is_attached: v.boolean(),
   })
     .index("by_user_id", ["user_id"])
-    .index("by_is_attached", ["is_attached"]),
+    .index("by_is_attached", ["is_attached"])
+    .index("by_s3_key", ["s3_key"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),

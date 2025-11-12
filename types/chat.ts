@@ -87,6 +87,7 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
     mediaType?: string;
     url?: string | null;
     storageId?: string;
+    s3Key?: string;
   }>;
   sourceMessageId?: string;
 };

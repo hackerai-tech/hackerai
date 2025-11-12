@@ -1,11 +1,13 @@
 import Image from "next/image";
-import React, { useState, memo, useMemo, useCallback } from "react";
-import { useConvex } from "convex/react";
+import React, { useState, memo, useMemo, useCallback, useEffect } from "react";
+import { useConvex, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
-import { AlertCircle, File, Download } from "lucide-react";
+import { AlertCircle, File, Download, Loader2 } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
+import { useImageUrlCacheContext } from "../contexts/ImageUrlCacheContext";
+import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
 
 const FilePartRendererComponent = ({
   part,
@@ -14,11 +16,91 @@ const FilePartRendererComponent = ({
   totalFileParts = 1,
 }: FilePartRendererProps) => {
   const convex = useConvex();
+  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const imageUrlCache = useImageUrlCacheContext();
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
     alt: string;
   } | null>(null);
   const [downloadingFile, setDownloadingFile] = useState(false);
+  const [fileUrl, setFileUrl] = useState<string | null>(null);
+  const [isLoadingUrl, setIsLoadingUrl] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+
+  // Fetch URL dynamically for S3 files or Convex files without pre-fetched URLs
+  useEffect(() => {
+    async function fetchUrl() {
+      // If we already have a URL directly, use it
+      if (part.url) {
+        setFileUrl(part.url);
+        return;
+      }
+
+      // If we have fileId (for S3 files), check cache first for images
+      if (part.fileId) {
+        // Check if this is an S3 image that might be cached
+        const isS3Image =
+          part.s3Key &&
+          part.mediaType &&
+          isSupportedImageMediaType(part.mediaType);
+
+        if (isS3Image && imageUrlCache) {
+          const cachedUrl = imageUrlCache.getCachedUrl(part.fileId);
+          if (cachedUrl) {
+            setFileUrl(cachedUrl);
+            return;
+          }
+        }
+
+        // Not in cache or not an image, fetch URL normally
+        setIsLoadingUrl(true);
+        setUrlError(null);
+        try {
+          const url = await getFileUrlAction({ fileId: part.fileId });
+          setFileUrl(url);
+        } catch (error) {
+          console.error("Failed to fetch file URL:", error);
+          setUrlError("Failed to load file");
+        } finally {
+          setIsLoadingUrl(false);
+        }
+        return;
+      }
+
+      // If we have storageId (for Convex files), fetch URL on-demand
+      if (part.storageId) {
+        setIsLoadingUrl(true);
+        setUrlError(null);
+        try {
+          const url = await convex.query(api.fileStorage.getFileDownloadUrl, {
+            storageId: part.storageId,
+          });
+          if (url) {
+            setFileUrl(url);
+          } else {
+            setUrlError("Failed to get download URL");
+          }
+        } catch (error) {
+          console.error("Failed to fetch download URL:", error);
+          setUrlError("Failed to load file");
+        } finally {
+          setIsLoadingUrl(false);
+        }
+        return;
+      }
+    }
+
+    fetchUrl();
+  }, [
+    part.url,
+    part.fileId,
+    part.storageId,
+    part.s3Key,
+    part.mediaType,
+    getFileUrlAction,
+    convex,
+    imageUrlCache,
+  ]);
 
   const handleDownload = useCallback(async (url: string, fileName: string) => {
     try {
@@ -46,32 +128,15 @@ const FilePartRendererComponent = ({
 
   const handleNonImageFileClick = useCallback(
     async (fileName: string) => {
-      // If we have URL directly, use it
-      if (part.url) {
-        await handleDownload(part.url, fileName);
+      // Use the fetched URL if available
+      if (fileUrl) {
+        await handleDownload(fileUrl, fileName);
         return;
       }
 
-      // If we have storageId, fetch URL on-demand
-      if (part.storageId) {
-        try {
-          const downloadUrl = await convex.query(
-            api.fileStorage.getFileDownloadUrl,
-            { storageId: part.storageId },
-          );
-
-          if (downloadUrl) {
-            await handleDownload(downloadUrl, fileName);
-          } else {
-            toast.error("Failed to get download URL");
-          }
-        } catch (error) {
-          console.error("Error fetching download URL:", error);
-          toast.error("Failed to download file");
-        }
-      }
+      toast.error("File URL not available");
     },
-    [part.url, part.storageId, convex, handleDownload],
+    [fileUrl, handleDownload],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
@@ -143,11 +208,35 @@ const FilePartRendererComponent = ({
   // Memoize ConvexFilePart to prevent unnecessary re-renders
   const ConvexFilePart = memo(
     ({ part, partId }: { part: FilePart; partId: string }) => {
-      // For images, we should have URL directly; for other files, we might have storageId
-      const actualUrl = part.url;
+      // Show loading state while fetching URL
+      if (isLoadingUrl) {
+        return (
+          <div className="p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background flex items-center justify-center gap-2">
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            <span className="text-sm text-muted-foreground">Loading...</span>
+          </div>
+        );
+      }
 
-      if (!actualUrl && !part.storageId) {
-        // Error state for files without URLs or storageId
+      // Show error state if URL fetch failed
+      if (urlError) {
+        return (
+          <FilePreviewCard
+            partId={partId}
+            icon={<AlertCircle className="h-6 w-6 text-red-500" />}
+            fileName={part.name || part.filename || "Unknown file"}
+            subtitle={urlError}
+            url={undefined}
+            storageId={undefined}
+          />
+        );
+      }
+
+      // Use the fetched URL or the URL from props
+      const actualUrl = fileUrl || part.url;
+
+      if (!actualUrl && !part.storageId && !part.fileId) {
+        // Error state for files without URLs or storage references
         return (
           <FilePreviewCard
             partId={partId}
@@ -241,7 +330,7 @@ const FilePartRendererComponent = ({
     const partId = `${messageId}-file-${partIndex}`;
 
     // Check if this is a file part with either URL, storageId, or fileId
-    if (part.url || part.storageId || part.fileId) {
+    if (part.url || part.storageId || part.fileId || fileUrl) {
       return <ConvexFilePart part={part} partId={partId} />;
     }
 
@@ -263,6 +352,9 @@ const FilePartRendererComponent = ({
     part.url,
     part.storageId,
     part.fileId,
+    fileUrl,
+    isLoadingUrl,
+    urlError,
     FilePreviewCard,
   ]);
 
@@ -294,6 +386,7 @@ export const FilePartRenderer = memo(
       prevProps.part.url === nextProps.part.url &&
       prevProps.part.storageId === nextProps.part.storageId &&
       prevProps.part.fileId === nextProps.part.fileId &&
+      prevProps.part.s3Key === nextProps.part.s3Key &&
       prevProps.part.name === nextProps.part.name &&
       prevProps.part.filename === nextProps.part.filename &&
       prevProps.part.mediaType === nextProps.part.mediaType
