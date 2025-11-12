@@ -166,7 +166,9 @@ export const getFileUrlsByFileIds = query({
 
     // Get URLs from storage using the storage IDs
     const urls = await Promise.all(
-      files.map((file) => (file ? ctx.storage.getUrl(file.storage_id) : null)),
+      files.map((file) =>
+        file && file.storage_id ? ctx.storage.getUrl(file.storage_id) : null,
+      ),
     );
 
     return urls;

@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
+import { generateS3DownloadUrl } from "./s3Utils";
 
 /**
  * Extract text content from message parts for search and display
@@ -233,6 +234,7 @@ export const getMessagesByChatId = query({
               mediaType: v.optional(v.string()),
               url: v.optional(v.union(v.string(), v.null())),
               storageId: v.optional(v.string()),
+              s3Key: v.optional(v.string()),
             }),
           ),
         ),
@@ -284,11 +286,18 @@ export const getMessagesByChatId = query({
 
       // Step 3: Batch fetch storage URLs for images only
       const urls = await Promise.all(
-        files.map((file) => {
+        files.map(async (file) => {
           if (!file) return null;
-          // Only fetch URL for images, others will use storageId
+          // Only fetch URL for images, others will use storageId or s3Key
           if (file.media_type?.startsWith("image/")) {
-            return ctx.storage.getUrl(file.storage_id);
+            // Handle both S3 and Convex storage
+            if (file.s3_key) {
+              // S3 file: Generate presigned URL
+              return await generateS3DownloadUrl(file.s3_key);
+            } else if (file.storage_id) {
+              // Convex file: Use Convex storage URL
+              return await ctx.storage.getUrl(file.storage_id);
+            }
           }
           return null;
         }),
@@ -305,6 +314,7 @@ export const getMessagesByChatId = query({
             mediaType: file.media_type,
             url: isImage ? urls[index] : undefined,
             storageId: !isImage ? file.storage_id : undefined,
+            s3Key: file.s3_key,
           });
         }
       });

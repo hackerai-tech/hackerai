@@ -287,12 +287,12 @@ export const Messages = ({
             status === "streaming" &&
             !messageHasTextContent;
 
-          // Get saved files for assistant messages (include files with url or storageId)
+          // Get saved files for assistant messages (include files with url, storageId, or s3Key)
           const savedFiles =
             !isUser &&
             (isLastAssistantMessage ? status !== "streaming" : true) &&
             message.fileDetails
-              ? message.fileDetails.filter((f) => f.url || f.storageId)
+              ? message.fileDetails.filter((f) => f.url || f.storageId || f.s3Key)
               : [];
 
           // Check if we should show branch indicator after this message
