@@ -3,7 +3,7 @@ import React, { useState, memo, useMemo, useCallback, useEffect } from "react";
 import { useConvex, useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
-import { AlertCircle, File, Download, Loader2 } from "lucide-react";
+import { AlertCircle, File, Download } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
@@ -24,7 +24,6 @@ const FilePartRendererComponent = ({
   } | null>(null);
   const [downloadingFile, setDownloadingFile] = useState(false);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
-  const [isLoadingUrl, setIsLoadingUrl] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
 
   // Fetch URL ONLY for images (inline display) - non-images are fetched lazily on click
@@ -54,7 +53,6 @@ const FilePartRendererComponent = ({
         }
 
         // Not in cache, fetch URL for image
-        setIsLoadingUrl(true);
         setUrlError(null);
         try {
           const url = await getFileUrlAction({ fileId: part.fileId });
@@ -66,15 +64,12 @@ const FilePartRendererComponent = ({
         } catch (error) {
           console.error("Failed to fetch file URL:", error);
           setUrlError("Failed to load file");
-        } finally {
-          setIsLoadingUrl(false);
         }
         return;
       }
 
       // If we have storageId (for Convex files), fetch URL on-demand for images
       if (part.storageId) {
-        setIsLoadingUrl(true);
         setUrlError(null);
         try {
           const url = await convex.query(api.fileStorage.getFileDownloadUrl, {
@@ -88,8 +83,6 @@ const FilePartRendererComponent = ({
         } catch (error) {
           console.error("Failed to fetch download URL:", error);
           setUrlError("Failed to load file");
-        } finally {
-          setIsLoadingUrl(false);
         }
         return;
       }
@@ -148,7 +141,6 @@ const FilePartRendererComponent = ({
       }
 
       // Fetch URL lazily on click
-      setIsLoadingUrl(true);
       try {
         let url: string | null = null;
 
@@ -176,8 +168,6 @@ const FilePartRendererComponent = ({
       } catch (error) {
         console.error("Failed to fetch download URL:", error);
         toast.error("Failed to fetch download URL");
-      } finally {
-        setIsLoadingUrl(false);
       }
     },
     [fileUrl, handleDownload, part.fileId, part.storageId, fileUrlCache, getFileUrlAction, convex],
@@ -254,16 +244,6 @@ const FilePartRendererComponent = ({
   // Memoize ConvexFilePart to prevent unnecessary re-renders
   const ConvexFilePart = memo(
     ({ part, partId }: { part: FilePart; partId: string }) => {
-      // Show loading state while fetching URL
-      if (isLoadingUrl) {
-        return (
-          <div className="p-2 w-full max-w-80 min-w-64 border rounded-lg bg-background flex items-center justify-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">Loading...</span>
-          </div>
-        );
-      }
-
       // Show error state if URL fetch failed
       if (urlError) {
         return (
@@ -404,7 +384,6 @@ const FilePartRendererComponent = ({
     part.storageId,
     part.fileId,
     fileUrl,
-    isLoadingUrl,
     urlError,
     FilePreviewCard,
   ]);
