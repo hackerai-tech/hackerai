@@ -29,11 +29,6 @@ const FilePartRendererComponent = ({
   // Fetch URL ONLY for images (inline display) - non-images are fetched lazily on click
   useEffect(() => {
     async function fetchUrl() {
-      // If we already have a URL directly, use it
-      if (part.url) {
-        setFileUrl(part.url);
-        return;
-      }
 
       // Only fetch URLs eagerly for images (they display inline)
       // Non-images will be fetched lazily when user clicks download button
@@ -65,6 +60,12 @@ const FilePartRendererComponent = ({
           console.error("Failed to fetch file URL:", error);
           setUrlError("Failed to load file");
         }
+        return;
+      }
+
+      // Fallback: if no fileId but we have part.url (Convex storage), use it
+      if (part.url) {
+        setFileUrl(part.url);
         return;
       }
 
