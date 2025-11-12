@@ -1,4 +1,4 @@
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import { describe, it, expect, jest, beforeEach, afterEach } from "@jest/globals";
 
 // Mock dependencies
 jest.mock("../_generated/server", () => ({
@@ -23,6 +23,10 @@ describe("userDeletion", () => {
     jest.spyOn(console, "log").mockImplementation(() => {});
     jest.spyOn(console, "error").mockImplementation(() => {});
     jest.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe("deleteAllUserData", () => {

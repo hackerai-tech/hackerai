@@ -145,6 +145,9 @@ const FilePartRendererComponent = ({
         }
       }
 
+      // Clear error state before attempting fetch (allows recovery from transient failures)
+      setUrlError(null);
+
       // Fetch URL lazily on click
       try {
         let url: string | null = null;
@@ -168,10 +171,12 @@ const FilePartRendererComponent = ({
           setFileUrl(url);
           await handleDownload(url, fileName);
         } else {
+          setUrlError("Failed to get download URL");
           toast.error("Failed to get download URL");
         }
       } catch (error) {
         console.error("Failed to fetch download URL:", error);
+        setUrlError("Failed to fetch download URL");
         toast.error("Failed to fetch download URL");
       }
     },

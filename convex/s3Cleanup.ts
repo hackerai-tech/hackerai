@@ -17,6 +17,7 @@ export const deleteS3ObjectAction = internalAction({
   args: {
     s3Key: v.string(),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
     try {
       await deleteS3Object(args.s3Key);
@@ -25,6 +26,7 @@ export const deleteS3ObjectAction = internalAction({
       console.error(`Failed to delete S3 object: ${args.s3Key}`, error);
       // Don't throw - we don't want to block other operations
     }
+    return null;
   },
 });
 
@@ -41,6 +43,7 @@ export const deleteS3ObjectsBatchAction = internalAction({
   args: {
     s3Keys: v.array(v.string()),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
     const results = await Promise.allSettled(
       args.s3Keys.map((key) => deleteS3Object(key))
@@ -50,5 +53,6 @@ export const deleteS3ObjectsBatchAction = internalAction({
     if (failed.length > 0) {
       console.error(`Failed to delete ${failed.length} S3 objects`);
     }
+    return null;
   },
 });

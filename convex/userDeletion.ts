@@ -110,7 +110,7 @@ export const deleteAllUserData = mutation({
               s3Keys.push(file.s3_key);
             }
             // Handle Convex storage files
-            else if (file.storage_id) {
+            if (file.storage_id) {
               try {
                 await ctx.storage.delete(file.storage_id);
               } catch (e) {

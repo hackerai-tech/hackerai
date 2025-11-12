@@ -286,6 +286,8 @@ export const getMessagesByChatId = query({
       // Step 3: Build file details lookup map for O(1) access
       // DON'T generate URLs here - they expire and get cached with the query!
       // Frontend will fetch URLs on-demand via actions (avoids stale cached URLs)
+      // V8-SAFE: This query does NOT call generateS3DownloadUrl or any Node.js built-ins.
+      // Only file metadata (fileId, name, mediaType, s3Key, storageId) is returned.
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
         if (file) {

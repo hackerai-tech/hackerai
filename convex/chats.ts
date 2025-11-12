@@ -534,7 +534,8 @@ export const deleteChat = mutation({
                       internal.s3Cleanup.deleteS3ObjectAction,
                       { s3Key: file.s3_key },
                     );
-                  } else if (file.storage_id) {
+                  }
+                  if (file.storage_id) {
                     await ctx.storage.delete(file.storage_id);
                   }
                   await ctx.db.delete(file._id);
@@ -700,7 +701,8 @@ export const deleteAllChats = mutation({
                         internal.s3Cleanup.deleteS3ObjectAction,
                         { s3Key: file.s3_key },
                       );
-                    } else if (file.storage_id) {
+                    }
+                    if (file.storage_id) {
                       await ctx.storage.delete(file.storage_id);
                     }
                     await ctx.db.delete(file._id);

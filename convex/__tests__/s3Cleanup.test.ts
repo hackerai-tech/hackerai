@@ -1,4 +1,4 @@
-import { describe, it, expect, jest, beforeEach } from "@jest/globals";
+import { describe, it, expect, jest, beforeEach, afterEach } from "@jest/globals";
 
 // Mock dependencies
 jest.mock("../s3Utils");
@@ -9,6 +9,7 @@ jest.mock("convex/values", () => ({
   v: {
     string: jest.fn(() => "string"),
     array: jest.fn(() => "array"),
+    null: jest.fn(() => "null"),
   },
 }));
 
@@ -18,6 +19,10 @@ describe("s3Cleanup", () => {
     // Clear console spies
     jest.spyOn(console, "log").mockImplementation(() => {});
     jest.spyOn(console, "error").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe("deleteS3ObjectAction", () => {
@@ -51,6 +56,7 @@ describe("s3Cleanup", () => {
         v: {
           string: jest.fn(() => "string"),
           array: jest.fn(() => "array"),
+          null: jest.fn(() => "null"),
         },
       }));
 
