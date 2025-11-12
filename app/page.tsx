@@ -87,6 +87,7 @@ export default function Page() {
   const { showPricing, handleClosePricing } = usePricingDialog(subscription);
 
   const { isMigrating, migrate } = usePentestgptMigration();
+
   const { initialSeats, initialPlan } = React.useMemo(() => {
     if (typeof window === "undefined") {
       return { initialSeats: 5, initialPlan: "monthly" as const };
@@ -108,7 +109,7 @@ export default function Page() {
       | "yearly";
 
     return { initialSeats: seats, initialPlan: plan };
-  }, [typeof window !== "undefined" ? window.location.search : ""]);
+  }, []); // Only compute once on mount - URL params don't change
 
   return (
     <>

@@ -70,7 +70,10 @@ export default defineSchema({
     }),
 
   files: defineTable({
-    storage_id: v.id("_storage"),
+    // Legacy field for Convex storage (existing files)
+    storage_id: v.optional(v.id("_storage")),
+    // New field for S3 storage
+    s3_key: v.optional(v.string()),
     user_id: v.string(),
     name: v.string(),
     media_type: v.string(),
@@ -80,7 +83,8 @@ export default defineSchema({
     is_attached: v.boolean(),
   })
     .index("by_user_id", ["user_id"])
-    .index("by_is_attached", ["is_attached"]),
+    .index("by_is_attached", ["is_attached"])
+    .index("by_s3_key", ["s3_key"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),

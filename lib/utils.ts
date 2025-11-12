@@ -50,7 +50,15 @@ export function convertToUIMessages(messages: MessageRecord[]): ChatMessage[] {
   return messages.map((message) => ({
     id: message.id,
     role: message.role,
-    parts: message.parts,
+    // Sanitize parts: remove any old URLs that may be stored in database
+    // URLs expire, so we always fetch fresh ones via fileId
+    parts: message.parts.map((part: any) => {
+      if (part.type === "file" && part.url) {
+        const { url, ...partWithoutUrl } = part;
+        return partWithoutUrl;
+      }
+      return part;
+    }),
     sourceMessageId: message.source_message_id,
     metadata: message.feedback
       ? { feedbackType: message.feedback.feedbackType }

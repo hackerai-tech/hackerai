@@ -166,7 +166,9 @@ export const getFileUrlsByFileIds = query({
 
     // Get URLs from storage using the storage IDs
     const urls = await Promise.all(
-      files.map((file) => (file ? ctx.storage.getUrl(file.storage_id) : null)),
+      files.map((file) =>
+        file && file.storage_id ? ctx.storage.getUrl(file.storage_id) : null,
+      ),
     );
 
     return urls;
@@ -174,7 +176,8 @@ export const getFileUrlsByFileIds = query({
 });
 
 /**
- * Delete file from storage by storage ID
+ * Delete file from storage by file ID
+ * Handles both S3 and Convex storage files
  */
 export const deleteFile = mutation({
   args: {
@@ -198,8 +201,22 @@ export const deleteFile = mutation({
       throw new Error("Unauthorized: File does not belong to user");
     }
 
-    await ctx.storage.delete(file.storage_id);
+    // Delete from appropriate storage
+    if (file.s3_key) {
+      // Schedule S3 deletion using the cleanup action
+      await ctx.scheduler.runAfter(0, internal.s3Cleanup.deleteS3ObjectAction, {
+        s3Key: file.s3_key,
+      });
+    } else if (file.storage_id) {
+      // Delete from Convex storage
+      await ctx.storage.delete(file.storage_id);
+    } else {
+      console.warn(
+        `File ${args.fileId} has neither s3_key nor storage_id, skipping storage deletion`,
+      );
+    }
 
+    // Delete database record
     await ctx.db.delete(args.fileId);
 
     return null;
@@ -283,6 +300,7 @@ export const getFileContentByFileIds = query({
 
 /**
  * Internal mutation: purge unattached files older than cutoff
+ * Handles both S3 and Convex storage files
  */
 export const purgeExpiredUnattachedFiles = internalMutation({
   args: {
@@ -304,15 +322,68 @@ export const purgeExpiredUnattachedFiles = internalMutation({
     let deletedCount = 0;
     for (const file of candidates) {
       try {
-        await ctx.storage.delete(file.storage_id);
+        // Delete from appropriate storage
+        if (file.s3_key) {
+          // Schedule S3 deletion using the cleanup action
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: file.s3_key },
+          );
+          console.log(`Scheduled S3 deletion for key: ${file.s3_key}`);
+        } else if (file.storage_id) {
+          // Delete from Convex storage
+          await ctx.storage.delete(file.storage_id);
+          console.log(`Deleted Convex storage file: ${file.storage_id}`);
+        } else {
+          console.warn(
+            `File ${file._id} has neither s3_key nor storage_id, skipping storage deletion`,
+          );
+        }
       } catch (e) {
-        console.warn("Failed to delete storage blob:", file.storage_id, e);
+        console.error(`Failed to delete storage for file ${file._id}:`, e);
       }
+
+      // Delete database record regardless of storage deletion result
       await ctx.db.delete(file._id);
       deletedCount++;
     }
 
+    console.log(
+      `Purged ${deletedCount} unattached files (cutoff: ${new Date(args.cutoffTimeMs).toISOString()})`,
+    );
+
     return { deletedCount };
+  },
+});
+
+/**
+ * Internal query to get a file by ID
+ * Used by actions that need to verify file existence and ownership
+ */
+export const getFileById = internalQuery({
+  args: {
+    fileId: v.id("files"),
+  },
+  returns: v.union(
+    v.object({
+      _id: v.id("files"),
+      storage_id: v.optional(v.id("_storage")),
+      s3_key: v.optional(v.string()),
+      user_id: v.string(),
+      name: v.string(),
+      media_type: v.string(),
+      size: v.number(),
+      file_token_size: v.number(),
+      content: v.optional(v.string()),
+      is_attached: v.boolean(),
+      _creationTime: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const file = await ctx.db.get(args.fileId);
+    return file;
   },
 });
 
@@ -322,7 +393,8 @@ export const purgeExpiredUnattachedFiles = internalMutation({
  */
 export const saveFileToDb = internalMutation({
   args: {
-    storageId: v.id("_storage"),
+    storageId: v.optional(v.id("_storage")),
+    s3Key: v.optional(v.string()),
     userId: v.string(),
     name: v.string(),
     mediaType: v.string(),
@@ -334,6 +406,7 @@ export const saveFileToDb = internalMutation({
   handler: async (ctx, args) => {
     const fileId = await ctx.db.insert("files", {
       storage_id: args.storageId,
+      s3_key: args.s3Key,
       user_id: args.userId,
       name: args.name,
       media_type: args.mediaType,

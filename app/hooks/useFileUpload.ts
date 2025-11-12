@@ -13,6 +13,8 @@ import { FileProcessingResult, FileSource } from "@/types/file";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 
+const USE_S3_STORAGE = process.env.NEXT_PUBLIC_USE_S3_STORAGE === "true";
+
 export const useFileUpload = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
@@ -32,6 +34,9 @@ export const useFileUpload = () => {
   const generateUploadUrl = useMutation(api.fileStorage.generateUploadUrl);
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
+  const generateS3UploadUrlAction = useAction(
+    api.s3Actions.generateS3UploadUrlAction,
+  );
 
   // Wrap Convex mutation to match `() => Promise<string>` signature expected by the util
   const generateUploadUrlFn = useCallback(
@@ -125,6 +130,85 @@ export const useFileUpload = () => {
     [],
   );
 
+  // Upload file to S3 storage
+  const uploadFileToS3 = useCallback(
+    async (file: File, uploadIndex: number) => {
+      try {
+        // Step 1: Generate presigned S3 upload URL
+        const { uploadUrl, s3Key } = await generateS3UploadUrlAction({
+          fileName: file.name,
+          contentType: file.type,
+        });
+
+        // Step 2: Upload file to S3 using presigned URL
+        const uploadResponse = await fetch(uploadUrl, {
+          method: "PUT",
+          body: file,
+          headers: { "Content-Type": file.type },
+        });
+
+        if (!uploadResponse.ok) {
+          throw new Error(
+            `Failed to upload file ${file.name}: ${uploadResponse.statusText}`,
+          );
+        }
+
+        // Step 3: Save file metadata to database with S3 key
+        const { url, fileId, tokens } = await saveFile({
+          s3Key,
+          name: file.name,
+          mediaType: file.type,
+          size: file.size,
+        });
+
+        // Check token limit before updating state
+        const currentTotal = getTotalTokens();
+        const newTotal = currentTotal + tokens;
+
+        if (newTotal > MAX_TOKENS_FILE) {
+          // Exceeds limit - delete file from storage and remove from upload list
+          deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
+          removeUploadedFile(uploadIndex);
+
+          toast.error(
+            `${file.name} exceeds token limit (${newTotal}/${MAX_TOKENS_FILE})`,
+          );
+        } else {
+          // Within limits - set success state with tokens
+          updateUploadedFile(uploadIndex, {
+            tokens,
+            uploading: false,
+            uploaded: true,
+            fileId,
+            url,
+          });
+        }
+      } catch (error) {
+        console.error("Failed to upload file:", error);
+
+        const errorMessage =
+          error instanceof Error ? error.message : "Upload failed";
+
+        // Update the upload state to error
+        updateUploadedFile(uploadIndex, {
+          uploading: false,
+          uploaded: false,
+          error: errorMessage,
+        });
+
+        toast.error(errorMessage);
+      }
+    },
+    [
+      generateS3UploadUrlAction,
+      saveFile,
+      getTotalTokens,
+      deleteFile,
+      removeUploadedFile,
+      updateUploadedFile,
+    ],
+  );
+
   // Upload file to Convex storage
   const uploadFileToConvex = useCallback(
     async (file: File, uploadIndex: number) => {
@@ -198,10 +282,15 @@ export const useFileUpload = () => {
         });
 
         // Start upload in background with correct index
-        uploadFileToConvex(file, startingIndex + index);
+        // Use S3 or Convex based on feature flag
+        if (USE_S3_STORAGE) {
+          uploadFileToS3(file, startingIndex + index);
+        } else {
+          uploadFileToConvex(file, startingIndex + index);
+        }
       });
     },
-    [uploadedFiles.length, addUploadedFile, uploadFileToConvex],
+    [uploadedFiles.length, addUploadedFile, uploadFileToS3, uploadFileToConvex],
   );
 
   // Unified file processing function

@@ -233,6 +233,7 @@ export const getMessagesByChatId = query({
               mediaType: v.optional(v.string()),
               url: v.optional(v.union(v.string(), v.null())),
               storageId: v.optional(v.string()),
+              s3Key: v.optional(v.string()),
             }),
           ),
         ),
@@ -282,29 +283,21 @@ export const getMessagesByChatId = query({
         fileIdArray.map((fileId) => ctx.db.get(fileId)),
       );
 
-      // Step 3: Batch fetch storage URLs for images only
-      const urls = await Promise.all(
-        files.map((file) => {
-          if (!file) return null;
-          // Only fetch URL for images, others will use storageId
-          if (file.media_type?.startsWith("image/")) {
-            return ctx.storage.getUrl(file.storage_id);
-          }
-          return null;
-        }),
-      );
-
-      // Step 4: Build file details lookup map for O(1) access
+      // Step 3: Build file details lookup map for O(1) access
+      // DON'T generate URLs here - they expire and get cached with the query!
+      // Frontend will fetch URLs on-demand via actions (avoids stale cached URLs)
+      // V8-SAFE: This query does NOT call generateS3DownloadUrl or any Node.js built-ins.
+      // Only file metadata (fileId, name, mediaType, s3Key, storageId) is returned.
       const fileDetailsMap = new Map();
       files.forEach((file, index) => {
         if (file) {
-          const isImage = file.media_type?.startsWith("image/");
           fileDetailsMap.set(fileIdArray[index], {
             fileId: fileIdArray[index],
             name: file.name,
             mediaType: file.media_type,
-            url: isImage ? urls[index] : undefined,
-            storageId: !isImage ? file.storage_id : undefined,
+            // url: removed - generate on-demand to avoid caching expired URLs
+            storageId: file.storage_id,
+            s3Key: file.s3_key,
           });
         }
       });
@@ -513,7 +506,16 @@ export const deleteLastAssistantMessage = mutation({
             try {
               const file = await ctx.db.get(storageId);
               if (file) {
-                await ctx.storage.delete(file.storage_id);
+                // Delete from appropriate storage
+                if (file.s3_key) {
+                  await ctx.scheduler.runAfter(
+                    0,
+                    internal.s3Cleanup.deleteS3ObjectAction,
+                    { s3Key: file.s3_key },
+                  );
+                } else if (file.storage_id) {
+                  await ctx.storage.delete(file.storage_id);
+                }
                 await ctx.db.delete(file._id);
               }
             } catch (error) {
@@ -1009,7 +1011,16 @@ export const regenerateWithNewContent = mutation({
             try {
               const file = await ctx.db.get(fileId);
               if (file) {
-                await ctx.storage.delete(file.storage_id);
+                // Delete from appropriate storage
+                if (file.s3_key) {
+                  await ctx.scheduler.runAfter(
+                    0,
+                    internal.s3Cleanup.deleteS3ObjectAction,
+                    { s3Key: file.s3_key },
+                  );
+                } else if (file.storage_id) {
+                  await ctx.storage.delete(file.storage_id);
+                }
                 await ctx.db.delete(file._id);
               }
             } catch (error) {

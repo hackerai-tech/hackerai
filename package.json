@@ -18,6 +18,7 @@
     "test:coverage": "jest --coverage",
     "test:ci": "jest --ci --coverage --maxWorkers=2",
     "prepare": "husky",
+    "s3:validate": "npx ts-node scripts/validate-s3-security.ts",
     "e2b:build:dev": "npx tsx e2b/build.dev.ts",
     "e2b:build:prod": "npx tsx e2b/build.prod.ts"
   },
@@ -25,6 +26,8 @@
     "@ai-sdk/openai": "^2.0.64",
     "@ai-sdk/react": "^2.0.90",
     "@ai-sdk/xai": "^2.0.31",
+    "@aws-sdk/client-s3": "^3.929.0",
+    "@aws-sdk/s3-request-presigner": "^3.929.0",
     "@convex-dev/workos": "^0.0.1",
     "@e2b/code-interpreter": "2.2.0",
     "@langchain/community": "^1.0.0",

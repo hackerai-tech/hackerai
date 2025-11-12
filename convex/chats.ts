@@ -1,6 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
+import { internal } from "./_generated/api";
 
 export function validateServiceKey(serviceKey?: string): void {
   if (serviceKey && serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -526,7 +527,17 @@ export const deleteChat = mutation({
               try {
                 const file = await ctx.db.get(storageId);
                 if (file) {
-                  await ctx.storage.delete(file.storage_id);
+                  // Delete from appropriate storage
+                  if (file.s3_key) {
+                    await ctx.scheduler.runAfter(
+                      0,
+                      internal.s3Cleanup.deleteS3ObjectAction,
+                      { s3Key: file.s3_key },
+                    );
+                  }
+                  if (file.storage_id) {
+                    await ctx.storage.delete(file.storage_id);
+                  }
                   await ctx.db.delete(file._id);
                 }
               } catch (error) {
@@ -683,7 +694,17 @@ export const deleteAllChats = mutation({
                 try {
                   const file = await ctx.db.get(storageId);
                   if (file) {
-                    await ctx.storage.delete(file.storage_id);
+                    // Delete from appropriate storage
+                    if (file.s3_key) {
+                      await ctx.scheduler.runAfter(
+                        0,
+                        internal.s3Cleanup.deleteS3ObjectAction,
+                        { s3Key: file.s3_key },
+                      );
+                    }
+                    if (file.storage_id) {
+                      await ctx.storage.delete(file.storage_id);
+                    }
                     await ctx.db.delete(file._id);
                   }
                 } catch (error) {

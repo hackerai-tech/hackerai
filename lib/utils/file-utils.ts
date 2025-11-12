@@ -42,15 +42,14 @@ export async function uploadSingleFileToConvex(
 }
 
 /**
- * Create file message part from uploaded file state (includes fileId and URL)
+ * Create file message part from uploaded file state (includes fileId only)
+ * URLs are generated on-demand to avoid expiration issues
  */
 export function createFileMessagePart(
   uploadedFile: UploadedFileState,
 ): FileMessagePart {
-  if (!uploadedFile.fileId || !uploadedFile.url) {
-    throw new Error(
-      "File must have both fileId and url to create message part",
-    );
+  if (!uploadedFile.fileId) {
+    throw new Error("File must have fileId to create message part");
   }
 
   return {
@@ -59,7 +58,7 @@ export function createFileMessagePart(
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,
-    url: uploadedFile.url,
+    // DON'T store URL - it expires! Generate on-demand via fileId
   };
 }
 
@@ -142,7 +141,7 @@ export const MAX_FILES_LIMIT = 5;
 export function createFileMessagePartFromUploadedFile(
   uploadedFile: UploadedFileState,
 ): FileMessagePart | null {
-  if (!uploadedFile.fileId || !uploadedFile.url || !uploadedFile.uploaded) {
+  if (!uploadedFile.fileId || !uploadedFile.uploaded) {
     return null;
   }
 
@@ -152,6 +151,7 @@ export function createFileMessagePartFromUploadedFile(
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,
-    url: uploadedFile.url,
+    // DON'T store URL - it expires! Generate on-demand via fileId
+    // url: uploadedFile.url,
   };
 }

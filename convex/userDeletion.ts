@@ -1,18 +1,22 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 
 /**
- * Delete all Convex data for the authenticated user in correct dependency order.
+ * Delete all data for the authenticated user in correct dependency order.
  *
  * Deletion order (respects foreign key constraints):
  * 1) Feedback records (referenced by messages)
  * 2) Messages (owned by user, reference chats and files)
  * 3) Chats (owned by user)
- * 4) Files + storage blobs (owned by user, may be referenced by messages)
+ * 4) Files + storage (owned by user, may be referenced by messages)
+ *    - S3 files: Batch deleted using scheduled action
+ *    - Convex storage files: Deleted directly
  * 5) Memories (owned by user)
  * 6) User customization (owned by user)
  *
  * Uses parallel queries and deletions for optimal performance.
+ * S3 cleanup is scheduled asynchronously and errors don't block user deletion.
  */
 export const deleteAllUserData = mutation({
   args: {},
@@ -94,24 +98,54 @@ export const deleteAllUserData = mutation({
       );
 
       // Step 4: Delete files and storage blobs (safe since messages no longer reference them)
+
+      // Collect S3 keys for batch deletion
+      const s3Keys: string[] = [];
+
       await Promise.all(
         files.map(async (file) => {
           try {
-            try {
-              await ctx.storage.delete(file.storage_id);
-            } catch (e) {
-              console.warn(
-                "Failed to delete storage blob:",
-                file.storage_id,
-                e,
-              );
+            // Handle S3 files
+            if (file.s3_key) {
+              s3Keys.push(file.s3_key);
             }
+            // Handle Convex storage files
+            if (file.storage_id) {
+              try {
+                await ctx.storage.delete(file.storage_id);
+              } catch (e) {
+                console.warn(
+                  "Failed to delete storage blob:",
+                  file.storage_id,
+                  e,
+                );
+              }
+            }
+
+            // Delete database record
             await ctx.db.delete(file._id);
           } catch (error) {
             console.error(`Failed to delete file record ${file._id}:`, error);
           }
         }),
       );
+
+      // Batch delete all S3 files for efficiency
+      if (s3Keys.length > 0) {
+        try {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectsBatchAction,
+            { s3Keys },
+          );
+          console.log(
+            `Scheduled deletion of ${s3Keys.length} S3 objects for user ${user.subject}`,
+          );
+        } catch (error) {
+          console.error("Failed to schedule S3 batch deletion:", error);
+          // Don't fail user deletion on S3 cleanup errors
+        }
+      }
 
       // Step 5: Delete memories (independent of other data)
       await Promise.all(
