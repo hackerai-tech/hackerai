@@ -118,16 +118,14 @@ async function getWorkOSClientId(): Promise<string> {
 function generateWorkOSCookiePassword(): string {
   console.log(`\n${chalk.bold("Generating WORKOS_COOKIE_PASSWORD")}`);
   console.log(
-    "Generated a secure 64-character random password for WorkOS cookie encryption",
+    "Generated a secure random password for WorkOS cookie encryption",
   );
-  return crypto.randomBytes(32).toString("hex");
+  return crypto.randomBytes(32).toString("base64");
 }
 
 function generateConvexServiceRoleKey(): string {
   console.log(`\n${chalk.bold("Generating CONVEX_SERVICE_ROLE_KEY")}`);
-  console.log(
-    "Generated a secure 64-character random key for Convex service role",
-  );
+  console.log("Generated a secure random key for Convex service role");
   return crypto.randomBytes(32).toString("base64");
 }
 
@@ -144,6 +142,28 @@ async function configureWorkOSDashboard() {
   );
 }
 
+async function configureConvexDashboard(
+  workOSClientId: string,
+  convexServiceRoleKey: string,
+) {
+  console.log(`\n${chalk.bold("Configure Convex Dashboard")}`);
+  console.log(
+    "Please add the following environment variables to your Convex Dashboard:",
+  );
+  console.log("\n1. Go to: https://dashboard.convex.dev/");
+  console.log("2. Select your project");
+  console.log("3. Go to Settings → Environment Variables");
+  console.log("4. Add the following variables:\n");
+  console.log(chalk.bold(`   WORKOS_CLIENT_ID=${workOSClientId}`));
+  console.log(chalk.bold(`   CONVEX_SERVICE_ROLE_KEY=${convexServiceRoleKey}`));
+  console.log(
+    "\nThese are required for authentication and service operations.",
+  );
+  return await question(
+    "Hit enter after you have added the environment variables to Convex Dashboard",
+  );
+}
+
 async function writeEnvFile(envVars: Record<string, string>) {
   console.log(`\n${chalk.bold("Writing environment variables to .env.local")}`);
 
@@ -156,7 +176,7 @@ WORKOS_API_KEY=${envVars.WORKOS_API_KEY}
 # ⚠️ IMPORTANT: Also add this to Convex Dashboard → Environment Variables
 WORKOS_CLIENT_ID=${envVars.WORKOS_CLIENT_ID}
 
-# Generated secure password (64 characters)
+# Generated secure random password
 WORKOS_COOKIE_PASSWORD=${envVars.WORKOS_COOKIE_PASSWORD}
 NEXT_PUBLIC_WORKOS_REDIRECT_URI=${envVars.NEXT_PUBLIC_WORKOS_REDIRECT_URI}
 
@@ -167,12 +187,9 @@ NEXT_PUBLIC_WORKOS_REDIRECT_URI=${envVars.NEXT_PUBLIC_WORKOS_REDIRECT_URI}
 CONVEX_DEPLOYMENT=${envVars.CONVEX_DEPLOYMENT || ""}
 NEXT_PUBLIC_CONVEX_URL=${envVars.NEXT_PUBLIC_CONVEX_URL || ""}
 
-# Generated secure key (replace with a 32+ char random secret)
+# Generated secure random key
 # ⚠️ IMPORTANT: Also add this to Convex Dashboard → Environment Variables
 CONVEX_SERVICE_ROLE_KEY=${envVars.CONVEX_SERVICE_ROLE_KEY}
-
-# ⚠️ IMPORTANT: You must manually add WORKOS_CLIENT_ID and CONVEX_SERVICE_ROLE_KEY to Convex Dashboard → Environment Variables
-# Visit: https://dashboard.convex.dev/
 
 # =============================================================================
 # S3 FILE STORAGE (Optional - Feature Flag Controlled)
@@ -350,15 +367,14 @@ async function main() {
     NEXT_PUBLIC_BASE_URL,
   });
 
+  // Configure Convex Dashboard
+  await configureConvexDashboard(WORKOS_CLIENT_ID, CONVEX_SERVICE_ROLE_KEY);
+
   console.log(`\n${chalk.green.bold("🎉 Setup completed successfully!")}`);
   console.log("\nNext steps:");
-  console.log(
-    `1. ${chalk.bold("Add WORKOS_CLIENT_ID and CONVEX_SERVICE_ROLE_KEY to Convex Dashboard")} → Environment Variables`,
-  );
-  console.log(`   Visit: ${chalk.bold("https://dashboard.convex.dev/")}`);
-  console.log(`2. Review your ${chalk.bold(".env.local")} file`);
-  console.log(`3. Start the development server: ${chalk.bold("pnpm run dev")}`);
-  console.log(`4. Visit: ${chalk.bold("http://localhost:3000")}`);
+  console.log(`1. Review your ${chalk.bold(".env.local")} file`);
+  console.log(`2. Start the development server: ${chalk.bold("pnpm run dev")}`);
+  console.log(`3. Visit: ${chalk.bold("http://localhost:3000")}`);
 }
 
 main().catch(console.error);
