@@ -22,8 +22,8 @@ import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
 import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
 import { useFeedback } from "../hooks/useFeedback";
-import { useImageUrlCache } from "../hooks/useImageUrlCache";
-import { ImageUrlCacheProvider } from "../contexts/ImageUrlCacheContext";
+import { useFileUrlCache } from "../hooks/useFileUrlCache";
+import { FileUrlCacheProvider } from "../contexts/FileUrlCacheContext";
 import {
   extractMessageText,
   hasTextContent,
@@ -86,7 +86,7 @@ export const Messages = ({
   branchedFromChatTitle,
 }: MessagesProps) => {
   // Prefetch and cache image URLs for better performance
-  const { getCachedUrl } = useImageUrlCache(messages);
+  const { getCachedUrl, setCachedUrl } = useFileUrlCache(messages);
 
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
@@ -245,7 +245,7 @@ export const Messages = ({
   }, [handleScroll]);
 
   return (
-    <ImageUrlCacheProvider getCachedUrl={getCachedUrl}>
+    <FileUrlCacheProvider getCachedUrl={getCachedUrl} setCachedUrl={setCachedUrl}>
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4">
         <div
           ref={contentRef}
@@ -551,6 +551,6 @@ export const Messages = ({
           chatTitle={chatTitle}
         />
       </div>
-    </ImageUrlCacheProvider>
+    </FileUrlCacheProvider>
   );
 };

@@ -13,15 +13,15 @@ interface CachedUrl {
 const URL_CACHE_EXPIRATION = 50 * 60 * 1000; // 50 minutes (S3 URLs expire in 1 hour)
 
 /**
- * Hook to manage prefetching and caching of image URLs
+ * Hook to manage prefetching and caching of file URLs
  *
  * Features:
- * - Batch prefetches URLs for all S3 image files in messages
+ * - Batch prefetches URLs for all S3 image files in messages (images need eager loading)
  * - Caches URLs with expiration handling (50 min, before 1 hour S3 expiry)
- * - Provides method to retrieve cached URLs
+ * - Provides methods to get and set cached URLs (for lazy-loaded non-image files)
  * - Automatically cleans up expired URLs
  */
-export function useImageUrlCache(messages: ChatMessage[]) {
+export function useFileUrlCache(messages: ChatMessage[]) {
   const getFileUrlsBatchAction = useAction(api.s3Actions.getFileUrlsBatchAction);
   const urlCacheRef = useRef<Map<string, CachedUrl>>(new Map());
   const prefetchedIdsRef = useRef<Set<string>>(new Set());
@@ -40,6 +40,13 @@ export function useImageUrlCache(messages: ChatMessage[]) {
     }
 
     return cached.url;
+  }, []);
+
+  // Set/update cached URL for a file (used for lazy-loaded non-image files)
+  const setCachedUrl = useCallback((fileId: string, url: string) => {
+    const now = Date.now();
+    urlCacheRef.current.set(fileId, { url, timestamp: now });
+    prefetchedIdsRef.current.add(fileId);
   }, []);
 
   // Prefetch image URLs for messages
@@ -141,5 +148,5 @@ export function useImageUrlCache(messages: ChatMessage[]) {
     return () => clearInterval(cleanupInterval);
   }, []);
 
-  return { getCachedUrl };
+  return { getCachedUrl, setCachedUrl };
 }
