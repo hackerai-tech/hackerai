@@ -28,6 +28,10 @@ const FilePartRendererComponent = ({
 
   // Fetch URL ONLY for images (inline display) - non-images are fetched lazily on click
   useEffect(() => {
+    // Reset state when file part identifiers change to avoid stale URLs
+    setFileUrl(null);
+    setUrlError(null);
+
     async function fetchUrl() {
 
       // Only fetch URLs eagerly for images (they display inline)
