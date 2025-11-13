@@ -51,6 +51,10 @@ import {
   createSummarizationCompletedPart,
   writeRateLimitWarning,
 } from "@/lib/utils/stream-writer-utils";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@/convex/_generated/api";
+
+const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 let globalStreamContext: any | null = null;
 
@@ -465,7 +469,43 @@ export const createChatHandler = () => {
                     });
                   }
                 } else {
-                  // For temporary chats, ensure temp stream row is removed backend-side
+                  // For temporary chats, send file metadata via stream before cleanup
+                  const newFileIds = getFileAccumulator().getAll();
+
+                  if (newFileIds && newFileIds.length > 0) {
+                    try {
+                      // Fetch file metadata in batch
+                      const fileMetadata = await convex.query(
+                        api.fileStorage.getFileMetadataByFileIds,
+                        {
+                          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+                          fileIds: newFileIds,
+                        },
+                      );
+
+                      // Filter out null entries and send via custom stream event
+                      const validFileMetadata = fileMetadata.filter(
+                        (f) => f !== null,
+                      );
+
+                      if (validFileMetadata.length > 0) {
+                        writer.write({
+                          type: "data-file-metadata",
+                          data: {
+                            messageId: assistantMessageId,
+                            fileDetails: validFileMetadata,
+                          },
+                        });
+                      }
+                    } catch (error) {
+                      console.error(
+                        "Failed to fetch file metadata for temporary chat:",
+                        error,
+                      );
+                    }
+                  }
+
+                  // Ensure temp stream row is removed backend-side
                   await deleteTempStreamForBackend({ chatId });
                 }
               },

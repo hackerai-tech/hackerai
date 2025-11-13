@@ -79,3 +79,13 @@ export interface ProcessFileOptions {
   prepend?: string; // For markdown files
   fileName?: string; // For file type detection (e.g., .doc vs .docx)
 }
+
+// File details type for assistant-generated files in messages
+export interface FileDetails {
+  fileId: Id<"files">;
+  name: string;
+  mediaType?: string;
+  url?: string | null;
+  storageId?: string;
+  s3Key?: string;
+}

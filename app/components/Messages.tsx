@@ -31,6 +31,7 @@ import {
   extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
+import type { FileDetails } from "@/types/file";
 import { toast } from "sonner";
 import { FileSearch } from "lucide-react";
 
@@ -54,6 +55,7 @@ interface MessagesProps {
   loadMore?: (numItems: number) => void;
   isSwitchingChats?: boolean;
   isTemporaryChat?: boolean;
+  tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
   uploadStatus?: { message: string; isUploading: boolean } | null;
   mode?: "ask" | "agent";
@@ -78,6 +80,7 @@ export const Messages = ({
   loadMore,
   isSwitchingChats,
   isTemporaryChat,
+  tempChatFileDetails,
   finishReason,
   uploadStatus,
   mode,
@@ -291,12 +294,19 @@ export const Messages = ({
               status === "streaming" &&
               !messageHasTextContent;
 
+            // Merge fileDetails from parallel state for temporary chats
+            const effectiveFileDetails = !isUser
+              ? message.fileDetails ||
+                tempChatFileDetails?.get(message.id) ||
+                undefined
+              : undefined;
+
             // Get saved files for assistant messages (include files with url, storageId, or s3Key)
             const savedFiles =
               !isUser &&
               (isLastAssistantMessage ? status !== "streaming" : true) &&
-              message.fileDetails
-                ? message.fileDetails.filter(
+              effectiveFileDetails
+                ? effectiveFileDetails.filter(
                     (f) => f.url || f.storageId || f.s3Key,
                   )
                 : [];

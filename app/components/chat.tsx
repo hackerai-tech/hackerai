@@ -5,6 +5,7 @@ import { DefaultChatTransport } from "ai";
 import { RefObject, useRef, useEffect, useState } from "react";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import { ComputerSidebar } from "./ComputerSidebar";
@@ -90,6 +91,11 @@ export const Chat = ({
 
   // Suppress transient "Chat Not Found" while server creates the chat
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
+
+  // Store file metadata separately from AI SDK message state (for temporary chats)
+  const [tempChatFileDetails, setTempChatFileDetails] = useState<
+    Map<string, FileDetails[]>
+  >(new Map());
 
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   // Use global state ref so streaming callback reads latest value
@@ -229,6 +235,19 @@ export const Chat = ({
             subscription: warningData.subscription,
           });
         }
+      }
+      if (dataPart.type === "data-file-metadata") {
+        const fileData = dataPart.data as {
+          messageId: string;
+          fileDetails: FileDetails[];
+        };
+
+        // Store in parallel state (outside AI SDK control)
+        setTempChatFileDetails((prev) => {
+          const next = new Map(prev);
+          next.set(fileData.messageId, fileData.fileDetails);
+          return next;
+        });
       }
     },
     onToolCall: ({ toolCall }) => {
@@ -629,6 +648,7 @@ export const Chat = ({
                     loadMore={paginatedMessages.loadMore}
                     isSwitchingChats={false}
                     isTemporaryChat={isTempChat}
+                    tempChatFileDetails={tempChatFileDetails}
                     finishReason={chatData?.finish_reason}
                     uploadStatus={uploadStatus}
                     mode={chatMode ?? (chatData as any)?.default_model_slug}
