@@ -6,12 +6,24 @@ jest.mock("../s3Utils");
 // Mock Convex server functions
 jest.mock("../_generated/server", () => ({
   action: jest.fn((config) => config),
+  query: jest.fn((config) => config),
+}));
+
+// Mock chats module to avoid circular dependency
+jest.mock("../chats", () => ({
+  validateServiceKey: jest.fn(),
 }));
 
 describe("s3Actions", () => {
   beforeEach(async () => {
     // Reset mocks
     jest.clearAllMocks();
+
+    // Reset validateServiceKey mock to no-op
+    const { validateServiceKey } = await import("../chats");
+    const mockValidateServiceKey =
+      validateServiceKey as jest.MockedFunction<typeof validateServiceKey>;
+    mockValidateServiceKey.mockImplementation(() => {});
 
     // Setup environment variables
     process.env.AWS_S3_ACCESS_KEY_ID = "test-access-key";
@@ -1065,6 +1077,326 @@ describe("s3Actions", () => {
       });
 
       expect(result).toEqual({});
+    });
+  });
+
+  describe("getFileUrlsByFileIdsAction", () => {
+    it("should generate URLs for multiple S3 files using service key", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const { validateServiceKey } = await import("../chats");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+      const mockValidateServiceKey =
+        validateServiceKey as jest.MockedFunction<typeof validateServiceKey>;
+
+      mockGenerateS3DownloadUrl
+        .mockResolvedValueOnce("https://s3.amazonaws.com/file1-url")
+        .mockResolvedValueOnce("https://s3.amazonaws.com/file2-url");
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockFile1Id = "file1" as any;
+      const mockFile2Id = "file2" as any;
+
+      const mockFile1 = {
+        _id: mockFile1Id,
+        s3_key: "users/user123/file1.pdf",
+        storage_id: undefined,
+        user_id: "user123",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockFile2 = {
+        _id: mockFile2Id,
+        s3_key: "users/user123/file2.pdf",
+        storage_id: undefined,
+        user_id: "user123",
+        name: "file2.pdf",
+        media_type: "application/pdf",
+        size: 2048,
+        file_token_size: 200,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest
+          .fn()
+          .mockResolvedValueOnce(mockFile1)
+          .mockResolvedValueOnce(mockFile2),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        fileIds: [mockFile1Id, mockFile2Id],
+      });
+
+      expect(mockValidateServiceKey).toHaveBeenCalledWith("test-service-key");
+      expect(result).toEqual([
+        "https://s3.amazonaws.com/file1-url",
+        "https://s3.amazonaws.com/file2-url",
+      ]);
+    });
+
+    it("should handle mixed S3 and Convex files", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+
+      mockGenerateS3DownloadUrl.mockResolvedValue(
+        "https://s3.amazonaws.com/file1-url",
+      );
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockFile1Id = "file1" as any;
+      const mockFile2Id = "file2" as any;
+
+      const mockFile1 = {
+        _id: mockFile1Id,
+        s3_key: "users/user123/file1.pdf",
+        storage_id: undefined,
+        user_id: "user123",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockFile2 = {
+        _id: mockFile2Id,
+        s3_key: undefined,
+        storage_id: "storage123" as any,
+        user_id: "user123",
+        name: "file2.pdf",
+        media_type: "application/pdf",
+        size: 2048,
+        file_token_size: 200,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest
+          .fn()
+          .mockResolvedValueOnce(mockFile1)
+          .mockResolvedValueOnce(mockFile2),
+        storage: {
+          getUrl: jest
+            .fn()
+            .mockResolvedValue("https://convex.cloud/storage/file2-url"),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        fileIds: [mockFile1Id, mockFile2Id],
+      });
+
+      expect(result).toEqual([
+        "https://s3.amazonaws.com/file1-url",
+        "https://convex.cloud/storage/file2-url",
+      ]);
+    });
+
+    it("should return null for files not found", async () => {
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockFile1Id = "file1" as any;
+      const mockFile2Id = "file2" as any;
+
+      const mockCtx = {
+        runQuery: jest
+          .fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        fileIds: [mockFile1Id, mockFile2Id],
+      });
+
+      expect(result).toEqual([null, null]);
+    });
+
+    it("should throw error for invalid service key", async () => {
+      const { validateServiceKey } = await import("../chats");
+      const mockValidateServiceKey =
+        validateServiceKey as jest.MockedFunction<typeof validateServiceKey>;
+
+      mockValidateServiceKey.mockImplementation(() => {
+        throw new Error("Invalid service key");
+      });
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      await expect(
+        getFileUrlsByFileIdsAction.handler({} as any, {
+          serviceKey: "invalid-key",
+          fileIds: ["file1" as any],
+        }),
+      ).rejects.toThrow("Invalid service key");
+    });
+
+    it("should throw error for batch size exceeding limit", async () => {
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockCtx = {} as any;
+
+      // Create array with 51 file IDs (exceeds limit of 50)
+      const fileIds = Array.from({ length: 51 }, (_, i) => `file${i}` as any);
+
+      await expect(
+        getFileUrlsByFileIdsAction.handler(mockCtx, {
+          serviceKey: "test-service-key",
+          fileIds,
+        }),
+      ).rejects.toThrow("Batch size exceeds limit");
+    });
+
+    it("should handle partial failures gracefully", async () => {
+      const { generateS3DownloadUrl } = await import("../s3Utils");
+      const mockGenerateS3DownloadUrl =
+        generateS3DownloadUrl as jest.MockedFunction<
+          typeof generateS3DownloadUrl
+        >;
+
+      mockGenerateS3DownloadUrl
+        .mockResolvedValueOnce("https://s3.amazonaws.com/file1-url")
+        .mockRejectedValueOnce(new Error("S3 service unavailable"))
+        .mockResolvedValueOnce("https://s3.amazonaws.com/file3-url");
+
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockFile1Id = "file1" as any;
+      const mockFile2Id = "file2" as any;
+      const mockFile3Id = "file3" as any;
+
+      const mockFile1 = {
+        _id: mockFile1Id,
+        s3_key: "users/user123/file1.pdf",
+        storage_id: undefined,
+        user_id: "user123",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockFile2 = {
+        _id: mockFile2Id,
+        s3_key: "users/user123/file2.pdf",
+        storage_id: undefined,
+        user_id: "user123",
+        name: "file2.pdf",
+        media_type: "application/pdf",
+        size: 2048,
+        file_token_size: 200,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockFile3 = {
+        _id: mockFile3Id,
+        s3_key: "users/user123/file3.pdf",
+        storage_id: undefined,
+        user_id: "user123",
+        name: "file3.pdf",
+        media_type: "application/pdf",
+        size: 3072,
+        file_token_size: 300,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest
+          .fn()
+          .mockResolvedValueOnce(mockFile1)
+          .mockResolvedValueOnce(mockFile2)
+          .mockResolvedValueOnce(mockFile3),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        fileIds: [mockFile1Id, mockFile2Id, mockFile3Id],
+      });
+
+      // File2 should return null due to error
+      expect(result).toEqual([
+        "https://s3.amazonaws.com/file1-url",
+        null,
+        "https://s3.amazonaws.com/file3-url",
+      ]);
+    });
+
+    it("should handle empty file IDs array", async () => {
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockCtx = {} as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        fileIds: [],
+      });
+
+      expect(result).toEqual([]);
+    });
+
+    it("should return null for files with no storage reference", async () => {
+      const { getFileUrlsByFileIdsAction } = await import("../s3Actions");
+
+      const mockFile1Id = "file1" as any;
+
+      const mockFile1 = {
+        _id: mockFile1Id,
+        s3_key: undefined,
+        storage_id: undefined,
+        user_id: "user123",
+        name: "file1.pdf",
+        media_type: "application/pdf",
+        size: 1024,
+        file_token_size: 100,
+        is_attached: true,
+        _creationTime: Date.now(),
+      };
+
+      const mockCtx = {
+        runQuery: jest.fn().mockResolvedValue(mockFile1),
+        storage: {
+          getUrl: jest.fn(),
+        },
+      } as any;
+
+      const result = await getFileUrlsByFileIdsAction.handler(mockCtx, {
+        serviceKey: "test-service-key",
+        fileIds: [mockFile1Id],
+      });
+
+      expect(result).toEqual([null]);
     });
   });
 });
