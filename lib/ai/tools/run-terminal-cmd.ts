@@ -265,12 +265,8 @@ If you are generating files:
                   baseDelayMs: 500,
                   jitterMs: 50,
                   isPermanentError,
-                  logger: (message, error) => {
-                    // Don't log if we've already resolved via abort handler
-                    if (!resolved) {
-                      console.warn(`[Terminal Command] ${message}`, error);
-                    }
-                  },
+                  // Retry logs are too noisy - they're expected behavior
+                  logger: () => {},
                 },
               )
             : retryWithBackoff(
@@ -280,12 +276,8 @@ If you are generating files:
                   baseDelayMs: 500,
                   jitterMs: 50,
                   isPermanentError,
-                  logger: (message, error) => {
-                    // Don't log if we've already resolved via abort handler
-                    if (!resolved) {
-                      console.warn(`[Terminal Command] ${message}`, error);
-                    }
-                  },
+                  // Retry logs are too noisy - they're expected behavior
+                  logger: () => {},
                 },
               );
 
