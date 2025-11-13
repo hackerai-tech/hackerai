@@ -4,6 +4,7 @@ import { action } from "./_generated/server";
 import { v } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
+import { validateServiceKey } from "./chats";
 
 /**
  * Generate presigned S3 upload URL for authenticated users
@@ -143,6 +144,70 @@ export const getFileUrlAction = action({
           (error instanceof Error ? error.message : "Unknown error"),
       );
     }
+  },
+});
+
+/**
+ * Backend batch URL generation for service key (server-side processing)
+ *
+ * This action:
+ * - Authenticates via service key (for backend use)
+ * - Accepts array of file IDs (max 50 files)
+ * - Generates URLs for both S3 and Convex storage files
+ * - Returns array of URLs (matching order of fileIds, null for missing files)
+ * - Handles partial failures gracefully
+ */
+export const getFileUrlsByFileIdsAction = action({
+  args: {
+    serviceKey: v.optional(v.string()),
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.array(v.union(v.string(), v.null())),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    // Enforce batch size limit
+    const MAX_BATCH_SIZE = 50;
+    if (args.fileIds.length > MAX_BATCH_SIZE) {
+      throw new Error(
+        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+      );
+    }
+
+    // Get file records and generate URLs
+    const urls = await Promise.all(
+      args.fileIds.map(async (fileId) => {
+        try {
+          // Get file record using internal query
+          const file = await ctx.runQuery(
+            (internal as any).fileStorage.getFileById,
+            { fileId },
+          );
+
+          // Return null if file not found
+          if (!file) {
+            return null;
+          }
+
+          // Generate URL based on storage type
+          if (file.s3_key) {
+            // S3 file: Generate presigned download URL
+            return await generateS3DownloadUrl(file.s3_key);
+          } else if (file.storage_id) {
+            // Convex file: Get Convex storage URL
+            return await ctx.storage.getUrl(file.storage_id);
+          }
+
+          return null;
+        } catch (error) {
+          console.error(`Failed to generate URL for file ${fileId}:`, error);
+          return null;
+        }
+      }),
+    );
+
+    return urls;
   },
 });
 
