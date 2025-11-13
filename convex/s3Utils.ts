@@ -7,7 +7,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v4 as uuidv4 } from "uuid";
 import {
-  S3_URL_LIFETIME_SECONDS,
+  getS3UrlLifetimeSeconds,
   S3_USER_FILES_PREFIX,
 } from "../lib/constants/s3";
 
@@ -75,7 +75,7 @@ export async function generateS3UploadUrl(
     });
 
     const uploadUrl = await getSignedUrl(s3Client, command, {
-      expiresIn: S3_URL_LIFETIME_SECONDS,
+      expiresIn: getS3UrlLifetimeSeconds(),
     });
 
     return { uploadUrl, s3Key };
@@ -102,7 +102,7 @@ export async function generateS3DownloadUrl(s3Key: string): Promise<string> {
     });
 
     const downloadUrl = await getSignedUrl(s3Client, command, {
-      expiresIn: S3_URL_LIFETIME_SECONDS,
+      expiresIn: getS3UrlLifetimeSeconds(),
     });
 
     return downloadUrl;
