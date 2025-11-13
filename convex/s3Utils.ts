@@ -47,11 +47,11 @@ export function getS3Client(): S3Client {
 export function generateS3Key(userId: string, fileName: string): string {
   const timestamp = Date.now();
   const uuid = uuidv4();
-  
+
   // Extract file extension, default to empty string if none
   const lastDotIndex = fileName.lastIndexOf(".");
   const extension = lastDotIndex !== -1 ? fileName.substring(lastDotIndex) : "";
-  
+
   return `${S3_USER_FILES_PREFIX}/${userId}/${timestamp}-${uuid}${extension}`;
 }
 
