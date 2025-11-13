@@ -247,6 +247,52 @@ export const getFileTokensByFileIds = query({
 });
 
 /**
+ * Get file metadata by file IDs using service key (for backend processing)
+ */
+export const getFileMetadataByFileIds = query({
+  args: {
+    serviceKey: v.optional(v.string()),
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.array(
+    v.union(
+      v.object({
+        fileId: v.id("files"),
+        name: v.string(),
+        mediaType: v.string(),
+        storageId: v.optional(v.id("_storage")),
+        s3Key: v.optional(v.string()),
+      }),
+      v.null(),
+    ),
+  ),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    validateServiceKey(args.serviceKey);
+
+    // Get file records from database
+    const files = await Promise.all(
+      args.fileIds.map((fileId) => ctx.db.get(fileId)),
+    );
+
+    // Return file metadata
+    return files.map((file, index) => {
+      if (!file) {
+        return null;
+      }
+
+      return {
+        fileId: args.fileIds[index],
+        name: file.name,
+        mediaType: file.media_type,
+        storageId: file.storage_id,
+        s3Key: file.s3_key,
+      };
+    });
+  },
+});
+
+/**
  * Get file content and metadata by file IDs using service key (for backend processing)
  * Only returns content for non-image, non-PDF files
  */
