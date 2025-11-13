@@ -185,18 +185,36 @@ export async function processMessageFiles(
   }
 
   try {
-    // Fetch URLs for files that don't have them
+    // Always fetch fresh URLs for all files that need processing
+    // Frontend strips URLs before sending, so we always generate fresh ones here
+    // This ensures URLs never expire and prevents 403 errors
+    // Uses action (not query) to support both S3 presigned URLs and Convex storage URLs
     const fileIdsNeedingUrls = Array.from(filesToProcess.entries())
       .filter(([_, file]) => !file.url)
       .map(([fileId]) => fileId);
 
-    const fetchedUrls =
-      fileIdsNeedingUrls.length > 0
-        ? await convex.query(api.fileStorage.getFileUrlsByFileIds, {
+    let fetchedUrls: string[] = [];
+    if (fileIdsNeedingUrls.length > 0) {
+      try {
+        // Use action that handles both S3 and Convex storage (requires service key)
+        const urlMap = await convex.action(
+          api.s3Actions.getFileUrlsBatchActionForBackend,
+          {
             serviceKey,
             fileIds: fileIdsNeedingUrls as Id<"files">[],
-          })
-        : [];
+          },
+        );
+
+        // Convert map to array in same order as fileIdsNeedingUrls
+        fetchedUrls = fileIdsNeedingUrls.map((fileId) => urlMap[fileId] || "");
+      } catch (error) {
+        console.error("Failed to fetch file URLs:", {
+          error: error instanceof Error ? error.message : String(error),
+          fileCount: fileIdsNeedingUrls.length,
+        });
+        // Continue with empty URLs - files without URLs will be skipped in processing
+      }
+    }
 
     // Map fetched URLs back to files
     fileIdsNeedingUrls.forEach((fileId, index) => {

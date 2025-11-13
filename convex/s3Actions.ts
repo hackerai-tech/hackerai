@@ -1,6 +1,6 @@
 "use node";
 
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
@@ -159,6 +159,87 @@ export const getFileUrlAction = action({
  * - Returns map of fileId -> url (only includes accessible files)
  * - Handles partial failures gracefully (skips failed files)
  */
+/**
+ * Action to get file URLs for backend processing (uses service key)
+ * 
+ * Handles both S3 and Convex storage files:
+ * - S3 files: Generates presigned download URLs (1-hour expiration)
+ * - Convex storage files: Gets Convex storage URLs
+ * 
+ * Public action but requires service key authentication for backend use.
+ * Frontend uses getFileUrlsBatchAction (user-authenticated) instead.
+ */
+export const getFileUrlsBatchActionForBackend = action({
+  args: {
+    serviceKey: v.optional(v.string()),
+    fileIds: v.array(v.id("files")),
+  },
+  returns: v.record(v.string(), v.string()),
+  handler: async (ctx, args) => {
+    // Verify service role key
+    const { validateServiceKey } = await import("./chats");
+    validateServiceKey(args.serviceKey);
+
+    // Enforce batch size limit
+    const MAX_BATCH_SIZE = 50;
+    if (args.fileIds.length > MAX_BATCH_SIZE) {
+      throw new Error(
+        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+      );
+    }
+
+    const urlMap: Record<string, string> = {};
+
+    // Process each file
+    for (const fileId of args.fileIds) {
+      try {
+        // Get file record using internal query
+        const file = await ctx.runQuery(internal.fileStorage.getFileById, {
+          fileId,
+        });
+
+        // Skip if file not found
+        if (!file) {
+          continue;
+        }
+
+        // Enforce storage invariant
+        const hasS3Key = !!file.s3_key;
+        const hasStorageId = !!file.storage_id;
+
+        // Skip if no storage reference
+        if (!hasS3Key && !hasStorageId) {
+          continue;
+        }
+
+        // Skip if both storage references (invalid state)
+        if (hasS3Key && hasStorageId) {
+          continue;
+        }
+
+        // Generate URL based on storage type
+        if (file.s3_key) {
+          // S3 file: Generate presigned download URL
+          const url = await generateS3DownloadUrl(file.s3_key);
+          urlMap[fileId] = url;
+        } else if (file.storage_id) {
+          // Convex file: Get Convex storage URL
+          const url = await ctx.storage.getUrl(file.storage_id);
+          if (url) {
+            urlMap[fileId] = url;
+          }
+        }
+      } catch (error) {
+        // Log error but continue processing other files (partial failure handling)
+        console.error(`Failed to generate URL for file ${fileId}:`, error);
+        continue;
+      }
+    }
+
+    return urlMap;
+  },
+});
+
 export const getFileUrlsBatchAction = action({
   args: {
     fileIds: v.array(v.id("files")),

@@ -196,11 +196,36 @@ export const Chat = ({
         const isTemporaryChat =
           !isExistingChatRef.current && temporaryChatsEnabledRef.current;
 
+        // Strip URLs from file parts before sending to backend
+        // This ensures backend always generates fresh URLs (prevents 403 errors from expired URLs)
+        // Backend will fetch URLs using fileId, supporting both S3 and Convex storage
+        const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
+          return msgs.map((msg) => {
+            if (!msg.parts || msg.parts.length === 0) return msg;
+            const strippedParts = msg.parts.map((part: any) => {
+              if (part.type === "file" && "url" in part) {
+                // Remove URL property, keeping all other file metadata
+                const { url, ...partWithoutUrl } = part;
+                return partWithoutUrl;
+              }
+              return part;
+            });
+            return {
+              ...msg,
+              parts: strippedParts,
+            };
+          });
+        };
+
+        const messagesToSend = isTemporaryChat
+          ? normalizedMessages
+          : lastMessage;
+        const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
+
         return {
           body: {
             chatId: id,
-            // For temporary chats, send full message history; otherwise, only the last message
-            messages: isTemporaryChat ? normalizedMessages : lastMessage,
+            messages: messagesWithoutUrls,
             ...body,
           },
         };
