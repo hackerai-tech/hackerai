@@ -98,8 +98,7 @@ describe("SharedMessages", () => {
       ];
 
       renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      const documentTexts = screen.getAllByText("Document");
-      expect(documentTexts).toHaveLength(2); // Title and subtitle
+      expect(screen.getByText("Uploaded a file")).toBeInTheDocument();
     });
 
     it("should show placeholder for uploaded image", () => {
@@ -113,8 +112,7 @@ describe("SharedMessages", () => {
       ];
 
       renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      const imageTexts = screen.getAllByText("Image");
-      expect(imageTexts).toHaveLength(2); // Title and subtitle
+      expect(screen.getByText("Uploaded an image")).toBeInTheDocument();
     });
   });
 
@@ -334,8 +332,7 @@ describe("SharedMessages", () => {
 
       renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
       expect(screen.getByText("Here's the document you requested")).toBeInTheDocument();
-      const documentTexts = screen.getAllByText("Document");
-      expect(documentTexts).toHaveLength(2); // Title and subtitle
+      expect(screen.getByText("Uploaded a file")).toBeInTheDocument();
     });
   });
 });
