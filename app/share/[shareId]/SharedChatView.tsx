@@ -10,8 +10,13 @@ import { ComputerSidebarBase } from "@/app/components/ComputerSidebar";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import Header from "@/app/components/Header";
+import ChatHeader from "@/app/components/ChatHeader";
 import { ChatInput } from "@/app/components/ChatInput";
 import Footer from "@/app/components/Footer";
+import MainSidebar from "@/app/components/Sidebar";
+import { SidebarProvider } from "@/components/ui/sidebar";
+import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useRouter } from "next/navigation";
 
 // Desktop wrapper component that connects ComputerSidebarBase to SharedChatContext
 function SharedComputerSidebarDesktop() {
@@ -63,6 +68,8 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isMobile = useIsMobile();
   const { user, loading: authLoading } = useAuth();
+  const router = useRouter();
+  const { chatSidebarOpen, setChatSidebarOpen, initializeNewChat, closeSidebar } = useGlobalState();
 
   // Validate shareId format before making database query
   const isValidUUID = UUID_REGEX.test(shareId);
@@ -76,11 +83,22 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
     chat ? { chatId: chat.id } : "skip"
   );
 
-  // Handlers for unlogged users
+  // Handlers for chat input
   const handleChatSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Redirect to login when unlogged user tries to chat
-    window.location.href = "/login";
+
+    if (!user) {
+      // Redirect to login when unlogged user tries to chat
+      window.location.href = "/login";
+    } else {
+      // For logged users, create a new chat and navigate to it
+      closeSidebar();
+      if (isMobile) {
+        setChatSidebarOpen(false);
+      }
+      initializeNewChat();
+      router.push("/");
+    }
   };
 
   const handleChatStop = () => {
@@ -141,88 +159,112 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
           </div>
         )}
 
-        {/* Main Content Area - matches normal chat structure */}
-        <div className="flex flex-1 min-w-0 relative overflow-hidden">
-          {/* Left side - Chat content */}
-          <div className="flex flex-col flex-1 min-w-0 h-full">
-            {/* Header for logged users or chat title */}
-            {(authLoading || user) && (
-              <header className="border-b bg-background z-10 flex-shrink-0">
-                <div className="container max-w-4xl mx-auto px-4 py-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h1 className="text-lg font-semibold truncate">{chat.title}</h1>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Shared conversation • Read-only
-                      </p>
-                    </div>
-                    <Link
-                      href="/"
-                      className="text-sm text-primary hover:underline"
-                    >
-                      Try HackerAI
-                    </Link>
-                  </div>
-                </div>
-              </header>
-            )}
+        <div className="flex w-full h-full overflow-hidden">
+          {/* Chat Sidebar - Desktop screens for logged users */}
+          {!isMobile && !authLoading && user && (
+            <div
+              className={`transition-all duration-300 ${
+                chatSidebarOpen ? "w-72 flex-shrink-0" : "w-12 flex-shrink-0"
+              }`}
+            >
+              <SidebarProvider
+                open={chatSidebarOpen}
+                onOpenChange={setChatSidebarOpen}
+                defaultOpen={false}
+              >
+                <MainSidebar />
+              </SidebarProvider>
+            </div>
+          )}
+
+          {/* Main Content Area - matches normal chat structure */}
+          <div className="flex flex-1 min-w-0 relative overflow-hidden">
+            {/* Left side - Chat content */}
+            <div className="flex flex-col flex-1 min-w-0 h-full">
+              {/* ChatHeader for logged users - no id means no share button */}
+              {(authLoading || user) && (
+                <ChatHeader
+                  hasMessages={true}
+                  hasActiveChat={true}
+                  chatTitle={chat.title}
+                  isExistingChat={true}
+                  isChatNotFound={false}
+                  chatSidebarOpen={chatSidebarOpen}
+                />
+              )}
 
             {/* Messages area - scrollable */}
             <div className="bg-background flex flex-col flex-1 relative min-h-0 overflow-hidden">
               <div className="flex-1 overflow-y-auto p-4">
-                <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20">
+                <div className={`mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 ${!authLoading && !user ? 'pb-48' : 'pb-20'}`}>
                   {messages === undefined ? (
                     <div className="flex justify-center py-8">
                       <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
                     </div>
                   ) : (
-                    <>
-                      <SharedMessages messages={messages} shareDate={chat.share_date} />
-
-                      {/* Shared conversation info */}
-                      <div className="text-center text-sm text-muted-foreground pt-6 border-t">
-                        <p>
-                          This is a shared conversation. Files and images are not included for
-                          privacy.
-                        </p>
-                        <p className="mt-2">
-                          Powered by{" "}
-                          <Link href="/" className="text-white hover:underline">
-                            HackerAI
-                          </Link>
-                        </p>
-                      </div>
-
-                      {/* ChatInput for unlogged users */}
-                      {!authLoading && !user && (
-                        <div className="pt-6">
-                          <ChatInput
-                            onSubmit={handleChatSubmit}
-                            onStop={handleChatStop}
-                            onSendNow={() => {}}
-                            status="ready"
-                            isNewChat={true}
-                            clearDraftOnSubmit={false}
-                          />
-                        </div>
-                      )}
-                    </>
+                    <SharedMessages messages={messages} shareDate={chat.share_date} />
                   )}
                 </div>
               </div>
             </div>
 
-            {/* Footer for unlogged users */}
-            {!authLoading && !user && <Footer />}
+            {/* ChatInput for logged users (bottom placement) */}
+            {(authLoading || user) && (
+              <ChatInput
+                onSubmit={handleChatSubmit}
+                onStop={handleChatStop}
+                onSendNow={() => {}}
+                status="ready"
+                hasMessages={true}
+                isNewChat={false}
+                clearDraftOnSubmit={false}
+              />
+            )}
+
+            {/* Floating ChatInput and Footer for unlogged users */}
+            {!authLoading && !user && (
+              <div className="fixed bottom-0 left-0 right-0 z-20 bg-background">
+                {/* Floating ChatInput */}
+                <div className="px-4 pt-4">
+                  <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px]">
+                    <ChatInput
+                      onSubmit={handleChatSubmit}
+                      onStop={handleChatStop}
+                      onSendNow={() => {}}
+                      status="ready"
+                      isNewChat={true}
+                      clearDraftOnSubmit={false}
+                    />
+                  </div>
+                </div>
+
+                {/* Footer below input */}
+                <Footer />
+              </div>
+            )}
           </div>
 
-          {/* Desktop Computer Sidebar - fixed, independent scrolling */}
-          {!isMobile && <SharedComputerSidebarDesktop />}
+            {/* Desktop Computer Sidebar - fixed, independent scrolling */}
+            {!isMobile && <SharedComputerSidebarDesktop />}
+          </div>
         </div>
-      </div>
 
-      {/* Mobile Computer Sidebar */}
-      {isMobile && <SharedComputerSidebarMobile />}
+        {/* Mobile Computer Sidebar */}
+        {isMobile && <SharedComputerSidebarMobile />}
+
+        {/* Overlay Chat Sidebar - Mobile screens for logged users */}
+        {isMobile && !authLoading && user && chatSidebarOpen && (
+          <div className="fixed inset-0 z-50 bg-background">
+            <SidebarProvider
+              open={chatSidebarOpen}
+              onOpenChange={setChatSidebarOpen}
+              defaultOpen={false}
+            >
+              <MainSidebar />
+            </SidebarProvider>
+          </div>
+        )}
+      </div>
     </SharedChatProvider>
   );
 }
