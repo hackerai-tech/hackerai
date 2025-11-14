@@ -1,8 +1,10 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -117,6 +119,15 @@ export const CustomizeHackerAIDialog = ({
       onOpenChange(false);
     } catch (error) {
       console.error("Failed to save customization:", error);
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to save customization"
+          : error instanceof Error
+            ? error.message
+            : "Failed to save customization";
+      toast.error(errorMessage);
     } finally {
       setIsSaving(false);
     }

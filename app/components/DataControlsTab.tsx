@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useMutation } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import {
   AlertDialog,
@@ -31,11 +32,21 @@ const DataControlsTab = () => {
     setIsDeletingChats(true);
     try {
       await deleteAllChats();
-    } catch (error) {
-      console.error("Failed to delete all chats:", error);
-    } finally {
       setShowDeleteChats(false);
       window.location.href = "/";
+    } catch (error) {
+      console.error("Failed to delete all chats:", error);
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to delete all chats"
+          : error instanceof Error
+            ? error.message
+            : "Failed to delete all chats";
+      toast.error(errorMessage);
+      setShowDeleteChats(false);
+    } finally {
       setIsDeletingChats(false);
     }
   };

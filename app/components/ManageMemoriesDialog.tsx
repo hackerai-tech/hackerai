@@ -1,9 +1,10 @@
 "use client";
 
-import React from "react";
 import { Trash2 } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
+import { toast } from "sonner";
 import {
   Dialog,
   DialogContent,
@@ -30,6 +31,15 @@ const ManageMemoriesDialog = ({
       await deleteMemory({ memoryId });
     } catch (error) {
       console.error("Failed to delete memory:", error);
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to delete memory"
+          : error instanceof Error
+            ? error.message
+            : "Failed to delete memory";
+      toast.error(errorMessage);
     }
   };
 
@@ -38,6 +48,15 @@ const ManageMemoriesDialog = ({
       await deleteAllMemories({});
     } catch (error) {
       console.error("Failed to delete all memories:", error);
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to delete all memories"
+          : error instanceof Error
+            ? error.message
+            : "Failed to delete all memories";
+      toast.error(errorMessage);
     }
   };
 

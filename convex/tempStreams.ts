@@ -1,5 +1,5 @@
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 
 export function validateServiceKey(serviceKey?: string): void {
   if (serviceKey && serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -52,7 +52,10 @@ export const cancelTempStreamFromClient = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     const row = await ctx.db
@@ -63,7 +66,10 @@ export const cancelTempStreamFromClient = mutation({
     if (!row) return null;
 
     if (row.user_id !== identity.subject) {
-      throw new Error("Unauthorized: Temp stream does not belong to user");
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Temp stream does not belong to user",
+      });
     }
 
     await ctx.db.delete(row._id);

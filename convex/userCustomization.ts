@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./chats";
 
 /**
@@ -18,28 +18,44 @@ export const saveUserCustomization = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     const MAX_CHAR_LIMIT = 1500;
 
     // Validate character limits
     if (args.nickname && args.nickname.length > MAX_CHAR_LIMIT) {
-      throw new Error(`Nickname exceeds ${MAX_CHAR_LIMIT} character limit`);
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: `Nickname exceeds ${MAX_CHAR_LIMIT} character limit`,
+      });
     }
     if (args.occupation && args.occupation.length > MAX_CHAR_LIMIT) {
-      throw new Error(`Occupation exceeds ${MAX_CHAR_LIMIT} character limit`);
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: `Occupation exceeds ${MAX_CHAR_LIMIT} character limit`,
+      });
     }
     if (args.personality && args.personality.length > MAX_CHAR_LIMIT) {
-      throw new Error(`Personality exceeds ${MAX_CHAR_LIMIT} character limit`);
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: `Personality exceeds ${MAX_CHAR_LIMIT} character limit`,
+      });
     }
     if (args.traits && args.traits.length > MAX_CHAR_LIMIT) {
-      throw new Error(`Traits exceeds ${MAX_CHAR_LIMIT} character limit`);
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: `Traits exceeds ${MAX_CHAR_LIMIT} character limit`,
+      });
     }
     if (args.additional_info && args.additional_info.length > MAX_CHAR_LIMIT) {
-      throw new Error(
-        `Additional info exceeds ${MAX_CHAR_LIMIT} character limit`,
-      );
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: `Additional info exceeds ${MAX_CHAR_LIMIT} character limit`,
+      });
     }
 
     try {
@@ -74,7 +90,14 @@ export const saveUserCustomization = mutation({
       return null;
     } catch (error) {
       console.error("Failed to save user customization:", error);
-      throw new Error("Failed to save customization");
+      // Re-throw ConvexError as-is, wrap others
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      throw new ConvexError({
+        code: "SAVE_FAILED",
+        message: "Failed to save customization",
+      });
     }
   },
 });

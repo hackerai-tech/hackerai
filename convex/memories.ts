@@ -1,5 +1,5 @@
 import { mutation, query } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./chats";
 
 /**
@@ -93,9 +93,10 @@ export const createMemoryForBackend = mutation({
       // Validate content length (max 2000 characters, roughly 500 tokens)
       const maxContentLength = 2000;
       if (args.content.length > maxContentLength) {
-        throw new Error(
-          `Memory content exceeds maximum length of ${maxContentLength} characters`,
-        );
+        throw new ConvexError({
+          code: "VALIDATION_ERROR",
+          message: `Memory content exceeds maximum length of ${maxContentLength} characters`,
+        });
       }
 
       // Check user's memory preference first
@@ -117,7 +118,10 @@ export const createMemoryForBackend = mutation({
         .first();
 
       if (existing) {
-        throw new Error(`Memory with ID ${args.memoryId} already exists`);
+        throw new ConvexError({
+          code: "DUPLICATE_MEMORY",
+          message: `Memory with ID ${args.memoryId} already exists`,
+        });
       }
 
       // Simple token estimation (about 4 characters per token)
@@ -134,9 +138,15 @@ export const createMemoryForBackend = mutation({
       return args.memoryId;
     } catch (error) {
       console.error("Failed to create memory:", error);
-      throw new Error(
-        error instanceof Error ? error.message : "Failed to create memory",
-      );
+      // Re-throw ConvexError as-is, wrap others
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      throw new ConvexError({
+        code: "MEMORY_CREATION_FAILED",
+        message:
+          error instanceof Error ? error.message : "Failed to create memory",
+      });
     }
   },
 });
@@ -159,9 +169,10 @@ export const updateMemoryForBackend = mutation({
       // Validate content length (max 2000 characters, roughly 500 tokens)
       const maxContentLength = 2000;
       if (args.content.length > maxContentLength) {
-        throw new Error(
-          `Memory content exceeds maximum length of ${maxContentLength} characters`,
-        );
+        throw new ConvexError({
+          code: "VALIDATION_ERROR",
+          message: `Memory content exceeds maximum length of ${maxContentLength} characters`,
+        });
       }
 
       // Find the existing memory
@@ -171,12 +182,18 @@ export const updateMemoryForBackend = mutation({
         .first();
 
       if (!existing) {
-        throw new Error(`Memory with ID ${args.memoryId} not found`);
+        throw new ConvexError({
+          code: "MEMORY_NOT_FOUND",
+          message: `Memory with ID ${args.memoryId} not found`,
+        });
       }
 
       // Verify ownership
       if (existing.user_id !== args.userId) {
-        throw new Error("Access denied: You don't own this memory");
+        throw new ConvexError({
+          code: "ACCESS_DENIED",
+          message: "Access denied: You don't own this memory",
+        });
       }
 
       // Simple token estimation (about 4 characters per token)
@@ -191,9 +208,15 @@ export const updateMemoryForBackend = mutation({
       return null;
     } catch (error) {
       console.error("Failed to update memory:", error);
-      throw new Error(
-        error instanceof Error ? error.message : "Failed to update memory",
-      );
+      // Re-throw ConvexError as-is, wrap others
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      throw new ConvexError({
+        code: "MEMORY_UPDATE_FAILED",
+        message:
+          error instanceof Error ? error.message : "Failed to update memory",
+      });
     }
   },
 });
@@ -226,16 +249,25 @@ export const deleteMemoryForBackend = mutation({
 
       // Verify ownership
       if (memory.user_id !== args.userId) {
-        throw new Error("Access denied: You don't own this memory");
+        throw new ConvexError({
+          code: "ACCESS_DENIED",
+          message: "Access denied: You don't own this memory",
+        });
       }
 
       await ctx.db.delete(memory._id);
       return null;
     } catch (error) {
       console.error("Failed to delete memory:", error);
-      throw new Error(
-        error instanceof Error ? error.message : "Failed to delete memory",
-      );
+      // Re-throw ConvexError as-is, wrap others
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      throw new ConvexError({
+        code: "MEMORY_DELETION_FAILED",
+        message:
+          error instanceof Error ? error.message : "Failed to delete memory",
+      });
     }
   },
 });
@@ -284,7 +316,10 @@ export const getUserMemories = query({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -321,7 +356,10 @@ export const deleteUserMemory = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -338,7 +376,10 @@ export const deleteUserMemory = mutation({
 
       // Verify ownership
       if (memory.user_id !== identity.subject) {
-        throw new Error("Access denied: You don't own this memory");
+        throw new ConvexError({
+          code: "ACCESS_DENIED",
+          message: "Access denied: You don't own this memory",
+        });
       }
 
       await ctx.db.delete(memory._id);
@@ -361,7 +402,10 @@ export const deleteAllUserMemories = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -381,9 +425,15 @@ export const deleteAllUserMemories = mutation({
       return null;
     } catch (error) {
       console.error("Failed to delete all memories:", error);
-      throw new Error(
-        error instanceof Error ? error.message : "Failed to delete memories",
-      );
+      // Re-throw ConvexError as-is, wrap others
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      throw new ConvexError({
+        code: "MEMORY_DELETION_FAILED",
+        message:
+          error instanceof Error ? error.message : "Failed to delete memories",
+      });
     }
   },
 });
