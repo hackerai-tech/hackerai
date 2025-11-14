@@ -5,7 +5,6 @@ import { v } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./chats";
-import { inferMimeTypeFromFileName } from "./constants";
 
 /**
  * Generate presigned S3 upload URL for authenticated users
@@ -39,15 +38,8 @@ export const generateS3UploadUrlAction = action({
       throw new Error("Invalid fileName: fileName cannot be empty");
     }
 
-    // Defensive: Infer contentType from file extension if not provided
-    // This provides defense in depth if client validation is bypassed
     if (!args.contentType || args.contentType.trim().length === 0) {
-      args.contentType = inferMimeTypeFromFileName(args.fileName);
-
-      // Log for monitoring (indicates client validation might be missing)
-      console.warn(
-        `ContentType was empty, inferred from extension for ${args.fileName}: ${args.contentType}`
-      );
+      throw new Error("Invalid contentType: contentType cannot be empty");
     }
 
     // Get user ID from identity

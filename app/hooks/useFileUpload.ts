@@ -8,7 +8,6 @@ import {
   validateFile,
   createFileMessagePartFromUploadedFile,
 } from "@/lib/utils/file-utils";
-import { getContentType } from "@/lib/adapters/file-api-adapter";
 import { MAX_TOKENS_FILE } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -135,20 +134,17 @@ export const useFileUpload = () => {
   const uploadFileToS3 = useCallback(
     async (file: File, uploadIndex: number) => {
       try {
-        // Get normalized content type (defensive boundary layer)
-        const contentType = getContentType(file);
-
         // Step 1: Generate presigned S3 upload URL
         const { uploadUrl, s3Key } = await generateS3UploadUrlAction({
           fileName: file.name,
-          contentType,
+          contentType: file.type,
         });
 
         // Step 2: Upload file to S3 using presigned URL
         const uploadResponse = await fetch(uploadUrl, {
           method: "PUT",
           body: file,
-          headers: { "Content-Type": contentType },
+          headers: { "Content-Type": file.type },
         });
 
         if (!uploadResponse.ok) {
@@ -161,7 +157,7 @@ export const useFileUpload = () => {
         const { url, fileId, tokens } = await saveFile({
           s3Key,
           name: file.name,
-          mediaType: contentType,
+          mediaType: file.type,
           size: file.size,
         });
 
