@@ -17,7 +17,6 @@ import {
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { ManageSharedChatsDialog } from "./ManageSharedChatsDialog";
-import { Share2 } from "lucide-react";
 
 const DataControlsTab = () => {
   const { subscription } = useGlobalState();
@@ -83,7 +82,6 @@ const DataControlsTab = () => {
             onClick={() => setShowManageSharedChats(true)}
             aria-label="Manage shared chats"
           >
-            <Share2 className="h-4 w-4 mr-2" />
             Manage
           </Button>
         </div>
