@@ -14,10 +14,20 @@ import {
   isSidebarFile,
   isSidebarTerminal,
   isSidebarPython,
+  type SidebarContent,
 } from "@/types/chat";
 
-export const ComputerSidebar: React.FC = () => {
-  const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
+interface ComputerSidebarProps {
+  sidebarOpen: boolean;
+  sidebarContent: SidebarContent | null;
+  closeSidebar: () => void;
+}
+
+export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
+  sidebarOpen,
+  sidebarContent,
+  closeSidebar,
+}) => {
   const [isWrapped, setIsWrapped] = useState(true);
 
   if (!sidebarOpen || !sidebarContent) {
@@ -320,5 +330,18 @@ export const ComputerSidebar: React.FC = () => {
         </div>
       </div>
     </div>
+  );
+};
+
+// Wrapper for normal chats using GlobalState
+export const ComputerSidebar: React.FC = () => {
+  const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
+
+  return (
+    <ComputerSidebarBase
+      sidebarOpen={sidebarOpen}
+      sidebarContent={sidebarContent}
+      closeSidebar={closeSidebar}
+    />
   );
 };
