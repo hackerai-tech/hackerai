@@ -4,7 +4,7 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./chats";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
@@ -21,7 +21,10 @@ export const getFileDownloadUrl = query({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -34,7 +37,10 @@ export const getFileDownloadUrl = query({
       const file = userFiles.find((f) => f.storage_id === args.storageId);
 
       if (!file) {
-        throw new Error("File not found");
+        throw new ConvexError({
+          code: "FILE_NOT_FOUND",
+          message: "File not found",
+        });
       }
 
       // Generate and return signed URL
@@ -107,7 +113,10 @@ export const generateUploadUrl = mutation({
     if (args.serviceKey) {
       validateServiceKey(args.serviceKey);
       if (!args.userId) {
-        throw new Error("userId is required when using serviceKey");
+        throw new ConvexError({
+          code: "MISSING_USER_ID",
+          message: "userId is required when using serviceKey",
+        });
       }
       actingUserId = args.userId;
       entitlements = ["ultra-plan"]; // Max limit for service flows
@@ -115,7 +124,10 @@ export const generateUploadUrl = mutation({
       // User-authenticated flow
       const user = await ctx.auth.getUserIdentity();
       if (!user) {
-        throw new Error("Unauthorized: User not authenticated");
+        throw new ConvexError({
+          code: "UNAUTHORIZED",
+          message: "Unauthorized: User not authenticated",
+        });
       }
       actingUserId = user.subject;
       entitlements = Array.isArray(user.entitlements)
@@ -128,7 +140,10 @@ export const generateUploadUrl = mutation({
     // Check file limit
     const fileLimit = getFileLimit(entitlements);
     if (fileLimit === 0) {
-      throw new Error("Paid plan required for file uploads");
+      throw new ConvexError({
+        code: "PAID_PLAN_REQUIRED",
+        message: "Paid plan required for file uploads",
+      });
     }
 
     const currentFileCount = await ctx.runQuery(
@@ -137,9 +152,10 @@ export const generateUploadUrl = mutation({
     );
 
     if (currentFileCount >= fileLimit) {
-      throw new Error(
-        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
-      );
+      throw new ConvexError({
+        code: "FILE_LIMIT_EXCEEDED",
+        message: `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
+      });
     }
 
     return await ctx.storage.generateUploadUrl();
@@ -188,17 +204,26 @@ export const deleteFile = mutation({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     const file = await ctx.db.get(args.fileId);
 
     if (!file) {
-      throw new Error("File not found");
+      throw new ConvexError({
+        code: "FILE_NOT_FOUND",
+        message: "File not found",
+      });
     }
 
     if (file.user_id !== user.subject) {
-      throw new Error("Unauthorized: File does not belong to user");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: File does not belong to user",
+      });
     }
 
     // Delete from appropriate storage
@@ -394,10 +419,6 @@ export const purgeExpiredUnattachedFiles = internalMutation({
       await ctx.db.delete(file._id);
       deletedCount++;
     }
-
-    console.log(
-      `Purged ${deletedCount} unattached files (cutoff: ${new Date(args.cutoffTimeMs).toISOString()})`,
-    );
 
     return { deletedCount };
   },

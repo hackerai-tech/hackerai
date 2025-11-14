@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { useMutation, useAction } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
@@ -190,8 +191,17 @@ export const useFileUpload = () => {
       } catch (error) {
         console.error("Failed to upload file:", error);
 
-        const errorMessage =
-          error instanceof Error ? error.message : "Upload failed";
+        // Extract error message from ConvexError or regular Error
+        const errorMessage = (() => {
+          if (error instanceof ConvexError) {
+            const errorData = error.data as { message?: string };
+            return errorData?.message || error.message || "Upload failed";
+          }
+          if (error instanceof Error) {
+            return error.message;
+          }
+          return "Upload failed";
+        })();
 
         // Update the upload state to error
         updateUploadedFile(uploadIndex, {

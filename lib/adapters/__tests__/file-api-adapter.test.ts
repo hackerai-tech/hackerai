@@ -17,7 +17,9 @@ describe("File API Adapter", () => {
 
   describe("getContentType", () => {
     it("should return browser-provided MIME type when available", () => {
-      const file = new File(["content"], "test.pdf", { type: "application/pdf" });
+      const file = new File(["content"], "test.pdf", {
+        type: "application/pdf",
+      });
       expect(getContentType(file)).toBe("application/pdf");
     });
 
@@ -64,7 +66,9 @@ describe("File API Adapter", () => {
     });
 
     it("should normalize file with valid MIME type and clear inference flag", () => {
-      const file = new File(["content"], "test.pdf", { type: "application/pdf" });
+      const file = new File(["content"], "test.pdf", {
+        type: "application/pdf",
+      });
       const result = normalizeFile(file, "upload");
 
       expect(result.metadata.contentType).toBe("application/pdf");
@@ -111,7 +115,9 @@ describe("File API Adapter", () => {
     });
 
     it("should reject non-image files", () => {
-      const file = new File(["content"], "doc.pdf", { type: "application/pdf" });
+      const file = new File(["content"], "doc.pdf", {
+        type: "application/pdf",
+      });
       expect(isImage(file)).toBe(false);
     });
 
@@ -124,7 +130,9 @@ describe("File API Adapter", () => {
   describe("FileApiAdapter statistics", () => {
     it("should track total files processed", () => {
       const file1 = new File(["content"], "test.md", { type: "" });
-      const file2 = new File(["content"], "test.pdf", { type: "application/pdf" });
+      const file2 = new File(["content"], "test.pdf", {
+        type: "application/pdf",
+      });
 
       adapter.normalizeFile(file1);
       adapter.normalizeFile(file2);
@@ -136,7 +144,9 @@ describe("File API Adapter", () => {
     it("should track content type inference count", () => {
       const file1 = new File(["content"], "test.md", { type: "" });
       const file2 = new File(["content"], "test.csv", { type: "" });
-      const file3 = new File(["content"], "test.pdf", { type: "application/pdf" });
+      const file3 = new File(["content"], "test.pdf", {
+        type: "application/pdf",
+      });
 
       adapter.normalizeFile(file1);
       adapter.normalizeFile(file2);
@@ -187,7 +197,9 @@ describe("File API Adapter", () => {
 
     it("should prefer browser MIME type over extension when both available", () => {
       // File has .txt extension but browser detected it as markdown
-      const file = new File(["# Header"], "README.txt", { type: "text/markdown" });
+      const file = new File(["# Header"], "README.txt", {
+        type: "text/markdown",
+      });
       const contentType = getContentType(file);
 
       expect(contentType).toBe("text/markdown");
@@ -207,7 +219,11 @@ describe("File API Adapter", () => {
       { extension: "jpeg", expectedType: "image/jpeg" },
       { extension: "gif", expectedType: "image/gif" },
       { extension: "webp", expectedType: "image/webp" },
-      { extension: "docx", expectedType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" },
+      {
+        extension: "docx",
+        expectedType:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      },
     ];
 
     testCases.forEach(({ extension, expectedType }) => {

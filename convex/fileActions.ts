@@ -1,7 +1,7 @@
 "use node";
 
 import { action } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { countTokens } from "gpt-tokenizer";
 import { getDocument } from "pdfjs-serverless";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
@@ -39,9 +39,10 @@ const validateTokenLimit = (
   }
   const totalTokens = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
   if (totalTokens > MAX_TOKENS_FILE) {
-    throw new Error(
-      `File "${fileName}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${totalTokens}`,
-    );
+    throw new ConvexError({
+      code: "FILE_TOKEN_LIMIT_EXCEEDED",
+      message: `File "${fileName}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${totalTokens}`,
+    });
   }
 };
 
@@ -205,12 +206,20 @@ const processFileAuto = async (
     validateTokenLimit(chunks, fileName || "unknown", skipTokenValidation);
     return chunks;
   } catch (error) {
-    // Check if this is a token limit error - re-throw immediately without fallback
+    // Check if this is a ConvexError (including token limit errors) - re-throw as-is
+    if (error instanceof ConvexError) {
+      throw error;
+    }
+
+    // Check if this is a token limit error (legacy Error format) - convert to ConvexError
     if (
       error instanceof Error &&
       error.message.includes("exceeds the maximum token limit")
     ) {
-      throw error;
+      throw new ConvexError({
+        code: "FILE_TOKEN_LIMIT_EXCEEDED",
+        message: error.message,
+      });
     }
 
     // If processing fails, try simple text decoding as fallback
@@ -235,9 +244,10 @@ const processFileAuto = async (
 
         // Check token limit for fallback processing
         if (!skipTokenValidation && fallbackTokens > MAX_TOKENS_FILE) {
-          throw new Error(
-            `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${fallbackTokens}`,
-          );
+          throw new ConvexError({
+            code: "FILE_TOKEN_LIMIT_EXCEEDED",
+            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${fallbackTokens}`,
+          });
         }
 
         return [
@@ -247,12 +257,20 @@ const processFileAuto = async (
           },
         ];
       } catch (textError) {
-        // Check if this is a token limit error
+        // Check if this is a ConvexError (including token limit errors) - re-throw as-is
+        if (textError instanceof ConvexError) {
+          throw textError;
+        }
+
+        // Check if this is a token limit error (legacy Error format) - convert to ConvexError
         if (
           textError instanceof Error &&
           textError.message.includes("exceeds the maximum token limit")
         ) {
-          throw textError; // Re-throw token limit errors
+          throw new ConvexError({
+            code: "FILE_TOKEN_LIMIT_EXCEEDED",
+            message: textError.message,
+          });
         }
         console.warn(`Failed to decode file as text: ${textError}`);
         return [
@@ -422,10 +440,16 @@ export const saveFile = action({
   handler: async (ctx, args) => {
     // Storage invariant validation: exactly one of storageId or s3Key must be provided
     if (!args.storageId && !args.s3Key) {
-      throw new Error("Must provide either storageId or s3Key");
+      throw new ConvexError({
+        code: "INVALID_STORAGE_ARGS",
+        message: "Must provide either storageId or s3Key",
+      });
     }
     if (args.storageId && args.s3Key) {
-      throw new Error("Cannot provide both storageId and s3Key");
+      throw new ConvexError({
+        code: "INVALID_STORAGE_ARGS",
+        message: "Cannot provide both storageId and s3Key",
+      });
     }
     let actingUserId: string;
     let entitlements: Array<string> = [];
@@ -434,7 +458,10 @@ export const saveFile = action({
     if (args.serviceKey) {
       validateServiceKey(args.serviceKey);
       if (!args.userId) {
-        throw new Error("userId is required when using serviceKey");
+        throw new ConvexError({
+          code: "MISSING_USER_ID",
+          message: "userId is required when using serviceKey",
+        });
       }
       actingUserId = args.userId;
       entitlements = ["ultra-plan"]; // Max limit for service flows
@@ -442,7 +469,10 @@ export const saveFile = action({
       // User-authenticated flow
       const user = await ctx.auth.getUserIdentity();
       if (!user) {
-        throw new Error("Unauthorized: User not authenticated");
+        throw new ConvexError({
+          code: "UNAUTHORIZED",
+          message: "Unauthorized: User not authenticated",
+        });
       }
       actingUserId = user.subject;
       entitlements = Array.isArray(user.entitlements)
@@ -453,9 +483,11 @@ export const saveFile = action({
 
       // Security: Only backend (service key) flows can skip token validation
       if (args.skipTokenValidation) {
-        throw new Error(
-          "skipTokenValidation is only allowed for backend service flows",
-        );
+        throw new ConvexError({
+          code: "INVALID_REQUEST",
+          message:
+            "skipTokenValidation is only allowed for backend service flows",
+        });
       }
     }
 
@@ -478,7 +510,10 @@ export const saveFile = action({
     }
 
     if (fileLimit === 0) {
-      throw new Error("Paid plan required for file uploads");
+      throw new ConvexError({
+        code: "PAID_PLAN_REQUIRED",
+        message: "Paid plan required for file uploads",
+      });
     }
 
     const currentFileCount = await ctx.runQuery(
@@ -487,9 +522,10 @@ export const saveFile = action({
     );
 
     if (currentFileCount >= fileLimit) {
-      throw new Error(
-        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
-      );
+      throw new ConvexError({
+        code: "FILE_LIMIT_EXCEEDED",
+        message: `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
+      });
     }
 
     // Enforce file size limit (20 MB) regardless of skipTokenValidation
@@ -511,9 +547,10 @@ export const saveFile = action({
           deleteError,
         );
       }
-      throw new Error(
-        `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
-      );
+      throw new ConvexError({
+        code: "FILE_SIZE_EXCEEDED",
+        message: `File "${args.name}" exceeds the maximum file size limit of 20 MB. Current size: ${(args.size / (1024 * 1024)).toFixed(2)} MB`,
+      });
     }
 
     // Get file content from appropriate storage
@@ -527,15 +564,19 @@ export const saveFile = action({
     }
 
     if (!fileUrl) {
-      throw new Error(
-        `Failed to upload ${args.name}: File not found in storage`,
-      );
+      throw new ConvexError({
+        code: "FILE_NOT_FOUND",
+        message: `Failed to upload ${args.name}: File not found in storage`,
+      });
     }
 
     const response = await fetch(fileUrl);
 
     if (!response.ok) {
-      throw new Error(`Failed to upload ${args.name}: ${response.statusText}`);
+      throw new ConvexError({
+        code: "FILE_FETCH_FAILED",
+        message: `Failed to upload ${args.name}: ${response.statusText}`,
+      });
     }
 
     const file = await response.blob();
@@ -567,7 +608,25 @@ export const saveFile = action({
         fileContent = chunks.map((chunk) => chunk.content).join("\n\n");
       }
     } catch (error) {
-      // Check if this is a token limit error - if so, delete storage and re-throw
+      // Check if this is a ConvexError (including token limit errors) - re-throw as-is
+      if (error instanceof ConvexError) {
+        // Delete storage before re-throwing
+        console.error(
+          `Error processing file "${args.name}". Deleting storage object.`,
+        );
+        if (args.s3Key) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: args.s3Key },
+          );
+        } else if (args.storageId) {
+          await ctx.storage.delete(args.storageId);
+        }
+        throw error; // Re-throw ConvexError as-is
+      }
+
+      // Check if this is a token limit error (legacy Error format)
       if (
         error instanceof Error &&
         error.message.includes("exceeds the maximum token limit")
@@ -584,7 +643,11 @@ export const saveFile = action({
         } else if (args.storageId) {
           await ctx.storage.delete(args.storageId);
         }
-        throw error; // Re-throw the token limit error (already includes file name)
+        // Convert to ConvexError for consistent error handling
+        throw new ConvexError({
+          code: "FILE_TOKEN_LIMIT_EXCEEDED",
+          message: error.message,
+        });
       }
 
       // For any other unexpected errors, delete storage and wrap with file name
@@ -601,7 +664,10 @@ export const saveFile = action({
         await ctx.storage.delete(args.storageId);
       }
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
-      throw new Error(`Failed to upload ${args.name}: ${errorMsg}`);
+      throw new ConvexError({
+        code: "FILE_PROCESSING_FAILED",
+        message: `Failed to upload ${args.name}: ${errorMsg}`,
+      });
     }
 
     // Use internal mutation to save to database

@@ -20,6 +20,14 @@ jest.mock("convex/values", () => ({
     array: jest.fn(() => "array"),
     boolean: jest.fn(() => "boolean"),
   },
+  ConvexError: class ConvexError extends Error {
+    data: any;
+    constructor(data: any) {
+      super(typeof data === "string" ? data : data.message);
+      this.data = data;
+      this.name = "ConvexError";
+    }
+  },
 }));
 jest.mock("../chats", () => ({
   validateServiceKey: jest.fn(),

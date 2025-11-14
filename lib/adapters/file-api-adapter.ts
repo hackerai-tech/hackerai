@@ -77,7 +77,7 @@ export class FileApiAdapter {
    */
   normalizeFile(
     file: File,
-    source: FileSource = "unknown"
+    source: FileSource = "unknown",
   ): FileNormalizationResult {
     this.stats.totalFilesProcessed++;
 
@@ -92,7 +92,7 @@ export class FileApiAdapter {
       this.stats.contentTypeInferredCount++;
 
       warnings.push(
-        `Browser did not provide MIME type for "${file.name}" (source: ${source}), inferred as "${contentType}"`
+        `Browser did not provide MIME type for "${file.name}" (source: ${source}), inferred as "${contentType}"`,
       );
     }
 
@@ -132,7 +132,7 @@ export class FileApiAdapter {
    */
   normalizeFiles(
     files: File[],
-    source: FileSource = "unknown"
+    source: FileSource = "unknown",
   ): FileNormalizationResult[] {
     return files.map((file) => this.normalizeFile(file, source));
   }
@@ -215,7 +215,7 @@ export const fileAdapter = new FileApiAdapter();
  */
 export function normalizeFile(
   file: File,
-  source?: FileSource
+  source?: FileSource,
 ): FileNormalizationResult {
   return fileAdapter.normalizeFile(file, source);
 }
@@ -225,7 +225,7 @@ export function normalizeFile(
  */
 export function normalizeFiles(
   files: File[],
-  source?: FileSource
+  source?: FileSource,
 ): FileNormalizationResult[] {
   return fileAdapter.normalizeFiles(files, source);
 }

@@ -6,7 +6,10 @@ import { UIMessage } from "ai";
 import type { ChatMode } from "@/types";
 import type { FileMessagePart } from "@/types/file";
 import { Id } from "@/convex/_generated/dataModel";
-import { isSupportedImageMediaType, isSupportedFileMediaType } from "./file-utils";
+import {
+  isSupportedImageMediaType,
+  isSupportedFileMediaType,
+} from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages } from "./file-token-utils";
@@ -21,7 +24,8 @@ function isFilePart(part: any): part is FileMessagePart {
 function containsPdfAttachments(messages: UIMessage[]): boolean {
   return messages.some((message: any) =>
     (message.parts || []).some(
-      (part: any) => isFilePart(part) && isSupportedFileMediaType(part.mediaType),
+      (part: any) =>
+        isFilePart(part) && isSupportedFileMediaType(part.mediaType),
     ),
   );
 }

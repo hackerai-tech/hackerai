@@ -1,6 +1,9 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect } from "@jest/globals";
-import { isSupportedFileMediaType, isSupportedImageMediaType } from "../file-utils";
+import {
+  isSupportedFileMediaType,
+  isSupportedImageMediaType,
+} from "../file-utils";
 
 describe("File Media Type Utilities", () => {
   describe("isSupportedFileMediaType", () => {

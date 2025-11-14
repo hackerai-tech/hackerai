@@ -21,8 +21,9 @@ describe("s3Actions", () => {
 
     // Reset validateServiceKey mock to no-op
     const { validateServiceKey } = await import("../chats");
-    const mockValidateServiceKey =
-      validateServiceKey as jest.MockedFunction<typeof validateServiceKey>;
+    const mockValidateServiceKey = validateServiceKey as jest.MockedFunction<
+      typeof validateServiceKey
+    >;
     mockValidateServiceKey.mockImplementation(() => {});
 
     // Setup environment variables
@@ -139,7 +140,9 @@ describe("s3Actions", () => {
 
       // Should log warning when inference is used
       expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining("ContentType was empty, inferred from extension")
+        expect.stringContaining(
+          "ContentType was empty, inferred from extension",
+        ),
       );
 
       consoleWarnSpy.mockRestore();
@@ -1101,8 +1104,9 @@ describe("s3Actions", () => {
         generateS3DownloadUrl as jest.MockedFunction<
           typeof generateS3DownloadUrl
         >;
-      const mockValidateServiceKey =
-        validateServiceKey as jest.MockedFunction<typeof validateServiceKey>;
+      const mockValidateServiceKey = validateServiceKey as jest.MockedFunction<
+        typeof validateServiceKey
+      >;
 
       mockGenerateS3DownloadUrl
         .mockResolvedValueOnce("https://s3.amazonaws.com/file1-url")
@@ -1252,8 +1256,9 @@ describe("s3Actions", () => {
 
     it("should throw error for invalid service key", async () => {
       const { validateServiceKey } = await import("../chats");
-      const mockValidateServiceKey =
-        validateServiceKey as jest.MockedFunction<typeof validateServiceKey>;
+      const mockValidateServiceKey = validateServiceKey as jest.MockedFunction<
+        typeof validateServiceKey
+      >;
 
       mockValidateServiceKey.mockImplementation(() => {
         throw new Error("Invalid service key");

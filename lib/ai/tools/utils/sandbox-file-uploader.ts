@@ -1,6 +1,7 @@
 import "server-only";
 
 import { ConvexHttpClient } from "convex/browser";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
 import type { Sandbox } from "@e2b/code-interpreter";
@@ -21,6 +22,21 @@ function getConvexClient(): ConvexHttpClient {
     convexClient = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
   }
   return convexClient;
+}
+
+/**
+ * Extract error message from ConvexError or regular Error
+ * Ensures user-friendly error messages are properly displayed
+ */
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof ConvexError) {
+    const errorData = error.data as { message?: string };
+    return errorData?.message || error.message || "An error occurred";
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return "An unexpected error occurred";
 }
 
 export async function uploadSandboxFileToConvex(args: {
@@ -80,17 +96,22 @@ export async function uploadSandboxFileToConvex(args: {
       );
     }
 
-    const saved = await convex.action(api.fileActions.saveFile, {
-      s3Key,
-      name,
-      mediaType,
-      size: blob.size,
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      skipTokenValidation: args.skipTokenValidation,
-    });
+    try {
+      const saved = await convex.action(api.fileActions.saveFile, {
+        s3Key,
+        name,
+        mediaType,
+        size: blob.size,
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        skipTokenValidation: args.skipTokenValidation,
+      });
 
-    return saved as UploadedFileInfo;
+      return saved as UploadedFileInfo;
+    } catch (error) {
+      // Re-throw with properly extracted error message
+      throw new Error(extractErrorMessage(error));
+    }
   } else {
     // Convex upload path (existing)
     const postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
@@ -112,17 +133,22 @@ export async function uploadSandboxFileToConvex(args: {
 
     const { storageId } = (await uploadRes.json()) as { storageId: string };
 
-    const saved = await convex.action(api.fileActions.saveFile, {
-      storageId: storageId as Id<"_storage">,
-      name,
-      mediaType,
-      size: blob.size,
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      skipTokenValidation: args.skipTokenValidation,
-    });
+    try {
+      const saved = await convex.action(api.fileActions.saveFile, {
+        storageId: storageId as Id<"_storage">,
+        name,
+        mediaType,
+        size: blob.size,
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        skipTokenValidation: args.skipTokenValidation,
+      });
 
-    return saved as UploadedFileInfo;
+      return saved as UploadedFileInfo;
+    } catch (error) {
+      // Re-throw with properly extracted error message
+      throw new Error(extractErrorMessage(error));
+    }
   }
 }
 
@@ -174,17 +200,22 @@ export async function uploadBase64ToConvex(args: {
       );
     }
 
-    const saved = await convex.action(api.fileActions.saveFile, {
-      s3Key,
-      name: fileName,
-      mediaType,
-      size: blob.size,
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      skipTokenValidation: args.skipTokenValidation,
-    });
+    try {
+      const saved = await convex.action(api.fileActions.saveFile, {
+        s3Key,
+        name: fileName,
+        mediaType,
+        size: blob.size,
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        skipTokenValidation: args.skipTokenValidation,
+      });
 
-    return saved as UploadedFileInfo;
+      return saved as UploadedFileInfo;
+    } catch (error) {
+      // Re-throw with properly extracted error message
+      throw new Error(extractErrorMessage(error));
+    }
   } else {
     // Convex upload path (existing)
     const postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
@@ -206,16 +237,21 @@ export async function uploadBase64ToConvex(args: {
 
     const { storageId } = (await uploadRes.json()) as { storageId: string };
 
-    const saved = await convex.action(api.fileActions.saveFile, {
-      storageId: storageId as Id<"_storage">,
-      name: fileName,
-      mediaType,
-      size: blob.size,
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-      skipTokenValidation: args.skipTokenValidation,
-    });
+    try {
+      const saved = await convex.action(api.fileActions.saveFile, {
+        storageId: storageId as Id<"_storage">,
+        name: fileName,
+        mediaType,
+        size: blob.size,
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        skipTokenValidation: args.skipTokenValidation,
+      });
 
-    return saved as UploadedFileInfo;
+      return saved as UploadedFileInfo;
+    } catch (error) {
+      // Re-throw with properly extracted error message
+      throw new Error(extractErrorMessage(error));
+    }
   }
 }
