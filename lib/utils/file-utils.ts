@@ -150,6 +150,21 @@ export function isSupportedImageMediaType(mediaType: string): boolean {
 }
 
 /**
+ * Check if media type is a supported file format that can be directly processed by AI
+ * Supports: PDF and text files (CSV, Markdown, TXT)
+ */
+export function isSupportedFileMediaType(mediaType: string): boolean {
+  const supportedTypes = [
+    "application/pdf",
+    "text/csv",
+    "text/markdown",
+    "text/plain",
+    "text/html",
+  ];
+  return supportedTypes.includes(mediaType.toLowerCase());
+}
+
+/**
  * Maximum number of files allowed to be uploaded at once
  */
 export const MAX_FILES_LIMIT = 5;
