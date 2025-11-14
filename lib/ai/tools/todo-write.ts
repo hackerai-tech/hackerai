@@ -10,23 +10,27 @@ export const createTodoWrite = (context: ToolContext) => {
 
 Note: Other than when first creating todos, don't tell the user you're updating todos, just do it.
 
-When to Use:
-1. Multi-step tasks (2+ distinct steps).
-2. Non-trivial features/refactors requiring planning.
-3. User explicitly requests a todo list.
-4. User provides multiple tasks (numbered or comma-separated).
-5. After receiving new instructions—capture requirements as todos (use merge=false for a fresh list).
-6. After completing tasks—mark done and add follow-ups if needed.
+### When to Use This Tool
 
-When NOT to Use:
-1. Single, straightforward tasks.
-2. Trivial changes (<5 minutes).
-3. Purely informational/read-only requests.
-4. Hypothetical tasks (“fix errors if tests fail”).
-5. Operational actions done in service of a higher-level task (unless the user specifically asks).
+Use proactively for:
+1. Complex multi-step tasks (3+ distinct steps)
+2. Non-trivial tasks requiring careful planning
+3. User explicitly requests todo list
+4. User provides multiple tasks (numbered/comma-separated)
+5. After receiving new instructions - capture requirements as todos (use merge=false to add new ones)
+6. After completing tasks - mark complete with merge=true and add follow-ups
+7. When starting new tasks - mark as in_progress (ideally only one at a time)
 
-Tasks NOT to track:
-- Linting, testing, searching/examining the codebase, or communicating with the user—unless explicitly requested by the user.
+### When NOT to Use
+
+Skip for:
+1. Single, straightforward tasks
+2. Trivial tasks with no organizational benefit
+3. Tasks completable in < 3 trivial steps
+4. Purely conversational/informational requests
+5. Todo items should NOT include operational actions done in service of higher-level tasks.
+
+NEVER INCLUDE THESE IN TODOS: linting; testing; searching or examining the codebase.
 
 ### Examples
 

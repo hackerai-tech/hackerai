@@ -112,11 +112,8 @@ describe("s3Actions", () => {
       ).rejects.toThrow("Invalid fileName");
     });
 
-    it("should infer contentType from fileName when empty (defensive fallback)", async () => {
+    it("should throw error for empty contentType", async () => {
       const { generateS3UploadUrlAction } = await import("../s3Actions");
-
-      // Mock console.warn to verify it's called
-      const consoleWarnSpy = jest.spyOn(console, "warn").mockImplementation();
 
       // Create mock context
       const mockCtx = {
@@ -128,24 +125,12 @@ describe("s3Actions", () => {
         },
       } as any;
 
-      // Should succeed by inferring contentType from fileName
-      const result = await generateS3UploadUrlAction.handler(mockCtx, {
-        fileName: "test.pdf",
-        contentType: "",
-      });
-
-      expect(result).toBeDefined();
-      expect(result.uploadUrl).toBeDefined();
-      expect(result.s3Key).toBeDefined();
-
-      // Should log warning when inference is used
-      expect(consoleWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining(
-          "ContentType was empty, inferred from extension",
-        ),
-      );
-
-      consoleWarnSpy.mockRestore();
+      await expect(
+        generateS3UploadUrlAction.handler(mockCtx, {
+          fileName: "test.pdf",
+          contentType: "",
+        }),
+      ).rejects.toThrow("Invalid contentType");
     });
 
     it("should throw error for whitespace-only fileName", async () => {

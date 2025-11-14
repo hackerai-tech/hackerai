@@ -1,11 +1,10 @@
 "use node";
 
 import { action } from "./_generated/server";
-import { v, ConvexError } from "convex/values";
+import { v } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./chats";
-import { inferMimeTypeFromFileName } from "./constants";
 
 /**
  * Generate presigned S3 upload URL for authenticated users
@@ -29,29 +28,18 @@ export const generateS3UploadUrlAction = action({
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED",
-        message: "Unauthenticated: User must be logged in to upload files",
-      });
+      throw new Error(
+        "Unauthenticated: User must be logged in to upload files",
+      );
     }
 
     // Validate inputs
     if (!args.fileName || args.fileName.trim().length === 0) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "Invalid fileName: fileName cannot be empty",
-      });
+      throw new Error("Invalid fileName: fileName cannot be empty");
     }
 
-    // Defensive: Infer contentType from file extension if not provided
-    // This provides defense in depth if client validation is bypassed
     if (!args.contentType || args.contentType.trim().length === 0) {
-      args.contentType = inferMimeTypeFromFileName(args.fileName);
-
-      // Log for monitoring (indicates client validation might be missing)
-      console.warn(
-        `ContentType was empty, inferred from extension for ${args.fileName}: ${args.contentType}`,
-      );
+      throw new Error("Invalid contentType: contentType cannot be empty");
     }
 
     // Get user ID from identity
@@ -68,13 +56,10 @@ export const generateS3UploadUrlAction = action({
       return { uploadUrl, s3Key };
     } catch (error) {
       console.error("Failed to generate S3 upload URL:", error);
-      // Wrap error in ConvexError for proper propagation to client
-      throw new ConvexError({
-        code: "S3_UPLOAD_URL_GENERATION_FAILED",
-        message:
-          "Failed to generate upload URL: " +
+      throw new Error(
+        "Failed to generate upload URL: " +
           (error instanceof Error ? error.message : "Unknown error"),
-      });
+      );
     }
   },
 });
@@ -100,10 +85,9 @@ export const getFileUrlAction = action({
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED",
-        message: "Unauthenticated: User must be logged in to access files",
-      });
+      throw new Error(
+        "Unauthenticated: User must be logged in to access files",
+      );
     }
 
     try {
@@ -117,19 +101,14 @@ export const getFileUrlAction = action({
       );
 
       if (!file) {
-        throw new ConvexError({
-          code: "FILE_NOT_FOUND",
-          message: "File not found",
-        });
+        throw new Error("File not found");
       }
 
       // Verify user has access to this file
       if (file.user_id !== identity.subject) {
-        throw new ConvexError({
-          code: "ACCESS_DENIED",
-          message:
-            "Access denied: You do not have permission to access this file",
-        });
+        throw new Error(
+          "Access denied: You do not have permission to access this file",
+        );
       }
 
       // Enforce storage invariant: exactly one storage reference
@@ -137,18 +116,13 @@ export const getFileUrlAction = action({
       const hasStorageId = !!file.storage_id;
 
       if (!hasS3Key && !hasStorageId) {
-        throw new ConvexError({
-          code: "INVALID_STORAGE_STATE",
-          message: "File has no storage reference",
-        });
+        throw new Error("File has no storage reference");
       }
 
       if (hasS3Key && hasStorageId) {
-        throw new ConvexError({
-          code: "INVALID_STORAGE_STATE",
-          message:
-            "File has both S3 and Convex storage references (invalid state)",
-        });
+        throw new Error(
+          "File has both S3 and Convex storage references (invalid state)",
+        );
       }
 
       // Generate appropriate URL based on storage type
@@ -159,25 +133,16 @@ export const getFileUrlAction = action({
         // Convex file: Get Convex storage URL
         const url = await ctx.storage.getUrl(file.storage_id!);
         if (!url) {
-          throw new ConvexError({
-            code: "STORAGE_URL_GENERATION_FAILED",
-            message: "Failed to generate Convex storage URL",
-          });
+          throw new Error("Failed to generate Convex storage URL");
         }
         return url;
       }
     } catch (error) {
       console.error("Failed to get file URL:", error);
-      // Re-throw ConvexError as-is, wrap others
-      if (error instanceof ConvexError) {
-        throw error;
-      }
-      throw new ConvexError({
-        code: "FILE_URL_GENERATION_FAILED",
-        message:
-          "Failed to get file URL: " +
+      throw new Error(
+        "Failed to get file URL: " +
           (error instanceof Error ? error.message : "Unknown error"),
-      });
+      );
     }
   },
 });
@@ -205,10 +170,9 @@ export const getFileUrlsByFileIdsAction = action({
     // Enforce batch size limit
     const MAX_BATCH_SIZE = 50;
     if (args.fileIds.length > MAX_BATCH_SIZE) {
-      throw new ConvexError({
-        code: "BATCH_SIZE_EXCEEDED",
-        message: `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
-      });
+      throw new Error(
+        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+      );
     }
 
     // Get file records and generate URLs
@@ -269,19 +233,17 @@ export const getFileUrlsBatchAction = action({
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED",
-        message: "Unauthenticated: User must be logged in to access files",
-      });
+      throw new Error(
+        "Unauthenticated: User must be logged in to access files",
+      );
     }
 
     // Enforce batch size limit
     const MAX_BATCH_SIZE = 50;
     if (args.fileIds.length > MAX_BATCH_SIZE) {
-      throw new ConvexError({
-        code: "BATCH_SIZE_EXCEEDED",
-        message: `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
-      });
+      throw new Error(
+        `Batch size exceeds limit: Maximum ${MAX_BATCH_SIZE} files allowed per request (requested: ${args.fileIds.length})`,
+      );
     }
 
     const urlMap: Record<string, string> = {};

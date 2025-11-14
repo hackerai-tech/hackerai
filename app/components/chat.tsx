@@ -28,7 +28,6 @@ import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
-import { getContentType } from "@/lib/adapters/file-api-adapter";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
@@ -477,7 +476,7 @@ export const Chat = ({
               ? nextMessage.files.map((f) => ({
                   type: "file" as const,
                   filename: f.file.name,
-                  mediaType: getContentType(f.file),
+                  mediaType: f.file.type,
                   url: f.url,
                   fileId: f.fileId,
                 }))
