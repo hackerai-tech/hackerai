@@ -1,5 +1,6 @@
 import { FileMessagePart, UploadedFileState } from "@/types/file";
 import { Id } from "@/convex/_generated/dataModel";
+import { inferMimeTypeFromFileName } from "@/convex/constants";
 
 /**
  * Upload a single file to Convex storage and return file ID and URL
@@ -20,7 +21,7 @@ export async function uploadSingleFileToConvex(
   // Step 2: Upload file to Convex storage
   const result = await fetch(postUrl, {
     method: "POST",
-    headers: { "Content-Type": file.type },
+    headers: { "Content-Type": getContentType(file) },
     body: file,
   });
 
@@ -34,7 +35,7 @@ export async function uploadSingleFileToConvex(
   const { url, fileId, tokens } = await saveFile({
     storageId,
     name: file.name,
-    mediaType: file.type,
+    mediaType: getContentType(file),
     size: file.size,
   });
 
@@ -54,12 +55,29 @@ export function createFileMessagePart(
 
   return {
     type: "file" as const,
-    mediaType: uploadedFile.file.type,
+    mediaType: getContentType(uploadedFile.file),
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,
     // DON'T store URL - it expires! Generate on-demand via fileId
   };
+}
+
+/**
+ * Get content type with fallback to file extension inference
+ * This is the defensive boundary layer for unreliable browser File API
+ *
+ * @param file - Browser File object
+ * @returns Non-empty MIME type string (guaranteed)
+ */
+export function getContentType(file: File): string {
+  // If browser provides MIME type, use it
+  if (file.type && file.type.trim().length > 0) {
+    return file.type;
+  }
+
+  // Fallback: infer from file extension
+  return inferMimeTypeFromFileName(file.name);
 }
 
 /**
@@ -71,6 +89,7 @@ export function getMaxFileSize(): number {
 
 /**
  * Validate file for upload
+ * Checks file size (MIME type is handled by getContentType with automatic fallback)
  */
 export function validateFile(file: File): { valid: boolean; error?: string } {
   if (file.size > getMaxFileSize()) {
@@ -112,7 +131,7 @@ export function fileToBase64(file: File): Promise<string> {
  * Check if file is an image that can be previewed
  */
 export function isImageFile(file: File): boolean {
-  return file.type.startsWith("image/");
+  return getContentType(file).startsWith("image/");
 }
 
 /**
@@ -126,6 +145,21 @@ export function isSupportedImageMediaType(mediaType: string): boolean {
     "image/jpg",
     "image/webp",
     "image/gif",
+  ];
+  return supportedTypes.includes(mediaType.toLowerCase());
+}
+
+/**
+ * Check if media type is a supported file format that can be directly processed by AI
+ * Supports: PDF and text files (CSV, Markdown, TXT)
+ */
+export function isSupportedFileMediaType(mediaType: string): boolean {
+  const supportedTypes = [
+    "application/pdf",
+    "text/csv",
+    "text/markdown",
+    "text/plain",
+    "text/html",
   ];
   return supportedTypes.includes(mediaType.toLowerCase());
 }
@@ -147,7 +181,7 @@ export function createFileMessagePartFromUploadedFile(
 
   return {
     type: "file" as const,
-    mediaType: uploadedFile.file.type,
+    mediaType: getContentType(uploadedFile.file),
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,

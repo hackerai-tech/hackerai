@@ -6,7 +6,7 @@ import { UIMessage } from "ai";
 import type { ChatMode } from "@/types";
 import type { FileMessagePart } from "@/types/file";
 import { Id } from "@/convex/_generated/dataModel";
-import { isSupportedImageMediaType } from "./file-utils";
+import { isSupportedImageMediaType, isSupportedFileMediaType } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages } from "./file-token-utils";
@@ -21,7 +21,7 @@ function isFilePart(part: any): part is FileMessagePart {
 function containsPdfAttachments(messages: UIMessage[]): boolean {
   return messages.some((message: any) =>
     (message.parts || []).some(
-      (part: any) => isFilePart(part) && part.mediaType === "application/pdf",
+      (part: any) => isFilePart(part) && isSupportedFileMediaType(part.mediaType),
     ),
   );
 }
@@ -124,20 +124,20 @@ export async function processMessageFiles(
 
     message.parts.forEach((part: any, partIndex) => {
       if (isFilePart(part) && part.fileId) {
-        // Check for media files (supported images and PDFs)
+        // Check for media files (supported images and supported file types)
         if (part.mediaType) {
           if (
             isSupportedImageMediaType(part.mediaType) ||
-            part.mediaType === "application/pdf"
+            isSupportedFileMediaType(part.mediaType)
           ) {
             hasMediaFiles = true;
           }
         }
 
         // Files no longer have URLs in parts - they're fetched on-demand
-        // Process PDFs and images (URLs will be fetched when needed)
+        // Process supported files and images (URLs will be fetched when needed)
         const shouldProcess =
-          part.mediaType === "application/pdf" ||
+          (part.mediaType && isSupportedFileMediaType(part.mediaType)) ||
           (part.mediaType && isSupportedImageMediaType(part.mediaType));
 
         if (shouldProcess) {
@@ -310,10 +310,10 @@ function filterNonMediaFileIds(
 
     for (const part of message.parts as any[]) {
       if (part.type === "file" && part.fileId && part.mediaType) {
-        // Keep images and PDFs as file parts
+        // Keep images and supported file types as file parts
         if (
           isSupportedImageMediaType(part.mediaType) ||
-          part.mediaType === "application/pdf"
+          isSupportedFileMediaType(part.mediaType)
         ) {
           mediaFileIds.add(part.fileId);
         }
