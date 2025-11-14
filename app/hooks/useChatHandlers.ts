@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStream } from "@/app/components/DataStreamProvider";
 import { normalizeMessages } from "@/lib/utils/message-processor";
+import { getContentType } from "@/lib/adapters/file-api-adapter";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -179,7 +180,7 @@ export const useChatHandlers = ({
                 ? validFiles.map((uploadedFile) => ({
                     type: "file" as const,
                     filename: uploadedFile.file.name,
-                    mediaType: uploadedFile.file.type,
+                    mediaType: getContentType(uploadedFile.file),
                     url: uploadedFile.url!,
                     fileId: uploadedFile.fileId!,
                   }))
@@ -506,7 +507,7 @@ export const useChatHandlers = ({
         messagePayload.files = validFiles.map((f) => ({
           type: "file" as const,
           filename: f.file.name,
-          mediaType: f.file.type,
+          mediaType: getContentType(f.file),
           url: f.url,
           fileId: f.fileId,
         }));
