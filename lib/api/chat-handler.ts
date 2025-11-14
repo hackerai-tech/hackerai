@@ -111,6 +111,14 @@ export const createChatHandler = () => {
         );
       }
 
+      // Set up pre-emptive abort before Vercel timeout (moved early to cover entire request)
+      const userStopSignal = new AbortController();
+      preemptiveTimeout = createPreemptiveTimeout({
+        chatId,
+        mode,
+        abortController: userStopSignal,
+      });
+
       const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
         chatId,
         userId,
@@ -150,15 +158,6 @@ export const createChatHandler = () => {
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
       const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
-
-      const userStopSignal = new AbortController();
-
-      // Set up pre-emptive abort before Vercel timeout
-      preemptiveTimeout = createPreemptiveTimeout({
-        chatId,
-        mode,
-        abortController: userStopSignal,
-      });
 
       // Start temp stream coordination for temporary chats
       if (temporary) {
