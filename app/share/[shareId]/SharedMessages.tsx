@@ -1,6 +1,6 @@
 "use client";
 
-import { FileIcon, ImageIcon, Clock, Terminal, FileCode, Search, Brain, CheckSquare, FileText, FilePlus, FilePen, FileMinus, Code2 } from "lucide-react";
+import { FileIcon, ImageIcon, Terminal, FileCode, Search, Brain, CheckSquare, FileText, FilePlus, FilePen, FileMinus, Code2 } from "lucide-react";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 import ToolBlock from "@/components/ui/tool-block";
 import { useSharedChatContext } from "./SharedChatContext";
@@ -298,17 +298,9 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
 
   return (
     <>
-      {/* Frozen Content Notice */}
-      <div className="bg-muted/50 border rounded-lg p-4 flex items-start gap-3">
-        <Clock className="h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0" />
-        <div className="space-y-1">
-          <p className="text-sm font-medium">Frozen Snapshot</p>
-          <p className="text-xs text-muted-foreground">
-            This share shows messages as they were on{" "}
-            {new Date(shareDate).toLocaleString()}. Newer messages are not
-            included.
-          </p>
-        </div>
+      {/* Shared conversation notice */}
+      <div className="text-center text-[12px] font-normal" style={{ color: 'rgb(155, 155, 155)' }}>
+        This is a copy of a conversation between HackerAI & Anonymous.
       </div>
 
       {/* Messages */}

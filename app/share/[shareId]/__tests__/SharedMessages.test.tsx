@@ -19,8 +19,8 @@ describe("SharedMessages", () => {
     });
   });
 
-  describe("Frozen Snapshot Notice", () => {
-    it("should display frozen snapshot notice", () => {
+  describe("Shared Conversation Notice", () => {
+    it("should display shared conversation notice", () => {
       const messages = [
         {
           id: "1",
@@ -31,7 +31,7 @@ describe("SharedMessages", () => {
       ];
 
       renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      expect(screen.getByText("Frozen Snapshot")).toBeInTheDocument();
+      expect(screen.getByText("This is a copy of a conversation between HackerAI & Anonymous.")).toBeInTheDocument();
     });
   });
 
