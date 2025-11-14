@@ -16,7 +16,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { SharedLinksTab } from "./SharedLinksTab";
+import { ManageSharedChatsDialog } from "./ManageSharedChatsDialog";
+import { Share2 } from "lucide-react";
 
 const DataControlsTab = () => {
   const { subscription } = useGlobalState();
@@ -24,6 +25,7 @@ const DataControlsTab = () => {
   const [isDeletingChats, setIsDeletingChats] = useState(false);
   const [showDeleteSandboxes, setShowDeleteSandboxes] = useState(false);
   const [isDeletingSandboxes, setIsDeletingSandboxes] = useState(false);
+  const [showManageSharedChats, setShowManageSharedChats] = useState(false);
 
   const deleteAllChats = useMutation(api.chats.deleteAllChats);
 
@@ -66,9 +68,25 @@ const DataControlsTab = () => {
 
   return (
     <div className="space-y-6 min-h-0">
-      {/* Shared Links Section */}
+      {/* Manage Shared Chats Section */}
       <div>
-        <SharedLinksTab />
+        <div className="flex items-center justify-between py-3">
+          <div>
+            <div className="font-medium">Shared chats</div>
+            <div className="text-sm text-muted-foreground mt-1">
+              Manage your publicly shared conversations
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowManageSharedChats(true)}
+            aria-label="Manage shared chats"
+          >
+            <Share2 className="h-4 w-4 mr-2" />
+            Manage
+          </Button>
+        </div>
       </div>
 
       {/* Divider */}
@@ -170,6 +188,12 @@ const DataControlsTab = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Manage Shared Chats Dialog */}
+      <ManageSharedChatsDialog
+        open={showManageSharedChats}
+        onOpenChange={setShowManageSharedChats}
+      />
     </div>
   );
 };
