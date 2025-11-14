@@ -1,6 +1,7 @@
 "use client";
 
 import { FileIcon, ImageIcon, Clock, Terminal, FileCode, Search, Brain, CheckSquare } from "lucide-react";
+import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 
 interface MessagePart {
   type: string;
@@ -66,7 +67,7 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
     if (part.type === "text" && part.text) {
       return (
         <div key={idx}>
-          {part.text}
+          <MemoizedMarkdown content={part.text} />
         </div>
       );
     }
