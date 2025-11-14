@@ -83,11 +83,30 @@ If you are generating files:
       { toolCallId, abortSignal },
     ) => {
       try {
+        // Get fresh sandbox and verify it's ready
         const { sandbox } = await sandboxManager.getSandbox();
 
-        // Wait for sandbox to be ready before executing commands
-        // This prevents wasting retry attempts on a sandbox that's being recreated
-        await waitForSandboxReady(sandbox);
+        try {
+          await waitForSandboxReady(sandbox);
+        } catch (healthError) {
+          // Sandbox health check failed - force recreation by resetting the cached instance
+          console.warn(
+            "[Terminal Command] Sandbox health check failed, recreating sandbox",
+          );
+          
+          // Reset cached instance to force ensureSandboxConnection to create a fresh one
+          sandboxManager.setSandbox(null as any);
+          const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
+          
+          // Verify the fresh sandbox is ready
+          await waitForSandboxReady(freshSandbox);
+          
+          return executeCommand(freshSandbox);
+        }
+
+        return executeCommand(sandbox);
+
+        async function executeCommand(sandboxInstance: typeof sandbox) {
 
         const terminalSessionId = `terminal-${randomUUID()}`;
         let outputCounter = 0;
@@ -119,13 +138,13 @@ If you are generating files:
 
             // For foreground commands, attempt to discover PID if not already known
             if (!processId && !is_background) {
-              processId = await findProcessPid(sandbox, command);
+              processId = await findProcessPid(sandboxInstance, command);
             }
 
             // Terminate the current process
             try {
               if ((execution && execution.kill) || processId) {
-                await terminateProcessReliably(sandbox, execution, processId);
+                await terminateProcessReliably(sandboxInstance, execution, processId);
               } else {
                 console.warn(
                   "[Terminal Command] Cannot kill process: no execution handle or PID available",
@@ -177,14 +196,14 @@ If you are generating files:
 
                 // For foreground commands, attempt to discover PID if not already known
                 if (!processId && !is_background) {
-                  processId = await findProcessPid(sandbox, command);
+                  processId = await findProcessPid(sandboxInstance, command);
                 }
 
                 // Attempt to kill the running process on timeout
                 if ((execution && execution.kill) || processId) {
                   try {
                     await terminateProcessReliably(
-                      sandbox,
+                      sandboxInstance,
                       execution,
                       processId,
                     );
@@ -256,7 +275,7 @@ If you are generating files:
           const runPromise = is_background
             ? retryWithBackoff(
                 () =>
-                  sandbox.commands.run(command, {
+                  sandboxInstance.commands.run(command, {
                     ...commonOptions,
                     background: true,
                   }),
@@ -265,27 +284,19 @@ If you are generating files:
                   baseDelayMs: 500,
                   jitterMs: 50,
                   isPermanentError,
-                  logger: (message, error) => {
-                    // Don't log if we've already resolved via abort handler
-                    if (!resolved) {
-                      console.warn(`[Terminal Command] ${message}`, error);
-                    }
-                  },
+                  // Retry logs are too noisy - they're expected behavior
+                  logger: () => {},
                 },
               )
             : retryWithBackoff(
-                () => sandbox.commands.run(command, commonOptions),
+                () => sandboxInstance.commands.run(command, commonOptions),
                 {
                   maxRetries: 6,
                   baseDelayMs: 500,
                   jitterMs: 50,
                   isPermanentError,
-                  logger: (message, error) => {
-                    // Don't log if we've already resolved via abort handler
-                    if (!resolved) {
-                      console.warn(`[Terminal Command] ${message}`, error);
-                    }
-                  },
+                  // Retry logs are too noisy - they're expected behavior
+                  logger: () => {},
                 },
               );
 
@@ -361,6 +372,7 @@ If you are generating files:
               }
             });
         });
+        } // end of executeCommand
       } catch (error) {
         return error as CommandExitError;
       }

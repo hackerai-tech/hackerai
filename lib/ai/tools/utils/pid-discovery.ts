@@ -32,6 +32,7 @@ export async function findProcessPid(
       {
         user: "root" as const,
         cwd: "/home/user",
+        timeoutMs: 5000, // 5 second timeout for PID discovery
       },
     );
 
@@ -49,11 +50,7 @@ export async function findProcessPid(
       }
     }
   } catch (error) {
-    console.warn(
-      `[PID Discovery] pgrep failed for '${searchPattern.slice(0, 50)}...':`,
-      error,
-    );
-
+    // pgrep failure is expected when process has already finished - don't log as warning
     // Fallback: use ps with full command line matching
     try {
       // ps -eo pid,cmd shows PID and full command
@@ -63,6 +60,7 @@ export async function findProcessPid(
         {
           user: "root" as const,
           cwd: "/home/user",
+          timeoutMs: 5000, // 5 second timeout for PID discovery
         },
       );
 
@@ -73,14 +71,10 @@ export async function findProcessPid(
         }
       }
     } catch (psError) {
-      console.error(
-        `[PID Discovery] Both pgrep and ps failed for '${searchPattern.slice(0, 50)}...'`,
-      );
+      // Both methods failing means process already finished - this is normal, not an error
     }
   }
 
-  console.warn(
-    `[PID Discovery] Could not find PID for '${searchPattern.slice(0, 50)}...'`,
-  );
+  // Process not found - likely already finished, which is normal
   return null;
 }
