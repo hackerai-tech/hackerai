@@ -8,12 +8,10 @@ import { inferMimeTypeFromFileName } from "@/convex/constants";
 export async function uploadSingleFileToConvex(
   file: File,
   generateUploadUrl: () => Promise<string>,
-  saveFile: (args: {
-    storageId: Id<"_storage">;
-    name: string;
-    mediaType: string;
-    size: number;
-  }) => Promise<{ url: string; fileId: string; tokens: number }>,
+  saveFile: (
+    args: any,
+  ) => Promise<{ url: string; fileId: string; tokens: number }>,
+  mode: "ask" | "agent" = "ask",
 ): Promise<{ fileId: string; url: string; tokens: number }> {
   // Step 1: Get upload URL
   const postUrl = await generateUploadUrl();
@@ -37,6 +35,7 @@ export async function uploadSingleFileToConvex(
     name: file.name,
     mediaType: getContentType(file),
     size: file.size,
+    mode,
   });
 
   return { fileId, url, tokens };

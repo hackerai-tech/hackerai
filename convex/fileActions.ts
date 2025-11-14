@@ -3,6 +3,7 @@
 import { action } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { countTokens } from "gpt-tokenizer";
+import { encode, decode } from "gpt-tokenizer";
 import { getDocument } from "pdfjs-serverless";
 import { CSVLoader } from "@langchain/community/document_loaders/fs/csv";
 import mammoth from "mammoth";
@@ -24,6 +25,30 @@ import { MAX_TOKENS_FILE } from "../lib/token-utils";
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 
 /**
+ * Truncate content to a maximum number of tokens
+ * @param content - The content to truncate
+ * @param maxTokens - Maximum number of tokens
+ * @returns Truncated content
+ */
+const truncateContentByTokens = (
+  content: string,
+  maxTokens: number,
+): string => {
+  const tokens = encode(content);
+  if (tokens.length <= maxTokens) return content;
+
+  const truncationSuffix = "\n\n[Content truncated due to token limit]";
+  const suffixTokens = countTokens(truncationSuffix);
+  const budgetForContent = maxTokens - suffixTokens;
+
+  if (budgetForContent <= 0) {
+    return truncationSuffix;
+  }
+
+  return decode(tokens.slice(0, budgetForContent)) + truncationSuffix;
+};
+
+/**
  * Validate token count and throw error if exceeds limit
  * @param chunks - Array of file chunks
  * @param fileName - Name of the file for error reporting
@@ -41,7 +66,7 @@ const validateTokenLimit = (
   if (totalTokens > MAX_TOKENS_FILE) {
     throw new ConvexError({
       code: "FILE_TOKEN_LIMIT_EXCEEDED",
-      message: `File "${fileName}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${totalTokens}`,
+      message: `File "${fileName}" exceeds the maximum token limit of ${MAX_TOKENS_FILE.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
     });
   }
 };
@@ -246,7 +271,7 @@ const processFileAuto = async (
         if (!skipTokenValidation && fallbackTokens > MAX_TOKENS_FILE) {
           throw new ConvexError({
             code: "FILE_TOKEN_LIMIT_EXCEEDED",
-            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE} tokens. Current tokens: ${fallbackTokens}`,
+            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
           });
         }
 
@@ -431,6 +456,7 @@ export const saveFile = action({
     serviceKey: v.optional(v.string()),
     userId: v.optional(v.string()),
     skipTokenValidation: v.optional(v.boolean()),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
   },
   returns: v.object({
     url: v.string(),
@@ -481,8 +507,9 @@ export const saveFile = action({
           )
         : [];
 
-      // Security: Only backend (service key) flows can skip token validation
-      if (args.skipTokenValidation) {
+      // Security: Only backend (service key) flows can directly set skipTokenValidation
+      // Client can use mode="agent" to skip validation
+      if (args.skipTokenValidation && !args.mode) {
         throw new ConvexError({
           code: "INVALID_REQUEST",
           message:
@@ -490,6 +517,12 @@ export const saveFile = action({
         });
       }
     }
+
+    // Determine if we should skip token validation based on mode
+    // Agent mode: files are accessed in sandbox, no token counting needed
+    // Ask mode: files are included in context, token counting required
+    const shouldSkipTokenValidation =
+      args.skipTokenValidation || args.mode === "agent";
 
     // Check file limit (Pro: 300, Team: 500, Ultra: 1000, Free: 0)
     let fileLimit = 0;
@@ -592,7 +625,7 @@ export const saveFile = action({
         args.name,
         args.mediaType,
         undefined,
-        args.skipTokenValidation ?? false,
+        shouldSkipTokenValidation,
       );
       tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
 
@@ -605,7 +638,10 @@ export const saveFile = action({
         chunks[0].content.length > 0;
 
       if (shouldSaveContent) {
-        fileContent = chunks.map((chunk) => chunk.content).join("\n\n");
+        const rawContent = chunks.map((chunk) => chunk.content).join("\n\n");
+        // Always truncate content to MAX_TOKENS_FILE before saving to database
+        // This ensures database content field stays reasonable even for agent mode files
+        fileContent = truncateContentByTokens(rawContent, MAX_TOKENS_FILE);
       }
     } catch (error) {
       // Check if this is a ConvexError (including token limit errors) - re-throw as-is
