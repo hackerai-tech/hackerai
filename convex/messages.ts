@@ -1158,3 +1158,60 @@ export const getSharedMessages = query({
     }
   },
 });
+
+/**
+ * Get first two messages (user and assistant) for share preview
+ * Used to show a preview in the share dialog
+ */
+export const getPreviewMessages = query({
+  args: { chatId: v.string() },
+  returns: v.array(
+    v.object({
+      id: v.string(),
+      role: v.union(
+        v.literal("user"),
+        v.literal("assistant"),
+        v.literal("system"),
+      ),
+      content: v.optional(v.string()),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return [];
+    }
+
+    try {
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+
+      if (!chat || chat.user_id !== identity.subject) {
+        return [];
+      }
+
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .order("asc")
+        .take(10);
+
+      // Get first 4 messages (user and assistant messages only)
+      const result = messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .slice(0, 4)
+        .map((m) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+        }));
+
+      return result;
+    } catch (error) {
+      console.error("Failed to get preview messages:", error);
+      return [];
+    }
+  },
+});
