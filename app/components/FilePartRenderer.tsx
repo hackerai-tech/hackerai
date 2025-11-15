@@ -1,6 +1,7 @@
 import Image from "next/image";
 import React, { useState, memo, useMemo, useCallback, useEffect } from "react";
 import { useConvex, useAction } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { ImageViewer } from "./ImageViewer";
 import { AlertCircle, File, Download } from "lucide-react";
@@ -60,7 +61,16 @@ const FilePartRendererComponent = ({
           }
         } catch (error) {
           console.error("Failed to fetch file URL:", error);
-          setUrlError("Failed to load file");
+          const errorMessage =
+            error instanceof ConvexError
+              ? (error.data as { message?: string })?.message ||
+                error.message ||
+                "Failed to load file"
+              : error instanceof Error
+                ? error.message
+                : "Failed to load file";
+          setUrlError(errorMessage);
+          toast.error(errorMessage);
         }
         return;
       }
@@ -85,7 +95,16 @@ const FilePartRendererComponent = ({
           }
         } catch (error) {
           console.error("Failed to fetch download URL:", error);
-          setUrlError("Failed to load file");
+          const errorMessage =
+            error instanceof ConvexError
+              ? (error.data as { message?: string })?.message ||
+                error.message ||
+                "Failed to load file"
+              : error instanceof Error
+                ? error.message
+                : "Failed to load file";
+          setUrlError(errorMessage);
+          toast.error(errorMessage);
         }
         return;
       }
@@ -174,8 +193,16 @@ const FilePartRendererComponent = ({
         }
       } catch (error) {
         console.error("Failed to fetch download URL:", error);
-        setUrlError("Failed to fetch download URL");
-        toast.error("Failed to fetch download URL");
+        const errorMessage =
+          error instanceof ConvexError
+            ? (error.data as { message?: string })?.message ||
+              error.message ||
+              "Failed to fetch download URL"
+            : error instanceof Error
+              ? error.message
+              : "Failed to fetch download URL";
+        setUrlError(errorMessage);
+        toast.error(errorMessage);
       }
     },
     [

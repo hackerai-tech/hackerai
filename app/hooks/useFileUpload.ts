@@ -1,6 +1,7 @@
 import { useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { useMutation, useAction } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
@@ -15,7 +16,7 @@ import { Id } from "@/convex/_generated/dataModel";
 
 const USE_S3_STORAGE = process.env.NEXT_PUBLIC_USE_S3_STORAGE === "true";
 
-export const useFileUpload = () => {
+export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     uploadedFiles,
@@ -159,35 +160,49 @@ export const useFileUpload = () => {
           name: file.name,
           mediaType: file.type,
           size: file.size,
+          mode,
         });
 
-        // Check token limit before updating state
-        const currentTotal = getTotalTokens();
-        const newTotal = currentTotal + tokens;
+        // Only check token limit for "ask" mode
+        // In "agent" mode, files are accessed in sandbox, no token limit applies
+        if (mode === "ask") {
+          const currentTotal = getTotalTokens();
+          const newTotal = currentTotal + tokens;
 
-        if (newTotal > MAX_TOKENS_FILE) {
-          // Exceeds limit - delete file from storage and remove from upload list
-          deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
-          removeUploadedFile(uploadIndex);
+          if (newTotal > MAX_TOKENS_FILE) {
+            // Exceeds limit - delete file from storage and remove from upload list
+            deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
+            removeUploadedFile(uploadIndex);
 
-          toast.error(
-            `${file.name} exceeds token limit (${newTotal}/${MAX_TOKENS_FILE})`,
-          );
-        } else {
-          // Within limits - set success state with tokens
-          updateUploadedFile(uploadIndex, {
-            tokens,
-            uploading: false,
-            uploaded: true,
-            fileId,
-            url,
-          });
+            toast.error(
+              `${file.name} exceeds token limit (${newTotal.toLocaleString()}/${MAX_TOKENS_FILE.toLocaleString()} tokens). Tip: Switch to Agent mode to upload larger files.`,
+            );
+            return;
+          }
         }
+
+        // Set success state with tokens
+        updateUploadedFile(uploadIndex, {
+          tokens,
+          uploading: false,
+          uploaded: true,
+          fileId,
+          url,
+        });
       } catch (error) {
         console.error("Failed to upload file:", error);
 
-        const errorMessage =
-          error instanceof Error ? error.message : "Upload failed";
+        // Extract error message from ConvexError or regular Error
+        const errorMessage = (() => {
+          if (error instanceof ConvexError) {
+            const errorData = error.data as { message?: string };
+            return errorData?.message || error.message || "Upload failed";
+          }
+          if (error instanceof Error) {
+            return error.message;
+          }
+          return "Upload failed";
+        })();
 
         // Update the upload state to error
         updateUploadedFile(uploadIndex, {
@@ -206,6 +221,7 @@ export const useFileUpload = () => {
       deleteFile,
       removeUploadedFile,
       updateUploadedFile,
+      mode,
     ],
   );
 
@@ -217,30 +233,35 @@ export const useFileUpload = () => {
           file,
           generateUploadUrlFn,
           saveFile,
+          mode,
         );
 
-        // Check token limit before updating state
-        const currentTotal = getTotalTokens();
-        const newTotal = currentTotal + tokens;
+        // Only check token limit for "ask" mode
+        // In "agent" mode, files are accessed in sandbox, no token limit applies
+        if (mode === "ask") {
+          const currentTotal = getTotalTokens();
+          const newTotal = currentTotal + tokens;
 
-        if (newTotal > MAX_TOKENS_FILE) {
-          // Exceeds limit - delete file from storage and remove from upload list
-          deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
-          removeUploadedFile(uploadIndex);
+          if (newTotal > MAX_TOKENS_FILE) {
+            // Exceeds limit - delete file from storage and remove from upload list
+            deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
+            removeUploadedFile(uploadIndex);
 
-          toast.error(
-            `${file.name} exceeds token limit (${newTotal}/${MAX_TOKENS_FILE})`,
-          );
-        } else {
-          // Within limits - set success state with tokens
-          updateUploadedFile(uploadIndex, {
-            tokens,
-            uploading: false,
-            uploaded: true,
-            fileId,
-            url,
-          });
+            toast.error(
+              `${file.name} exceeds token limit (${newTotal.toLocaleString()}/${MAX_TOKENS_FILE.toLocaleString()} tokens). Tip: Switch to Agent mode to upload larger files.`,
+            );
+            return;
+          }
         }
+
+        // Set success state with tokens
+        updateUploadedFile(uploadIndex, {
+          tokens,
+          uploading: false,
+          uploaded: true,
+          fileId,
+          url,
+        });
       } catch (error) {
         console.error("Failed to upload file:", error);
 
@@ -265,6 +286,7 @@ export const useFileUpload = () => {
       deleteFile,
       removeUploadedFile,
       updateUploadedFile,
+      mode,
     ],
   );
 

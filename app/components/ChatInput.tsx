@@ -105,7 +105,7 @@ export const ChatInput = ({
     handleRemoveFile,
     handleAttachClick,
     handlePasteEvent,
-  } = useFileUpload();
+  } = useFileUpload(chatMode);
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isGenerating = status === "submitted" || status === "streaming";
@@ -355,7 +355,7 @@ export const ChatInput = ({
                   </DropdownMenuItem>
                   {subscription !== "free" || isCheckingProPlan ? (
                     <DropdownMenuItem
-                      onClick={() => setChatMode("agent")}
+                      onClick={handleAgentModeClick}
                       className="cursor-pointer"
                     >
                       <Infinity className="w-4 h-4 mr-2" />

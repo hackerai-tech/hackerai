@@ -1,5 +1,6 @@
 import { useState, useCallback, Dispatch, SetStateAction } from "react";
 import { useMutation } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { toast } from "sonner";
 import type { ChatMessage } from "@/types";
@@ -53,7 +54,15 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
           toast.success("Thank you for your feedback!");
         } catch (error) {
           console.error("Failed to save feedback:", error);
-          toast.error("Failed to save feedback. Please try again.");
+          const errorMessage =
+            error instanceof ConvexError
+              ? (error.data as { message?: string })?.message ||
+                error.message ||
+                "Failed to save feedback"
+              : error instanceof Error
+                ? error.message
+                : "Failed to save feedback. Please try again.";
+          toast.error(errorMessage);
         }
       } else {
         // For negative feedback
@@ -86,7 +95,15 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
           setFeedbackInputMessageId(messageId);
         } catch (error) {
           console.error("Failed to save initial negative feedback:", error);
-          toast.error("Failed to save feedback. Please try again.");
+          const errorMessage =
+            error instanceof ConvexError
+              ? (error.data as { message?: string })?.message ||
+                error.message ||
+                "Failed to save feedback"
+              : error instanceof Error
+                ? error.message
+                : "Failed to save feedback. Please try again.";
+          toast.error(errorMessage);
         }
       }
     },
@@ -111,7 +128,15 @@ export const useFeedback = ({ messages, setMessages }: UseFeedbackProps) => {
         toast.success("Thank you for your feedback!");
       } catch (error) {
         console.error("Failed to update feedback details:", error);
-        toast.error("Failed to save feedback details. Please try again.");
+        const errorMessage =
+          error instanceof ConvexError
+            ? (error.data as { message?: string })?.message ||
+              error.message ||
+              "Failed to save feedback details"
+            : error instanceof Error
+              ? error.message
+              : "Failed to save feedback details. Please try again.";
+        toast.error(errorMessage);
       }
     },
     [createFeedback, feedbackInputMessageId],

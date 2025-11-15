@@ -2,135 +2,102 @@ import "server-only";
 
 import { api } from "@/convex/_generated/api";
 import { ConvexHttpClient } from "convex/browser";
-import { UIMessagePart } from "ai";
-import { UIMessage } from "ai";
+import { UIMessagePart, UIMessage } from "ai";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   truncateMessagesToTokenLimit,
   getMaxTokensForSubscription,
 } from "@/lib/token-utils";
 import type { SubscriptionTier } from "@/types";
+import type { FileMessagePart } from "@/types/file";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 /**
- * Extract file IDs from message parts
- * @param parts - Array of message parts
- * @returns Array of file IDs found in file parts
+ * Type guard to check if a message part is a file part
  */
-export function extractFileIdsFromParts(
-  parts: UIMessagePart<any, any>[],
-): Id<"files">[] {
-  const fileIds: Id<"files">[] = [];
-
-  for (const part of parts) {
-    if (part.type === "file") {
-      // Check if fileId exists directly
-      if ((part as any).fileId) {
-        fileIds.push((part as any).fileId as Id<"files">);
-      }
-    }
-  }
-
-  return fileIds;
-}
+export const isFilePart = (part: any): part is FileMessagePart =>
+  part && typeof part === "object" && part.type === "file";
 
 /**
- * Fetch file tokens for given file IDs
- * @param fileIds - Array of file IDs
+ * Extracts file IDs from message parts
+ */
+export const extractFileIdsFromParts = (
+  parts: UIMessagePart<any, any>[],
+): Id<"files">[] =>
+  parts
+    .filter(isFilePart)
+    .map((part: any) => part.fileId as Id<"files">)
+    .filter(Boolean);
+
+/**
+ * Fetches token counts for given file IDs from storage
  * @returns Record mapping file IDs to their token counts
  */
-export async function getFileTokensByIds(
+export const getFileTokensByIds = async (
   fileIds: Id<"files">[],
-): Promise<Record<Id<"files">, number>> {
-  if (fileIds.length === 0) {
-    return {};
-  }
+): Promise<Record<Id<"files">, number>> => {
+  if (!fileIds.length) return {};
 
   try {
     const tokens = await convex.query(api.fileStorage.getFileTokensByFileIds, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      fileIds: fileIds,
+      fileIds,
     });
 
-    // Create a mapping from fileId to token count
-    const fileTokenMap: Record<Id<"files">, number> = {};
-    for (let i = 0; i < fileIds.length; i++) {
-      fileTokenMap[fileIds[i]] = tokens[i] || 0;
-    }
-
-    return fileTokenMap;
+    return Object.fromEntries(
+      fileIds.map((id, i) => [id, tokens[i] || 0]),
+    ) as Record<Id<"files">, number>;
   } catch (error) {
     console.error("Failed to fetch file tokens:", error);
-    // Return empty map if fetching fails
     return {};
   }
-}
+};
 
 /**
- * Extract all file IDs from an array of messages
- * @param messages - Array of messages to extract file IDs from
- * @returns Array of unique file IDs found in all messages
+ * Extracts all unique file IDs from an array of messages
  */
-export function extractAllFileIdsFromMessages(
+export const extractAllFileIdsFromMessages = (
   messages: UIMessage[],
-): Array<Id<"files">> {
+): Id<"files">[] => {
   const fileIds = new Set<Id<"files">>();
-
-  for (const message of messages) {
-    if (message.parts) {
-      const messageFileIds = extractFileIdsFromParts(message.parts);
-      messageFileIds.forEach((id) => fileIds.add(id));
+  messages.forEach((msg) => {
+    if (msg.parts) {
+      extractFileIdsFromParts(msg.parts).forEach((id) => fileIds.add(id));
     }
-  }
-
+  });
   return Array.from(fileIds);
-}
+};
 
 /**
- * Truncate messages with file tokens included - combines file ID extraction,
- * token fetching, and message truncation in one efficient operation.
- * @param messages - Array of messages to truncate
- * @param subscription - User subscription tier (affects token limits)
+ * Truncates messages to fit within subscription token limits, including file tokens
  * @param skipFileTokens - Skip file token counting (for agent mode where files go to sandbox)
- * @returns Truncated messages array
  */
-export async function truncateMessagesWithFileTokens(
+export const truncateMessagesWithFileTokens = async (
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
   skipFileTokens: boolean = false,
-): Promise<UIMessage[]> {
-  let fileTokens: Record<Id<"files">, number> = {};
-
-  if (!skipFileTokens) {
-    // Extract file IDs from all messages
-    const fileIds = extractAllFileIdsFromMessages(messages);
-    // Fetch file tokens for all file IDs
-    fileTokens = await getFileTokensByIds(fileIds);
-  }
-
-  // Truncate messages with file tokens included
+): Promise<UIMessage[]> => {
   const maxTokens = getMaxTokensForSubscription(subscription);
+  const fileTokens = skipFileTokens
+    ? {}
+    : await getFileTokensByIds(extractAllFileIdsFromMessages(messages));
+
   return truncateMessagesToTokenLimit(messages, fileTokens, maxTokens);
-}
+};
 
 /**
- * Truncate messages using a precomputed fileTokens map when available
+ * Truncates messages using precomputed file token map when available
  */
-export async function truncateMessagesWithPrecomputedTokens(
+export const truncateMessagesWithPrecomputedTokens = async (
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
   precomputedFileTokens?: Record<Id<"files">, number>,
-): Promise<UIMessage[]> {
+): Promise<UIMessage[]> => {
   const maxTokens = getMaxTokensForSubscription(subscription);
-  if (precomputedFileTokens) {
-    return truncateMessagesToTokenLimit(
-      messages,
-      precomputedFileTokens,
-      maxTokens,
-    );
-  }
-  const fileIds = extractAllFileIdsFromMessages(messages);
-  const fileTokens = await getFileTokensByIds(fileIds);
+  const fileTokens =
+    precomputedFileTokens ||
+    (await getFileTokensByIds(extractAllFileIdsFromMessages(messages)));
+
   return truncateMessagesToTokenLimit(messages, fileTokens, maxTokens);
-}
+};

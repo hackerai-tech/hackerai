@@ -1,5 +1,5 @@
 import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 
@@ -222,7 +222,10 @@ export const updateChat = mutation({
         .first();
 
       if (!chat) {
-        throw new Error("Chat not found");
+        throw new ConvexError({
+          code: "CHAT_NOT_FOUND",
+          message: "Chat not found",
+        });
       }
 
       // Prepare update object with only provided fields
@@ -356,7 +359,10 @@ export const cancelStreamFromClient = mutation({
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     const chat = await ctx.db
@@ -365,12 +371,18 @@ export const cancelStreamFromClient = mutation({
       .first();
 
     if (!chat) {
-      throw new Error("Chat not found");
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
     }
 
     // Verify ownership
     if (chat.user_id !== identity.subject) {
-      throw new Error("Unauthorized: Chat does not belong to user");
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
     }
 
     // Only patch if needed
@@ -496,7 +508,10 @@ export const deleteChat = mutation({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -509,7 +524,10 @@ export const deleteChat = mutation({
       if (!chat) {
         return null;
       } else if (chat.user_id !== user.subject) {
-        throw new Error("Unauthorized: Chat does not belong to user");
+        throw new ConvexError({
+          code: "ACCESS_DENIED",
+          message: "Unauthorized: Chat does not belong to user",
+        });
       }
 
       // Delete all messages and their associated files
@@ -617,7 +635,10 @@ export const renameChat = mutation({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -628,19 +649,31 @@ export const renameChat = mutation({
         .first();
 
       if (!chat) {
-        throw new Error("Chat not found");
+        throw new ConvexError({
+          code: "CHAT_NOT_FOUND",
+          message: "Chat not found",
+        });
       } else if (chat.user_id !== user.subject) {
-        throw new Error("Unauthorized: Chat does not belong to user");
+        throw new ConvexError({
+          code: "ACCESS_DENIED",
+          message: "Unauthorized: Chat does not belong to user",
+        });
       }
 
       // Validate the new title
       const trimmedTitle = args.newTitle.trim();
       if (!trimmedTitle) {
-        throw new Error("Chat title cannot be empty");
+        throw new ConvexError({
+          code: "VALIDATION_ERROR",
+          message: "Chat title cannot be empty",
+        });
       }
 
       if (trimmedTitle.length > 100) {
-        throw new Error("Chat title cannot exceed 100 characters");
+        throw new ConvexError({
+          code: "VALIDATION_ERROR",
+          message: "Chat title cannot exceed 100 characters",
+        });
       }
 
       // Update the chat title
@@ -652,7 +685,15 @@ export const renameChat = mutation({
       return null;
     } catch (error) {
       console.error("Failed to rename chat:", error);
-      throw error;
+      // Re-throw ConvexError as-is, wrap others
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      throw new ConvexError({
+        code: "CHAT_RENAME_FAILED",
+        message:
+          error instanceof Error ? error.message : "Failed to rename chat",
+      });
     }
   },
 });
@@ -667,7 +708,10 @@ export const deleteAllChats = mutation({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -794,7 +838,10 @@ export const saveLatestSummary = mutation({
         .first();
 
       if (!chat) {
-        throw new Error("Chat not found");
+        throw new ConvexError({
+          code: "CHAT_NOT_FOUND",
+          message: "Chat not found",
+        });
       }
 
       // Delete old summary if it exists

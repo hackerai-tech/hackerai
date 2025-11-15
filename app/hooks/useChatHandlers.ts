@@ -7,6 +7,7 @@ import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
   getMaxTokensForSubscription,
+  MAX_TOKENS_FILE,
 } from "@/lib/token-utils";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
@@ -146,6 +147,22 @@ export const useChatHandlers = ({
       // Check token limit before sending based on user plan
       const tokenCount = countInputTokens(input, uploadedFiles);
       const maxTokens = getMaxTokensForSubscription(subscription);
+
+      // Additional validation for Ask mode: ensure files don't exceed Ask mode token limits
+      // This prevents uploading files in Agent mode then switching to Ask mode to send them
+      if (chatMode === "ask" && uploadedFiles.length > 0) {
+        const fileTokens = uploadedFiles.reduce(
+          (total, file) => total + (file.tokens || 0),
+          0,
+        );
+        if (fileTokens > MAX_TOKENS_FILE) {
+          toast.error("Cannot send files in Ask mode", {
+            description: `Files exceed Ask mode token limit (${fileTokens.toLocaleString()}/${MAX_TOKENS_FILE.toLocaleString()} tokens). Tip: Switch to Agent mode or remove large files.`,
+          });
+          return;
+        }
+      }
+
       if (tokenCount > maxTokens) {
         const hasFiles = uploadedFiles.length > 0;
         const planText = subscription !== "free" ? "" : " (Free plan limit)";

@@ -1,5 +1,5 @@
 import { mutation } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 
 export const createFeedback = mutation({
   args: {
@@ -12,7 +12,10 @@ export const createFeedback = mutation({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     // Find the message to update
@@ -22,11 +25,16 @@ export const createFeedback = mutation({
       .unique();
 
     if (!message) {
-      throw new Error("Message not found");
+      throw new ConvexError({
+        code: "MESSAGE_NOT_FOUND",
+        message: "Message not found",
+      });
     } else if (message.user_id !== user.subject) {
-      throw new Error(
-        "Unauthorized: User not allowed to give feedback for this message",
-      );
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message:
+          "Unauthorized: User not allowed to give feedback for this message",
+      });
     }
 
     // If message already has feedback, update it

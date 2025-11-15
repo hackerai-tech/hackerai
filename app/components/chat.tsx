@@ -444,7 +444,7 @@ export const Chat = ({
     handleDragLeave,
     handleDragOver,
     handleDrop,
-  } = useFileUpload();
+  } = useFileUpload(chatMode);
 
   // Handle instant scroll to bottom when loading existing chat messages
   useEffect(() => {

@@ -2,10 +2,12 @@
 
 import React, { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import { ConvexError } from "convex/values";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -114,9 +116,18 @@ const ChatItem: React.FC<ChatItemProps> = ({
         router.push("/");
       }
     } catch (error: any) {
-      // Treat not found as success, and swallow other errors to avoid user noise
-      const message = String(error?.message || error);
-      if (message.includes("Chat not found")) {
+      // Extract error message
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to delete chat"
+          : error instanceof Error
+            ? error.message
+            : String(error?.message || error);
+
+      // Treat not found as success, and show other errors
+      if (errorMessage.includes("Chat not found")) {
         // Even if chat not found in DB, still clean up draft
         removeDraft(id);
         if (isCurrentlyActive) {
@@ -125,6 +136,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
         }
       } else {
         console.error("Failed to delete chat:", error);
+        toast.error(errorMessage);
       }
     } finally {
       setIsDeleting(false);
@@ -160,6 +172,15 @@ const ChatItem: React.FC<ChatItemProps> = ({
       setShowRenameDialog(false);
     } catch (error) {
       console.error("Failed to rename chat:", error);
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to rename chat"
+          : error instanceof Error
+            ? error.message
+            : "Failed to rename chat";
+      toast.error(errorMessage);
       setEditTitle(displayTitle); // Reset to original title on error
     } finally {
       setIsRenaming(false);

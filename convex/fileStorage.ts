@@ -4,7 +4,7 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./chats";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
@@ -21,7 +21,10 @@ export const getFileDownloadUrl = query({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     try {
@@ -34,7 +37,10 @@ export const getFileDownloadUrl = query({
       const file = userFiles.find((f) => f.storage_id === args.storageId);
 
       if (!file) {
-        throw new Error("File not found");
+        throw new ConvexError({
+          code: "FILE_NOT_FOUND",
+          message: "File not found",
+        });
       }
 
       // Generate and return signed URL
@@ -107,7 +113,10 @@ export const generateUploadUrl = mutation({
     if (args.serviceKey) {
       validateServiceKey(args.serviceKey);
       if (!args.userId) {
-        throw new Error("userId is required when using serviceKey");
+        throw new ConvexError({
+          code: "MISSING_USER_ID",
+          message: "userId is required when using serviceKey",
+        });
       }
       actingUserId = args.userId;
       entitlements = ["ultra-plan"]; // Max limit for service flows
@@ -115,7 +124,10 @@ export const generateUploadUrl = mutation({
       // User-authenticated flow
       const user = await ctx.auth.getUserIdentity();
       if (!user) {
-        throw new Error("Unauthorized: User not authenticated");
+        throw new ConvexError({
+          code: "UNAUTHORIZED",
+          message: "Unauthorized: User not authenticated",
+        });
       }
       actingUserId = user.subject;
       entitlements = Array.isArray(user.entitlements)
@@ -128,7 +140,10 @@ export const generateUploadUrl = mutation({
     // Check file limit
     const fileLimit = getFileLimit(entitlements);
     if (fileLimit === 0) {
-      throw new Error("Paid plan required for file uploads");
+      throw new ConvexError({
+        code: "PAID_PLAN_REQUIRED",
+        message: "Paid plan required for file uploads",
+      });
     }
 
     const currentFileCount = await ctx.runQuery(
@@ -137,9 +152,10 @@ export const generateUploadUrl = mutation({
     );
 
     if (currentFileCount >= fileLimit) {
-      throw new Error(
-        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan`,
-      );
+      throw new ConvexError({
+        code: "FILE_LIMIT_EXCEEDED",
+        message: `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
+      });
     }
 
     return await ctx.storage.generateUploadUrl();
@@ -188,17 +204,26 @@ export const deleteFile = mutation({
     const user = await ctx.auth.getUserIdentity();
 
     if (!user) {
-      throw new Error("Unauthorized: User not authenticated");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
     }
 
     const file = await ctx.db.get(args.fileId);
 
     if (!file) {
-      throw new Error("File not found");
+      throw new ConvexError({
+        code: "FILE_NOT_FOUND",
+        message: "File not found",
+      });
     }
 
     if (file.user_id !== user.subject) {
-      throw new Error("Unauthorized: File does not belong to user");
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: File does not belong to user",
+      });
     }
 
     // Delete from appropriate storage
@@ -307,6 +332,7 @@ export const getFileContentByFileIds = query({
       name: v.string(),
       mediaType: v.string(),
       content: v.union(v.string(), v.null()),
+      tokenSize: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -326,6 +352,7 @@ export const getFileContentByFileIds = query({
           name: "Unknown",
           mediaType: "unknown",
           content: null,
+          tokenSize: 0,
         };
       }
 
@@ -339,6 +366,7 @@ export const getFileContentByFileIds = query({
         name: file.name,
         mediaType: file.media_type,
         content: isSupportedImage || isPdf ? null : file.content || null,
+        tokenSize: file.file_token_size,
       };
     });
   },
@@ -376,11 +404,9 @@ export const purgeExpiredUnattachedFiles = internalMutation({
             internal.s3Cleanup.deleteS3ObjectAction,
             { s3Key: file.s3_key },
           );
-          console.log(`Scheduled S3 deletion for key: ${file.s3_key}`);
         } else if (file.storage_id) {
           // Delete from Convex storage
           await ctx.storage.delete(file.storage_id);
-          console.log(`Deleted Convex storage file: ${file.storage_id}`);
         } else {
           console.warn(
             `File ${file._id} has neither s3_key nor storage_id, skipping storage deletion`,
@@ -394,10 +420,6 @@ export const purgeExpiredUnattachedFiles = internalMutation({
       await ctx.db.delete(file._id);
       deletedCount++;
     }
-
-    console.log(
-      `Purged ${deletedCount} unattached files (cutoff: ${new Date(args.cutoffTimeMs).toISOString()})`,
-    );
 
     return { deletedCount };
   },
