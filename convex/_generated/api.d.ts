@@ -9,7 +9,6 @@
  */
 
 import type * as chats from "../chats.js";
-import type * as constants from "../constants.js";
 import type * as crons from "../crons.js";
 import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
@@ -31,7 +30,6 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   chats: typeof chats;
-  constants: typeof constants;
   crons: typeof crons;
   feedback: typeof feedback;
   fileActions: typeof fileActions;

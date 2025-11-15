@@ -134,9 +134,11 @@ export async function processMessageFiles(
           }
         }
 
-        // Files no longer have URLs in parts - they're fetched on-demand
-        // Process PDFs and images (URLs will be fetched when needed)
+        // Files no longer have URLs in parts - they're fetched on-demand.
+        // In agent mode, process ALL files to get URLs for sandbox upload.
+        // In ask mode, only process PDFs and images for URL transformation.
         const shouldProcess =
+          mode === "agent" ||
           part.mediaType === "application/pdf" ||
           (part.mediaType && isSupportedImageMediaType(part.mediaType));
 
