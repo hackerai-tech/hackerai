@@ -14,44 +14,28 @@ const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   return -1;
 };
 
-/**
- * Sanitizes a filename to be terminal-friendly by removing/replacing problematic characters
- * - Replaces spaces with underscores
- * - Removes special characters that need escaping
- * - Preserves file extension
- * - Ensures the name is valid and readable
- */
 const sanitizeFilenameForTerminal = (filename: string): string => {
-  // Remove path separators first
   const basename = filename.split(/[/\\]/g).pop() ?? "file";
-
-  // Split into name and extension
   const lastDotIndex = basename.lastIndexOf(".");
   const hasExtension = lastDotIndex > 0;
   const name = hasExtension ? basename.substring(0, lastDotIndex) : basename;
   const ext = hasExtension ? basename.substring(lastDotIndex) : "";
 
-  // Replace spaces and special characters
-  let sanitized = name
-    .replace(/\s+/g, "_") // Replace spaces with underscores
-    .replace(/[^\w.-]/g, "") // Remove special characters except word chars, dots, and hyphens
-    .replace(/_{2,}/g, "_") // Replace multiple underscores with single
-    .replace(/^[._-]+/, "") // Remove leading dots, underscores, or hyphens
-    .replace(/[._-]+$/, ""); // Remove trailing dots, underscores, or hyphens
+  const sanitized =
+    name
+      .replace(/\s+/g, "_")
+      .replace(/[^\w.-]/g, "")
+      .replace(/_{2,}/g, "_")
+      .replace(/^[._-]+|[._-]+$/g, "") || "file";
 
-  // Fallback if name becomes empty
-  if (!sanitized) {
-    sanitized = "file";
-  }
-
-  // Sanitize extension (remove special chars except the leading dot)
-  const sanitizedExt = ext.replace(/[^\w.]/g, "");
-
-  return sanitized + sanitizedExt;
+  return sanitized + ext.replace(/[^\w.]/g, "");
 };
 
 /**
- * Collects sandbox files from message parts and appends attachment tags in agent mode
+ * Collects sandbox files from message parts and appends attachment tags
+ * - Sanitizes filenames for terminal compatibility
+ * - Adds attachment tags to user messages
+ * - Only queues files from the last user message for upload
  */
 export const collectSandboxFiles = (
   updatedMessages: UIMessage[],
@@ -60,18 +44,17 @@ export const collectSandboxFiles = (
   const lastUserIdx = getLastUserMessageIndex(updatedMessages);
   if (lastUserIdx === -1) return;
 
-  for (let i = 0; i < updatedMessages.length; i++) {
-    const msg = updatedMessages[i];
-    if (msg.role !== "user" || !msg.parts) continue;
+  updatedMessages.forEach((msg, i) => {
+    if (msg.role !== "user" || !msg.parts) return;
 
     const tags: string[] = [];
-
-    for (const part of msg.parts as any[]) {
+    (msg.parts as any[]).forEach((part) => {
       if (part?.type === "file" && part?.fileId && part?.url) {
-        const rawName: string = part.name || part.filename || "file";
-        const sanitizedName = sanitizeFilenameForTerminal(rawName);
+        const sanitizedName = sanitizeFilenameForTerminal(
+          part.name || part.filename || "file",
+        );
         const localPath = `/home/user/upload/${sanitizedName}`;
-        // Only upload files for the last user message
+
         if (i === lastUserIdx) {
           sandboxFiles.push({ url: part.url, localPath });
         }
@@ -79,40 +62,47 @@ export const collectSandboxFiles = (
           `<attachment filename="${sanitizedName}" local_path="${localPath}" />`,
         );
       }
-    }
+    });
 
     if (tags.length > 0) {
       (msg.parts as any[]).push({ type: "text", text: tags.join("\n") });
     }
+  });
+};
+
+const fetchFileData = async (file: SandboxFile) => {
+  if (!file.url || !file.localPath) return null;
+  try {
+    const res = await fetch(file.url);
+    if (!res.ok) return null;
+    return { localPath: file.localPath, data: await res.arrayBuffer() };
+  } catch {
+    return null;
   }
 };
 
+/**
+ * Uploads files to the sandbox environment in parallel
+ * - Fetches file data from URLs
+ * - Writes files to sandbox filesystem
+ * - Handles errors gracefully without throwing
+ */
 export const uploadSandboxFiles = async (
   sandboxFiles: SandboxFile[],
   ensureSandbox: () => Promise<any>,
 ) => {
   try {
-    const sandbox = await ensureSandbox();
+    const [sandbox, ...fileDataResults] = await Promise.all([
+      ensureSandbox(),
+      ...sandboxFiles.map(fetchFileData),
+    ]);
 
-    // Fetch all files in parallel
-    const fileDataPromises = sandboxFiles.map(async (file) => {
-      if (!file.url || !file.localPath) return null;
-      const res = await fetch(file.url);
-      if (!res.ok) return null;
-      const ab = await res.arrayBuffer();
-      return { localPath: file.localPath, data: ab };
-    });
-
-    const fileDataResults = await Promise.all(fileDataPromises);
-
-    // Write files in parallel
     await Promise.all(
-      fileDataResults.map((fileData) => {
-        if (!fileData) return Promise.resolve();
-        return sandbox.files.write(fileData.localPath, fileData.data, {
+      fileDataResults.filter(Boolean).map((fileData) =>
+        sandbox.files.write(fileData!.localPath, fileData!.data, {
           user: "user" as const,
-        });
-      }),
+        }),
+      ),
     );
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);

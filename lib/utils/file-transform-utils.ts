@@ -4,86 +4,202 @@ import { api } from "@/convex/_generated/api";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessage } from "ai";
 import type { ChatMode } from "@/types";
-import type { FileMessagePart } from "@/types/file";
 import { Id } from "@/convex/_generated/dataModel";
 import { isSupportedImageMediaType } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
-import { extractAllFileIdsFromMessages } from "./file-token-utils";
+import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
+import { MAX_TOKENS_FILE } from "../token-utils";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
-function isFilePart(part: any): part is FileMessagePart {
-  return part && typeof part === "object" && part.type === "file";
-}
-
-function containsPdfAttachments(messages: UIMessage[]): boolean {
-  return messages.some((message: any) =>
-    (message.parts || []).some(
+const containsPdfAttachments = (messages: UIMessage[]): boolean =>
+  messages.some((msg: any) =>
+    (msg.parts || []).some(
       (part: any) => isFilePart(part) && part.mediaType === "application/pdf",
     ),
   );
-}
 
-/**
- * Converts a file URL to a base64 data URL for the given media type.
- * Falls back to original URL on failure.
- * @param url - The URL of the file to convert
- * @param mediaType - MIME type for the data URL
- * @returns Base64 data URL or original URL if conversion fails
- */
-async function convertUrlToBase64DataUrl(
+const isMediaFile = (mediaType?: string) =>
+  mediaType &&
+  (isSupportedImageMediaType(mediaType) || mediaType === "application/pdf");
+
+const convertUrlToBase64DataUrl = async (
   url: string,
   mediaType: string,
-): Promise<string> {
+): Promise<string> => {
   if (!url) return url;
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 30000);
+
   try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-
-    try {
-      const response = await fetch(url, {
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        console.error(`Failed to fetch file (${response.status}): ${url}`);
-        return url;
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const base64Data = buffer.toString("base64");
-
-      return `data:${mediaType};base64,${base64Data}`;
-    } finally {
-      clearTimeout(timeoutId);
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      console.error(`Failed to fetch file (${response.status}): ${url}`);
+      return url;
     }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return `data:${mediaType};base64,${buffer.toString("base64")}`;
   } catch (error) {
     console.error("Failed to convert file to base64:", {
       url,
       error: error instanceof Error ? error.message : String(error),
-      errorType: error instanceof Error ? error.constructor.name : typeof error,
     });
     return url;
+  } finally {
+    clearTimeout(timeoutId);
   }
-}
+};
+
+const collectFilesToProcess = (
+  messages: UIMessage[],
+  mode: ChatMode,
+): {
+  hasMedia: boolean;
+  files: Map<
+    string,
+    {
+      url?: string;
+      mediaType?: string;
+      positions: Array<{ messageIndex: number; partIndex: number }>;
+    }
+  >;
+} => {
+  let hasMedia = false;
+  const files = new Map<
+    string,
+    {
+      url?: string;
+      mediaType?: string;
+      positions: Array<{ messageIndex: number; partIndex: number }>;
+    }
+  >();
+
+  messages.forEach((msg, messageIndex) => {
+    if (!msg.parts) return;
+
+    (msg.parts as any[]).forEach((part, partIndex) => {
+      if (!isFilePart(part) || !part.fileId) return;
+
+      if (isMediaFile(part.mediaType)) hasMedia = true;
+
+      const shouldProcess =
+        mode === "agent" ||
+        part.mediaType === "application/pdf" ||
+        isMediaFile(part.mediaType);
+
+      if (shouldProcess) {
+        if (!files.has(part.fileId)) {
+          files.set(part.fileId, { mediaType: part.mediaType, positions: [] });
+        }
+        files.get(part.fileId)!.positions.push({ messageIndex, partIndex });
+      }
+    });
+  });
+
+  return { hasMedia, files };
+};
+
+const fetchFileUrls = async (fileIds: string[]): Promise<(string | null)[]> => {
+  if (!fileIds.length) return [];
+
+  try {
+    return await convex.action(api.s3Actions.getFileUrlsByFileIdsAction, {
+      serviceKey,
+      fileIds: fileIds as Id<"files">[],
+    });
+  } catch (error) {
+    console.error("Failed to fetch file URLs:", {
+      error: error instanceof Error ? error.message : String(error),
+      fileCount: fileIds.length,
+    });
+    return [];
+  }
+};
+
+const applyUrlsToFileParts = async (
+  messages: UIMessage[],
+  filesToProcess: Map<
+    string,
+    {
+      url?: string;
+      mediaType?: string;
+      positions: Array<{ messageIndex: number; partIndex: number }>;
+    }
+  >,
+) => {
+  const fileIdsNeedingUrls = Array.from(filesToProcess.entries())
+    .filter(([_, file]) => !file.url)
+    .map(([fileId]) => fileId);
+
+  const fetchedUrls = await fetchFileUrls(fileIdsNeedingUrls);
+
+  fileIdsNeedingUrls.forEach((fileId, index) => {
+    const file = filesToProcess.get(fileId);
+    if (file && fetchedUrls[index]) {
+      file.url = fetchedUrls[index];
+    }
+  });
+
+  for (const [_, file] of filesToProcess) {
+    if (!file.url) continue;
+
+    const finalUrl =
+      file.mediaType === "application/pdf"
+        ? await convertUrlToBase64DataUrl(file.url, "application/pdf").catch(
+            () => file.url!,
+          )
+        : file.url;
+
+    file.positions.forEach(({ messageIndex, partIndex }) => {
+      const filePart = messages[messageIndex].parts![partIndex] as any;
+      if (filePart.type === "file") filePart.url = finalUrl;
+    });
+  }
+};
+
+const applyModeSpecificTransforms = async (
+  messages: UIMessage[],
+  mode: ChatMode,
+  sandboxFiles: SandboxFile[],
+) => {
+  const fileIds = extractAllFileIdsFromMessages(messages);
+
+  if (mode === "agent") {
+    collectSandboxFiles(messages, sandboxFiles);
+    removeNonMediaFileParts(messages);
+  } else {
+    const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
+    if (nonMediaFileIds.length > 0) {
+      await addDocumentContentToMessages(messages, nonMediaFileIds);
+    }
+    removeAudioFileParts(messages);
+  }
+};
 
 /**
- * Processes all file attachments in messages:
- * - Transforms storage IDs to URLs
- * - Converts PDFs to base64
- * - Detects media and PDF files
- * - Processes document content for non-media files
- * - Prepares sandbox file uploads for agent mode
- * @param messages - Array of messages to process
- * @param mode - Chat mode (ask or agent)
- * @returns Processed messages with file metadata
+ * Processes all file attachments in messages for AI model consumption
+ *
+ * Transforms file parts based on chat mode:
+ * - **Ask mode**: Converts non-media files to document content, keeps images/PDFs as file parts
+ * - **Agent mode**: Prepares all files for sandbox upload, keeps only images as file parts
+ *
+ * Processing steps:
+ * 1. Generates fresh URLs for files (prevents expiration)
+ * 2. Converts PDFs to base64 for inline viewing
+ * 3. Detects media files (images/PDFs)
+ * 4. Applies mode-specific transforms:
+ *    - Ask: Injects document content for text files, removes audio
+ *    - Agent: Collects files for sandbox, adds attachment tags, removes non-images
+ *
+ * @param messages - Messages to process
+ * @param mode - Chat mode ("ask" or "agent")
+ * @returns Processed messages with file metadata and sandbox files for upload
  */
-
-export async function processMessageFiles(
+export const processMessageFiles = async (
   messages: UIMessage[],
   mode: ChatMode = "ask",
 ): Promise<{
@@ -91,7 +207,7 @@ export async function processMessageFiles(
   hasMediaFiles: boolean;
   sandboxFiles: SandboxFile[];
   containsPdfFiles: boolean;
-}> {
+}> => {
   if (!messages.length) {
     return {
       messages,
@@ -101,265 +217,91 @@ export async function processMessageFiles(
     };
   }
 
-  // Create a deep copy to avoid mutation
   const updatedMessages = JSON.parse(JSON.stringify(messages)) as UIMessage[];
-
-  // Track media file types
-  let hasMediaFiles = false;
   const sandboxFiles: SandboxFile[] = [];
 
-  // Collect files that need processing
-  const filesToProcess = new Map<
-    string,
-    {
-      url?: string; // Populated dynamically during processing, not from parts
-      mediaType?: string;
-      positions: Array<{ messageIndex: number; partIndex: number }>;
-    }
-  >();
+  const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
-  // Scan all messages for file parts
-  updatedMessages.forEach((message, messageIndex) => {
-    if (!message.parts) return;
+  if (files.size > 0) {
+    await applyUrlsToFileParts(updatedMessages, files);
+  }
 
-    message.parts.forEach((part: any, partIndex) => {
-      if (isFilePart(part) && part.fileId) {
-        // Check for media files (supported images and PDFs)
-        if (part.mediaType) {
-          if (
-            isSupportedImageMediaType(part.mediaType) ||
-            part.mediaType === "application/pdf"
-          ) {
-            hasMediaFiles = true;
-          }
-        }
+  await applyModeSpecificTransforms(updatedMessages, mode, sandboxFiles);
 
-        // Files no longer have URLs in parts - they're fetched on-demand.
-        // In agent mode, process ALL files to get URLs for sandbox upload.
-        // In ask mode, only process PDFs and images for URL transformation.
-        const shouldProcess =
-          mode === "agent" ||
-          part.mediaType === "application/pdf" ||
-          (part.mediaType && isSupportedImageMediaType(part.mediaType));
+  return {
+    messages: updatedMessages,
+    hasMediaFiles: hasMedia,
+    sandboxFiles,
+    containsPdfFiles: containsPdfAttachments(updatedMessages),
+  };
+};
 
-        if (shouldProcess) {
-          if (!filesToProcess.has(part.fileId)) {
-            filesToProcess.set(part.fileId, {
-              mediaType: part.mediaType,
-              positions: [],
-            });
-          }
-          filesToProcess
-            .get(part.fileId)!
-            .positions.push({ messageIndex, partIndex });
-        }
+const filterNonMediaFileIds = (
+  messages: UIMessage[],
+  fileIds: Id<"files">[],
+): Id<"files">[] => {
+  const mediaFileIds = new Set<string>();
+
+  messages.forEach((msg) => {
+    if (!msg.parts) return;
+    (msg.parts as any[]).forEach((part) => {
+      if (part.type === "file" && part.fileId && isMediaFile(part.mediaType)) {
+        mediaFileIds.add(part.fileId);
       }
     });
   });
 
-  if (filesToProcess.size === 0) {
-    // Always add document content for non-media files even if no URL processing is needed
-    const fileIds = extractAllFileIdsFromMessages(updatedMessages);
-    // Mode-specific transforms
-    if (mode === "agent") {
-      collectSandboxFiles(updatedMessages, sandboxFiles);
-      removeNonMediaFileParts(updatedMessages);
-    } else {
-      if (fileIds.length > 0) {
-        // Filter out media files - they should stay as file parts in ask mode
-        const nonMediaFileIds = filterNonMediaFileIds(updatedMessages, fileIds);
-        if (nonMediaFileIds.length > 0) {
-          await addDocumentContentToMessages(updatedMessages, nonMediaFileIds);
-        }
-      }
-      // In ask mode, strip audio files entirely to avoid provider errors
-      removeAudioFileParts(updatedMessages);
-    }
-
-    const containsPdfFiles = containsPdfAttachments(updatedMessages);
-
-    return {
-      messages: updatedMessages,
-      hasMediaFiles,
-      sandboxFiles,
-      containsPdfFiles,
-    };
-  }
-
-  try {
-    // Always fetch fresh URLs for all files that need processing
-    // Frontend strips URLs before sending, so we always generate fresh ones here
-    // This ensures URLs never expire and prevents 403 errors
-    // Uses action (not query) to support both S3 presigned URLs and Convex storage URLs
-    const fileIdsNeedingUrls = Array.from(filesToProcess.entries())
-      .filter(([_, file]) => !file.url)
-      .map(([fileId]) => fileId);
-
-    let fetchedUrls: (string | null)[] = [];
-    if (fileIdsNeedingUrls.length > 0) {
-      try {
-        // Use ACTION instead of QUERY to properly generate S3 presigned URLs
-        // Actions can call Node.js APIs (AWS SDK) while queries cannot
-        fetchedUrls = await convex.action(
-          api.s3Actions.getFileUrlsByFileIdsAction,
-          {
-            serviceKey,
-            fileIds: fileIdsNeedingUrls as Id<"files">[],
-          },
-        );
-      } catch (error) {
-        console.error("Failed to fetch file URLs:", {
-          error: error instanceof Error ? error.message : String(error),
-          fileCount: fileIdsNeedingUrls.length,
-        });
-        // Continue with empty URLs - files without URLs will be skipped in processing
-      }
-    }
-
-    // Map fetched URLs back to files
-    fileIdsNeedingUrls.forEach((fileId, index) => {
-      const file = filesToProcess.get(fileId);
-      if (file && fetchedUrls[index]) {
-        file.url = fetchedUrls[index];
-      }
-    });
-
-    // Process each file
-    for (const [fileId, file] of filesToProcess) {
-      if (!file.url) continue;
-
-      let finalUrl = file.url;
-      if (file.mediaType === "application/pdf") {
-        try {
-          finalUrl = await convertUrlToBase64DataUrl(
-            file.url,
-            "application/pdf",
-          );
-        } catch (error) {
-          console.error("Error converting PDF to base64, using original URL:", {
-            fileId,
-            url: file.url,
-            error: error instanceof Error ? error.message : String(error),
-          });
-          // Continue with original URL if conversion fails
-        }
-      }
-
-      // Update all file parts with the final URL
-      file.positions.forEach(({ messageIndex, partIndex }) => {
-        const filePart = updatedMessages[messageIndex].parts![partIndex] as any;
-        if (filePart.type === "file") {
-          filePart.url = finalUrl;
-        }
-      });
-    }
-
-    // Detect if any attached files are PDFs
-    const containsPdfFiles = containsPdfAttachments(updatedMessages);
-
-    // Extract file IDs from all messages and process document content
-    const fileIds = extractAllFileIdsFromMessages(updatedMessages);
-    // Mode-specific transforms
-    if (mode === "agent") {
-      collectSandboxFiles(updatedMessages, sandboxFiles);
-      removeNonMediaFileParts(updatedMessages);
-    } else {
-      if (fileIds.length > 0) {
-        // Filter out media files - they should stay as file parts in ask mode
-        const nonMediaFileIds = filterNonMediaFileIds(updatedMessages, fileIds);
-        if (nonMediaFileIds.length > 0) {
-          await addDocumentContentToMessages(updatedMessages, nonMediaFileIds);
-        }
-      }
-      // In ask mode, strip audio files entirely to avoid provider errors
-      removeAudioFileParts(updatedMessages);
-    }
-
-    return {
-      messages: updatedMessages,
-      hasMediaFiles,
-      sandboxFiles,
-      containsPdfFiles,
-    };
-  } catch (error) {
-    console.error("Failed to transform file URLs:", {
-      error: error instanceof Error ? error.message : String(error),
-      errorType: error instanceof Error ? error.constructor.name : typeof error,
-    });
-    // Return processed messages even if some transformations failed
-    return {
-      messages: updatedMessages,
-      hasMediaFiles,
-      sandboxFiles: [],
-      containsPdfFiles: false,
-    };
-  }
-}
-
-/**
- * Filters out media files (images and PDFs) from the file IDs array.
- * Returns only non-media file IDs that should be converted to document content.
- */
-function filterNonMediaFileIds(
-  messages: UIMessage[],
-  fileIds: Id<"files">[],
-): Id<"files">[] {
-  // Build a set of media file IDs from message parts
-  const mediaFileIds = new Set<string>();
-
-  for (const message of messages) {
-    if (!message.parts) continue;
-
-    for (const part of message.parts as any[]) {
-      if (part.type === "file" && part.fileId && part.mediaType) {
-        // Keep images and PDFs as file parts
-        if (
-          isSupportedImageMediaType(part.mediaType) ||
-          part.mediaType === "application/pdf"
-        ) {
-          mediaFileIds.add(part.fileId);
-        }
-      }
-    }
-  }
-
-  // Return only non-media file IDs
   return fileIds.filter((fileId) => !mediaFileIds.has(fileId));
-}
+};
 
-/**
- * Adds document content to the specific messages where files were attached and removes those file parts
- * @param messages - Array of messages to process
- * @param fileIds - Array of file IDs to fetch content for
- */
-async function addDocumentContentToMessages(
+const formatDocument = (
+  id: string,
+  name: string,
+  content: string,
+) => `<document id="${id}">
+<source>${name}</source>
+<document_content>${content}</document_content>
+</document>`;
+
+const formatUnprocessableDocument = (name: string, reason: string) =>
+  `<document>
+<source>${name}</source>
+<document_content>${reason}</document_content>
+</document>`;
+
+const addDocumentContentToMessages = async (
   messages: UIMessage[],
   fileIds: Id<"files">[],
-): Promise<void> {
-  if (fileIds.length === 0 || messages.length === 0) {
-    return;
-  }
+): Promise<void> => {
+  if (!fileIds.length || !messages.length) return;
 
   try {
-    // Fetch file content and metadata
     const fileContents = await convex.query(
       api.fileStorage.getFileContentByFileIds,
-      {
-        serviceKey,
-        fileIds,
-      },
+      { serviceKey, fileIds },
     );
 
-    // Create a map of fileId to content
-    const fileContentMap = new Map<string, { name: string; content: string }>();
+    const processableFiles = new Map<
+      string,
+      { name: string; content: string }
+    >();
     const unprocessableFiles = new Map<
       string,
       { name: string; reason: string }
     >();
 
-    for (const file of fileContents) {
-      if (file.content !== null && file.content.trim().length > 0) {
-        fileContentMap.set(file.id, { name: file.name, content: file.content });
+    fileContents.forEach((file) => {
+      // Check if file exceeds token limit for ask mode
+      if (file.tokenSize > MAX_TOKENS_FILE) {
+        unprocessableFiles.set(file.id, {
+          name: file.name,
+          reason: `This file is too large for ask mode (${file.tokenSize.toLocaleString()} tokens, limit: ${MAX_TOKENS_FILE.toLocaleString()} tokens). Please use agent mode to access this file, where you can use terminal tools to analyze it.`,
+        });
+      } else if (file.content?.trim()) {
+        processableFiles.set(file.id, {
+          name: file.name,
+          content: file.content,
+        });
       } else {
         unprocessableFiles.set(file.id, {
           name: file.name,
@@ -367,137 +309,64 @@ async function addDocumentContentToMessages(
             "This file has no readable text content. If you need to process this file, please use agent mode where you can use terminal tools to analyze binary or complex file formats.",
         });
       }
-    }
+    });
 
-    // Process each message and add document content where files exist
-    for (const message of messages) {
-      if (!message.parts) continue;
+    messages.forEach((msg) => {
+      if (!msg.parts) return;
 
-      const documentsForThisMessage: Array<{
-        id: string;
-        name: string;
-        content: string;
-      }> = [];
+      const documents: string[] = [];
       const fileIdsToRemove = new Set<string>();
-      const unprocessableFilesForThisMessage: Array<{
-        name: string;
-        reason: string;
-      }> = [];
 
-      // Collect all documents from file parts in this message
-      for (const part of message.parts as any[]) {
-        if (part.type === "file" && part.fileId) {
-          // Check if it's an unprocessable file
-          if (unprocessableFiles.has(part.fileId)) {
-            const fileInfo = unprocessableFiles.get(part.fileId)!;
+      (msg.parts as any[]).forEach((part) => {
+        if (part.type !== "file" || !part.fileId) return;
 
-            unprocessableFilesForThisMessage.push(fileInfo);
-            fileIdsToRemove.add(part.fileId);
-          } else if (fileContentMap.has(part.fileId)) {
-            const fileData = fileContentMap.get(part.fileId)!;
-
-            documentsForThisMessage.push({
-              id: part.fileId,
-              name: fileData.name,
-              content: fileData.content,
-            });
-            fileIdsToRemove.add(part.fileId);
-          }
+        if (unprocessableFiles.has(part.fileId)) {
+          const { name, reason } = unprocessableFiles.get(part.fileId)!;
+          documents.push(formatUnprocessableDocument(name, reason));
+          fileIdsToRemove.add(part.fileId);
+        } else if (processableFiles.has(part.fileId)) {
+          const { name, content } = processableFiles.get(part.fileId)!;
+          documents.push(formatDocument(part.fileId, name, content));
+          fileIdsToRemove.add(part.fileId);
         }
-      }
+      });
 
-      // Build content to add to message
-      let contentToAdd = "";
-
-      // Add document content if there are processable files
-      if (documentsForThisMessage.length > 0) {
-        const documents = documentsForThisMessage
-          .map((file) => {
-            return `<document id="${file.id}">
-<source>${file.name}</source>
-<document_content>${file.content}</document_content>
-</document>`;
-          })
-          .join("\n\n");
-
-        contentToAdd = `<documents>\n${documents}\n</documents>`;
-      }
-
-      // Add notice about unprocessable files
-      if (unprocessableFilesForThisMessage.length > 0) {
-        const notices = unprocessableFilesForThisMessage
-          .map(
-            (file) => `<document>
-<source>${file.name}</source>
-<document_content>${file.reason}</document_content>
-</document>`,
-          )
-          .join("\n\n");
-
-        if (contentToAdd) {
-          contentToAdd += "\n\n" + notices;
-        } else {
-          contentToAdd = `<documents>\n${notices}\n</documents>`;
-        }
-      }
-
-      // Add the content and remove file parts
-      if (contentToAdd) {
-        // Add content as the first part of this message
-        message.parts.unshift({
+      if (documents.length > 0) {
+        msg.parts.unshift({
           type: "text",
-          text: contentToAdd,
+          text: `<documents>\n${documents.join("\n\n")}\n</documents>`,
         });
-
-        // Remove the file parts that were processed
-        message.parts = message.parts.filter((part: any) => {
-          if (part.type !== "file") return true;
-          return !fileIdsToRemove.has(part.fileId);
-        });
+        msg.parts = msg.parts.filter(
+          (part: any) =>
+            part.type !== "file" || !fileIdsToRemove.has(part.fileId),
+        );
       }
-    }
+    });
   } catch (error) {
     console.error("Failed to fetch and add document content:", {
       error: error instanceof Error ? error.message : String(error),
-      errorType: error instanceof Error ? error.constructor.name : typeof error,
       fileIds,
     });
-    // Continue processing without document content
   }
-}
+};
 
-/**
- * Generic file-part pruner using a predicate for which file MIME types to keep.
- */
-function pruneFileParts(
+const pruneFileParts = (
   messages: UIMessage[],
-  shouldKeepFile: (mediaType: string | undefined) => boolean,
-) {
-  for (const message of messages) {
-    if (!message.parts) continue;
-    message.parts = message.parts.filter((part: any) => {
-      if (part?.type !== "file") return true;
-      return shouldKeepFile(part.mediaType);
-    });
-  }
-}
-
-/**
- * Removes non-image file parts from messages (used in agent mode after files are transformed to attachment tags)
- * Only keeps image file parts so the model can see them. PDFs and text files are removed.
- */
-function removeNonMediaFileParts(messages: UIMessage[]) {
-  pruneFileParts(messages, (mediaType) =>
-    mediaType ? isSupportedImageMediaType(mediaType) : false,
-  );
-}
-
-/**
- * Removes audio file parts from messages (used in ask mode to avoid provider errors)
- */
-function removeAudioFileParts(messages: UIMessage[]) {
-  pruneFileParts(messages, (mediaType) => {
-    if (!mediaType) return true;
-    return !mediaType.startsWith("audio/");
+  shouldKeep: (mediaType?: string) => boolean,
+) => {
+  messages.forEach((msg) => {
+    if (!msg.parts) return;
+    msg.parts = msg.parts.filter(
+      (part: any) => part?.type !== "file" || shouldKeep(part.mediaType),
+    );
   });
-}
+};
+
+const removeNonMediaFileParts = (messages: UIMessage[]) =>
+  pruneFileParts(
+    messages,
+    (mediaType) => !!mediaType && isSupportedImageMediaType(mediaType),
+  );
+
+const removeAudioFileParts = (messages: UIMessage[]) =>
+  pruneFileParts(messages, (mediaType) => !mediaType?.startsWith("audio/"));

@@ -332,6 +332,7 @@ export const getFileContentByFileIds = query({
       name: v.string(),
       mediaType: v.string(),
       content: v.union(v.string(), v.null()),
+      tokenSize: v.number(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -351,6 +352,7 @@ export const getFileContentByFileIds = query({
           name: "Unknown",
           mediaType: "unknown",
           content: null,
+          tokenSize: 0,
         };
       }
 
@@ -364,6 +366,7 @@ export const getFileContentByFileIds = query({
         name: file.name,
         mediaType: file.media_type,
         content: isSupportedImage || isPdf ? null : file.content || null,
+        tokenSize: file.file_token_size,
       };
     });
   },
@@ -401,11 +404,9 @@ export const purgeExpiredUnattachedFiles = internalMutation({
             internal.s3Cleanup.deleteS3ObjectAction,
             { s3Key: file.s3_key },
           );
-          console.log(`Scheduled S3 deletion for key: ${file.s3_key}`);
         } else if (file.storage_id) {
           // Delete from Convex storage
           await ctx.storage.delete(file.storage_id);
-          console.log(`Deleted Convex storage file: ${file.storage_id}`);
         } else {
           console.warn(
             `File ${file._id} has neither s3_key nor storage_id, skipping storage deletion`,
