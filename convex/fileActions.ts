@@ -646,18 +646,25 @@ export const saveFile = action({
     } catch (error) {
       // Check if this is a ConvexError (including token limit errors) - re-throw as-is
       if (error instanceof ConvexError) {
-        // Delete storage before re-throwing
+        // Best-effort cleanup: delete storage before re-throwing
         console.error(
           `Error processing file "${args.name}". Deleting storage object.`,
         );
-        if (args.s3Key) {
-          await ctx.scheduler.runAfter(
-            0,
-            internal.s3Cleanup.deleteS3ObjectAction,
-            { s3Key: args.s3Key },
+        try {
+          if (args.s3Key) {
+            await ctx.scheduler.runAfter(
+              0,
+              internal.s3Cleanup.deleteS3ObjectAction,
+              { s3Key: args.s3Key },
+            );
+          } else if (args.storageId) {
+            await ctx.storage.delete(args.storageId);
+          }
+        } catch (cleanupError) {
+          console.warn(
+            `Failed to cleanup storage for file "${args.name}":`,
+            cleanupError,
           );
-        } else if (args.storageId) {
-          await ctx.storage.delete(args.storageId);
         }
         throw error; // Re-throw ConvexError as-is
       }
@@ -670,14 +677,22 @@ export const saveFile = action({
         console.error(
           `Token limit exceeded for file "${args.name}". Deleting storage object.`,
         );
-        if (args.s3Key) {
-          await ctx.scheduler.runAfter(
-            0,
-            internal.s3Cleanup.deleteS3ObjectAction,
-            { s3Key: args.s3Key },
+        // Best-effort cleanup before throwing standardized error
+        try {
+          if (args.s3Key) {
+            await ctx.scheduler.runAfter(
+              0,
+              internal.s3Cleanup.deleteS3ObjectAction,
+              { s3Key: args.s3Key },
+            );
+          } else if (args.storageId) {
+            await ctx.storage.delete(args.storageId);
+          }
+        } catch (cleanupError) {
+          console.warn(
+            `Failed to cleanup storage for file "${args.name}":`,
+            cleanupError,
           );
-        } else if (args.storageId) {
-          await ctx.storage.delete(args.storageId);
         }
         // Convert to ConvexError for consistent error handling
         throw new ConvexError({
@@ -690,14 +705,22 @@ export const saveFile = action({
       console.error(
         `Unexpected error processing file "${args.name}". Deleting storage object.`,
       );
-      if (args.s3Key) {
-        await ctx.scheduler.runAfter(
-          0,
-          internal.s3Cleanup.deleteS3ObjectAction,
-          { s3Key: args.s3Key },
+      // Best-effort cleanup before throwing standardized error
+      try {
+        if (args.s3Key) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.s3Cleanup.deleteS3ObjectAction,
+            { s3Key: args.s3Key },
+          );
+        } else if (args.storageId) {
+          await ctx.storage.delete(args.storageId);
+        }
+      } catch (cleanupError) {
+        console.warn(
+          `Failed to cleanup storage for file "${args.name}":`,
+          cleanupError,
         );
-      } else if (args.storageId) {
-        await ctx.storage.delete(args.storageId);
       }
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
       throw new ConvexError({
