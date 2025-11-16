@@ -11,7 +11,7 @@ const baseProviders = {
   "ask-model-free": openrouter("qwen/qwen3-coder"),
   "agent-model": xai("grok-code-fast-1"),
   "agent-model-with-vision": xai("grok-4-fast-reasoning"),
-  "vision-model": openrouter("qwen/qwen3-vl-235b-a22b-instruct"),
+  "vision-model": openrouter("google/gemini-2.5-flash-preview-09-2025"),
   "vision-model-for-pdfs": openrouter(
     "google/gemini-2.5-flash-preview-09-2025",
   ),
