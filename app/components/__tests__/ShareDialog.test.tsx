@@ -253,7 +253,9 @@ describe("ShareDialog", () => {
 
       await waitFor(() => {
         expect(
-          screen.queryByText("Failed to generate share link. Please try again."),
+          screen.queryByText(
+            "Failed to generate share link. Please try again.",
+          ),
         ).not.toBeInTheDocument();
       });
     });
@@ -363,7 +365,9 @@ describe("ShareDialog", () => {
       fireEvent.click(linkedInButton!);
 
       expect(mockWindowOpen).toHaveBeenCalledWith(
-        expect.stringContaining("https://www.linkedin.com/sharing/share-offsite/"),
+        expect.stringContaining(
+          "https://www.linkedin.com/sharing/share-offsite/",
+        ),
         "_blank",
         "noopener,noreferrer",
       );
@@ -420,7 +424,9 @@ describe("ShareDialog", () => {
       });
 
       expect(
-        screen.getByText("React is a JavaScript library for building user interfaces."),
+        screen.getByText(
+          "React is a JavaScript library for building user interfaces.",
+        ),
       ).toBeInTheDocument();
     });
 
@@ -451,7 +457,11 @@ describe("ShareDialog", () => {
       const mockOnOpenChange = jest.fn();
 
       render(
-        <ShareDialog {...defaultProps} open={true} onOpenChange={mockOnOpenChange} />,
+        <ShareDialog
+          {...defaultProps}
+          open={true}
+          onOpenChange={mockOnOpenChange}
+        />,
       );
 
       const closeButton = screen.getByLabelText("Close");
@@ -461,7 +471,9 @@ describe("ShareDialog", () => {
     });
 
     it("should reset states when dialog is reopened", async () => {
-      const { rerender } = render(<ShareDialog {...defaultProps} open={true} />);
+      const { rerender } = render(
+        <ShareDialog {...defaultProps} open={true} />,
+      );
 
       await waitFor(() => {
         expect(screen.getByText("Copy link")).toBeInTheDocument();
@@ -489,7 +501,9 @@ describe("ShareDialog", () => {
       });
 
       await waitFor(() => {
-        expect(screen.queryByText("Generating share link...")).not.toBeInTheDocument();
+        expect(
+          screen.queryByText("Generating share link..."),
+        ).not.toBeInTheDocument();
       });
     });
 
@@ -503,14 +517,18 @@ describe("ShareDialog", () => {
       });
 
       await waitFor(() => {
-        expect(screen.queryByText("Generating share link...")).not.toBeInTheDocument();
+        expect(
+          screen.queryByText("Generating share link..."),
+        ).not.toBeInTheDocument();
       });
     });
 
     it("should handle very long chat titles", async () => {
       const longTitle = "A".repeat(200);
 
-      render(<ShareDialog {...defaultProps} open={true} chatTitle={longTitle} />);
+      render(
+        <ShareDialog {...defaultProps} open={true} chatTitle={longTitle} />,
+      );
 
       expect(screen.getByText(longTitle)).toBeInTheDocument();
     });
@@ -518,7 +536,9 @@ describe("ShareDialog", () => {
     it("should handle special characters in chat title", async () => {
       const specialTitle = "Test <>&\"' Title";
 
-      render(<ShareDialog {...defaultProps} open={true} chatTitle={specialTitle} />);
+      render(
+        <ShareDialog {...defaultProps} open={true} chatTitle={specialTitle} />,
+      );
 
       expect(screen.getByText(specialTitle)).toBeInTheDocument();
     });

@@ -11,13 +11,13 @@ interface SharedChatContextType {
 }
 
 const SharedChatContext = createContext<SharedChatContextType | undefined>(
-  undefined
+  undefined,
 );
 
 export const SharedChatProvider = ({ children }: { children: ReactNode }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
-    null
+    null,
   );
 
   const openSidebar = (content: SidebarContent) => {
@@ -42,7 +42,7 @@ export const useSharedChatContext = () => {
   const context = useContext(SharedChatContext);
   if (context === undefined) {
     throw new Error(
-      "useSharedChatContext must be used within a SharedChatProvider"
+      "useSharedChatContext must be used within a SharedChatProvider",
     );
   }
   return context;

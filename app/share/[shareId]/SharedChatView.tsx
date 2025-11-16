@@ -4,19 +4,16 @@ import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { SharedMessages } from "./SharedMessages";
 import { Loader2, AlertCircle } from "lucide-react";
-import Link from "next/link";
 import { SharedChatProvider, useSharedChatContext } from "./SharedChatContext";
 import { ComputerSidebarBase } from "@/app/components/ComputerSidebar";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import Header from "@/app/components/Header";
 import ChatHeader from "@/app/components/ChatHeader";
-import { ChatInput } from "@/app/components/ChatInput";
-import Footer from "@/app/components/Footer";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 // Desktop wrapper component that connects ComputerSidebarBase to SharedChatContext
 function SharedComputerSidebarDesktop() {
@@ -63,47 +60,36 @@ interface SharedChatViewProps {
 }
 
 // UUID format validation regex (matches v4 and other UUID versions)
-const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isMobile = useIsMobile();
   const { user, loading: authLoading } = useAuth();
-  const router = useRouter();
-  const { chatSidebarOpen, setChatSidebarOpen, initializeNewChat, closeSidebar } = useGlobalState();
+  const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
 
   // Validate shareId format before making database query
   const isValidUUID = UUID_REGEX.test(shareId);
 
   const chat = useQuery(
     api.chats.getSharedChat,
-    isValidUUID ? { shareId } : "skip"
+    isValidUUID ? { shareId } : "skip",
   );
   const messages = useQuery(
     api.messages.getSharedMessages,
-    chat ? { chatId: chat.id } : "skip"
+    chat ? { chatId: chat.id } : "skip",
   );
 
-  // Handlers for chat input
-  const handleChatSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!user) {
-      // Redirect to login when unlogged user tries to chat
-      window.location.href = "/login";
-    } else {
-      // For logged users, create a new chat and navigate to it
-      closeSidebar();
-      if (isMobile) {
-        setChatSidebarOpen(false);
-      }
-      initializeNewChat();
-      router.push("/");
+  // Update page title when chat loads
+  useEffect(() => {
+    if (chat?.title) {
+      document.title = `${chat.title} | HackerAI`;
     }
-  };
 
-  const handleChatStop = () => {
-    // No-op for shared chats
-  };
+    return () => {
+      document.title = "Shared Chat | HackerAI";
+    };
+  }, [chat?.title]);
 
   // Invalid UUID format - show not found immediately
   if (!isValidUUID) {
@@ -127,7 +113,9 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
       <div className="flex items-center justify-center min-h-screen">
         <div className="flex flex-col items-center gap-4">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Loading shared chat...</p>
+          <p className="text-sm text-muted-foreground">
+            Loading shared chat...
+          </p>
         </div>
       </div>
     );
@@ -141,8 +129,8 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
           <AlertCircle className="h-12 w-12 text-muted-foreground" />
           <h1 className="text-2xl font-semibold">Chat not found</h1>
           <p className="text-sm text-muted-foreground">
-            This shared chat doesn&apos;t exist or is no longer available. It may
-            have been unshared by the owner.
+            This shared chat doesn&apos;t exist or is no longer available. It
+            may have been unshared by the owner.
           </p>
         </div>
       </div>
@@ -155,7 +143,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
         {/* Header for unlogged users */}
         {!authLoading && !user && (
           <div className="flex-shrink-0">
-            <Header />
+            <Header chatTitle={chat.title} />
           </div>
         )}
 
@@ -181,7 +169,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
           <div className="flex flex-1 min-w-0 relative overflow-hidden">
             {/* Left side - Chat content */}
             <div className="flex flex-col flex-1 min-w-0 h-full">
-              {/* ChatHeader for logged users - no id means no share button */}
+              {/* ChatHeader for logged users - always show title */}
               {(authLoading || user) && (
                 <ChatHeader
                   hasMessages={true}
@@ -193,56 +181,24 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
                 />
               )}
 
-            {/* Messages area - scrollable */}
-            <div className="bg-background flex flex-col flex-1 relative min-h-0 overflow-hidden">
-              <div className="flex-1 overflow-y-auto p-4">
-                <div className={`mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 ${!authLoading && !user ? 'pb-48' : 'pb-20'}`}>
-                  {messages === undefined ? (
-                    <div className="flex justify-center py-8">
-                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : (
-                    <SharedMessages messages={messages} shareDate={chat.share_date} />
-                  )}
+              {/* Messages area - scrollable */}
+              <div className="bg-background flex flex-col flex-1 relative min-h-0 overflow-hidden">
+                <div className="flex-1 overflow-y-auto p-4">
+                  <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20">
+                    {messages === undefined ? (
+                      <div className="flex justify-center py-8">
+                        <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : (
+                      <SharedMessages
+                        messages={messages}
+                        shareDate={chat.share_date}
+                      />
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
-
-            {/* ChatInput for logged users (bottom placement) */}
-            {(authLoading || user) && (
-              <ChatInput
-                onSubmit={handleChatSubmit}
-                onStop={handleChatStop}
-                onSendNow={() => {}}
-                status="ready"
-                hasMessages={true}
-                isNewChat={false}
-                clearDraftOnSubmit={false}
-              />
-            )}
-
-            {/* Floating ChatInput and Footer for unlogged users */}
-            {!authLoading && !user && (
-              <div className="fixed bottom-0 left-0 right-0 z-20 bg-background">
-                {/* Floating ChatInput */}
-                <div className="px-4 pt-4">
-                  <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px]">
-                    <ChatInput
-                      onSubmit={handleChatSubmit}
-                      onStop={handleChatStop}
-                      onSendNow={() => {}}
-                      status="ready"
-                      isNewChat={true}
-                      clearDraftOnSubmit={false}
-                    />
-                  </div>
-                </div>
-
-                {/* Footer below input */}
-                <Footer />
-              </div>
-            )}
-          </div>
 
             {/* Desktop Computer Sidebar - fixed, independent scrolling */}
             {!isMobile && <SharedComputerSidebarDesktop />}

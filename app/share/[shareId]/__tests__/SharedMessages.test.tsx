@@ -14,8 +14,12 @@ describe("SharedMessages", () => {
 
   describe("Empty State", () => {
     it("should show empty message when no messages provided", () => {
-      renderWithContext(<SharedMessages messages={[]} shareDate={mockShareDate} />);
-      expect(screen.getByText("No messages in this conversation")).toBeInTheDocument();
+      renderWithContext(
+        <SharedMessages messages={[]} shareDate={mockShareDate} />,
+      );
+      expect(
+        screen.getByText("No messages in this conversation"),
+      ).toBeInTheDocument();
     });
   });
 
@@ -30,8 +34,14 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      expect(screen.getByText("This is a copy of a conversation between HackerAI & Anonymous.")).toBeInTheDocument();
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
+      expect(
+        screen.getByText(
+          "This is a copy of a conversation between HackerAI & Anonymous.",
+        ),
+      ).toBeInTheDocument();
     });
   });
 
@@ -46,8 +56,12 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      expect(screen.getByText("Hello, this is a test message")).toBeInTheDocument();
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
+      expect(
+        screen.getByText("Hello, this is a test message"),
+      ).toBeInTheDocument();
     });
 
     it("should render assistant text message", () => {
@@ -60,7 +74,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("I can help you with that")).toBeInTheDocument();
     });
 
@@ -80,7 +96,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("First message")).toBeInTheDocument();
       expect(screen.getByText("Second message")).toBeInTheDocument();
     });
@@ -97,7 +115,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Uploaded a file")).toBeInTheDocument();
     });
 
@@ -111,7 +131,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Uploaded an image")).toBeInTheDocument();
     });
   });
@@ -133,7 +155,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Executed")).toBeInTheDocument();
       expect(screen.getByText("ls -la")).toBeInTheDocument();
     });
@@ -156,7 +180,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Read")).toBeInTheDocument();
       expect(screen.getByText("/path/to/file.txt")).toBeInTheDocument();
     });
@@ -177,7 +203,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Wrote")).toBeInTheDocument();
       expect(screen.getByText("/path/to/new-file.js")).toBeInTheDocument();
     });
@@ -198,7 +226,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Edited")).toBeInTheDocument();
       expect(screen.getByText("/path/to/edited.ts")).toBeInTheDocument();
     });
@@ -221,7 +251,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Executed Python")).toBeInTheDocument();
       expect(screen.getByText("print('Hello World')")).toBeInTheDocument();
     });
@@ -244,9 +276,13 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Searched")).toBeInTheDocument();
-      expect(screen.getByText("best practices for testing")).toBeInTheDocument();
+      expect(
+        screen.getByText("best practices for testing"),
+      ).toBeInTheDocument();
     });
   });
 
@@ -266,7 +302,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Updated todos")).toBeInTheDocument();
     });
 
@@ -285,7 +323,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("Updated memory")).toBeInTheDocument();
     });
   });
@@ -311,7 +351,9 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
       expect(screen.getByText("I'll help you with that.")).toBeInTheDocument();
       expect(screen.getByText("Read")).toBeInTheDocument();
       expect(screen.getByText("Here's what I found.")).toBeInTheDocument();
@@ -330,8 +372,12 @@ describe("SharedMessages", () => {
         },
       ];
 
-      renderWithContext(<SharedMessages messages={messages} shareDate={mockShareDate} />);
-      expect(screen.getByText("Here's the document you requested")).toBeInTheDocument();
+      renderWithContext(
+        <SharedMessages messages={messages} shareDate={mockShareDate} />,
+      );
+      expect(
+        screen.getByText("Here's the document you requested"),
+      ).toBeInTheDocument();
       expect(screen.getByText("Uploaded a file")).toBeInTheDocument();
     });
   });

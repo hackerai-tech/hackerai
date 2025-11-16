@@ -5,7 +5,11 @@ import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 
-const Header: React.FC = () => {
+interface HeaderProps {
+  chatTitle?: string;
+}
+
+const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
   const { user, loading } = useAuth();
 
   const handleSignIn = () => {
@@ -27,7 +31,14 @@ const Header: React.FC = () => {
           </span>
         </div>
         <div className="flex flex-1 gap-2 justify-between items-center">
-          <div className="flex gap-[40px]"></div>
+          {chatTitle && (
+            <div className="flex-1 text-center">
+              <span className="text-foreground text-lg font-medium truncate">
+                {chatTitle}
+              </span>
+            </div>
+          )}
+          {!chatTitle && <div className="flex gap-[40px]"></div>}
           {!loading && !user && (
             <div className="flex gap-2 items-center">
               <Button

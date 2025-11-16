@@ -1099,7 +1099,8 @@ export const getSharedMessages = query({
   handler: async (ctx, args) => {
     try {
       // Validate UUID format
-      const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const UUID_REGEX =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!UUID_REGEX.test(args.chatId)) {
         return [];
       }

@@ -988,7 +988,9 @@ export const updateShareDate = mutation({
 
     // Can only update if chat is already shared
     if (!chat.share_id || !chat.share_date) {
-      throw new Error("Chat is not shared - use shareChat to create a share first");
+      throw new Error(
+        "Chat is not shared - use shareChat to create a share first",
+      );
     }
 
     // Update share_date to now, keeping same share_id
@@ -1001,7 +1003,7 @@ export const updateShareDate = mutation({
 
     return {
       shareId: chat.share_id,
-      shareDate: newShareDate
+      shareDate: newShareDate,
     };
   },
 });
@@ -1111,7 +1113,9 @@ export const getUserSharedChats = query({
 
     const chats = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_updated", (q) => q.eq("user_id", identity.subject))
+      .withIndex("by_user_and_updated", (q) =>
+        q.eq("user_id", identity.subject),
+      )
       .collect();
 
     // Filter and map to only shared chats
@@ -1145,7 +1149,9 @@ export const unshareAllChats = mutation({
 
     const sharedChats = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_updated", (q) => q.eq("user_id", identity.subject))
+      .withIndex("by_user_and_updated", (q) =>
+        q.eq("user_id", identity.subject),
+      )
       .collect();
 
     const updates = sharedChats
