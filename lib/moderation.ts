@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { encode, decode } from "gpt-tokenizer";
 
-const MODERATION_TOKEN_LIMIT = 256;
+const MODERATION_TOKEN_LIMIT = 1024;
 
 export async function getModerationResult(
   messages: any[],
@@ -48,12 +48,12 @@ export async function getModerationResult(
       isPro,
     );
 
-    // console.log(
-    //   JSON.stringify(moderation, null, 2),
-    //   moderationLevel,
-    //   hazardCategories,
-    //   shouldUncensorResponse,
-    // );
+    console.log(
+      JSON.stringify(moderation, null, 2),
+      moderationLevel,
+      hazardCategories,
+      shouldUncensorResponse,
+    );
 
     return { shouldUncensorResponse };
   } catch (_error: any) {
@@ -148,7 +148,13 @@ function truncateByTokens(content: string): string {
   if (tokens.length <= MODERATION_TOKEN_LIMIT) {
     return content;
   }
-  return decode(tokens.slice(0, MODERATION_TOKEN_LIMIT));
+  
+  // For large inputs, include both beginning and end for better context
+  const halfLimit = Math.floor(MODERATION_TOKEN_LIMIT / 2);
+  const startTokens = tokens.slice(0, halfLimit);
+  const endTokens = tokens.slice(-halfLimit);
+  
+  return decode(startTokens) + " [...] " + decode(endTokens);
 }
 
 function calculateModerationLevel(
