@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import { encode, decode } from "gpt-tokenizer";
 
-const MODERATION_TOKEN_LIMIT = 1024;
+const MODERATION_TOKEN_LIMIT = 512;
 
 export async function getModerationResult(
   messages: any[],
@@ -48,12 +48,12 @@ export async function getModerationResult(
       isPro,
     );
 
-    console.log(
-      JSON.stringify(moderation, null, 2),
-      moderationLevel,
-      hazardCategories,
-      shouldUncensorResponse,
-    );
+    // console.log(
+    //   JSON.stringify(moderation, null, 2),
+    //   moderationLevel,
+    //   hazardCategories,
+    //   shouldUncensorResponse,
+    // );
 
     return { shouldUncensorResponse };
   } catch (_error: any) {
