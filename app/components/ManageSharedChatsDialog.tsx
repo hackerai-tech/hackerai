@@ -29,12 +29,14 @@ export const ManageSharedChatsDialog = ({
           <div className="relative z-10 p-0">
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <h3 className="text-lg font-semibold">Manage Shared Chats</h3>
-              <div
+              <button
+                type="button"
                 className="flex h-7 w-7 items-center justify-center cursor-pointer rounded-md hover:bg-muted"
                 onClick={() => onOpenChange(false)}
+                aria-label="Close"
               >
                 <X className="size-5" />
-              </div>
+              </button>
             </div>
           </div>
         )}
