@@ -333,7 +333,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                     )}
                   </span>
                 </div>
-                {/* Share button - only show for existing chats that aren't temporary */}
+                {/* Share button - only show for existing chats that aren't temporary, hide on mobile */}
                 {isExistingChat &&
                   !temporaryChatsEnabled &&
                   id &&
@@ -342,7 +342,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                       aria-label="Share"
                       data-testid="share-chat-button"
                       onClick={() => setShowShareDialog(true)}
-                      className="relative mx-2 flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a]"
+                      className="relative mx-2 flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden"
                     >
                       <div className="flex w-full items-center justify-center gap-1.5">
                         <svg

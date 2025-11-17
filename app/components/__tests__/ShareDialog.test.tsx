@@ -138,7 +138,6 @@ describe("ShareDialog", () => {
     });
   });
 
-
   describe("Error Handling", () => {
     it("should show error message on failure", async () => {
       mockShareChatFn.mockRejectedValue(new Error("Network error"));
@@ -162,7 +161,6 @@ describe("ShareDialog", () => {
       });
     });
   });
-
 
   describe("Dialog Close", () => {
     it("should call onOpenChange when close button clicked", () => {
