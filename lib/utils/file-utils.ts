@@ -16,9 +16,11 @@ export async function uploadSingleFileToConvex(
   const postUrl = await generateUploadUrl();
 
   // Step 2: Upload file to Convex storage
+  // Use a fallback Content-Type if browser doesn't provide one (common for .md, .txt files)
+  const contentType = file.type || "application/octet-stream";
   const result = await fetch(postUrl, {
     method: "POST",
-    headers: { "Content-Type": file.type },
+    headers: { "Content-Type": contentType },
     body: file,
   });
 
@@ -32,7 +34,7 @@ export async function uploadSingleFileToConvex(
   const { url, fileId, tokens } = await saveFile({
     storageId,
     name: file.name,
-    mediaType: file.type,
+    mediaType: contentType,
     size: file.size,
     mode,
   });
@@ -51,9 +53,12 @@ export function createFileMessagePart(
     throw new Error("File must have fileId to create message part");
   }
 
+  // Use fallback for empty media types (common for .md, .txt files)
+  const mediaType = uploadedFile.file.type || "application/octet-stream";
+
   return {
     type: "file" as const,
-    mediaType: uploadedFile.file.type,
+    mediaType,
     fileId: uploadedFile.fileId,
     name: uploadedFile.file.name,
     size: uploadedFile.file.size,

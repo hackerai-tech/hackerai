@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { ManageSharedChatsDialog } from "./ManageSharedChatsDialog";
 
 const DataControlsTab = () => {
   const { subscription } = useGlobalState();
@@ -24,6 +25,7 @@ const DataControlsTab = () => {
   const [isDeletingChats, setIsDeletingChats] = useState(false);
   const [showDeleteSandboxes, setShowDeleteSandboxes] = useState(false);
   const [isDeletingSandboxes, setIsDeletingSandboxes] = useState(false);
+  const [showManageSharedChats, setShowManageSharedChats] = useState(false);
 
   const deleteAllChats = useMutation(api.chats.deleteAllChats);
 
@@ -76,6 +78,29 @@ const DataControlsTab = () => {
 
   return (
     <div className="space-y-6 min-h-0">
+      {/* Manage Shared Chats Section */}
+      <div>
+        <div className="flex items-center justify-between py-3">
+          <div>
+            <div className="font-medium">Shared chats</div>
+            <div className="text-sm text-muted-foreground mt-1">
+              Manage your publicly shared conversations
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowManageSharedChats(true)}
+            aria-label="Manage shared chats"
+          >
+            Manage
+          </Button>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div className="border-t" />
+
       {/* Delete All Chats Section */}
       <div>
         <div className="flex items-center justify-between py-3">
@@ -172,6 +197,12 @@ const DataControlsTab = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Manage Shared Chats Dialog */}
+      <ManageSharedChatsDialog
+        open={showManageSharedChats}
+        onOpenChange={setShowManageSharedChats}
+      />
     </div>
   );
 };

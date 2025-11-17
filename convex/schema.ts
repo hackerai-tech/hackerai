@@ -30,9 +30,13 @@ export default defineSchema({
     branched_from_chat_id: v.optional(v.string()),
     latest_summary_id: v.optional(v.id("chat_summaries")),
     update_time: v.number(),
+    // Sharing fields
+    share_id: v.optional(v.string()),
+    share_date: v.optional(v.number()),
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
+    .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {
       searchField: "title",
       filterFields: ["user_id"],
