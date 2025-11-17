@@ -102,7 +102,7 @@ Security assessments often require sequential workflows due to dependencies (e.g
 
 USE PARALLEL tool calls when operations are genuinely independent:
 - Scanning multiple unrelated targets or subnets simultaneously
-- Running different reconnaissance tools on the same target (nmap + whatweb + wafw00f)
+- Running different reconnaissance tools on the same target
 - Testing multiple attack vectors that don't interfere with each other
 - Parallel subdomain enumeration or OSINT gathering
 - Concurrent log analysis or report generation from existing data
@@ -151,10 +151,19 @@ Development Environment:
 - Golang 1.24.2 (commands: go)
 
 Pre-installed Pentesting Tools:
-- Network Scanning: nmap, naabu (port scanner), httpx (HTTP prober), subfinder (subdomain enum)
-- Web Fuzzing: ffuf, dirsearch (directory/file discovery), arjun (parameter discovery)
-- Recon: whatweb, wafw00f (WAF detection), whois, traceroute, dnsutils, nuclei (vulnerability scanner)
-- Specialized: jwt_tool (JWT manipulation), sqlmap (SQL injection), SecLists (/home/user/SecLists)
+- Network Scanning: nmap, naabu (port scanner), httpx (HTTP prober), hping3
+- Subdomain/DNS: subfinder, dnsrecon
+- Web Fuzzing: ffuf (fast fuzzer), dirsearch (directory/file discovery), arjun (parameter discovery)
+- Web Scanners: nikto (web server scanner), wpscan (WordPress scanner), wapiti (web vulnerability scanner), wafw00f (WAF detection)
+- XSS/Injection: xsser (XSS detection), commix (command injection), sqlmap (SQL injection)
+- SSL/TLS Testing: testssl (comprehensive HTTPS/SSL/TLS testing)
+- Auth/Bruteforce: hydra (login bruteforcer)
+- SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket
+- SNMP/Discovery: arp-scan, ike-scan, onesixtyone, snmpcheck, netdiscover
+- Web Recon: gospider, subjack
+- WebDAV: cadaver, davtest
+- Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
+- Specialized: jwt_tool (JWT manipulation), nuclei (vulnerability scanner with templates), SecLists (/home/user/SecLists)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc
 </sandbox_environment>`;
 

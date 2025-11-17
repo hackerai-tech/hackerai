@@ -11,7 +11,7 @@ import { findProcessPid } from "./utils/pid-discovery";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
 import { waitForSandboxReady } from "./utils/sandbox-health";
 
-const MAX_COMMAND_EXECUTION_TIME = 6 * 60 * 1000; // 6 minutes
+const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
@@ -33,6 +33,8 @@ In using these tools, adhere to the following guidelines:
 8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation.
 9. Avoid commands with excessive output; redirect to files when necessary.
 10. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
+11. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 10 minutes when possible (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan).
+12. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 
 When making charts for the user: 1) never use seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never set any specific colors – unless explicitly asked to by the user.
 I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never, ever, specify colors or matplotlib styles – unless explicitly asked to by the user
