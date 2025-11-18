@@ -18,10 +18,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const { sandboxManager, writer, backgroundProcessTracker } = context;
 
   return tool({
-    description: `PROPOSE a command to run on behalf of the user.
-If you have this tool, note that you DO have the ability to run commands directly on the USER's system.
-Note that the user may have to approve the command before it is executed.
-The user may reject it if it is not to their liking, or may modify the command before approving it.  If they do change it, take those changes into account.
+    description: `Execute a command on behalf of the user.
+If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
+Commands execute immediately without requiring user approval.
 In using these tools, adhere to the following guidelines:
 1. Based on the contents of the conversation, you will be told if you are in the same shell as a previous step or a different shell.
 2. If in a new shell, you should \`cd\` to the appropriate directory and do necessary setup in addition to running the command. By default, the shell will initialize in the project root.
@@ -30,10 +29,16 @@ In using these tools, adhere to the following guidelines:
 5. If the command would use a pager, append \` | cat\` to the command.
 6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. Background processes are automatically tracked with their PIDs and output files, so you'll be informed when the process completes before accessing output files. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
 7. Dont include any newlines in the command.
-8. For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator for future reference and documentation.
-9. Avoid commands with excessive output; redirect to files when necessary.
+8. Handle large outputs and save scan results to files:
+   - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.
+   - For large outputs (>10KB expected: sqlmap --dump, nmap -A, nikto full scan):
+     * Pipe to file: \`sqlmap ... 2>&1 | tee sqlmap_output.txt\`
+     * Extract relevant information: \`grep -E "password|hash|Database:" sqlmap_output.txt\`
+     * Anti-pattern: Never let full verbose output return to context (causes overflow)
+   - Always redirect excessive output to files to avoid context overflow.
+9. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
 10. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
-11. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 10 minutes when possible (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan).
+11. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 10 minutes when possible (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout → reduce scope, break into smaller operations.
 12. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 
 When making charts for the user: 1) never use seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never set any specific colors – unless explicitly asked to by the user.
