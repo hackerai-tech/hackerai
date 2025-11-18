@@ -3,7 +3,14 @@
 import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { PanelLeft, Sparkle, SquarePen, HatGlasses, Split, Share } from "lucide-react";
+import {
+  PanelLeft,
+  Sparkle,
+  SquarePen,
+  HatGlasses,
+  Split,
+  Share,
+} from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useRouter } from "next/navigation";

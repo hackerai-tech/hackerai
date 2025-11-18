@@ -148,12 +148,12 @@ function truncateByTokens(content: string): string {
   if (tokens.length <= MODERATION_TOKEN_LIMIT) {
     return content;
   }
-  
+
   // For large inputs, include both beginning and end for better context
   const halfLimit = Math.floor(MODERATION_TOKEN_LIMIT / 2);
   const startTokens = tokens.slice(0, halfLimit);
   const endTokens = tokens.slice(-halfLimit);
-  
+
   return decode(startTokens) + " [...] " + decode(endTokens);
 }
 

@@ -183,25 +183,31 @@ export const Messages = ({
   );
 
   // Handler to show all files for a specific message
-  const handleShowAllFiles = useCallback((message: ChatMessage) => {
-    if (!message.fileDetails) return;
+  const handleShowAllFiles = useCallback(
+    (message: ChatMessage, fileDetails: FileDetails[]) => {
+      if (!fileDetails || fileDetails.length === 0) return;
 
-    const files = message.fileDetails
-      .filter((file) => file.url)
-      .map((file, fileIndex) => ({
-        part: {
-          url: file.url!,
-          name: file.name,
-          filename: file.name,
-          mediaType: undefined,
-        },
-        partIndex: fileIndex,
-        messageId: message.id,
-      }));
+      const files = fileDetails
+        .filter((file) => file.url || file.storageId || file.s3Key)
+        .map((file, fileIndex) => ({
+          part: {
+            url: file.url ?? undefined,
+            storageId: file.storageId,
+            fileId: file.fileId,
+            s3Key: file.s3Key,
+            name: file.name,
+            filename: file.name,
+            mediaType: file.mediaType,
+          },
+          partIndex: fileIndex,
+          messageId: message.id,
+        }));
 
-    setDialogFiles(files);
-    setShowAllFilesDialog(true);
-  }, []);
+      setDialogFiles(files);
+      setShowAllFilesDialog(true);
+    },
+    [],
+  );
 
   // Handler for branching a message
   const handleBranchMessage = useCallback(
@@ -440,7 +446,12 @@ export const Messages = ({
                           />
                           {/* View all files button */}
                           <button
-                            onClick={() => handleShowAllFiles(message)}
+                            onClick={() =>
+                              handleShowAllFiles(
+                                message,
+                                effectiveFileDetails || [],
+                              )
+                            }
                             className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
                             type="button"
                             aria-label="View all files"
