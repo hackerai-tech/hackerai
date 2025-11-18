@@ -140,11 +140,10 @@ const AllFilesDialog = ({
   // Reset URLs when dialog closes
   useEffect(() => {
     if (!open) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setFileUrls(new Map());
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setIsLoadingUrls(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   // Batch fetch all URLs when dialog opens
