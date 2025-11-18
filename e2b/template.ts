@@ -41,6 +41,7 @@ export const template = Template()
       tree \
       sudo \
       nikto \
+      whatweb \
       wafw00f \
       subfinder \
       dnsrecon \
@@ -82,6 +83,15 @@ export const template = Template()
       python3-dev \
       build-essential && \
     apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*",
+    { user: "root" },
+  )
+  .runCmd(
+    "if command -v whatweb >/dev/null 2>&1; then \
+      mkdir -p /usr/bin/lib; \
+      if ls /usr/lib/ruby/vendor_ruby/*.rb >/dev/null 2>&1; then \
+        ln -sf /usr/lib/ruby/vendor_ruby/*.rb /usr/bin/lib/; \
+      fi; \
+    fi",
     { user: "root" },
   )
   .runCmd(
@@ -144,6 +154,7 @@ export const template = Template()
     which sqlmap && echo "sqlmap OK" && \
     which gobuster && echo "gobuster OK" && \
     which nikto && echo "nikto OK" && \
+    which whatweb && echo "whatweb OK" && \
     which wafw00f && echo "wafw00f OK" && \
     which subfinder && echo "subfinder OK" && \
     which ffuf && echo "ffuf OK" && \
