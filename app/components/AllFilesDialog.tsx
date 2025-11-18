@@ -152,7 +152,10 @@ const AllFilesDialog = ({
       return;
     }
 
+    let cancelled = false;
+
     async function fetchAllUrls() {
+      if (cancelled) return;
       setIsLoadingUrls(true);
       const urlMap = new Map<number, string>();
 
@@ -201,11 +204,17 @@ const AllFilesDialog = ({
         }),
       );
 
-      setFileUrls(urlMap);
-      setIsLoadingUrls(false);
+      if (!cancelled) {
+        setFileUrls(urlMap);
+        setIsLoadingUrls(false);
+      }
     }
 
     fetchAllUrls();
+
+    return () => {
+      cancelled = true;
+    };
   }, [open, files, getFileUrlAction, convex, fileUrlCache]);
 
   // Reset selection when dialog closes
