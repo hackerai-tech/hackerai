@@ -12,69 +12,76 @@ export const template = Template()
   .runCmd(
     "apt-get update && \
     apt-get install -y --no-install-recommends \
-      apt-utils \
-      wget \
-      curl \
-      git \
-      vim \
-      nano \
-      unzip \
-      tar \
-      apt-transport-https \
-      ca-certificates \
-      gnupg \
-      lsb-release \
-      build-essential \
-      software-properties-common \
-      gcc \
-      libc6-dev \
-      pkg-config \
-      libpcap-dev \
-      libssl-dev \
       python3 \
-      python3-pip \
-      python3-dev \
       python3-venv \
-      python3-setuptools \
-      golang-go \
-      net-tools \
-      dnsutils \
-      whois \
-      traceroute \
-      iputils-ping \
-      jq \
-      parallel \
-      ripgrep \
-      grep \
-      less \
-      man-db \
-      procps \
-      htop \
-      iproute2 \
-      netcat-traditional \
+      python3-pip \
+      python-is-python3 \
       nmap \
-      ncat \
-      ndiff \
       sqlmap \
-      nuclei \
-      subfinder \
-      naabu \
-      ffuf \
-      whatweb \
+      gobuster \
+      curl \
+      netcat-traditional \
+      tcpdump \
+      git \
+      perl \
+      gnupg2 \
+      wget \
+      libnet-ssleay-perl \
+      libio-socket-ssl-perl \
+      libcrypt-ssleay-perl \
+      libssl-dev \
+      ca-certificates \
+      iputils-ping \
+      dnsutils \
+      iproute2 \
+      net-tools \
+      traceroute \
+      jq \
+      unzip \
+      tree \
+      sudo \
+      nikto \
       wafw00f \
+      subfinder \
+      dnsrecon \
+      ffuf \
       arjun \
+      wapiti \
+      wpscan \
+      naabu \
+      smbclient \
+      smbmap \
+      nbtscan \
+      python3-impacket \
+      arp-scan \
+      ike-scan \
+      onesixtyone \
+      snmpcheck \
+      netdiscover \
+      hping3 \
+      socat \
+      proxychains4 \
+      commix \
+      xsser \
+      hashid \
+      nuclei \
+      hydra \
+      libimage-exiftool-perl \
+      cewl \
+      cadaver \
+      davtest \
+      testssl.sh \
+      gospider \
+      subjack \
       dirsearch \
+      golang \
+      rustc \
+      cargo \
       nodejs \
       npm \
-      pipx \
-      libcap2-bin \
-      gdb \
-      tmux \
-      pandoc && \
-    apt-get autoremove -y && \
-    apt-get autoclean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
-    mkdir -p /var/lib/dpkg/status.d",
+      python3-dev \
+      build-essential && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*",
     { user: "root" },
   )
   .runCmd(
@@ -132,21 +139,29 @@ export const template = Template()
   .runCmd(
     'test -d /home/user/SecLists && \
     test -f /home/user/SecLists/README.md && \
-    which nmap && \
-    which httpx && \
-    which nuclei && \
-    which subfinder && \
-    which naabu && \
-    which ffuf && \
-    which sqlmap && \
-    which whatweb && \
-    which wafw00f && \
-    which arjun && \
-    which dirsearch && \
-    which jwt_tool && \
-    which go && \
-    which python3 && \
-    python3 -c "import reportlab; import docx; import openpyxl; import pptx; import pandas; import pypandoc; import odf"',
+    echo "SecLists OK" && \
+    which nmap && echo "nmap OK" && \
+    which sqlmap && echo "sqlmap OK" && \
+    which gobuster && echo "gobuster OK" && \
+    which nikto && echo "nikto OK" && \
+    which wafw00f && echo "wafw00f OK" && \
+    which subfinder && echo "subfinder OK" && \
+    which ffuf && echo "ffuf OK" && \
+    which arjun && echo "arjun OK" && \
+    which wapiti && echo "wapiti OK" && \
+    which wpscan && echo "wpscan OK" && \
+    which naabu && echo "naabu OK" && \
+    which nuclei && echo "nuclei OK" && \
+    which hydra && echo "hydra OK" && \
+    which dirsearch && echo "dirsearch OK" && \
+    which testssl && echo "testssl OK" && \
+    which xsser && echo "xsser OK" && \
+    which commix && echo "commix OK" && \
+    which jwt_tool && echo "jwt_tool OK" && \
+    which httpx && echo "httpx OK" && \
+    which go && echo "go OK" && \
+    which python3 && echo "python3 OK" && \
+    python3 -c "import reportlab; import docx; import openpyxl; import pptx; import pandas; import pypandoc; import odf" && echo "Python imports OK"',
     { user: "root" },
   )
   .setWorkdir("/home/user");

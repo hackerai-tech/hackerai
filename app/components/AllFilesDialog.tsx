@@ -1,9 +1,12 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { X, Download, Circle, CircleCheck, File } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { useConvex, useAction } from "convex/react";
+import { api } from "@/convex/_generated/api";
+import { useFileUrlCacheContext } from "@/app/contexts/FileUrlCacheContext";
 import type { FilePart } from "@/types/file";
 import JSZip from "jszip";
 
@@ -27,6 +30,7 @@ interface FileItemProps {
   isSelected: boolean;
   selectionMode: boolean;
   onToggle: () => void;
+  fileUrl: string | null;
 }
 
 const FileItem = ({
@@ -34,14 +38,15 @@ const FileItem = ({
   isSelected,
   selectionMode,
   onToggle,
+  fileUrl,
 }: FileItemProps) => {
   const fileName = file.part.name || file.part.filename || "Unknown file";
 
   const handleDownload = async () => {
-    if (!file.part.url) return;
+    if (!fileUrl) return;
 
     try {
-      const response = await fetch(file.part.url);
+      const response = await fetch(fileUrl);
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -102,7 +107,7 @@ const FileItem = ({
         </div>
       </div>
 
-      {!selectionMode && file.part.url && (
+      {!selectionMode && fileUrl && (
         <Button
           onClick={handleDownload}
           variant="ghost"
@@ -124,8 +129,93 @@ const AllFilesDialog = ({
   files,
   chatTitle,
 }: AllFilesDialogProps) => {
+  const convex = useConvex();
+  const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
+  const fileUrlCache = useFileUrlCacheContext();
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [fileUrls, setFileUrls] = useState<Map<number, string>>(new Map());
+  const [isLoadingUrls, setIsLoadingUrls] = useState(false);
+
+  // Reset URLs when dialog closes
+  useEffect(() => {
+    if (!open) {
+      setFileUrls(new Map());
+      setIsLoadingUrls(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Batch fetch all URLs when dialog opens
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    let cancelled = false;
+
+    async function fetchAllUrls() {
+      if (cancelled) return;
+      setIsLoadingUrls(true);
+      const urlMap = new Map<number, string>();
+
+      // Fetch URLs in parallel
+      await Promise.all(
+        files.map(async (file, index) => {
+          // If already has URL, use it
+          if (file.part.url) {
+            urlMap.set(index, file.part.url);
+            return;
+          }
+
+          // Check cache first for fileId
+          if (file.part.fileId && fileUrlCache) {
+            const cachedUrl = fileUrlCache.getCachedUrl(file.part.fileId);
+            if (cachedUrl) {
+              urlMap.set(index, cachedUrl);
+              return;
+            }
+          }
+
+          // Fetch URL based on storage type
+          try {
+            let url: string | null = null;
+
+            if (file.part.fileId) {
+              // S3 file - fetch presigned URL
+              url = await getFileUrlAction({ fileId: file.part.fileId });
+              // Cache it
+              if (url && fileUrlCache) {
+                fileUrlCache.setCachedUrl(file.part.fileId, url);
+              }
+            } else if (file.part.storageId) {
+              // Convex storage file - fetch URL
+              url = await convex.query(api.fileStorage.getFileDownloadUrl, {
+                storageId: file.part.storageId,
+              });
+            }
+
+            if (url) {
+              urlMap.set(index, url);
+            }
+          } catch (error) {
+            console.error(`Failed to fetch URL for file ${index}:`, error);
+          }
+        }),
+      );
+
+      if (!cancelled) {
+        setFileUrls(urlMap);
+        setIsLoadingUrls(false);
+      }
+    }
+
+    fetchAllUrls();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, files, getFileUrlAction, convex, fileUrlCache]);
 
   // Reset selection when dialog closes
   useEffect(() => {
@@ -169,30 +259,47 @@ const AllFilesDialog = ({
   };
 
   const handleBatchDownload = async () => {
-    const filesToDownload = files.filter((_, index) =>
-      selectedFiles.has(index.toString()),
-    );
+    const filesToDownload = files
+      .map((file, index) => ({ file, index }))
+      .filter(({ index }) => selectedFiles.has(index.toString()));
 
     if (filesToDownload.length === 0) return;
 
     try {
       const zip = new JSZip();
 
-      // Add all files to the ZIP
+      // Use already fetched URLs or fetch missing ones
       await Promise.all(
-        filesToDownload.map(async (file) => {
-          if (file.part.url) {
-            try {
-              const response = await fetch(file.part.url);
+        filesToDownload.map(async ({ file, index }) => {
+          try {
+            let url = fileUrls.get(index) || file.part.url;
+
+            // Fetch URL if not already available
+            if (!url) {
+              if (file.part.fileId) {
+                url = await getFileUrlAction({ fileId: file.part.fileId });
+              } else if (file.part.storageId) {
+                const fetchedUrl = await convex.query(
+                  api.fileStorage.getFileDownloadUrl,
+                  {
+                    storageId: file.part.storageId,
+                  },
+                );
+                url = fetchedUrl || undefined;
+              }
+            }
+
+            if (url) {
+              const response = await fetch(url);
               const blob = await response.blob();
               const fileName =
                 file.part.name ||
                 file.part.filename ||
                 `file-${file.partIndex}`;
               zip.file(fileName, blob);
-            } catch (error) {
-              console.error(`Error adding ${file.part.name} to ZIP:`, error);
             }
+          } catch (error) {
+            console.error(`Error adding ${file.part.name} to ZIP:`, error);
           }
         }),
       );
@@ -300,10 +407,15 @@ const AllFilesDialog = ({
               <div className="text-center text-muted-foreground py-8">
                 No files
               </div>
+            ) : isLoadingUrls ? (
+              <div className="text-center text-muted-foreground py-8">
+                Loading files...
+              </div>
             ) : (
               files.map((file, index) => {
                 const fileId = index.toString();
                 const isSelected = selectedFiles.has(fileId);
+                const fileUrl = fileUrls.get(index) || file.part.url || null;
 
                 return (
                   <FileItem
@@ -312,6 +424,7 @@ const AllFilesDialog = ({
                     isSelected={isSelected}
                     selectionMode={selectionMode}
                     onToggle={() => handleToggleFile(fileId)}
+                    fileUrl={fileUrl}
                   />
                 );
               })
