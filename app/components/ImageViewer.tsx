@@ -76,6 +76,7 @@ export const ImageViewer = ({
       style={{ pointerEvents: "auto" }}
       onClick={handleBackdropClick}
       tabIndex={-1}
+      data-testid="image-zoom-modal"
     >
       {/* Close Button */}
       <button

@@ -328,6 +328,7 @@ export const Messages = ({
             return (
               <Fragment key={message.id}>
                 <div
+                  data-testid="message"
                   className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
                   onMouseEnter={() => handleMouseEnter(message.id)}
                   onMouseLeave={handleMouseLeave}
@@ -491,7 +492,7 @@ export const Messages = ({
                   {/* Loading state */}
                   {shouldShowLoader && (
                     <div className="mt-1 flex justify-start">
-                      <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
+                      <div data-testid="streaming" className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
                         <DotsSpinner size="sm" variant="primary" />
                       </div>
                     </div>
