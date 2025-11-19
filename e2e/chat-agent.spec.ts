@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
 import { ChatComponent } from "./page-objects";
+import {
+  setupChat,
+  sendAndWaitForResponse,
+  attachTestFile,
+} from "./helpers/test-helpers";
+import { TIMEOUTS, TEST_DATA } from "./constants";
 import path from "path";
 
 test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
@@ -7,8 +13,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     test.use({ storageState: "e2e/.auth/pro.json" });
 
     test("should switch to Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.expectMode("ask");
       await chat.switchToAgentMode();
@@ -16,8 +21,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should switch back to Ask mode from Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
@@ -29,43 +33,35 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     test("should generate markdown from image in Agent mode", async ({
       page,
     }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
 
-      const filePath = path.join(process.cwd(), "e2e/resource/image.png");
-      await chat.attachFile(filePath);
+      await attachTestFile(chat, "image");
 
-      await chat.expectImageAttached("image.png");
-      await chat.sendMessage(
+      await sendAndWaitForResponse(
+        chat,
         "Generate a short markdown description of this image, save it to a file and share with me",
+        TIMEOUTS.AGENT_LONG,
       );
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(90000);
 
       await chat.expectMessageContains(".md");
     });
 
     test("should resize image in Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
 
-      const filePath = path.join(process.cwd(), "e2e/resource/image.png");
-      await chat.attachFile(filePath);
+      await attachTestFile(chat, "image");
 
-      await chat.expectImageAttached("image.png");
-      await chat.sendMessage(
-        "Create a 100x100px version of this image using: pip3 install pillow && python3 -c \"from PIL import Image; img = Image.open('/home/user/upload/image.png'); img_resized = img.resize((100, 100)); img_resized.save('/home/user/resized_image.png')\". Then share with me.",
+      await sendAndWaitForResponse(
+        chat,
+        "Create a 100x100px version of this image. Then share with me.",
+        TIMEOUTS.AGENT_LONG,
       );
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(90000);
 
       const lastMessage = await chat.getLastMessageText();
       expect(lastMessage.toLowerCase()).toMatch(
@@ -74,44 +70,62 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should accept file operations in Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.txt");
-      await chat.attachFile(filePath);
+      await attachTestFile(chat, "text");
 
-      await chat.sendMessage("Read this file and tell me what word is in it");
+      await sendAndWaitForResponse(
+        chat,
+        "Read this file and tell me what word is in it",
+        TIMEOUTS.AGENT,
+      );
 
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
+      await chat.expectMessageContains(TEST_DATA.SECRETS.TEXT);
+    });
 
-      await chat.expectMessageContains("bazinga");
+    test("should read PDF file in Agent mode", async ({ page }) => {
+      const chat = await setupChat(page);
+
+      await chat.switchToAgentMode();
+      await chat.expectMode("agent");
+
+      await attachTestFile(chat, "pdf");
+
+      await sendAndWaitForResponse(
+        chat,
+        "Read this PDF file and tell me what word is in it",
+        TIMEOUTS.AGENT_LONG,
+      );
+
+      await chat.expectMessageContains(TEST_DATA.SECRETS.PDF);
     });
 
     test("should handle multiple operations in Agent mode", async ({
       page,
     }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
 
-      await chat.sendMessage("What is 2+2?");
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
-
-      await chat.sendMessage("What is 3+3?");
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
+      await sendAndWaitForResponse(
+        chat,
+        TEST_DATA.MESSAGES.MATH_SIMPLE,
+        TIMEOUTS.AGENT,
+      );
+      await sendAndWaitForResponse(
+        chat,
+        TEST_DATA.MESSAGES.MATH_NEXT,
+        TIMEOUTS.AGENT,
+      );
 
       await expect(async () => {
         const messageCount = await chat.getMessageCount();
         expect(messageCount).toBeGreaterThanOrEqual(4);
-      }).toPass({ timeout: 10000 });
+      }).toPass({ timeout: TIMEOUTS.MEDIUM });
     });
   });
 
@@ -119,8 +133,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     test.use({ storageState: "e2e/.auth/ultra.json" });
 
     test("should switch to Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.expectMode("ask");
       await chat.switchToAgentMode();
@@ -128,8 +141,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should switch back to Ask mode from Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
@@ -141,43 +153,35 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     test("should generate markdown from image in Agent mode", async ({
       page,
     }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
 
-      const filePath = path.join(process.cwd(), "e2e/resource/image.png");
-      await chat.attachFile(filePath);
+      await attachTestFile(chat, "image");
 
-      await chat.expectImageAttached("image.png");
-      await chat.sendMessage(
+      await sendAndWaitForResponse(
+        chat,
         "Generate a short markdown description of this image, save it to a file and share with me",
+        TIMEOUTS.AGENT_LONG,
       );
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(90000);
 
       await chat.expectMessageContains(".md");
     });
 
     test("should resize image in Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
 
-      const filePath = path.join(process.cwd(), "e2e/resource/image.png");
-      await chat.attachFile(filePath);
+      await attachTestFile(chat, "image");
 
-      await chat.expectImageAttached("image.png");
-      await chat.sendMessage(
-        "Create a 100x100px version of this image using: pip3 install pillow && python3 -c \"from PIL import Image; img = Image.open('/home/user/upload/image.png'); img_resized = img.resize((100, 100)); img_resized.save('/home/user/resized_image.png')\". Then share with me.",
+      await sendAndWaitForResponse(
+        chat,
+        "Create a 100x100px version of this image. Then share with me.",
+        TIMEOUTS.AGENT_LONG,
       );
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(90000);
 
       const lastMessage = await chat.getLastMessageText();
       expect(lastMessage.toLowerCase()).toMatch(
@@ -186,21 +190,37 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should accept file operations in Agent mode", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
       await chat.switchToAgentMode();
       await chat.expectMode("agent");
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.txt");
-      await chat.attachFile(filePath);
+      await attachTestFile(chat, "text");
 
-      await chat.sendMessage("Read this file and tell me what word is in it");
+      await sendAndWaitForResponse(
+        chat,
+        "Read this file and tell me what word is in it",
+        TIMEOUTS.AGENT,
+      );
 
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
+      await chat.expectMessageContains(TEST_DATA.SECRETS.TEXT);
+    });
 
-      await chat.expectMessageContains("bazinga");
+    test("should read PDF file in Agent mode", async ({ page }) => {
+      const chat = await setupChat(page);
+
+      await chat.switchToAgentMode();
+      await chat.expectMode("agent");
+
+      await attachTestFile(chat, "pdf");
+
+      await sendAndWaitForResponse(
+        chat,
+        "Read this PDF file and tell me what word is in it",
+        TIMEOUTS.AGENT_LONG,
+      );
+
+      await chat.expectMessageContains(TEST_DATA.SECRETS.PDF);
     });
   });
 });

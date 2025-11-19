@@ -57,7 +57,7 @@ e2e/
 **Agent Mode (Pro/Ultra):**
 - Switch between Ask and Agent modes
 - Generate markdown description from image
-- Resize image to 100x100px with PIL/Pillow
+- Resize image to 100x100px
 - Perform file operations (read/write)
 - Handle multiple operations in sequence
 
