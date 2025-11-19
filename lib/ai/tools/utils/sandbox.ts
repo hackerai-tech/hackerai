@@ -1,9 +1,8 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import { safeWaitUntil } from "@/lib/utils/safe-wait-until";
 import type { SandboxContext } from "@/types";
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
-const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
+const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000; // 15 minutes inactivity timeout
 
 /**
  * Current sandbox version identifier.
@@ -12,7 +11,7 @@ const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000;
  * Old sandboxes without this version (or with mismatched versions) will be automatically deleted
  * and recreated on next connection attempt.
  */
-const SANDBOX_VERSION = "v5";
+const SANDBOX_VERSION = "v6";
 
 /**
  * Ensures a sandbox connection is established and maintained
@@ -26,10 +25,9 @@ const SANDBOX_VERSION = "v5";
  * 1. Returns existing sandbox if already initialized
  * 2. Lists existing sandboxes for the user
  * 3. Validates sandbox version metadata (auto-kills old versions)
- * 4a. If found with "running" state: pause first (3 retries), then resume
- * 4b. If found with "paused" state: resume directly (no retries needed)
- * 5. Pause operations use 5-second delays between retry attempts
- * 6. If pause fails after retries or no sandbox found, creates new one
+ * 4. If found: connect to existing sandbox (works for both running and paused states)
+ * 5. If not found or connection fails: creates new sandbox with auto-pause enabled
+ * 6. Auto-pause automatically pauses sandbox after inactivity timeout (15 minutes)
  * 7. Returns active sandbox ready for use
  */
 export const ensureSandboxConnection = async (
@@ -72,95 +70,48 @@ export const ensureSandboxConnection = async (
       }
       // Skip to creating new sandbox
     } else if (existingSandbox?.sandboxId) {
-      // Step 3: Try to reuse existing sandbox if available
-      const currentState = existingSandbox.state;
-
-      if (currentState === "running") {
-        // Step 4a: If running, get sandbox instance first, then pause and resume
-        try {
-          // First, connect to the running sandbox
-          const runningSandbox = await Sandbox.connect(
-            existingSandbox.sandboxId,
-          );
-
-          // Try to pause with retry logic
-          let pauseSuccess = false;
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            try {
-              await runningSandbox.betaPause();
-              pauseSuccess = true;
-              break;
-            } catch (error) {
-              console.warn(
-                `[${userID}] Sandbox pause attempt ${attempt}/3 failed:`,
-                error,
-              );
-
-              if (attempt < 3) {
-                await new Promise((resolve) => setTimeout(resolve, 5000));
-              }
-            }
-          }
-
-          if (!pauseSuccess) {
-            console.error(
-              `[${userID}] Failed to pause sandbox after 3 attempts, creating new one`,
-            );
-            // Fall through to create new sandbox
-          } else {
-            // Now resume the paused sandbox
-            const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-              timeoutMs: BASH_SANDBOX_TIMEOUT,
-            });
-            setSandbox(sandbox);
-            return { sandbox };
-          }
-        } catch (error) {
+      // Step 3: Try to reuse existing sandbox (works for both running and paused states)
+      // With auto-pause, we don't need to manually pause before resuming
+      // Sandbox.connect() handles both running and paused sandboxes automatically
+      try {
+        const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
+          timeoutMs: BASH_SANDBOX_TIMEOUT,
+        });
+        setSandbox(sandbox);
+        return { sandbox };
+      } catch (e) {
+        // Handle specific error cases
+        if (
+          e instanceof Error &&
+          (e.name === "NotFoundError" || e.message?.includes("not found"))
+        ) {
           console.error(
-            `[${userID}] Error in pause-resume flow for sandbox ${existingSandbox.sandboxId}:`,
-            error,
+            `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`,
           );
-          // Fall through to create new sandbox
-        }
-      } else if (currentState === "paused") {
-        // Step 4b: If already paused, resume directly (no retries needed)
-        try {
-          const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-            timeoutMs: BASH_SANDBOX_TIMEOUT,
-          });
-          setSandbox(sandbox);
-          return { sandbox };
-        } catch (e) {
-          // Handle specific error cases
-          if (
-            e instanceof Error &&
-            (e.name === "NotFoundError" || e.message?.includes("not found"))
-          ) {
-            console.error(
-              `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`,
-            );
-            // Clean up expired sandbox reference
-            try {
-              await Sandbox.kill(existingSandbox.sandboxId);
-            } catch (killError) {
-              console.warn(
-                `[${userID}] Failed to clean up expired sandbox:`,
-                killError,
-              );
-            }
-          } else {
-            console.error(
-              `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
-              e,
+          // Clean up expired sandbox reference
+          try {
+            await Sandbox.kill(existingSandbox.sandboxId);
+          } catch (killError) {
+            console.warn(
+              `[${userID}] Failed to clean up expired sandbox:`,
+              killError,
             );
           }
+        } else {
+          console.error(
+            `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
+            e,
+          );
         }
       }
     }
 
     // Step 5: Create new sandbox (fallback for all failure cases)
-    const sandbox = await Sandbox.create(SANDBOX_TEMPLATE, {
+    // Use betaCreate with autoPause - sandbox will automatically pause after timeout
+    // This eliminates the need for manual pause operations and their failure modes
+    const sandbox = await Sandbox.betaCreate(SANDBOX_TEMPLATE, {
       timeoutMs: BASH_SANDBOX_TIMEOUT,
+      autoPause: true, // Auto-pause after inactivity timeout
       // Enable secure mode to generate pre-signed URLs for file downloads
       // This allows unauthorized environments (like browsers) to securely access
       // sandbox files through signed URLs with optional expiration times
@@ -183,34 +134,3 @@ export const ensureSandboxConnection = async (
   }
 };
 
-/**
- * Initiates a background task to pause an active sandbox
- * Uses safeWaitUntil to handle the pause operation asynchronously without blocking
- *
- * @param sandbox - Active sandbox instance to pause
- * @returns sandboxId if pause initiated, null if invalid sandbox
- *
- * Purpose:
- * - Pauses sandbox to conserve resources when not actively in use
- * - Runs in background to avoid blocking the response
- * - Maintains sandbox state for future reuse
- * - Gracefully handles pause failures with logging
- */
-export async function pauseSandbox(sandbox: Sandbox): Promise<string | null> {
-  if (!sandbox?.sandboxId) {
-    console.error("pauseSandbox: No sandbox ID provided for pausing");
-    return null;
-  }
-
-  // Start background pause operation and return immediately
-  safeWaitUntil(
-    sandbox.betaPause().catch((error) => {
-      console.error(
-        `Background pause failed for sandbox ${sandbox.sandboxId}:`,
-        error,
-      );
-    }),
-  );
-
-  return sandbox.sandboxId;
-}

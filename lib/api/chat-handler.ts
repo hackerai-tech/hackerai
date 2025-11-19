@@ -10,7 +10,6 @@ import {
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
-import { pauseSandbox } from "@/lib/ai/tools/utils/sandbox";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type { ChatMode, Todo } from "@/types";
@@ -388,11 +387,9 @@ export const createChatHandler = () => {
                 cancellationPoller.stop();
                 pollerStopped = true;
 
-                // Always cleanup sandbox regardless of abort status
-                const sandbox = getSandbox();
-                if (sandbox) {
-                  await pauseSandbox(sandbox);
-                }
+                // Sandbox cleanup is automatic with auto-pause
+                // The sandbox will auto-pause after inactivity timeout (15 minutes)
+                // No manual pause needed
 
                 // Always wait for title generation to complete
                 const generatedTitle = await titlePromise;
