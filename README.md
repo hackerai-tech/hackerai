@@ -1,23 +1,19 @@
 <p align="center">
-  <h1 align="center">HackerAI</h1>
-</p>
-
-<p align="center">
-  Your AI-Powered Penetration Testing Assistant
-</p>
-
-<p align="center">
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache%202.0%20with%20Commercial%20Restrictions-red.svg" alt="License: Apache 2.0 with Commercial Restrictions"/>
-  </a>
   <a href="https://hackerai.co/">
-    <img src="https://img.shields.io/badge/Demo-Website-blue" alt="Demo: Website"/>
+    <img src="public/icon-512x512.png" width="150" alt="HackerAI Logo">
   </a>
 </p>
 
-<p align="center">
-  Demo: <a href="https://hackerai.co/">https://hackerai.co/</a>
-</p>
+<h1 align="center">HackerAI</h1>
+
+<h2 align="center">Your AI-Powered Penetration Testing Assistant</h2>
+
+<div align="center">
+
+[![License](https://img.shields.io/badge/License-Apache%202.0%20with%20Commercial%20Restrictions-red.svg)](LICENSE)
+[![Website](https://img.shields.io/badge/Website-hackerai.co-2d3748.svg)](https://hackerai.co)
+
+</div>
 
 ## Getting started
 
@@ -36,8 +32,10 @@ You'll need the following accounts:
 
 **Optional:**
 
+- [Amazon S3](https://aws.amazon.com/s3/) - File storage (alternative to Convex storage)
 - [Exa](https://exa.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
+- [Redis](https://redis.io/) - Stream resumption
 - [Upstash Redis](https://upstash.com/) - Rate limiting
 - [PostHog](https://posthog.com/) - Analytics
 - [Stripe](https://stripe.com/) - Payment processing
