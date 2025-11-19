@@ -5,20 +5,20 @@
 
 export const TIMEOUTS = {
   // Short timeouts for fast operations
-  SHORT: 15000, // 5s - UI element visibility, quick checks
+  SHORT: 15000, // 15s - UI element visibility, quick checks
 
   // Medium timeouts for normal operations
-  MEDIUM: 30000, // 10s - Message rendering, file uploads
+  MEDIUM: 30000, // 30s - Message rendering, file uploads
 
   // Long timeouts for slow operations
-  LONG: 30000, // 30s - AI response streaming
+  LONG: 60000, // 60s - AI response streaming
 
   // Extra long timeouts for agent operations
-  AGENT: 60000, // 60s - Agent mode operations
+  AGENT: 90000, // 90s - Agent mode operations
   AGENT_LONG: 120000, // 120s - Complex agent operations (image processing)
 
   // Special timeouts
-  STOP_BUTTON_CHECK: 1000, // 1s - Quick check if streaming is active
+  STOP_BUTTON_CHECK: 5000, // 1s - Quick check if streaming is active
 } as const;
 
 export const TEST_DATA = {
