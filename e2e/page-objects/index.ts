@@ -3,3 +3,8 @@ export { HomePage } from "./HomePage";
 export { SidebarComponent } from "./SidebarComponent";
 export { UserMenuComponent } from "./UserMenuComponent";
 export { SettingsDialog, type SettingsTab } from "./SettingsDialog";
+export { ChatComponent } from "./ChatComponent";
+export { ChatPage } from "./ChatPage";
+export { ChatModeSelector } from "./ChatModeSelector";
+export { FileAttachment } from "./FileAttachment";
+export { UpgradeDialog } from "./UpgradeDialog";

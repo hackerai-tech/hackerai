@@ -17,7 +17,6 @@ The chat e2e tests cover core chat features, file attachments, Agent mode operat
 ```
 e2e/
 ├── auth.spec.ts                    # Authentication test suite
-├── chat-basic.spec.ts              # Basic chat functionality (all tiers)
 ├── chat-files-pro.spec.ts          # File attachments (Pro/Ultra)
 ├── chat-agent.spec.ts              # Agent mode operations (Pro/Ultra)
 ├── chat-free-restrictions.spec.ts  # Free tier upgrade restrictions
@@ -164,7 +163,6 @@ pnpm test:e2e:mobile
 Run specific test suite:
 ```bash
 pnpm test:e2e e2e/auth.spec.ts
-pnpm test:e2e e2e/chat-basic.spec.ts
 pnpm test:e2e e2e/chat-files-pro.spec.ts
 pnpm test:e2e e2e/chat-agent.spec.ts
 pnpm test:e2e e2e/chat-free-restrictions.spec.ts
