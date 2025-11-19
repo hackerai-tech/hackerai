@@ -13,6 +13,15 @@
 # testing
 /coverage
 
+# e2e tests
+/test-results/
+/playwright-report/
+/playwright/.cache/
+/e2e/test-files/
+/e2e/.auth/
+.env.e2e
+.playwright-mcp
+
 # next.js
 /.next/
 /out/
@@ -41,3 +50,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+# Playwright auth states
+.auth/
+CLAUDE.md
