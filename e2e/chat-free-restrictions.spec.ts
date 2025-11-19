@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { ChatComponent } from "./page-objects";
+import { setupChat } from "./helpers/test-helpers";
+import { TIMEOUTS } from "./constants";
 
 test.describe("Free Tier Restriction Tests", () => {
   test.use({ storageState: "e2e/.auth/free.json" });
@@ -7,8 +9,7 @@ test.describe("Free Tier Restriction Tests", () => {
   test("should show upgrade popover when attempting to attach file", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await chat.clickAttachButton();
     await chat.expectUpgradePopoverVisible();
@@ -18,8 +19,7 @@ test.describe("Free Tier Restriction Tests", () => {
   test("should show Upgrade now button in file attachment popover", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await chat.clickAttachButton();
     await chat.expectUpgradePopoverVisible();
@@ -32,23 +32,21 @@ test.describe("Free Tier Restriction Tests", () => {
   test("should redirect to pricing when clicking Upgrade now", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await chat.clickAttachButton();
     await chat.expectUpgradeNowButtonVisible();
 
     await chat.clickUpgradeNow();
 
-    await page.waitForURL(/.*pricing.*/, { timeout: 10000 });
+    await page.waitForURL(/.*pricing.*/, { timeout: TIMEOUTS.MEDIUM });
     expect(page.url()).toMatch(/pricing/);
   });
 
   test("should show upgrade dialog when attempting to switch to Agent mode", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await chat.expectMode("ask");
 
@@ -64,8 +62,7 @@ test.describe("Free Tier Restriction Tests", () => {
   test("should show Upgrade plan button in Agent mode dialog", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await page.getByRole("button", { name: /Ask/ }).click();
     const agentOption = page.getByRole("menuitem").filter({ hasText: "Agent" });
@@ -79,8 +76,7 @@ test.describe("Free Tier Restriction Tests", () => {
   test("should redirect to pricing when clicking Upgrade plan from Agent dialog", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await page.getByRole("button", { name: /Ask/ }).click();
     const agentOption = page.getByRole("menuitem").filter({ hasText: "Agent" });
@@ -89,15 +85,14 @@ test.describe("Free Tier Restriction Tests", () => {
     await chat.expectUpgradePlanButtonVisible();
     await chat.clickUpgradePlan();
 
-    await page.waitForURL(/.*pricing.*/, { timeout: 10000 });
+    await page.waitForURL(/.*pricing.*/, { timeout: TIMEOUTS.MEDIUM });
     expect(page.url()).toMatch(/pricing/);
   });
 
   test("should remain in Ask mode after dismissing Agent upgrade dialog", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await page.getByRole("button", { name: /Ask/ }).click();
     const agentOption = page.getByRole("menuitem").filter({ hasText: "Agent" });
@@ -107,15 +102,14 @@ test.describe("Free Tier Restriction Tests", () => {
 
     await page.keyboard.press("Escape");
 
-    await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: TIMEOUTS.SHORT });
     await chat.expectMode("ask");
   });
 
   test("should show PRO badge on Agent mode option for free users", async ({
     page,
   }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await page.getByRole("button", { name: /Ask/ }).click();
 
@@ -127,8 +121,7 @@ test.describe("Free Tier Restriction Tests", () => {
   });
 
   test("should not allow file attachment for free tier", async ({ page }) => {
-    await page.goto("/");
-    const chat = new ChatComponent(page);
+    const chat = await setupChat(page);
 
     await chat.clickAttachButton();
     await chat.expectUpgradePopoverVisible();

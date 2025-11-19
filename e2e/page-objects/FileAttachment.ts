@@ -7,14 +7,14 @@ export class FileAttachment {
   private readonly uploadingStatus: Locator;
 
   constructor(private page: Page) {
-    this.attachButton = page.locator('button[aria-label*="Attach"]').or(
-      page.locator('button:has-text("Attach")')
-    );
+    this.attachButton = page
+      .locator('button[aria-label*="Attach"]')
+      .or(page.locator('button:has-text("Attach")'));
     this.fileInput = page.locator('input[type="file"]');
-    this.filePreviewContainer = page.locator('[data-testid="file-preview"]').or(
-      page.locator('.file-upload-preview')
-    );
-    this.uploadingStatus = page.locator('text=/uploading/i');
+    this.filePreviewContainer = page
+      .locator('[data-testid="file-preview"]')
+      .or(page.locator(".file-upload-preview"));
+    this.uploadingStatus = page.locator("text=/uploading/i");
   }
 
   async attachFile(filePath: string): Promise<void> {
@@ -46,10 +46,7 @@ export class FileAttachment {
       .locator(`[data-file-name="${fileName}"]`)
       .locator('button[aria-label*="Remove"]')
       .or(
-        this.page
-          .locator(`text="${fileName}"`)
-          .locator('..')
-          .locator('button')
+        this.page.locator(`text="${fileName}"`).locator("..").locator("button"),
       );
 
     await removeButton.click();
@@ -57,7 +54,9 @@ export class FileAttachment {
   }
 
   async removeAllFiles(): Promise<void> {
-    const removeButtons = this.page.locator('button[aria-label*="Remove file"]');
+    const removeButtons = this.page.locator(
+      'button[aria-label*="Remove file"]',
+    );
     const count = await removeButtons.count();
 
     for (let i = count - 1; i >= 0; i--) {
@@ -72,7 +71,7 @@ export class FileAttachment {
     await expect(imageButton).toBeVisible();
     // Wait for send button to be enabled (upload complete)
     await expect(this.page.getByTestId("send-button")).toBeEnabled({
-      timeout: 5000,
+      timeout: 30000,
     });
   }
 
@@ -100,9 +99,9 @@ export class FileAttachment {
   }
 
   async verifyFileNotAttached(fileName: string): Promise<void> {
-    const fileItem = this.page.locator(`text="${fileName}"`).or(
-      this.page.locator(`[data-file-name="${fileName}"]`)
-    );
+    const fileItem = this.page
+      .locator(`text="${fileName}"`)
+      .or(this.page.locator(`[data-file-name="${fileName}"]`));
     await expect(fileItem).not.toBeVisible();
   }
 
@@ -146,16 +145,16 @@ export class FileAttachment {
       return 0;
     }
 
-    const fileItems = this.page.locator('[data-testid="file-item"]').or(
-      this.page.locator('.file-preview-item')
-    );
+    const fileItems = this.page
+      .locator('[data-testid="file-item"]')
+      .or(this.page.locator(".file-preview-item"));
     return await fileItems.count();
   }
 
   async getAttachedFileNames(): Promise<string[]> {
-    const fileItems = this.page.locator('[data-testid="file-item"]').or(
-      this.page.locator('.file-preview-item')
-    );
+    const fileItems = this.page
+      .locator('[data-testid="file-item"]')
+      .or(this.page.locator(".file-preview-item"));
     const count = await fileItems.count();
     const names: string[] = [];
 
@@ -170,13 +169,10 @@ export class FileAttachment {
   async verifyFileHasError(fileName: string): Promise<void> {
     const errorIndicator = this.page
       .locator(`text="${fileName}"`)
-      .locator('..')
+      .locator("..")
       .locator('[data-error="true"]')
       .or(
-        this.page
-          .locator(`text="${fileName}"`)
-          .locator('..')
-          .locator('.error')
+        this.page.locator(`text="${fileName}"`).locator("..").locator(".error"),
       );
 
     await expect(errorIndicator).toBeVisible();

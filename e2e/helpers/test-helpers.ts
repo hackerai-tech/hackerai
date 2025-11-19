@@ -1,34 +1,74 @@
-import { Page, expect } from "@playwright/test";
-import { authenticateUser, TestUser } from "../fixtures/auth";
+import { Page } from "@playwright/test";
+import { ChatComponent } from "../page-objects";
+import path from "path";
+import { TEST_DATA, TIMEOUTS } from "../constants";
 
-export const getUserMenuButton = (page: Page) => {
-  return page
-    .getByTestId("user-menu-button")
-    .or(page.getByTestId("user-menu-button-collapsed"));
-};
+/**
+ * Common test helper functions to reduce duplication
+ */
 
-export const ensureAuthenticated = async (page: Page, user: TestUser) => {
-  // Always call authenticateUser - it has built-in caching
-  // First test: Will perform actual login and cache cookies
-  // Subsequent tests: Will load cached cookies into context and skip login
-  await authenticateUser(page, user);
-};
+/**
+ * Send a message and wait for AI response
+ */
+export async function sendAndWaitForResponse(
+  chat: ChatComponent,
+  message: string,
+  timeout: number = TIMEOUTS.LONG
+): Promise<void> {
+  await chat.sendMessage(message);
+  await chat.expectStreamingVisible();
+  await chat.expectStreamingNotVisible(timeout);
+}
 
-export const openSettingsDialog = async (page: Page) => {
-  const userMenuButton = getUserMenuButton(page);
-  await userMenuButton.click();
-  await page.getByTestId("settings-button").click();
-  await expect(page.getByTestId("settings-dialog")).toBeVisible();
-};
+/**
+ * Attach a file by name and wait for upload completion
+ */
+export async function attachTestFile(
+  chat: ChatComponent,
+  fileName: "image" | "text" | "pdf"
+): Promise<void> {
+  const fileMap = {
+    image: TEST_DATA.RESOURCES.IMAGE,
+    text: TEST_DATA.RESOURCES.TEXT_FILE,
+    pdf: TEST_DATA.RESOURCES.PDF_FILE,
+  };
 
-export const navigateToSettingsTab = async (page: Page, tab: string) => {
-  await openSettingsDialog(page);
-  await page.getByTestId(`settings-tab-${tab}`).click();
-};
+  const filePath = path.join(process.cwd(), fileMap[fileName]);
+  await chat.attachFile(filePath);
 
-export const closeDialog = async (page: Page) => {
-  const closeButton = page.getByRole("button", { name: /close/i }).first();
-  if (await closeButton.isVisible({ timeout: 500 }).catch(() => false)) {
-    await closeButton.click();
+  // Wait for upload based on file type
+  const fileNameMap = {
+    image: "image.png",
+    text: "secret.txt",
+    pdf: "secret.pdf",
+  };
+
+  if (fileName === "image") {
+    await chat.expectImageAttached(fileNameMap[fileName]);
+  } else {
+    await chat.expectFileAttached(fileNameMap[fileName]);
   }
-};
+}
+
+/**
+ * Common setup for chat tests
+ */
+export async function setupChat(page: Page): Promise<ChatComponent> {
+  await page.goto("/");
+  return new ChatComponent(page);
+}
+
+/**
+ * Send message with file and verify AI reads content
+ */
+export async function sendMessageWithFileAndVerifyContent(
+  chat: ChatComponent,
+  fileType: "text" | "pdf" | "image",
+  question: string,
+  expectedContent: string,
+  timeout: number = TIMEOUTS.AGENT
+): Promise<void> {
+  await attachTestFile(chat, fileType);
+  await sendAndWaitForResponse(chat, question, timeout);
+  await chat.expectMessageContains(expectedContent);
+}

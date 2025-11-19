@@ -1,5 +1,11 @@
 import { test, expect } from "@playwright/test";
 import { ChatComponent } from "./page-objects";
+import {
+  setupChat,
+  sendMessageWithFileAndVerifyContent,
+  attachTestFile,
+} from "./helpers/test-helpers";
+import { TIMEOUTS, TEST_DATA } from "./constants";
 import path from "path";
 
 test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
@@ -7,61 +13,46 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     test.use({ storageState: "e2e/.auth/pro.json" });
 
     test("should attach text file and AI reads content", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.txt");
-      await chat.attachFile(filePath);
-
-      await chat.expectFileAttached("secret.txt");
-      await chat.sendMessage("What is the secret word in the file?");
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
-
-      await chat.expectMessageContains("bazinga");
+      await sendMessageWithFileAndVerifyContent(
+        chat,
+        "text",
+        "What is the secret word in the file?",
+        TEST_DATA.SECRETS.TEXT,
+        TIMEOUTS.AGENT,
+      );
     });
 
     test("should attach image and AI recognizes content", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/image.png");
-      await chat.attachFile(filePath);
-
-      await chat.expectImageAttached("image.png");
-      await chat.sendMessage(
+      await sendMessageWithFileAndVerifyContent(
+        chat,
+        "image",
         "What do you see in this image? Answer in one word.",
+        TEST_DATA.SECRETS.IMAGE_CONTENT,
+        TIMEOUTS.AGENT,
       );
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
-
-      await chat.expectMessageContains("duck");
     });
 
     test("should attach PDF and AI reads content", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.pdf");
-      await chat.attachFile(filePath);
-
-      await chat.expectFileAttached("secret.pdf");
-      await chat.sendMessage("What is the secret word in the file?");
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
-
-      await chat.expectMessageContains("hippo");
+      await sendMessageWithFileAndVerifyContent(
+        chat,
+        "pdf",
+        "What is the secret word in the file?",
+        TEST_DATA.SECRETS.PDF,
+        TIMEOUTS.AGENT,
+      );
     });
 
     test("should attach multiple files at once", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const textFile = path.join(process.cwd(), "e2e/resource/secret.txt");
-      const imageFile = path.join(process.cwd(), "e2e/resource/image.png");
+      const textFile = path.join(process.cwd(), TEST_DATA.RESOURCES.TEXT_FILE);
+      const imageFile = path.join(process.cwd(), TEST_DATA.RESOURCES.IMAGE);
 
       await chat.attachFiles([textFile, imageFile]);
 
@@ -71,36 +62,28 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     });
 
     test("should remove attached file", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.txt");
-      await chat.attachFile(filePath);
-
-      await chat.expectFileAttached("secret.txt");
+      await attachTestFile(chat, "text");
       await chat.removeAttachedFile(0);
 
       await chat.expectAttachedFileCount(0);
     });
 
     test("should send message with file attachment", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.txt");
-      await chat.attachFile(filePath);
-
-      await chat.expectFileAttached("secret.txt");
+      await attachTestFile(chat, "text");
       await chat.expectSendButtonEnabled();
 
       await chat.sendMessage("Describe this file");
       await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
+      await chat.expectStreamingNotVisible(TIMEOUTS.AGENT);
 
       await expect(async () => {
         const messageCount = await chat.getMessageCount();
         expect(messageCount).toBeGreaterThanOrEqual(2);
-      }).toPass({ timeout: 10000 });
+      }).toPass({ timeout: TIMEOUTS.MEDIUM });
     });
   });
 
@@ -108,61 +91,46 @@ test.describe("File Attachment Tests - Pro and Ultra Tiers", () => {
     test.use({ storageState: "e2e/.auth/ultra.json" });
 
     test("should attach text file and AI reads content", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.txt");
-      await chat.attachFile(filePath);
-
-      await chat.expectFileAttached("secret.txt");
-      await chat.sendMessage("What is the secret word in the file?");
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
-
-      await chat.expectMessageContains("bazinga");
+      await sendMessageWithFileAndVerifyContent(
+        chat,
+        "text",
+        "What is the secret word in the file?",
+        TEST_DATA.SECRETS.TEXT,
+        TIMEOUTS.AGENT,
+      );
     });
 
     test("should attach image and AI recognizes content", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/image.png");
-      await chat.attachFile(filePath);
-
-      await chat.expectImageAttached("image.png");
-      await chat.sendMessage(
+      await sendMessageWithFileAndVerifyContent(
+        chat,
+        "image",
         "What do you see in this image? Answer in one word.",
+        TEST_DATA.SECRETS.IMAGE_CONTENT,
+        TIMEOUTS.AGENT,
       );
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
-
-      await chat.expectMessageContains("duck");
     });
 
     test("should attach PDF and AI reads content", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const filePath = path.join(process.cwd(), "e2e/resource/secret.pdf");
-      await chat.attachFile(filePath);
-
-      await chat.expectFileAttached("secret.pdf");
-      await chat.sendMessage("What is the secret word in the file?");
-
-      await chat.expectStreamingVisible();
-      await chat.expectStreamingNotVisible(120000);
-
-      await chat.expectMessageContains("hippo");
+      await sendMessageWithFileAndVerifyContent(
+        chat,
+        "pdf",
+        "What is the secret word in the file?",
+        TEST_DATA.SECRETS.PDF,
+        TIMEOUTS.AGENT,
+      );
     });
 
     test("should attach multiple files at once", async ({ page }) => {
-      await page.goto("/");
-      const chat = new ChatComponent(page);
+      const chat = await setupChat(page);
 
-      const textFile = path.join(process.cwd(), "e2e/resource/secret.txt");
-      const imageFile = path.join(process.cwd(), "e2e/resource/image.png");
+      const textFile = path.join(process.cwd(), TEST_DATA.RESOURCES.TEXT_FILE);
+      const imageFile = path.join(process.cwd(), TEST_DATA.RESOURCES.IMAGE);
 
       await chat.attachFiles([textFile, imageFile]);
 
