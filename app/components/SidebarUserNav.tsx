@@ -233,7 +233,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 <div className="text-sm font-medium text-sidebar-foreground truncate">
                   {getDisplayName()}
                 </div>
-                <div data-testid="subscription-badge" className="text-xs text-sidebar-accent-foreground truncate">
+                <div
+                  data-testid="subscription-badge"
+                  className="text-xs text-sidebar-accent-foreground truncate"
+                >
                   {subscription === "ultra"
                     ? "Ultra"
                     : subscription === "team"
@@ -256,7 +259,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuLabel className="font-normal py-2.5">
             <div className="flex items-center space-x-2.5">
               <CircleUserRound className="h-5 w-5 text-muted-foreground flex-shrink-0" />
-              <p data-testid="user-email" className="leading-none text-muted-foreground truncate min-w-0">
+              <p
+                data-testid="user-email"
+                className="leading-none text-muted-foreground truncate min-w-0"
+              >
                 {user.email}
               </p>
             </div>
@@ -265,7 +271,11 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuSeparator />
 
           {subscription === "pro" && (
-            <DropdownMenuItem data-testid="upgrade-menu-item" onClick={redirectToPricing} className="py-2.5">
+            <DropdownMenuItem
+              data-testid="upgrade-menu-item"
+              onClick={redirectToPricing}
+              className="py-2.5"
+            >
               <Sparkle className="mr-2.5 h-5 w-5 text-foreground" />
               <span>Upgrade Plan</span>
             </DropdownMenuItem>
@@ -319,7 +329,11 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenuItem data-testid="logout-button" onClick={handleLogOut} className="py-2.5">
+          <DropdownMenuItem
+            data-testid="logout-button"
+            onClick={handleLogOut}
+            className="py-2.5"
+          >
             <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
             <span>Log out</span>
           </DropdownMenuItem>

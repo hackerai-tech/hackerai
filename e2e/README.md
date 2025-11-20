@@ -139,15 +139,16 @@ e2e/
 
 Three test users are configured for different subscription tiers:
 
-| Tier  | Email                | Test ID Prefix |
-|-------|---------------------|----------------|
-| Free  | free@hackerai.com   | TEST_FREE_    |
-| Pro   | pro@hackerai.com    | TEST_PRO_     |
-| Ultra | ultra@hackerai.com  | TEST_ULTRA_   |
+| Tier  | Email              | Test ID Prefix |
+| ----- | ------------------ | -------------- |
+| Free  | free@hackerai.com  | TEST*FREE*     |
+| Pro   | pro@hackerai.com   | TEST*PRO*      |
+| Ultra | ultra@hackerai.com | TEST*ULTRA*    |
 
 ### Setup
 
 1. **Create test users in WorkOS:**
+
    ```bash
    pnpm test:e2e:setup
    ```
@@ -164,26 +165,31 @@ Three test users are configured for different subscription tiers:
 ### Running Tests
 
 Run all e2e tests:
+
 ```bash
 pnpm test:e2e
 ```
 
 Run with UI mode (recommended for development):
+
 ```bash
 pnpm test:e2e:ui
 ```
 
 Run in headed mode (see browser):
+
 ```bash
 pnpm test:e2e:headed
 ```
 
 Run in debug mode:
+
 ```bash
 pnpm test:e2e:debug
 ```
 
 Run specific browser:
+
 ```bash
 pnpm test:e2e:chromium
 pnpm test:e2e:firefox
@@ -191,11 +197,13 @@ pnpm test:e2e:webkit
 ```
 
 Run mobile tests:
+
 ```bash
 pnpm test:e2e:mobile
 ```
 
 Run specific test suite:
+
 ```bash
 pnpm test:e2e e2e/chat-free.spec.ts
 pnpm test:e2e e2e/chat-files-pro.spec.ts
@@ -205,21 +213,25 @@ pnpm test:e2e e2e/chat-agent.spec.ts
 ### Test User Management
 
 Create test users:
+
 ```bash
 pnpm test:e2e:users:create
 ```
 
 Delete test users:
+
 ```bash
 pnpm test:e2e:users:delete
 ```
 
 Reset test user passwords:
+
 ```bash
 pnpm test:e2e:users:reset-passwords
 ```
 
 Reset rate limits for test users:
+
 ```bash
 pnpm rate-limit:reset free|pro|ultra|--all
 ```

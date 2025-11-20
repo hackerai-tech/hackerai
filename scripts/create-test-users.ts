@@ -247,19 +247,23 @@ async function createTestUsers() {
   console.log(chalk.bold.blue("\n📝 Next Steps\n"));
 
   console.log(
-    "1. Ensure your " +
-      chalk.bold(".env.e2e") +
-      " file has these credentials:",
+    "1. Ensure your " + chalk.bold(".env.e2e") + " file has these credentials:",
   );
   console.log();
   console.log(chalk.cyan(`   TEST_FREE_TIER_USER=${TEST_USERS[0].email}`));
-  console.log(chalk.cyan(`   TEST_FREE_TIER_PASSWORD=${TEST_USERS[0].password}`));
+  console.log(
+    chalk.cyan(`   TEST_FREE_TIER_PASSWORD=${TEST_USERS[0].password}`),
+  );
   console.log();
   console.log(chalk.cyan(`   TEST_PRO_TIER_USER=${TEST_USERS[1].email}`));
-  console.log(chalk.cyan(`   TEST_PRO_TIER_PASSWORD=${TEST_USERS[1].password}`));
+  console.log(
+    chalk.cyan(`   TEST_PRO_TIER_PASSWORD=${TEST_USERS[1].password}`),
+  );
   console.log();
   console.log(chalk.cyan(`   TEST_ULTRA_TIER_USER=${TEST_USERS[2].email}`));
-  console.log(chalk.cyan(`   TEST_ULTRA_TIER_PASSWORD=${TEST_USERS[2].password}`));
+  console.log(
+    chalk.cyan(`   TEST_ULTRA_TIER_PASSWORD=${TEST_USERS[2].password}`),
+  );
   console.log();
 
   console.log("\n2. Run verification script to verify all emails:");

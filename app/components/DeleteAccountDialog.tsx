@@ -96,7 +96,10 @@ export const DeleteAccountDialog = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} modal={true}>
-      <DialogContent data-testid="delete-account-dialog" className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        data-testid="delete-account-dialog"
+        className="sm:max-w-md max-h-[90vh] overflow-y-auto"
+      >
         <DialogHeader>
           <DialogTitle>Delete account - are you sure?</DialogTitle>
         </DialogHeader>

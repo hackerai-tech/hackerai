@@ -47,7 +47,7 @@ export class FileAttachment {
       .locator(`[data-file-name="${fileName}"]`)
       .locator('button[aria-label*="Remove"]')
       .or(
-        this.page.locator(`text="${fileName}"`).locator("..").locator("button")
+        this.page.locator(`text="${fileName}"`).locator("..").locator("button"),
       );
 
     await removeButton.click();
@@ -56,7 +56,7 @@ export class FileAttachment {
 
   async removeAllFiles(): Promise<void> {
     const removeButtons = this.page.locator(
-      'button[aria-label*="Remove file"]'
+      'button[aria-label*="Remove file"]',
     );
     const count = await removeButtons.count();
 
@@ -116,7 +116,7 @@ export class FileAttachment {
 
   async waitForUploadComplete(fileName?: string): Promise<void> {
     const uploadingText = this.page.getByText(
-      "Uploading attachments to the computer..."
+      "Uploading attachments to the computer...",
     );
     const isUploading = await uploadingText.isVisible().catch(() => false);
     if (isUploading) {
@@ -173,7 +173,7 @@ export class FileAttachment {
       .locator("..")
       .locator('[data-error="true"]')
       .or(
-        this.page.locator(`text="${fileName}"`).locator("..").locator(".error")
+        this.page.locator(`text="${fileName}"`).locator("..").locator(".error"),
       );
 
     await expect(errorIndicator).toBeVisible();

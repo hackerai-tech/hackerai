@@ -73,16 +73,16 @@ export class ChatModeSelector {
 
   async verifyAgentModeHasProBadge(): Promise<void> {
     await this.openModeDropdown();
-    const proBadge = this.page.locator('[role="menuitem"]', {
-      has: this.page.locator('text="Agent"'),
-    }).locator('text="PRO"');
+    const proBadge = this.page
+      .locator('[role="menuitem"]', {
+        has: this.page.locator('text="Agent"'),
+      })
+      .locator('text="PRO"');
     await expect(proBadge).toBeVisible();
     await this.page.keyboard.press("Escape");
   }
 
-  async verifyModeDropdownContainsOptions(
-    options: ChatMode[]
-  ): Promise<void> {
+  async verifyModeDropdownContainsOptions(options: ChatMode[]): Promise<void> {
     await this.openModeDropdown();
 
     for (const option of options) {

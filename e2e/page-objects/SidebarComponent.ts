@@ -27,7 +27,7 @@ export class SidebarComponent {
 
   async getSubscriptionTier(): Promise<string> {
     await this.expandIfCollapsed();
-    return await this.subscriptionBadge.textContent() || "";
+    return (await this.subscriptionBadge.textContent()) || "";
   }
 
   async verifySubscriptionTier(expectedTier: string): Promise<void> {
@@ -45,7 +45,10 @@ export class SidebarComponent {
   /**
    * Check if a chat with the given title exists in the sidebar
    */
-  async hasChatWithTitle(title: string, timeout: number = TIMEOUTS.MEDIUM): Promise<boolean> {
+  async hasChatWithTitle(
+    title: string,
+    timeout: number = TIMEOUTS.MEDIUM,
+  ): Promise<boolean> {
     try {
       const chatItem = await this.findChatByTitle(title);
       await chatItem.waitFor({ state: "visible", timeout });
@@ -58,7 +61,10 @@ export class SidebarComponent {
   /**
    * Verify that a chat with the given title appears in the sidebar
    */
-  async expectChatWithTitle(title: string, timeout: number = TIMEOUTS.MEDIUM): Promise<void> {
+  async expectChatWithTitle(
+    title: string,
+    timeout: number = TIMEOUTS.MEDIUM,
+  ): Promise<void> {
     const chatItem = await this.findChatByTitle(title);
     await expect(chatItem).toBeVisible({ timeout });
   }

@@ -480,7 +480,10 @@ export const ChatInput = ({
         open={agentUpgradeDialogOpen}
         onOpenChange={setAgentUpgradeDialogOpen}
       >
-        <DialogContent className="sm:max-w-[500px]" data-testid="agent-upgrade-dialog">
+        <DialogContent
+          className="sm:max-w-[500px]"
+          data-testid="agent-upgrade-dialog"
+        >
           <DialogHeader>
             <DialogTitle>Upgrade plan</DialogTitle>
             <DialogDescription>
@@ -488,7 +491,12 @@ export const ChatInput = ({
               security features with Pro.
             </DialogDescription>
           </DialogHeader>
-          <Button onClick={handleUpgradeClick} className="w-full" size="lg" data-testid="agent-upgrade-button">
+          <Button
+            onClick={handleUpgradeClick}
+            className="w-full"
+            size="lg"
+            data-testid="agent-upgrade-button"
+          >
             Upgrade plan
           </Button>
         </DialogContent>

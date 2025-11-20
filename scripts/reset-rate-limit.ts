@@ -60,12 +60,12 @@ async function getUserId(email: string): Promise<string | null> {
 
 async function resetRateLimitForUser(
   user: TestUser,
-  userEmail: string
+  userEmail: string,
 ): Promise<void> {
   if (!REDIS_URL || !REDIS_TOKEN) {
     console.error("❌ Error: Redis is not configured in .env.local");
     console.log(
-      "\nTo configure Redis, add the following to your .env.local file:"
+      "\nTo configure Redis, add the following to your .env.local file:",
     );
     console.log("  UPSTASH_REDIS_REST_URL=https://your-endpoint.upstash.io");
     console.log("  UPSTASH_REDIS_REST_TOKEN=your_token_here");
@@ -127,7 +127,6 @@ async function resetAllTestUsers(): Promise<void> {
   console.log("✨ All test user rate limits have been reset!\n");
 }
 
-
 // Main CLI handler
 async function main() {
   const args = process.argv.slice(2);
@@ -173,7 +172,9 @@ Note: This script automatically looks up user IDs from WorkOS
 
   // Check for WorkOS credentials
   if (!process.env.WORKOS_API_KEY || !process.env.WORKOS_CLIENT_ID) {
-    console.error("❌ Error: WORKOS_API_KEY and WORKOS_CLIENT_ID must be set in .env.local");
+    console.error(
+      "❌ Error: WORKOS_API_KEY and WORKOS_CLIENT_ID must be set in .env.local",
+    );
     process.exit(1);
   }
 
@@ -188,7 +189,9 @@ Note: This script automatically looks up user IDs from WorkOS
 
   // Validate user
   if (!TEST_USERS[user]) {
-    console.error(`❌ Error: Invalid user "${user}". Must be: free | pro | ultra`);
+    console.error(
+      `❌ Error: Invalid user "${user}". Must be: free | pro | ultra`,
+    );
     console.log("\n💡 Tip: Use --help to see available options");
     process.exit(1);
   }

@@ -104,7 +104,7 @@ export class UpgradeDialog {
 
     if (expectedContent.descriptionContains) {
       await this.verifyDialogDescriptionContains(
-        expectedContent.descriptionContains
+        expectedContent.descriptionContains,
       );
     }
 

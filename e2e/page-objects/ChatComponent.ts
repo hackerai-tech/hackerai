@@ -27,7 +27,7 @@ export class ChatComponent {
 
   private get messages(): Locator {
     return this.page.locator(
-      '[data-testid="user-message"], [data-testid="assistant-message"]'
+      '[data-testid="user-message"], [data-testid="assistant-message"]',
     );
   }
 
@@ -155,7 +155,7 @@ export class ChatComponent {
 
   async waitForMessageCount(
     count: number,
-    timeout: number = TIMEOUTS.SHORT
+    timeout: number = TIMEOUTS.SHORT,
   ): Promise<void> {
     await expect(this.messages).toHaveCount(count, { timeout });
   }
@@ -178,14 +178,14 @@ export class ChatComponent {
 
   async expectMessageContains(
     text: string,
-    timeout: number = TIMEOUTS.MEDIUM
+    timeout: number = TIMEOUTS.MEDIUM,
   ): Promise<void> {
     await expect(
       this.page
         .locator(
-          `[data-testid="user-message"], [data-testid="assistant-message"]`
+          `[data-testid="user-message"], [data-testid="assistant-message"]`,
         )
-        .filter({ hasText: text })
+        .filter({ hasText: text }),
     ).toBeVisible({ timeout });
   }
 
@@ -201,7 +201,7 @@ export class ChatComponent {
   }
 
   async expectStreamingNotVisible(
-    timeout: number = TIMEOUTS.AGENT
+    timeout: number = TIMEOUTS.AGENT,
   ): Promise<void> {
     const stopButtonHidden = await this.stopButton
       .waitFor({ state: "hidden", timeout })

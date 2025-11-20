@@ -104,7 +104,7 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                       return (
                         <button
                           key={tab.id}
-                          data-testid={`settings-tab-${tab.id.toLowerCase().replace(/\s+/g, '-')}`}
+                          data-testid={`settings-tab-${tab.id.toLowerCase().replace(/\s+/g, "-")}`}
                           type="button"
                           onClick={() => setActiveTab(tab.id)}
                           className={`group flex items-center gap-1.5 px-1 py-2 text-sm leading-5 max-md:whitespace-nowrap md:h-12 md:gap-2.5 md:self-stretch md:px-4 md:rounded-lg hover:bg-muted transition-colors ${

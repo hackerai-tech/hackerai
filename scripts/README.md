@@ -28,11 +28,13 @@ pnpm rate-limit:reset <userId> [mode] [subscription]
 ```
 
 **Arguments:**
+
 - `userId` - WorkOS user ID (required)
 - `mode` - Chat mode: `ask` | `agent` (optional)
 - `subscription` - Subscription tier: `free` | `pro` | `ultra` | `team` (optional)
 
 **Options:**
+
 - `--all` - Reset all rate limits for a user
 - `--list` - List current rate limits for a user
 - `--help` - Show help message
@@ -56,6 +58,7 @@ pnpm rate-limit:reset --list user_01234567
 #### How It Works
 
 Rate limits are stored in Upstash Redis with keys in this format:
+
 ```
 {userId}:{mode}:{subscription}
 ```
@@ -88,17 +91,20 @@ To find a user's WorkOS ID:
 Default rate limits per 5-hour window:
 
 **Ask Mode:**
+
 - Free: 10 requests
 - Pro: 80 requests
 - Ultra: 240 requests
 - Team: 160 requests
 
 **Agent Mode:**
+
 - Pro: 45 requests
 - Ultra: 135 requests
 - Team: 90 requests
 
 Configure in `.env.local`:
+
 ```env
 FREE_RATE_LIMIT_REQUESTS=10
 PRO_RATE_LIMIT_REQUESTS=80

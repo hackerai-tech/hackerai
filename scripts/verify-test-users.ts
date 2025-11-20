@@ -22,8 +22,8 @@ async function verifyTestUsers() {
   if (!process.env.WORKOS_API_KEY || !process.env.WORKOS_CLIENT_ID) {
     console.log(
       chalk.red(
-        "❌ Error: WORKOS_API_KEY and WORKOS_CLIENT_ID must be set in .env.local"
-      )
+        "❌ Error: WORKOS_API_KEY and WORKOS_CLIENT_ID must be set in .env.local",
+      ),
     );
     process.exit(1);
   }
@@ -41,19 +41,21 @@ async function verifyTestUsers() {
         userIds.push({ email, id: usersList.data[0].id });
       } else {
         console.log(
-          chalk.yellow(`⚠️  User ${email} not found. Run create-test-users.ts first.`)
+          chalk.yellow(
+            `⚠️  User ${email} not found. Run create-test-users.ts first.`,
+          ),
         );
       }
     } catch (error: any) {
       console.log(
-        chalk.red(`❌ Error fetching user ${email}: ${error.message || error}`)
+        chalk.red(`❌ Error fetching user ${email}: ${error.message || error}`),
       );
     }
   }
 
   if (userIds.length === 0) {
     console.log(
-      chalk.red("\n❌ No users found. Please run create-test-users.ts first.")
+      chalk.red("\n❌ No users found. Please run create-test-users.ts first."),
     );
     process.exit(1);
   }
@@ -70,19 +72,19 @@ async function verifyTestUsers() {
 
       console.log(
         chalk.green(
-          `  ✓ Email verification status: ${updatedUser.emailVerified ? "VERIFIED" : "NOT VERIFIED"}`
-        )
+          `  ✓ Email verification status: ${updatedUser.emailVerified ? "VERIFIED" : "NOT VERIFIED"}`,
+        ),
       );
     } catch (error: any) {
       console.log(
-        chalk.red(`  ❌ Error verifying user: ${error.message || error}`)
+        chalk.red(`  ❌ Error verifying user: ${error.message || error}`),
       );
 
       // Try to get current user status
       try {
         const currentUser = await workos.userManagement.getUser(user.id);
         console.log(
-          `  Current status: ${currentUser.emailVerified ? chalk.green("VERIFIED") : chalk.red("NOT VERIFIED")}`
+          `  Current status: ${currentUser.emailVerified ? chalk.green("VERIFIED") : chalk.red("NOT VERIFIED")}`,
         );
       } catch (fetchError) {
         console.log(chalk.red("  Could not fetch user status"));

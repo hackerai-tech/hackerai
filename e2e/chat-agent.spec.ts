@@ -23,7 +23,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Generate a short markdown description of this image, save it to a file and share with me",
-        TIMEOUTS.AGENT_LONG
+        TIMEOUTS.AGENT_LONG,
       );
 
       await chat.expectMessageContains(".md");
@@ -40,12 +40,12 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Create a 100x100px version of this image. Then share with me.",
-        TIMEOUTS.AGENT_LONG
+        TIMEOUTS.AGENT_LONG,
       );
 
       const lastMessage = await chat.getLastMessageText();
       expect(lastMessage.toLowerCase()).toMatch(
-        /100.*100|resize|created|saved/i
+        /100.*100|resize|created|saved/i,
       );
     });
 
@@ -60,7 +60,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Read this file and tell me what word is in it",
-        TIMEOUTS.AGENT
+        TIMEOUTS.AGENT,
       );
 
       await chat.expectMessageContains(TEST_DATA.SECRETS.TEXT);
@@ -77,7 +77,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Read this PDF file and tell me what word is in it",
-        TIMEOUTS.AGENT_LONG
+        TIMEOUTS.AGENT_LONG,
       );
 
       await chat.expectMessageContains(TEST_DATA.SECRETS.PDF);
@@ -94,12 +94,12 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         TEST_DATA.MESSAGES.MATH_SIMPLE,
-        TIMEOUTS.AGENT
+        TIMEOUTS.AGENT,
       );
       await sendAndWaitForResponse(
         chat,
         TEST_DATA.MESSAGES.MATH_NEXT,
-        TIMEOUTS.AGENT
+        TIMEOUTS.AGENT,
       );
 
       await expect(async () => {
@@ -125,7 +125,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Generate a short markdown description of this image, save it to a file and share with me",
-        TIMEOUTS.AGENT_LONG
+        TIMEOUTS.AGENT_LONG,
       );
 
       await chat.expectMessageContains(".md");
@@ -142,12 +142,12 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Create a 100x100px version of this image. Then share with me.",
-        TIMEOUTS.AGENT_LONG
+        TIMEOUTS.AGENT_LONG,
       );
 
       const lastMessage = await chat.getLastMessageText();
       expect(lastMessage.toLowerCase()).toMatch(
-        /100.*100|resize|created|saved/i
+        /100.*100|resize|created|saved/i,
       );
     });
 
@@ -162,7 +162,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Read this file and tell me what word is in it",
-        TIMEOUTS.AGENT
+        TIMEOUTS.AGENT,
       );
 
       await chat.expectMessageContains(TEST_DATA.SECRETS.TEXT);
@@ -179,7 +179,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
       await sendAndWaitForResponse(
         chat,
         "Read this PDF file and tell me what word is in it",
-        TIMEOUTS.AGENT_LONG
+        TIMEOUTS.AGENT_LONG,
       );
 
       await chat.expectMessageContains(TEST_DATA.SECRETS.PDF);

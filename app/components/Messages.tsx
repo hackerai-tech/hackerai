@@ -132,7 +132,7 @@ export const Messages = ({
   const { resetSidebarFlag } = useSidebarAutoOpen(
     messages,
     lastAssistantMessageIndex,
-    status
+    status,
   );
 
   // Expose reset function to parent if provided
@@ -160,7 +160,7 @@ export const Messages = ({
         }
       }
     },
-    [editingMessageId, onEditMessage]
+    [editingMessageId, onEditMessage],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -179,7 +179,7 @@ export const Messages = ({
   // Extract web sources (memoized adapter)
   const extractWebSources = useCallback(
     (message: ChatMessage) => extractWebSourcesFromMessage(message as any),
-    []
+    [],
   );
 
   // Handler to show all files for a specific message
@@ -206,7 +206,7 @@ export const Messages = ({
       setDialogFiles(files);
       setShowAllFilesDialog(true);
     },
-    []
+    [],
   );
 
   // Handler for branching a message
@@ -221,7 +221,7 @@ export const Messages = ({
         }
       }
     },
-    [onBranchMessage]
+    [onBranchMessage],
   );
 
   // Handle scroll to load more messages when scrolling to top
@@ -285,15 +285,15 @@ export const Messages = ({
 
             // Separate file parts from other parts for user messages
             const fileParts = message.parts.filter(
-              (part) => part.type === "file"
+              (part) => part.type === "file",
             );
             const nonFileParts = message.parts.filter(
-              (part) => part.type !== "file"
+              (part) => part.type !== "file",
             );
 
             // Check if message contains image content
             const hasFileContent = message.parts.some(
-              (part) => part.type === "file"
+              (part) => part.type === "file",
             );
 
             const shouldShowLoader =
@@ -314,7 +314,7 @@ export const Messages = ({
               (isLastAssistantMessage ? status !== "streaming" : true) &&
               effectiveFileDetails
                 ? effectiveFileDetails.filter(
-                    (f) => f.url || f.storageId || f.s3Key
+                    (f) => f.url || f.storageId || f.s3Key,
                   )
                 : [];
 
@@ -323,7 +323,7 @@ export const Messages = ({
               branchedFromChatId &&
                 branchedFromChatTitle &&
                 branchBoundaryIndex >= 0 &&
-                index === branchBoundaryIndex
+                index === branchBoundaryIndex,
             );
 
             return (
@@ -452,7 +452,7 @@ export const Messages = ({
                             onClick={() =>
                               handleShowAllFiles(
                                 message,
-                                effectiveFileDetails || []
+                                effectiveFileDetails || [],
                               )
                             }
                             className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"

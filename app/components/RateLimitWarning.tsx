@@ -51,7 +51,10 @@ export const RateLimitWarning = ({
       : `You have ${remaining} ${remaining === 1 ? "response" : "responses"} in ${mode} mode remaining until it resets ${timeString}.`;
 
   return (
-    <div data-testid="rate-limit-warning" className="mb-2 px-3 py-2.5 bg-input-chat border border-black/8 dark:border-border rounded-lg flex items-center justify-between gap-2">
+    <div
+      data-testid="rate-limit-warning"
+      className="mb-2 px-3 py-2.5 bg-input-chat border border-black/8 dark:border-border rounded-lg flex items-center justify-between gap-2"
+    >
       <div className="flex-1 flex items-center gap-2 flex-wrap">
         <span className="text-foreground">{message}</span>
         {isFree && (

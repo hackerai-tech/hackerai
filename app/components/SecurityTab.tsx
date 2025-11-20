@@ -185,7 +185,12 @@ const SecurityTab = () => {
           <div>
             <div className="font-medium text-base">Log out of this device</div>
           </div>
-          <Button data-testid="logout-button-device" variant="outline" size="sm" onClick={handleLogout}>
+          <Button
+            data-testid="logout-button-device"
+            variant="outline"
+            size="sm"
+            onClick={handleLogout}
+          >
             Log out
           </Button>
         </div>

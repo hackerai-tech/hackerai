@@ -13,7 +13,7 @@ import { TEST_DATA, TIMEOUTS } from "../constants";
 export async function sendAndWaitForResponse(
   chat: ChatComponent,
   message: string,
-  timeout: number = TIMEOUTS.LONG
+  timeout: number = TIMEOUTS.LONG,
 ): Promise<void> {
   await chat.sendMessage(message);
   await chat.expectStreamingVisible();
@@ -25,7 +25,7 @@ export async function sendAndWaitForResponse(
  */
 export async function attachTestFile(
   chat: ChatComponent,
-  fileName: "image" | "text" | "pdf"
+  fileName: "image" | "text" | "pdf",
 ): Promise<void> {
   const fileMap = {
     image: TEST_DATA.RESOURCES.IMAGE,
@@ -66,7 +66,7 @@ export async function sendMessageWithFileAndVerifyContent(
   fileType: "text" | "pdf" | "image",
   question: string,
   expectedContent: string,
-  timeout: number = TIMEOUTS.AGENT
+  timeout: number = TIMEOUTS.AGENT,
 ): Promise<void> {
   await attachTestFile(chat, fileType);
   await sendAndWaitForResponse(chat, question, timeout);

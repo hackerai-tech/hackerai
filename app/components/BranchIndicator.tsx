@@ -44,7 +44,10 @@ export const BranchIndicator = memo(function BranchIndicator({
   ]);
 
   return (
-    <div data-testid="branch-indicator" className="relative flex items-center justify-center py-6">
+    <div
+      data-testid="branch-indicator"
+      className="relative flex items-center justify-center py-6"
+    >
       <div className="absolute inset-0 flex items-center">
         <div className="w-full border-t border-border"></div>
       </div>

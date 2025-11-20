@@ -72,15 +72,17 @@ export class ChatPage extends BasePage {
     await messages.first().waitFor({ state: "visible", timeout });
     const count = await messages.count();
     if (count === 0) return "";
-    return await messages.nth(count - 1).textContent() || "";
+    return (await messages.nth(count - 1).textContent()) || "";
   }
 
-  async getLastAssistantMessage(timeout: number = TIMEOUTS.SHORT): Promise<string> {
+  async getLastAssistantMessage(
+    timeout: number = TIMEOUTS.SHORT,
+  ): Promise<string> {
     const messages = this.page.locator('[data-testid="assistant-message"]');
     await messages.first().waitFor({ state: "visible", timeout });
     const count = await messages.count();
     if (count === 0) return "";
-    return await messages.nth(count - 1).textContent() || "";
+    return (await messages.nth(count - 1).textContent()) || "";
   }
 
   async getAllMessages(): Promise<string[]> {
@@ -96,13 +98,13 @@ export class ChatPage extends BasePage {
 
   async verifyMessageVisible(text: string): Promise<void> {
     await expect(
-      this.page.locator('[data-testid="message-content"]', { hasText: text })
+      this.page.locator('[data-testid="message-content"]', { hasText: text }),
     ).toBeVisible();
   }
 
   async verifyAssistantMessageVisible(text: string): Promise<void> {
     await expect(
-      this.page.locator('[data-testid="assistant-message"]', { hasText: text })
+      this.page.locator('[data-testid="assistant-message"]', { hasText: text }),
     ).toBeVisible();
   }
 

@@ -13,13 +13,13 @@ test.describe("Free Tier Simple Chat Tests", () => {
     await sendAndWaitForResponse(
       chat,
       TEST_DATA.MESSAGES.MATH_SIMPLE,
-      TIMEOUTS.MEDIUM
+      TIMEOUTS.MEDIUM,
     );
 
     await sendAndWaitForResponse(
       chat,
       TEST_DATA.MESSAGES.MATH_NEXT,
-      TIMEOUTS.MEDIUM
+      TIMEOUTS.MEDIUM,
     );
 
     await expect(async () => {
