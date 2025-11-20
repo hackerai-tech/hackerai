@@ -269,7 +269,6 @@ The current date is ${currentDateTime}.`;
   if (mode === "ask") {
     sections.push(getToneAndFormattingSection());
     sections.push(getKnowledgeCutoffSection());
-    sections.push(getResumeSection(finishReason));
   } else {
     sections.push(getCommunicationSection());
     sections.push(getToolCallingSection());
@@ -281,7 +280,6 @@ The current date is ${currentDateTime}.`;
     sections.push(getTaskManagementSection());
     sections.push(getSummarySection());
     sections.push(getSandboxEnvironmentSection());
-    sections.push(getResumeSection(finishReason));
     sections.push(getFinalInstructionsSection());
   }
 
@@ -292,6 +290,8 @@ The current date is ${currentDateTime}.`;
   if (personalityInstructions) {
     sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
   }
+
+  sections.push(getResumeSection(finishReason));
 
   return sections.filter(Boolean).join("\n\n");
 };
