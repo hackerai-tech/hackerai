@@ -26,7 +26,9 @@ export class ChatComponent {
   }
 
   private get messages(): Locator {
-    return this.page.getByTestId("message");
+    return this.page.locator(
+      '[data-testid="user-message"], [data-testid="assistant-message"]'
+    );
   }
 
   private get streamingIndicator(): Locator {
@@ -179,7 +181,11 @@ export class ChatComponent {
     timeout: number = TIMEOUTS.MEDIUM
   ): Promise<void> {
     await expect(
-      this.page.locator(`[data-testid="message"]:has-text("${text}")`)
+      this.page
+        .locator(
+          `[data-testid="user-message"], [data-testid="assistant-message"]`
+        )
+        .filter({ hasText: text })
     ).toBeVisible({ timeout });
   }
 

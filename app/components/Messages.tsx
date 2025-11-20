@@ -132,7 +132,7 @@ export const Messages = ({
   const { resetSidebarFlag } = useSidebarAutoOpen(
     messages,
     lastAssistantMessageIndex,
-    status,
+    status
   );
 
   // Expose reset function to parent if provided
@@ -160,7 +160,7 @@ export const Messages = ({
         }
       }
     },
-    [editingMessageId, onEditMessage],
+    [editingMessageId, onEditMessage]
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -179,7 +179,7 @@ export const Messages = ({
   // Extract web sources (memoized adapter)
   const extractWebSources = useCallback(
     (message: ChatMessage) => extractWebSourcesFromMessage(message as any),
-    [],
+    []
   );
 
   // Handler to show all files for a specific message
@@ -206,7 +206,7 @@ export const Messages = ({
       setDialogFiles(files);
       setShowAllFilesDialog(true);
     },
-    [],
+    []
   );
 
   // Handler for branching a message
@@ -221,7 +221,7 @@ export const Messages = ({
         }
       }
     },
-    [onBranchMessage],
+    [onBranchMessage]
   );
 
   // Handle scroll to load more messages when scrolling to top
@@ -262,6 +262,7 @@ export const Messages = ({
         <div
           ref={contentRef}
           className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col space-y-4 pb-20"
+          data-testid="messages-container"
         >
           {/* Loading indicator at top when loading more messages */}
           {paginationStatus === "LoadingMore" && (
@@ -284,15 +285,15 @@ export const Messages = ({
 
             // Separate file parts from other parts for user messages
             const fileParts = message.parts.filter(
-              (part) => part.type === "file",
+              (part) => part.type === "file"
             );
             const nonFileParts = message.parts.filter(
-              (part) => part.type !== "file",
+              (part) => part.type !== "file"
             );
 
             // Check if message contains image content
             const hasFileContent = message.parts.some(
-              (part) => part.type === "file",
+              (part) => part.type === "file"
             );
 
             const shouldShowLoader =
@@ -313,7 +314,7 @@ export const Messages = ({
               (isLastAssistantMessage ? status !== "streaming" : true) &&
               effectiveFileDetails
                 ? effectiveFileDetails.filter(
-                    (f) => f.url || f.storageId || f.s3Key,
+                    (f) => f.url || f.storageId || f.s3Key
                   )
                 : [];
 
@@ -322,13 +323,13 @@ export const Messages = ({
               branchedFromChatId &&
                 branchedFromChatTitle &&
                 branchBoundaryIndex >= 0 &&
-                index === branchBoundaryIndex,
+                index === branchBoundaryIndex
             );
 
             return (
               <Fragment key={message.id}>
                 <div
-                  data-testid="message"
+                  data-testid={isUser ? "user-message" : "assistant-message"}
                   className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
                   onMouseEnter={() => handleMouseEnter(message.id)}
                   onMouseLeave={handleMouseLeave}
@@ -367,6 +368,7 @@ export const Messages = ({
                       {/* Render text and other parts */}
                       {nonFileParts.length > 0 && (
                         <div
+                          data-testid="message-content"
                           className={`${
                             isUser
                               ? "max-w-[80%] bg-secondary rounded-[18px] px-4 py-1.5 data-[multiline]:py-3 rounded-se-lg text-primary-foreground border border-border"
@@ -450,7 +452,7 @@ export const Messages = ({
                             onClick={() =>
                               handleShowAllFiles(
                                 message,
-                                effectiveFileDetails || [],
+                                effectiveFileDetails || []
                               )
                             }
                             className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
@@ -492,7 +494,10 @@ export const Messages = ({
                   {/* Loading state */}
                   {shouldShowLoader && (
                     <div className="mt-1 flex justify-start">
-                      <div data-testid="streaming" className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2">
+                      <div
+                        data-testid="streaming"
+                        className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2"
+                      >
                         <DotsSpinner size="sm" variant="primary" />
                       </div>
                     </div>
