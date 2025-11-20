@@ -4,6 +4,33 @@ import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 
 /**
+ * Get maximum steps allowed for a user based on mode and subscription tier
+ * Agent mode: Always 20 steps (for all paid users)
+ * Ask mode: Free: 5 steps, Pro/Team: 10 steps, Ultra: 15 steps
+ */
+export const getMaxStepsForUser = (
+  mode: ChatMode,
+  subscription: SubscriptionTier,
+): number => {
+  // Agent mode always gets 20 steps regardless of subscription
+  if (mode === "agent") {
+    return 20;
+  }
+
+  // Ask mode steps vary by subscription tier
+  if (subscription === "free") {
+    return 5; // Free users limited to 5 steps
+  }
+
+  if (subscription === "ultra") {
+    return 15; // Ultra users get 15 steps
+  }
+
+  // Pro and Team users get 10 steps
+  return 10;
+};
+
+/**
  * Selects the appropriate model based on mode and file content
  * @param mode - Chat mode (ask or agent)
  * @param containsMediaFiles - Whether messages contain media files
