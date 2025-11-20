@@ -171,6 +171,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  data-testid="upgrade-button-collapsed"
                   variant="secondary"
                   size="sm"
                   className="w-full h-8 px-2 bg-premium-bg text-premium-text hover:bg-premium-hover border-0"
@@ -193,12 +194,13 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             /* Collapsed state - only show avatar */
             <div className="mb-1">
               <button
+                data-testid="user-menu-button-collapsed"
                 type="button"
                 className="flex items-center justify-center p-2 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 w-full"
                 aria-haspopup="menu"
                 aria-label={`Open user menu for ${getDisplayName()}`}
               >
-                <Avatar className="h-7 w-7">
+                <Avatar data-testid="user-avatar" className="h-7 w-7">
                   <AvatarImage
                     src={user.profilePictureUrl || undefined}
                     alt={getDisplayName()}
@@ -212,12 +214,13 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           ) : (
             /* Expanded state - show full user info */
             <button
+              data-testid="user-menu-button"
               type="button"
               className="flex items-center gap-3 p-3 cursor-pointer hover:bg-sidebar-accent/50 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 w-full text-left"
               aria-haspopup="menu"
               aria-label={`Open user menu for ${getDisplayName()}`}
             >
-              <Avatar className="h-7 w-7">
+              <Avatar data-testid="user-avatar" className="h-7 w-7">
                 <AvatarImage
                   src={user.profilePictureUrl || undefined}
                   alt={getDisplayName()}
@@ -230,7 +233,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                 <div className="text-sm font-medium text-sidebar-foreground truncate">
                   {getDisplayName()}
                 </div>
-                <div className="text-xs text-sidebar-accent-foreground truncate">
+                <div data-testid="subscription-badge" className="text-xs text-sidebar-accent-foreground truncate">
                   {subscription === "ultra"
                     ? "Ultra"
                     : subscription === "team"
@@ -253,7 +256,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuLabel className="font-normal py-2.5">
             <div className="flex items-center space-x-2.5">
               <CircleUserRound className="h-5 w-5 text-muted-foreground flex-shrink-0" />
-              <p className="leading-none text-muted-foreground truncate min-w-0">
+              <p data-testid="user-email" className="leading-none text-muted-foreground truncate min-w-0">
                 {user.email}
               </p>
             </div>
@@ -262,7 +265,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuSeparator />
 
           {subscription === "pro" && (
-            <DropdownMenuItem onClick={redirectToPricing} className="py-2.5">
+            <DropdownMenuItem data-testid="upgrade-menu-item" onClick={redirectToPricing} className="py-2.5">
               <Sparkle className="mr-2.5 h-5 w-5 text-foreground" />
               <span>Upgrade Plan</span>
             </DropdownMenuItem>
@@ -277,6 +280,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           </DropdownMenuItem>
 
           <DropdownMenuItem
+            data-testid="settings-button"
             onClick={() => setShowSettingsDialog(true)}
             className="py-2.5"
           >
@@ -315,7 +319,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          <DropdownMenuItem onClick={handleLogOut} className="py-2.5">
+          <DropdownMenuItem data-testid="logout-button" onClick={handleLogOut} className="py-2.5">
             <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
             <span>Log out</span>
           </DropdownMenuItem>

@@ -101,6 +101,7 @@ export const FileUploadPreview = ({
               <div
                 key={`${filePreview.file.name}-${index}`}
                 className="group text-token-text-primary relative inline-block text-sm"
+                data-testid="attached-file"
               >
                 <div
                   className={`relative overflow-hidden border rounded-2xl ${
@@ -223,6 +224,7 @@ export const FileUploadPreview = ({
                     size="sm"
                     className="transition-colors flex h-6 w-6 items-center justify-center rounded-full border-[rgba(0,0,0,0.1)] bg-black text-white dark:border-[rgba(255,255,255,0.1)] dark:bg-white dark:text-black p-0"
                     aria-label="Remove file"
+                    data-testid="remove-file"
                   >
                     <X className="h-3 w-3" />
                   </Button>

@@ -347,7 +347,7 @@ export const createChatHandler = () => {
               },
             },
             experimental_transform: smoothStream({ chunking: "word" }),
-            stopWhen: stepCountIs(mode === "ask" ? 5 : 20),
+            stopWhen: stepCountIs(20),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
               if (chunk.chunk.type === "tool-call") {

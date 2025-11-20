@@ -160,6 +160,7 @@ const AccountTab = () => {
             <div className="font-medium">Delete account</div>
           </div>
           <Button
+            data-testid="delete-account-button"
             variant="destructive"
             size="sm"
             onClick={() => setShowDeleteAccount(true)}

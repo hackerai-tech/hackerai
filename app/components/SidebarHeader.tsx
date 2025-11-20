@@ -113,6 +113,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
         <div className="flex flex-col items-center p-2">
           {/* HackerAI Logo with hover sidebar toggle */}
           <div
+            data-testid="sidebar-toggle"
             className="relative flex items-center justify-center mb-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded"
             onClick={toggleSidebar}
             onKeyDown={(e) => {

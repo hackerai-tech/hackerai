@@ -608,6 +608,7 @@ export const Chat = ({
           {/* Chat Sidebar - Desktop screens: always mounted, collapses to icon rail when closed */}
           {!isMobile && (
             <div
+              data-testid="sidebar"
               className={`transition-all duration-300 ${
                 chatSidebarOpen ? "w-72 flex-shrink-0" : "w-12 flex-shrink-0"
               }`}

@@ -42,6 +42,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
           {!loading && !user && (
             <div className="flex gap-2 items-center">
               <Button
+                data-testid="sign-in-button"
                 onClick={handleSignIn}
                 variant="default"
                 size="default"
@@ -50,6 +51,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
                 Sign in
               </Button>
               <Button
+                data-testid="sign-up-button"
                 onClick={handleSignUp}
                 variant="outline"
                 size="default"
@@ -73,6 +75,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
         {!loading && !user && (
           <div className="flex items-center gap-2">
             <Button
+              data-testid="sign-in-button-mobile"
               onClick={handleSignIn}
               variant="default"
               size="sm"
@@ -81,6 +84,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
               Sign in
             </Button>
             <Button
+              data-testid="sign-up-button-mobile"
               onClick={handleSignUp}
               variant="outline"
               size="sm"

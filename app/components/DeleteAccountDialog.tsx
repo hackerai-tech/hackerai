@@ -96,7 +96,7 @@ export const DeleteAccountDialog = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange} modal={true}>
-      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+      <DialogContent data-testid="delete-account-dialog" className="sm:max-w-md max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Delete account - are you sure?</DialogTitle>
         </DialogHeader>
@@ -122,6 +122,7 @@ export const DeleteAccountDialog = ({
                 Please type your account email.
               </Label>
               <Input
+                data-testid="email-confirmation"
                 id="delete-email"
                 type="email"
                 inputMode="email"
@@ -142,6 +143,7 @@ export const DeleteAccountDialog = ({
                 To proceed, type &quot;DELETE&quot; in the input field below.
               </Label>
               <Input
+                data-testid="delete-phrase-input"
                 id="delete-confirm"
                 aria-label="Type DELETE to confirm"
                 placeholder="DELETE"
@@ -162,6 +164,7 @@ export const DeleteAccountDialog = ({
             </Button>
           ) : canDelete && !isDeleting ? (
             <Button
+              data-testid="delete-button"
               variant="destructive"
               onClick={handleConfirmDelete}
               className="w-full"
