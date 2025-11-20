@@ -1,4 +1,5 @@
 import { Page, Locator, expect } from "@playwright/test";
+import { TIMEOUTS } from "../constants";
 
 export class UpgradeDialog {
   private readonly dialog: Locator;
@@ -108,11 +109,11 @@ export class UpgradeDialog {
   }
 
   async waitForDialogToAppear(): Promise<void> {
-    await expect(this.dialog).toBeVisible({ timeout: 10000 });
+    await expect(this.dialog).toBeVisible({ timeout: TIMEOUTS.SHORT });
   }
 
   async waitForDialogToDisappear(): Promise<void> {
-    await expect(this.dialog).not.toBeVisible({ timeout: 10000 });
+    await expect(this.dialog).not.toBeVisible({ timeout: TIMEOUTS.SHORT });
   }
 
   async verifyAgentModeUpgradeDialog(): Promise<void> {

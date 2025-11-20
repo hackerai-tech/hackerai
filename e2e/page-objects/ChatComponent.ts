@@ -1,5 +1,6 @@
 import { Page, expect, Locator } from "@playwright/test";
 import path from "path";
+import { TIMEOUTS } from "../constants";
 
 export class ChatComponent {
   constructor(private page: Page) {}
@@ -101,29 +102,21 @@ export class ChatComponent {
   }
 
   async waitForUploadComplete(fileName?: string): Promise<void> {
-    const uploadingText = this.page.getByText(
-      "Uploading attachments to the computer...",
-    );
-    const isUploading = await uploadingText.isVisible().catch(() => false);
-    if (isUploading) {
-      await uploadingText.waitFor({ state: "hidden", timeout: 10000 });
-    }
-
     if (fileName) {
       const isImage = fileName.match(/\.(png|jpg|jpeg|gif|webp)$/i);
       if (isImage) {
         await this.page
           .getByRole("button", { name: fileName })
-          .waitFor({ state: "visible", timeout: 5000 });
+          .waitFor({ state: "visible", timeout: TIMEOUTS.SHORT });
       } else {
         await this.page
           .getByTestId("attached-file")
           .filter({ hasText: fileName })
-          .waitFor({ state: "visible", timeout: 5000 });
+          .waitFor({ state: "visible", timeout: TIMEOUTS.SHORT });
       }
     }
 
-    await expect(this.sendButton).toBeEnabled({ timeout: 5000 });
+    await expect(this.sendButton).toBeEnabled({ timeout: TIMEOUTS.SHORT });
   }
 
   async clickAttachButton(): Promise<void> {
@@ -144,32 +137,34 @@ export class ChatComponent {
     await this.askModeOption.click();
   }
 
-  async waitForResponse(timeout: number = 30000): Promise<void> {
+  async waitForResponse(timeout: number = TIMEOUTS.MEDIUM): Promise<void> {
     const isGenerating = await this.stopButton
-      .isVisible({ timeout: 1000 })
+      .isVisible({ timeout: TIMEOUTS.STOP_BUTTON_CHECK })
       .catch(() => false);
 
     if (isGenerating) {
       await this.stopButton.waitFor({ state: "hidden", timeout });
     }
 
-    await this.messages.last().waitFor({ state: "visible", timeout: 10000 });
+    await this.messages
+      .last()
+      .waitFor({ state: "visible", timeout: TIMEOUTS.SHORT });
   }
 
   async waitForMessageCount(
     count: number,
-    timeout: number = 5000,
+    timeout: number = TIMEOUTS.SHORT
   ): Promise<void> {
     await expect(this.messages).toHaveCount(count, { timeout });
   }
 
-  async getMessageCount(timeout: number = 10000): Promise<number> {
+  async getMessageCount(timeout: number = TIMEOUTS.SHORT): Promise<number> {
     // Wait for at least one message to exist before counting
     await this.messages.first().waitFor({ state: "visible", timeout });
     return await this.messages.count();
   }
 
-  async getLastMessageText(timeout: number = 10000): Promise<string> {
+  async getLastMessageText(timeout: number = TIMEOUTS.SHORT): Promise<string> {
     const lastMessage = this.messages.last();
     await lastMessage.waitFor({ state: "visible", timeout });
     return await lastMessage.innerText();
@@ -181,25 +176,27 @@ export class ChatComponent {
 
   async expectMessageContains(
     text: string,
-    timeout: number = 30000,
+    timeout: number = TIMEOUTS.MEDIUM
   ): Promise<void> {
     await expect(
-      this.page.locator(`[data-testid="message"]:has-text("${text}")`),
+      this.page.locator(`[data-testid="message"]:has-text("${text}")`)
     ).toBeVisible({ timeout });
   }
 
   async expectStreamingVisible(): Promise<void> {
     const isGenerating = await this.stopButton
-      .isVisible({ timeout: 5000 })
+      .isVisible({ timeout: TIMEOUTS.SHORT })
       .catch(() => false);
     const streamingVisible = await this.streamingIndicator
-      .isVisible({ timeout: 5000 })
+      .isVisible({ timeout: TIMEOUTS.SHORT })
       .catch(() => false);
 
     expect(isGenerating || streamingVisible).toBe(true);
   }
 
-  async expectStreamingNotVisible(timeout: number = 30000): Promise<void> {
+  async expectStreamingNotVisible(
+    timeout: number = TIMEOUTS.MEDIUM
+  ): Promise<void> {
     const stopButtonHidden = await this.stopButton
       .waitFor({ state: "hidden", timeout })
       .then(() => true)
@@ -213,19 +210,23 @@ export class ChatComponent {
   }
 
   async expectUpgradeDialogVisible(): Promise<void> {
-    await expect(this.upgradeDialog).toBeVisible({ timeout: 5000 });
+    await expect(this.upgradeDialog).toBeVisible({ timeout: TIMEOUTS.SHORT });
   }
 
   async expectUpgradePopoverVisible(): Promise<void> {
-    await expect(this.upgradePopover).toBeVisible({ timeout: 5000 });
+    await expect(this.upgradePopover).toBeVisible({ timeout: TIMEOUTS.SHORT });
   }
 
   async expectUpgradeNowButtonVisible(): Promise<void> {
-    await expect(this.upgradeNowButton).toBeVisible({ timeout: 5000 });
+    await expect(this.upgradeNowButton).toBeVisible({
+      timeout: TIMEOUTS.SHORT,
+    });
   }
 
   async expectUpgradePlanButtonVisible(): Promise<void> {
-    await expect(this.upgradePlanButton).toBeVisible({ timeout: 5000 });
+    await expect(this.upgradePlanButton).toBeVisible({
+      timeout: TIMEOUTS.SHORT,
+    });
   }
 
   async clickUpgradeNow(): Promise<void> {
@@ -240,14 +241,14 @@ export class ChatComponent {
     const imageButton = this.page.getByRole("button", { name: fileName });
     await expect(imageButton).toBeVisible();
     // Wait for send button to be enabled (upload complete)
-    await expect(this.sendButton).toBeEnabled({ timeout: 5000 });
+    await expect(this.sendButton).toBeEnabled({ timeout: TIMEOUTS.SHORT });
   }
 
   async expectNonImageFileAttached(fileName: string): Promise<void> {
     const fileDiv = this.attachedFiles.filter({ hasText: fileName });
     await expect(fileDiv).toBeVisible();
     // Wait for send button to be enabled (upload complete)
-    await expect(this.sendButton).toBeEnabled({ timeout: 30000 });
+    await expect(this.sendButton).toBeEnabled({ timeout: TIMEOUTS.MEDIUM });
   }
 
   async expectFileAttached(fileName: string): Promise<void> {
@@ -261,7 +262,9 @@ export class ChatComponent {
   }
 
   async expectAttachedFileCount(count: number): Promise<void> {
-    await expect(this.attachedFiles).toHaveCount(count, { timeout: 30000 });
+    await expect(this.attachedFiles).toHaveCount(count, {
+      timeout: TIMEOUTS.MEDIUM,
+    });
   }
 
   async expectChatInputVisible(): Promise<void> {

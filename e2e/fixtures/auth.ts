@@ -1,4 +1,5 @@
 import { Page, BrowserContext } from '@playwright/test';
+import { TIMEOUTS } from '../constants';
 
 export interface TestUser {
   email: string;
@@ -81,7 +82,7 @@ export async function authenticateUser(
       // Verify session is still valid by checking for authenticated UI
       // Check for both collapsed and expanded user menu button
       const userMenuButton = page.getByTestId('user-menu-button').or(page.getByTestId('user-menu-button-collapsed'));
-      const isAuthenticated = await userMenuButton.isVisible({ timeout: 10000 }).catch(() => false);
+      const isAuthenticated = await userMenuButton.isVisible({ timeout: TIMEOUTS.SHORT }).catch(() => false);
       if (isAuthenticated) {
         return;
       }
@@ -138,7 +139,7 @@ async function performLogin(page: Page, user: TestUser): Promise<void> {
   // Step 1: Enter email and click Continue
   // WorkOS uses a two-step process: email first, then password
   const emailInput = page.getByRole('textbox', { name: 'Email' });
-  await emailInput.waitFor({ state: 'visible', timeout: 15000 });
+  await emailInput.waitFor({ state: 'visible', timeout: TIMEOUTS.SHORT });
   await emailInput.fill(user.email);
 
   const continueButton = page.getByRole('button', { name: 'Continue' });
@@ -147,7 +148,7 @@ async function performLogin(page: Page, user: TestUser): Promise<void> {
   // Step 2: Enter password and submit
   // Wait for password input to appear
   const passwordInput = page.getByRole('textbox', { name: 'Password' });
-  await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
+  await passwordInput.waitFor({ state: 'visible', timeout: TIMEOUTS.SHORT });
   await passwordInput.fill(user.password);
 
   // Submit the form
@@ -157,11 +158,11 @@ async function performLogin(page: Page, user: TestUser): Promise<void> {
   // Wait for redirect to app (callback then dashboard/home)
   await page.waitForURL(url => {
     return url.pathname === '/' || url.pathname.startsWith('/c/');
-  }, { timeout: 30000 });
+  }, { timeout: TIMEOUTS.MEDIUM });
 
   // Wait for authenticated UI to appear - check for either collapsed or expanded user menu
   const userMenuButton = page.getByTestId('user-menu-button').or(page.getByTestId('user-menu-button-collapsed'));
-  await userMenuButton.waitFor({ state: 'visible', timeout: 10000 });
+  await userMenuButton.waitFor({ state: 'visible', timeout: TIMEOUTS.SHORT });
 }
 
 export async function logout(page: Page): Promise<void> {
@@ -174,10 +175,10 @@ export async function logout(page: Page): Promise<void> {
   await logoutButton.click({ force: true });
 
   // Wait for redirect to home page
-  await page.waitForURL('/', { timeout: 10000 });
+  await page.waitForURL('/', { timeout: TIMEOUTS.SHORT });
 
   // Verify logged out state - sign in button should be visible
-  await page.getByTestId('sign-in-button').waitFor({ state: 'visible', timeout: 5000 });
+  await page.getByTestId('sign-in-button').waitFor({ state: 'visible', timeout: TIMEOUTS.SHORT });
 }
 
 export async function clearAuthCache(): Promise<void> {

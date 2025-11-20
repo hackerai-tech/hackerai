@@ -1,4 +1,5 @@
 import { Page, Locator, expect } from "@playwright/test";
+import { TIMEOUTS } from "../constants";
 
 export class FileAttachment {
   private readonly attachButton: Locator;
@@ -46,7 +47,7 @@ export class FileAttachment {
       .locator(`[data-file-name="${fileName}"]`)
       .locator('button[aria-label*="Remove"]')
       .or(
-        this.page.locator(`text="${fileName}"`).locator("..").locator("button"),
+        this.page.locator(`text="${fileName}"`).locator("..").locator("button")
       );
 
     await removeButton.click();
@@ -55,7 +56,7 @@ export class FileAttachment {
 
   async removeAllFiles(): Promise<void> {
     const removeButtons = this.page.locator(
-      'button[aria-label*="Remove file"]',
+      'button[aria-label*="Remove file"]'
     );
     const count = await removeButtons.count();
 
@@ -71,7 +72,7 @@ export class FileAttachment {
     await expect(imageButton).toBeVisible();
     // Wait for send button to be enabled (upload complete)
     await expect(this.page.getByTestId("send-button")).toBeEnabled({
-      timeout: 30000,
+      timeout: TIMEOUTS.MEDIUM,
     });
   }
 
@@ -82,7 +83,7 @@ export class FileAttachment {
     await expect(fileDiv).toBeVisible();
     // Wait for send button to be enabled (upload complete)
     await expect(this.page.getByTestId("send-button")).toBeEnabled({
-      timeout: 5000,
+      timeout: TIMEOUTS.SHORT,
     });
   }
 
@@ -115,28 +116,28 @@ export class FileAttachment {
 
   async waitForUploadComplete(fileName?: string): Promise<void> {
     const uploadingText = this.page.getByText(
-      "Uploading attachments to the computer...",
+      "Uploading attachments to the computer..."
     );
     const isUploading = await uploadingText.isVisible().catch(() => false);
     if (isUploading) {
-      await uploadingText.waitFor({ state: "hidden", timeout: 10000 });
+      await uploadingText.waitFor({ state: "hidden", timeout: TIMEOUTS.SHORT });
     }
 
     if (fileName) {
       try {
         await this.page
           .getByRole("button", { name: fileName })
-          .waitFor({ state: "visible", timeout: 5000 });
+          .waitFor({ state: "visible", timeout: TIMEOUTS.SHORT });
       } catch {
         await this.page
           .getByTestId("attached-file")
           .filter({ hasText: fileName })
-          .waitFor({ state: "visible", timeout: 5000 });
+          .waitFor({ state: "visible", timeout: TIMEOUTS.SHORT });
       }
     }
 
     await expect(this.page.getByTestId("send-button")).toBeEnabled({
-      timeout: 5000,
+      timeout: TIMEOUTS.SHORT,
     });
   }
 
@@ -172,7 +173,7 @@ export class FileAttachment {
       .locator("..")
       .locator('[data-error="true"]')
       .or(
-        this.page.locator(`text="${fileName}"`).locator("..").locator(".error"),
+        this.page.locator(`text="${fileName}"`).locator("..").locator(".error")
       );
 
     await expect(errorIndicator).toBeVisible();

@@ -3,6 +3,7 @@ import { BasePage } from "./BasePage";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { FileAttachment } from "./FileAttachment";
 import { UpgradeDialog } from "./UpgradeDialog";
+import { TIMEOUTS } from "../constants";
 
 export type ChatMode = "agent" | "ask";
 
@@ -51,9 +52,9 @@ export class ChatPage extends BasePage {
     await this.stopButton.click();
   }
 
-  async waitForResponse(timeout: number = 30000): Promise<void> {
+  async waitForResponse(timeout: number = TIMEOUTS.MEDIUM): Promise<void> {
     const isGenerating = await this.stopButton
-      .isVisible({ timeout: 1000 })
+      .isVisible({ timeout: TIMEOUTS.STOP_BUTTON_CHECK })
       .catch(() => false);
 
     if (isGenerating) {
@@ -62,11 +63,11 @@ export class ChatPage extends BasePage {
 
     await this.page.waitForSelector('[data-testid="assistant-message"]', {
       state: "visible",
-      timeout: 10000,
+      timeout: TIMEOUTS.SHORT,
     });
   }
 
-  async getLastMessage(timeout: number = 10000): Promise<string> {
+  async getLastMessage(timeout: number = TIMEOUTS.SHORT): Promise<string> {
     const messages = this.page.locator('[data-testid="message-content"]');
     await messages.first().waitFor({ state: "visible", timeout });
     const count = await messages.count();
@@ -74,7 +75,7 @@ export class ChatPage extends BasePage {
     return await messages.nth(count - 1).textContent() || "";
   }
 
-  async getLastAssistantMessage(timeout: number = 10000): Promise<string> {
+  async getLastAssistantMessage(timeout: number = TIMEOUTS.SHORT): Promise<string> {
     const messages = this.page.locator('[data-testid="assistant-message"]');
     await messages.first().waitFor({ state: "visible", timeout });
     const count = await messages.count();
