@@ -201,7 +201,7 @@ export class ChatComponent {
   }
 
   async expectStreamingNotVisible(
-    timeout: number = TIMEOUTS.MEDIUM
+    timeout: number = TIMEOUTS.AGENT
   ): Promise<void> {
     const stopButtonHidden = await this.stopButton
       .waitFor({ state: "hidden", timeout })
