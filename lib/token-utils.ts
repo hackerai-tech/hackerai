@@ -75,7 +75,69 @@ const getMessageTokenCountWithFiles = (
 };
 
 /**
+ * Checks if a part is a tool result (including custom tool types)
+ * Tool results can be:
+ * - Standard: type === "tool-result"
+ * - Custom tools: type starts with "tool-" but not "tool-call"
+ */
+const isToolResultPart = (part: UIMessagePart<any, any>): boolean => {
+  const type = part.type;
+
+  if (type === "tool-result") return true;
+
+  if (
+    typeof type === "string" &&
+    type.startsWith("tool-") &&
+    type !== "tool-call"
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+/**
+ * Strips tool results from a message, keeping tool calls and other content
+ * This preserves conversation flow while reducing token usage
+ */
+const stripToolResultsFromMessage = (message: UIMessage): UIMessage => {
+  const strippedParts = message.parts.map((part) => {
+    if (isToolResultPart(part)) {
+      const stripped = { ...part };
+      const strippedAny = stripped as any;
+
+      const placeholder = "[removed]";
+
+      if (strippedAny.result !== undefined) {
+        strippedAny.result = placeholder;
+      }
+      if (strippedAny.content !== undefined) {
+        strippedAny.content = placeholder;
+      }
+      if (strippedAny.text !== undefined) {
+        strippedAny.text = placeholder;
+      }
+      if (strippedAny.output !== undefined) {
+        strippedAny.output = placeholder;
+      }
+      if (strippedAny.state !== undefined) {
+        strippedAny.state = "completed";
+      }
+
+      return stripped;
+    }
+    return part;
+  });
+
+  return {
+    ...message,
+    parts: strippedParts,
+  };
+};
+
+/**
  * Truncates messages to stay within token limit, keeping newest messages first
+ * Also tries stripping tool results from older messages before dropping them entirely
  */
 export const truncateMessagesToTokenLimit = (
   messages: UIMessage[],
@@ -84,10 +146,18 @@ export const truncateMessagesToTokenLimit = (
 ): UIMessage[] => {
   if (messages.length === 0) return messages;
 
+  // Calculate total tokens in all messages before truncation
+  const totalTokensBeforeTruncation = countMessagesTokens(messages, fileTokens);
+
+  // If we're already under budget, no need to truncate
+  if (totalTokensBeforeTruncation <= maxTokens) {
+    return messages;
+  }
+
   const result: UIMessage[] = [];
   let totalTokens = 0;
 
-  // Process from newest to oldest
+  // First pass: Process from newest to oldest, keeping messages intact
   for (let i = messages.length - 1; i >= 0; i--) {
     const messageTokens = getMessageTokenCountWithFiles(
       messages[i],
@@ -98,6 +168,39 @@ export const truncateMessagesToTokenLimit = (
 
     totalTokens += messageTokens;
     result.unshift(messages[i]);
+  }
+
+  // If we dropped messages, try to fit more messages by stripping tool results
+  // This preserves conversation context for all users
+  const droppedMessageCount = messages.length - result.length;
+
+  if (droppedMessageCount > 0) {
+    // Try adding back dropped messages with tool results stripped
+    const droppedMessages = messages.slice(0, droppedMessageCount);
+    const additionalMessages: UIMessage[] = [];
+
+    // Process dropped messages from newest to oldest (closest to our result)
+    for (let i = droppedMessages.length - 1; i >= 0; i--) {
+      const originalMessage = droppedMessages[i];
+      const strippedMessage = stripToolResultsFromMessage(originalMessage);
+      const messageTokens = getMessageTokenCountWithFiles(
+        strippedMessage,
+        fileTokens,
+      );
+
+      // Only add if it fits in our remaining budget
+      if (totalTokens + messageTokens <= maxTokens) {
+        totalTokens += messageTokens;
+        additionalMessages.unshift(strippedMessage);
+      } else {
+        // No more room even with stripped results
+        break;
+      }
+    }
+
+    if (additionalMessages.length > 0) {
+      result.unshift(...additionalMessages);
+    }
   }
 
   return result;
