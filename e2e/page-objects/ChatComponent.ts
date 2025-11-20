@@ -288,4 +288,29 @@ export class ChatComponent {
     const currentMode = await this.getCurrentMode();
     expect(currentMode).toBe(mode);
   }
+
+  /**
+   * Get the chat title from the header
+   */
+  async getChatHeaderTitle(timeout: number = TIMEOUTS.SHORT): Promise<string> {
+    // The chat title is displayed in a div with text-lg font-medium classes
+    // It contains a span with the title text, and may include icons (like Split icon for branched chats)
+    // We need to get the text content excluding SVG icons
+    const titleContainer = this.page.locator("div.text-lg.font-medium").first();
+
+    await titleContainer.waitFor({ state: "visible", timeout });
+
+    // Get all text nodes, excluding SVG elements
+    // The title is in a span, and we want to exclude any SVG icons
+    const titleText = await titleContainer.evaluate((el) => {
+      // Clone the element to avoid modifying the original
+      const clone = el.cloneNode(true) as HTMLElement;
+      // Remove all SVG elements
+      clone.querySelectorAll("svg").forEach((svg) => svg.remove());
+      // Get the text content
+      return clone.textContent?.trim() || "";
+    });
+
+    return titleText;
+  }
 }

@@ -12,12 +12,12 @@ export class UpgradeDialog {
 
   constructor(private page: Page) {
     this.dialog = page.locator('[role="dialog"]');
-    this.dialogTitle = this.dialog.locator('[role="heading"]').or(
-      this.dialog.locator('h2, .dialog-title')
-    );
-    this.dialogDescription = this.dialog.locator('.dialog-description').or(
-      this.dialog.locator('p')
-    );
+    this.dialogTitle = this.dialog
+      .locator('[role="heading"]')
+      .or(this.dialog.locator("h2, .dialog-title"));
+    this.dialogDescription = this.dialog
+      .locator(".dialog-description")
+      .or(this.dialog.locator("p"));
     this.upgradeButton = page.getByRole("button", { name: /upgrade/i });
     this.upgradeNowButton = page.getByRole("button", { name: /upgrade now/i });
     this.upgradePlanButton = page.getByRole("button", {
@@ -79,7 +79,10 @@ export class UpgradeDialog {
     const hasUpgradeButton =
       (await this.upgradeNowButton.isVisible().catch(() => false)) ||
       (await this.upgradePlanButton.isVisible().catch(() => false)) ||
-      (await this.upgradeButton.first().isVisible().catch(() => false));
+      (await this.upgradeButton
+        .first()
+        .isVisible()
+        .catch(() => false));
 
     expect(hasUpgradeButton).toBe(true);
   }
