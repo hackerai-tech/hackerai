@@ -301,6 +301,7 @@ export const ChatInput = ({
               className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-[15px] shadow-none resize-none min-h-[28px]"
               rows={1}
               autoFocus
+              data-testid="chat-input"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -320,6 +321,7 @@ export const ChatInput = ({
                   <Button
                     variant="ghost"
                     size="sm"
+                    data-testid="mode-selector"
                     className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 ${
                       chatMode === "agent"
                         ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20"
@@ -344,6 +346,7 @@ export const ChatInput = ({
                   <DropdownMenuItem
                     onClick={() => setChatMode("ask")}
                     className="cursor-pointer"
+                    data-testid="mode-ask"
                   >
                     <MessageSquare className="w-4 h-4 mr-2" />
                     <div className="flex flex-col">
@@ -357,6 +360,7 @@ export const ChatInput = ({
                     <DropdownMenuItem
                       onClick={handleAgentModeClick}
                       className="cursor-pointer"
+                      data-testid="mode-agent"
                     >
                       <Infinity className="w-4 h-4 mr-2" />
                       <div className="flex flex-col">
@@ -372,6 +376,7 @@ export const ChatInput = ({
                     <DropdownMenuItem
                       onClick={handleAgentModeClick}
                       className="cursor-pointer"
+                      data-testid="mode-agent"
                     >
                       <Infinity className="w-4 h-4 mr-2" />
                       <div className="flex flex-col flex-1">
@@ -436,6 +441,7 @@ export const ChatInput = ({
                               : ""
                           }`}
                           aria-label="Send message"
+                          data-testid="send-button"
                         >
                           <ArrowUp size={15} strokeWidth={3} />
                         </Button>
@@ -474,7 +480,10 @@ export const ChatInput = ({
         open={agentUpgradeDialogOpen}
         onOpenChange={setAgentUpgradeDialogOpen}
       >
-        <DialogContent className="sm:max-w-[500px]">
+        <DialogContent
+          className="sm:max-w-[500px]"
+          data-testid="agent-upgrade-dialog"
+        >
           <DialogHeader>
             <DialogTitle>Upgrade plan</DialogTitle>
             <DialogDescription>
@@ -482,7 +491,12 @@ export const ChatInput = ({
               security features with Pro.
             </DialogDescription>
           </DialogHeader>
-          <Button onClick={handleUpgradeClick} className="w-full" size="lg">
+          <Button
+            onClick={handleUpgradeClick}
+            className="w-full"
+            size="lg"
+            data-testid="agent-upgrade-button"
+          >
             Upgrade plan
           </Button>
         </DialogContent>

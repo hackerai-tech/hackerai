@@ -50,6 +50,7 @@ export const AttachmentButton = ({
             size="sm"
             className="rounded-full p-0 w-8 h-8 min-w-0"
             aria-label="Attach files"
+            data-testid="attach-files-button"
             disabled={disabled || isCheckingProPlan}
           >
             <Paperclip className="w-[15px] h-[15px]" />
@@ -73,18 +74,28 @@ export const AttachmentButton = ({
           size="sm"
           className="rounded-full p-0 w-8 h-8 min-w-0"
           aria-label="Attach files"
+          data-testid="attach-files-button"
           disabled={disabled}
         >
           <Paperclip className="w-[15px] h-[15px]" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-80 p-4" side="top" align="start">
+      <PopoverContent
+        className="w-80 p-4"
+        side="top"
+        align="start"
+        data-testid="file-attach-upgrade-dialog"
+      >
         <div className="space-y-3">
           <h3 className="font-semibold text-base">Upgrade plan</h3>
           <p className="text-sm text-muted-foreground">
             Get access to file attachments and more features with Pro
           </p>
-          <Button onClick={handleUpgradeClick} className="w-full">
+          <Button
+            onClick={handleUpgradeClick}
+            className="w-full"
+            data-testid="file-attach-upgrade-button"
+          >
             Upgrade now
           </Button>
         </div>

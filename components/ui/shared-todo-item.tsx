@@ -24,7 +24,11 @@ export const getTextStyles = (status: Todo["status"]) => {
 
 export const SharedTodoItem = React.memo(({ todo }: { todo: Todo }) => {
   return (
-    <div className="flex items-center gap-3 py-1">
+    <div
+      data-testid="todo-item"
+      data-status={todo.status}
+      className="flex items-center gap-3 py-1"
+    >
       <div className="flex-shrink-0">{getStatusIcon(todo.status)}</div>
       <span className={`text-sm ${getTextStyles(todo.status)}`}>
         {todo.content}

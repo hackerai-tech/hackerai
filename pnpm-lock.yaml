@@ -30,7 +30,7 @@ importers:
         version: 2.2.0
       "@langchain/community":
         specifier: ^1.0.3
-        version: 1.0.3(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.932.0)(@aws-sdk/credential-provider-node@3.932.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.0.3(@opentelemetry/api@1.9.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.6))(@upstash/redis@1.35.6)(convex@1.29.2(react@19.2.0))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.2)(mammoth@1.11.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(playwright@1.55.0)(redis@5.9.0)(word-extractor@1.0.4)(ws@8.18.3)
+        version: 1.0.3(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.932.0)(@aws-sdk/credential-provider-node@3.932.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.56.1)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.0.3(@opentelemetry/api@1.9.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.6))(@upstash/redis@1.35.6)(convex@1.29.2(react@19.2.0))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.2)(mammoth@1.11.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(playwright@1.56.1)(redis@5.9.0)(word-extractor@1.0.4)(ws@8.18.3)
       "@openrouter/ai-sdk-provider":
         specifier: ^1.2.3
         version: 1.2.3(ai@5.0.93(zod@4.1.12))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(zod@4.1.12)
@@ -90,10 +90,10 @@ importers:
         version: 3.3.2(@aws-sdk/credential-provider-web-identity@3.932.0)
       "@workos-inc/authkit-nextjs":
         specifier: ^2.11.0
-        version: 2.11.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+        version: 2.11.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       "@workos-inc/node":
         specifier: ^7.73.0
-        version: 7.73.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))
+        version: 7.73.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))
       ai:
         specifier: ^5.0.93
         version: 5.0.93(zod@4.1.12)
@@ -144,7 +144,7 @@ importers:
         version: 12.23.24(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       next:
         specifier: 16.0.3
-        version: 16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+        version: 16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
@@ -215,6 +215,9 @@ importers:
       "@jest/globals":
         specifier: ^30.2.0
         version: 30.2.0
+      "@playwright/test":
+        specifier: ^1.56.1
+        version: 1.56.1
       "@tailwindcss/postcss":
         specifier: ^4
         version: 4.1.11
@@ -269,6 +272,9 @@ importers:
       jest-environment-jsdom:
         specifier: ^30.2.0
         version: 30.2.0
+      playwright:
+        specifier: ^1.56.1
+        version: 1.56.1
       prettier:
         specifier: ^3.6.2
         version: 3.6.2
@@ -2866,10 +2872,10 @@ packages:
       }
     engines: { node: ^12.20.0 || ^14.18.0 || >=16.0.0 }
 
-  "@playwright/test@1.55.0":
+  "@playwright/test@1.56.1":
     resolution:
       {
-        integrity: sha512-04IXzPwHrW69XusN/SIdDdKZBzMfOT9UNT/YiJit/xpy2VuAoB8NHc8Aplb96zsWDddLnbkPL3TsmrS04ZU2xQ==,
+        integrity: sha512-vSMYtL/zOcFpvJCW71Q/OEGQb7KYBPAdKh35WNSkaZA75JlAO8ED8UN6GUNTm3drWomcbcqRPFqQbLae8yBTdg==,
       }
     engines: { node: ">=18" }
     hasBin: true
@@ -10146,18 +10152,18 @@ packages:
         integrity: sha512-fnWVljUchTro6RiCFvCXBbNhJc2NijN7oIQxbwsyL0buWJPG85v81ehlHI9fXrJsMNgTofEoWIQeClKpgxFLrg==,
       }
 
-  playwright-core@1.55.0:
+  playwright-core@1.56.1:
     resolution:
       {
-        integrity: sha512-GvZs4vU3U5ro2nZpeiwyb0zuFaqb9sUiAJuyrWpcGouD8y9/HLgGbNRjIph7zU9D3hnPaisMl9zG9CgFi/biIg==,
+        integrity: sha512-hutraynyn31F+Bifme+Ps9Vq59hKuUCz7H1kDOcBs+2oGguKkWTU50bBWrtz34OUWmIwpBTWDxaRPXrIXkgvmQ==,
       }
     engines: { node: ">=18" }
     hasBin: true
 
-  playwright@1.55.0:
+  playwright@1.56.1:
     resolution:
       {
-        integrity: sha512-sdCWStblvV1YU909Xqx0DhOjPZE4/5lJsIS84IfN9dAZfcl/CIZ5O8l3o0j7hPMjDvqoTF8ZUcc+i/GL5erstA==,
+        integrity: sha512-aFi5B0WovBHTEvpM3DzXTUaeN6eN0qWnTkKx4NQaH4Wvcmc153PdaY2UBdSYKaGYw+UyWXSVyxDUg5DoPEttjw==,
       }
     engines: { node: ">=18" }
     hasBin: true
@@ -13080,11 +13086,11 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  "@browserbasehq/stagehand@1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12)":
+  "@browserbasehq/stagehand@1.14.0(@playwright/test@1.56.1)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12)":
     dependencies:
       "@anthropic-ai/sdk": 0.27.3
       "@browserbasehq/sdk": 2.6.0
-      "@playwright/test": 1.55.0
+      "@playwright/test": 1.56.1
       deepmerge: 4.3.1
       dotenv: 17.2.3
       openai: 6.9.0(ws@8.18.3)(zod@4.1.12)
@@ -13820,9 +13826,9 @@ snapshots:
       - openai
       - ws
 
-  "@langchain/community@1.0.3(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.932.0)(@aws-sdk/credential-provider-node@3.932.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.0.3(@opentelemetry/api@1.9.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.6))(@upstash/redis@1.35.6)(convex@1.29.2(react@19.2.0))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.2)(mammoth@1.11.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(playwright@1.55.0)(redis@5.9.0)(word-extractor@1.0.4)(ws@8.18.3)":
+  "@langchain/community@1.0.3(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.932.0)(@aws-sdk/credential-provider-node@3.932.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.56.1)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.0.3(@opentelemetry/api@1.9.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.6))(@upstash/redis@1.35.6)(convex@1.29.2(react@19.2.0))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.2)(mammoth@1.11.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(playwright@1.56.1)(redis@5.9.0)(word-extractor@1.0.4)(ws@8.18.3)":
     dependencies:
-      "@browserbasehq/stagehand": 1.14.0(@playwright/test@1.55.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12)
+      "@browserbasehq/stagehand": 1.14.0(@playwright/test@1.56.1)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(zod@4.1.12)
       "@ibm-cloud/watsonx-ai": 1.6.12
       "@langchain/classic": 1.0.3(@langchain/core@1.0.3(@opentelemetry/api@1.9.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12)))(@opentelemetry/api@1.9.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))(ws@8.18.3)
       "@langchain/core": 1.0.3(@opentelemetry/api@1.9.0)(openai@6.9.0(ws@8.18.3)(zod@4.1.12))
@@ -13850,7 +13856,7 @@ snapshots:
       jsdom: 26.1.0
       jsonwebtoken: 9.0.2
       mammoth: 1.11.0
-      playwright: 1.55.0
+      playwright: 1.56.1
       redis: 5.9.0
       word-extractor: 1.0.4
       ws: 8.18.3
@@ -14029,9 +14035,9 @@ snapshots:
 
   "@pkgr/core@0.2.9": {}
 
-  "@playwright/test@1.55.0":
+  "@playwright/test@1.56.1":
     dependencies:
-      playwright: 1.55.0
+      playwright: 1.56.1
 
   "@posthog/ai@7.1.0(@opentelemetry/api@1.9.0)(posthog-node@5.11.2)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)(ws@8.18.3)(zod-to-json-schema@3.24.6(zod@4.1.12))":
     dependencies:
@@ -15726,12 +15732,12 @@ snapshots:
 
   "@workos-inc/authkit-js@0.13.0": {}
 
-  "@workos-inc/authkit-nextjs@2.11.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)":
+  "@workos-inc/authkit-nextjs@2.11.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))(react-dom@19.2.0(react@19.2.0))(react@19.2.0)":
     dependencies:
-      "@workos-inc/node": 7.73.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))
+      "@workos-inc/node": 7.73.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))
       iron-session: 8.0.4
       jose: 5.10.0
-      next: 16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      next: 16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       path-to-regexp: 6.3.0
       react: 19.2.0
       react-dom: 19.2.0(react@19.2.0)
@@ -15744,9 +15750,9 @@ snapshots:
       "@workos-inc/authkit-js": 0.13.0
       react: 19.2.0
 
-  "@workos-inc/node@7.73.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))":
+  "@workos-inc/node@7.73.0(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))":
     dependencies:
-      iron-session: 6.3.1(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))
+      iron-session: 6.3.1(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0))
       jose: 5.6.3
       leb: 1.0.0
       qs: 6.14.0
@@ -17530,7 +17536,7 @@ snapshots:
 
   internmap@2.0.3: {}
 
-  iron-session@6.3.1(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)):
+  iron-session@6.3.1(next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)):
     dependencies:
       "@peculiar/webcrypto": 1.5.0
       "@types/cookie": 0.5.4
@@ -17540,7 +17546,7 @@ snapshots:
       cookie: 0.5.0
       iron-webcrypto: 0.2.8
     optionalDependencies:
-      next: 16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      next: 16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
 
   iron-session@8.0.4:
     dependencies:
@@ -18925,7 +18931,7 @@ snapshots:
       react: 19.2.0
       react-dom: 19.2.0(react@19.2.0)
 
-  next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.55.0)(react-dom@19.2.0(react@19.2.0))(react@19.2.0):
+  next@16.0.3(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.56.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0):
     dependencies:
       "@next/env": 16.0.3
       "@swc/helpers": 0.5.15
@@ -18944,7 +18950,7 @@ snapshots:
       "@next/swc-win32-arm64-msvc": 16.0.3
       "@next/swc-win32-x64-msvc": 16.0.3
       "@opentelemetry/api": 1.9.0
-      "@playwright/test": 1.55.0
+      "@playwright/test": 1.56.1
       sharp: 0.34.4
     transitivePeerDependencies:
       - "@babel/core"
@@ -19185,11 +19191,11 @@ snapshots:
 
   platform@1.3.6: {}
 
-  playwright-core@1.55.0: {}
+  playwright-core@1.56.1: {}
 
-  playwright@1.55.0:
+  playwright@1.56.1:
     dependencies:
-      playwright-core: 1.55.0
+      playwright-core: 1.56.1
     optionalDependencies:
       fsevents: 2.3.2
 
