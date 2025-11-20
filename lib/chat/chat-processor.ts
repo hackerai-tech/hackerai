@@ -44,15 +44,15 @@ export function selectModel(
 ): string {
   // Prefer a dedicated PDF vision model for PDFs in ask mode
   if (containsPdfFiles && mode === "ask") {
-    return "vision-model-for-pdfs";
+    return "ask-vision-model-for-pdfs";
   }
 
   // If there are media files (images or otherwise), choose appropriate vision model
   if (containsMediaFiles && mode === "ask") {
-    return "vision-model";
+    return "ask-vision-model";
   }
   if (containsMediaFiles && mode === "agent") {
-    return "agent-model-with-vision";
+    return "agent-vision-model";
   }
 
   // Otherwise, choose based on mode
