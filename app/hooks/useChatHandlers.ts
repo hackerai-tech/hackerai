@@ -298,9 +298,17 @@ export const useChatHandlers = ({
       : todos;
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
+    // Check if the last assistant message has actual content
+    // If it's empty or has no parts, it was never saved (error occurred)
+    // In this case, we shouldn't delete anything from the database
+    const hasContent = lastAssistant?.parts && lastAssistant.parts.length > 0;
+
     if (!temporaryChatsEnabled) {
-      // Delete last assistant message and update todos in a single transaction
-      await deleteLastAssistantMessage({ chatId, todos: cleanedTodos });
+      // Only delete if the last assistant message has content
+      // This prevents deleting previous valid messages when an error occurred
+      if (hasContent) {
+        await deleteLastAssistantMessage({ chatId, todos: cleanedTodos });
+      }
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
         body: {
@@ -348,11 +356,21 @@ export const useChatHandlers = ({
         },
       });
     } else {
-      // For temporary chats, send all messages
+      // For temporary chats, filter out empty assistant message if present (from error)
+      // Check if last message is an empty assistant message
+      const lastMessage = messages[messages.length - 1];
+      const isLastMessageEmptyAssistant =
+        lastMessage?.role === "assistant" &&
+        (!lastMessage.parts || lastMessage.parts.length === 0);
+
+      const messagesToSend = isLastMessageEmptyAssistant
+        ? messages.slice(0, -1)
+        : messages;
+
       regenerate({
         body: {
           mode: chatMode,
-          messages,
+          messages: messagesToSend,
           todos: cleanedTodos,
           regenerate: true,
           temporary: true,

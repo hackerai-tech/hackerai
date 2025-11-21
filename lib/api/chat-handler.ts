@@ -52,6 +52,7 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -347,7 +348,7 @@ export const createChatHandler = () => {
               },
             },
             experimental_transform: smoothStream({ chunking: "word" }),
-            stopWhen: stepCountIs(mode === "ask" ? 5 : 20),
+            stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
               if (chunk.chunk.type === "tool-call") {
