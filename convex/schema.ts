@@ -120,4 +120,19 @@ export default defineSchema({
     chat_id: v.string(),
     user_id: v.string(),
   }).index("by_chat_id", ["chat_id"]),
+
+  user_settings: defineTable({
+    user_id: v.string(),
+    use_local_sandbox: v.optional(v.boolean()),
+    local_sandbox_token: v.optional(v.string()),
+    updated_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
+
+  sandbox_connections: defineTable({
+    user_id: v.string(),
+    container_id: v.string(),
+    mode: v.literal("docker"),
+    last_ping: v.number(),
+    connected_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
 });

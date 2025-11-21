@@ -15,6 +15,8 @@ export default authkitMiddleware({
       "/terms-of-service",
       "/manifest.json",
       "/share/:path*", // Allow public access to shared chats
+      "/api/local-sandbox", // Allow Bearer token auth for local sandbox client
+      "/api/local-sandbox/token", // Allow session auth for token management
     ],
   },
 });

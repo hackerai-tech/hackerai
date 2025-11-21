@@ -1,5 +1,5 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import { DefaultSandboxManager } from "./utils/sandbox-manager";
+import { HybridSandboxManager } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createGetTerminalFiles } from "./get-terminal-files";
@@ -30,7 +30,7 @@ export const createTools = (
 ) => {
   let sandbox: Sandbox | null = null;
 
-  const sandboxManager = new DefaultSandboxManager(
+  const sandboxManager = new HybridSandboxManager(
     userID,
     (newSandbox) => {
       sandbox = newSandbox;
