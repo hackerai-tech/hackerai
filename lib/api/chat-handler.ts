@@ -338,6 +338,8 @@ export const createChatHandler = () => {
             abortSignal: userStopSignal.signal,
             providerOptions: {
               openrouter: {
+                // Current ask model doesn't support sequential tool calls
+                // ...(mode === "ask" && { parallel_tool_calls: false }),
                 provider: {
                   ...(subscription === "free"
                     ? {

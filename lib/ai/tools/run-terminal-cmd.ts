@@ -22,24 +22,27 @@ export const createRunTerminalCmd = (context: ToolContext) => {
 If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
 Commands execute immediately without requiring user approval.
 In using these tools, adhere to the following guidelines:
-1. Based on the contents of the conversation, you will be told if you are in the same shell as a previous step or a different shell.
-2. If in a new shell, you should \`cd\` to the appropriate directory and do necessary setup in addition to running the command. By default, the shell will initialize in the project root.
-3. If in the same shell, LOOK IN CHAT HISTORY for your current working directory.
-4. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
-5. If the command would use a pager, append \` | cat\` to the command.
-6. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. Background processes are automatically tracked with their PIDs and output files, so you'll be informed when the process completes before accessing output files. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
-7. Dont include any newlines in the command.
-8. Handle large outputs and save scan results to files:
-   - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.
-   - For large outputs (>10KB expected: sqlmap --dump, nmap -A, nikto full scan):
-     * Pipe to file: \`sqlmap ... 2>&1 | tee sqlmap_output.txt\`
-     * Extract relevant information: \`grep -E "password|hash|Database:" sqlmap_output.txt\`
-     * Anti-pattern: Never let full verbose output return to context (causes overflow)
-   - Always redirect excessive output to files to avoid context overflow.
-9. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
-10. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
-11. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 10 minutes when possible (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout → reduce scope, break into smaller operations.
-12. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
+1. Use command chaining and pipes for efficiency:
+   - Chain commands with \`&&\` to execute multiple commands together and handle errors cleanly (e.g., \`cd /app && npm install && npm start\`)
+   - Use pipes \`|\` to pass outputs between commands and simplify workflows (e.g., \`cat log.txt | grep error | wc -l\`)
+2. NEVER run code directly via interpreter inline commands (like \`python3 -c "..."\` or \`node -e "..."\`). ALWAYS save code to a file first, then execute the file.
+3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
+4. If the command would use a pager, append \` | cat\` to the command.
+5. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
+  - To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\`
+  - If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.
+6. Dont include any newlines in the command.
+7. Handle large outputs and save scan results to files:
+  - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.
+  - For large outputs (>10KB expected: sqlmap --dump, nmap -A, nikto full scan):
+    - Pipe to file: \`sqlmap ... 2>&1 | tee sqlmap_output.txt\`
+    - Extract relevant information: \`grep -E "password|hash|Database:" sqlmap_output.txt\`
+    - Anti-pattern: Never let full verbose output return to context (causes overflow)
+  - Always redirect excessive output to files to avoid context overflow.
+8. Install missing tools when needed: Use \`apt install tool\` or \`pip install package\` (no sudo needed in container).
+9. After creating files that the user needs (reports, scan results, generated documents), use the get_terminal_files tool to share them as downloadable attachments.
+10. For pentesting tools, always use time-efficient flags and targeted scans to keep execution under 10 minutes when possible (e.g., targeted ports for nmap, small wordlists for fuzzing, specific templates for nuclei, vulnerable-only enumeration for wpscan). Timeout handling: On timeout → reduce scope, break into smaller operations.
+11. When users make vague requests (e.g., "do recon", "scan this", "check security"), start with fast, lightweight tools and quick scans to provide initial results quickly. Use comprehensive/deep scans only when explicitly requested or after initial findings warrant deeper investigation.
 
 When making charts for the user: 1) never use seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never set any specific colors – unless explicitly asked to by the user.
 I REPEAT: when making charts for the user: 1) use matplotlib over seaborn, 2) give each chart its own distinct plot (no subplots), and 3) never, ever, specify colors or matplotlib styles – unless explicitly asked to by the user
@@ -168,7 +171,9 @@ If you are generating files:
               }
 
               // Clean up and resolve
-              const result = handler ? handler.getResult() : { output: "" };
+              const result = handler
+                ? handler.getResult(processId ?? undefined)
+                : { output: "" };
               if (handler) {
                 handler.cleanup();
               }
@@ -193,40 +198,66 @@ If you are generating files:
               });
             }
 
+            // For tail --pid commands (used to wait for processes), use MAX_COMMAND_EXECUTION_TIME
+            // instead of STREAM_TIMEOUT_SECONDS since they're designed to wait for long-running processes
+            const isWaitCommand = command.trim().startsWith("tail --pid");
+            const streamTimeout = isWaitCommand
+              ? Math.floor(MAX_COMMAND_EXECUTION_TIME / 1000)
+              : STREAM_TIMEOUT_SECONDS;
+
+            // Extract PID from tail --pid command for user-friendly messages
+            let waitingForPid: number | null = null;
+            if (isWaitCommand) {
+              const pidMatch = command.match(/tail\s+--pid[=\s]+(\d+)/);
+              if (pidMatch) {
+                waitingForPid = parseInt(pidMatch[1], 10);
+                createTerminalWriter(
+                  `Waiting for process ${waitingForPid} to complete...\n`,
+                );
+              }
+            }
+
             handler = createTerminalHandler(
               (output) => createTerminalWriter(output),
               {
-                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
+                timeoutSeconds: streamTimeout,
                 onTimeout: async () => {
                   if (resolved) {
                     return;
                   }
 
-                  createTerminalWriter(TIMEOUT_MESSAGE(STREAM_TIMEOUT_SECONDS));
+                  // Try to get PID from execution object first (if available)
+                  if (!processId && execution && (execution as any)?.pid) {
+                    processId = (execution as any).pid;
+                  }
 
-                  // For foreground commands, attempt to discover PID if not already known
+                  // For foreground commands on stream timeout, try to discover PID for user reference
+                  // DO NOT kill the process - it may still be working and saving to files
+                  // The process has its own MAX_COMMAND_EXECUTION_TIME timeout via commonOptions
                   if (!processId && !is_background) {
                     processId = await findProcessPid(sandboxInstance, command);
                   }
 
-                  // Attempt to kill the running process on timeout
-                  if ((execution && execution.kill) || processId) {
-                    try {
-                      await terminateProcessReliably(
-                        sandboxInstance,
-                        execution,
-                        processId,
-                      );
-                    } catch (error) {
-                      console.error(
-                        "[Terminal Command] Error during timeout termination:",
-                        error,
-                      );
-                    }
+                  // Only show "continues in background" for STREAM_TIMEOUT_SECONDS (60s)
+                  // For MAX_COMMAND_EXECUTION_TIME (10min), the process is killed by e2b
+                  const isContinuingInBackground =
+                    streamTimeout === STREAM_TIMEOUT_SECONDS;
+
+                  if (isContinuingInBackground) {
+                    createTerminalWriter(
+                      TIMEOUT_MESSAGE(streamTimeout, processId ?? undefined),
+                    );
+                  } else {
+                    // Max execution time reached - process will be killed by e2b
+                    createTerminalWriter(
+                      `\n\nCommand timed out after ${streamTimeout} seconds and was terminated.`,
+                    );
                   }
 
                   resolved = true;
-                  const result = handler ? handler.getResult() : { output: "" };
+                  const result = handler
+                    ? handler.getResult(processId ?? undefined)
+                    : { output: "" };
                   if (handler) {
                     handler.cleanup();
                   }
@@ -327,7 +358,7 @@ If you are generating files:
                   resolved = true;
                   abortSignal?.removeEventListener("abort", onAbort);
                   const finalResult = handler
-                    ? handler.getResult()
+                    ? handler.getResult(processId ?? undefined)
                     : { output: "" };
 
                   // Track background processes with their output files
@@ -341,6 +372,13 @@ If you are generating files:
                       processId,
                       command,
                       outputFiles,
+                    );
+                  }
+
+                  // Add completion message for tail --pid commands
+                  if (waitingForPid) {
+                    createTerminalWriter(
+                      `Process ${waitingForPid} completed\n`,
                     );
                   }
 
@@ -367,7 +405,7 @@ If you are generating files:
                   // Handle CommandExitError as a valid result (non-zero exit code)
                   if (error instanceof CommandExitError) {
                     const finalResult = handler
-                      ? handler.getResult()
+                      ? handler.getResult(processId ?? undefined)
                       : { output: "" };
                     resolve({
                       result: {

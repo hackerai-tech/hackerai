@@ -78,8 +78,10 @@ export const createTerminalHandler = (
   return {
     stdout: (output: string) => handleOutput(output),
     stderr: (output: string) => handleOutput(output),
-    getResult: (): TerminalResult => {
-      const timeoutMsg = timedOut ? TIMEOUT_MESSAGE(timeoutSeconds || 0) : "";
+    getResult: (pid?: number): TerminalResult => {
+      const timeoutMsg = timedOut
+        ? TIMEOUT_MESSAGE(timeoutSeconds || 0, pid)
+        : "";
       let finalOutput = combinedOutput;
       if (timeoutMsg) {
         finalOutput += timeoutMsg;
