@@ -2,7 +2,8 @@ import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxContext } from "@/types";
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
-const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000; // 15 minutes inactivity timeout
+const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000; // 15 minutes connection timeout
+const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000; // 7 minutes auto-pause inactivity timeout
 
 /**
  * Current sandbox version identifier.
@@ -110,7 +111,7 @@ export const ensureSandboxConnection = async (
     // Use betaCreate with autoPause - sandbox will automatically pause after timeout
     // This eliminates the need for manual pause operations and their failure modes
     const sandbox = await Sandbox.betaCreate(SANDBOX_TEMPLATE, {
-      timeoutMs: BASH_SANDBOX_TIMEOUT,
+      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
       autoPause: true, // Auto-pause after inactivity timeout
       // Enable secure mode to generate pre-signed URLs for file downloads
       // This allows unauthorized environments (like browsers) to securely access

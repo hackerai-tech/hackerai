@@ -138,14 +138,14 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
         // Step 1: Generate presigned S3 upload URL
         const { uploadUrl, s3Key } = await generateS3UploadUrlAction({
           fileName: file.name,
-          contentType: file.type,
+          contentType: file.type || "application/octet-stream",
         });
 
         // Step 2: Upload file to S3 using presigned URL
         const uploadResponse = await fetch(uploadUrl, {
           method: "PUT",
           body: file,
-          headers: { "Content-Type": file.type },
+          headers: { "Content-Type": file.type || "application/octet-stream" },
         });
 
         if (!uploadResponse.ok) {

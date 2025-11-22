@@ -28,8 +28,10 @@ export const TOOL_DEFAULT_MAX_TOKENS = 2048;
 export const TRUNCATION_MESSAGE = "\n\n[Output truncated because too long]";
 export const FILE_READ_TRUNCATION_MESSAGE =
   "\n\n[Content truncated due to size limit. Use line ranges to read in chunks]";
-export const TIMEOUT_MESSAGE = (seconds: number) =>
-  `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
+export const TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
+  pid
+    ? `\n\nCommand output paused after ${seconds} seconds. Command continues in background with PID: ${pid}`
+    : `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
 
 /**
  * Count tokens for a single message part

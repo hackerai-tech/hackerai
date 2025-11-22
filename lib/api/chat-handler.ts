@@ -338,6 +338,8 @@ export const createChatHandler = () => {
             abortSignal: userStopSignal.signal,
             providerOptions: {
               openrouter: {
+                // Current ask model doesn't support sequential tool calls
+                // ...(mode === "ask" && { parallel_tool_calls: false }),
                 provider: {
                   ...(subscription === "free"
                     ? {
@@ -389,7 +391,7 @@ export const createChatHandler = () => {
                 pollerStopped = true;
 
                 // Sandbox cleanup is automatic with auto-pause
-                // The sandbox will auto-pause after inactivity timeout (15 minutes)
+                // The sandbox will auto-pause after inactivity timeout (7 minutes)
                 // No manual pause needed
 
                 // Always wait for title generation to complete
