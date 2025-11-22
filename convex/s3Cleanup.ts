@@ -21,7 +21,7 @@ export const deleteS3ObjectAction = internalAction({
   handler: async (ctx, args) => {
     try {
       await deleteS3Object(args.s3Key);
-      console.log(`Successfully deleted S3 object: ${args.s3Key}`);
+      // console.log(`Successfully deleted S3 object: ${args.s3Key}`);
     } catch (error) {
       console.error(`Failed to delete S3 object: ${args.s3Key}`, error);
       // Don't throw - we don't want to block other operations

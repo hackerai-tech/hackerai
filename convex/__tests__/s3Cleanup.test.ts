@@ -48,9 +48,9 @@ describe("s3Cleanup", () => {
       await deleteS3ObjectAction.handler(mockCtx, args);
 
       expect(mockDeleteS3Object).toHaveBeenCalledWith(args.s3Key);
-      expect(console.log).toHaveBeenCalledWith(
-        `Successfully deleted S3 object: ${args.s3Key}`,
-      );
+      // expect(console.log).toHaveBeenCalledWith(
+      //   `Successfully deleted S3 object: ${args.s3Key}`,
+      // );
     });
 
     it("should log error but not throw when deletion fails", async () => {
