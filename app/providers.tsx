@@ -17,7 +17,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
     const trackFreeUsers =
       process.env.NEXT_PUBLIC_POSTHOG_TRACK_FREE_USERS === "true";
     const isPaidUser = subscription !== "free";
-    
+
     const shouldTrack = trackFreeUsers ? !isPaidUser : isPaidUser;
 
     if (!shouldTrack) {
