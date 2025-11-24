@@ -313,13 +313,26 @@ If you are generating files:
             // Execute command with retry logic for transient failures
             // Sandbox readiness already checked, so these retries handle race conditions
             // Retries: 6 attempts with exponential backoff (500ms, 1s, 2s, 4s, 8s, 16s) + jitter (±50ms)
-            const runPromise = is_background
+            const runPromise: Promise<{
+              stdout: string;
+              stderr: string;
+              exitCode: number;
+              pid?: number;
+            }> = is_background
               ? retryWithBackoff(
-                  () =>
-                    sandboxInstance.commands.run(command, {
+                  async () => {
+                    const result = await sandboxInstance.commands.run(command, {
                       ...commonOptions,
                       background: true,
-                    }),
+                    });
+                    // Normalize the result to include exitCode
+                    return {
+                      stdout: result.stdout,
+                      stderr: result.stderr,
+                      exitCode: result.exitCode ?? 0,
+                      pid: (result as { pid?: number }).pid,
+                    };
+                  },
                   {
                     maxRetries: 6,
                     baseDelayMs: 500,
@@ -346,8 +359,8 @@ If you are generating files:
                 execution = exec;
 
                 // Capture PID for background processes
-                if (is_background && (exec as any)?.pid) {
-                  processId = (exec as any).pid;
+                if (is_background && exec?.pid) {
+                  processId = exec.pid;
                 }
 
                 if (handler) {

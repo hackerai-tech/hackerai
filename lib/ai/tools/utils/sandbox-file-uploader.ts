@@ -4,7 +4,8 @@ import { ConvexHttpClient } from "convex/browser";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
-import type { Sandbox } from "@e2b/code-interpreter";
+import type { AnySandbox } from "@/types";
+import { isE2BSandbox } from "./sandbox-types";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
@@ -40,7 +41,7 @@ function extractErrorMessage(error: unknown): string {
 }
 
 export async function uploadSandboxFileToConvex(args: {
-  sandbox: Sandbox;
+  sandbox: AnySandbox;
   userId: string;
   fullPath: string;
   skipTokenValidation?: boolean;
@@ -61,18 +62,27 @@ export async function uploadSandboxFileToConvex(args: {
   const { sandbox, userId, fullPath } = args;
   const convex = getConvexClient();
 
-  const downloadUrl = await sandbox.downloadUrl(fullPath, {
-    useSignatureExpiration: 30_000, // 30 seconds
-  });
+  let blob: Blob;
 
-  const fileRes = await fetch(downloadUrl);
-  if (!fileRes.ok) {
-    throw new Error(
-      `Failed to download ${fullPath}: ${fileRes.status} ${fileRes.statusText}`,
-    );
+  if (isE2BSandbox(sandbox)) {
+    // E2B Sandbox: use downloadUrl
+    const downloadUrl = await sandbox.downloadUrl(fullPath, {
+      useSignatureExpiration: 30_000, // 30 seconds
+    });
+
+    const fileRes = await fetch(downloadUrl);
+    if (!fileRes.ok) {
+      throw new Error(
+        `Failed to download ${fullPath}: ${fileRes.status} ${fileRes.statusText}`,
+      );
+    }
+
+    blob = await fileRes.blob();
+  } else {
+    // ConvexSandbox: use files.read
+    const content = await sandbox.files.read(fullPath);
+    blob = new Blob([content], { type: DEFAULT_MEDIA_TYPE });
   }
-
-  const blob = await fileRes.blob();
   const mediaType = DEFAULT_MEDIA_TYPE;
   const name = fullPath.split("/").pop() || "file";
 

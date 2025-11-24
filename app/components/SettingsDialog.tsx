@@ -9,6 +9,7 @@ import {
   Database,
   Users,
   Infinity,
+  Server,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
@@ -19,6 +20,7 @@ import { AccountTab } from "@/app/components/AccountTab";
 import { DataControlsTab } from "@/app/components/DataControlsTab";
 import { TeamTab } from "@/app/components/TeamTab";
 import { AgentsTab } from "@/app/components/AgentsTab";
+import { LocalSandboxTab } from "@/app/components/LocalSandboxTab";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
@@ -38,6 +40,7 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
     { id: "Personalization", label: "Personalization", icon: Settings },
     { id: "Security", label: "Security", icon: Shield },
     { id: "Data controls", label: "Data controls", icon: Database },
+    { id: "Local Sandbox", label: "Local Sandbox", icon: Server },
     { id: "Agents", label: "Agents", icon: Infinity },
   ];
 
@@ -152,6 +155,8 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                 {activeTab === "Data controls" && <DataControlsTab />}
 
                 {activeTab === "Agents" && <AgentsTab />}
+
+                {activeTab === "Local Sandbox" && <LocalSandboxTab />}
 
                 {activeTab === "Team" && <TeamTab />}
 
