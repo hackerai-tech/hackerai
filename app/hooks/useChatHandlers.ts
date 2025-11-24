@@ -176,7 +176,6 @@ export const useChatHandlers = ({
         activateChatLocally();
       }
 
-
       try {
         // Get file objects from uploaded files - URLs are already resolved in global state
         const validFiles = uploadedFiles.filter(

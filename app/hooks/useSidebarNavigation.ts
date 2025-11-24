@@ -84,9 +84,7 @@ export const useSidebarNavigation = ({
       const x = e.clientX - rect.left;
       const percentage = Math.max(0, Math.min(1, x / rect.width));
 
-      const targetIndex = Math.round(
-        percentage * (toolExecutions.length - 1),
-      );
+      const targetIndex = Math.round(percentage * (toolExecutions.length - 1));
       const clampedIndex = Math.max(
         0,
         Math.min(targetIndex, toolExecutions.length - 1),
@@ -122,4 +120,3 @@ export const useSidebarNavigation = ({
     canGoNext,
   };
 };
-

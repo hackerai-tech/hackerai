@@ -159,10 +159,10 @@ const AnsiCodeBlock = ({
   // Memoize the className to prevent unnecessary re-calculations (react-shiki pattern)
   const containerClassName = useMemo(() => {
     const heightClasses = "h-full [&_pre]:h-full [&_pre]:flex [&_pre]:flex-col";
-    const baseClasses = `shiki not-prose relative bg-card text-sm font-[450] text-card-foreground [&_pre]:!bg-transparent [&_pre]:px-[1em] [&_pre]:py-[1em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:min-w-0 ${heightClasses} ${
+    const baseClasses = `shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground [&_pre]:!bg-transparent [&_pre]:px-[1em] [&_pre]:py-[1em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:min-w-0 [&_code]:bg-transparent [&_span]:bg-transparent ${heightClasses} ${
       isWrapped
-        ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible [&_pre]:word-break-break-word"
-        : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
+        ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:word-break-break-word"
+        : "[&_pre]:whitespace-pre [&_pre]:overflow-x-auto [&_pre]:max-w-full"
     }`;
     return className ? `${baseClasses} ${className}` : baseClasses;
   }, [isWrapped, className]);
@@ -262,7 +262,7 @@ export const TerminalCodeBlock = ({
   return (
     <div className="shiki not-prose relative h-full w-full bg-transparent overflow-hidden">
       {/* Terminal content - takes full available space */}
-      <div className="h-full w-full overflow-auto">
+      <div className="h-full w-full overflow-auto bg-background">
         {isExecuting && !output && status === "streaming" ? (
           <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
             <Shimmer>Executing command</Shimmer>

@@ -85,7 +85,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     if (currentToolCount > previousToolCount) {
       // Check if we were at the last position before new tools arrived
       const wasAtLive = currentIndex === previousToolCount - 1;
-      
+
       // Also check if we're currently at live (in case sidebarContent already updated)
       const isCurrentlyAtLive = currentIndex === currentToolCount - 1;
 
@@ -103,7 +103,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
     // Update the ref for next comparison
     previousToolCountRef.current = currentToolCount;
-  }, [toolExecutions.length, currentIndex, sidebarOpen, onNavigate, toolExecutions]);
+  }, [
+    toolExecutions.length,
+    currentIndex,
+    sidebarOpen,
+    onNavigate,
+    toolExecutions,
+  ]);
 
   if (!sidebarOpen || !sidebarContent) {
     return null;
@@ -330,7 +336,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
               </div>
 
               {/* Content */}
-              <div className="flex-1 min-h-0 w-full overflow-hidden">
+              <div className="flex-1 min-h-0 w-full overflow-hidden bg-background">
                 <div className="flex flex-col min-h-0 h-full relative">
                   <div className="focus-visible:outline-none flex-1 min-h-0 h-full text-sm flex flex-col py-0 outline-none">
                     <div
@@ -476,7 +482,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 <div className="flex items-center gap-1 text-sm ms-[2px] cursor-default">
                   <div
                     className={`h-[8px] w-[8px] rounded-full ${
-                      status === "streaming" ? "bg-green-500" : "bg-muted-foreground"
+                      status === "streaming"
+                        ? "bg-green-500"
+                        : "bg-muted-foreground"
                     }`}
                   ></div>
                   <span

@@ -15,7 +15,9 @@ interface Message {
   [key: string]: any;
 }
 
-export function extractAllSidebarContent(messages: Message[]): SidebarContent[] {
+export function extractAllSidebarContent(
+  messages: Message[],
+): SidebarContent[] {
   const contentList: SidebarContent[] = [];
 
   messages.forEach((message) => {
@@ -25,7 +27,7 @@ export function extractAllSidebarContent(messages: Message[]): SidebarContent[] 
     const terminalDataMap = new Map<string, string>();
     // Collect Python output from data-python parts (for streaming)
     const pythonDataMap = new Map<string, string>();
-    
+
     message.parts.forEach((part) => {
       if (part.type === "data-terminal" && part.data?.toolCallId) {
         const toolCallId = part.data.toolCallId;
@@ -45,14 +47,15 @@ export function extractAllSidebarContent(messages: Message[]): SidebarContent[] 
       // Terminal
       if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
         const command = part.input.command;
-        
+
         // Get streaming output from data-terminal parts
-        const streamingOutput = terminalDataMap.get(part.toolCallId || "") || "";
-        
+        const streamingOutput =
+          terminalDataMap.get(part.toolCallId || "") || "";
+
         // Extract output from result object (handles both new and legacy formats)
         const result = part.output?.result;
         let output = "";
-        
+
         if (result) {
           // New format: result.output
           if (typeof result.output === "string") {
@@ -67,14 +70,16 @@ export function extractAllSidebarContent(messages: Message[]): SidebarContent[] 
             output = result;
           }
         }
-        
+
         // Fallback to streaming output or direct output property
-        const finalOutput = output || streamingOutput || part.output?.output || "";
-        
+        const finalOutput =
+          output || streamingOutput || part.output?.output || "";
+
         contentList.push({
           command,
           output: finalOutput,
-          isExecuting: part.state === "input-available" || part.state === "running",
+          isExecuting:
+            part.state === "input-available" || part.state === "running",
           isBackground: part.input.is_background,
           toolCallId: part.toolCallId || "",
         });
@@ -83,13 +88,13 @@ export function extractAllSidebarContent(messages: Message[]): SidebarContent[] 
       // Python
       if (part.type === "tool-python" && part.input?.code) {
         const code = part.input.code;
-        
+
         // Get streaming output from data-python parts
         const streamingOutput = pythonDataMap.get(part.toolCallId || "") || "";
-        
+
         const result = part.output?.result;
         let output = "";
-        
+
         if (result) {
           // New format: result.output
           if (typeof result.output === "string") {
@@ -104,13 +109,15 @@ export function extractAllSidebarContent(messages: Message[]): SidebarContent[] 
             output = result;
           }
         }
-        
-        const finalOutput = output || streamingOutput || part.output?.output || "";
-        
+
+        const finalOutput =
+          output || streamingOutput || part.output?.output || "";
+
         contentList.push({
           code,
           output: finalOutput,
-          isExecuting: part.state === "input-available" || part.state === "running",
+          isExecuting:
+            part.state === "input-available" || part.state === "running",
           toolCallId: part.toolCallId || "",
         });
       }
@@ -140,19 +147,19 @@ export function extractAllSidebarContent(messages: Message[]): SidebarContent[] 
           // Extract result - handle both string and object formats
           const result = part.output?.result;
           let rawContent = "";
-          
+
           if (typeof result === "string") {
             rawContent = result;
           } else if (result && typeof result === "object") {
             // If result is an object, try to extract content
             rawContent = result.content || result.text || result.result || "";
           }
-          
+
           // Clean line numbers from read output (only if we have content)
           if (rawContent) {
             content = rawContent.replace(/^\s*\d+\|/gm, "");
           }
-          
+
           if (fileInput.offset && fileInput.limit) {
             range = {
               start: fileInput.offset,
@@ -191,4 +198,3 @@ export function extractAllSidebarContent(messages: Message[]): SidebarContent[] 
 
   return contentList;
 }
-

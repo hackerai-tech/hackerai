@@ -36,7 +36,9 @@ export const TerminalToolHandler = ({
         p.type === "data-terminal" &&
         (p as any).data?.toolCallId === toolCallId,
     );
-    return terminalDataParts.map((p) => (p as any).data?.terminal || "").join("");
+    return terminalDataParts
+      .map((p) => (p as any).data?.terminal || "")
+      .join("");
   }, [message.parts, toolCallId]);
 
   // Memoize final output computation
