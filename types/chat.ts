@@ -16,6 +16,7 @@ export interface SidebarFile {
     end: number;
   };
   action?: "reading" | "creating" | "editing" | "writing";
+  toolCallId?: string;
 }
 
 export interface SidebarTerminal {

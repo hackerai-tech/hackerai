@@ -20,7 +20,6 @@ import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import Loading from "@/components/ui/loading";
-import { useSidebarAutoOpen } from "../hooks/useSidebarAutoOpen";
 import { useFeedback } from "../hooks/useFeedback";
 import { useFileUrlCache } from "../hooks/useFileUrlCache";
 import { FileUrlCacheProvider } from "../contexts/FileUrlCacheContext";
@@ -46,7 +45,6 @@ interface MessagesProps {
   error: Error | null;
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
-  resetSidebarAutoOpen?: RefObject<(() => void) | null>;
   paginationStatus?:
     | "LoadingFirstPage"
     | "CanLoadMore"
@@ -75,7 +73,6 @@ export const Messages = ({
   error,
   scrollRef,
   contentRef,
-  resetSidebarAutoOpen,
   paginationStatus,
   loadMore,
   isSwitchingChats,
@@ -128,19 +125,7 @@ export const Messages = ({
     handleFeedbackCancel,
   } = useFeedback({ messages, setMessages });
 
-  // Handle sidebar auto-opening
-  const { resetSidebarFlag } = useSidebarAutoOpen(
-    messages,
-    lastAssistantMessageIndex,
-    status,
-  );
-
-  // Expose reset function to parent if provided
-  useEffect(() => {
-    if (resetSidebarAutoOpen) {
-      resetSidebarAutoOpen.current = resetSidebarFlag;
-    }
-  }, [resetSidebarFlag, resetSidebarAutoOpen]);
+  // Sidebar auto-open removed - sidebar only opens via manual clicks
 
   // Memoized edit handlers to prevent unnecessary re-renders
   const handleStartEdit = useCallback((messageId: string) => {

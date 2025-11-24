@@ -1,10 +1,19 @@
 import React from "react";
-import { Minimize2, Edit, Terminal, Code2 } from "lucide-react";
-import { useState } from "react";
+import {
+  Minimize2,
+  Edit,
+  Terminal,
+  Code2,
+  Play,
+  SkipBack,
+  SkipForward,
+} from "lucide-react";
+import { useState, useEffect, useRef } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
+import { useSidebarNavigation } from "../hooks/useSidebarNavigation";
 import {
   Tooltip,
   TooltipTrigger,
@@ -15,20 +24,86 @@ import {
   isSidebarTerminal,
   isSidebarPython,
   type SidebarContent,
+  type ChatStatus,
 } from "@/types/chat";
 
 interface ComputerSidebarProps {
   sidebarOpen: boolean;
   sidebarContent: SidebarContent | null;
   closeSidebar: () => void;
+  messages?: any[];
+  onNavigate?: (content: SidebarContent) => void;
+  status?: ChatStatus;
 }
 
 export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   sidebarOpen,
   sidebarContent,
   closeSidebar,
+  messages = [],
+  onNavigate,
+  status,
 }) => {
   const [isWrapped, setIsWrapped] = useState(true);
+  const previousToolCountRef = useRef<number>(0);
+
+  const {
+    toolExecutions,
+    currentIndex,
+    maxIndex,
+    handlePrev,
+    handleNext,
+    handleJumpToLive,
+    handleSliderClick,
+    getProgressPercentage,
+    isAtLive,
+    canGoPrev,
+    canGoNext,
+  } = useSidebarNavigation({
+    messages,
+    sidebarContent,
+    onNavigate,
+  });
+
+  // Initialize tool count ref on mount
+  useEffect(() => {
+    if (sidebarOpen && toolExecutions.length > 0) {
+      previousToolCountRef.current = toolExecutions.length;
+    }
+  }, [sidebarOpen]); // Only run when sidebar opens/closes
+
+  // Auto-follow new tools when at live position during streaming
+  useEffect(() => {
+    if (!sidebarOpen || !onNavigate || toolExecutions.length === 0) {
+      return;
+    }
+
+    const currentToolCount = toolExecutions.length;
+    const previousToolCount = previousToolCountRef.current;
+
+    // Check if new tools arrived (count increased)
+    if (currentToolCount > previousToolCount) {
+      // Check if we were at the last position before new tools arrived
+      const wasAtLive = currentIndex === previousToolCount - 1;
+      
+      // Also check if we're currently at live (in case sidebarContent already updated)
+      const isCurrentlyAtLive = currentIndex === currentToolCount - 1;
+
+      // Auto-update if we were at live OR currently at live
+      if (wasAtLive || isCurrentlyAtLive) {
+        // Navigate to the latest tool execution
+        // Since we only extract file operations when output is available,
+        // content should always be ready
+        const latestTool = toolExecutions[toolExecutions.length - 1];
+        if (latestTool) {
+          onNavigate(latestTool);
+        }
+      }
+    }
+
+    // Update the ref for next comparison
+    previousToolCountRef.current = currentToolCount;
+  }, [toolExecutions.length, currentIndex, sidebarOpen, onNavigate, toolExecutions]);
 
   if (!sidebarOpen || !sidebarContent) {
     return null;
@@ -325,6 +400,110 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                   </div>
                 </div>
               </div>
+
+              {/* Navigation Footer */}
+              <div className="mt-auto flex w-full items-center gap-2 px-4 h-[44px] relative bg-background border-t border-border">
+                <div className="flex items-center" dir="ltr">
+                  <button
+                    type="button"
+                    onClick={handlePrev}
+                    disabled={!canGoPrev}
+                    className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
+                      !canGoPrev
+                        ? "text-muted-foreground/30 cursor-not-allowed"
+                        : "text-muted-foreground hover:text-blue-500"
+                    }`}
+                    aria-label="Previous tool execution"
+                  >
+                    <SkipBack size={16} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleNext}
+                    disabled={!canGoNext}
+                    className={`flex items-center justify-center w-[24px] h-[24px] transition-colors cursor-pointer ${
+                      !canGoNext
+                        ? "text-muted-foreground/30 cursor-not-allowed"
+                        : "text-muted-foreground hover:text-blue-500"
+                    }`}
+                    aria-label="Next tool execution"
+                  >
+                    <SkipForward size={16} />
+                  </button>
+                </div>
+                <div
+                  className="group touch-none group relative hover:z-10 flex h-1 flex-1 min-w-0 cursor-pointer select-none items-center"
+                  onClick={handleSliderClick}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      // Focus the slider handle for keyboard navigation
+                      const handle = e.currentTarget.querySelector(
+                        '[role="slider"]',
+                      ) as HTMLElement;
+                      handle?.focus();
+                    }
+                  }}
+                >
+                  <span className="relative h-full w-full rounded-full bg-muted">
+                    <span
+                      className="absolute h-full rounded-full bg-blue-500"
+                      style={{
+                        left: "0%",
+                        width: `${getProgressPercentage}%`,
+                      }}
+                    ></span>
+                  </span>
+                  {currentIndex >= 0 && (
+                    <span
+                      className="absolute -translate-x-1/2 p-[3px]"
+                      style={{
+                        left: `${getProgressPercentage}%`,
+                      }}
+                    >
+                      <span
+                        role="slider"
+                        tabIndex={0}
+                        aria-valuemin={0}
+                        aria-valuemax={maxIndex}
+                        aria-valuenow={currentIndex}
+                        aria-label={`Tool execution ${currentIndex + 1}`}
+                        className="relative block h-[14px] w-[14px] rounded-full bg-blue-500 transition-all focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 border-2 border-background drop-shadow-[0px_1px_4px_rgba(0,0,0,0.06)]"
+                      ></span>
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 text-sm ms-[2px] cursor-default">
+                  <div
+                    className={`h-[8px] w-[8px] rounded-full ${
+                      status === "streaming" ? "bg-green-500" : "bg-muted-foreground"
+                    }`}
+                  ></div>
+                  <span
+                    className={
+                      status === "streaming"
+                        ? "text-foreground"
+                        : "text-muted-foreground"
+                    }
+                  >
+                    live
+                  </span>
+                </div>
+                {!isAtLive && (
+                  <button
+                    onClick={handleJumpToLive}
+                    className="h-10 px-4 border border-border flex items-center gap-2 bg-background hover:bg-muted shadow-[0px_5px_16px_0px_rgba(0,0,0,0.1),0px_0px_1.25px_0px_rgba(0,0,0,0.1)] rounded-full cursor-pointer absolute left-[50%] translate-x-[-50%]"
+                    style={{ bottom: "calc(100% + 10px)" }}
+                    aria-label="Jump to live"
+                  >
+                    <Play size={16} className="text-foreground" />
+                    <span className="text-foreground text-sm font-medium">
+                      Jump to live
+                    </span>
+                  </button>
+                )}
+                <div></div>
+              </div>
             </div>
           </div>
         </div>
@@ -334,14 +513,21 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 };
 
 // Wrapper for normal chats using GlobalState
-export const ComputerSidebar: React.FC = () => {
-  const { sidebarOpen, sidebarContent, closeSidebar } = useGlobalState();
+export const ComputerSidebar: React.FC<{
+  messages?: any[];
+  status?: ChatStatus;
+}> = ({ messages, status }) => {
+  const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
+    useGlobalState();
 
   return (
     <ComputerSidebarBase
       sidebarOpen={sidebarOpen}
       sidebarContent={sidebarContent}
       closeSidebar={closeSidebar}
+      messages={messages}
+      onNavigate={openSidebar}
+      status={status}
     />
   );
 };
