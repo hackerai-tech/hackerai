@@ -1,10 +1,11 @@
-import React from "react";
+import React, { useEffect, useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
+import { isSidebarTerminal } from "@/types/chat";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
@@ -17,7 +18,8 @@ export const TerminalToolHandler = ({
   part,
   status,
 }: TerminalToolHandlerProps) => {
-  const { openSidebar } = useGlobalState();
+  const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
+    useGlobalState();
   const { toolCallId, state, input, output, errorText } = part;
   const terminalInput = input as {
     command: string;
@@ -27,43 +29,69 @@ export const TerminalToolHandler = ({
     result: CommandResult & { output?: string };
   };
 
-  const handleOpenInSidebar = () => {
-    if (!terminalInput?.command) return;
-
-    // Get terminal data parts for streaming output (for manual clicks)
+  // Memoize streaming output computation
+  const streamingOutput = useMemo(() => {
     const terminalDataParts = message.parts.filter(
       (p) =>
         p.type === "data-terminal" &&
         (p as any).data?.toolCallId === toolCallId,
     );
-    const streamingOutput = terminalDataParts
+    return terminalDataParts
       .map((p) => (p as any).data?.terminal || "")
       .join("");
+  }, [message.parts, toolCallId]);
 
+  // Memoize final output computation
+  const finalOutput = useMemo(() => {
     // Prefer new combined output format, fall back to legacy stdout+stderr for old messages
     const newFormatOutput = terminalOutput?.result?.output ?? "";
     const stdout = terminalOutput?.result?.stdout ?? "";
     const stderr = terminalOutput?.result?.stderr ?? "";
     const legacyOutput = stdout + stderr;
 
-    const finalOutput =
+    return (
       newFormatOutput ||
       legacyOutput ||
       streamingOutput ||
       (terminalOutput?.result?.error ?? "") ||
       errorText ||
-      "";
+      ""
+    );
+  }, [terminalOutput, streamingOutput, errorText]);
+
+  const isExecuting = state === "input-available" && status === "streaming";
+
+  const handleOpenInSidebar = () => {
+    if (!terminalInput?.command) return;
 
     const sidebarTerminal: SidebarTerminal = {
       command: terminalInput.command,
       output: finalOutput,
-      isExecuting: state === "input-available" && status === "streaming",
+      isExecuting,
       isBackground: terminalInput.is_background,
       toolCallId: toolCallId,
     };
 
     openSidebar(sidebarTerminal);
   };
+
+  // Track if this sidebar is currently active
+  const isSidebarActive =
+    sidebarOpen &&
+    sidebarContent &&
+    isSidebarTerminal(sidebarContent) &&
+    sidebarContent.toolCallId === toolCallId;
+
+  // Update sidebar content in real-time if it's currently open for this tool call
+  useEffect(() => {
+    if (!isSidebarActive) return;
+
+    updateSidebarContent({
+      output: finalOutput,
+      isExecuting,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSidebarActive, finalOutput, isExecuting]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {

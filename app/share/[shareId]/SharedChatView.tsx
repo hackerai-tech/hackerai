@@ -16,8 +16,9 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useEffect } from "react";
 
 // Desktop wrapper component that connects ComputerSidebarBase to SharedChatContext
-function SharedComputerSidebarDesktop() {
-  const { sidebarOpen, sidebarContent, closeSidebar } = useSharedChatContext();
+function SharedComputerSidebarDesktop({ messages }: { messages: any[] }) {
+  const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
+    useSharedChatContext();
 
   return (
     <div
@@ -30,6 +31,8 @@ function SharedComputerSidebarDesktop() {
           sidebarOpen={sidebarOpen}
           sidebarContent={sidebarContent}
           closeSidebar={closeSidebar}
+          messages={messages}
+          onNavigate={openSidebar}
         />
       )}
     </div>
@@ -37,8 +40,9 @@ function SharedComputerSidebarDesktop() {
 }
 
 // Mobile wrapper component for full-screen sidebar overlay
-function SharedComputerSidebarMobile() {
-  const { sidebarOpen, sidebarContent, closeSidebar } = useSharedChatContext();
+function SharedComputerSidebarMobile({ messages }: { messages: any[] }) {
+  const { sidebarOpen, sidebarContent, closeSidebar, openSidebar } =
+    useSharedChatContext();
 
   if (!sidebarOpen) return null;
 
@@ -49,6 +53,8 @@ function SharedComputerSidebarMobile() {
           sidebarOpen={sidebarOpen}
           sidebarContent={sidebarContent}
           closeSidebar={closeSidebar}
+          messages={messages}
+          onNavigate={openSidebar}
         />
       </div>
     </div>
@@ -201,12 +207,14 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
             </div>
 
             {/* Desktop Computer Sidebar - fixed, independent scrolling */}
-            {!isMobile && <SharedComputerSidebarDesktop />}
+            {!isMobile && (
+              <SharedComputerSidebarDesktop messages={messages || []} />
+            )}
           </div>
         </div>
 
         {/* Mobile Computer Sidebar */}
-        {isMobile && <SharedComputerSidebarMobile />}
+        {isMobile && <SharedComputerSidebarMobile messages={messages || []} />}
 
         {/* Overlay Chat Sidebar - Mobile screens for logged users */}
         {isMobile && !authLoading && user && chatSidebarOpen && (

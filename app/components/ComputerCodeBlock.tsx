@@ -150,28 +150,28 @@ export const ComputerCodeBlock = ({
       )}
 
       {/* Code content - takes full available space */}
-      <div className="h-full w-full overflow-auto">
+      <div className={`h-full w-full overflow-auto bg-background`}>
         {shouldUsePlainText ? (
           <pre
             className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full px-[0.5em] py-[0.5em] rounded-none m-0 min-h-full min-w-0 ${
-              wrap
-                ? "whitespace-pre-wrap break-words overflow-visible word-break-break-word"
-                : "overflow-x-auto max-w-full"
+              isWrapped
+                ? "whitespace-pre-wrap break-words word-break-break-word"
+                : "whitespace-pre overflow-x-auto"
             }`}
           >
-            <code>{codeContent}</code>
+            <code className="bg-transparent">{codeContent}</code>
           </pre>
         ) : (
           <ShikiErrorBoundary
             fallback={
               <pre
                 className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full px-[0.5em] py-[0.5em] rounded-none m-0 min-h-full min-w-0 ${
-                  wrap
-                    ? "whitespace-pre-wrap break-words overflow-visible word-break-break-word"
-                    : "overflow-x-auto max-w-full"
+                  isWrapped
+                    ? "whitespace-pre-wrap break-words word-break-break-word"
+                    : "whitespace-pre overflow-x-auto"
                 }`}
               >
-                <code>{codeContent}</code>
+                <code className="bg-transparent">{codeContent}</code>
               </pre>
             }
           >
@@ -181,10 +181,10 @@ export const ComputerCodeBlock = ({
               delay={150}
               addDefaultStyles={false}
               showLanguage={false}
-              className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full [&_pre]:!bg-transparent [&_pre]:px-[0.5em] [&_pre]:py-[0.5em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:h-full [&_pre]:w-full [&_pre]:min-h-full [&_pre]:min-w-0 ${
-                wrap
-                  ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:overflow-visible [&_pre]:word-break-break-word"
-                  : "[&_pre]:overflow-x-auto [&_pre]:max-w-full"
+              className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full [&_pre]:!bg-transparent [&_pre]:px-[0.5em] [&_pre]:py-[0.5em] [&_pre]:rounded-none [&_pre]:m-0 [&_pre]:h-full [&_pre]:w-full [&_pre]:min-h-full [&_pre]:min-w-0 [&_code]:bg-transparent [&_span]:bg-transparent ${
+                isWrapped
+                  ? "[&_pre]:whitespace-pre-wrap [&_pre]:break-words [&_pre]:word-break-break-word"
+                  : "[&_pre]:whitespace-pre [&_pre]:overflow-x-auto"
               }`}
             >
               {codeContent}

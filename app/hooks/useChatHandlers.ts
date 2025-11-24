@@ -17,7 +17,6 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 interface UseChatHandlersProps {
   chatId: string;
   messages: ChatMessage[];
-  resetSidebarAutoOpenRef: RefObject<(() => void) | null>;
   sendMessage: (message?: any, options?: { body?: any }) => void;
   stop: () => void;
   regenerate: (options?: { body?: any }) => void;
@@ -34,7 +33,6 @@ interface UseChatHandlersProps {
 export const useChatHandlers = ({
   chatId,
   messages,
-  resetSidebarAutoOpenRef,
   sendMessage,
   stop,
   regenerate,
@@ -176,10 +174,6 @@ export const useChatHandlers = ({
         setCurrentChatId(chatId);
         window.history.replaceState({}, "", `/c/${chatId}`);
         activateChatLocally();
-      }
-
-      if (resetSidebarAutoOpenRef.current) {
-        resetSidebarAutoOpenRef.current();
       }
 
       try {

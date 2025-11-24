@@ -434,7 +434,6 @@ export const Chat = ({
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
-  const resetSidebarAutoOpenRef = useRef<(() => void) | null>(null);
 
   // File upload with drag and drop support
   const {
@@ -547,7 +546,6 @@ export const Chat = ({
   } = useChatHandlers({
     chatId,
     messages,
-    resetSidebarAutoOpenRef,
     sendMessage,
     stop,
     regenerate,
@@ -669,7 +667,6 @@ export const Chat = ({
                     onBranchMessage={handleBranchMessage}
                     status={status}
                     error={error || null}
-                    resetSidebarAutoOpen={resetSidebarAutoOpenRef}
                     paginationStatus={paginatedMessages.status}
                     loadMore={paginatedMessages.loadMore}
                     isSwitchingChats={false}
@@ -775,7 +772,9 @@ export const Chat = ({
                   sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
                 }`}
               >
-                {sidebarOpen && <ComputerSidebar />}
+                {sidebarOpen && (
+                  <ComputerSidebar messages={messages} status={status} />
+                )}
               </div>
             )}
 
@@ -791,7 +790,7 @@ export const Chat = ({
         {isMobile && sidebarOpen && (
           <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
             <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar />
+              <ComputerSidebar messages={messages} status={status} />
             </div>
           </div>
         )}

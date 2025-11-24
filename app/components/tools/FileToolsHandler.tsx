@@ -1,15 +1,46 @@
+import { useMemo } from "react";
+import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus } from "@/types";
 
+interface DiffDataPart {
+  type: "data-diff";
+  data: {
+    toolCallId: string;
+    filePath: string;
+    originalContent: string;
+    modifiedContent: string;
+  };
+}
+
 interface FileToolsHandlerProps {
+  message: UIMessage;
   part: any;
   status: ChatStatus;
 }
 
-export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
+export const FileToolsHandler = ({
+  message,
+  part,
+  status,
+}: FileToolsHandlerProps) => {
   const { openSidebar } = useGlobalState();
+
+  // Extract diff data from data-diff parts in the message (streamed separately from tool result)
+  // This data only exists in memory/stream - not persisted, so on reload we just show the result message
+  const diffDataFromStream = useMemo(() => {
+    if (part.type !== "tool-search_replace") return null;
+
+    const diffPart = message.parts.find(
+      (p): p is DiffDataPart =>
+        p.type === "data-diff" &&
+        (p as DiffDataPart).data?.toolCallId === part.toolCallId,
+    );
+
+    return diffPart?.data || null;
+  }, [message.parts, part.type, part.toolCallId]);
 
   const renderReadFileTool = () => {
     const { toolCallId, state, input, output } = part;
@@ -254,12 +285,35 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
         const isSuccess =
           searchReplaceOutput.result.includes("Successfully made");
 
+        const handleOpenInSidebar = () => {
+          // Use diff data from stream if available (not persisted across reloads)
+          openSidebar({
+            path: searchReplaceInput.file_path,
+            content:
+              diffDataFromStream?.modifiedContent || searchReplaceOutput.result,
+            action: "editing",
+            toolCallId,
+            originalContent: diffDataFromStream?.originalContent,
+            modifiedContent: diffDataFromStream?.modifiedContent,
+          });
+        };
+
+        const handleKeyDown = (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleOpenInSidebar();
+          }
+        };
+
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
             action={isSuccess ? "Successfully edited" : "Failed to edit"}
             target={searchReplaceInput.file_path}
+            isClickable={true}
+            onClick={handleOpenInSidebar}
+            onKeyDown={handleKeyDown}
           />
         );
       }

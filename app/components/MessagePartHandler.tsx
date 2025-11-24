@@ -72,7 +72,7 @@ export const MessagePartHandler = ({
     case "tool-delete_file":
     case "tool-search_replace":
     case "tool-multi_edit":
-      return <FileToolsHandler part={part} status={status} />;
+      return <FileToolsHandler message={message} part={part} status={status} />;
 
     // Keep the old export for backward compatibility
     case "tool-web_search":
