@@ -9,7 +9,7 @@ interface MessagePart {
   [key: string]: any;
 }
 
-interface Message {
+export interface Message {
   role: string;
   parts?: MessagePart[];
   [key: string]: any;

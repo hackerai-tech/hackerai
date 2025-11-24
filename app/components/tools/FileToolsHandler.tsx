@@ -290,8 +290,7 @@ export const FileToolsHandler = ({
           openSidebar({
             path: searchReplaceInput.file_path,
             content:
-              diffDataFromStream?.modifiedContent ||
-              searchReplaceOutput.result,
+              diffDataFromStream?.modifiedContent || searchReplaceOutput.result,
             action: "editing",
             toolCallId,
             originalContent: diffDataFromStream?.originalContent,

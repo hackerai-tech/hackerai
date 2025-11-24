@@ -1,5 +1,9 @@
 import { useMemo, useCallback } from "react";
-import { extractAllSidebarContent } from "@/lib/utils/sidebar-utils";
+import type { MouseEvent } from "react";
+import {
+  extractAllSidebarContent,
+  type Message,
+} from "@/lib/utils/sidebar-utils";
 import {
   isSidebarFile,
   isSidebarTerminal,
@@ -8,7 +12,7 @@ import {
 } from "@/types/chat";
 
 interface UseSidebarNavigationProps {
-  messages: any[];
+  messages: Message[];
   sidebarContent: SidebarContent | null;
   onNavigate?: (content: SidebarContent) => void;
 }
@@ -77,7 +81,7 @@ export const useSidebarNavigation = ({
   }, [toolExecutions, onNavigate]);
 
   const handleSliderClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
+    (e: MouseEvent<HTMLDivElement>) => {
       if (toolExecutions.length === 0 || !onNavigate) return;
 
       const rect = e.currentTarget.getBoundingClientRect();
@@ -97,7 +101,14 @@ export const useSidebarNavigation = ({
 
   const getProgressPercentage = useMemo(() => {
     if (toolExecutions.length <= 1) return 100;
-    return (currentIndex / (toolExecutions.length - 1)) * 100;
+    const effectiveIndex = Math.max(
+      0,
+      Math.min(currentIndex, toolExecutions.length - 1),
+    );
+    return Math.max(
+      0,
+      Math.min(100, (effectiveIndex / (toolExecutions.length - 1)) * 100),
+    );
   }, [currentIndex, toolExecutions.length]);
 
   const isAtLive = currentIndex === toolExecutions.length - 1;
