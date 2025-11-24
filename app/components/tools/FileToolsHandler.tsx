@@ -254,12 +254,31 @@ export const FileToolsHandler = ({ part, status }: FileToolsHandlerProps) => {
         const isSuccess =
           searchReplaceOutput.result.includes("Successfully made");
 
+        const handleOpenInSidebar = () => {
+          openSidebar({
+            path: searchReplaceInput.file_path,
+            content: searchReplaceOutput.result,
+            action: "editing",
+            toolCallId,
+          });
+        };
+
+        const handleKeyDown = (e: React.KeyboardEvent) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            handleOpenInSidebar();
+          }
+        };
+
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
             action={isSuccess ? "Successfully edited" : "Failed to edit"}
             target={searchReplaceInput.file_path}
+            isClickable={true}
+            onClick={handleOpenInSidebar}
+            onKeyDown={handleKeyDown}
           />
         );
       }
