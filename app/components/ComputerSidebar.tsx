@@ -12,6 +12,7 @@ import { useState, useEffect, useRef } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
+import { DiffView } from "./DiffView";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import { useSidebarNavigation } from "../hooks/useSidebarNavigation";
 import {
@@ -348,16 +349,33 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       }}
                     >
                       {isFile && (
-                        <ComputerCodeBlock
-                          language={
-                            sidebarContent.language ||
-                            getLanguageFromPath(sidebarContent.path)
-                          }
-                          wrap={isWrapped}
-                          showButtons={false}
-                        >
-                          {sidebarContent.content}
-                        </ComputerCodeBlock>
+                        <>
+                          {/* Show DiffView for editing actions with diff data */}
+                          {sidebarContent.action === "editing" &&
+                          sidebarContent.originalContent &&
+                          sidebarContent.modifiedContent ? (
+                            <DiffView
+                              originalContent={sidebarContent.originalContent}
+                              modifiedContent={sidebarContent.modifiedContent}
+                              language={
+                                sidebarContent.language ||
+                                getLanguageFromPath(sidebarContent.path)
+                              }
+                              wrap={isWrapped}
+                            />
+                          ) : (
+                            <ComputerCodeBlock
+                              language={
+                                sidebarContent.language ||
+                                getLanguageFromPath(sidebarContent.path)
+                              }
+                              wrap={isWrapped}
+                              showButtons={false}
+                            >
+                              {sidebarContent.content}
+                            </ComputerCodeBlock>
+                          )}
+                        </>
                       )}
                       {isTerminal && (
                         <TerminalCodeBlock

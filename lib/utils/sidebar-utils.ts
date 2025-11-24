@@ -27,6 +27,11 @@ export function extractAllSidebarContent(
     const terminalDataMap = new Map<string, string>();
     // Collect Python output from data-python parts (for streaming)
     const pythonDataMap = new Map<string, string>();
+    // Collect diff data from data-diff parts (for search_replace UI-only diff display)
+    const diffDataMap = new Map<
+      string,
+      { originalContent: string; modifiedContent: string }
+    >();
 
     message.parts.forEach((part) => {
       if (part.type === "data-terminal" && part.data?.toolCallId) {
@@ -40,6 +45,13 @@ export function extractAllSidebarContent(
         const pythonOutput = part.data?.terminal || ""; // Python uses same 'terminal' field
         const existing = pythonDataMap.get(toolCallId) || "";
         pythonDataMap.set(toolCallId, existing + pythonOutput);
+      }
+      if (part.type === "data-diff" && part.data?.toolCallId) {
+        const toolCallId = part.data.toolCallId;
+        diffDataMap.set(toolCallId, {
+          originalContent: part.data.originalContent || "",
+          modifiedContent: part.data.modifiedContent || "",
+        });
       }
     });
 
@@ -185,12 +197,26 @@ export function extractAllSidebarContent(
           }
         }
 
+        // For search_replace, try to get diff data from data-diff parts (not persisted across reloads)
+        let originalContent: string | undefined;
+        let modifiedContent: string | undefined;
+
+        if (part.type === "tool-search_replace" && part.toolCallId) {
+          const streamedDiff = diffDataMap.get(part.toolCallId);
+          if (streamedDiff) {
+            originalContent = streamedDiff.originalContent;
+            modifiedContent = streamedDiff.modifiedContent;
+          }
+        }
+
         contentList.push({
           path: filePath,
-          content,
+          content: modifiedContent || content,
           range,
           action,
           toolCallId: part.toolCallId || "",
+          originalContent,
+          modifiedContent,
         });
       }
     });

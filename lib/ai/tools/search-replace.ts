@@ -2,8 +2,12 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
 
+export interface SearchReplaceOutput {
+  result: string;
+}
+
 export const createSearchReplace = (context: ToolContext) => {
-  const { sandboxManager } = context;
+  const { sandboxManager, writer } = context;
 
   return tool({
     description: `Performs exact string replacements in files.
@@ -33,17 +37,20 @@ Usage:
         .default(false)
         .describe("Replace all occurences of old_string (default false)"),
     }),
-    execute: async ({
-      file_path,
-      old_string,
-      new_string,
-      replace_all = false,
-    }: {
-      file_path: string;
-      old_string: string;
-      new_string: string;
-      replace_all?: boolean;
-    }) => {
+    execute: async (
+      {
+        file_path,
+        old_string,
+        new_string,
+        replace_all = false,
+      }: {
+        file_path: string;
+        old_string: string;
+        new_string: string;
+        replace_all?: boolean;
+      },
+      { toolCallId },
+    ): Promise<SearchReplaceOutput> => {
       try {
         const { sandbox } = await sandboxManager.getSandbox();
 
@@ -93,6 +100,17 @@ Usage:
           // Write the updated content back to the file
           await sandbox.files.write(file_path, updatedContent, {
             user: "user" as const,
+          });
+
+          // Emit diff data to UI stream (NOT part of tool result, AI won't see this)
+          writer.write({
+            type: "data-diff",
+            data: {
+              toolCallId,
+              filePath: file_path,
+              originalContent: fileContent,
+              modifiedContent: updatedContent,
+            },
           });
 
           const action = replace_all ? "replacements" : "replacement";

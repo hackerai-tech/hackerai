@@ -17,6 +17,10 @@ export interface SidebarFile {
   };
   action?: "reading" | "creating" | "editing" | "writing";
   toolCallId?: string;
+  /** Original content before edit (for diff view) */
+  originalContent?: string;
+  /** Modified content after edit (for diff view) */
+  modifiedContent?: string;
 }
 
 export interface SidebarTerminal {
