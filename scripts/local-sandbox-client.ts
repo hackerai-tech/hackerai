@@ -10,7 +10,11 @@
  *   npx hackerai-local --token TOKEN --name "My Laptop"
  *   npx hackerai-local --token TOKEN --name "Kali" --image kalilinux/kali-rolling
  *   npx hackerai-local --token TOKEN --name "Work PC" --dangerous
+ *   npx hackerai-local --token TOKEN --build  # Build image locally instead of pulling
  */
+
+// Default pre-built image with all pentesting tools
+const DEFAULT_IMAGE = "ghcr.io/hackerai-tech/hackerai-sandbox:latest";
 
 import { config as dotenvConfig } from "dotenv";
 import { ConvexHttpClient } from "convex/browser";
@@ -43,6 +47,7 @@ interface Config {
   name: string;
   image: string;
   dangerous: boolean;
+  build: boolean;
 }
 
 interface OsInfo {
@@ -123,22 +128,46 @@ class LocalSandboxClient {
   }
 
   private async createContainer(): Promise<string> {
-    console.log(chalk.blue("Creating Docker container..."));
+    const image = this.config.image;
+    const isDefaultImage = image === DEFAULT_IMAGE;
 
+    // Build image locally if requested
+    if (this.config.build) {
+      console.log(chalk.blue("Building Docker image locally (this may take 10-15 minutes)..."));
+      try {
+        const dockerfilePath = path.resolve(__dirname, "../docker/Dockerfile");
+        await execAsync(`docker build -t hackerai-sandbox:local -f "${dockerfilePath}" "${path.dirname(dockerfilePath)}"`, {
+          timeout: 30 * 60 * 1000, // 30 minutes for build
+        });
+        console.log(chalk.green("✓ Image built successfully"));
+        // Use the locally built image
+        this.config.image = "hackerai-sandbox:local";
+      } catch (error: any) {
+        console.error(chalk.red("❌ Failed to build image:"), error.message);
+        process.exit(1);
+      }
+    } else if (isDefaultImage) {
+      // Pull the pre-built image if using default
+      console.log(chalk.blue(`Pulling pre-built image: ${image}`));
+      console.log(chalk.gray("(First run may take a few minutes to download ~2GB image)"));
+      try {
+        await execAsync(`docker pull ${image}`, {
+          timeout: 10 * 60 * 1000, // 10 minutes for pull
+        });
+        console.log(chalk.green("✓ Image ready"));
+      } catch (error: any) {
+        console.error(chalk.red("❌ Failed to pull image:"), error.message);
+        console.log(chalk.yellow("Try building locally with: --build"));
+        process.exit(1);
+      }
+    }
+
+    console.log(chalk.blue("Creating Docker container..."));
     const { stdout } = await execAsync(
       `docker run -d --network host ${this.config.image} tail -f /dev/null`,
     );
 
-    const containerId = stdout.trim();
-
-    // Install common tools (suppress errors for images that already have them)
-    console.log(chalk.blue("Installing tools..."));
-    try {
-    } catch {
-      // Ignore errors - some images may not have package managers
-    }
-
-    return containerId;
+    return stdout.trim();
   }
 
   private getOsInfo(): OsInfo {
@@ -393,20 +422,28 @@ ${chalk.yellow("Usage:")}
 ${chalk.yellow("Options:")}
   --token TOKEN       Authentication token from Settings (required)
   --name NAME         Connection name (default: hostname)
-  --image IMAGE       Docker image to use (default: ubuntu:latest)
+  --image IMAGE       Docker image to use (default: pre-built HackerAI sandbox)
+  --build             Build image locally instead of pulling from registry
   --dangerous         Run commands directly on host OS (no Docker)
   --convex-url URL    Convex backend URL
   --help, -h          Show this help message
 
 ${chalk.yellow("Examples:")}
-  # Basic usage (Docker mode)
+  # Basic usage - pulls pre-built image with 30+ pentesting tools
   npx hackerai-local --token hsb_abc123 --name "My Laptop"
 
-  # Custom Docker image
+  # Build the sandbox image locally (takes 10-15 minutes)
+  npx hackerai-local --token hsb_abc123 --build
+
+  # Use a custom Docker image (e.g., Kali Linux)
   npx hackerai-local --token hsb_abc123 --name "Kali" --image kalilinux/kali-rolling
 
-  # Dangerous mode (no Docker isolation)
+  # Dangerous mode (no Docker isolation) - use with caution!
   npx hackerai-local --token hsb_abc123 --name "Work PC" --dangerous
+
+${chalk.cyan("Pre-built Image:")}
+  The default image includes: nmap, sqlmap, ffuf, gobuster, nuclei, hydra,
+  nikto, wpscan, subfinder, httpx, and 20+ more pentesting tools.
 
 ${chalk.red("⚠️  Security Warning:")}
   In Docker mode, commands run in an isolated container with --network host.
@@ -422,8 +459,9 @@ const config: Config = {
     "",
   token: getArg("--token") || process.env.HACKERAI_TOKEN || "",
   name: getArg("--name") || os.hostname(),
-  image: getArg("--image") || process.env.DOCKER_IMAGE || "ubuntu:latest",
+  image: getArg("--image") || process.env.DOCKER_IMAGE || DEFAULT_IMAGE,
   dangerous: hasFlag("--dangerous"),
+  build: hasFlag("--build"),
 };
 
 if (!config.convexUrl) {
