@@ -31,7 +31,6 @@ export async function waitForSandboxReady(
       // Verify it can actually execute commands with a simple test
       try {
         await sandbox.commands.run("echo ready", {
-          cwd: "/home/user",
           timeoutMs: 3000, // 3 second timeout for health check
         });
       } catch (error) {

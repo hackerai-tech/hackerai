@@ -30,7 +30,6 @@ export async function findProcessPid(
     const pgrepResult = await sandbox.commands.run(
       `pgrep -f '${escapedPattern}'`,
       {
-        cwd: "/home/user",
         timeoutMs: 5000, // 5 second timeout for PID discovery
       },
     );
@@ -57,7 +56,6 @@ export async function findProcessPid(
       const psResult = await sandbox.commands.run(
         `ps -eo pid,cmd | grep '${escapedPattern}' | grep -v grep | awk '{print $1}' | head -1`,
         {
-          cwd: "/home/user",
           timeoutMs: 5000, // 5 second timeout for PID discovery
         },
       );

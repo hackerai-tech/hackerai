@@ -273,8 +273,6 @@ If you are generating files:
 
             const commonOptions = {
               timeoutMs: MAX_COMMAND_EXECUTION_TIME,
-              user: "root" as const,
-              cwd: "/home/user",
               ...(is_background
                 ? {}
                 : {

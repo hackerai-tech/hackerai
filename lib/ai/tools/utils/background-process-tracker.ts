@@ -38,9 +38,7 @@ export class BackgroundProcessTracker {
    */
   async checkProcessStatus(sandbox: AnySandbox, pid: number): Promise<boolean> {
     try {
-      const result = await sandbox.commands.run(`ps -p ${pid}`, {
-        cwd: "/home/user",
-      });
+      const result = await sandbox.commands.run(`ps -p ${pid}`, {});
 
       const isRunning = result.stdout.includes(pid.toString());
 

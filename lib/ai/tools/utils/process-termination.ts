@@ -19,9 +19,7 @@ export async function verifyProcessTerminated(
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const result = await sandbox.commands.run(`ps -p ${pid}`, {
-        cwd: "/home/user",
-      });
+      const result = await sandbox.commands.run(`ps -p ${pid}`, {});
 
       // Process is still running if PID appears in output
       const isRunning = result.stdout.includes(pid.toString());
@@ -72,9 +70,7 @@ export async function forceKillProcess(
       return killed;
     } else {
       // For ConvexSandbox, use kill -9 command
-      const result = await sandbox.commands.run(`kill -9 ${pid}`, {
-        cwd: "/home/user",
-      });
+      const result = await sandbox.commands.run(`kill -9 ${pid}`, {});
       return result.exitCode === 0;
     }
   } catch (error) {
