@@ -7,12 +7,9 @@ import { validateServiceKey } from "./chats";
 // ============================================================================
 
 function generateToken(): string {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  let token = "hsb_";
-  for (let i = 0; i < 64; i++) {
-    token += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return token;
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return `hsb_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
 export const getToken = mutation({
