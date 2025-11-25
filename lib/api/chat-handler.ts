@@ -12,7 +12,7 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import type { ChatMode, Todo } from "@/types";
+import type { ChatMode, Todo, SandboxPreference } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
@@ -92,6 +92,7 @@ export const createChatHandler = () => {
         chatId,
         regenerate,
         temporary,
+        sandboxPreference,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -99,6 +100,7 @@ export const createChatHandler = () => {
         todos?: Todo[];
         regenerate?: boolean;
         temporary?: boolean;
+        sandboxPreference?: SandboxPreference;
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
@@ -213,6 +215,8 @@ export const createChatHandler = () => {
             temporary,
             assistantMessageId,
             subscription,
+            sandboxPreference,
+            process.env.CONVEX_SERVICE_ROLE_KEY,
           );
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
