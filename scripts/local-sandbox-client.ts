@@ -12,11 +12,17 @@
  *   npx hackerai-local --token TOKEN --name "Work PC" --dangerous
  */
 
+import { config as dotenvConfig } from "dotenv";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "../convex/_generated/api";
 import { exec } from "child_process";
 import { promisify } from "util";
 import os from "os";
+import path from "path";
+
+// Load environment variables from .env.local
+dotenvConfig({ path: path.resolve(process.cwd(), ".env.local") });
+dotenvConfig({ path: path.resolve(process.cwd(), ".env") });
 
 const execAsync = promisify(exec);
 
@@ -94,19 +100,21 @@ class LocalSandboxClient {
         console.log(chalk.green("✓ Docker is available"));
       } catch {
         console.error(
-          chalk.red("❌ Docker not found. Please install Docker or use --dangerous mode."),
+          chalk.red(
+            "❌ Docker not found. Please install Docker or use --dangerous mode.",
+          ),
         );
         process.exit(1);
       }
 
       // Create container
       this.containerId = await this.createContainer();
-      console.log(
-        chalk.green(`✓ Container: ${this.containerId.slice(0, 12)}`),
-      );
+      console.log(chalk.green(`✓ Container: ${this.containerId.slice(0, 12)}`));
     } else {
       console.log(
-        chalk.yellow("⚠️  DANGEROUS MODE - Commands will run directly on your OS!"),
+        chalk.yellow(
+          "⚠️  DANGEROUS MODE - Commands will run directly on your OS!",
+        ),
       );
     }
 
@@ -126,12 +134,6 @@ class LocalSandboxClient {
     // Install common tools (suppress errors for images that already have them)
     console.log(chalk.blue("Installing tools..."));
     try {
-      await execAsync(
-        `docker exec ${containerId} sh -c "apt-get update -qq 2>/dev/null || apk update 2>/dev/null || true"`,
-      );
-      await execAsync(
-        `docker exec ${containerId} sh -c "apt-get install -y curl wget git python3 -qq 2>/dev/null || apk add curl wget git python3 2>/dev/null || true"`,
-      );
     } catch {
       // Ignore errors - some images may not have package managers
     }
@@ -152,13 +154,12 @@ class LocalSandboxClient {
     console.log(chalk.blue("Connecting to Convex..."));
 
     try {
-      
       const result = (await this.convex.mutation(api.localSandbox.connect, {
         token: this.config.token,
         connectionName: this.config.name,
         containerId: this.containerId,
         clientVersion: "1.0.0",
-        mode: this.config.dangerous ? "dangerous" : "docker",
+        mode: this.config.dangerous ? ("dangerous" as const) : ("docker" as const),
         osInfo: this.config.dangerous ? this.getOsInfo() : undefined,
       })) as ConnectResult;
 
@@ -173,7 +174,9 @@ class LocalSandboxClient {
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
       console.log(chalk.gray(`User ID: ${this.userId}`));
       console.log(chalk.gray(`Connection ID: ${this.connectionId}`));
-      console.log(chalk.gray(`Mode: ${this.config.dangerous ? "DANGEROUS" : "Docker"}`));
+      console.log(
+        chalk.gray(`Mode: ${this.config.dangerous ? "DANGEROUS" : "Docker"}`),
+      );
 
       // Start heartbeat
       this.startHeartbeat();
@@ -181,10 +184,13 @@ class LocalSandboxClient {
       // Start polling for commands
       this.startPolling();
     } catch (error: any) {
-      console.error(chalk.red("❌ Connection failed:"), error.message);
-      console.error(
-        chalk.yellow("Please regenerate your token in Settings"),
-      );
+      const errorMessage = error?.data?.message || error?.message || JSON.stringify(error);
+      console.error(chalk.red("❌ Connection failed:"), errorMessage);
+      if (errorMessage.includes("Invalid token") || errorMessage.includes("token")) {
+        console.error(chalk.yellow("Please regenerate your token in Settings"));
+      } else {
+        console.error(chalk.yellow("Error details:"), error);
+      }
       await this.cleanup();
       process.exit(1);
     }
@@ -196,10 +202,12 @@ class LocalSandboxClient {
       if (this.isShuttingDown || !this.connectionId) return;
 
       try {
-        
-        const data = (await this.convex.query(api.localSandbox.getPendingCommands, {
-          connectionId: this.connectionId,
-        })) as PendingCommandsResult;
+        const data = (await this.convex.query(
+          api.localSandbox.getPendingCommands,
+          {
+            connectionId: this.connectionId,
+          },
+        )) as PendingCommandsResult;
 
         if (data?.commands && data.commands.length > 0) {
           // Execute all pending commands
@@ -221,7 +229,7 @@ class LocalSandboxClient {
 
     try {
       // Mark as executing
-      
+
       await this.convex.mutation(api.localSandbox.markCommandExecuting, {
         commandId: command_id,
       });
@@ -268,7 +276,7 @@ class LocalSandboxClient {
       const duration = Date.now() - startTime;
 
       // Submit result
-      
+
       await this.convex.mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         userId: this.userId!,
@@ -282,7 +290,6 @@ class LocalSandboxClient {
     } catch (error: any) {
       const duration = Date.now() - startTime;
 
-      
       await this.convex.mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         userId: this.userId!,
@@ -300,10 +307,12 @@ class LocalSandboxClient {
     this.heartbeatInterval = setInterval(async () => {
       if (this.connectionId) {
         try {
-          
-          const result = (await this.convex.mutation(api.localSandbox.heartbeat, {
-            connectionId: this.connectionId,
-          })) as HeartbeatResult;
+          const result = (await this.convex.mutation(
+            api.localSandbox.heartbeat,
+            {
+              connectionId: this.connectionId,
+            },
+          )) as HeartbeatResult;
 
           if (!result.success) {
             console.log(
@@ -340,7 +349,6 @@ class LocalSandboxClient {
 
     if (this.connectionId) {
       try {
-        
         await this.convex.mutation(api.localSandbox.disconnect, {
           connectionId: this.connectionId,
         });
@@ -409,21 +417,23 @@ const config: Config = {
   convexUrl:
     getArg("--convex-url") ||
     process.env.NEXT_PUBLIC_CONVEX_URL ||
-    "https://bright-raven-265.convex.cloud", // Default to production
+    "",
   token: getArg("--token") || process.env.HACKERAI_TOKEN || "",
   name: getArg("--name") || os.hostname(),
   image: getArg("--image") || process.env.DOCKER_IMAGE || "ubuntu:latest",
   dangerous: hasFlag("--dangerous"),
 };
 
+if (!config.convexUrl) {
+  console.error(chalk.red("❌ No Convex URL found"));
+  console.error(chalk.yellow("Set NEXT_PUBLIC_CONVEX_URL in .env.local or use --convex-url"));
+  process.exit(1);
+}
+
 if (!config.token) {
   console.error(chalk.red("❌ No authentication token provided"));
-  console.error(
-    chalk.yellow("Usage: npx hackerai-local --token YOUR_TOKEN"),
-  );
-  console.error(
-    chalk.yellow("Or set HACKERAI_TOKEN environment variable"),
-  );
+  console.error(chalk.yellow("Usage: npx hackerai-local --token YOUR_TOKEN"));
+  console.error(chalk.yellow("Or set HACKERAI_TOKEN environment variable"));
   process.exit(1);
 }
 
