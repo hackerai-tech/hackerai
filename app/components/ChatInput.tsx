@@ -45,6 +45,7 @@ import {
   removeDraft,
 } from "@/lib/utils/client-storage";
 import { RateLimitWarning } from "./RateLimitWarning";
+import { SandboxSelector } from "./SandboxSelector";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 interface ChatInputProps {
@@ -98,6 +99,8 @@ export const ChatInput = ({
     removeQueuedMessage,
     queueBehavior,
     setQueueBehavior,
+    sandboxPreference,
+    setSandboxPreference,
   } = useGlobalState();
   const {
     fileInputRef,
@@ -315,7 +318,7 @@ export const ChatInput = ({
             <AttachmentButton onAttachClick={handleAttachClick} />
 
             {/* Mode selector */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -394,6 +397,15 @@ export const ChatInput = ({
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>
+
+              {/* Sandbox selector - only shown in Agent mode */}
+              {chatMode === "agent" && (
+                <SandboxSelector
+                  value={sandboxPreference}
+                  onChange={setSandboxPreference}
+                  disabled={status === "streaming"}
+                />
+              )}
             </div>
             <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
               {isGenerating && !hideStop ? (

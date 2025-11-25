@@ -109,3 +109,6 @@ export interface QueuedMessage {
 }
 
 export type QueueBehavior = "queue" | "stop-and-send";
+
+// Sandbox preference: "e2b" for cloud, or a connection ID for local sandbox
+export type SandboxPreference = "e2b" | string;
