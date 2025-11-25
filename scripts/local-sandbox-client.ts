@@ -237,8 +237,10 @@ class LocalSandboxClient {
       // Build command with env vars and cwd
       let fullCommand = command;
 
-      if (cwd) {
-        fullCommand = `cd ${cwd} && ${fullCommand}`;
+      // Only cd if cwd is explicitly provided and is not empty
+      if (cwd && cwd.trim() !== "") {
+        // Use -P to follow symlinks and || true to not fail if dir doesn't exist
+        fullCommand = `cd "${cwd}" 2>/dev/null && ${fullCommand}`;
       }
 
       if (env) {

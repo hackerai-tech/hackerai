@@ -103,7 +103,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         commandId,
         command,
         env: opts?.envVars,
-        cwd: opts?.cwd ?? "/home/user",
+        cwd: opts?.cwd,
         timeout,
       });
 
