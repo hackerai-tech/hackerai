@@ -62,10 +62,54 @@ export async function uploadSandboxFileToConvex(args: {
   const { sandbox, userId, fullPath } = args;
   const convex = getConvexClient();
 
+  const mediaType = DEFAULT_MEDIA_TYPE;
+  const name = fullPath.split("/").pop() || "file";
+
+  // For ConvexSandbox, always upload directly from sandbox to S3
+  // This avoids data corruption and size limits when piping through Convex commands
+  if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
+    if (!USE_S3_STORAGE) {
+      throw new Error(
+        "S3 storage is required for local sandbox file uploads. Set NEXT_PUBLIC_USE_S3_STORAGE=true",
+      );
+    }
+
+    const { uploadUrl, s3Key } = await generateS3UploadUrl(
+      name,
+      mediaType,
+      userId,
+    );
+
+    // Upload directly from sandbox to S3
+    await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
+
+    // Get file size via stat command (try Linux format first, then macOS)
+    const statResult = await sandbox.commands.run(
+      `stat -c%s "${fullPath}" 2>/dev/null || stat -f%z "${fullPath}"`,
+    );
+    const fileSize = parseInt(statResult.stdout.trim(), 10) || 0;
+
+    try {
+      const saved = await convex.action(api.fileActions.saveFile, {
+        s3Key,
+        name,
+        mediaType,
+        size: fileSize,
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        skipTokenValidation: args.skipTokenValidation,
+      });
+
+      return saved as UploadedFileInfo;
+    } catch (error) {
+      throw new Error(extractErrorMessage(error));
+    }
+  }
+
+  // E2B Sandbox: use downloadUrl to fetch file, then upload to storage
   let blob: Blob;
 
   if (isE2BSandbox(sandbox)) {
-    // E2B Sandbox: use downloadUrl
     const downloadUrl = await sandbox.downloadUrl(fullPath, {
       useSignatureExpiration: 30_000, // 30 seconds
     });
@@ -79,12 +123,9 @@ export async function uploadSandboxFileToConvex(args: {
 
     blob = await fileRes.blob();
   } else {
-    // ConvexSandbox: use files.read
-    const content = await sandbox.files.read(fullPath);
-    blob = new Blob([content], { type: DEFAULT_MEDIA_TYPE });
+    // Fallback for unknown sandbox types
+    throw new Error("Unsupported sandbox type for file upload");
   }
-  const mediaType = DEFAULT_MEDIA_TYPE;
-  const name = fullPath.split("/").pop() || "file";
 
   if (USE_S3_STORAGE) {
     // S3 upload path

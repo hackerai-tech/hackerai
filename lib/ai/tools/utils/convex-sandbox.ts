@@ -157,17 +157,52 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
   }
 
   // E2B-compatible interface: files operations
+  // Max chunk size ~500KB base64 to stay under Convex's 1MB limit
+  private static readonly MAX_CHUNK_SIZE = 500 * 1024;
+
   files = {
-    write: async (path: string, content: string | Buffer): Promise<void> => {
-      const contentStr =
-        typeof content === "string" ? content : content.toString("base64");
+    write: async (
+      path: string,
+      content: string | Buffer | ArrayBuffer,
+    ): Promise<void> => {
+      let contentStr: string;
+      let isBinary = false;
 
-      const command =
-        typeof content === "string"
-          ? `cat > ${path} <<'HACKERAI_EOF'\n${contentStr}\nHACKERAI_EOF`
-          : `echo "${contentStr}" | base64 -d > ${path}`;
+      if (typeof content === "string") {
+        contentStr = content;
+      } else if (content instanceof ArrayBuffer) {
+        contentStr = Buffer.from(content).toString("base64");
+        isBinary = true;
+      } else {
+        contentStr = content.toString("base64");
+        isBinary = true;
+      }
 
-      await this.commands.run(command);
+      if (isBinary && contentStr.length > ConvexSandbox.MAX_CHUNK_SIZE) {
+        // Chunk large binary files to stay under Convex size limits
+        const chunks: string[] = [];
+        for (
+          let i = 0;
+          i < contentStr.length;
+          i += ConvexSandbox.MAX_CHUNK_SIZE
+        ) {
+          chunks.push(contentStr.slice(i, i + ConvexSandbox.MAX_CHUNK_SIZE));
+        }
+
+        // First chunk creates the file, subsequent chunks append
+        for (let i = 0; i < chunks.length; i++) {
+          const operator = i === 0 ? ">" : ">>";
+          await this.commands.run(
+            `echo "${chunks[i]}" | base64 -d ${operator} ${path}`,
+          );
+        }
+      } else {
+        const command = isBinary
+          ? `echo "${contentStr}" | base64 -d > ${path}`
+          : `cat > ${path} <<'HACKERAI_EOF'\n${contentStr}\nHACKERAI_EOF`;
+
+        await this.commands.run(command);
+      }
     },
 
     read: async (path: string): Promise<string> => {
@@ -192,6 +227,37 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         .split("\n")
         .filter(Boolean)
         .map((name) => ({ name }));
+    },
+
+    downloadFromUrl: async (url: string, path: string): Promise<void> => {
+      // Ensure parent directory exists
+      const dir = path.substring(0, path.lastIndexOf("/"));
+      if (dir) {
+        await this.commands.run(`mkdir -p "${dir}"`);
+      }
+      // Download file directly from URL using curl
+      const result = await this.commands.run(
+        `curl -fsSL -o "${path}" "${url}"`,
+      );
+      if (result.exitCode !== 0) {
+        throw new Error(`Failed to download file: ${result.stderr}`);
+      }
+    },
+
+    uploadToUrl: async (
+      path: string,
+      uploadUrl: string,
+      contentType: string,
+    ): Promise<void> => {
+      // Upload file directly to presigned URL using curl
+      // Use --data-binary to preserve binary data exactly
+      const result = await this.commands.run(
+        `curl -fsSL -X PUT -H "Content-Type: ${contentType}" --data-binary @"${path}" "${uploadUrl}"`,
+        { timeoutMs: 120000 }, // 2 minutes for large files
+      );
+      if (result.exitCode !== 0) {
+        throw new Error(`Failed to upload file: ${result.stderr}`);
+      }
     },
   };
 
