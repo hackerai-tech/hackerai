@@ -95,7 +95,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       const timeout = opts?.timeoutMs ?? 30000;
 
       // Enqueue command in Convex
-      // @ts-expect-error - Types generated after npx convex dev
+      
       await this.convex.mutation(api.localSandbox.enqueueCommand, {
         serviceKey: this.serviceKey,
         userId: this.userId,
@@ -135,7 +135,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
     while (Date.now() - startTime < maxWaitTime) {
-      // @ts-expect-error - Types generated after npx convex dev
+      
       const result = await this.convex.query(api.localSandbox.getResult, {
         serviceKey: this.serviceKey,
         commandId,
@@ -209,7 +209,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
    * Check if sandbox is still connected
    */
   async isConnected(): Promise<boolean> {
-    // @ts-expect-error - Types generated after npx convex dev
+    
     const status = await this.convex.query(api.localSandbox.isConnected, {
       connectionId: this.connectionInfo.connectionId,
     });

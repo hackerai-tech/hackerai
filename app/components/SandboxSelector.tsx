@@ -42,7 +42,7 @@ export function SandboxSelector({
   disabled = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
-  // @ts-expect-error - Types generated after npx convex dev
+  
   const connections = useQuery(api.localSandbox.listConnections);
 
   const options: ConnectionOption[] = [

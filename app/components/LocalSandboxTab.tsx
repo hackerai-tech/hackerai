@@ -33,11 +33,11 @@ interface LocalConnection {
 export function LocalSandboxTab() {
   const [showToken, setShowToken] = useState(false);
 
-  // @ts-expect-error - Types generated after npx convex dev
+  
   const connections = useQuery(api.localSandbox.listConnections);
-  // @ts-expect-error - Types generated after npx convex dev
+  
   const tokenResult = useMutation(api.localSandbox.getToken);
-  // @ts-expect-error - Types generated after npx convex dev
+  
   const regenerateToken = useMutation(api.localSandbox.regenerateToken);
 
   const [token, setToken] = useState<string | null>(null);

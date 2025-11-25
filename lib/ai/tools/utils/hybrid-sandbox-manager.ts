@@ -97,7 +97,7 @@ export class HybridSandboxManager implements SandboxManager {
   async listConnections(): Promise<ConnectionInfo[]> {
     try {
       const connections = await this.convex.query(
-        // @ts-expect-error - Types generated after npx convex dev
+        
         api.localSandbox.listConnectionsForBackend,
         {
           serviceKey: this.serviceKey,

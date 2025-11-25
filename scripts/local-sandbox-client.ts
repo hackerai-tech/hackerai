@@ -13,6 +13,7 @@
  */
 
 import { ConvexHttpClient } from "convex/browser";
+import { api } from "../convex/_generated/api";
 import { exec } from "child_process";
 import { promisify } from "util";
 import os from "os";
@@ -151,22 +152,15 @@ class LocalSandboxClient {
     console.log(chalk.blue("Connecting to Convex..."));
 
     try {
-      // Build the function reference dynamically
-      const connectFn = {
-        _functionName: "localSandbox:connect" as const,
-      };
-
-      const result = (await this.convex.mutation(
-        connectFn as any,
-        {
-          token: this.config.token,
-          connectionName: this.config.name,
-          containerId: this.containerId,
-          clientVersion: "1.0.0",
-          mode: this.config.dangerous ? "dangerous" : "docker",
-          osInfo: this.config.dangerous ? this.getOsInfo() : undefined,
-        },
-      )) as ConnectResult;
+      
+      const result = (await this.convex.mutation(api.localSandbox.connect, {
+        token: this.config.token,
+        connectionName: this.config.name,
+        containerId: this.containerId,
+        clientVersion: "1.0.0",
+        mode: this.config.dangerous ? "dangerous" : "docker",
+        osInfo: this.config.dangerous ? this.getOsInfo() : undefined,
+      })) as ConnectResult;
 
       if (!result.success) {
         throw new Error(result.error || "Authentication failed");
@@ -202,14 +196,10 @@ class LocalSandboxClient {
       if (this.isShuttingDown || !this.connectionId) return;
 
       try {
-        const getPendingFn = {
-          _functionName: "localSandbox:getPendingCommands" as const,
-        };
-
-        const data = (await this.convex.query(
-          getPendingFn as any,
-          { connectionId: this.connectionId },
-        )) as PendingCommandsResult;
+        
+        const data = (await this.convex.query(api.localSandbox.getPendingCommands, {
+          connectionId: this.connectionId,
+        })) as PendingCommandsResult;
 
         if (data?.commands && data.commands.length > 0) {
           // Execute all pending commands
@@ -231,11 +221,8 @@ class LocalSandboxClient {
 
     try {
       // Mark as executing
-      const markExecutingFn = {
-        _functionName: "localSandbox:markCommandExecuting" as const,
-      };
-
-      await this.convex.mutation(markExecutingFn as any, {
+      
+      await this.convex.mutation(api.localSandbox.markCommandExecuting, {
         commandId: command_id,
       });
 
@@ -281,11 +268,8 @@ class LocalSandboxClient {
       const duration = Date.now() - startTime;
 
       // Submit result
-      const submitResultFn = {
-        _functionName: "localSandbox:submitResult" as const,
-      };
-
-      await this.convex.mutation(submitResultFn as any, {
+      
+      await this.convex.mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         userId: this.userId!,
         stdout: result.stdout || "",
@@ -298,11 +282,8 @@ class LocalSandboxClient {
     } catch (error: any) {
       const duration = Date.now() - startTime;
 
-      const submitResultFn = {
-        _functionName: "localSandbox:submitResult" as const,
-      };
-
-      await this.convex.mutation(submitResultFn as any, {
+      
+      await this.convex.mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         userId: this.userId!,
         stdout: "",
@@ -319,14 +300,10 @@ class LocalSandboxClient {
     this.heartbeatInterval = setInterval(async () => {
       if (this.connectionId) {
         try {
-          const heartbeatFn = {
-            _functionName: "localSandbox:heartbeat" as const,
-          };
-
-          const result = (await this.convex.mutation(
-            heartbeatFn as any,
-            { connectionId: this.connectionId },
-          )) as HeartbeatResult;
+          
+          const result = (await this.convex.mutation(api.localSandbox.heartbeat, {
+            connectionId: this.connectionId,
+          })) as HeartbeatResult;
 
           if (!result.success) {
             console.log(
@@ -363,11 +340,8 @@ class LocalSandboxClient {
 
     if (this.connectionId) {
       try {
-        const disconnectFn = {
-          _functionName: "localSandbox:disconnect" as const,
-        };
-
-        await this.convex.mutation(disconnectFn as any, {
+        
+        await this.convex.mutation(api.localSandbox.disconnect, {
           connectionId: this.connectionId,
         });
         console.log(chalk.green("✓ Disconnected from Convex"));
