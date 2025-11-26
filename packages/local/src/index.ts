@@ -13,11 +13,22 @@
  */
 
 import { ConvexHttpClient } from "convex/browser";
-import { exec } from "child_process";
+import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import os from "os";
 
 const execAsync = promisify(exec);
+
+function runWithOutput(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args, { stdio: "inherit" });
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Process exited with code ${code}`));
+    });
+    proc.on("error", reject);
+  });
+}
 
 // Production Convex URL - hardcoded for the published package
 const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
@@ -145,12 +156,11 @@ class LocalSandboxClient {
     } else if (isDefaultImage) {
       console.log(chalk.blue(`Pulling pre-built image: ${image}`));
       console.log(
-        chalk.gray("(First run may take a few minutes to download image)"),
+        chalk.gray("(First run may take a few minutes to download the image)"),
       );
+      console.log("");
       try {
-        await execAsync(`docker pull ${image}`, {
-          timeout: 10 * 60 * 1000,
-        });
+        await runWithOutput("docker", ["pull", image]);
         console.log(chalk.green("✓ Image ready"));
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
