@@ -40,7 +40,8 @@ const convexUrlFlag =
 interface LocalConnection {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous";
+  mode: "docker" | "dangerous" | "custom";
+  imageName?: string;
   containerId?: string;
   osInfo?: {
     platform: string;

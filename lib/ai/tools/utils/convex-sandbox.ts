@@ -18,7 +18,8 @@ interface OsInfo {
 interface ConnectionInfo {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous";
+  mode: "docker" | "dangerous" | "custom";
+  imageName?: string;
   osInfo?: OsInfo;
   containerId?: string;
 }
@@ -43,28 +44,49 @@ export class ConvexSandbox extends EventEmitter {
   }
 
   /**
-   * Get OS context for AI when in dangerous mode
+   * Get sandbox context for AI based on mode
    */
-  getOsContext(): string | null {
-    if (this.connectionInfo.mode !== "dangerous" || !this.connectionInfo.osInfo) {
-      return null;
-    }
+  getSandboxContext(): string | null {
+    const { mode, osInfo, imageName } = this.connectionInfo;
 
-    const { platform, arch, release, hostname } = this.connectionInfo.osInfo;
-    const platformName =
-      platform === "darwin"
-        ? "macOS"
-        : platform === "win32"
-          ? "Windows"
-          : platform === "linux"
-            ? "Linux"
-            : platform;
+    if (mode === "dangerous" && osInfo) {
+      const { platform, arch, release, hostname } = osInfo;
+      const platformName =
+        platform === "darwin"
+          ? "macOS"
+          : platform === "win32"
+            ? "Windows"
+            : platform === "linux"
+              ? "Linux"
+              : platform;
 
-    return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
+      return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
 - Process management (can affect host system)`;
+    }
+
+    if (mode === "custom" && imageName) {
+      return `You are executing commands in a custom Docker container using image "${imageName}".
+This is a user-provided image - available tools and environment may vary.
+Commands run inside the Docker container with network access.`;
+    }
+
+    if (mode === "docker") {
+      return `You are executing commands in the HackerAI sandbox Docker container.
+This container includes common pentesting tools like nmap, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, httpx, and more.
+Commands run inside the Docker container with network access.`;
+    }
+
+    return null;
+  }
+
+  /**
+   * Get OS context for AI when in dangerous mode (alias for backwards compatibility)
+   */
+  getOsContext(): string | null {
+    return this.getSandboxContext();
   }
 
   /**

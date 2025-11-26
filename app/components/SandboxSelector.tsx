@@ -21,7 +21,8 @@ interface SandboxSelectorProps {
 interface LocalConnection {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous";
+  mode: "docker" | "dangerous" | "custom";
+  imageName?: string;
   containerId?: string;
   osInfo?: {
     platform: string;
@@ -34,7 +35,7 @@ interface ConnectionOption {
   description: string;
   icon: typeof Cloud;
   warning: string | null;
-  mode?: "docker" | "dangerous";
+  mode?: "docker" | "dangerous" | "custom";
 }
 
 export function SandboxSelector({
@@ -62,7 +63,9 @@ export function SandboxSelector({
       description:
         conn.mode === "dangerous"
           ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
-          : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
+          : conn.mode === "custom"
+            ? `Custom: ${conn.imageName || "unknown"}`
+            : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
       warning:
         conn.mode === "dangerous" ? "Direct OS access - no isolation" : null,
       mode: conn.mode,

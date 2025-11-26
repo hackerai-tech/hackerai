@@ -135,7 +135,7 @@ It's very important that you keep the summary short, non-repetitive, and high-si
 Don't add headings like "Summary:" or "Update:".
 </summary_spec>`;
 
-const getSandboxEnvironmentSection = (): string => `<sandbox_environment>
+const getDefaultSandboxEnvironmentSection = (): string => `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
 
 System Environment:
@@ -237,6 +237,7 @@ export const systemPrompt = async (
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
   finishReason?: string,
+  sandboxContext?: string | null,
 ): Promise<string> => {
   // Only get memories if the user has memory entries enabled
   const shouldIncludeMemories =
@@ -279,7 +280,7 @@ The current date is ${currentDateTime}.`;
     sections.push(getInlineLineNumbersSection());
     sections.push(getTaskManagementSection());
     sections.push(getSummarySection());
-    sections.push(getSandboxEnvironmentSection());
+    sections.push(sandboxContext || getDefaultSandboxEnvironmentSection());
     sections.push(getFinalInstructionsSection());
   }
 

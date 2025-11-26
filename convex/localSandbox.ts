@@ -133,7 +133,8 @@ export const connect = mutation({
     connectionName: v.string(),
     containerId: v.optional(v.string()),
     clientVersion: v.string(),
-    mode: v.union(v.literal("docker"), v.literal("dangerous")),
+    mode: v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
+    imageName: v.optional(v.string()),
     osInfo: v.optional(
       v.object({
         platform: v.string(),
@@ -171,6 +172,7 @@ export const connect = mutation({
       container_id: args.containerId,
       client_version: args.clientVersion,
       mode: args.mode,
+      image_name: args.imageName,
       os_info: args.osInfo,
       last_heartbeat: Date.now(),
       status: "connected",
@@ -240,7 +242,8 @@ export const listConnections = query({
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous")),
+      mode: v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
+      imageName: v.optional(v.string()),
       osInfo: v.optional(
         v.object({
           platform: v.string(),
@@ -278,6 +281,7 @@ export const listConnections = query({
         connectionId: conn.connection_id,
         name: conn.connection_name,
         mode: conn.mode,
+        imageName: conn.image_name,
         osInfo: conn.os_info,
         containerId: conn.container_id,
         lastSeen: conn.last_heartbeat,
@@ -294,7 +298,8 @@ export const listConnectionsForBackend = query({
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous")),
+      mode: v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
+      imageName: v.optional(v.string()),
       osInfo: v.optional(
         v.object({
           platform: v.string(),
@@ -327,6 +332,7 @@ export const listConnectionsForBackend = query({
         connectionId: conn.connection_id,
         name: conn.connection_name,
         mode: conn.mode,
+        imageName: conn.image_name,
         osInfo: conn.os_info,
         containerId: conn.container_id,
         lastSeen: conn.last_heartbeat,
@@ -341,7 +347,8 @@ export const isConnected = query({
   returns: v.object({
     connected: v.boolean(),
     containerId: v.optional(v.string()),
-    mode: v.optional(v.union(v.literal("docker"), v.literal("dangerous"))),
+    mode: v.optional(v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom"))),
+    imageName: v.optional(v.string()),
     osInfo: v.optional(
       v.object({
         platform: v.string(),
@@ -373,6 +380,7 @@ export const isConnected = query({
       connected: true,
       containerId: connection.container_id,
       mode: connection.mode,
+      imageName: connection.image_name,
       osInfo: connection.os_info,
     };
   },

@@ -186,6 +186,27 @@ class LocalSandboxClient {
     };
   }
 
+  private getMode(): "docker" | "dangerous" | "custom" {
+    if (this.config.dangerous) {
+      return "dangerous";
+    }
+    if (this.config.image !== DEFAULT_IMAGE) {
+      return "custom";
+    }
+    return "docker";
+  }
+
+  private getModeDisplay(): string {
+    const mode = this.getMode();
+    if (mode === "dangerous") {
+      return "DANGEROUS";
+    }
+    if (mode === "custom") {
+      return `Custom (${this.config.image})`;
+    }
+    return "Docker";
+  }
+
   private async connect(): Promise<void> {
     console.log(chalk.blue("Connecting to HackerAI..."));
 
@@ -198,7 +219,8 @@ class LocalSandboxClient {
           connectionName: this.config.name,
           containerId: this.containerId,
           clientVersion: "1.0.0",
-          mode: this.config.dangerous ? "dangerous" : "docker",
+          mode: this.getMode(),
+          imageName: this.config.dangerous ? undefined : this.config.image,
           osInfo: this.config.dangerous ? this.getOsInfo() : undefined,
         },
       )) as ConnectResult;
@@ -214,7 +236,7 @@ class LocalSandboxClient {
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
       console.log(chalk.gray(`Connection: ${this.connectionId}`));
       console.log(
-        chalk.gray(`Mode: ${this.config.dangerous ? "DANGEROUS" : "Docker"}`),
+        chalk.gray(`Mode: ${this.getModeDisplay()}`),
       );
 
       this.startHeartbeat();

@@ -12,7 +12,8 @@ export type SandboxPreference = "e2b" | string; // "e2b" or connectionId
 interface ConnectionInfo {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous";
+  mode: "docker" | "dangerous" | "custom";
+  imageName?: string;
   osInfo?: {
     platform: string;
     arch: string;
@@ -219,5 +220,99 @@ export class HybridSandboxManager implements SandboxManager {
    */
   getCurrentConnectionId(): string | null {
     return this.currentConnectionId;
+  }
+
+  /**
+   * Get expected sandbox context for the system prompt based on preference
+   * without initializing the sandbox. Returns null for E2B (uses default prompt).
+   */
+  async getSandboxContextForPrompt(): Promise<string | null> {
+    if (this.sandboxPreference === "e2b") {
+      return null;
+    }
+
+    const connections = await this.listConnections();
+    const preferredConnection = connections.find(
+      (conn) => conn.connectionId === this.sandboxPreference,
+    );
+
+    const connection = preferredConnection || connections[0];
+    if (!connection) {
+      return null;
+    }
+
+    return this.buildSandboxContext(connection);
+  }
+
+  private buildSandboxContext(connection: ConnectionInfo): string | null {
+    const { mode, osInfo, imageName } = connection;
+
+    if (mode === "dangerous" && osInfo) {
+      const { platform, arch, release, hostname } = osInfo;
+      const platformName =
+        platform === "darwin"
+          ? "macOS"
+          : platform === "win32"
+            ? "Windows"
+            : platform === "linux"
+              ? "Linux"
+              : platform;
+
+      return `<sandbox_environment>
+IMPORTANT: You are connected to a LOCAL machine in DANGEROUS MODE. Commands run directly on the host OS without Docker isolation.
+
+System Environment:
+- OS: ${platformName} ${release} (${arch})
+- Hostname: ${hostname}
+- Mode: DANGEROUS (no Docker isolation)
+
+Security Warning:
+- File system operations affect the host directly
+- Network operations use the host network
+- Process management can affect the host system
+- Be careful with destructive commands
+
+Available tools depend on what's installed on the host system.
+</sandbox_environment>`;
+    }
+
+    if (mode === "custom" && imageName) {
+      return `<sandbox_environment>
+IMPORTANT: You are connected to a LOCAL machine running a custom Docker container.
+
+Container Environment:
+- Image: ${imageName}
+- Mode: Custom Docker container
+- Network: Host network (--network host)
+
+Note: Available tools and environment depend on the custom image. This is a user-provided image - available commands may vary from the standard HackerAI sandbox.
+</sandbox_environment>`;
+    }
+
+    if (mode === "docker") {
+      return `<sandbox_environment>
+IMPORTANT: You are connected to a LOCAL machine running the HackerAI Docker sandbox.
+
+Container Environment:
+- Image: hackeraidev/sandbox (pre-built pentesting tools)
+- Mode: Docker container
+- Network: Host network (--network host)
+
+Pre-installed Pentesting Tools:
+- Network Scanning: nmap, naabu, httpx, hping3
+- Subdomain/DNS: subfinder, dnsrecon
+- Web Fuzzing: ffuf, dirsearch, arjun
+- Web Scanners: nikto, whatweb, wpscan, wapiti, wafw00f
+- XSS/Injection: xsser, commix, sqlmap
+- SSL/TLS Testing: testssl
+- Auth/Bruteforce: hydra
+- SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket
+- SNMP/Discovery: arp-scan, ike-scan, onesixtyone, snmpcheck
+- Web Recon: gospider, subjack
+- Utilities: gobuster, socat, proxychains4, nuclei, SecLists
+</sandbox_environment>`;
+    }
+
+    return null;
   }
 }

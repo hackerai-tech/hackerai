@@ -205,6 +205,7 @@ export const createChatHandler = () => {
             ensureSandbox,
             getTodoManager,
             getFileAccumulator,
+            sandboxManager,
           } = createTools(
             userId,
             writer,
@@ -218,6 +219,16 @@ export const createChatHandler = () => {
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
           );
+
+          // Get sandbox context for system prompt (only for local sandboxes)
+          const sandboxContext =
+            mode === "agent" && "getSandboxContextForPrompt" in sandboxManager
+              ? await (
+                  sandboxManager as {
+                    getSandboxContextForPrompt: () => Promise<string | null>;
+                  }
+                ).getSandboxContextForPrompt()
+              : null;
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
@@ -250,6 +261,7 @@ export const createChatHandler = () => {
             userCustomization,
             temporary,
             chat?.finish_reason,
+            sandboxContext,
           );
 
           let streamFinishReason: string | undefined;
@@ -327,6 +339,7 @@ export const createChatHandler = () => {
                   userCustomization,
                   temporary,
                   chat?.finish_reason,
+                  sandboxContext,
                 );
 
                 return {
