@@ -292,7 +292,7 @@ const AgentsTab = () => {
                 className="w-full sm:w-auto"
               >
                 <Terminal className="h-3.5 w-3.5 mr-2" />
-                {isLoadingToken ? "Loading..." : "Get Token"}
+                {isLoadingToken ? "Loading..." : "Generate Token"}
               </Button>
             ) : (
               <div className="flex gap-2">

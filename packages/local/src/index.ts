@@ -485,7 +485,7 @@ if (!config.token) {
   console.error(chalk.red("❌ No authentication token provided"));
   console.error(chalk.yellow("Usage: npx @hackerai/local --token YOUR_TOKEN"));
   console.error(
-    chalk.yellow("Get your token from HackerAI Settings > Local Sandbox"),
+    chalk.yellow("Get your token from HackerAI Settings > Agents"),
   );
   process.exit(1);
 }

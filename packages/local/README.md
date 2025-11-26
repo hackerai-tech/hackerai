@@ -54,7 +54,7 @@ npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
 ## Getting Your Token
 
 1. Go to [HackerAI Settings](https://hackerai.com/settings)
-2. Navigate to the "Local Sandbox" tab
+2. Navigate to the "Agents" tab
 3. Click "Generate Token" or copy your existing token
 
 ## Security
