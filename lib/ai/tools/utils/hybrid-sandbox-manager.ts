@@ -84,10 +84,7 @@ export class HybridSandboxManager implements SandboxManager {
   setSandboxPreference(preference: SandboxPreference): void {
     this.sandboxPreference = preference;
     // Force re-evaluation on next getSandbox call
-    if (
-      preference !== "e2b" &&
-      this.currentConnectionId !== preference
-    ) {
+    if (preference !== "e2b" && this.currentConnectionId !== preference) {
       this.sandbox = null;
     }
   }
@@ -98,7 +95,6 @@ export class HybridSandboxManager implements SandboxManager {
   async listConnections(): Promise<ConnectionInfo[]> {
     try {
       const connections = await this.convex.query(
-        
         api.localSandbox.listConnectionsForBackend,
         {
           serviceKey: this.serviceKey,

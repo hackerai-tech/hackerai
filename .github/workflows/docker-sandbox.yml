@@ -5,13 +5,13 @@ on:
     branches:
       - main
     paths:
-      - 'docker/**'
+      - "docker/**"
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Image tag (default: latest)'
+        description: "Image tag (default: latest)"
         required: false
-        default: 'latest'
+        default: "latest"
 
 env:
   REGISTRY: ghcr.io

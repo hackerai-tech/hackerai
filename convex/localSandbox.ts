@@ -133,7 +133,11 @@ export const connect = mutation({
     connectionName: v.string(),
     containerId: v.optional(v.string()),
     clientVersion: v.string(),
-    mode: v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
+    mode: v.union(
+      v.literal("docker"),
+      v.literal("dangerous"),
+      v.literal("custom"),
+    ),
     imageName: v.optional(v.string()),
     osInfo: v.optional(
       v.object({
@@ -242,7 +246,11 @@ export const listConnections = query({
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
+      mode: v.union(
+        v.literal("docker"),
+        v.literal("dangerous"),
+        v.literal("custom"),
+      ),
       imageName: v.optional(v.string()),
       osInfo: v.optional(
         v.object({
@@ -298,7 +306,11 @@ export const listConnectionsForBackend = query({
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
+      mode: v.union(
+        v.literal("docker"),
+        v.literal("dangerous"),
+        v.literal("custom"),
+      ),
       imageName: v.optional(v.string()),
       osInfo: v.optional(
         v.object({
@@ -347,7 +359,9 @@ export const isConnected = query({
   returns: v.object({
     connected: v.boolean(),
     containerId: v.optional(v.string()),
-    mode: v.optional(v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom"))),
+    mode: v.optional(
+      v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
+    ),
     imageName: v.optional(v.string()),
     osInfo: v.optional(
       v.object({

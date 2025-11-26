@@ -117,7 +117,7 @@ Commands run inside the Docker container with network access.`;
       const timeout = opts?.timeoutMs ?? 30000;
 
       // Enqueue command in Convex
-      
+
       await this.convex.mutation(api.localSandbox.enqueueCommand, {
         serviceKey: this.serviceKey,
         userId: this.userId,
@@ -157,7 +157,6 @@ Commands run inside the Docker container with network access.`;
     const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
     while (Date.now() - startTime < maxWaitTime) {
-      
       const result = await this.convex.query(api.localSandbox.getResult, {
         serviceKey: this.serviceKey,
         commandId,
@@ -297,7 +296,6 @@ Commands run inside the Docker container with network access.`;
    * Check if sandbox is still connected
    */
   async isConnected(): Promise<boolean> {
-    
     const status = await this.convex.query(api.localSandbox.isConnected, {
       connectionId: this.connectionInfo.connectionId,
     });

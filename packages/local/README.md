@@ -42,14 +42,14 @@ npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
 
 ## Options
 
-| Option | Description |
-|--------|-------------|
-| `--token TOKEN` | Authentication token from HackerAI Settings (required) |
-| `--name NAME` | Connection name shown in HackerAI (default: hostname) |
-| `--image IMAGE` | Docker image to use (default: hackeraidev/sandbox) |
-| `--dangerous` | Run commands directly on host OS without Docker |
-| `--convex-url URL` | Override backend URL (for development) |
-| `--help, -h` | Show help message |
+| Option             | Description                                            |
+| ------------------ | ------------------------------------------------------ |
+| `--token TOKEN`    | Authentication token from HackerAI Settings (required) |
+| `--name NAME`      | Connection name shown in HackerAI (default: hostname)  |
+| `--image IMAGE`    | Docker image to use (default: hackeraidev/sandbox)     |
+| `--dangerous`      | Run commands directly on host OS without Docker        |
+| `--convex-url URL` | Override backend URL (for development)                 |
+| `--help, -h`       | Show help message                                      |
 
 ## Getting Your Token
 

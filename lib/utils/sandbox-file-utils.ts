@@ -89,7 +89,9 @@ const downloadFileToSandbox = async (
   if (dir) {
     await sandbox.commands.run(`mkdir -p "${dir}"`);
   }
-  const result = await sandbox.commands.run(`curl -fsSL -o "${localPath}" "${url}"`);
+  const result = await sandbox.commands.run(
+    `curl -fsSL -o "${localPath}" "${url}"`,
+  );
   if (result.exitCode !== 0) {
     throw new Error(`Failed to download file: ${result.stderr}`);
   }
@@ -114,7 +116,9 @@ export const uploadSandboxFiles = async (
     await Promise.all(
       sandboxFiles
         .filter((file) => file.url && file.localPath)
-        .map((file) => downloadFileToSandbox(sandbox, file.url, file.localPath)),
+        .map((file) =>
+          downloadFileToSandbox(sandbox, file.url, file.localPath),
+        ),
     );
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);

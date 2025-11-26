@@ -58,9 +58,16 @@ interface CommandBlockProps {
   warning?: boolean;
 }
 
-const CommandBlock = ({ label, command, onCopy, warning }: CommandBlockProps) => (
+const CommandBlock = ({
+  label,
+  command,
+  onCopy,
+  warning,
+}: CommandBlockProps) => (
   <div className="space-y-1.5">
-    <div className={`text-xs font-medium flex items-center gap-1.5 ${warning ? "text-yellow-700 dark:text-yellow-400" : ""}`}>
+    <div
+      className={`text-xs font-medium flex items-center gap-1.5 ${warning ? "text-yellow-700 dark:text-yellow-400" : ""}`}
+    >
       {label}
       {warning && <AlertTriangle className="h-3 w-3" />}
     </div>
