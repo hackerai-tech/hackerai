@@ -53,3 +53,4 @@ next-env.d.ts
 # Playwright auth states
 .auth/
 CLAUDE.md
+packages/local/node_modules/

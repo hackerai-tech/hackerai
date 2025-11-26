@@ -1,0 +1,42 @@
+{
+  "name": "@hackerai/local",
+  "version": "0.1.0",
+  "description": "HackerAI Local Sandbox Client - Execute commands on your local machine",
+  "bin": {
+    "hackerai-local": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "hackerai",
+    "sandbox",
+    "pentesting",
+    "security",
+    "cli"
+  ],
+  "author": "HackerAI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hackerai-tech/hackerai.git",
+    "directory": "packages/local"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "convex": "^1.29.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
