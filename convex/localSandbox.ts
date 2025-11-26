@@ -199,6 +199,10 @@ export const heartbeat = mutation({
       return { success: false, error: "No connection found" };
     }
 
+    if (connection.status === "disconnected") {
+      return { success: false, error: "Connection was terminated" };
+    }
+
     await ctx.db.patch(connection._id, {
       last_heartbeat: Date.now(),
     });

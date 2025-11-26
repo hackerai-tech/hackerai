@@ -357,7 +357,7 @@ class LocalSandboxClient {
 
   private startHeartbeat(): void {
     this.heartbeatInterval = setInterval(async () => {
-      if (this.connectionId) {
+      if (this.connectionId && !this.isShuttingDown) {
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const result = (await (this.convex as any).mutation(
@@ -369,11 +369,14 @@ class LocalSandboxClient {
 
           if (!result.success) {
             console.log(
-              chalk.yellow("⚠️  Heartbeat failed, connection may be stale"),
+              chalk.red("\n❌ Connection invalidated (token may have been regenerated)"),
             );
+            console.log(chalk.yellow("Shutting down..."));
+            await this.cleanup();
+            process.exit(1);
           }
         } catch {
-          // Ignore heartbeat errors
+          // Ignore transient heartbeat errors
         }
       }
     }, 10000);
