@@ -14,7 +14,7 @@
  */
 
 // Default pre-built image with all pentesting tools
-const DEFAULT_IMAGE = "ghcr.io/hackerai-tech/hackerai-sandbox:latest";
+const DEFAULT_IMAGE = "hackeraidev/sandbox";
 
 import { config as dotenvConfig } from "dotenv";
 import { ConvexHttpClient } from "convex/browser";
