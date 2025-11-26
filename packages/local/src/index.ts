@@ -264,6 +264,7 @@ class LocalSandboxClient {
         const data = (await (this.convex as any).query(
           api.localSandbox.getPendingCommands,
           {
+            token: this.config.token,
             connectionId: this.connectionId,
           },
         )) as PendingCommandsResult;
@@ -290,6 +291,7 @@ class LocalSandboxClient {
       await (this.convex as any).mutation(
         api.localSandbox.markCommandExecuting,
         {
+          token: this.config.token,
           commandId: command_id,
         },
       );
@@ -349,7 +351,7 @@ class LocalSandboxClient {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (this.convex as any).mutation(api.localSandbox.submitResult, {
         commandId: command_id,
-        userId: this.userId!,
+        token: this.config.token,
         stdout: result.stdout || "",
         stderr: result.stderr || "",
         exitCode: result.code || 0,
@@ -364,7 +366,7 @@ class LocalSandboxClient {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (this.convex as any).mutation(api.localSandbox.submitResult, {
         commandId: command_id,
-        userId: this.userId!,
+        token: this.config.token,
         stdout: "",
         stderr: message,
         exitCode: 1,
@@ -383,6 +385,7 @@ class LocalSandboxClient {
           const result = (await (this.convex as any).mutation(
             api.localSandbox.heartbeat,
             {
+              token: this.config.token,
               connectionId: this.connectionId,
             },
           )) as HeartbeatResult;
@@ -429,6 +432,7 @@ class LocalSandboxClient {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (this.convex as any).mutation(api.localSandbox.disconnect, {
+          token: this.config.token,
           connectionId: this.connectionId,
         });
         console.log(chalk.green("✓ Disconnected"));

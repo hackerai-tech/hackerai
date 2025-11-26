@@ -60,7 +60,7 @@ ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
 
 # ============================================================================
-# Python 3.12
+# Python 3.11 (Debian Bookworm default)
 # ============================================================================
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \

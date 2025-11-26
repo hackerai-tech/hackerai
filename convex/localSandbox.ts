@@ -12,6 +12,24 @@ function generateToken(): string {
   return `hsb_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+import { DatabaseReader } from "./_generated/server";
+
+async function validateToken(
+  db: DatabaseReader,
+  token: string,
+): Promise<{ valid: false } | { valid: true; userId: string }> {
+  const tokenRecord = await db
+    .query("local_sandbox_tokens")
+    .withIndex("by_token", (q) => q.eq("token", token))
+    .first();
+
+  if (!tokenRecord) {
+    return { valid: false };
+  }
+
+  return { valid: true, userId: tokenRecord.user_id };
+}
+
 export const getToken = mutation({
   args: {},
   returns: v.object({
@@ -189,13 +207,19 @@ export const connect = mutation({
 
 export const heartbeat = mutation({
   args: {
+    token: v.string(),
     connectionId: v.string(),
   },
   returns: v.object({
     success: v.boolean(),
     error: v.optional(v.string()),
   }),
-  handler: async (ctx, { connectionId }) => {
+  handler: async (ctx, { token, connectionId }) => {
+    const tokenResult = await validateToken(ctx.db, token);
+    if (!tokenResult.valid) {
+      return { success: false, error: "Invalid token" };
+    }
+
     const connection = await ctx.db
       .query("local_sandbox_connections")
       .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
@@ -203,6 +227,10 @@ export const heartbeat = mutation({
 
     if (!connection) {
       return { success: false, error: "No connection found" };
+    }
+
+    if (connection.user_id !== tokenResult.userId) {
+      return { success: false, error: "Connection does not belong to this user" };
     }
 
     if (connection.status === "disconnected") {
@@ -219,18 +247,24 @@ export const heartbeat = mutation({
 
 export const disconnect = mutation({
   args: {
+    token: v.string(),
     connectionId: v.string(),
   },
   returns: v.object({
     success: v.boolean(),
   }),
-  handler: async (ctx, { connectionId }) => {
+  handler: async (ctx, { token, connectionId }) => {
+    const tokenResult = await validateToken(ctx.db, token);
+    if (!tokenResult.valid) {
+      return { success: false };
+    }
+
     const connection = await ctx.db
       .query("local_sandbox_connections")
       .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
       .first();
 
-    if (connection) {
+    if (connection && connection.user_id === tokenResult.userId) {
       await ctx.db.patch(connection._id, {
         status: "disconnected",
       });
@@ -354,6 +388,7 @@ export const listConnectionsForBackend = query({
 
 export const isConnected = query({
   args: {
+    serviceKey: v.optional(v.string()),
     connectionId: v.string(),
   },
   returns: v.object({
@@ -372,7 +407,9 @@ export const isConnected = query({
       }),
     ),
   }),
-  handler: async (ctx, { connectionId }) => {
+  handler: async (ctx, { serviceKey, connectionId }) => {
+    validateServiceKey(serviceKey);
+
     const connection = await ctx.db
       .query("local_sandbox_connections")
       .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
@@ -439,6 +476,7 @@ export const enqueueCommand = mutation({
 
 export const getPendingCommands = query({
   args: {
+    token: v.string(),
     connectionId: v.string(),
   },
   returns: v.object({
@@ -452,7 +490,22 @@ export const getPendingCommands = query({
       }),
     ),
   }),
-  handler: async (ctx, { connectionId }) => {
+  handler: async (ctx, { token, connectionId }) => {
+    const tokenResult = await validateToken(ctx.db, token);
+    if (!tokenResult.valid) {
+      return { commands: [] };
+    }
+
+    // Verify connection belongs to this user
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (!connection || connection.user_id !== tokenResult.userId) {
+      return { commands: [] };
+    }
+
     const commands = await ctx.db
       .query("local_sandbox_commands")
       .withIndex("by_connection_and_status", (q) =>
@@ -475,18 +528,24 @@ export const getPendingCommands = query({
 
 export const markCommandExecuting = mutation({
   args: {
+    token: v.string(),
     commandId: v.string(),
   },
   returns: v.object({
     success: v.boolean(),
   }),
-  handler: async (ctx, { commandId }) => {
+  handler: async (ctx, { token, commandId }) => {
+    const tokenResult = await validateToken(ctx.db, token);
+    if (!tokenResult.valid) {
+      return { success: false };
+    }
+
     const command = await ctx.db
       .query("local_sandbox_commands")
       .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
       .first();
 
-    if (!command) {
+    if (!command || command.user_id !== tokenResult.userId) {
       return { success: false };
     }
 
@@ -500,8 +559,8 @@ export const markCommandExecuting = mutation({
 
 export const submitResult = mutation({
   args: {
+    token: v.string(),
     commandId: v.string(),
-    userId: v.string(),
     stdout: v.string(),
     stderr: v.string(),
     exitCode: v.number(),
@@ -511,10 +570,23 @@ export const submitResult = mutation({
     success: v.boolean(),
   }),
   handler: async (ctx, args) => {
-    // Store result
+    const tokenResult = await validateToken(ctx.db, args.token);
+    if (!tokenResult.valid) {
+      return { success: false };
+    }
+
+    const command = await ctx.db
+      .query("local_sandbox_commands")
+      .withIndex("by_command_id", (q) => q.eq("command_id", args.commandId))
+      .first();
+
+    if (!command || command.user_id !== tokenResult.userId) {
+      return { success: false };
+    }
+
     await ctx.db.insert("local_sandbox_results", {
       command_id: args.commandId,
-      user_id: args.userId,
+      user_id: tokenResult.userId,
       stdout: args.stdout,
       stderr: args.stderr,
       exit_code: args.exitCode,
@@ -522,17 +594,9 @@ export const submitResult = mutation({
       completed_at: Date.now(),
     });
 
-    // Mark command as completed
-    const command = await ctx.db
-      .query("local_sandbox_commands")
-      .withIndex("by_command_id", (q) => q.eq("command_id", args.commandId))
-      .first();
-
-    if (command) {
-      await ctx.db.patch(command._id, {
-        status: "completed",
-      });
-    }
+    await ctx.db.patch(command._id, {
+      status: "completed",
+    });
 
     return { success: true };
   },
@@ -588,7 +652,7 @@ export const cleanupStaleConnections = internalMutation({
     // Find stale connections
     const staleConnections = await ctx.db
       .query("local_sandbox_connections")
-      .withIndex("by_status", (q) =>
+      .withIndex("by_status_and_last_heartbeat", (q) =>
         q.eq("status", "connected").lt("last_heartbeat", now - staleTimeout),
       )
       .collect();
@@ -618,11 +682,8 @@ export const cleanupOldCommands = internalMutation({
     // Delete old completed commands
     const oldCommands = await ctx.db
       .query("local_sandbox_commands")
-      .filter((q) =>
-        q.and(
-          q.eq(q.field("status"), "completed"),
-          q.lt(q.field("created_at"), now - maxAge),
-        ),
+      .withIndex("by_status_and_created_at", (q) =>
+        q.eq("status", "completed").lt("created_at", now - maxAge),
       )
       .take(100);
 
@@ -634,7 +695,7 @@ export const cleanupOldCommands = internalMutation({
     // Delete old results
     const oldResults = await ctx.db
       .query("local_sandbox_results")
-      .filter((q) => q.lt(q.field("completed_at"), now - maxAge))
+      .withIndex("by_completed_at", (q) => q.lt("completed_at", now - maxAge))
       .take(100);
 
     for (const result of oldResults) {
@@ -645,11 +706,8 @@ export const cleanupOldCommands = internalMutation({
     // Delete old disconnected connections (older than 24 hours)
     const oldConnections = await ctx.db
       .query("local_sandbox_connections")
-      .filter((q) =>
-        q.and(
-          q.eq(q.field("status"), "disconnected"),
-          q.lt(q.field("created_at"), now - 24 * 60 * 60 * 1000),
-        ),
+      .withIndex("by_status_and_created_at", (q) =>
+        q.eq("status", "disconnected").lt("created_at", now - 24 * 60 * 60 * 1000),
       )
       .take(100);
 

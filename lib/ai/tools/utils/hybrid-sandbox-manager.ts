@@ -40,6 +40,7 @@ export class HybridSandboxManager implements SandboxManager {
   private isLocal = false;
   private currentConnectionId: string | null = null;
   private convex: ConvexHttpClient;
+  private convexUrl: string;
 
   constructor(
     private userID: string,
@@ -49,7 +50,12 @@ export class HybridSandboxManager implements SandboxManager {
     initialSandbox?: Sandbox | null,
   ) {
     this.sandbox = initialSandbox || null;
-    this.convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+    const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+    if (!convexUrl) {
+      throw new Error("NEXT_PUBLIC_CONVEX_URL environment variable is not set");
+    }
+    this.convexUrl = convexUrl;
+    this.convex = new ConvexHttpClient(convexUrl);
   }
 
   /**
@@ -133,7 +139,7 @@ export class HybridSandboxManager implements SandboxManager {
         );
         this.sandbox = new ConvexSandbox(
           this.userID,
-          process.env.NEXT_PUBLIC_CONVEX_URL!,
+          this.convexUrl,
           preferredConnection,
           this.serviceKey,
         );
@@ -153,7 +159,7 @@ export class HybridSandboxManager implements SandboxManager {
       );
       this.sandbox = new ConvexSandbox(
         this.userID,
-        process.env.NEXT_PUBLIC_CONVEX_URL!,
+        this.convexUrl,
         firstAvailable,
         this.serviceKey,
       );

@@ -158,7 +158,8 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_connection_id", ["connection_id"])
     .index("by_user_and_status", ["user_id", "status"])
-    .index("by_status", ["status", "last_heartbeat"]),
+    .index("by_status_and_last_heartbeat", ["status", "last_heartbeat"])
+    .index("by_status_and_created_at", ["status", "created_at"]),
 
   local_sandbox_commands: defineTable({
     user_id: v.string(),
@@ -178,7 +179,8 @@ export default defineSchema({
     .index("by_user_id", ["user_id"])
     .index("by_command_id", ["command_id"])
     .index("by_connection_and_status", ["connection_id", "status"])
-    .index("by_user_and_status", ["user_id", "status"]),
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_status_and_created_at", ["status", "created_at"]),
 
   local_sandbox_results: defineTable({
     command_id: v.string(),
@@ -190,5 +192,6 @@ export default defineSchema({
     completed_at: v.number(),
   })
     .index("by_command_id", ["command_id"])
-    .index("by_user_id", ["user_id"]),
+    .index("by_user_id", ["user_id"])
+    .index("by_completed_at", ["completed_at"]),
 });
