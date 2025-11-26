@@ -15,6 +15,7 @@ interface SandboxSelectorProps {
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  size?: "sm" | "md";
 }
 
 interface LocalConnection {
@@ -40,6 +41,7 @@ export function SandboxSelector({
   value,
   onChange,
   disabled = false,
+  size = "sm",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
   
@@ -48,9 +50,9 @@ export function SandboxSelector({
   const options: ConnectionOption[] = [
     {
       id: "e2b",
-      label: "E2B Cloud",
+      label: "Cloud",
       icon: Cloud,
-      description: "Auto-pause enabled",
+      description: "",
       warning: null,
     },
     ...((connections as LocalConnection[] | undefined)?.map((conn) => ({
@@ -74,17 +76,23 @@ export function SandboxSelector({
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
-          variant="outline"
-          size="sm"
+          variant="ghost"
+          size={size === "md" ? "default" : "sm"}
           disabled={disabled}
-          className="h-8 gap-1.5 text-xs font-normal"
+          className={
+            size === "md"
+              ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1"
+              : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1"
+          }
         >
-          <Icon className="h-3.5 w-3.5" />
-          <span className="max-w-[100px] truncate">{selectedOption?.label}</span>
+          <Icon className={size === "md" ? "h-4 w-4" : "h-3 w-3"} />
+          <span className={size === "md" ? "max-w-[150px] truncate" : "max-w-[100px] truncate"}>
+            {selectedOption?.label}
+          </span>
           {selectedOption?.mode === "dangerous" && (
-            <AlertTriangle className="h-3 w-3 text-yellow-500" />
+            <AlertTriangle className={size === "md" ? "h-4 w-4 text-yellow-500" : "h-3 w-3 text-yellow-500"} />
           )}
-          <ChevronDown className="h-3 w-3 opacity-50" />
+          <ChevronDown className={size === "md" ? "h-4 w-4 ml-1" : "h-3 w-3 ml-1"} />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[280px] p-1" align="start">
@@ -117,9 +125,11 @@ export function SandboxSelector({
                       <AlertTriangle className="h-3 w-3 text-yellow-500 shrink-0" />
                     )}
                   </div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {option.description}
-                  </div>
+                  {option.description && (
+                    <div className="text-xs text-muted-foreground truncate">
+                      {option.description}
+                    </div>
+                  )}
                   {option.warning && (
                     <div className="text-xs text-yellow-600 dark:text-yellow-400 mt-0.5">
                       {option.warning}
@@ -127,7 +137,7 @@ export function SandboxSelector({
                   )}
                 </div>
                 {value === option.id && (
-                  <Check className="h-4 w-4 text-primary shrink-0" />
+                  <Check className="h-4 w-4 shrink-0" />
                 )}
               </button>
             );

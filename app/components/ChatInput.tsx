@@ -398,8 +398,8 @@ export const ChatInput = ({
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Sandbox selector - only shown in Agent mode */}
-              {chatMode === "agent" && (
+              {/* Sandbox selector - only shown in Agent mode on new chats */}
+              {chatMode === "agent" && isNewChat && (
                 <SandboxSelector
                   value={sandboxPreference}
                   onChange={setSandboxPreference}
