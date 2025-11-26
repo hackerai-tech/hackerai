@@ -315,17 +315,19 @@ export const ChatInput = ({
           </div>
           <div className="px-3 flex gap-2 items-center">
             {/* Attachment Button */}
-            <AttachmentButton onAttachClick={handleAttachClick} />
+            <div className="shrink-0">
+              <AttachmentButton onAttachClick={handleAttachClick} />
+            </div>
 
-            {/* Mode selector */}
-            <div className="flex items-center gap-1.5">
+            {/* Mode selector + Sandbox selector container */}
+            <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="ghost"
                     size="sm"
                     data-testid="mode-selector"
-                    className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 ${
+                    className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 shrink-0 ${
                       chatMode === "agent"
                         ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20"
                         : "bg-muted hover:bg-muted/50"
@@ -407,7 +409,9 @@ export const ChatInput = ({
                 />
               )}
             </div>
-            <div className="min-w-0 flex gap-2 ml-auto flex-shrink items-center">
+
+            {/* Send/Stop button container */}
+            <div className="flex gap-2 shrink-0 items-center ml-auto">
               {isGenerating && !hideStop ? (
                 // Show only stop button during streaming for both modes
                 <TooltipPrimitive.Root>

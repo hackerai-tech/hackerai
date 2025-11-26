@@ -45,7 +45,7 @@ export function SandboxSelector({
   size = "sm",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
-  
+
   const connections = useQuery(api.localSandbox.listConnections);
 
   const options: ConnectionOption[] = [
@@ -84,18 +84,28 @@ export function SandboxSelector({
           disabled={disabled}
           className={
             size === "md"
-              ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1"
-              : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1"
+              ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+              : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
           }
         >
-          <Icon className={size === "md" ? "h-4 w-4" : "h-3 w-3"} />
-          <span className={size === "md" ? "max-w-[150px] truncate" : "max-w-[100px] truncate"}>
-            {selectedOption?.label}
-          </span>
+          <Icon
+            className={size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0"}
+          />
+          <span className="truncate">{selectedOption?.label}</span>
           {selectedOption?.mode === "dangerous" && (
-            <AlertTriangle className={size === "md" ? "h-4 w-4 text-yellow-500" : "h-3 w-3 text-yellow-500"} />
+            <AlertTriangle
+              className={
+                size === "md"
+                  ? "h-4 w-4 text-yellow-500 shrink-0"
+                  : "h-3 w-3 text-yellow-500 shrink-0"
+              }
+            />
           )}
-          <ChevronDown className={size === "md" ? "h-4 w-4 ml-1" : "h-3 w-3 ml-1"} />
+          <ChevronDown
+            className={
+              size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
+            }
+          />
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[280px] p-1" align="start">
@@ -139,9 +149,7 @@ export function SandboxSelector({
                     </div>
                   )}
                 </div>
-                {value === option.id && (
-                  <Check className="h-4 w-4 shrink-0" />
-                )}
+                {value === option.id && <Check className="h-4 w-4 shrink-0" />}
               </button>
             );
           })}
@@ -149,7 +157,10 @@ export function SandboxSelector({
             <div className="px-2 py-2 text-xs text-muted-foreground border-t mt-1 pt-2">
               No local connections.{" "}
               <span className="text-foreground">
-                Run <code className="bg-muted px-1 rounded">npx @hackerai/local</code>
+                Run{" "}
+                <code className="bg-muted px-1 rounded">
+                  npx @hackerai/local
+                </code>
               </span>{" "}
               to enable local execution.
             </div>
