@@ -495,8 +495,9 @@ ${chalk.cyan("Pre-built Image:")}
   nikto, wpscan, subfinder, httpx, and 20+ more pentesting tools.
 
 ${chalk.red("⚠️  Security Warning:")}
-  In Docker mode, commands run in an isolated container with --network host.
-  In DANGEROUS mode, commands run directly on your OS without isolation.
+  Docker mode provides process isolation but uses --network host for direct
+  network access (required for pentesting tools to scan network services).
+  In DANGEROUS mode, commands run directly on your OS without any isolation.
 `);
   process.exit(0);
 }

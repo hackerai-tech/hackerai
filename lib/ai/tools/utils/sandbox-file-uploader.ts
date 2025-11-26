@@ -87,7 +87,12 @@ export async function uploadSandboxFileToConvex(args: {
     const statResult = await sandbox.commands.run(
       `stat -c%s "${fullPath}" 2>/dev/null || stat -f%z "${fullPath}"`,
     );
-    const fileSize = parseInt(statResult.stdout.trim(), 10) || 0;
+    const fileSize = parseInt(statResult.stdout.trim(), 10);
+    if (isNaN(fileSize) || statResult.exitCode !== 0) {
+      throw new Error(
+        `Failed to get file size for ${fullPath}: ${statResult.stderr || "stat command failed"}`,
+      );
+    }
 
     try {
       const saved = await convex.action(api.fileActions.saveFile, {

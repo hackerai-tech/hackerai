@@ -59,8 +59,8 @@ npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
 
 ## Security
 
-- **Docker Mode**: Commands run in an isolated container with `--network host` for network access
-- **Dangerous Mode**: Commands run directly on your OS - use with caution
+- **Docker Mode**: Commands run in a container with process isolation, but with direct host network access (`--network host`) so pentesting tools can scan and interact with network services
+- **Dangerous Mode**: Commands run directly on your OS without any isolation - use with caution
 
 ## License
 

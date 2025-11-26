@@ -221,14 +221,21 @@ export const createChatHandler = () => {
           );
 
           // Get sandbox context for system prompt (only for local sandboxes)
-          const sandboxContext =
-            mode === "agent" && "getSandboxContextForPrompt" in sandboxManager
-              ? await (
-                  sandboxManager as {
-                    getSandboxContextForPrompt: () => Promise<string | null>;
-                  }
-                ).getSandboxContextForPrompt()
-              : null;
+          let sandboxContext: string | null = null;
+          if (
+            mode === "agent" &&
+            "getSandboxContextForPrompt" in sandboxManager
+          ) {
+            try {
+              sandboxContext = await (
+                sandboxManager as {
+                  getSandboxContextForPrompt: () => Promise<string | null>;
+                }
+              ).getSandboxContextForPrompt();
+            } catch (error) {
+              console.warn("Failed to get sandbox context for prompt:", error);
+            }
+          }
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
