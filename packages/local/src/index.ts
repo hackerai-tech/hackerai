@@ -145,7 +145,7 @@ class LocalSandboxClient {
     } else if (isDefaultImage) {
       console.log(chalk.blue(`Pulling pre-built image: ${image}`));
       console.log(
-        chalk.gray("(First run may take a few minutes to download ~2GB image)"),
+        chalk.gray("(First run may take a few minutes to download image)"),
       );
       try {
         await execAsync(`docker pull ${image}`, {
@@ -257,9 +257,12 @@ class LocalSandboxClient {
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await (this.convex as any).mutation(api.localSandbox.markCommandExecuting, {
-        commandId: command_id,
-      });
+      await (this.convex as any).mutation(
+        api.localSandbox.markCommandExecuting,
+        {
+          commandId: command_id,
+        },
+      );
 
       let fullCommand = command;
 
@@ -280,21 +283,35 @@ class LocalSandboxClient {
         result = await execAsync(fullCommand, {
           timeout: timeout ?? 30000,
           shell: "/bin/bash",
-        }).catch((error: { stdout?: string; stderr?: string; message?: string; code?: number }) => ({
-          stdout: error.stdout || "",
-          stderr: error.stderr || error.message || "",
-          code: error.code || 1,
-        }));
+        }).catch(
+          (error: {
+            stdout?: string;
+            stderr?: string;
+            message?: string;
+            code?: number;
+          }) => ({
+            stdout: error.stdout || "",
+            stderr: error.stderr || error.message || "",
+            code: error.code || 1,
+          }),
+        );
       } else {
         const escapedCommand = fullCommand.replace(/"/g, '\\"');
         result = await execAsync(
           `docker exec ${this.containerId} bash -c "${escapedCommand}"`,
           { timeout: timeout ?? 30000 },
-        ).catch((error: { stdout?: string; stderr?: string; message?: string; code?: number }) => ({
-          stdout: error.stdout || "",
-          stderr: error.stderr || error.message || "",
-          code: error.code || 1,
-        }));
+        ).catch(
+          (error: {
+            stdout?: string;
+            stderr?: string;
+            message?: string;
+            code?: number;
+          }) => ({
+            stdout: error.stdout || "",
+            stderr: error.stderr || error.message || "",
+            code: error.code || 1,
+          }),
+        );
       }
 
       const duration = Date.now() - startTime;

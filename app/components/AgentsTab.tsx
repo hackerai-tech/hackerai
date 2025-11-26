@@ -27,6 +27,16 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 
+// Production Convex URL (must match @hackerai/local package)
+const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
+
+// Add --convex-url flag if running against non-production backend
+const convexUrlFlag =
+  process.env.NEXT_PUBLIC_CONVEX_URL &&
+  process.env.NEXT_PUBLIC_CONVEX_URL !== PRODUCTION_CONVEX_URL
+    ? ` --convex-url ${process.env.NEXT_PUBLIC_CONVEX_URL}`
+    : "";
+
 interface LocalConnection {
   connectionId: string;
   name: string;
@@ -330,10 +340,10 @@ const AgentsTab = () => {
               {/* Docker command */}
               <CommandBlock
                 label="Basic (Docker)"
-                command={`pnpm local-sandbox --token ${showToken && token ? token : "<token>"} --name "My Machine"`}
+                command={`npx @hackerai/local --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
                 onCopy={() =>
                   handleCopyCommand(
-                    `pnpm local-sandbox --token ${token || "YOUR_TOKEN"} --name "My Machine"`,
+                    `npx @hackerai/local --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
                   )
                 }
               />
@@ -341,10 +351,10 @@ const AgentsTab = () => {
               {/* Kali command */}
               <CommandBlock
                 label="Custom Image (Kali Linux)"
-                command={`pnpm local-sandbox --token ${showToken && token ? token : "<token>"} --name "Kali" --image kalilinux/kali-rolling`}
+                command={`npx @hackerai/local --token ${showToken && token ? token : "<token>"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`}
                 onCopy={() =>
                   handleCopyCommand(
-                    `pnpm local-sandbox --token ${token || "YOUR_TOKEN"} --name "Kali" --image kalilinux/kali-rolling`,
+                    `npx @hackerai/local --token ${token || "YOUR_TOKEN"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`,
                   )
                 }
               />
@@ -353,10 +363,10 @@ const AgentsTab = () => {
               <CommandBlock
                 label="Dangerous Mode (No Docker)"
                 warning
-                command={`pnpm local-sandbox --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous`}
+                command={`npx @hackerai/local --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
                 onCopy={() =>
                   handleCopyCommand(
-                    `pnpm local-sandbox --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous`,
+                    `npx @hackerai/local --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
                   )
                 }
               />

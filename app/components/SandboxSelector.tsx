@@ -146,7 +146,7 @@ export function SandboxSelector({
             <div className="px-2 py-2 text-xs text-muted-foreground border-t mt-1 pt-2">
               No local connections.{" "}
               <span className="text-foreground">
-                Run <code className="bg-muted px-1 rounded">pnpm local-sandbox</code>
+                Run <code className="bg-muted px-1 rounded">npx @hackerai/local</code>
               </span>{" "}
               to enable local execution.
             </div>
