@@ -335,15 +335,4 @@ Commands run inside the Docker container with network access.`;
     await this.realtimeClient.close();
     this.emit("close");
   }
-
-  /**
-   * Check if sandbox is still connected
-   */
-  async isConnected(): Promise<boolean> {
-    const status = await this.convex.query(api.localSandbox.isConnected, {
-      serviceKey: this.serviceKey,
-      connectionId: this.connectionInfo.connectionId,
-    });
-    return status.connected;
-  }
 }

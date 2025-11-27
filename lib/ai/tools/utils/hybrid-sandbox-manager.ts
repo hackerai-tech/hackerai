@@ -70,17 +70,14 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Get the current sandbox type
+   * Close current sandbox if it's a ConvexSandbox (to prevent WebSocket leaks)
    */
-  getSandboxType(): "e2b" | "local-docker" | "local-dangerous" {
-    if (!this.isLocal) {
-      return "e2b";
-    }
+  private async closeCurrentSandbox(): Promise<void> {
     if (this.sandbox instanceof ConvexSandbox) {
-      const info = this.sandbox.getConnectionInfo();
-      return info.mode === "dangerous" ? "local-dangerous" : "local-docker";
+      await this.sandbox.close().catch((err) => {
+        console.warn(`[${this.userID}] Failed to close sandbox:`, err);
+      });
     }
-    return "e2b";
   }
 
   /**
@@ -91,6 +88,7 @@ export class HybridSandboxManager implements SandboxManager {
     this.sandboxPreference = preference;
     // Force re-evaluation on next getSandbox call
     if (preference !== "e2b" && this.currentConnectionId !== preference) {
+      this.closeCurrentSandbox();
       this.sandbox = null;
     }
   }
@@ -134,6 +132,7 @@ export class HybridSandboxManager implements SandboxManager {
         this.currentConnectionId !== preferredConnection.connectionId ||
         !this.sandbox
       ) {
+        await this.closeCurrentSandbox();
         console.log(
           `[${this.userID}] Using local sandbox: ${preferredConnection.name} (${preferredConnection.mode})`,
         );
@@ -154,6 +153,7 @@ export class HybridSandboxManager implements SandboxManager {
     // If preferred connection not available, check if any connection is available
     if (connections.length > 0) {
       const firstAvailable = connections[0];
+      await this.closeCurrentSandbox();
       console.log(
         `[${this.userID}] Preferred connection unavailable, using: ${firstAvailable.name}`,
       );
@@ -182,6 +182,7 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox };
     }
 
+    await this.closeCurrentSandbox();
     console.log(`[${this.userID}] Using E2B cloud sandbox`);
     const result = await ensureSandboxConnection(
       {
