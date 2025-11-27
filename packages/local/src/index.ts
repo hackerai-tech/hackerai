@@ -419,7 +419,15 @@ class LocalSandboxClient {
 
       if (env) {
         const envString = Object.entries(env)
-          .map(([k, v]) => `export ${k}="${v}"`)
+          .map(([k, v]) => {
+            // Escape quotes, backticks, and $ to prevent shell injection
+            const escaped = v
+              .replace(/\\/g, "\\\\")
+              .replace(/"/g, '\\"')
+              .replace(/\$/g, "\\$")
+              .replace(/`/g, "\\`");
+            return `export ${k}="${escaped}"`;
+          })
           .join("; ");
         fullCommand = `${envString}; ${fullCommand}`;
       }
