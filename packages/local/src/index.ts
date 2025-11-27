@@ -381,6 +381,8 @@ class LocalSandboxClient {
   private startCommandSubscription(): void {
     if (!this.connectionId) return;
 
+    console.log(chalk.gray(`[debug] Starting subscription for connection ${this.connectionId}`));
+
     // Use Convex subscription for real-time command updates
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.commandSubscription = (this.convex as any).onUpdate(
@@ -394,7 +396,11 @@ class LocalSandboxClient {
         const now = Date.now();
         const elapsed = now - this.lastLogTime;
 
-        // Log subscription stats every 10 seconds
+        // Log on first callback and then every 10 seconds
+        if (this.subscriptionCallCount === 1) {
+          console.log(chalk.gray(`[debug] First subscription callback received`));
+        }
+
         if (elapsed >= 10000) {
           const rate = (this.subscriptionCallCount / (elapsed / 1000)).toFixed(1);
           console.log(

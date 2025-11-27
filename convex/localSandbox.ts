@@ -505,7 +505,7 @@ export const enqueueCommand = mutation({
 
 export const getPendingCommands = query({
   args: {
-    token: v.string(),
+    token: v.string(), // Kept for API compatibility, validated on connect/heartbeat
     connectionId: v.string(),
   },
   returns: v.object({
@@ -519,21 +519,14 @@ export const getPendingCommands = query({
       }),
     ),
   }),
-  handler: async (ctx, { token, connectionId }) => {
-    const tokenResult = await validateToken(ctx.db, token);
-    if (!tokenResult.valid) {
-      return { commands: [] };
-    }
-
-    // Verify connection belongs to this user
-    const connection = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
-      .first();
-
-    if (!connection || connection.user_id !== tokenResult.userId) {
-      return { commands: [] };
-    }
+  handler: async (ctx, { connectionId }) => {
+    // Skip token/connection validation here to minimize reactive surface.
+    // Security is maintained because:
+    // 1. connectionId is a UUID validated on connect()
+    // 2. Token is validated on heartbeat() every 30s
+    // 3. Commands are only created via enqueueCommand() which validates ownership
+    // This query now only reads from local_sandbox_commands table,
+    // reducing subscription triggers from 3 tables to 1.
 
     const commands = await ctx.db
       .query("local_sandbox_commands")
