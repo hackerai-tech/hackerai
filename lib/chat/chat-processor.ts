@@ -2,6 +2,7 @@ import { getModerationResult } from "@/lib/moderation";
 import type { ChatMode, SubscriptionTier } from "@/types";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
+import type { ModelName } from "@/lib/ai/providers";
 
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
@@ -41,7 +42,7 @@ export function selectModel(
   containsMediaFiles: boolean,
   containsPdfFiles: boolean,
   subscription: SubscriptionTier,
-): string {
+): ModelName {
   // Prefer a dedicated PDF vision model for PDFs in ask mode
   if (containsPdfFiles && mode === "ask") {
     return "ask-vision-model-for-pdfs";

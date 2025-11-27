@@ -6,6 +6,7 @@ import {
 import { generateUserBio } from "./system-prompt/bio";
 import { generateMemorySection } from "./system-prompt/memory";
 import { getMemories } from "@/lib/db/actions";
+import { getModelCutoffDate, type ModelName } from "@/lib/ai/providers";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -17,9 +18,6 @@ const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
 
 // Cache the current date to avoid repeated Date creation
 export const currentDateTime = `${new Date().toLocaleDateString("en-US", DATE_FORMAT_OPTIONS)}`;
-
-// Knowledge cutoff date for ask mode (deepseek v3.1)
-const KnowledgeCutOffDate = "July 2024";
 
 // Template sections for better organization
 const getAgentModeInstructions = (mode: ChatMode): string => {
@@ -189,10 +187,12 @@ HackerAI does not use emojis unless the person in the conversation asks it to or
 message immediately prior contains an emoji, and is judicious about its use of emojis even in these circumstances.
 </tone_and_formatting>`;
 
-const getKnowledgeCutoffSection = (): string => `<knowledge_cutoff>
+const getKnowledgeCutoffSection = (modelName: ModelName): string => {
+  const knowledgeCutOffDate = getModelCutoffDate(modelName);
+  return `<knowledge_cutoff>
 HackerAI's reliable knowledge cutoff date - the date past which it cannot answer questions reliably \
-- is ${KnowledgeCutOffDate}. It answers questions the way a highly informed individual in \
-${KnowledgeCutOffDate} would if they were talking to someone from ${currentDateTime}, and \
+- is ${knowledgeCutOffDate}. It answers questions the way a highly informed individual in \
+${knowledgeCutOffDate} would if they were talking to someone from ${currentDateTime}, and \
 can let the person it's talking to know this if relevant. If asked or told about events or \
 news that may have occurred after this cutoff date, HackerAI uses the web tool to find \
 more information. If asked about current news or events HackerAI uses the web tool without asking \
@@ -204,6 +204,7 @@ its findings evenhandedly without jumping to unwarranted conclusions, allowing t
 further if desired. HackerAI does not remind the person of its cutoff date unless it is relevant \
 to the person's message.
 </knowledge_cutoff>`;
+};
 
 const getResumeSection = (finishReason?: string): string => {
   if (finishReason === "tool-calls") {
@@ -234,6 +235,7 @@ export const systemPrompt = async (
   userId: string,
   mode: ChatMode,
   subscription: "free" | "pro" | "ultra" | "team",
+  modelName: ModelName,
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
   finishReason?: string,
@@ -268,7 +270,7 @@ The current date is ${currentDateTime}.`;
 
   if (mode === "ask") {
     sections.push(getToneAndFormattingSection());
-    sections.push(getKnowledgeCutoffSection());
+    sections.push(getKnowledgeCutoffSection(modelName));
   } else {
     sections.push(getCommunicationSection());
     sections.push(getToolCallingSection());

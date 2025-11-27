@@ -15,8 +15,27 @@ const baseProviders = {
   ),
   "agent-model": xai("grok-code-fast-1"),
   "agent-vision-model": xai("grok-4-fast-reasoning"),
-  "title-generator-model": openai("gpt-4.1-mini-2025-04-14"),
+  "title-generator-model": openrouter(
+    "google/gemini-2.5-flash-preview-09-2025",
+  ),
   "summarization-model": xai("grok-4-fast-non-reasoning"),
+};
+
+export type ModelName = keyof typeof baseProviders;
+
+export const modelCutoffDates: Record<ModelName, string> = {
+  "ask-model": "January 2025",
+  "ask-model-free": "January 2025",
+  "ask-vision-model": "January 2025",
+  "ask-vision-model-for-pdfs": "January 2025",
+  "agent-model": "November 2024",
+  "agent-vision-model": "November 2024",
+  "title-generator-model": "January 2025",
+  "summarization-model": "November 2024",
+};
+
+export const getModelCutoffDate = (modelName: ModelName): string => {
+  return modelCutoffDates[modelName];
 };
 
 export const myProvider = customProvider({
