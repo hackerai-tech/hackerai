@@ -3,9 +3,9 @@ import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 
-export function validateServiceKey(serviceKey?: string): void {
-  if (!serviceKey || serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
-    throw new Error("Unauthorized: Invalid or missing service key");
+export function validateServiceKey(serviceKey: string): void {
+  if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
+    throw new Error("Unauthorized: Invalid service key");
   }
 }
 
@@ -100,7 +100,7 @@ export const getChatByIdFromClient = query({
  * Used by server-side actions that already enforce ownership separately.
  */
 export const getChatById = query({
-  args: { serviceKey: v.optional(v.string()), id: v.string() },
+  args: { serviceKey: v.string(), id: v.string() },
   returns: v.union(
     v.object({
       _id: v.id("chats"),
@@ -160,7 +160,7 @@ export const getChatById = query({
  */
 export const saveChat = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     id: v.string(),
     userId: v.string(),
     title: v.string(),
@@ -192,7 +192,7 @@ export const saveChat = mutation({
  */
 export const updateChat = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
     title: v.optional(v.string()),
     finishReason: v.optional(v.string()),
@@ -286,7 +286,7 @@ export const updateChat = mutation({
  */
 export const startStream = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
     streamId: v.string(),
   },
@@ -320,7 +320,7 @@ export const startStream = mutation({
  */
 export const prepareForNewStream = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
   },
   returns: v.null(),
@@ -408,7 +408,7 @@ export const cancelStreamFromClient = mutation({
  * Optimized for stream cancellation checks
  */
 export const getCancellationStatus = query({
-  args: { serviceKey: v.optional(v.string()), chatId: v.string() },
+  args: { serviceKey: v.string(), chatId: v.string() },
   returns: v.union(
     v.object({
       canceled_at: v.optional(v.number()),
@@ -825,7 +825,7 @@ export const deleteAllChats = mutation({
  */
 export const saveLatestSummary = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
     summaryText: v.string(),
     summaryUpToMessageId: v.string(),
@@ -889,7 +889,7 @@ export const saveLatestSummary = mutation({
  */
 export const getLatestSummaryForBackend = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
   },
   returns: v.union(

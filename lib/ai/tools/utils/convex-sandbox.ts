@@ -159,6 +159,7 @@ Commands run inside the Docker container with network access.`;
     while (Date.now() - startTime < maxWaitTime) {
       const result = await this.convex.query(api.localSandbox.getResult, {
         serviceKey: this.serviceKey,
+        userId: this.userId,
         commandId,
       });
 

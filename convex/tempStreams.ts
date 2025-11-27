@@ -1,8 +1,8 @@
 import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 
-export function validateServiceKey(serviceKey?: string): void {
-  if (serviceKey && serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
+export function validateServiceKey(serviceKey: string): void {
+  if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
     throw new Error("Unauthorized: Invalid service key");
   }
 }
@@ -13,7 +13,7 @@ export function validateServiceKey(serviceKey?: string): void {
  */
 export const startTempStream = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
     userId: v.string(),
   },
@@ -82,7 +82,7 @@ export const cancelTempStreamFromClient = mutation({
  * Backend-only status check (service key).
  */
 export const getTempCancellationStatus = query({
-  args: { serviceKey: v.optional(v.string()), chatId: v.string() },
+  args: { serviceKey: v.string(), chatId: v.string() },
   returns: v.union(
     v.object({
       canceled: v.boolean(),
@@ -106,7 +106,7 @@ export const getTempCancellationStatus = query({
  * Backend-only delete by chatId (idempotent).
  */
 export const deleteTempStreamForBackend = mutation({
-  args: { serviceKey: v.optional(v.string()), chatId: v.string() },
+  args: { serviceKey: v.string(), chatId: v.string() },
   returns: v.null(),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);

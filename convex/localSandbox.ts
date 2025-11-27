@@ -333,7 +333,7 @@ export const listConnections = query({
 
 export const listConnectionsForBackend = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     userId: v.string(),
   },
   returns: v.array(
@@ -388,7 +388,7 @@ export const listConnectionsForBackend = query({
 
 export const isConnected = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     connectionId: v.string(),
   },
   returns: v.object({
@@ -443,7 +443,7 @@ export const isConnected = query({
 
 export const enqueueCommand = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     userId: v.string(),
     connectionId: v.string(),
     commandId: v.string(),
@@ -578,6 +578,11 @@ export const markCommandExecuting = mutation({
       return { success: false };
     }
 
+    // Prevent duplicate execution - only transition from pending to executing
+    if (command.status !== "pending") {
+      return { success: false };
+    }
+
     await ctx.db.patch(command._id, {
       status: "executing",
     });
@@ -633,7 +638,8 @@ export const submitResult = mutation({
 
 export const getResult = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
+    userId: v.string(),
     commandId: v.string(),
   },
   returns: v.object({
@@ -643,7 +649,7 @@ export const getResult = query({
     exitCode: v.optional(v.number()),
     duration: v.optional(v.number()),
   }),
-  handler: async (ctx, { serviceKey, commandId }) => {
+  handler: async (ctx, { serviceKey, userId, commandId }) => {
     validateServiceKey(serviceKey);
 
     const result = await ctx.db
@@ -652,6 +658,11 @@ export const getResult = query({
       .first();
 
     if (!result) {
+      return { found: false };
+    }
+
+    // Verify ownership - result must belong to the requesting user
+    if (result.user_id !== userId) {
       return { found: false };
     }
 
@@ -705,18 +716,45 @@ export const cleanupOldCommands = internalMutation({
   handler: async (ctx) => {
     const now = Date.now();
     const maxAge = 60 * 60 * 1000; // 1 hour
+    const stuckCommandTimeout = 60 * 60 * 1000; // 1 hour for stuck pending/executing
 
     let deletedCount = 0;
 
     // Delete old completed commands
-    const oldCommands = await ctx.db
+    const oldCompletedCommands = await ctx.db
       .query("local_sandbox_commands")
       .withIndex("by_status_and_created_at", (q) =>
         q.eq("status", "completed").lt("created_at", now - maxAge),
       )
       .take(100);
 
-    for (const cmd of oldCommands) {
+    for (const cmd of oldCompletedCommands) {
+      await ctx.db.delete(cmd._id);
+      deletedCount++;
+    }
+
+    // Delete orphaned pending commands (stuck for more than 5 minutes)
+    const stuckPendingCommands = await ctx.db
+      .query("local_sandbox_commands")
+      .withIndex("by_status_and_created_at", (q) =>
+        q.eq("status", "pending").lt("created_at", now - stuckCommandTimeout),
+      )
+      .take(100);
+
+    for (const cmd of stuckPendingCommands) {
+      await ctx.db.delete(cmd._id);
+      deletedCount++;
+    }
+
+    // Delete orphaned executing commands (stuck for more than 5 minutes)
+    const stuckExecutingCommands = await ctx.db
+      .query("local_sandbox_commands")
+      .withIndex("by_status_and_created_at", (q) =>
+        q.eq("status", "executing").lt("created_at", now - stuckCommandTimeout),
+      )
+      .take(100);
+
+    for (const cmd of stuckExecutingCommands) {
       await ctx.db.delete(cmd._id);
       deletedCount++;
     }

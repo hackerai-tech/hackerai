@@ -156,7 +156,7 @@ export const getUserCustomization = query({
  */
 export const getUserCustomizationForBackend = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     userId: v.string(),
   },
   returns: v.union(

@@ -159,7 +159,7 @@ export const getFileUrlAction = action({
  */
 export const getFileUrlsByFileIdsAction = action({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.union(v.string(), v.null())),
