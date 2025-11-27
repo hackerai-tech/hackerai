@@ -12,7 +12,7 @@
  *   npx @hackerai/local --token TOKEN --name "Work PC" --dangerous
  */
 
-import { ConvexHttpClient } from "convex/browser";
+import { ConvexClient } from "convex/browser";
 import { exec, spawn } from "child_process";
 import { promisify } from "util";
 import os from "os";
@@ -100,16 +100,16 @@ interface PendingCommandsResult {
 }
 
 class LocalSandboxClient {
-  private convex: ConvexHttpClient;
+  private convex: ConvexClient;
   private containerId?: string;
   private userId?: string;
   private connectionId?: string;
   private heartbeatInterval?: NodeJS.Timeout;
-  private pollInterval?: NodeJS.Timeout;
+  private commandSubscription?: () => void;
   private isShuttingDown = false;
 
   constructor(private config: Config) {
-    this.convex = new ConvexHttpClient(config.convexUrl);
+    this.convex = new ConvexClient(config.convexUrl);
   }
 
   async start(): Promise<void> {
@@ -238,7 +238,7 @@ class LocalSandboxClient {
       console.log(chalk.gray(`Mode: ${this.getModeDisplay()}`));
 
       this.startHeartbeat();
-      this.startPolling();
+      this.startCommandSubscription();
     } catch (error: unknown) {
       const err = error as { data?: { message?: string }; message?: string };
       const errorMessage =
@@ -255,29 +255,25 @@ class LocalSandboxClient {
     }
   }
 
-  private startPolling(): void {
-    this.pollInterval = setInterval(async () => {
-      if (this.isShuttingDown || !this.connectionId) return;
+  private startCommandSubscription(): void {
+    if (!this.connectionId) return;
 
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data = (await (this.convex as any).query(
-          api.localSandbox.getPendingCommands,
-          {
-            token: this.config.token,
-            connectionId: this.connectionId,
-          },
-        )) as PendingCommandsResult;
+    // Use Convex subscription for real-time command updates (much more efficient than polling)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.commandSubscription = (this.convex as any).onUpdate(
+      api.localSandbox.getPendingCommands,
+      {
+        token: this.config.token,
+        connectionId: this.connectionId,
+      },
+      async (data: PendingCommandsResult) => {
+        if (this.isShuttingDown || !data?.commands) return;
 
-        if (data?.commands && data.commands.length > 0) {
-          for (const cmd of data.commands) {
-            await this.executeCommand(cmd);
-          }
+        for (const cmd of data.commands) {
+          await this.executeCommand(cmd);
         }
-      } catch {
-        // Ignore polling errors
-      }
-    }, 500);
+      },
+    );
   }
 
   private async executeCommand(cmd: Command): Promise<void> {
@@ -406,7 +402,7 @@ class LocalSandboxClient {
           // Ignore transient heartbeat errors
         }
       }
-    }, 10000);
+    }, 30000);
   }
 
   private stopHeartbeat(): void {
@@ -416,10 +412,10 @@ class LocalSandboxClient {
     }
   }
 
-  private stopPolling(): void {
-    if (this.pollInterval) {
-      clearInterval(this.pollInterval);
-      this.pollInterval = undefined;
+  private stopCommandSubscription(): void {
+    if (this.commandSubscription) {
+      this.commandSubscription();
+      this.commandSubscription = undefined;
     }
   }
 
@@ -428,7 +424,7 @@ class LocalSandboxClient {
 
     this.isShuttingDown = true;
     this.stopHeartbeat();
-    this.stopPolling();
+    this.stopCommandSubscription();
 
     if (this.connectionId) {
       try {
@@ -452,6 +448,9 @@ class LocalSandboxClient {
         console.error(chalk.red("Error removing container:"), message);
       }
     }
+
+    // Close the Convex client to clean up WebSocket connection
+    await this.convex.close();
   }
 }
 

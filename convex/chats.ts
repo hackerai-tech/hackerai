@@ -4,8 +4,8 @@ import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 
 export function validateServiceKey(serviceKey?: string): void {
-  if (serviceKey && serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
-    throw new Error("Unauthorized: Invalid service key");
+  if (!serviceKey || serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
+    throw new Error("Unauthorized: Invalid or missing service key");
   }
 }
 
