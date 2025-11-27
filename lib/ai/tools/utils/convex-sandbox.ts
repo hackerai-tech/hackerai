@@ -181,6 +181,11 @@ Commands run inside the Docker container with network access.`;
   // Max chunk size ~500KB base64 to stay under Convex's 1MB limit
   private static readonly MAX_CHUNK_SIZE = 500 * 1024;
 
+  // Escape paths for shell using single quotes (prevents $(), backticks, etc.)
+  private static escapePath(path: string): string {
+    return `'${path.replace(/'/g, "'\\''")}'`;
+  }
+
   files = {
     write: async (
       path: string,
@@ -211,26 +216,30 @@ Commands run inside the Docker container with network access.`;
         }
 
         // First chunk creates the file, subsequent chunks append
+        const escapedPath = ConvexSandbox.escapePath(path);
         for (let i = 0; i < chunks.length; i++) {
           const operator = i === 0 ? ">" : ">>";
           // Use printf to avoid echo interpretation issues
           await this.commands.run(
-            `printf '%s' "${chunks[i]}" | base64 -d ${operator} "${path}"`,
+            `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
           );
         }
       } else {
         // Generate a unique delimiter to avoid content collision
         const delimiter = `HACKERAI_EOF_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+        const escapedPath = ConvexSandbox.escapePath(path);
         const command = isBinary
-          ? `printf '%s' "${contentStr}" | base64 -d > "${path}"`
-          : `cat > "${path}" <<'${delimiter}'\n${contentStr}\n${delimiter}`;
+          ? `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`
+          : `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
 
         await this.commands.run(command);
       }
     },
 
     read: async (path: string): Promise<string> => {
-      const result = await this.commands.run(`cat "${path}"`);
+      const result = await this.commands.run(
+        `cat ${ConvexSandbox.escapePath(path)}`,
+      );
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read file: ${result.stderr}`);
       }
@@ -238,12 +247,12 @@ Commands run inside the Docker container with network access.`;
     },
 
     remove: async (path: string): Promise<void> => {
-      await this.commands.run(`rm -rf "${path}"`);
+      await this.commands.run(`rm -rf ${ConvexSandbox.escapePath(path)}`);
     },
 
     list: async (path: string = "/"): Promise<{ name: string }[]> => {
       const result = await this.commands.run(
-        `find "${path}" -maxdepth 1 -type f 2>/dev/null || true`,
+        `find ${ConvexSandbox.escapePath(path)} -maxdepth 1 -type f 2>/dev/null || true`,
       );
       if (result.exitCode !== 0) return [];
 
@@ -257,13 +266,13 @@ Commands run inside the Docker container with network access.`;
       // Ensure parent directory exists
       const dir = path.substring(0, path.lastIndexOf("/"));
       if (dir) {
-        await this.commands.run(`mkdir -p "${dir}"`);
+        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`);
       }
       // Download file directly from URL using curl
       // Use single quotes for URL and escape embedded single quotes to prevent shell injection
-      const escapedUrl = url.replace(/'/g, "'\"'\"'");
+      const escapedUrl = url.replace(/'/g, "'\\''");
       const result = await this.commands.run(
-        `curl -fsSL -o "${path}" '${escapedUrl}'`,
+        `curl -fsSL -o ${ConvexSandbox.escapePath(path)} '${escapedUrl}'`,
       );
       if (result.exitCode !== 0) {
         throw new Error(`Failed to download file: ${result.stderr}`);
@@ -277,11 +286,11 @@ Commands run inside the Docker container with network access.`;
     ): Promise<void> => {
       // Upload file directly to presigned URL using curl
       // Use --data-binary to preserve binary data exactly
-      // Use single quotes for URL and escape embedded single quotes to prevent shell injection
-      const escapedUrl = uploadUrl.replace(/'/g, "'\"'\"'");
-      const escapedContentType = contentType.replace(/'/g, "'\"'\"'");
+      // Use single quotes for URL/contentType and escape embedded single quotes
+      const escapedUrl = uploadUrl.replace(/'/g, "'\\''");
+      const escapedContentType = contentType.replace(/'/g, "'\\''");
       const result = await this.commands.run(
-        `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @"${path}" '${escapedUrl}'`,
+        `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @${ConvexSandbox.escapePath(path)} '${escapedUrl}'`,
         { timeoutMs: 120000 }, // 2 minutes for large files
       );
       if (result.exitCode !== 0) {
