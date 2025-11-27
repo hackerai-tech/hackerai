@@ -328,9 +328,11 @@ class LocalSandboxClient {
           }),
         );
       } else {
-        const escapedCommand = fullCommand.replace(/"/g, '\\"');
+        // Use single quotes to prevent host shell from interpreting $(), backticks, etc.
+        // This ensures ALL command execution happens inside the Docker container
+        const escapedCommand = fullCommand.replace(/'/g, "'\\''");
         result = await execAsync(
-          `docker exec ${this.containerId} bash -c "${escapedCommand}"`,
+          `docker exec ${this.containerId} bash -c '${escapedCommand}'`,
           { timeout: timeout ?? 30000 },
         ).catch(
           (error: {
