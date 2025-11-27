@@ -375,10 +375,13 @@ class LocalSandboxClient {
     }
   }
 
+  private subscriptionCallCount = 0;
+  private lastLogTime = Date.now();
+
   private startCommandSubscription(): void {
     if (!this.connectionId) return;
 
-    // Use Convex subscription for real-time command updates (much more efficient than polling)
+    // Use Convex subscription for real-time command updates
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     this.commandSubscription = (this.convex as any).onUpdate(
       api.localSandbox.getPendingCommands,
@@ -387,6 +390,20 @@ class LocalSandboxClient {
         connectionId: this.connectionId,
       },
       async (data: PendingCommandsResult) => {
+        this.subscriptionCallCount++;
+        const now = Date.now();
+        const elapsed = now - this.lastLogTime;
+
+        // Log subscription stats every 10 seconds
+        if (elapsed >= 10000) {
+          const rate = (this.subscriptionCallCount / (elapsed / 1000)).toFixed(1);
+          console.log(
+            chalk.gray(`[debug] Subscription callbacks: ${this.subscriptionCallCount} (${rate}/sec), commands: ${data?.commands?.length ?? 0}`),
+          );
+          this.subscriptionCallCount = 0;
+          this.lastLogTime = now;
+        }
+
         if (this.isShuttingDown || !data?.commands) return;
 
         for (const cmd of data.commands) {
