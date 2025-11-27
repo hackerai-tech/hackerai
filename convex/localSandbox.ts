@@ -121,26 +121,6 @@ export const regenerateToken = mutation({
   },
 });
 
-export const verifyToken = query({
-  args: {
-    token: v.string(),
-  },
-  returns: v.object({
-    valid: v.boolean(),
-    userId: v.union(v.string(), v.null()),
-  }),
-  handler: async (ctx, { token }) => {
-    const tokenRecord = await ctx.db
-      .query("local_sandbox_tokens")
-      .withIndex("by_token", (q) => q.eq("token", token))
-      .first();
-
-    return tokenRecord
-      ? { valid: true, userId: tokenRecord.user_id }
-      : { valid: false, userId: null };
-  },
-});
-
 // ============================================================================
 // CONNECTION MANAGEMENT
 // ============================================================================
@@ -386,57 +366,6 @@ export const listConnectionsForBackend = query({
   },
 });
 
-export const isConnected = query({
-  args: {
-    serviceKey: v.string(),
-    connectionId: v.string(),
-  },
-  returns: v.object({
-    connected: v.boolean(),
-    containerId: v.optional(v.string()),
-    mode: v.optional(
-      v.union(v.literal("docker"), v.literal("dangerous"), v.literal("custom")),
-    ),
-    imageName: v.optional(v.string()),
-    osInfo: v.optional(
-      v.object({
-        platform: v.string(),
-        arch: v.string(),
-        release: v.string(),
-        hostname: v.string(),
-      }),
-    ),
-  }),
-  handler: async (ctx, { serviceKey, connectionId }) => {
-    validateServiceKey(serviceKey);
-
-    const connection = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
-      .first();
-
-    if (!connection || connection.status !== "connected") {
-      return { connected: false };
-    }
-
-    // Check heartbeat timeout (30 seconds)
-    const now = Date.now();
-    const timeout = 30000;
-
-    if (now - connection.last_heartbeat > timeout) {
-      return { connected: false };
-    }
-
-    return {
-      connected: true,
-      containerId: connection.container_id,
-      mode: connection.mode,
-      imageName: connection.image_name,
-      osInfo: connection.os_info,
-    };
-  },
-});
-
 // ============================================================================
 // COMMAND EXECUTION
 // ============================================================================
@@ -625,46 +554,6 @@ export const submitResult = mutation({
     });
 
     return { success: true };
-  },
-});
-
-export const getResult = query({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    commandId: v.string(),
-  },
-  returns: v.object({
-    found: v.boolean(),
-    stdout: v.optional(v.string()),
-    stderr: v.optional(v.string()),
-    exitCode: v.optional(v.number()),
-    duration: v.optional(v.number()),
-  }),
-  handler: async (ctx, { serviceKey, userId, commandId }) => {
-    validateServiceKey(serviceKey);
-
-    const result = await ctx.db
-      .query("local_sandbox_results")
-      .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
-      .first();
-
-    if (!result) {
-      return { found: false };
-    }
-
-    // Verify ownership - result must belong to the requesting user
-    if (result.user_id !== userId) {
-      return { found: false };
-    }
-
-    return {
-      found: true,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exit_code,
-      duration: result.duration,
-    };
   },
 });
 

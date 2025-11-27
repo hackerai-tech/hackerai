@@ -1,7 +1,6 @@
 import { EventEmitter } from "events";
 import { ConvexHttpClient, ConvexClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
-import { truncateOutput } from "@/lib/token-utils";
 
 interface CommandResult {
   stdout: string;
@@ -92,13 +91,6 @@ Commands run inside the Docker container with network access.`;
     return this.getSandboxContext();
   }
 
-  /**
-   * Get connection info
-   */
-  getConnectionInfo(): ConnectionInfo {
-    return this.connectionInfo;
-  }
-
   // E2B-compatible interface: commands.run()
   commands = {
     run: async (
@@ -143,10 +135,10 @@ Commands run inside the Docker container with network access.`;
         opts.onStderr(result.stderr);
       }
 
-      // Truncate output for LLM context limits
+      // Output is already truncated by the local sandbox before submission
       return {
-        stdout: truncateOutput({ content: result.stdout || "" }),
-        stderr: truncateOutput({ content: result.stderr || "" }),
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
         exitCode: result.exitCode ?? -1, // -1 indicates unknown exit status
       };
     },
@@ -324,11 +316,6 @@ Commands run inside the Docker container with network access.`;
       }
     },
   };
-
-  // E2B-compatible interface: getHost()
-  getHost(port: number): string {
-    return `localhost:${port}`;
-  }
 
   // E2B-compatible interface: close()
   async close(): Promise<void> {

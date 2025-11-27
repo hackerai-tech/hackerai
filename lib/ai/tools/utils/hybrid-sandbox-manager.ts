@@ -212,20 +212,6 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Check if currently using local sandbox
-   */
-  isUsingLocal(): boolean {
-    return this.isLocal;
-  }
-
-  /**
-   * Get current connection ID (null if using E2B)
-   */
-  getCurrentConnectionId(): string | null {
-    return this.currentConnectionId;
-  }
-
-  /**
    * Get expected sandbox context for the system prompt based on preference
    * without initializing the sandbox. Returns null for E2B (uses default prompt).
    */
