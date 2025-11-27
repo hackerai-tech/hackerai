@@ -733,7 +733,7 @@ export const cleanupOldCommands = internalMutation({
       deletedCount++;
     }
 
-    // Delete orphaned pending commands (stuck for more than 5 minutes)
+    // Delete orphaned pending commands (stuck for more than 1 hour)
     const stuckPendingCommands = await ctx.db
       .query("local_sandbox_commands")
       .withIndex("by_status_and_created_at", (q) =>
@@ -746,7 +746,7 @@ export const cleanupOldCommands = internalMutation({
       deletedCount++;
     }
 
-    // Delete orphaned executing commands (stuck for more than 5 minutes)
+    // Delete orphaned executing commands (stuck for more than 1 hour)
     const stuckExecutingCommands = await ctx.db
       .query("local_sandbox_commands")
       .withIndex("by_status_and_created_at", (q) =>
