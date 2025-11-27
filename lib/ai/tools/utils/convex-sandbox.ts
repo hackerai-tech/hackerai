@@ -1,5 +1,5 @@
 import { EventEmitter } from "events";
-import { ConvexHttpClient } from "convex/browser";
+import { ConvexHttpClient, ConvexClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { truncateOutput } from "@/lib/token-utils";
 
@@ -31,6 +31,7 @@ interface ConnectionInfo {
  */
 export class ConvexSandbox extends EventEmitter {
   private convex: ConvexHttpClient;
+  private realtimeClient: ConvexClient;
   private connectionInfo: ConnectionInfo;
 
   constructor(
@@ -41,6 +42,7 @@ export class ConvexSandbox extends EventEmitter {
   ) {
     super();
     this.convex = new ConvexHttpClient(convexUrl);
+    this.realtimeClient = new ConvexClient(convexUrl);
     this.connectionInfo = connectionInfo;
   }
 
@@ -154,30 +156,51 @@ Commands run inside the Docker container with network access.`;
     commandId: string,
     timeout: number,
   ): Promise<CommandResult> {
-    const startTime = Date.now();
-    const pollInterval = 200; // Poll every 200ms
     const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
-    while (Date.now() - startTime < maxWaitTime) {
-      const result = await this.convex.query(api.localSandbox.getResult, {
-        serviceKey: this.serviceKey,
-        userId: this.userId,
-        commandId,
-      });
+    return new Promise((resolve, reject) => {
+      let timeoutId: NodeJS.Timeout;
+      let unsubscribe: (() => void) | undefined;
 
-      if (result?.found) {
-        return {
-          stdout: result.stdout ?? "",
-          stderr: result.stderr ?? "",
-          exitCode: result.exitCode ?? -1, // -1 indicates unknown exit status
-        };
-      }
+      const cleanup = () => {
+        if (timeoutId) clearTimeout(timeoutId);
+        if (unsubscribe) unsubscribe();
+      };
 
-      // Wait before next poll
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-    }
+      // Set up timeout
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error(`Command timeout after ${maxWaitTime}ms`));
+      }, maxWaitTime);
 
-    throw new Error(`Command timeout after ${maxWaitTime}ms`);
+      // Subscribe to result using real-time client
+      unsubscribe = this.realtimeClient.onUpdate(
+        api.localSandbox.subscribeToResult,
+        { userId: this.userId, commandId },
+        async (result) => {
+          if (result?.found) {
+            cleanup();
+
+            // Delete result after read to reduce storage
+            this.convex
+              .mutation(api.localSandbox.deleteResult, {
+                serviceKey: this.serviceKey,
+                userId: this.userId,
+                commandId,
+              })
+              .catch(() => {
+                // Ignore cleanup errors
+              });
+
+            resolve({
+              stdout: result.stdout ?? "",
+              stderr: result.stderr ?? "",
+              exitCode: result.exitCode ?? -1,
+            });
+          }
+        },
+      );
+    });
   }
 
   // E2B-compatible interface: files operations
@@ -309,6 +332,7 @@ Commands run inside the Docker container with network access.`;
 
   // E2B-compatible interface: close()
   async close(): Promise<void> {
+    await this.realtimeClient.close();
     this.emit("close");
   }
 

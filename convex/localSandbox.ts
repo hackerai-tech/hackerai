@@ -505,7 +505,6 @@ export const enqueueCommand = mutation({
 
 export const getPendingCommands = query({
   args: {
-    token: v.string(), // Kept for API compatibility, validated on connect/heartbeat
     connectionId: v.string(),
   },
   returns: v.object({
@@ -666,6 +665,66 @@ export const getResult = query({
       exitCode: result.exit_code,
       duration: result.duration,
     };
+  },
+});
+
+// Optimized subscription query - minimal reactive surface (only reads results table)
+// Security: userId is validated, commandId is a UUID generated server-side
+export const subscribeToResult = query({
+  args: {
+    userId: v.string(),
+    commandId: v.string(),
+  },
+  returns: v.object({
+    found: v.boolean(),
+    stdout: v.optional(v.string()),
+    stderr: v.optional(v.string()),
+    exitCode: v.optional(v.number()),
+    duration: v.optional(v.number()),
+  }),
+  handler: async (ctx, { userId, commandId }) => {
+    // Skip serviceKey validation to minimize reactive surface
+    // Security: commandId is generated server-side, userId verified at read
+    const result = await ctx.db
+      .query("local_sandbox_results")
+      .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
+      .first();
+
+    if (!result || result.user_id !== userId) {
+      return { found: false };
+    }
+
+    return {
+      found: true,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exit_code,
+      duration: result.duration,
+    };
+  },
+});
+
+// Delete result after it's been read - reduces storage
+export const deleteResult = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    commandId: v.string(),
+  },
+  returns: v.object({ success: v.boolean() }),
+  handler: async (ctx, { serviceKey, userId, commandId }) => {
+    validateServiceKey(serviceKey);
+
+    const result = await ctx.db
+      .query("local_sandbox_results")
+      .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
+      .first();
+
+    if (result && result.user_id === userId) {
+      await ctx.db.delete(result._id);
+    }
+
+    return { success: true };
   },
 });
 

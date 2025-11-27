@@ -383,7 +383,6 @@ class LocalSandboxClient {
     this.commandSubscription = (this.convex as any).onUpdate(
       api.localSandbox.getPendingCommands,
       {
-        token: this.config.token,
         connectionId: this.connectionId,
       },
       async (data: PendingCommandsResult) => {
@@ -473,8 +472,13 @@ class LocalSandboxClient {
     }
   }
 
-  private startHeartbeat(): void {
-    this.heartbeatInterval = setInterval(async () => {
+  private scheduleNextHeartbeat(): void {
+    // Add jitter (±5s) to prevent thundering herd when multiple clients connect
+    const baseInterval = 30000;
+    const jitter = Math.floor(Math.random() * 10000) - 5000; // -5000 to +5000
+    const interval = baseInterval + jitter;
+
+    this.heartbeatInterval = setTimeout(async () => {
       if (this.connectionId && !this.isShuttingDown) {
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -500,12 +504,20 @@ class LocalSandboxClient {
           // Ignore transient heartbeat errors
         }
       }
-    }, 30000);
+      // Schedule next heartbeat with fresh jitter
+      if (!this.isShuttingDown) {
+        this.scheduleNextHeartbeat();
+      }
+    }, interval);
+  }
+
+  private startHeartbeat(): void {
+    this.scheduleNextHeartbeat();
   }
 
   private stopHeartbeat(): void {
     if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
+      clearTimeout(this.heartbeatInterval);
       this.heartbeatInterval = undefined;
     }
   }
