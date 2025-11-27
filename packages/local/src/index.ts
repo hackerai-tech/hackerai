@@ -13,11 +13,127 @@
  */
 
 import { ConvexClient } from "convex/browser";
-import { exec, spawn } from "child_process";
-import { promisify } from "util";
+import { spawn, ChildProcess } from "child_process";
 import os from "os";
 
-const execAsync = promisify(exec);
+// Align with LLM context limits: ~2048 tokens ≈ 6000 chars
+const MAX_OUTPUT_SIZE = 6000;
+
+// Truncation marker for 25% head + 75% tail strategy
+const TRUNCATION_MARKER =
+  "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
+
+/**
+ * Truncates output using 25% head + 75% tail strategy.
+ * This preserves both the command start (context) and the end (final results/errors).
+ */
+function truncateOutput(content: string, maxSize: number = MAX_OUTPUT_SIZE): string {
+  if (content.length <= maxSize) return content;
+
+  const markerLength = TRUNCATION_MARKER.length;
+  const budgetForContent = maxSize - markerLength;
+
+  // 25% head + 75% tail strategy
+  const headBudget = Math.floor(budgetForContent * 0.25);
+  const tailBudget = budgetForContent - headBudget;
+
+  const head = content.slice(0, headBudget);
+  const tail = content.slice(-tailBudget);
+
+  return head + TRUNCATION_MARKER + tail;
+}
+
+interface ShellCommandResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+/**
+ * Runs a shell command using spawn for better output control.
+ * Collects stdout/stderr and handles timeouts gracefully.
+ */
+function runShellCommand(
+  command: string,
+  options: {
+    timeout?: number;
+    shell?: string;
+    maxOutputSize?: number;
+  } = {},
+): Promise<ShellCommandResult> {
+  const { timeout = 30000, shell = "/bin/bash", maxOutputSize = MAX_OUTPUT_SIZE } = options;
+
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let killed = false;
+    let timeoutId: NodeJS.Timeout | undefined;
+
+    const proc: ChildProcess = spawn(shell, ["-c", command], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    // Set up timeout
+    if (timeout > 0) {
+      timeoutId = setTimeout(() => {
+        killed = true;
+        proc.kill("SIGTERM");
+        // Force kill after 2 seconds if still running
+        setTimeout(() => {
+          if (!proc.killed) {
+            proc.kill("SIGKILL");
+          }
+        }, 2000);
+      }, timeout);
+    }
+
+    proc.stdout?.on("data", (data: Buffer) => {
+      stdout += data.toString();
+      // Prevent memory issues by capping collection (we'll truncate at the end)
+      if (stdout.length > maxOutputSize * 2) {
+        stdout = truncateOutput(stdout, maxOutputSize * 2);
+      }
+    });
+
+    proc.stderr?.on("data", (data: Buffer) => {
+      stderr += data.toString();
+      if (stderr.length > maxOutputSize * 2) {
+        stderr = truncateOutput(stderr, maxOutputSize * 2);
+      }
+    });
+
+    proc.on("close", (code) => {
+      if (timeoutId) clearTimeout(timeoutId);
+
+      // Final truncation to fit Convex limits
+      const truncatedStdout = truncateOutput(stdout, maxOutputSize);
+      const truncatedStderr = truncateOutput(stderr, maxOutputSize);
+
+      if (killed) {
+        resolve({
+          stdout: truncatedStdout,
+          stderr: truncatedStderr + "\n[Command timed out and was terminated]",
+          exitCode: 124, // Standard timeout exit code
+        });
+      } else {
+        resolve({
+          stdout: truncatedStdout,
+          stderr: truncatedStderr,
+          exitCode: code ?? 1,
+        });
+      }
+    });
+
+    proc.on("error", (error) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      resolve({
+        stdout: truncateOutput(stdout, maxOutputSize),
+        stderr: truncateOutput(stderr + "\n" + error.message, maxOutputSize),
+        exitCode: 1,
+      });
+    });
+  });
+}
 
 function runWithOutput(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -116,10 +232,8 @@ class LocalSandboxClient {
     console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
 
     if (!this.config.dangerous) {
-      try {
-        await execAsync("docker --version");
-        console.log(chalk.green("✓ Docker is available"));
-      } catch {
+      const dockerCheck = await runShellCommand("docker --version", { timeout: 5000 });
+      if (dockerCheck.exitCode !== 0) {
         console.error(
           chalk.red(
             "❌ Docker not found. Please install Docker or use --dangerous mode.",
@@ -127,6 +241,7 @@ class LocalSandboxClient {
         );
         process.exit(1);
       }
+      console.log(chalk.green("✓ Docker is available"));
 
       this.containerId = await this.createContainer();
       console.log(chalk.green(`✓ Container: ${this.containerId.slice(0, 12)}`));
@@ -170,11 +285,16 @@ class LocalSandboxClient {
     }
 
     console.log(chalk.blue("Creating Docker container..."));
-    const { stdout } = await execAsync(
+    const result = await runShellCommand(
       `docker run -d --network host ${this.config.image} tail -f /dev/null`,
+      { timeout: 60000 },
     );
 
-    return stdout.trim();
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to create container: ${result.stderr}`);
+    }
+
+    return result.stdout.trim();
   }
 
   private getOsInfo(): OsInfo {
@@ -305,42 +425,20 @@ class LocalSandboxClient {
         fullCommand = `${envString}; ${fullCommand}`;
       }
 
-      let result: { stdout: string; stderr: string; code?: number };
+      let result: ShellCommandResult;
 
       if (this.config.dangerous) {
-        result = await execAsync(fullCommand, {
+        result = await runShellCommand(fullCommand, {
           timeout: timeout ?? 30000,
           shell: "/bin/bash",
-        }).catch(
-          (error: {
-            stdout?: string;
-            stderr?: string;
-            message?: string;
-            code?: number;
-          }) => ({
-            stdout: error.stdout || "",
-            stderr: error.stderr || error.message || "",
-            code: error.code || 1,
-          }),
-        );
+        });
       } else {
         // Use single quotes to prevent host shell from interpreting $(), backticks, etc.
         // This ensures ALL command execution happens inside the Docker container
         const escapedCommand = fullCommand.replace(/'/g, "'\\''");
-        result = await execAsync(
+        result = await runShellCommand(
           `docker exec ${this.containerId} bash -c '${escapedCommand}'`,
           { timeout: timeout ?? 30000 },
-        ).catch(
-          (error: {
-            stdout?: string;
-            stderr?: string;
-            message?: string;
-            code?: number;
-          }) => ({
-            stdout: error.stdout || "",
-            stderr: error.stderr || error.message || "",
-            code: error.code || 1,
-          }),
         );
       }
 
@@ -350,9 +448,9 @@ class LocalSandboxClient {
       await (this.convex as any).mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         token: this.config.token,
-        stdout: result.stdout || "",
-        stderr: result.stderr || "",
-        exitCode: result.code || 0,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
         duration,
       });
 
@@ -366,7 +464,7 @@ class LocalSandboxClient {
         commandId: command_id,
         token: this.config.token,
         stdout: "",
-        stderr: message,
+        stderr: truncateOutput(message),
         exitCode: 1,
         duration,
       });
@@ -426,31 +524,42 @@ class LocalSandboxClient {
     this.stopHeartbeat();
     this.stopCommandSubscription();
 
-    if (this.connectionId) {
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await (this.convex as any).mutation(api.localSandbox.disconnect, {
-          token: this.config.token,
-          connectionId: this.connectionId,
+    // Set up force-exit timeout (5 seconds)
+    const forceExitTimeout = setTimeout(() => {
+      console.log(chalk.yellow("⚠️  Force exiting after 5 second timeout..."));
+      process.exit(1);
+    }, 5000);
+
+    try {
+      if (this.connectionId) {
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (this.convex as any).mutation(api.localSandbox.disconnect, {
+            token: this.config.token,
+            connectionId: this.connectionId,
+          });
+          console.log(chalk.green("✓ Disconnected"));
+        } catch {
+          // Ignore disconnect errors
+        }
+      }
+
+      if (this.containerId) {
+        const result = await runShellCommand(`docker rm -f ${this.containerId}`, {
+          timeout: 3000,
         });
-        console.log(chalk.green("✓ Disconnected"));
-      } catch {
-        // Ignore disconnect errors
+        if (result.exitCode === 0) {
+          console.log(chalk.green("✓ Container removed"));
+        } else {
+          console.error(chalk.red("Error removing container:"), result.stderr);
+        }
       }
-    }
 
-    if (this.containerId) {
-      try {
-        await execAsync(`docker rm -f ${this.containerId}`);
-        console.log(chalk.green("✓ Container removed"));
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(chalk.red("Error removing container:"), message);
-      }
+      // Close the Convex client to clean up WebSocket connection
+      await this.convex.close();
+    } finally {
+      clearTimeout(forceExitTimeout);
     }
-
-    // Close the Convex client to clean up WebSocket connection
-    await this.convex.close();
   }
 }
 

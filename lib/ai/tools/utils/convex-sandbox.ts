@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { truncateOutput } from "@/lib/token-utils";
 
 interface CommandResult {
   stdout: string;
@@ -140,9 +141,10 @@ Commands run inside the Docker container with network access.`;
         opts.onStderr(result.stderr);
       }
 
+      // Truncate output for LLM context limits
       return {
-        stdout: result.stdout || "",
-        stderr: result.stderr || "",
+        stdout: truncateOutput({ content: result.stdout || "" }),
+        stderr: truncateOutput({ content: result.stderr || "" }),
         exitCode: result.exitCode ?? -1, // -1 indicates unknown exit status
       };
     },

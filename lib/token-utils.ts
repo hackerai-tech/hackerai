@@ -25,7 +25,8 @@ export const STREAM_MAX_TOKENS = 2048;
 export const TOOL_DEFAULT_MAX_TOKENS = 2048;
 
 // Truncation messages
-export const TRUNCATION_MESSAGE = "\n\n[Output truncated because too long]";
+export const TRUNCATION_MESSAGE =
+  "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
 export const FILE_READ_TRUNCATION_MESSAGE =
   "\n\n[Content truncated due to size limit. Use line ranges to read in chunks]";
 export const TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
@@ -120,24 +121,34 @@ export const countMessagesTokens = (
 };
 
 /**
- * Truncates content by token count to stay within specified limits
+ * Truncates content by token count using 25% head + 75% tail strategy.
+ * This preserves both the command start (context) and the end (final results/errors),
+ * which is typically more useful for debugging than keeping only the beginning.
  */
 export const truncateContent = (
   content: string,
-  suffix: string = TRUNCATION_MESSAGE,
+  marker: string = TRUNCATION_MESSAGE,
 ): string => {
   const tokens = encode(content);
   if (tokens.length <= TOOL_DEFAULT_MAX_TOKENS) return content;
 
-  const suffixTokens = countTokens(suffix);
-  if (TOOL_DEFAULT_MAX_TOKENS <= suffixTokens) {
+  const markerTokens = countTokens(marker);
+  if (TOOL_DEFAULT_MAX_TOKENS <= markerTokens) {
     return TOOL_DEFAULT_MAX_TOKENS <= 0
       ? ""
-      : decode(encode(suffix).slice(-TOOL_DEFAULT_MAX_TOKENS));
+      : decode(encode(marker).slice(-TOOL_DEFAULT_MAX_TOKENS));
   }
 
-  const budgetForContent = TOOL_DEFAULT_MAX_TOKENS - suffixTokens;
-  return decode(tokens.slice(0, budgetForContent)) + suffix;
+  const budgetForContent = TOOL_DEFAULT_MAX_TOKENS - markerTokens;
+
+  // 25% head + 75% tail strategy
+  const headBudget = Math.floor(budgetForContent * 0.25);
+  const tailBudget = budgetForContent - headBudget;
+
+  const headTokens = tokens.slice(0, headBudget);
+  const tailTokens = tokens.slice(-tailBudget);
+
+  return decode(headTokens) + marker + decode(tailTokens);
 };
 
 /**
