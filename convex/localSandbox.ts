@@ -458,6 +458,35 @@ export const enqueueCommand = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // Validate connection exists and belongs to the specified user
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) =>
+        q.eq("connection_id", args.connectionId),
+      )
+      .first();
+
+    if (!connection) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Connection not found",
+      });
+    }
+
+    if (connection.user_id !== args.userId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Connection does not belong to this user",
+      });
+    }
+
+    if (connection.status !== "connected") {
+      throw new ConvexError({
+        code: "BAD_REQUEST",
+        message: "Connection is not active",
+      });
+    }
+
     await ctx.db.insert("local_sandbox_commands", {
       user_id: args.userId,
       connection_id: args.connectionId,
