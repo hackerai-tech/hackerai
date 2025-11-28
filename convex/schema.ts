@@ -166,7 +166,7 @@ export default defineSchema({
     connection_id: v.string(),
     command_id: v.string(),
     command: v.string(),
-    env: v.optional(v.any()),
+    env: v.optional(v.record(v.string(), v.string())),
     cwd: v.optional(v.string()),
     timeout: v.optional(v.number()),
     background: v.optional(v.boolean()),

@@ -84,11 +84,11 @@ export class HybridSandboxManager implements SandboxManager {
    * Set the sandbox preference for this chat
    * @param preference - "e2b" or a specific connectionId
    */
-  setSandboxPreference(preference: SandboxPreference): void {
+  async setSandboxPreference(preference: SandboxPreference): Promise<void> {
     this.sandboxPreference = preference;
     // Force re-evaluation on next getSandbox call
     if (preference !== "e2b" && this.currentConnectionId !== preference) {
-      this.closeCurrentSandbox();
+      await this.closeCurrentSandbox();
       this.sandbox = null;
     }
   }

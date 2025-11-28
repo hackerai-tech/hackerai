@@ -19,6 +19,9 @@ import os from "os";
 // Align with LLM context limits: ~2048 tokens ≈ 6000 chars
 const MAX_OUTPUT_SIZE = 6000;
 
+// Idle timeout: auto-terminate after 1 hour without commands
+const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
+
 // Truncation marker for 25% head + 75% tail strategy
 const TRUNCATION_MARKER =
   "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
@@ -182,6 +185,7 @@ interface Config {
   image: string;
   dangerous: boolean;
   build: boolean;
+  persist: boolean;
 }
 
 interface OsInfo {
@@ -224,9 +228,11 @@ class LocalSandboxClient {
   private heartbeatInterval?: NodeJS.Timeout;
   private commandSubscription?: () => void;
   private isShuttingDown = false;
+  private lastActivityTime: number;
 
   constructor(private config: Config) {
     this.convex = new ConvexClient(config.convexUrl);
+    this.lastActivityTime = Date.now();
   }
 
   async start(): Promise<void> {
@@ -257,9 +263,62 @@ class LocalSandboxClient {
     await this.connect();
   }
 
+  private getContainerName(): string {
+    // Generate a predictable container name for --persist mode
+    // Sanitize the connection name to be docker-compatible
+    const sanitized = this.config.name
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
+    return `hackerai-sandbox-${sanitized || "default"}`;
+  }
+
+  private async findExistingContainer(containerName: string): Promise<{ id: string; running: boolean } | null> {
+    // Check if container with this name exists
+    const result = await runShellCommand(
+      `docker ps -a --filter "name=^${containerName}$" --format "{{.ID}}|{{.State}}"`,
+      { timeout: 5000 },
+    );
+
+    if (result.exitCode !== 0 || !result.stdout.trim()) {
+      return null;
+    }
+
+    const [id, state] = result.stdout.trim().split("|");
+    return { id, running: state === "running" };
+  }
+
   private async createContainer(): Promise<string> {
     const image = this.config.image;
     const isDefaultImage = image === DEFAULT_IMAGE;
+
+    // In persist mode, try to reuse existing container
+    if (this.config.persist) {
+      const containerName = this.getContainerName();
+      const existing = await this.findExistingContainer(containerName);
+
+      if (existing) {
+        if (existing.running) {
+          console.log(chalk.green(`✓ Reusing existing container: ${containerName}`));
+          return existing.id;
+        } else {
+          // Container exists but stopped - start it
+          console.log(chalk.blue(`Starting existing container: ${containerName}`));
+          const startResult = await runShellCommand(
+            `docker start ${existing.id}`,
+            { timeout: 30000 },
+          );
+          if (startResult.exitCode === 0) {
+            console.log(chalk.green(`✓ Container started: ${containerName}`));
+            return existing.id;
+          }
+          // If start failed, remove and create fresh
+          console.log(chalk.yellow(`⚠️  Failed to start, creating new container...`));
+          await runShellCommand(`docker rm -f ${existing.id}`, { timeout: 5000 });
+        }
+      }
+    }
 
     if (this.config.build) {
       console.log(
@@ -286,8 +345,11 @@ class LocalSandboxClient {
     }
 
     console.log(chalk.blue("Creating Docker container..."));
+
+    // In persist mode, use a named container
+    const nameFlag = this.config.persist ? `--name ${this.getContainerName()} ` : "";
     const result = await runShellCommand(
-      `docker run -d --network host ${this.config.image} tail -f /dev/null`,
+      `docker run -d ${nameFlag}--network host ${this.config.image} tail -f /dev/null`,
       { timeout: 60000 },
     );
 
@@ -356,7 +418,7 @@ class LocalSandboxClient {
       console.log(chalk.green("✓ Authenticated"));
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
       console.log(chalk.gray(`Connection: ${this.connectionId}`));
-      console.log(chalk.gray(`Mode: ${this.getModeDisplay()}`));
+      console.log(chalk.gray(`Mode: ${this.getModeDisplay()}${this.config.persist ? " (persistent)" : ""}`));
 
       this.startHeartbeat();
       this.startCommandSubscription();
@@ -399,6 +461,9 @@ class LocalSandboxClient {
   private async executeCommand(cmd: Command): Promise<void> {
     const { command_id, command, env, cwd, timeout, background } = cmd;
     const startTime = Date.now();
+
+    // Update activity time to prevent idle timeout
+    this.lastActivityTime = Date.now();
 
     console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}Executing: ${command}`));
 
@@ -535,6 +600,20 @@ class LocalSandboxClient {
 
     this.heartbeatInterval = setTimeout(async () => {
       if (this.connectionId && !this.isShuttingDown) {
+        // Check for idle timeout
+        const idleTime = Date.now() - this.lastActivityTime;
+        if (idleTime >= IDLE_TIMEOUT_MS) {
+          const idleMinutes = Math.floor(idleTime / 60000);
+          console.log(
+            chalk.yellow(
+              `\n⏰ Idle timeout: No commands received for ${idleMinutes} minutes`,
+            ),
+          );
+          console.log(chalk.yellow("Auto-terminating to save resources..."));
+          await this.cleanup();
+          process.exit(0);
+        }
+
         try {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const result = (await (this.convex as any).mutation(
@@ -555,8 +634,9 @@ class LocalSandboxClient {
             await this.cleanup();
             process.exit(1);
           }
-        } catch {
-          // Ignore transient heartbeat errors
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.debug(`Heartbeat error (will retry): ${message}`);
         }
       }
       // Schedule next heartbeat with fresh jitter
@@ -606,19 +686,25 @@ class LocalSandboxClient {
             connectionId: this.connectionId,
           });
           console.log(chalk.green("✓ Disconnected"));
-        } catch {
-          // Ignore disconnect errors
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.warn(chalk.yellow(`⚠️  Failed to disconnect: ${message}`));
         }
       }
 
       if (this.containerId) {
-        const result = await runShellCommand(`docker rm -f ${this.containerId}`, {
-          timeout: 3000,
-        });
-        if (result.exitCode === 0) {
-          console.log(chalk.green("✓ Container removed"));
+        if (this.config.persist) {
+          console.log(chalk.green(`✓ Container preserved: ${this.getContainerName()}`));
+          console.log(chalk.gray("  (Use --persist again to reuse it, or docker rm to remove)"));
         } else {
-          console.error(chalk.red("Error removing container:"), result.stderr);
+          const result = await runShellCommand(`docker rm -f ${this.containerId}`, {
+            timeout: 3000,
+          });
+          if (result.exitCode === 0) {
+            console.log(chalk.green("✓ Container removed"));
+          } else {
+            console.error(chalk.red("Error removing container:"), result.stderr);
+          }
         }
       }
 
@@ -654,6 +740,7 @@ ${chalk.yellow("Options:")}
   --name NAME         Connection name (default: hostname)
   --image IMAGE       Docker image to use (default: pre-built HackerAI sandbox)
   --dangerous         Run commands directly on host OS (no Docker)
+  --persist           Keep container running on exit and reuse if exists
   --convex-url URL    Override Convex backend URL (for development)
   --help, -h          Show this help message
 
@@ -663,6 +750,9 @@ ${chalk.yellow("Examples:")}
 
   # Use a custom Docker image (e.g., Kali Linux)
   npx @hackerai/local --token hsb_abc123 --name "Kali" --image kalilinux/kali-rolling
+
+  # Persistent container (faster restarts, preserves installed packages)
+  npx @hackerai/local --token hsb_abc123 --name "Dev" --persist
 
   # Dangerous mode (no Docker isolation) - use with caution!
   npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
@@ -675,6 +765,10 @@ ${chalk.red("⚠️  Security Warning:")}
   Docker mode provides process isolation but uses --network host for direct
   network access (required for pentesting tools to scan network services).
   In DANGEROUS mode, commands run directly on your OS without any isolation.
+
+${chalk.cyan("Auto-termination:")}
+  The client automatically terminates after 1 hour of inactivity (no commands
+  executed) to save system resources.
 `);
   process.exit(0);
 }
@@ -686,6 +780,7 @@ const config: Config = {
   image: getArg("--image") || DEFAULT_IMAGE,
   dangerous: hasFlag("--dangerous"),
   build: hasFlag("--build"),
+  persist: hasFlag("--persist"),
 };
 
 if (!config.token) {

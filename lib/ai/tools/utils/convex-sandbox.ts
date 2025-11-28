@@ -180,8 +180,10 @@ Commands run inside the Docker container with network access.`;
                 userId: this.userId,
                 commandId,
               })
-              .catch(() => {
-                // Ignore cleanup errors
+              .catch((error) => {
+                console.warn(
+                  `Failed to delete command result ${commandId}: ${error instanceof Error ? error.message : String(error)}`,
+                );
               });
 
             resolve({
@@ -239,9 +241,12 @@ Commands run inside the Docker container with network access.`;
         for (let i = 0; i < chunks.length; i++) {
           const operator = i === 0 ? ">" : ">>";
           // Use printf to avoid echo interpretation issues
-          await this.commands.run(
+          const result = await this.commands.run(
             `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
           );
+          if (result.exitCode !== 0) {
+            throw new Error(`Failed to write file: ${result.stderr}`);
+          }
         }
       } else {
         // Generate a unique delimiter to avoid content collision
@@ -251,7 +256,10 @@ Commands run inside the Docker container with network access.`;
           ? `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`
           : `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
 
-        await this.commands.run(command);
+        const result = await this.commands.run(command);
+        if (result.exitCode !== 0) {
+          throw new Error(`Failed to write file: ${result.stderr}`);
+        }
       }
     },
 
@@ -266,7 +274,10 @@ Commands run inside the Docker container with network access.`;
     },
 
     remove: async (path: string): Promise<void> => {
-      await this.commands.run(`rm -rf ${ConvexSandbox.escapePath(path)}`);
+      const result = await this.commands.run(`rm -rf ${ConvexSandbox.escapePath(path)}`);
+      if (result.exitCode !== 0) {
+        throw new Error(`Failed to remove file: ${result.stderr}`);
+      }
     },
 
     list: async (path: string = "/"): Promise<{ name: string }[]> => {
