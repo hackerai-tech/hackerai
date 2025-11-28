@@ -204,20 +204,28 @@ interface Command {
   background?: boolean;
 }
 
+interface SignedSession {
+  expiresAt: number;
+  signature: string;
+}
+
 interface ConnectResult {
   success: boolean;
   userId?: string;
   connectionId?: string;
+  session?: SignedSession;
   error?: string;
 }
 
 interface HeartbeatResult {
   success: boolean;
+  session?: SignedSession;
   error?: string;
 }
 
 interface PendingCommandsResult {
   commands: Command[];
+  authError?: boolean;
 }
 
 class LocalSandboxClient {
@@ -225,6 +233,7 @@ class LocalSandboxClient {
   private containerId?: string;
   private userId?: string;
   private connectionId?: string;
+  private session?: SignedSession;
   private heartbeatInterval?: NodeJS.Timeout;
   private commandSubscription?: () => void;
   private isShuttingDown = false;
@@ -408,12 +417,13 @@ class LocalSandboxClient {
         },
       )) as ConnectResult;
 
-      if (!result.success) {
+      if (!result.success || !result.session) {
         throw new Error(result.error || "Authentication failed");
       }
 
       this.userId = result.userId;
       this.connectionId = result.connectionId;
+      this.session = result.session;
 
       console.log(chalk.green("✓ Authenticated"));
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
@@ -439,7 +449,7 @@ class LocalSandboxClient {
   }
 
   private startCommandSubscription(): void {
-    if (!this.connectionId) return;
+    if (!this.connectionId || !this.userId || !this.session) return;
 
     // Use Convex subscription for real-time command updates
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -447,9 +457,23 @@ class LocalSandboxClient {
       api.localSandbox.getPendingCommands,
       {
         connectionId: this.connectionId,
+        // Pass signed session for secure verification without DB lookups
+        session: {
+          userId: this.userId,
+          expiresAt: this.session.expiresAt,
+          signature: this.session.signature,
+        },
       },
       async (data: PendingCommandsResult) => {
-        if (this.isShuttingDown || !data?.commands) return;
+        if (this.isShuttingDown) return;
+
+        // Handle session auth errors - client needs to re-authenticate
+        if (data?.authError) {
+          console.debug("Session expired or invalid, will refresh on next heartbeat");
+          return;
+        }
+
+        if (!data?.commands) return;
 
         for (const cmd of data.commands) {
           await this.executeCommand(cmd);
@@ -593,9 +617,9 @@ class LocalSandboxClient {
   }
 
   private scheduleNextHeartbeat(): void {
-    // Add jitter (±5s) to prevent thundering herd when multiple clients connect
-    const baseInterval = 30000;
-    const jitter = Math.floor(Math.random() * 10000) - 5000; // -5000 to +5000
+    // Add jitter (±10s) to prevent thundering herd when multiple clients connect
+    const baseInterval = 60000; // 1 minute
+    const jitter = Math.floor(Math.random() * 20000) - 10000; // -10000 to +10000
     const interval = baseInterval + jitter;
 
     this.heartbeatInterval = setTimeout(async () => {
@@ -634,6 +658,12 @@ class LocalSandboxClient {
             await this.cleanup();
             process.exit(1);
           }
+
+          // Refresh session and restart subscription with new session
+          if (result.session) {
+            this.session = result.session;
+            this.restartCommandSubscription();
+          }
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : String(error);
           console.debug(`Heartbeat error (will retry): ${message}`);
@@ -662,6 +692,11 @@ class LocalSandboxClient {
       this.commandSubscription();
       this.commandSubscription = undefined;
     }
+  }
+
+  private restartCommandSubscription(): void {
+    this.stopCommandSubscription();
+    this.startCommandSubscription();
   }
 
   async cleanup(): Promise<void> {

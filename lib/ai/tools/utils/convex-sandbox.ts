@@ -9,6 +9,13 @@ interface CommandResult {
   pid?: number;
 }
 
+interface SignedSession {
+  userId: string;
+  connectionId: string;
+  expiresAt: number;
+  signature: string;
+}
+
 interface OsInfo {
   platform: string;
   arch: string;
@@ -108,8 +115,8 @@ Commands run inside the Docker container with network access.`;
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
 
-      // Enqueue command in Convex
-      await this.convex.mutation(api.localSandbox.enqueueCommand, {
+      // Enqueue command in Convex and get signed session for result subscription
+      const enqueueResult = await this.convex.mutation(api.localSandbox.enqueueCommand, {
         serviceKey: this.serviceKey,
         userId: this.userId,
         connectionId: this.connectionInfo.connectionId,
@@ -121,8 +128,12 @@ Commands run inside the Docker container with network access.`;
         background: opts?.background,
       });
 
-      // Wait for result with timeout
-      const result = await this.waitForResult(commandId, timeout);
+      if (!enqueueResult.session) {
+        throw new Error("Failed to get session for command subscription");
+      }
+
+      // Wait for result with timeout, using signed session for secure subscription
+      const result = await this.waitForResult(commandId, timeout, enqueueResult.session);
 
       // Stream output if handlers provided (not applicable for background)
       if (!opts?.background) {
@@ -147,6 +158,7 @@ Commands run inside the Docker container with network access.`;
   private async waitForResult(
     commandId: string,
     timeout: number,
+    session: SignedSession,
   ): Promise<CommandResult> {
     const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
@@ -165,11 +177,18 @@ Commands run inside the Docker container with network access.`;
         reject(new Error(`Command timeout after ${maxWaitTime}ms`));
       }, maxWaitTime);
 
-      // Subscribe to result using real-time client
+      // Subscribe to result using real-time client with signed session
       unsubscribe = this.realtimeClient.onUpdate(
         api.localSandbox.subscribeToResult,
-        { userId: this.userId, commandId },
+        { commandId, session },
         async (result) => {
+          // Handle session auth errors
+          if (result?.authError) {
+            cleanup();
+            reject(new Error("Session expired or invalid - command result unavailable"));
+            return;
+          }
+
           if (result?.found) {
             cleanup();
 

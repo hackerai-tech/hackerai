@@ -12,6 +12,80 @@ function generateToken(): string {
   return `hsb_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+// ============================================================================
+// SIGNED SESSION TOKENS (HMAC-SHA256)
+// ============================================================================
+// These allow query-time verification without database lookups,
+// avoiding reactive surface issues while maintaining security.
+
+const SESSION_SIGNING_SECRET = process.env.LOCAL_SANDBOX_SESSION_SECRET;
+const SESSION_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes (refreshed on heartbeat)
+
+async function signSession(
+  userId: string,
+  connectionId: string,
+  expiresAt: number,
+): Promise<string> {
+  if (!SESSION_SIGNING_SECRET) {
+    throw new Error("LOCAL_SANDBOX_SESSION_SECRET environment variable not set");
+  }
+
+  const payload = `${userId}:${connectionId}:${expiresAt}`;
+  const encoder = new TextEncoder();
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(SESSION_SIGNING_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+  return Array.from(new Uint8Array(signature), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function verifySession(
+  userId: string,
+  connectionId: string,
+  expiresAt: number,
+  signature: string,
+): Promise<boolean> {
+  if (!SESSION_SIGNING_SECRET) {
+    return false;
+  }
+
+  // Check expiration first (cheap check)
+  if (Date.now() > expiresAt) {
+    return false;
+  }
+
+  // Validate signature format: HMAC-SHA256 produces 32 bytes = 64 hex chars
+  if (!/^[0-9a-f]{64}$/i.test(signature)) {
+    return false;
+  }
+
+  const payload = `${userId}:${connectionId}:${expiresAt}`;
+  const encoder = new TextEncoder();
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(SESSION_SIGNING_SECRET),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"],
+  );
+
+  // Convert hex signature to bytes (format already validated above)
+  const signatureBytes = new Uint8Array(
+    signature.match(/.{2}/g)!.map((byte) => parseInt(byte, 16)),
+  );
+
+  return crypto.subtle.verify("HMAC", key, signatureBytes, encoder.encode(payload));
+}
+
 import { DatabaseReader } from "./_generated/server";
 
 async function validateToken(
@@ -150,6 +224,13 @@ export const connect = mutation({
     success: v.boolean(),
     userId: v.optional(v.string()),
     connectionId: v.optional(v.string()),
+    // Signed session for secure query-time verification without DB lookups
+    session: v.optional(
+      v.object({
+        expiresAt: v.number(),
+        signature: v.string(),
+      }),
+    ),
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
@@ -165,6 +246,7 @@ export const connect = mutation({
 
     const userId = tokenRecord.user_id;
     const connectionId = crypto.randomUUID();
+    const expiresAt = Date.now() + SESSION_EXPIRY_MS;
 
     // Create new connection (multiple connections allowed)
     await ctx.db.insert("local_sandbox_connections", {
@@ -181,7 +263,15 @@ export const connect = mutation({
       created_at: Date.now(),
     });
 
-    return { success: true, userId, connectionId };
+    // Generate signed session for secure query access
+    const signature = await signSession(userId, connectionId, expiresAt);
+
+    return {
+      success: true,
+      userId,
+      connectionId,
+      session: { expiresAt, signature },
+    };
   },
 });
 
@@ -192,6 +282,13 @@ export const heartbeat = mutation({
   },
   returns: v.object({
     success: v.boolean(),
+    // Refreshed session for continued query access
+    session: v.optional(
+      v.object({
+        expiresAt: v.number(),
+        signature: v.string(),
+      }),
+    ),
     error: v.optional(v.string()),
   }),
   handler: async (ctx, { token, connectionId }) => {
@@ -221,7 +318,11 @@ export const heartbeat = mutation({
       last_heartbeat: Date.now(),
     });
 
-    return { success: true };
+    // Generate refreshed session for query access
+    const expiresAt = Date.now() + SESSION_EXPIRY_MS;
+    const signature = await signSession(tokenResult.userId, connectionId, expiresAt);
+
+    return { success: true, session: { expiresAt, signature } };
   },
 });
 
@@ -384,6 +485,15 @@ export const enqueueCommand = mutation({
   },
   returns: v.object({
     success: v.boolean(),
+    // Signed session for subscribing to results (no DB lookup needed)
+    session: v.optional(
+      v.object({
+        userId: v.string(),
+        connectionId: v.string(),
+        expiresAt: v.number(),
+        signature: v.string(),
+      }),
+    ),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -430,13 +540,31 @@ export const enqueueCommand = mutation({
       created_at: Date.now(),
     });
 
-    return { success: true };
+    // Generate signed session for result subscription
+    const expiresAt = Date.now() + SESSION_EXPIRY_MS;
+    const signature = await signSession(args.userId, args.connectionId, expiresAt);
+
+    return {
+      success: true,
+      session: {
+        userId: args.userId,
+        connectionId: args.connectionId,
+        expiresAt,
+        signature,
+      },
+    };
   },
 });
 
 export const getPendingCommands = query({
   args: {
     connectionId: v.string(),
+    // Signed session for secure verification without DB lookups
+    session: v.object({
+      userId: v.string(),
+      expiresAt: v.number(),
+      signature: v.string(),
+    }),
   },
   returns: v.object({
     commands: v.array(
@@ -449,15 +577,23 @@ export const getPendingCommands = query({
         background: v.optional(v.boolean()),
       }),
     ),
+    // Indicates session verification failed - client should re-authenticate
+    authError: v.optional(v.boolean()),
   }),
-  handler: async (ctx, { connectionId }) => {
-    // Skip token/connection validation here to minimize reactive surface.
-    // Security is maintained because:
-    // 1. connectionId is a UUID validated on connect()
-    // 2. Token is validated on heartbeat() every 30s
-    // 3. Commands are only created via enqueueCommand() which validates ownership
-    // This query now only reads from local_sandbox_commands table,
-    // reducing subscription triggers from 3 tables to 1.
+  handler: async (ctx, { connectionId, session }) => {
+    // Verify signed session - cryptographic check, no DB lookup needed
+    // This maintains security while avoiding reactive surface issues
+    const isValid = await verifySession(
+      session.userId,
+      connectionId,
+      session.expiresAt,
+      session.signature,
+    );
+
+    if (!isValid) {
+      // Signal auth failure so client can re-authenticate via connect()
+      return { commands: [], authError: true };
+    }
 
     const commands = await ctx.db
       .query("local_sandbox_commands")
@@ -564,11 +700,17 @@ export const submitResult = mutation({
 });
 
 // Optimized subscription query - minimal reactive surface (only reads results table)
-// Security: userId is validated, commandId is a UUID generated server-side
+// Security: Session signature verified cryptographically without DB lookups
 export const subscribeToResult = query({
   args: {
-    userId: v.string(),
     commandId: v.string(),
+    // Signed session for secure verification without DB lookups
+    session: v.object({
+      userId: v.string(),
+      connectionId: v.string(),
+      expiresAt: v.number(),
+      signature: v.string(),
+    }),
   },
   returns: v.object({
     found: v.boolean(),
@@ -577,16 +719,29 @@ export const subscribeToResult = query({
     exitCode: v.optional(v.number()),
     pid: v.optional(v.number()),
     duration: v.optional(v.number()),
+    // Indicates session verification failed - client should re-authenticate
+    authError: v.optional(v.boolean()),
   }),
-  handler: async (ctx, { userId, commandId }) => {
-    // Skip serviceKey validation to minimize reactive surface
-    // Security: commandId is generated server-side, userId verified at read
+  handler: async (ctx, { commandId, session }) => {
+    // Verify signed session - cryptographic check, no DB lookup needed
+    const isValid = await verifySession(
+      session.userId,
+      session.connectionId,
+      session.expiresAt,
+      session.signature,
+    );
+
+    if (!isValid) {
+      // Signal auth failure so client can distinguish from "not found"
+      return { found: false, authError: true };
+    }
+
     const result = await ctx.db
       .query("local_sandbox_results")
       .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
       .first();
 
-    if (!result || result.user_id !== userId) {
+    if (!result || result.user_id !== session.userId) {
       return { found: false };
     }
 
@@ -636,7 +791,7 @@ export const cleanupStaleConnections = internalMutation({
   }),
   handler: async (ctx) => {
     const now = Date.now();
-    const staleTimeout = 60000; // 60 seconds
+    const staleTimeout = 5 * 60 * 1000; // 5 minutes - allows several missed heartbeats
 
     // Find stale connections
     const staleConnections = await ctx.db
