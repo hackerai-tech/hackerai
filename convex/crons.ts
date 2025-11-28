@@ -24,8 +24,10 @@ export const runLocalSandboxCleanup = internalAction({
   returns: v.null(),
   handler: async (ctx) => {
     // Cleanup stale connections
-
     await ctx.runMutation(internal.localSandbox.cleanupStaleConnections, {});
+
+    // Cleanup results with legacy schema fields
+    await ctx.runMutation(internal.localSandbox.cleanupLegacyResults, {});
 
     // Cleanup old commands and results
     for (let i = 0; i < 10; i++) {

@@ -192,6 +192,9 @@ export default defineSchema({
     pid: v.optional(v.number()),
     duration: v.number(),
     completed_at: v.number(),
+    // Legacy fields - will be cleaned up automatically
+    is_complete: v.optional(v.boolean()),
+    started_at: v.optional(v.number()),
   })
     .index("by_command_id", ["command_id"])
     .index("by_user_id", ["user_id"])

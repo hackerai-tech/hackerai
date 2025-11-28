@@ -735,3 +735,33 @@ export const cleanupOldCommands = internalMutation({
     return { deleted: deletedCount };
   },
 });
+
+// Cleanup results with legacy schema fields (is_complete, started_at)
+export const cleanupLegacyResults = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+  }),
+  handler: async (ctx) => {
+    let deletedCount = 0;
+
+    // Find and delete results with legacy fields
+    const results = await ctx.db
+      .query("local_sandbox_results")
+      .take(100);
+
+    for (const result of results) {
+      // Check if result has legacy fields (using type assertion for legacy fields)
+      const legacyResult = result as typeof result & {
+        is_complete?: boolean;
+        started_at?: number;
+      };
+      if (legacyResult.is_complete !== undefined || legacyResult.started_at !== undefined) {
+        await ctx.db.delete(result._id);
+        deletedCount++;
+      }
+    }
+
+    return { deleted: deletedCount };
+  },
+});
