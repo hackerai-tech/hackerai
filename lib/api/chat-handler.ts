@@ -385,9 +385,30 @@ export const createChatHandler = () => {
                     ? (chunk.chunk.input as any)?.command
                     : undefined;
                 if (posthog) {
+                  // Tools that interact with the sandbox environment
+                  const sandboxEnvironmentTools = [
+                    "run_terminal_cmd",
+                    "get_terminal_files",
+                    "read_file",
+                    "write_file",
+                    "search_replace",
+                  ];
+
+                  // Determine sandbox type for environment-interacting tools
+                  const sandboxType = sandboxEnvironmentTools.includes(
+                    chunk.chunk.toolName,
+                  )
+                    ? sandboxPreference && sandboxPreference !== "e2b"
+                      ? "local"
+                      : "e2b"
+                    : undefined;
+
                   posthog.capture({
                     distinctId: userId,
                     event: "hackerai-" + (command || chunk.chunk.toolName),
+                    properties: {
+                      ...(sandboxType && { sandboxType }),
+                    },
                   });
                 }
               }
