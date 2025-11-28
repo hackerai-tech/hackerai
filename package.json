@@ -34,7 +34,9 @@
     "prepare": "husky",
     "s3:validate": "npx ts-node scripts/validate-s3-security.ts",
     "e2b:build:dev": "npx tsx e2b/build.dev.ts",
-    "e2b:build:prod": "npx tsx e2b/build.prod.ts"
+    "e2b:build:prod": "npx tsx e2b/build.prod.ts",
+    "local-sandbox": "npx tsx packages/local/src/index.ts",
+    "local-sandbox:build": "cd packages/local && pnpm build"
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.74",

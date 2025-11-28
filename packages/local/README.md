@@ -59,7 +59,12 @@ npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
 
 ## Security
 
-- **Docker Mode**: Commands run in a container with process isolation, but with direct host network access (`--network host`) so pentesting tools can scan and interact with network services
+- **Docker Mode**: Commands run in a container with process isolation, but with:
+  - Host network access (`--network host`) for pentesting tools to scan network services
+  - Linux capabilities for network tools:
+    - `NET_RAW`: Required for ping, nmap, masscan, hping3, arp-scan, tcpdump, raw sockets
+    - `NET_ADMIN`: Required for network interface manipulation, arp-scan, netdiscover
+    - `SYS_PTRACE`: Required for debugging tools (gdb, strace, ltrace)
 - **Dangerous Mode**: Commands run directly on your OS without any isolation - use with caution
 
 ## License

@@ -1,6 +1,6 @@
 {
   "name": "@hackerai/local",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "HackerAI Local Sandbox Client - Execute commands on your local machine",
   "bin": {
     "hackerai-local": "./dist/index.js"

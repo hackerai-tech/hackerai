@@ -374,5 +374,24 @@ RUN apt-get clean && \
 # Default shell
 SHELL ["/bin/bash", "-c"]
 
+# ============================================================================
+# IMPORTANT: Runtime Capabilities Required
+# ============================================================================
+# Docker drops Linux capabilities by default for security. This image requires
+# additional capabilities for penetration testing tools to work properly.
+#
+# Run with: ./docker/run.sh
+# Or manually: docker run --cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE ...
+#
+# Required capabilities:
+#   - NET_RAW:    ping, nmap, masscan, hping3, arp-scan, tcpdump, raw sockets
+#   - NET_ADMIN:  network interface manipulation, arp-scan, netdiscover
+#   - SYS_PTRACE: gdb, strace, ltrace (debugging tools)
+#
+# NOTE: These capabilities CANNOT be set in Dockerfile - they are runtime flags
+# controlled by Docker's security model. Even root inside container doesn't
+# have these capabilities unless explicitly granted at container start.
+# ============================================================================
+
 # Keep container running
 CMD ["tail", "-f", "/dev/null"]
