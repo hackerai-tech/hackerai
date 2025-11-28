@@ -13,6 +13,7 @@ import type * as crons from "../crons.js";
 import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileStorage from "../fileStorage.js";
+import type * as localSandbox from "../localSandbox.js";
 import type * as memories from "../memories.js";
 import type * as messages from "../messages.js";
 import type * as s3Actions from "../s3Actions.js";
@@ -34,6 +35,7 @@ declare const fullApi: ApiFromModules<{
   feedback: typeof feedback;
   fileActions: typeof fileActions;
   fileStorage: typeof fileStorage;
+  localSandbox: typeof localSandbox;
   memories: typeof memories;
   messages: typeof messages;
   s3Actions: typeof s3Actions;

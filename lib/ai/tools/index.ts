@@ -1,5 +1,9 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
+import {
+  HybridSandboxManager,
+  type SandboxPreference,
+} from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createGetTerminalFiles } from "./get-terminal-files";
@@ -11,7 +15,7 @@ import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
 // import { createPythonTool } from "./python";
 import type { UIMessageStreamWriter } from "ai";
-import type { ChatMode, ToolContext, Todo } from "@/types";
+import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
@@ -27,20 +31,43 @@ export const createTools = (
   isTemporary: boolean = false,
   assistantMessageId?: string,
   subscription: "free" | "pro" | "team" | "ultra" = "free",
+  sandboxPreference?: SandboxPreference,
+  serviceKey?: string,
 ) => {
-  let sandbox: Sandbox | null = null;
+  let sandbox: AnySandbox | null = null;
 
-  const sandboxManager = new DefaultSandboxManager(
-    userID,
-    (newSandbox) => {
-      sandbox = newSandbox;
-    },
-    sandbox,
-  );
+  // Helper to check if sandbox is E2B Sandbox
+  const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
+    return s !== null && "jupyterUrl" in s;
+  };
+
+  // Use HybridSandboxManager if sandboxPreference and serviceKey are provided
+  const sandboxManager =
+    sandboxPreference && serviceKey
+      ? new HybridSandboxManager(
+          userID,
+          (newSandbox) => {
+            sandbox = newSandbox;
+          },
+          sandboxPreference,
+          serviceKey,
+          isE2BSandbox(sandbox) ? sandbox : null,
+        )
+      : new DefaultSandboxManager(
+          userID,
+          (newSandbox) => {
+            sandbox = newSandbox;
+          },
+          isE2BSandbox(sandbox) ? sandbox : null,
+        );
 
   const todoManager = new TodoManager(initialTodos);
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
+
+  // Determine if using local sandbox (not e2b cloud)
+  const isLocalSandbox =
+    !!sandboxPreference && sandboxPreference !== "e2b" && !!serviceKey;
 
   const context: ToolContext = {
     sandboxManager,
@@ -52,6 +79,7 @@ export const createTools = (
     fileAccumulator,
     backgroundProcessTracker,
     mode,
+    isLocalSandbox,
   };
 
   // Create all available tools
@@ -97,5 +125,9 @@ export const createTools = (
     ensureSandbox,
     getTodoManager,
     getFileAccumulator,
+    sandboxManager,
   };
 };
+
+// Re-export types for external use
+export type { SandboxPreference };

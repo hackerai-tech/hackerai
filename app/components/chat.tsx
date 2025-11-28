@@ -74,6 +74,7 @@ export const Chat = ({
     clearQueue,
     queueBehavior,
     todos,
+    sandboxPreference,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -104,6 +105,8 @@ export const Chat = ({
   );
   // Use ref for todos to avoid stale closures in auto-send
   const todosRef = useLatestRef(todos);
+  // Use ref for sandbox preference to avoid stale closures in auto-send
+  const sandboxPreferenceRef = useLatestRef(sandboxPreference);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -486,6 +489,7 @@ export const Chat = ({
               mode: chatMode,
               todos: todosRef.current,
               temporary: temporaryChatsEnabledRef.current,
+              sandboxPreference: sandboxPreferenceRef.current,
             },
           },
         );

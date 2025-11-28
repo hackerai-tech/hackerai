@@ -1,27 +1,25 @@
-import type { Sandbox } from "@e2b/code-interpreter";
+import type { AnySandbox } from "@/types";
+import { isE2BSandbox } from "./sandbox-types";
 
 /**
  * Verifies that a process has been terminated by checking if it still exists.
  * Uses the `ps -p ${pid}` command pattern established in BackgroundProcessTracker.
  *
- * @param sandbox - The E2B sandbox instance
+ * @param sandbox - The sandbox instance (E2B or ConvexSandbox)
  * @param pid - Process ID to check
  * @param maxAttempts - Number of verification attempts (default: 3)
  * @param delayMs - Delay between attempts in milliseconds (default: 100)
  * @returns Promise<boolean> - true if process is terminated, false if still running
  */
 export async function verifyProcessTerminated(
-  sandbox: Sandbox,
+  sandbox: AnySandbox,
   pid: number,
   maxAttempts: number = 3,
   delayMs: number = 100,
 ): Promise<boolean> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const result = await sandbox.commands.run(`ps -p ${pid}`, {
-        user: "root" as const,
-        cwd: "/home/user",
-      });
+      const result = await sandbox.commands.run(`ps -p ${pid}`, {});
 
       // Process is still running if PID appears in output
       const isRunning = result.stdout.includes(pid.toString());
@@ -47,28 +45,34 @@ export async function verifyProcessTerminated(
 }
 
 /**
- * Force kills a process using SIGKILL via E2B's native kill command.
- * This is the fallback when graceful termination fails.
+ * Force kills a process using SIGKILL.
+ * Uses E2B's native kill command for E2B Sandbox, or kill -9 for ConvexSandbox.
  *
- * @param sandbox - The E2B sandbox instance
+ * @param sandbox - The sandbox instance (E2B or ConvexSandbox)
  * @param pid - Process ID to force kill
  * @returns Promise<boolean> - true if kill command succeeded, false otherwise
  */
 export async function forceKillProcess(
-  sandbox: Sandbox,
+  sandbox: AnySandbox,
   pid: number,
 ): Promise<boolean> {
   try {
-    // Use E2B's native kill method which uses SIGKILL
-    const killed = await sandbox.commands.kill(pid);
+    if (isE2BSandbox(sandbox)) {
+      // Use E2B's native kill method which uses SIGKILL
+      const killed = await sandbox.commands.kill(pid);
 
-    if (!killed) {
-      console.warn(
-        `[Process Termination] PID ${pid}: Force kill returned false (process may not exist)`,
-      );
+      if (!killed) {
+        console.warn(
+          `[Process Termination] PID ${pid}: Force kill returned false (process may not exist)`,
+        );
+      }
+
+      return killed;
+    } else {
+      // For ConvexSandbox, use kill -9 command
+      const result = await sandbox.commands.run(`kill -9 ${pid}`, {});
+      return result.exitCode === 0;
     }
-
-    return killed;
   } catch (error) {
     console.error(
       `[Process Termination] PID ${pid}: Force kill failed:`,
@@ -82,14 +86,14 @@ export async function forceKillProcess(
  * Attempts to terminate a process with verification and fallback.
  * First tries graceful kill, then verifies, then force kills if needed.
  *
- * @param sandbox - The E2B sandbox instance
+ * @param sandbox - The sandbox instance (E2B or ConvexSandbox)
  * @param execution - The execution object with kill() method (optional for foreground commands)
  * @param pid - Process ID (if available)
  * @returns Promise<void>
  */
 export async function terminateProcessReliably(
-  sandbox: Sandbox,
-  execution: any,
+  sandbox: AnySandbox,
+  execution: { kill?: () => Promise<void> } | null,
   pid: number | null | undefined,
 ): Promise<void> {
   // If we have PID but no execution object (foreground commands during abort), use direct kill

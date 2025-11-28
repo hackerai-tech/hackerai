@@ -12,7 +12,7 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import type { ChatMode, Todo } from "@/types";
+import type { ChatMode, Todo, SandboxPreference } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
@@ -92,6 +92,7 @@ export const createChatHandler = () => {
         chatId,
         regenerate,
         temporary,
+        sandboxPreference,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -99,6 +100,7 @@ export const createChatHandler = () => {
         todos?: Todo[];
         regenerate?: boolean;
         temporary?: boolean;
+        sandboxPreference?: SandboxPreference;
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
@@ -203,6 +205,7 @@ export const createChatHandler = () => {
             ensureSandbox,
             getTodoManager,
             getFileAccumulator,
+            sandboxManager,
           } = createTools(
             userId,
             writer,
@@ -213,7 +216,26 @@ export const createChatHandler = () => {
             temporary,
             assistantMessageId,
             subscription,
+            sandboxPreference,
+            process.env.CONVEX_SERVICE_ROLE_KEY,
           );
+
+          // Get sandbox context for system prompt (only for local sandboxes)
+          let sandboxContext: string | null = null;
+          if (
+            mode === "agent" &&
+            "getSandboxContextForPrompt" in sandboxManager
+          ) {
+            try {
+              sandboxContext = await (
+                sandboxManager as {
+                  getSandboxContextForPrompt: () => Promise<string | null>;
+                }
+              ).getSandboxContextForPrompt();
+            } catch (error) {
+              console.warn("Failed to get sandbox context for prompt:", error);
+            }
+          }
 
           if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
@@ -247,6 +269,7 @@ export const createChatHandler = () => {
             userCustomization,
             temporary,
             chat?.finish_reason,
+            sandboxContext,
           );
 
           let streamFinishReason: string | undefined;
@@ -325,6 +348,7 @@ export const createChatHandler = () => {
                   userCustomization,
                   temporary,
                   chat?.finish_reason,
+                  sandboxContext,
                 );
 
                 return {

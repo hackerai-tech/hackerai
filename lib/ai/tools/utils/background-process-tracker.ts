@@ -1,4 +1,4 @@
-import type { Sandbox } from "@e2b/code-interpreter";
+import type { AnySandbox } from "@/types";
 
 export interface BackgroundProcess {
   pid: number;
@@ -36,12 +36,9 @@ export class BackgroundProcessTracker {
   /**
    * Check if a process is still running
    */
-  async checkProcessStatus(sandbox: Sandbox, pid: number): Promise<boolean> {
+  async checkProcessStatus(sandbox: AnySandbox, pid: number): Promise<boolean> {
     try {
-      const result = await sandbox.commands.run(`ps -p ${pid}`, {
-        user: "root" as const,
-        cwd: "/home/user",
-      });
+      const result = await sandbox.commands.run(`ps -p ${pid}`, {});
 
       const isRunning = result.stdout.includes(pid.toString());
 
@@ -61,7 +58,7 @@ export class BackgroundProcessTracker {
    * Uses batch checking for efficiency
    */
   async hasActiveProcessesForFiles(
-    sandbox: Sandbox,
+    sandbox: AnySandbox,
     filePaths: string[],
   ): Promise<{ active: boolean; processes: BackgroundProcess[] }> {
     const activeProcesses: BackgroundProcess[] = [];

@@ -167,7 +167,7 @@ export const generateUploadUrl = mutation({
  */
 export const getFileUrlsByFileIds = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.union(v.string(), v.null())),
@@ -253,7 +253,7 @@ export const deleteFile = mutation({
  */
 export const getFileTokensByFileIds = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.number()),
@@ -276,7 +276,7 @@ export const getFileTokensByFileIds = query({
  */
 export const getFileMetadataByFileIds = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(
@@ -323,7 +323,7 @@ export const getFileMetadataByFileIds = query({
  */
 export const getFileContentByFileIds = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(

@@ -70,39 +70,55 @@ export const collectSandboxFiles = (
   });
 };
 
-const fetchFileData = async (file: SandboxFile) => {
-  if (!file.url || !file.localPath) return null;
-  try {
-    const res = await fetch(file.url);
-    if (!res.ok) return null;
-    return { localPath: file.localPath, data: await res.arrayBuffer() };
-  } catch {
-    return null;
+/**
+ * Downloads a file from URL to sandbox path
+ * Works with both E2B and ConvexSandbox
+ */
+const downloadFileToSandbox = async (
+  sandbox: any,
+  url: string,
+  localPath: string,
+): Promise<void> => {
+  // ConvexSandbox has downloadFromUrl method
+  if (sandbox.files?.downloadFromUrl) {
+    return sandbox.files.downloadFromUrl(url, localPath);
+  }
+
+  // E2B sandbox - use commands.run to execute curl
+  const dir = localPath.substring(0, localPath.lastIndexOf("/"));
+  if (dir) {
+    await sandbox.commands.run(`mkdir -p "${dir}"`);
+  }
+  const result = await sandbox.commands.run(
+    `curl -fsSL -o "${localPath}" "${url}"`,
+  );
+  if (result.exitCode !== 0) {
+    throw new Error(`Failed to download file: ${result.stderr}`);
   }
 };
 
 /**
  * Uploads files to the sandbox environment in parallel
- * - Fetches file data from URLs
- * - Writes files to sandbox filesystem
+ * - Downloads files directly from S3 URLs using curl in the sandbox
+ * - Avoids Convex size limits by not piping data through mutations
  * - Handles errors gracefully without throwing
  */
 export const uploadSandboxFiles = async (
   sandboxFiles: SandboxFile[],
   ensureSandbox: () => Promise<any>,
 ) => {
-  try {
-    const [sandbox, ...fileDataResults] = await Promise.all([
-      ensureSandbox(),
-      ...sandboxFiles.map(fetchFileData),
-    ]);
+  if (sandboxFiles.length === 0) return;
 
+  try {
+    const sandbox = await ensureSandbox();
+
+    // Download files directly from URLs in the sandbox
     await Promise.all(
-      fileDataResults.filter(Boolean).map((fileData) =>
-        sandbox.files.write(fileData!.localPath, fileData!.data, {
-          user: "user" as const,
-        }),
-      ),
+      sandboxFiles
+        .filter((file) => file.url && file.localPath)
+        .map((file) =>
+          downloadFileToSandbox(sandbox, file.url, file.localPath),
+        ),
     );
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);

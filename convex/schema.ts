@@ -120,4 +120,80 @@ export default defineSchema({
     chat_id: v.string(),
     user_id: v.string(),
   }).index("by_chat_id", ["chat_id"]),
+
+  // Local Sandbox Tables
+  local_sandbox_tokens: defineTable({
+    user_id: v.string(),
+    token: v.string(),
+    token_created_at: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_token", ["token"]),
+
+  local_sandbox_connections: defineTable({
+    user_id: v.string(),
+    connection_id: v.string(),
+    connection_name: v.string(),
+    container_id: v.optional(v.string()),
+    client_version: v.string(),
+    mode: v.union(
+      v.literal("docker"),
+      v.literal("dangerous"),
+      v.literal("custom"),
+    ),
+    image_name: v.optional(v.string()),
+    os_info: v.optional(
+      v.object({
+        platform: v.string(),
+        arch: v.string(),
+        release: v.string(),
+        hostname: v.string(),
+      }),
+    ),
+    last_heartbeat: v.number(),
+    status: v.union(v.literal("connected"), v.literal("disconnected")),
+    created_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_connection_id", ["connection_id"])
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_status_and_last_heartbeat", ["status", "last_heartbeat"])
+    .index("by_status_and_created_at", ["status", "created_at"]),
+
+  local_sandbox_commands: defineTable({
+    user_id: v.string(),
+    connection_id: v.string(),
+    command_id: v.string(),
+    command: v.string(),
+    env: v.optional(v.record(v.string(), v.string())),
+    cwd: v.optional(v.string()),
+    timeout: v.optional(v.number()),
+    background: v.optional(v.boolean()),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("executing"),
+      v.literal("completed"),
+    ),
+    created_at: v.number(),
+  })
+    .index("by_user_id", ["user_id"])
+    .index("by_command_id", ["command_id"])
+    .index("by_connection_and_status", ["connection_id", "status"])
+    .index("by_user_and_status", ["user_id", "status"])
+    .index("by_status_and_created_at", ["status", "created_at"]),
+
+  local_sandbox_results: defineTable({
+    command_id: v.string(),
+    user_id: v.string(),
+    stdout: v.string(),
+    stderr: v.string(),
+    exit_code: v.number(),
+    pid: v.optional(v.number()),
+    duration: v.number(),
+    completed_at: v.number(),
+  })
+    .index("by_command_id", ["command_id"])
+    .index("by_user_id", ["user_id"])
+    .index("by_completed_at", ["completed_at"]),
 });

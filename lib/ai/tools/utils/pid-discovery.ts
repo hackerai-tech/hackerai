@@ -1,15 +1,15 @@
-import type { Sandbox } from "@e2b/code-interpreter";
+import type { AnySandbox } from "@/types";
 
 /**
  * Attempts to find the PID of a running process by command name.
  * Uses pgrep as the primary method with ps as a fallback.
  *
- * @param sandbox - The E2B sandbox instance
+ * @param sandbox - The sandbox instance (E2B or ConvexSandbox)
  * @param command - The full command string
  * @returns Promise<number | null> - The PID if found, null otherwise
  */
 export async function findProcessPid(
-  sandbox: Sandbox,
+  sandbox: AnySandbox,
   command: string,
 ): Promise<number | null> {
   const normalizedCommand = command.trim();
@@ -30,8 +30,6 @@ export async function findProcessPid(
     const pgrepResult = await sandbox.commands.run(
       `pgrep -f '${escapedPattern}'`,
       {
-        user: "root" as const,
-        cwd: "/home/user",
         timeoutMs: 5000, // 5 second timeout for PID discovery
       },
     );
@@ -58,8 +56,6 @@ export async function findProcessPid(
       const psResult = await sandbox.commands.run(
         `ps -eo pid,cmd | grep '${escapedPattern}' | grep -v grep | awk '{print $1}' | head -1`,
         {
-          user: "root" as const,
-          cwd: "/home/user",
           timeoutMs: 5000, // 5 second timeout for PID discovery
         },
       );

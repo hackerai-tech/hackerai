@@ -61,6 +61,7 @@ export const useChatHandlers = ({
     messageQueue,
     removeQueuedMessage,
     queueBehavior,
+    sandboxPreference,
   } = useGlobalState();
 
   // Avoid stale closure on temporary flag
@@ -201,6 +202,7 @@ export const useChatHandlers = ({
               mode: chatMode,
               todos,
               temporary: temporaryChatsEnabled,
+              sandboxPreference,
             },
           },
         );
@@ -214,6 +216,7 @@ export const useChatHandlers = ({
               mode: chatMode,
               todos,
               temporary: temporaryChatsEnabled,
+              sandboxPreference,
             },
           },
         );
@@ -311,6 +314,7 @@ export const useChatHandlers = ({
           todos: cleanedTodos,
           regenerate: true,
           temporary: false,
+          sandboxPreference,
         },
       });
     } else {
@@ -324,6 +328,7 @@ export const useChatHandlers = ({
           todos: cleanedTodos,
           regenerate: true,
           temporary: true,
+          sandboxPreference,
         },
       });
     }
@@ -347,6 +352,7 @@ export const useChatHandlers = ({
           todos: cleanedTodos,
           regenerate: true,
           temporary: false,
+          sandboxPreference,
         },
       });
     } else {
@@ -368,6 +374,7 @@ export const useChatHandlers = ({
           todos: cleanedTodos,
           regenerate: true,
           temporary: true,
+          sandboxPreference,
         },
       });
     }
@@ -446,6 +453,7 @@ export const useChatHandlers = ({
           todos: cleanedTodosForEdit,
           regenerate: true,
           temporary: false,
+          sandboxPreference,
         },
       });
     } else {
@@ -464,6 +472,7 @@ export const useChatHandlers = ({
           todos: cleanedTodosForEdit,
           regenerate: true,
           temporary: true,
+          sandboxPreference,
         },
       });
     }
@@ -546,6 +555,7 @@ export const useChatHandlers = ({
           mode: chatMode,
           todos,
           temporary: temporaryChatsEnabled,
+          sandboxPreference,
         },
       });
     } catch (error) {

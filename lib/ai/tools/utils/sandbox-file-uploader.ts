@@ -4,7 +4,8 @@ import { ConvexHttpClient } from "convex/browser";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { Id } from "@/convex/_generated/dataModel";
-import type { Sandbox } from "@e2b/code-interpreter";
+import type { AnySandbox } from "@/types";
+import { isE2BSandbox } from "./sandbox-types";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
@@ -40,7 +41,7 @@ function extractErrorMessage(error: unknown): string {
 }
 
 export async function uploadSandboxFileToConvex(args: {
-  sandbox: Sandbox;
+  sandbox: AnySandbox;
   userId: string;
   fullPath: string;
   skipTokenValidation?: boolean;
@@ -61,20 +62,75 @@ export async function uploadSandboxFileToConvex(args: {
   const { sandbox, userId, fullPath } = args;
   const convex = getConvexClient();
 
-  const downloadUrl = await sandbox.downloadUrl(fullPath, {
-    useSignatureExpiration: 30_000, // 30 seconds
-  });
-
-  const fileRes = await fetch(downloadUrl);
-  if (!fileRes.ok) {
-    throw new Error(
-      `Failed to download ${fullPath}: ${fileRes.status} ${fileRes.statusText}`,
-    );
-  }
-
-  const blob = await fileRes.blob();
   const mediaType = DEFAULT_MEDIA_TYPE;
   const name = fullPath.split("/").pop() || "file";
+
+  // For ConvexSandbox, always upload directly from sandbox to S3
+  // This avoids data corruption and size limits when piping through Convex commands
+  if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
+    if (!USE_S3_STORAGE) {
+      throw new Error(
+        "S3 storage is required for local sandbox file uploads. Set NEXT_PUBLIC_USE_S3_STORAGE=true",
+      );
+    }
+
+    const { uploadUrl, s3Key } = await generateS3UploadUrl(
+      name,
+      mediaType,
+      userId,
+    );
+
+    // Upload directly from sandbox to S3
+    await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
+
+    // Get file size via stat command (try Linux format first, then macOS)
+    const statResult = await sandbox.commands.run(
+      `stat -c%s "${fullPath}" 2>/dev/null || stat -f%z "${fullPath}"`,
+    );
+    const fileSize = parseInt(statResult.stdout.trim(), 10);
+    if (isNaN(fileSize) || statResult.exitCode !== 0) {
+      throw new Error(
+        `Failed to get file size for ${fullPath}: ${statResult.stderr || "stat command failed"}`,
+      );
+    }
+
+    try {
+      const saved = await convex.action(api.fileActions.saveFile, {
+        s3Key,
+        name,
+        mediaType,
+        size: fileSize,
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+        skipTokenValidation: args.skipTokenValidation,
+      });
+
+      return saved as UploadedFileInfo;
+    } catch (error) {
+      throw new Error(extractErrorMessage(error));
+    }
+  }
+
+  // E2B Sandbox: use downloadUrl to fetch file, then upload to storage
+  let blob: Blob;
+
+  if (isE2BSandbox(sandbox)) {
+    const downloadUrl = await sandbox.downloadUrl(fullPath, {
+      useSignatureExpiration: 30_000, // 30 seconds
+    });
+
+    const fileRes = await fetch(downloadUrl);
+    if (!fileRes.ok) {
+      throw new Error(
+        `Failed to download ${fullPath}: ${fileRes.status} ${fileRes.statusText}`,
+      );
+    }
+
+    blob = await fileRes.blob();
+  } else {
+    // Fallback for unknown sandbox types
+    throw new Error("Unsupported sandbox type for file upload");
+  }
 
   if (USE_S3_STORAGE) {
     // S3 upload path

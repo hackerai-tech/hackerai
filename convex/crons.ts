@@ -19,12 +19,38 @@ export const runPurge = internalAction({
   },
 });
 
+export const runLocalSandboxCleanup = internalAction({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    // Cleanup stale connections
+    await ctx.runMutation(internal.localSandbox.cleanupStaleConnections, {});
+
+    // Cleanup old commands and results
+    for (let i = 0; i < 10; i++) {
+      const { deleted } = await ctx.runMutation(
+        internal.localSandbox.cleanupOldCommands,
+        {},
+      );
+      if (deleted === 0) break;
+    }
+    return null;
+  },
+});
+
 const crons = cronJobs();
 
 crons.interval(
   "purge orphan files older than 24h",
   { hours: 1 },
   internal.crons.runPurge,
+  {},
+);
+
+crons.interval(
+  "cleanup local sandbox stale connections and old commands",
+  { minutes: 5 },
+  internal.crons.runLocalSandboxCleanup,
   {},
 );
 

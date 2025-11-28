@@ -8,7 +8,7 @@ import { validateServiceKey } from "./chats";
  */
 export const getMemoriesForBackend = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     userId: v.string(),
     subscription: v.optional(
       v.union(
@@ -80,7 +80,7 @@ export const getMemoriesForBackend = query({
  */
 export const createMemoryForBackend = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     userId: v.string(),
     memoryId: v.string(),
     content: v.string(),
@@ -156,7 +156,7 @@ export const createMemoryForBackend = mutation({
  */
 export const updateMemoryForBackend = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     userId: v.string(),
     memoryId: v.string(),
     content: v.string(),
@@ -227,7 +227,7 @@ export const updateMemoryForBackend = mutation({
  */
 export const deleteMemoryForBackend = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     userId: v.string(),
     memoryId: v.string(),
   },
@@ -277,7 +277,7 @@ export const deleteMemoryForBackend = mutation({
  */
 export const getMemoryByIdForBackend = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     memoryId: v.string(),
   },
   returns: v.union(v.string(), v.null()),

@@ -1,4 +1,6 @@
 import type { Sandbox } from "@e2b/code-interpreter";
+import type { AnySandbox } from "@/types";
+import { isE2BSandbox } from "./sandbox-types";
 import { retryWithBackoff } from "./retry-with-backoff";
 
 /**
@@ -13,22 +15,22 @@ import { retryWithBackoff } from "./retry-with-backoff";
  * @throws Error if sandbox doesn't become ready after all retries
  */
 export async function waitForSandboxReady(
-  sandbox: Sandbox,
+  sandbox: AnySandbox,
   maxRetries: number = 5,
 ): Promise<void> {
   await retryWithBackoff(
     async () => {
-      // First check if sandbox is running
-      const running = await sandbox.isRunning();
-      if (!running) {
-        throw new Error("Sandbox is not running");
+      // For E2B Sandbox, check if it's running first
+      if (isE2BSandbox(sandbox)) {
+        const running = await sandbox.isRunning();
+        if (!running) {
+          throw new Error("Sandbox is not running");
+        }
       }
 
-      // Then verify it can actually execute commands with a simple test
+      // Verify it can actually execute commands with a simple test
       try {
         await sandbox.commands.run("echo ready", {
-          user: "root" as const,
-          cwd: "/home/user",
           timeoutMs: 3000, // 3 second timeout for health check
         });
       } catch (error) {

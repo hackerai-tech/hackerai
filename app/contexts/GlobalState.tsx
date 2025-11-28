@@ -15,6 +15,7 @@ import type {
   SidebarContent,
   QueuedMessage,
   QueueBehavior,
+  SandboxPreference,
 } from "@/types/chat";
 import type { Todo } from "@/types";
 import {
@@ -116,6 +117,10 @@ interface GlobalStateType {
   // Queue behavior preference
   queueBehavior: QueueBehavior;
   setQueueBehavior: (behavior: QueueBehavior) => void;
+
+  // Sandbox preference (for Agent mode)
+  sandboxPreference: SandboxPreference;
+  setSandboxPreference: (preference: SandboxPreference) => void;
 
   // Utility methods
   clearInput: () => void;
@@ -221,12 +226,26 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return "queue"; // Default: queue after current message completes
   });
 
+  // Sandbox preference (persisted to localStorage)
+  const [sandboxPreference, setSandboxPreferenceState] =
+    useState<SandboxPreference>(() => {
+      if (typeof window === "undefined") return "e2b";
+      return localStorage.getItem("sandbox-preference") || "e2b";
+    });
+
   // Persist queue behavior to localStorage
   useEffect(() => {
     if (typeof window !== "undefined") {
       localStorage.setItem("queue-behavior", queueBehavior);
     }
   }, [queueBehavior]);
+
+  // Persist sandbox preference to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("sandbox-preference", sandboxPreference);
+    }
+  }, [sandboxPreference]);
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -692,6 +711,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     queueBehavior,
     setQueueBehavior: setQueueBehaviorState,
+
+    sandboxPreference,
+    setSandboxPreference: setSandboxPreferenceState,
   };
 
   return (

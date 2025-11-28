@@ -5,10 +5,14 @@ import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 import type { ChatMode } from "./chat";
+import type { ConvexSandbox } from "@/lib/ai/tools/utils/convex-sandbox";
+
+// Union type for both E2B Sandbox and local ConvexSandbox
+export type AnySandbox = Sandbox | ConvexSandbox;
 
 export interface SandboxManager {
-  getSandbox(): Promise<{ sandbox: Sandbox }>;
-  setSandbox(sandbox: Sandbox): void;
+  getSandbox(): Promise<{ sandbox: AnySandbox }>;
+  setSandbox(sandbox: AnySandbox): void;
 }
 
 export interface SandboxContext {
@@ -26,4 +30,5 @@ export interface ToolContext {
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
   mode: ChatMode;
+  isLocalSandbox: boolean;
 }

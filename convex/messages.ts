@@ -92,7 +92,7 @@ export const verifyChatOwnership = internalQuery({
  */
 export const saveMessage = mutation({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     id: v.string(),
     chatId: v.string(),
     userId: v.string(),
@@ -555,7 +555,7 @@ export const deleteLastAssistantMessage = mutation({
  */
 export const getMessagesByChatIdForBackend = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
     userId: v.string(),
   },
@@ -619,7 +619,7 @@ export const getMessagesByChatIdForBackend = query({
  */
 export const getMessagesPageForBackend = query({
   args: {
-    serviceKey: v.optional(v.string()),
+    serviceKey: v.string(),
     chatId: v.string(),
     userId: v.string(),
     paginationOpts: paginationOptsValidator,
