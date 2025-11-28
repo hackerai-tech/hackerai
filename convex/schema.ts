@@ -169,6 +169,7 @@ export default defineSchema({
     env: v.optional(v.any()),
     cwd: v.optional(v.string()),
     timeout: v.optional(v.number()),
+    background: v.optional(v.boolean()),
     status: v.union(
       v.literal("pending"),
       v.literal("executing"),
@@ -188,6 +189,7 @@ export default defineSchema({
     stdout: v.string(),
     stderr: v.string(),
     exit_code: v.number(),
+    pid: v.optional(v.number()),
     duration: v.number(),
     completed_at: v.number(),
   })

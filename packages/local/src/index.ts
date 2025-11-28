@@ -197,6 +197,7 @@ interface Command {
   env?: Record<string, string>;
   cwd?: string;
   timeout?: number;
+  background?: boolean;
 }
 
 interface ConnectResult {
@@ -396,10 +397,10 @@ class LocalSandboxClient {
   }
 
   private async executeCommand(cmd: Command): Promise<void> {
-    const { command_id, command, env, cwd, timeout } = cmd;
+    const { command_id, command, env, cwd, timeout, background } = cmd;
     const startTime = Date.now();
 
-    console.log(chalk.cyan(`▶ Executing: ${command}`));
+    console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}Executing: ${command}`));
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -430,6 +431,26 @@ class LocalSandboxClient {
           })
           .join("; ");
         fullCommand = `${envString}; ${fullCommand}`;
+      }
+
+      // Handle background mode - spawn and return immediately with PID
+      if (background) {
+        const pid = await this.spawnBackground(fullCommand);
+        const duration = Date.now() - startTime;
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await (this.convex as any).mutation(api.localSandbox.submitResult, {
+          commandId: command_id,
+          token: this.config.token,
+          stdout: "",
+          stderr: "",
+          exitCode: 0,
+          pid,
+          duration,
+        });
+
+        console.log(chalk.green(`✓ Background process started with PID: ${pid}`));
+        return;
       }
 
       let result: ShellCommandResult;
@@ -477,6 +498,32 @@ class LocalSandboxClient {
       });
 
       console.log(chalk.red(`✗ Command failed: ${message}`));
+    }
+  }
+
+  private async spawnBackground(fullCommand: string): Promise<number> {
+    if (this.config.dangerous) {
+      // Spawn directly on host in dangerous mode
+      const child = spawn("/bin/bash", ["-c", fullCommand], {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+      return child.pid ?? -1;
+    } else {
+      // For Docker, start the process in background inside container and get its PID
+      // Using 'nohup command & echo $!' to get the container process PID
+      const escapedCommand = fullCommand.replace(/'/g, "'\\''");
+      const result = await runShellCommand(
+        `docker exec ${this.containerId} bash -c 'nohup ${escapedCommand} > /dev/null 2>&1 & echo $!'`,
+        { timeout: 5000 },
+      );
+
+      if (result.exitCode === 0 && result.stdout.trim()) {
+        const pid = parseInt(result.stdout.trim(), 10);
+        return isNaN(pid) ? -1 : pid;
+      }
+      return -1;
     }
   }
 

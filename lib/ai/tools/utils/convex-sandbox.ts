@@ -6,6 +6,7 @@ interface CommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  pid?: number;
 }
 
 interface OsInfo {
@@ -103,16 +104,11 @@ Commands run inside the Docker container with network access.`;
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
       },
-    ): Promise<{ stdout: string; stderr: string; exitCode: number }> => {
-      if (opts?.background) {
-        throw new Error("Background commands not supported in local sandbox");
-      }
-
+    ): Promise<{ stdout: string; stderr: string; exitCode: number; pid?: number }> => {
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
 
       // Enqueue command in Convex
-
       await this.convex.mutation(api.localSandbox.enqueueCommand, {
         serviceKey: this.serviceKey,
         userId: this.userId,
@@ -122,17 +118,20 @@ Commands run inside the Docker container with network access.`;
         env: opts?.envVars,
         cwd: opts?.cwd,
         timeout,
+        background: opts?.background,
       });
 
       // Wait for result with timeout
       const result = await this.waitForResult(commandId, timeout);
 
-      // Stream output if handlers provided
-      if (opts?.onStdout && result.stdout) {
-        opts.onStdout(result.stdout);
-      }
-      if (opts?.onStderr && result.stderr) {
-        opts.onStderr(result.stderr);
+      // Stream output if handlers provided (not applicable for background)
+      if (!opts?.background) {
+        if (opts?.onStdout && result.stdout) {
+          opts.onStdout(result.stdout);
+        }
+        if (opts?.onStderr && result.stderr) {
+          opts.onStderr(result.stderr);
+        }
       }
 
       // Output is already truncated by the local sandbox before submission
@@ -140,6 +139,7 @@ Commands run inside the Docker container with network access.`;
         stdout: result.stdout || "",
         stderr: result.stderr || "",
         exitCode: result.exitCode ?? -1, // -1 indicates unknown exit status
+        pid: result.pid,
       };
     },
   };
@@ -188,6 +188,7 @@ Commands run inside the Docker container with network access.`;
               stdout: result.stdout ?? "",
               stderr: result.stderr ?? "",
               exitCode: result.exitCode ?? -1,
+              pid: result.pid,
             });
           }
         },

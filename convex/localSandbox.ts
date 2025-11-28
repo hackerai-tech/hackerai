@@ -380,6 +380,7 @@ export const enqueueCommand = mutation({
     env: v.optional(v.record(v.string(), v.string())),
     cwd: v.optional(v.string()),
     timeout: v.optional(v.number()),
+    background: v.optional(v.boolean()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -424,6 +425,7 @@ export const enqueueCommand = mutation({
       env: args.env,
       cwd: args.cwd,
       timeout: args.timeout,
+      background: args.background,
       status: "pending",
       created_at: Date.now(),
     });
@@ -444,6 +446,7 @@ export const getPendingCommands = query({
         env: v.optional(v.record(v.string(), v.string())),
         cwd: v.optional(v.string()),
         timeout: v.optional(v.number()),
+        background: v.optional(v.boolean()),
       }),
     ),
   }),
@@ -471,6 +474,7 @@ export const getPendingCommands = query({
         env: cmd.env,
         cwd: cmd.cwd,
         timeout: cmd.timeout,
+        background: cmd.background,
       })),
     };
   },
@@ -519,6 +523,7 @@ export const submitResult = mutation({
     stdout: v.string(),
     stderr: v.string(),
     exitCode: v.number(),
+    pid: v.optional(v.number()),
     duration: v.number(),
   },
   returns: v.object({
@@ -545,6 +550,7 @@ export const submitResult = mutation({
       stdout: args.stdout,
       stderr: args.stderr,
       exit_code: args.exitCode,
+      pid: args.pid,
       duration: args.duration,
       completed_at: Date.now(),
     });
@@ -569,6 +575,7 @@ export const subscribeToResult = query({
     stdout: v.optional(v.string()),
     stderr: v.optional(v.string()),
     exitCode: v.optional(v.number()),
+    pid: v.optional(v.number()),
     duration: v.optional(v.number()),
   }),
   handler: async (ctx, { userId, commandId }) => {
@@ -588,6 +595,7 @@ export const subscribeToResult = query({
       stdout: result.stdout,
       stderr: result.stderr,
       exitCode: result.exit_code,
+      pid: result.pid,
       duration: result.duration,
     };
   },
