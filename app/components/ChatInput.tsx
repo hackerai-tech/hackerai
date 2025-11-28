@@ -400,12 +400,13 @@ export const ChatInput = ({
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Sandbox selector - only shown in Agent mode on new chats */}
-              {chatMode === "agent" && isNewChat && (
+              {/* Sandbox selector - editable for new chats, read-only for existing */}
+              {chatMode === "agent" && (
                 <SandboxSelector
                   value={sandboxPreference}
                   onChange={setSandboxPreference}
                   disabled={status === "streaming"}
+                  readOnly={!isNewChat}
                 />
               )}
             </div>

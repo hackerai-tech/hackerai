@@ -111,29 +111,41 @@ Commands run inside the Docker container with network access.`;
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
       },
-    ): Promise<{ stdout: string; stderr: string; exitCode: number; pid?: number }> => {
+    ): Promise<{
+      stdout: string;
+      stderr: string;
+      exitCode: number;
+      pid?: number;
+    }> => {
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
 
       // Enqueue command in Convex and get signed session for result subscription
-      const enqueueResult = await this.convex.mutation(api.localSandbox.enqueueCommand, {
-        serviceKey: this.serviceKey,
-        userId: this.userId,
-        connectionId: this.connectionInfo.connectionId,
-        commandId,
-        command,
-        env: opts?.envVars,
-        cwd: opts?.cwd,
-        timeout,
-        background: opts?.background,
-      });
+      const enqueueResult = await this.convex.mutation(
+        api.localSandbox.enqueueCommand,
+        {
+          serviceKey: this.serviceKey,
+          userId: this.userId,
+          connectionId: this.connectionInfo.connectionId,
+          commandId,
+          command,
+          env: opts?.envVars,
+          cwd: opts?.cwd,
+          timeout,
+          background: opts?.background,
+        },
+      );
 
       if (!enqueueResult.session) {
         throw new Error("Failed to get session for command subscription");
       }
 
       // Wait for result with timeout, using signed session for secure subscription
-      const result = await this.waitForResult(commandId, timeout, enqueueResult.session);
+      const result = await this.waitForResult(
+        commandId,
+        timeout,
+        enqueueResult.session,
+      );
 
       // Stream output if handlers provided (not applicable for background)
       if (!opts?.background) {
@@ -185,7 +197,11 @@ Commands run inside the Docker container with network access.`;
           // Handle session auth errors
           if (result?.authError) {
             cleanup();
-            reject(new Error("Session expired or invalid - command result unavailable"));
+            reject(
+              new Error(
+                "Session expired or invalid - command result unavailable",
+              ),
+            );
             return;
           }
 
@@ -293,7 +309,9 @@ Commands run inside the Docker container with network access.`;
     },
 
     remove: async (path: string): Promise<void> => {
-      const result = await this.commands.run(`rm -rf ${ConvexSandbox.escapePath(path)}`);
+      const result = await this.commands.run(
+        `rm -rf ${ConvexSandbox.escapePath(path)}`,
+      );
       if (result.exitCode !== 0) {
         throw new Error(`Failed to remove file: ${result.stderr}`);
       }

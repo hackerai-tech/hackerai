@@ -65,6 +65,10 @@ export const createTools = (
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
 
+  // Determine if using local sandbox (not e2b cloud)
+  const isLocalSandbox =
+    !!sandboxPreference && sandboxPreference !== "e2b" && !!serviceKey;
+
   const context: ToolContext = {
     sandboxManager,
     writer,
@@ -75,6 +79,7 @@ export const createTools = (
     fileAccumulator,
     backgroundProcessTracker,
     mode,
+    isLocalSandbox,
   };
 
   // Create all available tools

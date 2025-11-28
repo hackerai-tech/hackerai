@@ -8,14 +8,20 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 
 interface SandboxSelectorProps {
   value: string;
-  onChange: (value: string) => void;
+  onChange?: (value: string) => void;
   disabled?: boolean;
   size?: "sm" | "md";
+  readOnly?: boolean;
 }
 
 interface LocalConnection {
@@ -43,6 +49,7 @@ export function SandboxSelector({
   onChange,
   disabled = false,
   size = "sm",
+  readOnly = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
 
@@ -75,6 +82,56 @@ export function SandboxSelector({
   const selectedOption = options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
 
+  const buttonClassName =
+    size === "md"
+      ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
+      : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
+
+  const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
+
+  const buttonContent = (
+    <>
+      <Icon className={iconClassName} />
+      <span className="truncate">{selectedOption?.label}</span>
+      {selectedOption?.mode === "dangerous" && (
+        <AlertTriangle
+          className={
+            size === "md"
+              ? "h-4 w-4 text-yellow-500 shrink-0"
+              : "h-3 w-3 text-yellow-500 shrink-0"
+          }
+        />
+      )}
+      {!readOnly && (
+        <ChevronDown
+          className={
+            size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
+          }
+        />
+      )}
+    </>
+  );
+
+  // Read-only mode: display with tooltip
+  if (readOnly) {
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div
+            className={`flex items-center cursor-default text-muted-foreground ${buttonClassName}`}
+            aria-label="Sandbox environment for this chat"
+          >
+            {buttonContent}
+          </div>
+        </TooltipTrigger>
+        <TooltipContent>
+          <p>Sandbox environment for this chat</p>
+        </TooltipContent>
+      </Tooltip>
+    );
+  }
+
+  // Editable mode: popover selector
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -82,30 +139,9 @@ export function SandboxSelector({
           variant="ghost"
           size={size === "md" ? "default" : "sm"}
           disabled={disabled}
-          className={
-            size === "md"
-              ? "h-9 px-3 gap-2 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-              : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
-          }
+          className={buttonClassName}
         >
-          <Icon
-            className={size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0"}
-          />
-          <span className="truncate">{selectedOption?.label}</span>
-          {selectedOption?.mode === "dangerous" && (
-            <AlertTriangle
-              className={
-                size === "md"
-                  ? "h-4 w-4 text-yellow-500 shrink-0"
-                  : "h-3 w-3 text-yellow-500 shrink-0"
-              }
-            />
-          )}
-          <ChevronDown
-            className={
-              size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
-            }
-          />
+          {buttonContent}
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-[280px] p-1" align="start">
@@ -119,7 +155,7 @@ export function SandboxSelector({
               <button
                 key={option.id}
                 onClick={() => {
-                  onChange(option.id);
+                  onChange?.(option.id);
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${

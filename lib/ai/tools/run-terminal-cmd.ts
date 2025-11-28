@@ -15,7 +15,17 @@ const MAX_COMMAND_EXECUTION_TIME = 7 * 60 * 1000; // 7 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer, backgroundProcessTracker } = context;
+  const { sandboxManager, writer, backgroundProcessTracker, isLocalSandbox } =
+    context;
+
+  // Different wait instructions based on sandbox type
+  const waitForProcessInstruction = isLocalSandbox
+    ? `To wait for a background process to complete, use an appropriate wait technique for your environment (e.g., \`while kill -0 <pid> 2>/dev/null; do sleep 1; done\` on Unix-like systems, or poll with process checking commands). This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait using appropriate method for your OS.`
+    : `To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\``;
+
+  const timeoutWaitInstruction = isLocalSandbox
+    ? `If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use appropriate process discovery for your OS to find it, 2) Use an appropriate wait technique for your environment to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`
+    : `If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`;
 
   return tool({
     description: `Execute a command on behalf of the user.
@@ -29,8 +39,8 @@ In using these tools, adhere to the following guidelines:
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 4. If the command would use a pager, append \` | cat\` to the command.
 5. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
-  - To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\`
-  - If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.
+  - ${waitForProcessInstruction}
+  - ${timeoutWaitInstruction}
 6. Dont include any newlines in the command.
 7. Handle large outputs and save scan results to files:
   - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.

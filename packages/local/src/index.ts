@@ -30,7 +30,10 @@ const TRUNCATION_MARKER =
  * Truncates output using 25% head + 75% tail strategy.
  * This preserves both the command start (context) and the end (final results/errors).
  */
-function truncateOutput(content: string, maxSize: number = MAX_OUTPUT_SIZE): string {
+function truncateOutput(
+  content: string,
+  maxSize: number = MAX_OUTPUT_SIZE,
+): string {
   if (content.length <= maxSize) return content;
 
   const markerLength = TRUNCATION_MARKER.length;
@@ -64,7 +67,11 @@ function runShellCommand(
     maxOutputSize?: number;
   } = {},
 ): Promise<ShellCommandResult> {
-  const { timeout = 30000, shell = "/bin/bash", maxOutputSize = MAX_OUTPUT_SIZE } = options;
+  const {
+    timeout = 30000,
+    shell = "/bin/bash",
+    maxOutputSize = MAX_OUTPUT_SIZE,
+  } = options;
 
   return new Promise((resolve) => {
     let stdout = "";
@@ -248,7 +255,9 @@ class LocalSandboxClient {
     console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
 
     if (!this.config.dangerous) {
-      const dockerCheck = await runShellCommand("docker --version", { timeout: 5000 });
+      const dockerCheck = await runShellCommand("docker --version", {
+        timeout: 5000,
+      });
       if (dockerCheck.exitCode !== 0) {
         console.error(
           chalk.red(
@@ -283,7 +292,9 @@ class LocalSandboxClient {
     return `hackerai-sandbox-${sanitized || "default"}`;
   }
 
-  private async findExistingContainer(containerName: string): Promise<{ id: string; running: boolean } | null> {
+  private async findExistingContainer(
+    containerName: string,
+  ): Promise<{ id: string; running: boolean } | null> {
     // Check if container with this name exists
     const result = await runShellCommand(
       `docker ps -a --filter "name=^${containerName}$" --format "{{.ID}}|{{.State}}"`,
@@ -309,11 +320,15 @@ class LocalSandboxClient {
 
       if (existing) {
         if (existing.running) {
-          console.log(chalk.green(`✓ Reusing existing container: ${containerName}`));
+          console.log(
+            chalk.green(`✓ Reusing existing container: ${containerName}`),
+          );
           return existing.id;
         } else {
           // Container exists but stopped - start it
-          console.log(chalk.blue(`Starting existing container: ${containerName}`));
+          console.log(
+            chalk.blue(`Starting existing container: ${containerName}`),
+          );
           const startResult = await runShellCommand(
             `docker start ${existing.id}`,
             { timeout: 30000 },
@@ -323,8 +338,12 @@ class LocalSandboxClient {
             return existing.id;
           }
           // If start failed, remove and create fresh
-          console.log(chalk.yellow(`⚠️  Failed to start, creating new container...`));
-          await runShellCommand(`docker rm -f ${existing.id}`, { timeout: 5000 });
+          console.log(
+            chalk.yellow(`⚠️  Failed to start, creating new container...`),
+          );
+          await runShellCommand(`docker rm -f ${existing.id}`, {
+            timeout: 5000,
+          });
         }
       }
     }
@@ -356,7 +375,9 @@ class LocalSandboxClient {
     console.log(chalk.blue("Creating Docker container..."));
 
     // In persist mode, use a named container
-    const nameFlag = this.config.persist ? `--name ${this.getContainerName()} ` : "";
+    const nameFlag = this.config.persist
+      ? `--name ${this.getContainerName()} `
+      : "";
     const result = await runShellCommand(
       `docker run -d ${nameFlag}--network host ${this.config.image} tail -f /dev/null`,
       { timeout: 60000 },
@@ -428,7 +449,11 @@ class LocalSandboxClient {
       console.log(chalk.green("✓ Authenticated"));
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
       console.log(chalk.gray(`Connection: ${this.connectionId}`));
-      console.log(chalk.gray(`Mode: ${this.getModeDisplay()}${this.config.persist ? " (persistent)" : ""}`));
+      console.log(
+        chalk.gray(
+          `Mode: ${this.getModeDisplay()}${this.config.persist ? " (persistent)" : ""}`,
+        ),
+      );
 
       this.startHeartbeat();
       this.startCommandSubscription();
@@ -469,7 +494,9 @@ class LocalSandboxClient {
 
         // Handle session auth errors - client needs to re-authenticate
         if (data?.authError) {
-          console.debug("Session expired or invalid, will refresh on next heartbeat");
+          console.debug(
+            "Session expired or invalid, will refresh on next heartbeat",
+          );
           return;
         }
 
@@ -489,7 +516,9 @@ class LocalSandboxClient {
     // Update activity time to prevent idle timeout
     this.lastActivityTime = Date.now();
 
-    console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}Executing: ${command}`));
+    console.log(
+      chalk.cyan(`▶ ${background ? "[BG] " : ""}Executing: ${command}`),
+    );
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -538,7 +567,9 @@ class LocalSandboxClient {
           duration,
         });
 
-        console.log(chalk.green(`✓ Background process started with PID: ${pid}`));
+        console.log(
+          chalk.green(`✓ Background process started with PID: ${pid}`),
+        );
         return;
       }
 
@@ -665,7 +696,8 @@ class LocalSandboxClient {
             this.restartCommandSubscription();
           }
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           console.debug(`Heartbeat error (will retry): ${message}`);
         }
       }
@@ -722,23 +754,36 @@ class LocalSandboxClient {
           });
           console.log(chalk.green("✓ Disconnected"));
         } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           console.warn(chalk.yellow(`⚠️  Failed to disconnect: ${message}`));
         }
       }
 
       if (this.containerId) {
         if (this.config.persist) {
-          console.log(chalk.green(`✓ Container preserved: ${this.getContainerName()}`));
-          console.log(chalk.gray("  (Use --persist again to reuse it, or docker rm to remove)"));
+          console.log(
+            chalk.green(`✓ Container preserved: ${this.getContainerName()}`),
+          );
+          console.log(
+            chalk.gray(
+              "  (Use --persist again to reuse it, or docker rm to remove)",
+            ),
+          );
         } else {
-          const result = await runShellCommand(`docker rm -f ${this.containerId}`, {
-            timeout: 3000,
-          });
+          const result = await runShellCommand(
+            `docker rm -f ${this.containerId}`,
+            {
+              timeout: 3000,
+            },
+          );
           if (result.exitCode === 0) {
             console.log(chalk.green("✓ Container removed"));
           } else {
-            console.error(chalk.red("Error removing container:"), result.stderr);
+            console.error(
+              chalk.red("Error removing container:"),
+              result.stderr,
+            );
           }
         }
       }

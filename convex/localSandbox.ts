@@ -27,7 +27,9 @@ async function signSession(
   expiresAt: number,
 ): Promise<string> {
   if (!SESSION_SIGNING_SECRET) {
-    throw new Error("LOCAL_SANDBOX_SESSION_SECRET environment variable not set");
+    throw new Error(
+      "LOCAL_SANDBOX_SESSION_SECRET environment variable not set",
+    );
   }
 
   const payload = `${userId}:${connectionId}:${expiresAt}`;
@@ -41,7 +43,11 @@ async function signSession(
     ["sign"],
   );
 
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(payload),
+  );
   return Array.from(new Uint8Array(signature), (b) =>
     b.toString(16).padStart(2, "0"),
   ).join("");
@@ -83,7 +89,12 @@ async function verifySession(
     signature.match(/.{2}/g)!.map((byte) => parseInt(byte, 16)),
   );
 
-  return crypto.subtle.verify("HMAC", key, signatureBytes, encoder.encode(payload));
+  return crypto.subtle.verify(
+    "HMAC",
+    key,
+    signatureBytes,
+    encoder.encode(payload),
+  );
 }
 
 import { DatabaseReader } from "./_generated/server";
@@ -307,7 +318,10 @@ export const heartbeat = mutation({
     }
 
     if (connection.user_id !== tokenResult.userId) {
-      return { success: false, error: "Connection does not belong to this user" };
+      return {
+        success: false,
+        error: "Connection does not belong to this user",
+      };
     }
 
     if (connection.status === "disconnected") {
@@ -320,7 +334,11 @@ export const heartbeat = mutation({
 
     // Generate refreshed session for query access
     const expiresAt = Date.now() + SESSION_EXPIRY_MS;
-    const signature = await signSession(tokenResult.userId, connectionId, expiresAt);
+    const signature = await signSession(
+      tokenResult.userId,
+      connectionId,
+      expiresAt,
+    );
 
     return { success: true, session: { expiresAt, signature } };
   },
@@ -542,7 +560,11 @@ export const enqueueCommand = mutation({
 
     // Generate signed session for result subscription
     const expiresAt = Date.now() + SESSION_EXPIRY_MS;
-    const signature = await signSession(args.userId, args.connectionId, expiresAt);
+    const signature = await signSession(
+      args.userId,
+      args.connectionId,
+      expiresAt,
+    );
 
     return {
       success: true,
@@ -878,7 +900,9 @@ export const cleanupOldCommands = internalMutation({
     const oldConnections = await ctx.db
       .query("local_sandbox_connections")
       .withIndex("by_status_and_created_at", (q) =>
-        q.eq("status", "disconnected").lt("created_at", now - 24 * 60 * 60 * 1000),
+        q
+          .eq("status", "disconnected")
+          .lt("created_at", now - 24 * 60 * 60 * 1000),
       )
       .take(100);
 

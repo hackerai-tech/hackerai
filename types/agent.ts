@@ -30,4 +30,5 @@ export interface ToolContext {
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
   mode: ChatMode;
+  isLocalSandbox: boolean;
 }
