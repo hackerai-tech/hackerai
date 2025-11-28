@@ -283,7 +283,7 @@ Note: Available tools and environment depend on the custom image. This is a user
 IMPORTANT: You are connected to a LOCAL machine running the HackerAI Docker sandbox.
 
 Container Environment:
-- Image: hackeraidev/sandbox (pre-built pentesting tools)
+- Image: hackerai/sandbox (pre-built pentesting tools)
 - Mode: Docker container
 - Network: Host network (--network host)
 
@@ -292,7 +292,7 @@ Pre-installed Pentesting Tools:
 - Subdomain/DNS: subfinder, dnsrecon
 - Web Fuzzing: ffuf, dirsearch, arjun
 - Web Scanners: nikto, whatweb, wpscan, wapiti, wafw00f
-- XSS/Injection: xsser, commix, sqlmap
+- Injection: commix, sqlmap
 - SSL/TLS Testing: testssl
 - Auth/Bruteforce: hydra
 - SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket

@@ -160,7 +160,7 @@ function runWithOutput(command: string, args: string[]): Promise<void> {
 const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
 
 // Default pre-built image with all pentesting tools
-const DEFAULT_IMAGE = "hackeraidev/sandbox";
+const DEFAULT_IMAGE = "hackerai/sandbox";
 
 // Convex function references (string paths work at runtime)
 const api = {
@@ -378,8 +378,15 @@ class LocalSandboxClient {
     const nameFlag = this.config.persist
       ? `--name ${this.getContainerName()} `
       : "";
+    
+    // Required capabilities for penetration testing tools:
+    // - NET_RAW: ping, nmap, masscan, hping3, arp-scan, tcpdump, raw sockets
+    // - NET_ADMIN: network interface manipulation, arp-scan, netdiscover
+    // - SYS_PTRACE: gdb, strace, ltrace (debugging tools)
+    const capabilities = "--cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE";
+    
     const result = await runShellCommand(
-      `docker run -d ${nameFlag}--network host ${this.config.image} tail -f /dev/null`,
+      `docker run -d ${nameFlag}${capabilities} --network host ${this.config.image} tail -f /dev/null`,
       { timeout: 60000 },
     );
 
