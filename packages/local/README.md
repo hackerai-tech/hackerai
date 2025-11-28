@@ -23,8 +23,8 @@ hackerai-local --token YOUR_TOKEN
 npx @hackerai/local --token hsb_abc123 --name "My Laptop"
 ```
 
-This pulls the pre-built HackerAI sandbox image (~2GB) with 30+ pentesting tools including:
-nmap, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, httpx, and more.
+This pulls the pre-built HackerAI sandbox image (~4GB) - an AI Agent Penetration Testing Environment based on Kali Linux with comprehensive automated tools including:
+nmap, masscan, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, httpx, bloodhound, hashcat, and many more.
 
 ### Custom Docker Image
 
@@ -46,14 +46,14 @@ npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
 | ------------------ | ------------------------------------------------------ |
 | `--token TOKEN`    | Authentication token from HackerAI Settings (required) |
 | `--name NAME`      | Connection name shown in HackerAI (default: hostname)  |
-| `--image IMAGE`    | Docker image to use (default: hackerai/sandbox)     |
+| `--image IMAGE`    | Docker image to use (default: hackerai/sandbox)        |
 | `--dangerous`      | Run commands directly on host OS without Docker        |
 | `--convex-url URL` | Override backend URL (for development)                 |
 | `--help, -h`       | Show help message                                      |
 
 ## Getting Your Token
 
-1. Go to [HackerAI Settings](https://hackerai.com/settings)
+1. Go to [HackerAI Settings](https://hackerai.co/settings)
 2. Navigate to the "Agents" tab
 3. Click "Generate Token" or copy your existing token
 

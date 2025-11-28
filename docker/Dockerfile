@@ -1,318 +1,375 @@
-# HackerAI Pentesting Sandbox
-# Pre-built image with 30+ security tools for local sandbox execution
-# Based on Debian 12 (Bookworm) - matches E2B sandbox environment
+FROM kalilinux/kali-rolling
 
-FROM debian:bookworm-slim
-
-LABEL org.opencontainers.image.title="HackerAI Sandbox"
-LABEL org.opencontainers.image.description="Pre-configured pentesting sandbox with 30+ security tools"
+LABEL org.opencontainers.image.title="HackerAI Agent Sandbox"
+LABEL org.opencontainers.image.description="AI Agent Penetration Testing Environment with Comprehensive Automated Tools"
 LABEL org.opencontainers.image.source="https://github.com/hackerai-tech/hackerai"
 LABEL org.opencontainers.image.vendor="HackerAI"
 
-# Prevent interactive prompts during installation
+# ============================================================================
+# Environment Variables
+# ============================================================================
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HOME=/home/user
-ENV PATH="/home/user/.local/bin:/usr/local/go/bin:${PATH}"
-
-# Create user directory structure
-RUN mkdir -p /home/user/upload && \
-    chmod -R 777 /home/user
-
-WORKDIR /home/user
+ENV GOPATH=/home/user/go
+ENV GOCACHE=/home/user/go/.cache
+ENV PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ============================================================================
-# Base System & Build Dependencies
+# Kali Mirrors & Base System Installation
 # ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN set -eux; \
+    # Try multiple Kali mirrors for reliability
+    mirrors="ftp.acc.umu.se/mirror/kali.org/kali mirror.math.princeton.edu/pub/kali kali.mirror.garr.it/mirrors/kali mirror.pit.teraswitch.com/kali"; \
+    success=0; \
+    for mirror in $mirrors; do \
+        echo "deb http://$mirror kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list; \
+        if apt-get update; then \
+            echo "Using Kali mirror: $mirror"; \
+            success=1; \
+            break; \
+        fi; \
+    done; \
+    if [ "$success" -ne 1 ]; then \
+        echo "ERROR: apt-get update failed for all configured mirrors" >&2; \
+        exit 1; \
+    fi; \
+    # Install all tools in one layer to minimize image size
+    apt-get install -y --no-install-recommends \
     # Essential utilities
     curl \
     wget \
     git \
     ca-certificates \
-    gnupg \
+    gnupg2 \
     unzip \
     jq \
+    tree \
+    perl \
+    sudo \
     # Build tools
     build-essential \
     gcc \
     g++ \
     make \
     cmake \
+    pkg-config \
+    binutils \
+    # Python stack
+    python3 \
+    python3-venv \
+    python3-pip \
+    python3-dev \
+    python-is-python3 \
+    libffi-dev \
+    libxml2-dev \
+    libxslt1-dev \
+    zlib1g-dev \
+    libglib2.0-dev \
+    # Ruby stack
+    ruby-full \
+    ruby-dev \
+    libnet-ssleay-perl \
+    libio-socket-ssl-perl \
+    libcrypt-ssleay-perl \
+    libssl-dev \
     # Network utilities
-    dnsutils \
-    netcat-openbsd \
-    net-tools \
     iputils-ping \
+    dnsutils \
     iproute2 \
-    # Text processing
+    net-tools \
+    traceroute \
+    netcat-traditional \
+    tcpdump \
+    # Text editors
     vim \
     nano \
     less \
-    # Misc
-    procps \
-    file \
-    locales \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set locale
-RUN sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && locale-gen
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
+    # Network scanning & enumeration (from Kali repos - pre-compiled!)
+    nmap \
+    masscan \
+    naabu \
+    nikto \
+    whatweb \
+    wafw00f \
+    # Web vulnerability scanners
+    sqlmap \
+    wapiti \
+    wpscan \
+    # DNS/subdomain enumeration
+    subfinder \
+    dnsrecon \
+    dnsenum \
+    theharvester \
+    # Web fuzzing & discovery
+    ffuf \
+    arjun \
+    gobuster \
+    dirsearch \
+    # SMB/NetBIOS tools
+    smbclient \
+    smbmap \
+    nbtscan \
+    python3-impacket \
+    enum4linux \
+    # Network discovery
+    arp-scan \
+    ike-scan \
+    onesixtyone \
+    snmpcheck \
+    netdiscover \
+    hping3 \
+    # Utilities
+    socat \
+    proxychains4 \
+    seclists \
+    hashid \
+    hashcat \
+    commix \
+    libimage-exiftool-perl \
+    cewl \
+    # WebDAV tools
+    cadaver \
+    davtest \
+    # SSL/TLS testing
+    testssl.sh \
+    # Web crawling & recon
+    gospider \
+    subjack \
+    nuclei \
+    # Authentication/bruteforce
+    hydra \
+    # Programming languages
+    golang \
+    nodejs \
+    npm \
+    # Debugging tools
+    gdb \
+    ltrace \
+    strace \
+    # Forensics
+    steghide \
+    binwalk \
+    foremost \
+    # Document conversion
+    pandoc \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # ============================================================================
-# Python 3.11 (Debian Bookworm default)
+# WhatWeb Ruby Library Symlink Fix
 # ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-venv \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    if command -v whatweb >/dev/null 2>&1; then \
+      mkdir -p /usr/bin/lib; \
+      if ls /usr/lib/ruby/vendor_ruby/*.rb >/dev/null 2>&1; then \
+        ln -sf /usr/lib/ruby/vendor_ruby/*.rb /usr/bin/lib/; \
+      fi; \
+    fi
 
-# Python packages for document generation and data processing
-RUN pip3 install --no-cache-dir --break-system-packages \
+# ============================================================================
+# User Setup
+# ============================================================================
+RUN useradd --create-home --shell /bin/bash user && \
+    usermod -aG sudo user && \
+    echo 'user ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers && \
+    mkdir -p /home/user/upload /home/user/go && \
+    chown -R user:user /home/user
+
+WORKDIR /home/user
+
+# ============================================================================
+# Python Packages for Document Generation & Security Tools
+# ============================================================================
+RUN pip3 install --break-system-packages \
     reportlab \
     python-docx \
     openpyxl \
     python-pptx \
     pandas \
     pypandoc \
-    requests \
-    beautifulsoup4 \
-    lxml \
-    pyyaml \
-    colorama
+    odfpy
+
+# Additional security-focused Python packages
+RUN pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex ropgadget ropper
+
+# Active Directory security tools
+RUN pip3 install --break-system-packages --ignore-installed bloodhound
+RUN pip3 install --break-system-packages --ignore-installed certipy-ad
+RUN pip3 install --break-system-packages --ignore-installed coercer
+
+# Ruby forensics tool
+RUN gem install zsteg
 
 # ============================================================================
-# Node.js 20.x
+# Git-based Security Tools
 # ============================================================================
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
-
-# ============================================================================
-# Golang 1.24
-# ============================================================================
-RUN curl -fsSL https://go.dev/dl/go1.24.2.linux-amd64.tar.gz | tar -C /usr/local -xzf - && \
-    mkdir -p /home/user/go
-
-ENV GOPATH=/home/user/go
-ENV PATH="${GOPATH}/bin:${PATH}"
-
-# ============================================================================
-# Network Scanning Tools
-# ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    nmap \
-    hping3 \
-    libpcap-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# naabu - Fast port scanner (download pre-built binary)
-RUN NAABU_VERSION=$(curl -s https://api.github.com/repos/projectdiscovery/naabu/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
-    curl -fsSL "https://github.com/projectdiscovery/naabu/releases/download/v${NAABU_VERSION}/naabu_${NAABU_VERSION}_linux_amd64.zip" -o /tmp/naabu.zip && \
-    unzip -o /tmp/naabu.zip -d /tmp && \
-    mv /tmp/naabu /usr/local/bin/ && \
-    chmod +x /usr/local/bin/naabu && \
-    rm -rf /tmp/naabu* /tmp/LICENSE* /tmp/README*
-
-# httpx - HTTP probe (download pre-built binary)
-RUN HTTPX_VERSION=$(curl -s https://api.github.com/repos/projectdiscovery/httpx/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
-    curl -fsSL "https://github.com/projectdiscovery/httpx/releases/download/v${HTTPX_VERSION}/httpx_${HTTPX_VERSION}_linux_amd64.zip" -o /tmp/httpx.zip && \
-    unzip -o /tmp/httpx.zip -d /tmp && \
-    mv /tmp/httpx /usr/local/bin/ && \
-    chmod +x /usr/local/bin/httpx && \
-    rm -rf /tmp/httpx* /tmp/LICENSE* /tmp/README*
-
-# ============================================================================
-# Subdomain/DNS Enumeration
-# ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    dnsrecon \
-    && rm -rf /var/lib/apt/lists/*
-
-# subfinder - Passive subdomain discovery (download pre-built binary)
-RUN SUBFINDER_VERSION=$(curl -s https://api.github.com/repos/projectdiscovery/subfinder/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
-    curl -fsSL "https://github.com/projectdiscovery/subfinder/releases/download/v${SUBFINDER_VERSION}/subfinder_${SUBFINDER_VERSION}_linux_amd64.zip" -o /tmp/subfinder.zip && \
-    unzip -o /tmp/subfinder.zip -d /tmp && \
-    mv /tmp/subfinder /usr/local/bin/ && \
-    chmod +x /usr/local/bin/subfinder && \
-    rm -rf /tmp/subfinder* /tmp/LICENSE* /tmp/README*
+RUN set -eux; \
+    # GraphQL schema inference
+    git clone https://github.com/nikitastupin/clairvoyance.git /opt/clairvoyance || true && \
+    if [ -d /opt/clairvoyance ]; then \
+      cd /opt/clairvoyance && \
+      python3 -m venv venv && \
+      . venv/bin/activate && \
+      pip install . || true; \
+    fi && \
+    # JWT analysis tool
+    git clone https://github.com/ticarpi/jwt_tool.git /opt/jwt_tool || true && \
+    if [ -f /opt/jwt_tool/jwt_tool.py ]; then chmod +x /opt/jwt_tool/jwt_tool.py; fi && \
+    # Template injection testing
+    git clone https://github.com/epinna/tplmap.git /opt/tplmap || true && \
+    if [ -f /opt/tplmap/tplmap.py ]; then chmod +x /opt/tplmap/tplmap.py; fi && \
+    # Gopher protocol exploitation
+    git clone https://github.com/tarunkant/Gopherus.git /opt/gopherus || true && \
+    if [ -f /opt/gopherus/gopherus.py ]; then chmod +x /opt/gopherus/gopherus.py; fi && \
+    # PHP object injection
+    git clone https://github.com/ambionics/phpggc.git /opt/phpggc || true && \
+    if [ -f /opt/phpggc/phpggc ]; then chmod +x /opt/phpggc/phpggc; fi && \
+    # Network poisoning
+    git clone https://github.com/lgandx/Responder.git /opt/responder && \
+    ln -sf /opt/responder/Responder.py /usr/local/bin/responder && \
+    # Git repository dumper
+    git clone https://github.com/internetwache/GitTools.git /opt/gittools && \
+    chmod +x /opt/gittools/Dumper/gitdumper.sh /opt/gittools/Extractor/extractor.sh && \
+    ln -sf /opt/gittools/Dumper/gitdumper.sh /usr/local/bin/gitdumper && \
+    ln -sf /opt/gittools/Extractor/extractor.sh /usr/local/bin/gitextractor && \
+    # RSA CTF tool - install dependencies
+    apt-get update && apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev libmpc-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* && \
+    git clone https://github.com/RsaCtfTool/RsaCtfTool.git /opt/rsactftool && \
+    cd /opt/rsactftool && \
+    pip3 install --break-system-packages -r requirements.txt && \
+    ln -sf /opt/rsactftool/RsaCtfTool.py /usr/local/bin/rsactftool || true
 
 # ============================================================================
-# Web Fuzzing and Discovery
+# Binary Downloads (Platform-aware)
 # ============================================================================
-
-# ffuf - Fast web fuzzer (download pre-built binary)
-RUN FFUF_VERSION=$(curl -s https://api.github.com/repos/ffuf/ffuf/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
-    curl -fsSL "https://github.com/ffuf/ffuf/releases/download/v${FFUF_VERSION}/ffuf_${FFUF_VERSION}_linux_amd64.tar.gz" -o /tmp/ffuf.tar.gz && \
-    tar -xzf /tmp/ffuf.tar.gz -C /tmp && \
-    mv /tmp/ffuf /usr/local/bin/ && \
-    chmod +x /usr/local/bin/ffuf && \
-    rm -rf /tmp/ffuf*
-
-# gobuster - Directory/DNS brute-forcer (download pre-built binary)
-RUN GOBUSTER_VERSION=$(curl -s https://api.github.com/repos/OJ/gobuster/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
-    curl -fsSL "https://github.com/OJ/gobuster/releases/download/v${GOBUSTER_VERSION}/gobuster_Linux_x86_64.tar.gz" -o /tmp/gobuster.tar.gz && \
-    tar -xzf /tmp/gobuster.tar.gz -C /tmp && \
-    mv /tmp/gobuster /usr/local/bin/ && \
-    chmod +x /usr/local/bin/gobuster && \
-    rm -rf /tmp/gobuster*
-
-# dirsearch
-RUN pip3 install --no-cache-dir --break-system-packages dirsearch
-
-# arjun - Parameter discovery
-RUN pip3 install --no-cache-dir --break-system-packages arjun
-
-# ============================================================================
-# Web Scanners
-# ============================================================================
-
-# nikto - Web server scanner (install from git)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libnet-ssleay-perl \
-    && rm -rf /var/lib/apt/lists/* && \
-    git clone --depth 1 https://github.com/sullo/nikto.git /opt/nikto && \
-    ln -s /opt/nikto/program/nikto.pl /usr/local/bin/nikto && \
-    chmod +x /opt/nikto/program/nikto.pl
-
-# whatweb - Web technology identifier (install from git)
-RUN git clone --depth 1 https://github.com/urbanadventurer/WhatWeb.git /opt/whatweb && \
-    ln -s /opt/whatweb/whatweb /usr/local/bin/whatweb && \
-    chmod +x /opt/whatweb/whatweb
-
-# wapiti - Web vulnerability scanner
-RUN pip3 install --no-cache-dir --break-system-packages wapiti3
-
-# wpscan
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ruby \
-    ruby-dev \
-    libcurl4-openssl-dev \
-    && gem install wpscan --no-document \
-    && rm -rf /var/lib/apt/lists/*
-
-# wafw00f - WAF detection
-RUN pip3 install --no-cache-dir --break-system-packages wafw00f
+RUN set -eux; \
+    # Java deserialization exploits
+    mkdir -p /opt/ysoserial && \
+    wget -qO /opt/ysoserial/ysoserial.jar https://github.com/frohoff/ysoserial/releases/latest/download/ysoserial-all.jar || true && \
+    # Linux privilege escalation scripts
+    mkdir -p /opt/peass && \
+    wget -qO /opt/peass/linpeas.sh https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh && \
+    chmod +x /opt/peass/linpeas.sh && \
+    ln -sf /opt/peass/linpeas.sh /usr/local/bin/linpeas && \
+    # Secret scanning tool
+    curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin && \
+    # httpx with proper architecture detection
+    arch=$(uname -m); \
+    if [ "$arch" = "x86_64" ]; then platform="linux_amd64"; \
+    elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then platform="linux_arm64"; \
+    else platform="linux_amd64"; fi; \
+    HTTPX_URL=$(curl -s https://api.github.com/repos/projectdiscovery/httpx/releases/latest \
+      | grep -Eo '"browser_download_url"\s*:\s*"[^"]*' | cut -d '"' -f4 \
+      | grep -E "${platform}\\.zip$" | head -n1); \
+    echo "Fetching httpx: $HTTPX_URL"; \
+    wget -qO /tmp/httpx.zip "$HTTPX_URL" && \
+    mkdir -p /tmp/httpx_extracted && \
+    unzip -q /tmp/httpx.zip -d /tmp/httpx_extracted || true && \
+    find /tmp/httpx_extracted -type f -name httpx -exec mv {} /usr/local/bin/httpx \; || true && \
+    chmod +x /usr/local/bin/httpx || true && \
+    rm -rf /tmp/httpx_extracted /tmp/httpx.zip
 
 # ============================================================================
-# Injection and XSS Testing
+# Create Wrapper Scripts for Python Tools
 # ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    sqlmap \
-    && rm -rf /var/lib/apt/lists/*
-
-# xsser - XSS detection tool (install from git)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-pycurl \
-    python3-bs4 \
-    python3-geoip \
-    && rm -rf /var/lib/apt/lists/* && \
-    git clone --depth 1 https://github.com/epsylon/xsser.git /opt/xsser && \
-    ln -s /opt/xsser/xsser /usr/local/bin/xsser && \
-    chmod +x /opt/xsser/xsser
-
-# commix
-RUN pip3 install --no-cache-dir --break-system-packages commix
+RUN set -eux; \
+    # Clairvoyance wrapper
+    ([ -d /opt/clairvoyance ] && echo '#!/bin/bash\ncd /opt/clairvoyance && source venv/bin/activate && python -m clairvoyance "$@"' > /usr/local/bin/clairvoyance && chmod +x /usr/local/bin/clairvoyance) || true && \
+    # JWT Tool wrapper
+    ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true && \
+    # Tplmap wrapper
+    ([ -f /opt/tplmap/tplmap.py ] && echo '#!/bin/bash\npython3 /opt/tplmap/tplmap.py "$@"' > /usr/local/bin/tplmap && chmod +x /usr/local/bin/tplmap) || true && \
+    # Gopherus wrapper
+    ([ -f /opt/gopherus/gopherus.py ] && echo '#!/bin/bash\npython3 /opt/gopherus/gopherus.py "$@"' > /usr/local/bin/gopherus && chmod +x /usr/local/bin/gopherus) || true && \
+    # PHPGGC symlink
+    ([ -f /opt/phpggc/phpggc ] && ln -sf /opt/phpggc/phpggc /usr/local/bin/phpggc) || true && \
+    # YsoSerial wrapper
+    (echo '#!/bin/bash\njava -jar /opt/ysoserial/ysoserial.jar "$@"' > /usr/local/bin/ysoserial && chmod +x /usr/local/bin/ysoserial) || true
 
 # ============================================================================
-# SSL/TLS Analysis
+# Go-based Security Tools
 # ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    testssl.sh \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/testssl.sh /usr/bin/testssl
+RUN set -eux; \
+    go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
+    go install github.com/nicocha30/ligolo-ng/cmd/agent@latest && \
+    go install github.com/nicocha30/ligolo-ng/cmd/proxy@latest && \
+    go install github.com/hahwul/dalfox/v2@latest && \
+    go install github.com/jpillora/chisel@latest && \
+    go install github.com/ropnop/kerbrute@latest
 
 # ============================================================================
-# Authentication and Bruteforce
+# Tool Validation
 # ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    hydra \
-    && rm -rf /var/lib/apt/lists/*
-
-# ============================================================================
-# SMB/NetBIOS and Network Discovery
-# ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    smbclient \
-    nbtscan \
-    python3-impacket \
-    arp-scan \
-    ike-scan \
-    onesixtyone \
-    snmp \
-    netdiscover \
-    && rm -rf /var/lib/apt/lists/*
-
-# smbmap - SMB enumeration tool
-RUN pip3 install --no-cache-dir --break-system-packages smbmap
-
-# ============================================================================
-# Web Recon and Crawling
-# ============================================================================
-
-# gospider - Web crawler (download pre-built binary)
-RUN GOSPIDER_VERSION=$(curl -s https://api.github.com/repos/jaeles-project/gospider/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
-    curl -fsSL "https://github.com/jaeles-project/gospider/releases/download/v${GOSPIDER_VERSION}/gospider_v${GOSPIDER_VERSION}_linux_x86_64.zip" -o /tmp/gospider.zip && \
-    unzip -o /tmp/gospider.zip -d /tmp && \
-    find /tmp -name 'gospider' -type f -executable -exec mv {} /usr/local/bin/ \; && \
-    chmod +x /usr/local/bin/gospider && \
-    rm -rf /tmp/gospider* /tmp/LICENSE* /tmp/README*
-
-# subjack - Subdomain takeover checker (build with CGO disabled)
-RUN CGO_ENABLED=0 go install github.com/haccer/subjack@latest || echo "subjack build skipped"
-
-# ============================================================================
-# WebDAV Tools
-# ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    cadaver \
-    && rm -rf /var/lib/apt/lists/*
-
-# ============================================================================
-# Utilities and Specialized Tools
-# ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    socat \
-    proxychains4 \
-    hashid \
-    libimage-exiftool-perl \
-    cewl \
-    && rm -rf /var/lib/apt/lists/*
-
-# jwt_tool
-RUN pip3 install --no-cache-dir --break-system-packages pyjwt && \
-    git clone --depth 1 https://github.com/ticarpi/jwt_tool.git /opt/jwt_tool && \
-    chmod +x /opt/jwt_tool/jwt_tool.py && \
-    ln -s /opt/jwt_tool/jwt_tool.py /usr/local/bin/jwt_tool
-
-# nuclei - Template-based vulnerability scanner (download pre-built binary)
-RUN NUCLEI_VERSION=$(curl -s https://api.github.com/repos/projectdiscovery/nuclei/releases/latest | grep '"tag_name"' | cut -d'"' -f4 | sed 's/v//') && \
-    curl -fsSL "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip" -o /tmp/nuclei.zip && \
-    unzip -o /tmp/nuclei.zip -d /tmp && \
-    mv /tmp/nuclei /usr/local/bin/ && \
-    chmod +x /usr/local/bin/nuclei && \
-    rm -rf /tmp/nuclei* /tmp/LICENSE* /tmp/README*
-
-# ============================================================================
-# SecLists - Wordlists
-# ============================================================================
-RUN git clone --depth 1 https://github.com/danielmiessler/SecLists.git /home/user/SecLists
-
-# ============================================================================
-# Pandoc for document conversion
-# ============================================================================
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pandoc \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    echo "=== Starting tool validation ===" && \
+    test -d /usr/share/seclists && \
+    echo "✓ SecLists installed" && \
+    which nmap && echo "✓ nmap" && \
+    which masscan && echo "✓ masscan" && \
+    which naabu && echo "✓ naabu" && \
+    which nikto && echo "✓ nikto" && \
+    which whatweb && echo "✓ whatweb" && \
+    which wafw00f && echo "✓ wafw00f" && \
+    which sqlmap && echo "✓ sqlmap" && \
+    which wapiti && echo "✓ wapiti" && \
+    which wpscan && echo "✓ wpscan" && \
+    which subfinder && echo "✓ subfinder" && \
+    which dnsrecon && echo "✓ dnsrecon" && \
+    which dnsenum && echo "✓ dnsenum" && \
+    which theharvester && echo "✓ theharvester" && \
+    which ffuf && echo "✓ ffuf" && \
+    which arjun && echo "✓ arjun" && \
+    which gobuster && echo "✓ gobuster" && \
+    which dirsearch && echo "✓ dirsearch" && \
+    which testssl && echo "✓ testssl" && \
+    which nuclei && echo "✓ nuclei" && \
+    which hydra && echo "✓ hydra" && \
+    which smbclient && echo "✓ smbclient" && \
+    which smbmap && echo "✓ smbmap" && \
+    which nbtscan && echo "✓ nbtscan" && \
+    which enum4linux && echo "✓ enum4linux" && \
+    which commix && echo "✓ commix" && \
+    which gospider && echo "✓ gospider" && \
+    which subjack && echo "✓ subjack" && \
+    which hashcat && echo "✓ hashcat" && \
+    which dalfox && echo "✓ dalfox" && \
+    which chisel && echo "✓ chisel" && \
+    which kerbrute && echo "✓ kerbrute" && \
+    which interactsh-client && echo "✓ interactsh-client" && \
+    which jwt-tool && echo "✓ jwt_tool" && \
+    which tplmap && echo "✓ tplmap" && \
+    which gopherus && echo "✓ gopherus" && \
+    which phpggc && echo "✓ phpggc" && \
+    which responder && echo "✓ responder" && \
+    which gitdumper && echo "✓ gitdumper" && \
+    which linpeas && echo "✓ linpeas" && \
+    which trufflehog && echo "✓ trufflehog" && \
+    which httpx && echo "✓ httpx" && \
+    which go && echo "✓ go" && \
+    which python3 && echo "✓ python3" && \
+    which node && echo "✓ node" && \
+    which ruby && echo "✓ ruby" && \
+    python3 -c "import reportlab; print('✓ reportlab')" && \
+    python3 -c "import docx; print('✓ python-docx')" && \
+    python3 -c "import openpyxl; print('✓ openpyxl')" && \
+    python3 -c "import pptx; print('✓ python-pptx')" && \
+    python3 -c "import pandas; print('✓ pandas')" && \
+    python3 -c "import odf; print('✓ odfpy')" && \
+    python3 -c "import requests; print('✓ requests')" && \
+    echo "=== Version Information ===" && \
+    nmap --version | head -n1 && \
+    python3 --version && \
+    go version && \
+    node --version && \
+    ruby --version && \
+    echo "=== All critical tools validated successfully ==="
 
 # ============================================================================
 # Final Cleanup & Permissions
 # ============================================================================
 RUN apt-get clean && \
-    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
-    chmod -R 777 /home/user
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/cache/apt/archives/* && \
+    chown -R user:user /home/user
 
 # Default shell
 SHELL ["/bin/bash", "-c"]
