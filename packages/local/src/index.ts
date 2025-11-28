@@ -160,7 +160,7 @@ function runWithOutput(command: string, args: string[]): Promise<void> {
 const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
 
 // Default pre-built image with all pentesting tools
-const DEFAULT_IMAGE = "hackeraidev/sandbox";
+const DEFAULT_IMAGE = "hackerai/sandbox";
 
 // Convex function references (string paths work at runtime)
 const api = {

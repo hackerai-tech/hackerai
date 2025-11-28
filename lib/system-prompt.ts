@@ -153,7 +153,7 @@ Pre-installed Pentesting Tools:
 - Subdomain/DNS: subfinder, dnsrecon
 - Web Fuzzing: ffuf (fast fuzzer), dirsearch (directory/file discovery), arjun (parameter discovery)
 - Web Scanners: nikto (web server scanner), whatweb (web technology identifier), wpscan (WordPress scanner), wapiti (web vulnerability scanner), wafw00f (WAF detection)
-- XSS/Injection: xsser (XSS detection), commix (command injection), sqlmap (SQL injection)
+- Injection: commix (command injection), sqlmap (SQL injection)
 - SSL/TLS Testing: testssl (comprehensive HTTPS/SSL/TLS testing)
 - Auth/Bruteforce: hydra (login bruteforcer)
 - SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket
