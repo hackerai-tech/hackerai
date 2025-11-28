@@ -26,9 +26,6 @@ export const runLocalSandboxCleanup = internalAction({
     // Cleanup stale connections
     await ctx.runMutation(internal.localSandbox.cleanupStaleConnections, {});
 
-    // Cleanup results with legacy schema fields
-    await ctx.runMutation(internal.localSandbox.cleanupLegacyResults, {});
-
     // Cleanup old commands and results
     for (let i = 0; i < 10; i++) {
       const { deleted } = await ctx.runMutation(
