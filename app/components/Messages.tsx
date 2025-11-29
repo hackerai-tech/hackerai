@@ -306,9 +306,9 @@ export const Messages = ({
             // Check if we should show branch indicator after this message
             const shouldShowBranchIndicator = Boolean(
               branchedFromChatId &&
-                branchedFromChatTitle &&
-                branchBoundaryIndex >= 0 &&
-                index === branchBoundaryIndex,
+              branchedFromChatTitle &&
+              branchBoundaryIndex >= 0 &&
+              index === branchBoundaryIndex,
             );
 
             return (

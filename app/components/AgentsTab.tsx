@@ -27,7 +27,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 
-// Production Convex URL (must match @hackerai/local package)
+// Production Convex URL (must match @hackerai/local@latest package)
 const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
 
 // Add --convex-url flag if running against non-production backend
@@ -348,10 +348,10 @@ const AgentsTab = () => {
               {/* Docker command */}
               <CommandBlock
                 label="Basic (Docker)"
-                command={`npx @hackerai/local --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
+                command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
                 onCopy={() =>
                   handleCopyCommand(
-                    `npx @hackerai/local --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
+                    `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
                   )
                 }
               />
@@ -359,10 +359,10 @@ const AgentsTab = () => {
               {/* Kali command */}
               <CommandBlock
                 label="Custom Image (Kali Linux)"
-                command={`npx @hackerai/local --token ${showToken && token ? token : "<token>"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`}
+                command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`}
                 onCopy={() =>
                   handleCopyCommand(
-                    `npx @hackerai/local --token ${token || "YOUR_TOKEN"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`,
+                    `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`,
                   )
                 }
               />
@@ -371,10 +371,10 @@ const AgentsTab = () => {
               <CommandBlock
                 label="Dangerous Mode (No Docker)"
                 warning
-                command={`npx @hackerai/local --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
+                command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
                 onCopy={() =>
                   handleCopyCommand(
-                    `npx @hackerai/local --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
+                    `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
                   )
                 }
               />

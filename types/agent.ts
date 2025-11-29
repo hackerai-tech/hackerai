@@ -10,6 +10,9 @@ import type { ConvexSandbox } from "@/lib/ai/tools/utils/convex-sandbox";
 // Union type for both E2B Sandbox and local ConvexSandbox
 export type AnySandbox = Sandbox | ConvexSandbox;
 
+// Type guard to check if sandbox is E2B
+export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
+
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
@@ -30,5 +33,5 @@ export interface ToolContext {
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;
   mode: ChatMode;
-  isLocalSandbox: boolean;
+  isE2BSandbox: IsE2BSandboxFn;
 }
