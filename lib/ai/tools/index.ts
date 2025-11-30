@@ -20,6 +20,14 @@ import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 
+/**
+ * Check if a sandbox instance is an E2B Sandbox (vs local ConvexSandbox)
+ * E2B Sandbox has jupyterUrl property, ConvexSandbox does not
+ */
+export const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
+  return s !== null && "jupyterUrl" in s;
+};
+
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
@@ -35,11 +43,6 @@ export const createTools = (
   serviceKey?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
-
-  // Helper to check if sandbox is E2B Sandbox
-  const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
-    return s !== null && "jupyterUrl" in s;
-  };
 
   // Use HybridSandboxManager if sandboxPreference and serviceKey are provided
   const sandboxManager =
@@ -65,10 +68,6 @@ export const createTools = (
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
 
-  // Determine if using local sandbox (not e2b cloud)
-  const isLocalSandbox =
-    !!sandboxPreference && sandboxPreference !== "e2b" && !!serviceKey;
-
   const context: ToolContext = {
     sandboxManager,
     writer,
@@ -79,7 +78,7 @@ export const createTools = (
     fileAccumulator,
     backgroundProcessTracker,
     mode,
-    isLocalSandbox,
+    isE2BSandbox,
   };
 
   // Create all available tools

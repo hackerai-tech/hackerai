@@ -5,7 +5,7 @@ HackerAI Local Sandbox Client - Execute commands on your local machine from Hack
 ## Installation
 
 ```bash
-npx @hackerai/local --token YOUR_TOKEN
+npx @hackerai/local@latest --token YOUR_TOKEN
 ```
 
 Or install globally:
@@ -20,7 +20,7 @@ hackerai-local --token YOUR_TOKEN
 ### Basic Usage (Docker Mode)
 
 ```bash
-npx @hackerai/local --token hsb_abc123 --name "My Laptop"
+npx @hackerai/local@latest --token hsb_abc123 --name "My Laptop"
 ```
 
 This pulls the pre-built HackerAI sandbox image (~4GB) - an AI Agent Penetration Testing Environment based on Kali Linux with comprehensive automated tools including:
@@ -29,13 +29,13 @@ nmap, masscan, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, 
 ### Custom Docker Image
 
 ```bash
-npx @hackerai/local --token hsb_abc123 --name "Kali" --image kalilinux/kali-rolling
+npx @hackerai/local@latest --token hsb_abc123 --name "Kali" --image kalilinux/kali-rolling
 ```
 
 ### Dangerous Mode (No Docker)
 
 ```bash
-npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
+npx @hackerai/local@latest --token hsb_abc123 --name "Work PC" --dangerous
 ```
 
 **Warning:** Dangerous mode runs commands directly on your host OS without isolation.

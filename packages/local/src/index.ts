@@ -378,13 +378,14 @@ class LocalSandboxClient {
     const nameFlag = this.config.persist
       ? `--name ${this.getContainerName()} `
       : "";
-    
+
     // Required capabilities for penetration testing tools:
     // - NET_RAW: ping, nmap, masscan, hping3, arp-scan, tcpdump, raw sockets
     // - NET_ADMIN: network interface manipulation, arp-scan, netdiscover
     // - SYS_PTRACE: gdb, strace, ltrace (debugging tools)
-    const capabilities = "--cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE";
-    
+    const capabilities =
+      "--cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE";
+
     const result = await runShellCommand(
       `docker run -d ${nameFlag}${capabilities} --network host ${this.config.image} tail -f /dev/null`,
       { timeout: 60000 },

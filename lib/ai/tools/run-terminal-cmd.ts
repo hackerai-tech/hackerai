@@ -15,17 +15,13 @@ const MAX_COMMAND_EXECUTION_TIME = 7 * 60 * 1000; // 7 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer, backgroundProcessTracker, isLocalSandbox } =
+  const { sandboxManager, writer, backgroundProcessTracker, isE2BSandbox } =
     context;
 
-  // Different wait instructions based on sandbox type
-  const waitForProcessInstruction = isLocalSandbox
-    ? `To wait for a background process to complete, use an appropriate wait technique for your environment (e.g., \`while kill -0 <pid> 2>/dev/null; do sleep 1; done\` on Unix-like systems, or poll with process checking commands). This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait using appropriate method for your OS.`
-    : `To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\``;
+  // Wait instructions for E2B sandbox (local sandbox uses different commands)
+  const waitForProcessInstruction = `To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\``;
 
-  const timeoutWaitInstruction = isLocalSandbox
-    ? `If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use appropriate process discovery for your OS to find it, 2) Use an appropriate wait technique for your environment to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`
-    : `If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`;
+  const timeoutWaitInstruction = `If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`;
 
   return tool({
     description: `Execute a command on behalf of the user.
@@ -283,6 +279,13 @@ If you are generating files:
 
             const commonOptions = {
               timeoutMs: MAX_COMMAND_EXECUTION_TIME,
+              // E2B specific: run as root with /home/user as working directory
+              // This allows network tools (ping, nmap, etc.) to work without sudo
+              // We check at runtime because HybridSandboxManager may fallback to E2B
+              ...(isE2BSandbox(sandboxInstance) && {
+                user: "root" as const,
+                cwd: "/home/user",
+              }),
               ...(is_background
                 ? {}
                 : {

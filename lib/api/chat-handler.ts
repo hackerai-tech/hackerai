@@ -454,8 +454,8 @@ export const createChatHandler = () => {
                     ? true
                     : Boolean(
                         generatedTitle ||
-                          streamFinishReason ||
-                          mergedTodos.length > 0,
+                        streamFinishReason ||
+                        mergedTodos.length > 0,
                       );
 
                   if (shouldPersist) {
