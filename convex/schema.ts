@@ -170,6 +170,8 @@ export default defineSchema({
     cwd: v.optional(v.string()),
     timeout: v.optional(v.number()),
     background: v.optional(v.boolean()),
+    // Optional display name for CLI output (empty string = hide, undefined = show command)
+    display_name: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
       v.literal("executing"),

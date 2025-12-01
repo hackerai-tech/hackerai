@@ -209,6 +209,8 @@ interface Command {
   cwd?: string;
   timeout?: number;
   background?: boolean;
+  // Display name for CLI output (empty string = hide, undefined = show command)
+  display_name?: string;
 }
 
 interface SignedSession {
@@ -547,15 +549,22 @@ class LocalSandboxClient {
   }
 
   private async executeCommand(cmd: Command): Promise<void> {
-    const { command_id, command, env, cwd, timeout, background } = cmd;
+    const { command_id, command, env, cwd, timeout, background, display_name } =
+      cmd;
     const startTime = Date.now();
 
     // Update activity time to prevent idle timeout
     this.lastActivityTime = Date.now();
 
-    console.log(
-      chalk.cyan(`▶ ${background ? "[BG] " : ""}Executing: ${command}`),
-    );
+    // Determine what to show in console:
+    // - display_name === "" (empty string): hide command entirely
+    // - display_name === "something": show that instead of command
+    // - display_name === undefined: show actual command
+    const shouldShow = display_name !== "";
+    const displayText = display_name || command;
+    if (shouldShow) {
+      console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}${displayText}`));
+    }
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -641,7 +650,9 @@ class LocalSandboxClient {
         duration,
       });
 
-      console.log(chalk.green(`✓ Command completed in ${duration}ms`));
+      if (shouldShow) {
+        console.log(chalk.green(`✓ Completed in ${duration}ms`));
+      }
     } catch (error: unknown) {
       const duration = Date.now() - startTime;
       const message = error instanceof Error ? error.message : String(error);

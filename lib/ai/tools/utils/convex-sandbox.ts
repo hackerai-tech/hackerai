@@ -110,6 +110,8 @@ Commands run inside the Docker container with network access.`;
         background?: boolean;
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
+        // Display name for CLI output (empty string = hide, undefined = show command)
+        displayName?: string;
       },
     ): Promise<{
       stdout: string;
@@ -133,6 +135,7 @@ Commands run inside the Docker container with network access.`;
           cwd: opts?.cwd,
           timeout,
           background: opts?.background,
+          displayName: opts?.displayName,
         },
       );
 
@@ -242,11 +245,54 @@ Commands run inside the Docker container with network access.`;
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
 
+  // Cache for detected HTTP client (curl or wget)
+  private httpClient: "curl" | "wget" | null = null;
+
+  /**
+   * Detect available HTTP client (curl or wget).
+   * Alpine Linux uses wget by default, most other distros have curl.
+   */
+  private async detectHttpClient(): Promise<"curl" | "wget"> {
+    if (this.httpClient) return this.httpClient;
+
+    // Check for curl first (more common)
+    const curlCheck = await this.commands.run("command -v curl", {
+      displayName: "",
+    });
+    if (curlCheck.exitCode === 0) {
+      this.httpClient = "curl";
+      return "curl";
+    }
+
+    // Fall back to wget
+    const wgetCheck = await this.commands.run("command -v wget", {
+      displayName: "",
+    });
+    if (wgetCheck.exitCode === 0) {
+      this.httpClient = "wget";
+      return "wget";
+    }
+
+    // Default to curl and let it fail with a clear error
+    this.httpClient = "curl";
+    return "curl";
+  }
+
   files = {
     write: async (
       path: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
+      const fileName = path.split("/").pop() || "file";
+
+      // Ensure parent directory exists
+      const dir = path.substring(0, path.lastIndexOf("/"));
+      if (dir) {
+        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
+          displayName: "", // Hide internal mkdir
+        });
+      }
+
       let contentStr: string;
       let isBinary = false;
 
@@ -278,6 +324,8 @@ Commands run inside the Docker container with network access.`;
           // Use printf to avoid echo interpretation issues
           const result = await this.commands.run(
             `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
+            // Show progress for first chunk only
+            { displayName: i === 0 ? `Writing: ${fileName}` : "" },
           );
           if (result.exitCode !== 0) {
             throw new Error(`Failed to write file: ${result.stderr}`);
@@ -291,7 +339,9 @@ Commands run inside the Docker container with network access.`;
           ? `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`
           : `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
 
-        const result = await this.commands.run(command);
+        const result = await this.commands.run(command, {
+          displayName: `Writing: ${fileName}`,
+        });
         if (result.exitCode !== 0) {
           throw new Error(`Failed to write file: ${result.stderr}`);
         }
@@ -299,8 +349,10 @@ Commands run inside the Docker container with network access.`;
     },
 
     read: async (path: string): Promise<string> => {
+      const fileName = path.split("/").pop() || "file";
       const result = await this.commands.run(
         `cat ${ConvexSandbox.escapePath(path)}`,
+        { displayName: `Reading: ${fileName}` },
       );
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read file: ${result.stderr}`);
@@ -309,8 +361,10 @@ Commands run inside the Docker container with network access.`;
     },
 
     remove: async (path: string): Promise<void> => {
+      const fileName = path.split("/").pop() || "file";
       const result = await this.commands.run(
         `rm -rf ${ConvexSandbox.escapePath(path)}`,
+        { displayName: `Removing: ${fileName}` },
       );
       if (result.exitCode !== 0) {
         throw new Error(`Failed to remove file: ${result.stderr}`);
@@ -318,8 +372,10 @@ Commands run inside the Docker container with network access.`;
     },
 
     list: async (path: string = "/"): Promise<{ name: string }[]> => {
+      const dirName = path.split("/").pop() || path;
       const result = await this.commands.run(
         `find ${ConvexSandbox.escapePath(path)} -maxdepth 1 -type f 2>/dev/null || true`,
+        { displayName: `Listing: ${dirName}` },
       );
       if (result.exitCode !== 0) return [];
 
@@ -333,14 +389,25 @@ Commands run inside the Docker container with network access.`;
       // Ensure parent directory exists
       const dir = path.substring(0, path.lastIndexOf("/"));
       if (dir) {
-        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`);
+        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
+          displayName: "", // Hide internal mkdir
+        });
       }
-      // Download file directly from URL using curl
-      // Use single quotes for URL and escape embedded single quotes to prevent shell injection
+
+      const httpClient = await this.detectHttpClient();
       const escapedUrl = url.replace(/'/g, "'\\''");
-      const result = await this.commands.run(
-        `curl -fsSL -o ${ConvexSandbox.escapePath(path)} '${escapedUrl}'`,
-      );
+      const fileName = path.split("/").pop() || "file";
+      const escapedPath = ConvexSandbox.escapePath(path);
+
+      // Use curl or wget depending on what's available
+      const command =
+        httpClient === "curl"
+          ? `curl -fsSL -o ${escapedPath} '${escapedUrl}'`
+          : `wget -q -O ${escapedPath} '${escapedUrl}'`;
+
+      const result = await this.commands.run(command, {
+        displayName: `Downloading: ${fileName}`,
+      });
       if (result.exitCode !== 0) {
         throw new Error(`Failed to download file: ${result.stderr}`);
       }
@@ -351,15 +418,22 @@ Commands run inside the Docker container with network access.`;
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      // Upload file directly to presigned URL using curl
-      // Use --data-binary to preserve binary data exactly
-      // Use single quotes for URL/contentType and escape embedded single quotes
+      const httpClient = await this.detectHttpClient();
       const escapedUrl = uploadUrl.replace(/'/g, "'\\''");
       const escapedContentType = contentType.replace(/'/g, "'\\''");
-      const result = await this.commands.run(
-        `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @${ConvexSandbox.escapePath(path)} '${escapedUrl}'`,
-        { timeoutMs: 120000 }, // 2 minutes for large files
-      );
+      const escapedPath = ConvexSandbox.escapePath(path);
+      const fileName = path.split("/").pop() || "file";
+
+      // Use curl or wget depending on what's available
+      const command =
+        httpClient === "curl"
+          ? `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @${escapedPath} '${escapedUrl}'`
+          : `wget -q --method=PUT --header='Content-Type: ${escapedContentType}' --body-file=${escapedPath} -O - '${escapedUrl}'`;
+
+      const result = await this.commands.run(command, {
+        timeoutMs: 120000, // 2 minutes for large files
+        displayName: `Uploading: ${fileName}`,
+      });
       if (result.exitCode !== 0) {
         throw new Error(`Failed to upload file: ${result.stderr}`);
       }

@@ -502,6 +502,8 @@ export const enqueueCommand = mutation({
     cwd: v.optional(v.string()),
     timeout: v.optional(v.number()),
     background: v.optional(v.boolean()),
+    // Optional display name for CLI output (empty string = hide, undefined = show command)
+    displayName: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -556,6 +558,7 @@ export const enqueueCommand = mutation({
       cwd: args.cwd,
       timeout: args.timeout,
       background: args.background,
+      display_name: args.displayName,
       status: "pending",
       created_at: Date.now(),
     });
@@ -599,6 +602,7 @@ export const getPendingCommands = query({
         cwd: v.optional(v.string()),
         timeout: v.optional(v.number()),
         background: v.optional(v.boolean()),
+        display_name: v.optional(v.string()),
       }),
     ),
     // Indicates session verification failed - client should re-authenticate
@@ -635,6 +639,7 @@ export const getPendingCommands = query({
         cwd: cmd.cwd,
         timeout: cmd.timeout,
         background: cmd.background,
+        display_name: cmd.display_name,
       })),
     };
   },
