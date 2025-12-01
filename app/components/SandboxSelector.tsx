@@ -93,6 +93,9 @@ export function SandboxSelector({
   useEffect(() => {
     if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
       onChange?.("e2b");
+      toast.info("Local sandbox disconnected. Switched to Cloud.", {
+        duration: 5000,
+      });
     }
   }, [connections, valueMatchesOption, value, onChange]);
 
