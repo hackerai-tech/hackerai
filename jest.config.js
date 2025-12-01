@@ -33,7 +33,7 @@ const customJestConfig = {
     "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop)/)",
   ],
   testMatch: ["**/__tests__/**/*.[jt]s?(x)", "**/?(*.)+(spec|test).[jt]s?(x)"],
-  testPathIgnorePatterns: ["/node_modules/", "/.next/", "/e2e/"],
+  testPathIgnorePatterns: ["/node_modules/", "/.next/", "/e2e/", "/dist/"],
   collectCoverageFrom: [
     "app/**/*.{js,jsx,ts,tsx}",
     "convex/**/*.{js,jsx,ts,tsx}",

@@ -10,6 +10,7 @@ import { terminateProcessReliably } from "./utils/process-termination";
 import { findProcessPid } from "./utils/pid-discovery";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
 import { waitForSandboxReady } from "./utils/sandbox-health";
+import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
 
 const MAX_COMMAND_EXECUTION_TIME = 7 * 60 * 1000; // 7 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
@@ -277,22 +278,15 @@ If you are generating files:
             // Register abort listener
             abortSignal?.addEventListener("abort", onAbort, { once: true });
 
-            const commonOptions = {
-              timeoutMs: MAX_COMMAND_EXECUTION_TIME,
-              // E2B specific: run as root with /home/user as working directory
-              // This allows network tools (ping, nmap, etc.) to work without sudo
-              // We check at runtime because HybridSandboxManager may fallback to E2B
-              ...(isE2BSandbox(sandboxInstance) && {
-                user: "root" as const,
-                cwd: "/home/user",
-              }),
-              ...(is_background
-                ? {}
+            const commonOptions = buildSandboxCommandOptions(
+              sandboxInstance,
+              is_background
+                ? undefined
                 : {
                     onStdout: handler!.stdout,
                     onStderr: handler!.stderr,
-                  }),
-            };
+                  },
+            );
 
             // Determine if an error is a permanent command failure (don't retry)
             // vs a transient sandbox issue (do retry)

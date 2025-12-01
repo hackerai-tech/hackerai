@@ -15,39 +15,16 @@
 import { ConvexClient } from "convex/browser";
 import { spawn, ChildProcess } from "child_process";
 import os from "os";
-
-// Align with LLM context limits: ~2048 tokens ≈ 6000 chars
-const MAX_OUTPUT_SIZE = 6000;
+import {
+  truncateOutput,
+  MAX_OUTPUT_SIZE,
+  getSandboxMode,
+  buildDockerRunCommand,
+  parseShellDetectionOutput,
+} from "./utils";
 
 // Idle timeout: auto-terminate after 1 hour without commands
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
-
-// Truncation marker for 25% head + 75% tail strategy
-const TRUNCATION_MARKER =
-  "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
-
-/**
- * Truncates output using 25% head + 75% tail strategy.
- * This preserves both the command start (context) and the end (final results/errors).
- */
-function truncateOutput(
-  content: string,
-  maxSize: number = MAX_OUTPUT_SIZE,
-): string {
-  if (content.length <= maxSize) return content;
-
-  const markerLength = TRUNCATION_MARKER.length;
-  const budgetForContent = maxSize - markerLength;
-
-  // 25% head + 75% tail strategy
-  const headBudget = Math.floor(budgetForContent * 0.25);
-  const tailBudget = budgetForContent - headBudget;
-
-  const head = content.slice(0, headBudget);
-  const tail = content.slice(-tailBudget);
-
-  return head + TRUNCATION_MARKER + tail;
-}
 
 interface ShellCommandResult {
   stdout: string;
@@ -380,22 +357,13 @@ class LocalSandboxClient {
 
     console.log(chalk.blue("Creating Docker container..."));
 
-    // In persist mode, use a named container
-    const nameFlag = this.config.persist
-      ? `--name ${this.getContainerName()} `
-      : "";
+    // Build docker run command with capabilities for penetration testing tools
+    const dockerCommand = buildDockerRunCommand({
+      image: this.config.image,
+      containerName: this.config.persist ? this.getContainerName() : undefined,
+    });
 
-    // Required capabilities for penetration testing tools:
-    // - NET_RAW: ping, nmap, masscan, hping3, arp-scan, tcpdump, raw sockets
-    // - NET_ADMIN: network interface manipulation, arp-scan, netdiscover
-    // - SYS_PTRACE: gdb, strace, ltrace (debugging tools)
-    const capabilities =
-      "--cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE";
-
-    const result = await runShellCommand(
-      `docker run -d ${nameFlag}${capabilities} --network host ${this.config.image} tail -f /dev/null`,
-      { timeout: 60000 },
-    );
+    const result = await runShellCommand(dockerCommand, { timeout: 60000 });
 
     if (result.exitCode !== 0) {
       throw new Error(`Failed to create container: ${result.stderr}`);
@@ -414,13 +382,11 @@ class LocalSandboxClient {
   }
 
   private getMode(): "docker" | "dangerous" | "custom" {
-    if (this.config.dangerous) {
-      return "dangerous";
-    }
-    if (this.config.image !== DEFAULT_IMAGE) {
-      return "custom";
-    }
-    return "docker";
+    return getSandboxMode({
+      dangerous: this.config.dangerous,
+      image: this.config.image,
+      defaultImage: DEFAULT_IMAGE,
+    });
   }
 
   private getModeDisplay(): string {
@@ -449,8 +415,8 @@ class LocalSandboxClient {
       { timeout: 5000 },
     );
 
-    if (result.exitCode === 0 && result.stdout.trim()) {
-      this.containerShell = result.stdout.trim().split("\n")[0]; // Take first result
+    if (result.exitCode === 0) {
+      this.containerShell = parseShellDetectionOutput(result.stdout);
       console.log(chalk.green(`✓ Shell: ${this.containerShell}`));
     } else {
       // Fallback to /bin/sh if detection failed
