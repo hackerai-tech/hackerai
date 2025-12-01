@@ -251,24 +251,26 @@ Commands run inside the Docker container with network access.`;
   /**
    * Detect available HTTP client (curl or wget).
    * Alpine Linux uses wget by default, most other distros have curl.
+   * Note: We check stdout instead of exitCode for reliability through Convex relay.
    */
   private async detectHttpClient(): Promise<"curl" | "wget"> {
     if (this.httpClient) return this.httpClient;
 
     // Check for curl first (more common)
-    const curlCheck = await this.commands.run("command -v curl", {
+    // Use stdout check - exitCode may not propagate correctly through Convex relay
+    const curlCheck = await this.commands.run("command -v curl || true", {
       displayName: "",
     });
-    if (curlCheck.exitCode === 0) {
+    if (curlCheck.stdout.includes("curl")) {
       this.httpClient = "curl";
       return "curl";
     }
 
     // Fall back to wget
-    const wgetCheck = await this.commands.run("command -v wget", {
+    const wgetCheck = await this.commands.run("command -v wget || true", {
       displayName: "",
     });
-    if (wgetCheck.exitCode === 0) {
+    if (wgetCheck.stdout.includes("wget")) {
       this.httpClient = "wget";
       return "wget";
     }
@@ -419,6 +421,22 @@ Commands run inside the Docker container with network access.`;
       contentType: string,
     ): Promise<void> => {
       const httpClient = await this.detectHttpClient();
+
+      // BusyBox wget (common on Alpine) doesn't support --method=PUT or --body-file
+      // Check for this and provide a clear error message to the AI
+      // Note: BusyBox wget doesn't support --version, but outputs "BusyBox" in usage text
+      if (httpClient === "wget") {
+        const versionCheck = await this.commands.run("wget 2>&1 | head -1", {
+          displayName: "",
+        });
+        if (versionCheck.stdout.toLowerCase().includes("busybox")) {
+          throw new Error(
+            "File upload failed: curl is not available and BusyBox wget does not support PUT requests. " +
+              "Install curl to enable file uploads (e.g., 'apk add curl' on Alpine or 'apt install curl' on Debian).",
+          );
+        }
+      }
+
       const escapedUrl = uploadUrl.replace(/'/g, "'\\''");
       const escapedContentType = contentType.replace(/'/g, "'\\''");
       const escapedPath = ConvexSandbox.escapePath(path);
