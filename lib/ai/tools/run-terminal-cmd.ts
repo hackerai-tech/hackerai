@@ -103,6 +103,16 @@ If you are generating files:
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await sandboxManager.getSandbox();
 
+        // Check for sandbox fallback and notify frontend
+        const fallbackInfo = sandboxManager.consumeFallbackInfo?.();
+        if (fallbackInfo?.occurred) {
+          writer.write({
+            type: "data-sandbox-fallback",
+            id: `sandbox-fallback-${toolCallId}`,
+            data: fallbackInfo,
+          });
+        }
+
         try {
           await waitForSandboxReady(sandbox);
         } catch (healthError) {

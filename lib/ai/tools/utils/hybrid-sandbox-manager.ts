@@ -9,6 +9,14 @@ type SandboxType = Sandbox | ConvexSandbox;
 
 export type SandboxPreference = "e2b" | string; // "e2b" or connectionId
 
+export interface SandboxFallbackInfo {
+  occurred: boolean;
+  reason?: "connection_unavailable" | "no_local_connections";
+  requestedPreference: SandboxPreference;
+  actualSandbox: "e2b" | string; // "e2b" or connectionId
+  actualSandboxName?: string; // Human-readable name for local sandboxes
+}
+
 interface ConnectionInfo {
   connectionId: string;
   name: string;
@@ -41,6 +49,7 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionId: string | null = null;
   private convex: ConvexHttpClient;
   private convexUrl: string;
+  private pendingFallbackInfo: SandboxFallbackInfo | null = null;
 
   constructor(
     private userID: string,
@@ -91,6 +100,17 @@ export class HybridSandboxManager implements SandboxManager {
       await this.closeCurrentSandbox();
       this.sandbox = null;
     }
+  }
+
+  /**
+   * Get and clear any pending fallback info.
+   * Returns null if no fallback occurred, otherwise returns the fallback details.
+   * Clears the info after returning so it's only reported once.
+   */
+  consumeFallbackInfo(): SandboxFallbackInfo | null {
+    const info = this.pendingFallbackInfo;
+    this.pendingFallbackInfo = null;
+    return info;
   }
 
   /**
@@ -167,6 +187,15 @@ export class HybridSandboxManager implements SandboxManager {
       this.currentConnectionId = firstAvailable.connectionId;
       this.setSandboxCallback(this.sandbox);
 
+      // Record fallback info for notification
+      this.pendingFallbackInfo = {
+        occurred: true,
+        reason: "connection_unavailable",
+        requestedPreference: this.sandboxPreference,
+        actualSandbox: firstAvailable.connectionId,
+        actualSandboxName: firstAvailable.name,
+      };
+
       return { sandbox: this.sandbox };
     }
 
@@ -174,6 +203,16 @@ export class HybridSandboxManager implements SandboxManager {
     console.log(
       `[${this.userID}] No local connections available, falling back to E2B`,
     );
+
+    // Record fallback info for notification
+    this.pendingFallbackInfo = {
+      occurred: true,
+      reason: "no_local_connections",
+      requestedPreference: this.sandboxPreference,
+      actualSandbox: "e2b",
+      actualSandboxName: "Cloud",
+    };
+
     return this.getE2BSandbox();
   }
 
