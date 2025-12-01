@@ -412,9 +412,10 @@ export const listConnections = query({
       )
       .collect();
 
-    // Check heartbeat timeout (30 seconds)
+    // Check heartbeat timeout (90 seconds)
+    // Client sends heartbeat every 60s ± 10s jitter, so use 90s to be safe
     const now = Date.now();
-    const timeout = 30000;
+    const timeout = 90000;
 
     return connections
       .filter((conn) => now - conn.last_heartbeat < timeout)
@@ -467,9 +468,10 @@ export const listConnectionsForBackend = query({
       )
       .collect();
 
-    // Check heartbeat timeout (30 seconds)
+    // Check heartbeat timeout (90 seconds)
+    // Client sends heartbeat every 60s ± 10s jitter, so use 90s to be safe
     const now = Date.now();
-    const timeout = 30000;
+    const timeout = 90000;
 
     return connections
       .filter((conn) => now - conn.last_heartbeat < timeout)

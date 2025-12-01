@@ -238,6 +238,7 @@ interface PendingCommandsResult {
 class LocalSandboxClient {
   private convex: ConvexClient;
   private containerId?: string;
+  private containerShell: string = "/bin/bash"; // Detected shell, defaults to bash
   private userId?: string;
   private connectionId?: string;
   private session?: SignedSession;
@@ -270,6 +271,9 @@ class LocalSandboxClient {
 
       this.containerId = await this.createContainer();
       console.log(chalk.green(`✓ Container: ${this.containerId.slice(0, 12)}`));
+
+      // Detect available shell (bash or sh fallback for Alpine/minimal images)
+      await this.detectContainerShell();
     } else {
       console.log(
         chalk.yellow(
@@ -426,6 +430,31 @@ class LocalSandboxClient {
       return `Custom (${this.config.image})`;
     }
     return "Docker";
+  }
+
+  /**
+   * Detects which shell is available in the container.
+   * Tries bash first, falls back to sh if bash is not available.
+   * This handles Alpine/BusyBox images that don't have bash installed.
+   */
+  private async detectContainerShell(): Promise<void> {
+    if (!this.containerId) return;
+
+    // Try to detect available shell using 'command -v' (POSIX compliant)
+    // We use 'sh' to run the detection since it's guaranteed to exist
+    const result = await runShellCommand(
+      `docker exec ${this.containerId} sh -c 'command -v bash || command -v sh || echo /bin/sh'`,
+      { timeout: 5000 },
+    );
+
+    if (result.exitCode === 0 && result.stdout.trim()) {
+      this.containerShell = result.stdout.trim().split("\n")[0]; // Take first result
+      console.log(chalk.green(`✓ Shell: ${this.containerShell}`));
+    } else {
+      // Fallback to /bin/sh if detection failed
+      this.containerShell = "/bin/sh";
+      console.log(chalk.yellow(`⚠️  Shell detection failed, using ${this.containerShell}`));
+    }
   }
 
   private async connect(): Promise<void> {
@@ -592,8 +621,10 @@ class LocalSandboxClient {
         // Use single quotes to prevent host shell from interpreting $(), backticks, etc.
         // This ensures ALL command execution happens inside the Docker container
         const escapedCommand = fullCommand.replace(/'/g, "'\\''");
+        // Extract shell name (e.g., "bash" from "/bin/bash" or "/usr/bin/bash")
+        const shellName = this.containerShell.split("/").pop() || "sh";
         result = await runShellCommand(
-          `docker exec ${this.containerId} bash -c '${escapedCommand}'`,
+          `docker exec ${this.containerId} ${shellName} -c '${escapedCommand}'`,
           { timeout: timeout ?? 30000 },
         );
       }
@@ -642,8 +673,10 @@ class LocalSandboxClient {
       // For Docker, start the process in background inside container and get its PID
       // Using 'nohup command & echo $!' to get the container process PID
       const escapedCommand = fullCommand.replace(/'/g, "'\\''");
+      // Extract shell name (e.g., "bash" from "/bin/bash" or "/usr/bin/bash")
+      const shellName = this.containerShell.split("/").pop() || "sh";
       const result = await runShellCommand(
-        `docker exec ${this.containerId} bash -c 'nohup ${escapedCommand} > /dev/null 2>&1 & echo $!'`,
+        `docker exec ${this.containerId} ${shellName} -c 'nohup ${escapedCommand} > /dev/null 2>&1 & echo $!'`,
         { timeout: 5000 },
       );
 
