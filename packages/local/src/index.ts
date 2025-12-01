@@ -15,39 +15,16 @@
 import { ConvexClient } from "convex/browser";
 import { spawn, ChildProcess } from "child_process";
 import os from "os";
-
-// Align with LLM context limits: ~2048 tokens ≈ 6000 chars
-const MAX_OUTPUT_SIZE = 6000;
+import {
+  truncateOutput,
+  MAX_OUTPUT_SIZE,
+  getSandboxMode,
+  buildDockerRunCommand,
+  parseShellDetectionOutput,
+} from "./utils";
 
 // Idle timeout: auto-terminate after 1 hour without commands
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
-
-// Truncation marker for 25% head + 75% tail strategy
-const TRUNCATION_MARKER =
-  "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
-
-/**
- * Truncates output using 25% head + 75% tail strategy.
- * This preserves both the command start (context) and the end (final results/errors).
- */
-function truncateOutput(
-  content: string,
-  maxSize: number = MAX_OUTPUT_SIZE,
-): string {
-  if (content.length <= maxSize) return content;
-
-  const markerLength = TRUNCATION_MARKER.length;
-  const budgetForContent = maxSize - markerLength;
-
-  // 25% head + 75% tail strategy
-  const headBudget = Math.floor(budgetForContent * 0.25);
-  const tailBudget = budgetForContent - headBudget;
-
-  const head = content.slice(0, headBudget);
-  const tail = content.slice(-tailBudget);
-
-  return head + TRUNCATION_MARKER + tail;
-}
 
 interface ShellCommandResult {
   stdout: string;
@@ -209,6 +186,8 @@ interface Command {
   cwd?: string;
   timeout?: number;
   background?: boolean;
+  // Display name for CLI output (empty string = hide, undefined = show command)
+  display_name?: string;
 }
 
 interface SignedSession {
@@ -238,6 +217,7 @@ interface PendingCommandsResult {
 class LocalSandboxClient {
   private convex: ConvexClient;
   private containerId?: string;
+  private containerShell: string = "/bin/bash"; // Detected shell, defaults to bash
   private userId?: string;
   private connectionId?: string;
   private session?: SignedSession;
@@ -270,6 +250,9 @@ class LocalSandboxClient {
 
       this.containerId = await this.createContainer();
       console.log(chalk.green(`✓ Container: ${this.containerId.slice(0, 12)}`));
+
+      // Detect available shell (bash or sh fallback for Alpine/minimal images)
+      await this.detectContainerShell();
     } else {
       console.log(
         chalk.yellow(
@@ -374,22 +357,13 @@ class LocalSandboxClient {
 
     console.log(chalk.blue("Creating Docker container..."));
 
-    // In persist mode, use a named container
-    const nameFlag = this.config.persist
-      ? `--name ${this.getContainerName()} `
-      : "";
+    // Build docker run command with capabilities for penetration testing tools
+    const dockerCommand = buildDockerRunCommand({
+      image: this.config.image,
+      containerName: this.config.persist ? this.getContainerName() : undefined,
+    });
 
-    // Required capabilities for penetration testing tools:
-    // - NET_RAW: ping, nmap, masscan, hping3, arp-scan, tcpdump, raw sockets
-    // - NET_ADMIN: network interface manipulation, arp-scan, netdiscover
-    // - SYS_PTRACE: gdb, strace, ltrace (debugging tools)
-    const capabilities =
-      "--cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE";
-
-    const result = await runShellCommand(
-      `docker run -d ${nameFlag}${capabilities} --network host ${this.config.image} tail -f /dev/null`,
-      { timeout: 60000 },
-    );
+    const result = await runShellCommand(dockerCommand, { timeout: 60000 });
 
     if (result.exitCode !== 0) {
       throw new Error(`Failed to create container: ${result.stderr}`);
@@ -408,13 +382,11 @@ class LocalSandboxClient {
   }
 
   private getMode(): "docker" | "dangerous" | "custom" {
-    if (this.config.dangerous) {
-      return "dangerous";
-    }
-    if (this.config.image !== DEFAULT_IMAGE) {
-      return "custom";
-    }
-    return "docker";
+    return getSandboxMode({
+      dangerous: this.config.dangerous,
+      image: this.config.image,
+      defaultImage: DEFAULT_IMAGE,
+    });
   }
 
   private getModeDisplay(): string {
@@ -426,6 +398,31 @@ class LocalSandboxClient {
       return `Custom (${this.config.image})`;
     }
     return "Docker";
+  }
+
+  /**
+   * Detects which shell is available in the container.
+   * Tries bash first, falls back to sh if bash is not available.
+   * This handles Alpine/BusyBox images that don't have bash installed.
+   */
+  private async detectContainerShell(): Promise<void> {
+    if (!this.containerId) return;
+
+    // Try to detect available shell using 'command -v' (POSIX compliant)
+    // We use 'sh' to run the detection since it's guaranteed to exist
+    const result = await runShellCommand(
+      `docker exec ${this.containerId} sh -c 'command -v bash || command -v sh || echo /bin/sh'`,
+      { timeout: 5000 },
+    );
+
+    if (result.exitCode === 0) {
+      this.containerShell = parseShellDetectionOutput(result.stdout);
+      console.log(chalk.green(`✓ Shell: ${this.containerShell}`));
+    } else {
+      // Fallback to /bin/sh if detection failed
+      this.containerShell = "/bin/sh";
+      console.log(chalk.yellow(`⚠️  Shell detection failed, using ${this.containerShell}`));
+    }
   }
 
   private async connect(): Promise<void> {
@@ -518,15 +515,22 @@ class LocalSandboxClient {
   }
 
   private async executeCommand(cmd: Command): Promise<void> {
-    const { command_id, command, env, cwd, timeout, background } = cmd;
+    const { command_id, command, env, cwd, timeout, background, display_name } =
+      cmd;
     const startTime = Date.now();
 
     // Update activity time to prevent idle timeout
     this.lastActivityTime = Date.now();
 
-    console.log(
-      chalk.cyan(`▶ ${background ? "[BG] " : ""}Executing: ${command}`),
-    );
+    // Determine what to show in console:
+    // - display_name === "" (empty string): hide command entirely
+    // - display_name === "something": show that instead of command
+    // - display_name === undefined: show actual command
+    const shouldShow = display_name !== "";
+    const displayText = display_name || command;
+    if (shouldShow) {
+      console.log(chalk.cyan(`▶ ${background ? "[BG] " : ""}${displayText}`));
+    }
 
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -592,8 +596,10 @@ class LocalSandboxClient {
         // Use single quotes to prevent host shell from interpreting $(), backticks, etc.
         // This ensures ALL command execution happens inside the Docker container
         const escapedCommand = fullCommand.replace(/'/g, "'\\''");
+        // Extract shell name (e.g., "bash" from "/bin/bash" or "/usr/bin/bash")
+        const shellName = this.containerShell.split("/").pop() || "sh";
         result = await runShellCommand(
-          `docker exec ${this.containerId} bash -c '${escapedCommand}'`,
+          `docker exec ${this.containerId} ${shellName} -c '${escapedCommand}'`,
           { timeout: timeout ?? 30000 },
         );
       }
@@ -610,7 +616,9 @@ class LocalSandboxClient {
         duration,
       });
 
-      console.log(chalk.green(`✓ Command completed in ${duration}ms`));
+      if (shouldShow) {
+        console.log(chalk.green(`✓ Completed in ${duration}ms`));
+      }
     } catch (error: unknown) {
       const duration = Date.now() - startTime;
       const message = error instanceof Error ? error.message : String(error);
@@ -642,8 +650,10 @@ class LocalSandboxClient {
       // For Docker, start the process in background inside container and get its PID
       // Using 'nohup command & echo $!' to get the container process PID
       const escapedCommand = fullCommand.replace(/'/g, "'\\''");
+      // Extract shell name (e.g., "bash" from "/bin/bash" or "/usr/bin/bash")
+      const shellName = this.containerShell.split("/").pop() || "sh";
       const result = await runShellCommand(
-        `docker exec ${this.containerId} bash -c 'nohup ${escapedCommand} > /dev/null 2>&1 & echo $!'`,
+        `docker exec ${this.containerId} ${shellName} -c 'nohup ${escapedCommand} > /dev/null 2>&1 & echo $!'`,
         { timeout: 5000 },
       );
 

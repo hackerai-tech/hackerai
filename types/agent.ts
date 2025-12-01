@@ -6,6 +6,7 @@ import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 import type { ChatMode } from "./chat";
 import type { ConvexSandbox } from "@/lib/ai/tools/utils/convex-sandbox";
+import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 
 // Union type for both E2B Sandbox and local ConvexSandbox
 export type AnySandbox = Sandbox | ConvexSandbox;
@@ -16,6 +17,8 @@ export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
+  // Optional: only HybridSandboxManager implements this
+  consumeFallbackInfo?(): SandboxFallbackInfo | null;
 }
 
 export interface SandboxContext {

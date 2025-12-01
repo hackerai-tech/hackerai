@@ -412,9 +412,10 @@ export const listConnections = query({
       )
       .collect();
 
-    // Check heartbeat timeout (30 seconds)
+    // Check heartbeat timeout (90 seconds)
+    // Client sends heartbeat every 60s ± 10s jitter, so use 90s to be safe
     const now = Date.now();
-    const timeout = 30000;
+    const timeout = 90000;
 
     return connections
       .filter((conn) => now - conn.last_heartbeat < timeout)
@@ -467,9 +468,10 @@ export const listConnectionsForBackend = query({
       )
       .collect();
 
-    // Check heartbeat timeout (30 seconds)
+    // Check heartbeat timeout (90 seconds)
+    // Client sends heartbeat every 60s ± 10s jitter, so use 90s to be safe
     const now = Date.now();
-    const timeout = 30000;
+    const timeout = 90000;
 
     return connections
       .filter((conn) => now - conn.last_heartbeat < timeout)
@@ -500,6 +502,8 @@ export const enqueueCommand = mutation({
     cwd: v.optional(v.string()),
     timeout: v.optional(v.number()),
     background: v.optional(v.boolean()),
+    // Optional display name for CLI output (empty string = hide, undefined = show command)
+    displayName: v.optional(v.string()),
   },
   returns: v.object({
     success: v.boolean(),
@@ -554,6 +558,7 @@ export const enqueueCommand = mutation({
       cwd: args.cwd,
       timeout: args.timeout,
       background: args.background,
+      display_name: args.displayName,
       status: "pending",
       created_at: Date.now(),
     });
@@ -597,6 +602,7 @@ export const getPendingCommands = query({
         cwd: v.optional(v.string()),
         timeout: v.optional(v.number()),
         background: v.optional(v.boolean()),
+        display_name: v.optional(v.string()),
       }),
     ),
     // Indicates session verification failed - client should re-authenticate
@@ -633,6 +639,7 @@ export const getPendingCommands = query({
         cwd: cmd.cwd,
         timeout: cmd.timeout,
         background: cmd.background,
+        display_name: cmd.display_name,
       })),
     };
   },

@@ -86,6 +86,8 @@ export async function uploadSandboxFileToConvex(args: {
     // Get file size via stat command (try Linux format first, then macOS)
     const statResult = await sandbox.commands.run(
       `stat -c%s "${fullPath}" 2>/dev/null || stat -f%z "${fullPath}"`,
+      // Hide from local CLI output (internal operation)
+      { displayName: "" } as { displayName?: string },
     );
     const fileSize = parseInt(statResult.stdout.trim(), 10);
     if (isNaN(fileSize) || statResult.exitCode !== 0) {

@@ -75,6 +75,7 @@ export const Chat = ({
     queueBehavior,
     todos,
     sandboxPreference,
+    setSandboxPreference,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -276,6 +277,25 @@ export const Chat = ({
           next.set(fileData.messageId, fileData.fileDetails);
           return next;
         });
+      }
+      if (dataPart.type === "data-sandbox-fallback") {
+        const fallbackData = dataPart.data as {
+          occurred: boolean;
+          reason: "connection_unavailable" | "no_local_connections";
+          requestedPreference: string;
+          actualSandbox: string;
+          actualSandboxName?: string;
+        };
+
+        // Update sandbox preference to match actual sandbox used
+        setSandboxPreference(fallbackData.actualSandbox);
+
+        // Show toast notification
+        const message =
+          fallbackData.reason === "no_local_connections"
+            ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}.`
+            : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}.`;
+        toast.info(message, { duration: 5000 });
       }
     },
     onToolCall: ({ toolCall }) => {

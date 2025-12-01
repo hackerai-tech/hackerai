@@ -32,7 +32,9 @@ export async function waitForSandboxReady(
       try {
         await sandbox.commands.run("echo ready", {
           timeoutMs: 3000, // 3 second timeout for health check
-        });
+          // Hide from local CLI output (empty string = hide)
+          displayName: "",
+        } as { timeoutMs: number; displayName?: string });
       } catch (error) {
         throw new Error(
           `Sandbox running but not ready to execute commands: ${error instanceof Error ? error.message : error}`,
