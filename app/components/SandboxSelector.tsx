@@ -21,7 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 
 interface SandboxSelectorProps {
@@ -86,6 +86,15 @@ export function SandboxSelector({
       mode: conn.mode,
     })) || []),
   ];
+
+  // Auto-correct stale sandbox preference: if the stored value doesn't match any
+  // available option (e.g., local connection was disconnected), reset to "e2b"
+  const valueMatchesOption = options.some((opt) => opt.id === value);
+  useEffect(() => {
+    if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
+      onChange?.("e2b");
+    }
+  }, [connections, valueMatchesOption, value, onChange]);
 
   const selectedOption = options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
