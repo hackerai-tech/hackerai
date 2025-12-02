@@ -13,12 +13,12 @@ const baseProviders = {
   "ask-vision-model-for-pdfs": openrouter(
     "google/gemini-2.5-flash-preview-09-2025",
   ),
-  "agent-model": xai("grok-code-fast-1"),
-  "agent-vision-model": xai("grok-4-fast-reasoning"),
+  "agent-model": xai("grok-4-1-fast-reasoning"),
+  "agent-vision-model": xai("grok-4-1-fast-reasoning"),
   "title-generator-model": openrouter(
     "google/gemini-2.5-flash-preview-09-2025",
   ),
-  "summarization-model": xai("grok-4-fast-non-reasoning"),
+  "summarization-model": openrouter("google/gemini-2.5-flash-preview-09-2025"),
 };
 
 export type ModelName = keyof typeof baseProviders;
