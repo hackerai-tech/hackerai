@@ -421,7 +421,11 @@ class LocalSandboxClient {
     } else {
       // Fallback to /bin/sh if detection failed
       this.containerShell = "/bin/sh";
-      console.log(chalk.yellow(`⚠️  Shell detection failed, using ${this.containerShell}`));
+      console.log(
+        chalk.yellow(
+          `⚠️  Shell detection failed, using ${this.containerShell}`,
+        ),
+      );
     }
   }
 

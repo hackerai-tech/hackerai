@@ -83,7 +83,9 @@ describe("Docker Capabilities", () => {
   it("should build capability flags correctly", () => {
     const flags = buildDockerCapabilityFlags();
 
-    expect(flags).toBe("--cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE");
+    expect(flags).toBe(
+      "--cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE",
+    );
   });
 });
 

@@ -73,5 +73,4 @@ describe("Sandbox Capabilities for Network Tools", () => {
       expect(isE2BSandbox(null)).toBe(false);
     });
   });
-
 });
