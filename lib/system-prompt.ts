@@ -57,7 +57,7 @@ Pre-installed Pentesting Tools:
 - Web Recon: gospider, subjack
 - WebDAV: cadaver, davtest
 - Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
-- Specialized: jwt_tool (JWT manipulation), nuclei (vulnerability scanner with templates), SecLists (/home/user/SecLists)
+- Specialized: jwt_tool (JWT manipulation), nuclei (vulnerability scanner with templates), SecLists (/home/user/SecLists or /usr/share/seclists)
 - Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc
 </sandbox_environment>`;
 
