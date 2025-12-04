@@ -23,8 +23,8 @@ hackerai-local --token YOUR_TOKEN
 npx @hackerai/local@latest --token hsb_abc123 --name "My Laptop"
 ```
 
-This pulls the pre-built HackerAI sandbox image (~4GB) - an AI Agent Penetration Testing Environment based on Kali Linux with comprehensive automated tools including:
-nmap, masscan, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, httpx, bloodhound, hashcat, and many more.
+This pulls the pre-built HackerAI sandbox image (~3GB) - an AI Agent Penetration Testing Environment based on Kali Linux with comprehensive automated tools including:
+nmap, masscan, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, httpx, smbclient, impacket, and many more.
 
 ### Custom Docker Image
 

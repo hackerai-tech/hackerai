@@ -112,29 +112,19 @@ RUN set -eux; \
     python3-impacket \
     enum4linux \
     # Network discovery
-    arp-scan \
-    ike-scan \
-    onesixtyone \
-    snmpcheck \
-    netdiscover \
     hping3 \
     # Utilities
     socat \
     proxychains4 \
     seclists \
     hashid \
-    hashcat \
     commix \
     libimage-exiftool-perl \
     cewl \
-    # WebDAV tools
-    cadaver \
-    davtest \
     # SSL/TLS testing
     testssl.sh \
     # Web crawling & recon
     gospider \
-    subjack \
     nuclei \
     # Authentication/bruteforce
     hydra \
@@ -142,10 +132,6 @@ RUN set -eux; \
     golang \
     nodejs \
     npm \
-    # Debugging tools
-    gdb \
-    ltrace \
-    strace \
     # Forensics
     steghide \
     binwalk \
@@ -189,12 +175,7 @@ RUN pip3 install --break-system-packages \
     odfpy
 
 # Additional security-focused Python packages
-RUN pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex ropgadget ropper
-
-# Active Directory security tools
-RUN pip3 install --break-system-packages --ignore-installed bloodhound
-RUN pip3 install --break-system-packages --ignore-installed certipy-ad
-RUN pip3 install --break-system-packages --ignore-installed coercer
+RUN pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
 
 # Ruby forensics tool
 RUN gem install zsteg
@@ -217,15 +198,9 @@ RUN set -eux; \
     # Template injection testing
     git clone https://github.com/epinna/tplmap.git /opt/tplmap || true && \
     if [ -f /opt/tplmap/tplmap.py ]; then chmod +x /opt/tplmap/tplmap.py; fi && \
-    # Gopher protocol exploitation
-    git clone https://github.com/tarunkant/Gopherus.git /opt/gopherus || true && \
-    if [ -f /opt/gopherus/gopherus.py ]; then chmod +x /opt/gopherus/gopherus.py; fi && \
     # PHP object injection
     git clone https://github.com/ambionics/phpggc.git /opt/phpggc || true && \
     if [ -f /opt/phpggc/phpggc ]; then chmod +x /opt/phpggc/phpggc; fi && \
-    # Network poisoning
-    git clone https://github.com/lgandx/Responder.git /opt/responder && \
-    ln -sf /opt/responder/Responder.py /usr/local/bin/responder && \
     # Git repository dumper
     git clone https://github.com/internetwache/GitTools.git /opt/gittools && \
     chmod +x /opt/gittools/Dumper/gitdumper.sh /opt/gittools/Extractor/extractor.sh && \
@@ -243,9 +218,6 @@ RUN set -eux; \
 # Binary Downloads (Platform-aware)
 # ============================================================================
 RUN set -eux; \
-    # Java deserialization exploits
-    mkdir -p /opt/ysoserial && \
-    wget -qO /opt/ysoserial/ysoserial.jar https://github.com/frohoff/ysoserial/releases/latest/download/ysoserial-all.jar || true && \
     # Linux privilege escalation scripts
     mkdir -p /opt/peass && \
     wget -qO /opt/peass/linpeas.sh https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh && \
@@ -279,23 +251,16 @@ RUN set -eux; \
     ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true && \
     # Tplmap wrapper
     ([ -f /opt/tplmap/tplmap.py ] && echo '#!/bin/bash\npython3 /opt/tplmap/tplmap.py "$@"' > /usr/local/bin/tplmap && chmod +x /usr/local/bin/tplmap) || true && \
-    # Gopherus wrapper
-    ([ -f /opt/gopherus/gopherus.py ] && echo '#!/bin/bash\npython3 /opt/gopherus/gopherus.py "$@"' > /usr/local/bin/gopherus && chmod +x /usr/local/bin/gopherus) || true && \
     # PHPGGC symlink
-    ([ -f /opt/phpggc/phpggc ] && ln -sf /opt/phpggc/phpggc /usr/local/bin/phpggc) || true && \
-    # YsoSerial wrapper
-    (echo '#!/bin/bash\njava -jar /opt/ysoserial/ysoserial.jar "$@"' > /usr/local/bin/ysoserial && chmod +x /usr/local/bin/ysoserial) || true
+    ([ -f /opt/phpggc/phpggc ] && ln -sf /opt/phpggc/phpggc /usr/local/bin/phpggc) || true
 
 # ============================================================================
 # Go-based Security Tools
 # ============================================================================
 RUN set -eux; \
     go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
-    go install github.com/nicocha30/ligolo-ng/cmd/agent@latest && \
-    go install github.com/nicocha30/ligolo-ng/cmd/proxy@latest && \
     go install github.com/hahwul/dalfox/v2@latest && \
-    go install github.com/jpillora/chisel@latest && \
-    go install github.com/ropnop/kerbrute@latest
+    go install github.com/jpillora/chisel@latest
 
 # ============================================================================
 # Tool Validation
@@ -330,17 +295,12 @@ RUN set -eux; \
     which enum4linux && echo "✓ enum4linux" && \
     which commix && echo "✓ commix" && \
     which gospider && echo "✓ gospider" && \
-    which subjack && echo "✓ subjack" && \
-    which hashcat && echo "✓ hashcat" && \
     which dalfox && echo "✓ dalfox" && \
     which chisel && echo "✓ chisel" && \
-    which kerbrute && echo "✓ kerbrute" && \
     which interactsh-client && echo "✓ interactsh-client" && \
     which jwt-tool && echo "✓ jwt_tool" && \
     which tplmap && echo "✓ tplmap" && \
-    which gopherus && echo "✓ gopherus" && \
     which phpggc && echo "✓ phpggc" && \
-    which responder && echo "✓ responder" && \
     which gitdumper && echo "✓ gitdumper" && \
     which linpeas && echo "✓ linpeas" && \
     which trufflehog && echo "✓ trufflehog" && \
@@ -374,24 +334,6 @@ RUN apt-get clean && \
 # Default shell
 SHELL ["/bin/bash", "-c"]
 
-# ============================================================================
-# IMPORTANT: Runtime Capabilities Required
-# ============================================================================
-# Docker drops Linux capabilities by default for security. This image requires
-# additional capabilities for penetration testing tools to work properly.
-#
-# Run with: ./docker/run.sh
-# Or manually: docker run --cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE ...
-#
-# Required capabilities:
-#   - NET_RAW:    ping, nmap, masscan, hping3, arp-scan, tcpdump, raw sockets
-#   - NET_ADMIN:  network interface manipulation, arp-scan, netdiscover
-#   - SYS_PTRACE: gdb, strace, ltrace (debugging tools)
-#
-# NOTE: These capabilities CANNOT be set in Dockerfile - they are runtime flags
-# controlled by Docker's security model. Even root inside container doesn't
-# have these capabilities unless explicitly granted at container start.
-# ============================================================================
 
 # Keep container running
 CMD ["tail", "-f", "/dev/null"]
