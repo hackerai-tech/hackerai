@@ -46,9 +46,8 @@ export const createTrackedProvider = (
   userId?: string,
   conversationId?: string,
   subscription?: SubscriptionTier,
+  phClient?: ReturnType<typeof PostHogClient> | null,
 ) => {
-  const phClient = PostHogClient();
-
   if (!phClient) {
     return myProvider;
   }
