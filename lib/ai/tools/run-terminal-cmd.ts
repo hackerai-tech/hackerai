@@ -20,9 +20,10 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     context;
 
   // Wait instructions for E2B sandbox (local sandbox uses different commands)
-  const waitForProcessInstruction = `To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This will block until the process exits. Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\``;
+  // Note: Code also handles 'while ps -p' loops for robustness, but we only document tail --pid
+  const waitForProcessInstruction = `To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This blocks until the process exits and gets extended timeout (up to ${Math.floor(MAX_COMMAND_EXECUTION_TIME / 1000 / 60)} minutes). Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\``;
 
-  const timeoutWaitInstruction = `If a foreground command times out after 60 seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`;
+  const timeoutWaitInstruction = `If a foreground command times out after ${STREAM_TIMEOUT_SECONDS} seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`;
 
   return tool({
     description: `Execute a command on behalf of the user.
@@ -215,17 +216,24 @@ If you are generating files:
               });
             }
 
-            // For tail --pid commands (used to wait for processes), use MAX_COMMAND_EXECUTION_TIME
+            // For wait commands (tail --pid or while ps -p loops), use MAX_COMMAND_EXECUTION_TIME
             // instead of STREAM_TIMEOUT_SECONDS since they're designed to wait for long-running processes
-            const isWaitCommand = command.trim().startsWith("tail --pid");
+            const isTailWait = command.trim().startsWith("tail --pid");
+            const isWhilePsWait = /while\s+ps\s+-p\s+\d+/.test(command);
+            const isWaitCommand = isTailWait || isWhilePsWait;
             const streamTimeout = isWaitCommand
               ? Math.floor(MAX_COMMAND_EXECUTION_TIME / 1000)
               : STREAM_TIMEOUT_SECONDS;
 
-            // Extract PID from tail --pid command for user-friendly messages
+            // Extract PID from wait command for user-friendly messages
             let waitingForPid: number | null = null;
             if (isWaitCommand) {
-              const pidMatch = command.match(/tail\s+--pid[=\s]+(\d+)/);
+              // Try tail --pid pattern first
+              let pidMatch = command.match(/tail\s+--pid[=\s]+(\d+)/);
+              // If not found, try while ps -p pattern
+              if (!pidMatch) {
+                pidMatch = command.match(/while\s+ps\s+-p\s+(\d+)/);
+              }
               if (pidMatch) {
                 waitingForPid = parseInt(pidMatch[1], 10);
                 createTerminalWriter(

@@ -177,30 +177,13 @@ RUN pip3 install --break-system-packages \
 # Additional security-focused Python packages
 RUN pip3 install --break-system-packages requests aiohttp jinja2 'httpx[cli]' ratelimit pycryptodomex
 
-# Ruby forensics tool
-RUN gem install zsteg
-
 # ============================================================================
 # Git-based Security Tools
 # ============================================================================
 RUN set -eux; \
-    # GraphQL schema inference
-    git clone https://github.com/nikitastupin/clairvoyance.git /opt/clairvoyance || true && \
-    if [ -d /opt/clairvoyance ]; then \
-      cd /opt/clairvoyance && \
-      python3 -m venv venv && \
-      . venv/bin/activate && \
-      pip install . || true; \
-    fi && \
     # JWT analysis tool
     git clone https://github.com/ticarpi/jwt_tool.git /opt/jwt_tool || true && \
     if [ -f /opt/jwt_tool/jwt_tool.py ]; then chmod +x /opt/jwt_tool/jwt_tool.py; fi && \
-    # Template injection testing
-    git clone https://github.com/epinna/tplmap.git /opt/tplmap || true && \
-    if [ -f /opt/tplmap/tplmap.py ]; then chmod +x /opt/tplmap/tplmap.py; fi && \
-    # PHP object injection
-    git clone https://github.com/ambionics/phpggc.git /opt/phpggc || true && \
-    if [ -f /opt/phpggc/phpggc ]; then chmod +x /opt/phpggc/phpggc; fi && \
     # Git repository dumper
     git clone https://github.com/internetwache/GitTools.git /opt/gittools && \
     chmod +x /opt/gittools/Dumper/gitdumper.sh /opt/gittools/Extractor/extractor.sh && \
@@ -245,14 +228,8 @@ RUN set -eux; \
 # Create Wrapper Scripts for Python Tools
 # ============================================================================
 RUN set -eux; \
-    # Clairvoyance wrapper
-    ([ -d /opt/clairvoyance ] && echo '#!/bin/bash\ncd /opt/clairvoyance && source venv/bin/activate && python -m clairvoyance "$@"' > /usr/local/bin/clairvoyance && chmod +x /usr/local/bin/clairvoyance) || true && \
     # JWT Tool wrapper
-    ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true && \
-    # Tplmap wrapper
-    ([ -f /opt/tplmap/tplmap.py ] && echo '#!/bin/bash\npython3 /opt/tplmap/tplmap.py "$@"' > /usr/local/bin/tplmap && chmod +x /usr/local/bin/tplmap) || true && \
-    # PHPGGC symlink
-    ([ -f /opt/phpggc/phpggc ] && ln -sf /opt/phpggc/phpggc /usr/local/bin/phpggc) || true
+    ([ -f /opt/jwt_tool/jwt_tool.py ] && echo '#!/bin/bash\npython3 /opt/jwt_tool/jwt_tool.py "$@"' > /usr/local/bin/jwt-tool && chmod +x /usr/local/bin/jwt-tool) || true
 
 # ============================================================================
 # Go-based Security Tools
@@ -261,6 +238,14 @@ RUN set -eux; \
     go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
     go install github.com/hahwul/dalfox/v2@latest && \
     go install github.com/jpillora/chisel@latest
+
+# ============================================================================
+# TestSSL Symlink - Allow access via both 'testssl' and 'testssl.sh'
+# ============================================================================
+RUN set -eux; \
+    if command -v testssl >/dev/null 2>&1; then \
+      ln -sf $(which testssl) /usr/local/bin/testssl.sh; \
+    fi
 
 # ============================================================================
 # Tool Validation
@@ -287,6 +272,7 @@ RUN set -eux; \
     which gobuster && echo "✓ gobuster" && \
     which dirsearch && echo "✓ dirsearch" && \
     which testssl && echo "✓ testssl" && \
+    which testssl.sh && echo "✓ testssl.sh" && \
     which nuclei && echo "✓ nuclei" && \
     which hydra && echo "✓ hydra" && \
     which smbclient && echo "✓ smbclient" && \
@@ -299,8 +285,6 @@ RUN set -eux; \
     which chisel && echo "✓ chisel" && \
     which interactsh-client && echo "✓ interactsh-client" && \
     which jwt-tool && echo "✓ jwt_tool" && \
-    which tplmap && echo "✓ tplmap" && \
-    which phpggc && echo "✓ phpggc" && \
     which gitdumper && echo "✓ gitdumper" && \
     which linpeas && echo "✓ linpeas" && \
     which trufflehog && echo "✓ trufflehog" && \
