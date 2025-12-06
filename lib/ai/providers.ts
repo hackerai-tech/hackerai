@@ -1,6 +1,5 @@
 import { customProvider } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
-import { openai } from "@ai-sdk/openai";
 import { xai } from "@ai-sdk/xai";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
@@ -15,10 +14,8 @@ const baseProviders = {
   ),
   "agent-model": xai("grok-code-fast-1"),
   "agent-vision-model": xai("grok-4-fast-reasoning"),
-  "title-generator-model": openrouter(
-    "google/gemini-2.5-flash-preview-09-2025",
-  ),
-  "summarization-model": xai("grok-4-fast-non-reasoning"),
+  "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
+  "summarization-model": xai("grok-4-1-fast-non-reasoning"),
 };
 
 export type ModelName = keyof typeof baseProviders;
