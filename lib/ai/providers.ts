@@ -48,7 +48,8 @@ export const createTrackedProvider = (
   subscription?: SubscriptionTier,
   phClient?: ReturnType<typeof PostHogClient> | null,
 ) => {
-  if (!phClient) {
+  // Only use tracing for non-free users
+  if (!phClient || subscription === "free") {
     return myProvider;
   }
 
