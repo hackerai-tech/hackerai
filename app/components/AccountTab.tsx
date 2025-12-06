@@ -56,7 +56,7 @@ const AccountTab = () => {
           {subscription !== "free" ? (
             <DropdownMenu modal={false}>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm">
+                <Button type="button" variant="outline" size="sm">
                   Manage
                   <ChevronDown className="h-4 w-4" />
                 </Button>
@@ -81,7 +81,12 @@ const AccountTab = () => {
               </DropdownMenuContent>
             </DropdownMenu>
           ) : (
-            <Button variant="default" size="sm" onClick={redirectToPricing}>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={redirectToPricing}
+            >
               Upgrade
             </Button>
           )}
@@ -123,6 +128,7 @@ const AccountTab = () => {
               </div>
             </div>
             <Button
+              type="button"
               variant="outline"
               size="sm"
               onClick={handleOpenMigrateConfirm}
@@ -142,6 +148,7 @@ const AccountTab = () => {
                 <div className="font-medium">Payment</div>
               </div>
               <Button
+                type="button"
                 variant="outline"
                 size="sm"
                 onClick={() => redirectToBillingPortal()}
@@ -160,6 +167,7 @@ const AccountTab = () => {
             <div className="font-medium">Delete account</div>
           </div>
           <Button
+            type="button"
             data-testid="delete-account-button"
             variant="destructive"
             size="sm"
