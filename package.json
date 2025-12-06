@@ -31,6 +31,7 @@
     "test:e2e:users:delete": "npx tsx scripts/create-test-users.ts delete",
     "test:e2e:users:reset-passwords": "npx tsx scripts/create-test-users.ts reset-passwords",
     "rate-limit:reset": "npx tsx scripts/reset-rate-limit.ts",
+    "stripe:attach-failing-card": "npx tsx scripts/attach-failing-card.ts",
     "prepare": "husky",
     "s3:validate": "npx ts-node scripts/validate-s3-security.ts",
     "e2b:build:dev": "npx tsx e2b/build.dev.ts",
