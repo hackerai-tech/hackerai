@@ -158,7 +158,7 @@ export const createChatHandler = () => {
 
       const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
-      const posthog = subscription !== "free" ? PostHogClient() : null;
+      const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
 
       // Start temp stream coordination for temporary chats

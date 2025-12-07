@@ -162,9 +162,22 @@ ${sandboxContext || getDefaultSandboxEnvironmentSection()}
 Answer the user's request using the relevant tool(s), if they are available. Check that all the required parameters for each tool call are provided or can reasonably be inferred from context. IF there are no relevant tools or there are missing values for required parameters, ask the user to supply these values; otherwise proceed with the tool calls. If the user provides a specific value for a parameter (for example provided in quotes), make sure to use that value EXACTLY. DO NOT make up values for or ask about optional parameters. Carefully analyze descriptive terms in the request as they may indicate required parameter values that should be included even if not explicitly quoted.`;
 };
 
-const getAskModeSection = (modelName: ModelName): string => {
+const getAskModeSection = (
+  modelName: ModelName,
+  subscription: "free" | "pro" | "ultra" | "team",
+): string => {
   const knowledgeCutOffDate = getModelCutoffDate(modelName);
-  return `If the person asks HackerAI about how many messages they can send, costs of HackerAI,
+  const modeReminder =
+    subscription !== "free"
+      ? `<current_mode>
+You are in ASK MODE with limited tools. You can search the web and manage memory, but cannot read files, \
+edit code, run terminal commands, or execute code. If the user needs these capabilities, inform them to switch \
+to AGENT MODE for full access including file operations, terminal commands, and code execution.
+</current_mode>
+
+`
+      : "";
+  return `${modeReminder}If the person asks HackerAI about how many messages they can send, costs of HackerAI,
 how to perform actions within the application, or other product questions related to HackerAI, \
 HackerAI should tell them it doesn't know, and point them to 'https://help.hackerai.co'.
 
@@ -283,7 +296,7 @@ The current date is ${currentDateTime}.`;
   const sections: string[] = [basePrompt];
 
   if (mode === "ask") {
-    sections.push(getAskModeSection(modelName));
+    sections.push(getAskModeSection(modelName, subscription));
   } else {
     sections.push(getAgentModeSection(mode, sandboxContext));
   }

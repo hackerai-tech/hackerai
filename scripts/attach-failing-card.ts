@@ -72,10 +72,16 @@ async function attachFailingCard(customerEmail: string) {
     await stripe.paymentMethods.detach(pm.id);
     console.log(chalk.gray(`   Removed: ${pm.id}`));
   }
-  console.log(chalk.green(`✓ Removed ${existingPMs.data.length} existing payment method(s)`));
+  console.log(
+    chalk.green(
+      `✓ Removed ${existingPMs.data.length} existing payment method(s)`,
+    ),
+  );
 
   // 3. Attach tok_visa_chargeCustomerFail - attaches OK but fails on charge
-  console.log(chalk.cyan("\n📝 Attaching test card that will fail on charge..."));
+  console.log(
+    chalk.cyan("\n📝 Attaching test card that will fail on charge..."),
+  );
 
   const paymentMethod = await stripe.paymentMethods.create({
     type: "card",
@@ -95,7 +101,9 @@ async function attachFailingCard(customerEmail: string) {
 
   console.log(chalk.bold.yellow("\n⚠️  This card will FAIL when charged!"));
   console.log(chalk.gray("   Token: tok_visa_chargeCustomerFail"));
-  console.log(chalk.gray("   Behavior: Attaches OK, fails when customer is charged"));
+  console.log(
+    chalk.gray("   Behavior: Attaches OK, fails when customer is charged"),
+  );
 
   console.log(chalk.bold.green("\n✨ Done! Now try upgrading in the UI.\n"));
 }
@@ -107,7 +115,9 @@ if (!email) {
     chalk.red("Usage: npx tsx scripts/attach-failing-card.ts <customer-email>"),
   );
   console.log(
-    chalk.gray("Example: npx tsx scripts/attach-failing-card.ts pro1@hackerai.com"),
+    chalk.gray(
+      "Example: npx tsx scripts/attach-failing-card.ts pro1@hackerai.com",
+    ),
   );
   process.exit(1);
 }
