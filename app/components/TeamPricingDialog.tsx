@@ -11,6 +11,8 @@ import { Label } from "@/components/ui/label";
 import { useUpgrade } from "../hooks/useUpgrade";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "../contexts/GlobalState";
+import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
+import { PRICING } from "./PricingDialog";
 
 interface TeamPricingDialogProps {
   isOpen: boolean;
@@ -34,6 +36,10 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
   >(initialPlan);
   const [seats, setSeats] = React.useState(initialSeats);
   const [isInitialized, setIsInitialized] = React.useState(false);
+  const [showUpgradeConfirmation, setShowUpgradeConfirmation] =
+    React.useState(false);
+  const [targetPlanForConfirmation, setTargetPlanForConfirmation] =
+    React.useState<string>("");
 
   const formatNumber = (num: number) => {
     return num.toLocaleString("en-US");
@@ -69,7 +75,21 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
 
     const planKey =
       billingPeriod === "yearly" ? "team-yearly-plan" : "team-monthly-plan";
+
+    // For Pro users: show confirmation dialog with proration preview
+    if (subscription === "pro") {
+      setTargetPlanForConfirmation(planKey);
+      setShowUpgradeConfirmation(true);
+      return;
+    }
+
+    // For free users: proceed to checkout
     await handleUpgrade(planKey, undefined, seats, subscription);
+  };
+
+  const handleCloseConfirmation = () => {
+    setShowUpgradeConfirmation(false);
+    setTargetPlanForConfirmation("");
   };
 
   // Sync state with URL (only after initial state is loaded from URL/props)
@@ -122,7 +142,16 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
   }, [isOpen, isInitialized, initialSeats, initialPlan, minSeats, maxSeats]);
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
+    <>
+      <UpgradeConfirmationDialog
+        isOpen={showUpgradeConfirmation}
+        onClose={handleCloseConfirmation}
+        planName="Team"
+        price={billingPeriod === "yearly" ? PRICING.team.yearly : PRICING.team.monthly}
+        targetPlan={targetPlanForConfirmation}
+        quantity={seats}
+      />
+      <Dialog open={isOpen} onOpenChange={onClose}>
       <DialogContent
         className="!max-w-none !w-screen !h-screen !max-h-none !m-0 !rounded-none !inset-0 !translate-x-0 !translate-y-0 !top-0 !left-0 overflow-y-auto"
         showCloseButton={false}
@@ -140,6 +169,11 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
                   <div className="text-muted-foreground">
                     Minimum 2 seats. Add and reassign seats at anytime
                   </div>
+                  {subscription === "pro" && (
+                    <div className="text-sm text-muted-foreground bg-muted/50 rounded-lg px-4 py-2">
+                      Your remaining Pro subscription time will be credited toward Team
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-6">
@@ -344,6 +378,12 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
                 <div className="mb-8 text-3xl font-medium md:mt-[120px]">
                   Pick your plan
                 </div>
+
+                {subscription === "pro" && (
+                  <div className="text-sm text-muted-foreground bg-muted/50 rounded-lg px-4 py-2 mb-6 text-center">
+                    Your remaining Pro subscription time will be credited toward Team
+                  </div>
+                )}
 
                 <RadioGroup
                   value={billingPeriod}
@@ -564,6 +604,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
         </div>
       </DialogContent>
     </Dialog>
+    </>
   );
 };
 

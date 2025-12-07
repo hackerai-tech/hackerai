@@ -171,12 +171,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     }
   }, [isOpen, subscription, onClose]);
 
-  // Auto-close team plan view if pro user somehow gets there
-  React.useEffect(() => {
-    if (showTeamPlan && subscription === "pro") {
-      setShowTeamPlan(false);
-    }
-  }, [showTeamPlan, subscription]);
 
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
@@ -224,11 +218,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const handleTeamClick = () => {
     if (!user) {
       handleSignIn();
-      return;
-    }
-
-    // Don't allow Pro users to upgrade to Team plan
-    if (subscription === "pro") {
       return;
     }
 
@@ -483,18 +472,15 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
             )}
           </div>
 
-          {/* Hide team plan toggle for Pro users */}
-          {subscription !== "pro" && (
-            <div className="flex justify-center pb-8">
-              <Button
-                variant="secondary"
-                className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
-                onClick={() => setShowTeamPlan((prev) => !prev)}
-              >
-                {showTeamPlan ? "View Individual Plan" : "View Team Plan"}
-              </Button>
-            </div>
-          )}
+          <div className="flex justify-center pb-8">
+            <Button
+              variant="secondary"
+              className="rounded-full border border-border bg-background text-foreground hover:bg-muted/60"
+              onClick={() => setShowTeamPlan((prev) => !prev)}
+            >
+              {showTeamPlan ? "View Individual Plan" : "View Team Plan"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </>

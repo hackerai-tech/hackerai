@@ -8,6 +8,7 @@ export const POST = async (req: NextRequest) => {
     const body = await req.json().catch(() => ({}));
     const targetPlan: string | undefined = body?.plan;
     const confirm: boolean = body?.confirm === true;
+    const requestedQuantity: number | undefined = body?.quantity;
 
     const userId = await getUserID(req);
     const user = await workos.userManagement.getUser(userId);
@@ -63,6 +64,19 @@ export const POST = async (req: NextRequest) => {
     const targetAmount = targetPrice.unit_amount
       ? targetPrice.unit_amount / 100
       : 0;
+
+    // Validate and set quantity for team plans
+    const isTeamPlan = targetPlan?.includes("team");
+    const quantity = isTeamPlan
+      ? Math.max(requestedQuantity || 2, 2) // Minimum 2 seats for team
+      : 1;
+
+    if (isTeamPlan && requestedQuantity !== undefined && requestedQuantity < 2) {
+      return NextResponse.json(
+        { error: "Team plans require minimum 2 seats" },
+        { status: 400 },
+      );
+    }
 
     // Get active subscription for prorated calculation
     const subscriptions = await stripe.subscriptions.list({
@@ -147,6 +161,7 @@ export const POST = async (req: NextRequest) => {
               {
                 id: subscription.items.data[0].id,
                 price: targetPrice.id,
+                quantity: quantity,
               },
             ],
             proration_behavior: "always_invoice",
@@ -219,6 +234,7 @@ export const POST = async (req: NextRequest) => {
                 {
                   id: subscription.items.data[0].id,
                   price: targetPrice.id,
+                  quantity: quantity,
                 },
               ],
               proration_behavior: "always_invoice",
@@ -376,6 +392,7 @@ export const POST = async (req: NextRequest) => {
       additionalCredit: Number(additionalCredit.toFixed(2)),
       paymentMethod: paymentMethodInfo,
       currentPlan: planType,
+      quantity: quantity,
       // Cycle information (dates are unix seconds)
       currentPeriodStart,
       currentPeriodEnd,

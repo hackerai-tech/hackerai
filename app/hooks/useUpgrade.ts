@@ -78,7 +78,11 @@ export const useUpgrade = () => {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ plan: planKey, confirm: true }),
+          body: JSON.stringify({
+            plan: planKey,
+            confirm: true,
+            quantity: quantity,
+          }),
         });
 
         if (!res.ok) {
