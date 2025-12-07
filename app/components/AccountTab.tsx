@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -24,7 +24,25 @@ import DeleteAccountDialog from "./DeleteAccountDialog";
 const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
   const { isMigrating } = usePentestgptMigration();
+
+  // Fetch admin status for team subscriptions
+  useEffect(() => {
+    if (subscription === "team") {
+      fetch("/api/team/members")
+        .then((res) => res.json())
+        .then((data) => setIsTeamAdmin(data.isAdmin ?? false))
+        .catch(() => setIsTeamAdmin(false));
+    }
+  }, [subscription]);
+
+  // For individual plans (pro/ultra), user always has billing access
+  // For team plans, only admins can manage billing
+  const canManageBilling =
+    subscription === "pro" ||
+    subscription === "ultra" ||
+    (subscription === "team" && isTeamAdmin === true);
 
   const currentPlanFeatures =
     subscription === "team" ? teamFeatures : proFeatures;
@@ -54,32 +72,34 @@ const AccountTab = () => {
             </div>
           </div>
           {subscription !== "free" ? (
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button type="button" variant="outline" size="sm">
-                  Manage
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-56">
-                {subscription === "pro" && (
-                  <>
-                    <DropdownMenuItem onClick={redirectToPricing}>
-                      <Sparkle className="h-4 w-4" />
-                      <span>Upgrade plan</span>
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                  </>
-                )}
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={handleCancelSubscription}
-                >
-                  <X className="h-4 w-4" />
-                  <span>Cancel subscription</span>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            canManageBilling ? (
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="sm">
+                    Manage
+                    <ChevronDown className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56">
+                  {subscription === "pro" && (
+                    <>
+                      <DropdownMenuItem onClick={redirectToPricing}>
+                        <Sparkle className="h-4 w-4" />
+                        <span>Upgrade plan</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={handleCancelSubscription}
+                  >
+                    <X className="h-4 w-4" />
+                    <span>Cancel subscription</span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null
           ) : (
             <Button
               type="button"
@@ -140,7 +160,7 @@ const AccountTab = () => {
         </div>
       )}
 
-      {subscription !== "free" && (
+      {subscription !== "free" && canManageBilling && (
         <div>
           <div className="space-y-4">
             <div className="flex items-center justify-between py-3">
