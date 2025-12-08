@@ -38,13 +38,23 @@ export default async function redirectToBillingPortal() {
       },
     },
   );
+  if (!response.ok) {
+    throw new Error("Failed to fetch organization details");
+  }
   const workosOrg = await response.json();
+
+  if (!workosOrg?.stripe_customer_id) {
+    throw new Error("No billing account found for this organization");
+  }
 
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL;
   const billingPortalSession = await stripe.billingPortal.sessions.create({
-    customer: workosOrg?.stripe_customer_id,
+    customer: workosOrg.stripe_customer_id,
     return_url: `${baseUrl}`,
   });
 
-  redirect(billingPortalSession?.url);
+  if (!billingPortalSession?.url) {
+    throw new Error("Failed to create billing portal session");
+  }
+  redirect(billingPortalSession.url);
 }

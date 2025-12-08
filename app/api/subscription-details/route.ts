@@ -195,8 +195,8 @@ export const POST = async (req: NextRequest) => {
           additionalCredit = creditFromOldPlan - proratedCharge;
         }
 
-        // Next invoice will be the full target amount (no proration on renewal)
-        nextInvoiceAmountEstimate = targetAmount;
+        // Next invoice will be the full target amount times quantity (no proration on renewal)
+        nextInvoiceAmountEstimate = targetAmount * quantity;
       } catch (invoiceError) {
         console.error(
           "Error fetching invoice preview, using fallback calculation:",
@@ -221,7 +221,7 @@ export const POST = async (req: NextRequest) => {
         proratedCredit = Math.max(0, targetAmount - totalDue);
 
         additionalCredit = 0; // Fallback doesn't calculate excess credit
-        nextInvoiceAmountEstimate = targetAmount;
+        nextInvoiceAmountEstimate = targetAmount * quantity;
       }
 
       // If confirm flag is true, actually update the subscription
