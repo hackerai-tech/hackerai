@@ -8,6 +8,7 @@ export const POST = async (req: NextRequest) => {
     const body = await req.json().catch(() => ({}));
     const targetPlan: string | undefined = body?.plan;
     const confirm: boolean = body?.confirm === true;
+    const requestedQuantity: number | undefined = body?.quantity;
 
     const userId = await getUserID(req);
     const user = await workos.userManagement.getUser(userId);
@@ -64,6 +65,19 @@ export const POST = async (req: NextRequest) => {
       ? targetPrice.unit_amount / 100
       : 0;
 
+    // Validate and set quantity for team plans
+    const isTeamPlan = targetPlan?.includes("team");
+    const quantity = isTeamPlan
+      ? Math.max(requestedQuantity || 2, 2) // Minimum 2 seats for team
+      : 1;
+
+    if (isTeamPlan && requestedQuantity !== undefined && requestedQuantity < 2) {
+      return NextResponse.json(
+        { error: "Team plans require minimum 2 seats" },
+        { status: 400 },
+      );
+    }
+
     // Get active subscription for prorated calculation
     const subscriptions = await stripe.subscriptions.list({
       customer: matchingCustomer.id,
@@ -73,15 +87,15 @@ export const POST = async (req: NextRequest) => {
 
     let proratedCredit = 0;
     let currentAmount = 0;
-    let totalDue = targetAmount;
+    let totalDue = targetAmount * quantity;
     let additionalCredit = 0; // credit left over to be added to customer balance
     let paymentMethodInfo = "";
     let planType: "free" | "pro" | "ultra" | "team" = "free";
     let interval: "monthly" | "yearly" = "monthly";
     let currentPeriodStart: number | null = null; // unix seconds
     let currentPeriodEnd: number | null = null; // unix seconds
-    let nextInvoiceAmountEstimate = targetAmount; // will be adjusted below
-    let proratedAmount = targetAmount; // actual prorated charge for remaining time
+    let nextInvoiceAmountEstimate = targetAmount * quantity; // will be adjusted below
+    let proratedAmount = targetAmount * quantity; // actual prorated charge for remaining time
 
     if (subscriptions.data.length > 0) {
       const subscription = subscriptions.data[0];
@@ -147,6 +161,7 @@ export const POST = async (req: NextRequest) => {
               {
                 id: subscription.items.data[0].id,
                 price: targetPrice.id,
+                quantity: quantity,
               },
             ],
             proration_behavior: "always_invoice",
@@ -180,8 +195,8 @@ export const POST = async (req: NextRequest) => {
           additionalCredit = creditFromOldPlan - proratedCharge;
         }
 
-        // Next invoice will be the full target amount (no proration on renewal)
-        nextInvoiceAmountEstimate = targetAmount;
+        // Next invoice will be the full target amount times quantity (no proration on renewal)
+        nextInvoiceAmountEstimate = targetAmount * quantity;
       } catch (invoiceError) {
         console.error(
           "Error fetching invoice preview, using fallback calculation:",
@@ -200,13 +215,14 @@ export const POST = async (req: NextRequest) => {
 
         // Credit is the unused portion of the current subscription
         const estimatedCredit = Math.max(0, currentAmount * proratedRatio);
-        totalDue = Math.max(0, targetAmount - estimatedCredit);
+        const targetTotal = targetAmount * quantity;
+        totalDue = Math.max(0, targetTotal - estimatedCredit);
 
         // Calculate actual proration credit from what they pay (keeps display consistent)
-        proratedCredit = Math.max(0, targetAmount - totalDue);
+        proratedCredit = Math.max(0, targetTotal - totalDue);
 
         additionalCredit = 0; // Fallback doesn't calculate excess credit
-        nextInvoiceAmountEstimate = targetAmount;
+        nextInvoiceAmountEstimate = targetAmount * quantity;
       }
 
       // If confirm flag is true, actually update the subscription
@@ -219,6 +235,7 @@ export const POST = async (req: NextRequest) => {
                 {
                   id: subscription.items.data[0].id,
                   price: targetPrice.id,
+                  quantity: quantity,
                 },
               ],
               proration_behavior: "always_invoice",
@@ -376,6 +393,7 @@ export const POST = async (req: NextRequest) => {
       additionalCredit: Number(additionalCredit.toFixed(2)),
       paymentMethod: paymentMethodInfo,
       currentPlan: planType,
+      quantity: quantity,
       // Cycle information (dates are unix seconds)
       currentPeriodStart,
       currentPeriodEnd,

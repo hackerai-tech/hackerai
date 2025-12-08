@@ -12,6 +12,7 @@ interface UpgradeConfirmationDialogProps {
   planName: string;
   price: number;
   targetPlan: string;
+  quantity?: number;
 }
 
 // Safely validate and format unix seconds into a display date
@@ -31,6 +32,7 @@ interface SubscriptionDetails {
   currentPeriodEnd?: number;
   nextInvoiceDate?: number;
   nextInvoiceAmount?: number;
+  quantity?: number;
 }
 
 const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
@@ -39,6 +41,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
   planName,
   price,
   targetPlan,
+  quantity,
 }) => {
   const [details, setDetails] = useState<SubscriptionDetails | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
@@ -58,7 +61,11 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ plan: targetPlan, confirm: false }),
+          body: JSON.stringify({
+            plan: targetPlan,
+            confirm: false,
+            quantity: quantity,
+          }),
         });
 
         if (!previewRes.ok) {
@@ -78,6 +85,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
           currentPeriodEnd: previewData.currentPeriodEnd,
           nextInvoiceDate: previewData.nextInvoiceDate,
           nextInvoiceAmount: previewData.nextInvoiceAmount,
+          quantity: previewData.quantity,
         });
       } catch (error) {
         console.error("Error fetching subscription details:", error);
@@ -95,7 +103,7 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
     };
 
     fetchDetails();
-  }, [isOpen, targetPlan, price]);
+  }, [isOpen, targetPlan, price, quantity]);
 
   const handleConfirmPayment = async () => {
     setConfirming(true);
@@ -106,7 +114,11 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ plan: targetPlan, confirm: true }),
+        body: JSON.stringify({
+          plan: targetPlan,
+          confirm: true,
+          quantity: quantity,
+        }),
       });
 
       const result = await response.json();
@@ -182,6 +194,12 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
                 <div>
                   <div className="text-lg font-medium">
                     HackerAI {planName} subscription
+                    {details?.quantity && details.quantity > 1 && (
+                      <span className="text-muted-foreground font-normal">
+                        {" "}
+                        ({details.quantity} seats)
+                      </span>
+                    )}
                   </div>
                   <div className="text-sm text-muted-foreground mt-1">
                     Prorated charge for remaining time in your current billing
