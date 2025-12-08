@@ -171,7 +171,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     }
   }, [isOpen, subscription, onClose]);
 
-
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
   };

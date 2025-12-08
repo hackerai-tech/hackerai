@@ -1,11 +1,5 @@
 import "@testing-library/jest-dom";
-import {
-  describe,
-  it,
-  expect,
-  jest,
-  beforeEach,
-} from "@jest/globals";
+import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import UpgradeConfirmationDialog from "../UpgradeConfirmationDialog";
 
@@ -51,7 +45,8 @@ describe("UpgradeConfirmationDialog", () => {
             paymentMethod: "VISA *4242",
             currentPlan: "pro",
             quantity: 3,
-            currentPeriodStart: Math.floor(Date.now() / 1000) - 15 * 24 * 60 * 60,
+            currentPeriodStart:
+              Math.floor(Date.now() / 1000) - 15 * 24 * 60 * 60,
             currentPeriodEnd: Math.floor(Date.now() / 1000) + 15 * 24 * 60 * 60,
           }),
       });
@@ -191,7 +186,9 @@ describe("UpgradeConfirmationDialog", () => {
       });
 
       // Click confirm button
-      const confirmButton = screen.getByRole("button", { name: /confirm and pay/i });
+      const confirmButton = screen.getByRole("button", {
+        name: /confirm and pay/i,
+      });
       fireEvent.click(confirmButton);
 
       await waitFor(() => {
@@ -236,7 +233,9 @@ describe("UpgradeConfirmationDialog", () => {
         expect(screen.getByText("$70.00")).toBeInTheDocument();
       });
 
-      const confirmButton = screen.getByRole("button", { name: /confirm and pay/i });
+      const confirmButton = screen.getByRole("button", {
+        name: /confirm and pay/i,
+      });
       fireEvent.click(confirmButton);
 
       await waitFor(() => {
@@ -261,7 +260,9 @@ describe("UpgradeConfirmationDialog", () => {
           }),
       });
 
-      render(<UpgradeConfirmationDialog {...defaultProps} onClose={mockOnClose} />);
+      render(
+        <UpgradeConfirmationDialog {...defaultProps} onClose={mockOnClose} />,
+      );
 
       await waitFor(() => {
         expect(screen.getByText("$70.00")).toBeInTheDocument();

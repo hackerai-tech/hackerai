@@ -6,7 +6,11 @@ import chalk from "chalk";
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 
 if (!process.env.WORKOS_API_KEY || !process.env.WORKOS_CLIENT_ID) {
-  console.error(chalk.red("❌ Missing required environment variables: WORKOS_API_KEY and/or WORKOS_CLIENT_ID"));
+  console.error(
+    chalk.red(
+      "❌ Missing required environment variables: WORKOS_API_KEY and/or WORKOS_CLIENT_ID",
+    ),
+  );
   process.exit(1);
 }
 
@@ -32,16 +36,24 @@ async function verifyUserEmail(email: string) {
   }
 
   if (users.data.length > 1) {
-    console.log(chalk.yellow(`⚠️  Found ${users.data.length} users with email ${email}`));
+    console.log(
+      chalk.yellow(`⚠️  Found ${users.data.length} users with email ${email}`),
+    );
     users.data.forEach((u, idx) => {
-      console.log(chalk.cyan(`  ${idx + 1}. User ID: ${u.id} (Verified: ${u.emailVerified ? "Yes" : "No"})`));
+      console.log(
+        chalk.cyan(
+          `  ${idx + 1}. User ID: ${u.id} (Verified: ${u.emailVerified ? "Yes" : "No"})`,
+        ),
+      );
     });
     console.log(chalk.yellow("\nVerifying all users...\n"));
   }
 
   for (const user of users.data) {
     console.log(chalk.cyan(`Found user: ${user.id}`));
-    console.log(`Email verified: ${user.emailVerified ? chalk.green("Yes") : chalk.red("No")}`);
+    console.log(
+      `Email verified: ${user.emailVerified ? chalk.green("Yes") : chalk.red("No")}`,
+    );
 
     if (!user.emailVerified) {
       console.log(chalk.yellow("\n📧 Verifying email..."));

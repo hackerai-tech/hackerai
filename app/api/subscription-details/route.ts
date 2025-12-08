@@ -71,7 +71,11 @@ export const POST = async (req: NextRequest) => {
       ? Math.max(requestedQuantity || 2, 2) // Minimum 2 seats for team
       : 1;
 
-    if (isTeamPlan && requestedQuantity !== undefined && requestedQuantity < 2) {
+    if (
+      isTeamPlan &&
+      requestedQuantity !== undefined &&
+      requestedQuantity < 2
+    ) {
       return NextResponse.json(
         { error: "Team plans require minimum 2 seats" },
         { status: 400 },
