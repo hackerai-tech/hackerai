@@ -5,6 +5,11 @@ import chalk from "chalk";
 
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 
+if (!process.env.WORKOS_API_KEY || !process.env.WORKOS_CLIENT_ID) {
+  console.error(chalk.red("❌ Missing required environment variables: WORKOS_API_KEY and/or WORKOS_CLIENT_ID"));
+  process.exit(1);
+}
+
 const workos = new WorkOS(process.env.WORKOS_API_KEY, {
   clientId: process.env.WORKOS_CLIENT_ID,
 });
