@@ -12,6 +12,10 @@ export default async function redirectToBillingPortal() {
     throw new Error("User not authenticated");
   }
 
+  if (!organizationId) {
+    throw new Error("No organization found");
+  }
+
   // Check if user is an admin of the organization (for team subscriptions)
   const memberships = await workos.userManagement.listOrganizationMemberships({
     userId: user.id,
