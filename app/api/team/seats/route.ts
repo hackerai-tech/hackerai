@@ -6,6 +6,22 @@ import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 
 const MAX_SEATS = 999;
 
+function validateQuantity(quantity: unknown): { valid: true; value: number } | { valid: false; error: string } {
+  if (
+    !quantity ||
+    typeof quantity !== "number" ||
+    !Number.isFinite(quantity) ||
+    !Number.isInteger(quantity) ||
+    quantity < 2
+  ) {
+    return { valid: false, error: "Quantity must be a finite integer of at least 2" };
+  }
+  if (quantity > MAX_SEATS) {
+    return { valid: false, error: `Maximum ${MAX_SEATS} seats allowed` };
+  }
+  return { valid: true, value: quantity };
+}
+
 type WorkOSOrganization = Awaited<
   ReturnType<typeof workos.organizations.getOrganization>
 >;
@@ -112,7 +128,9 @@ async function getSeatOperationContext(
         paymentMethodInfo = `${brand} *${last4}`;
       }
     }
-  } catch {}
+  } catch (err) {
+    console.warn("Failed to retrieve payment method info:", err);
+  }
 
   return {
     userId,
@@ -148,35 +166,21 @@ export const POST = async (req: NextRequest) => {
     } = context;
 
     const body = await req.json();
-    const { quantity } = body;
+    const quantityResult = validateQuantity(body.quantity);
 
-    // Validate quantity
-    if (
-      !quantity ||
-      typeof quantity !== "number" ||
-      !Number.isFinite(quantity) ||
-      !Number.isInteger(quantity) ||
-      quantity < 2
-    ) {
+    if (!quantityResult.valid) {
       return NextResponse.json(
-        { error: "Quantity must be a finite integer of at least 2" },
+        { error: quantityResult.error },
         { status: 400 },
       );
     }
 
-    if (quantity > MAX_SEATS) {
-      return NextResponse.json(
-        { error: `Maximum ${MAX_SEATS} seats allowed` },
-        { status: 400 },
-      );
-    }
-
+    const quantity = quantityResult.value;
     const currentQuantity = subscriptionItem.quantity || 1;
     const isIncrease = quantity > currentQuantity;
-    const isDecrease = quantity < currentQuantity;
 
     // Validate decrease constraints
-    if (isDecrease && quantity < totalUsed) {
+    if (!isIncrease && quantity < totalUsed) {
       return NextResponse.json(
         {
           error: "Cannot reduce seats below current usage",
@@ -257,13 +261,16 @@ export const POST = async (req: NextRequest) => {
       const anchor = new Date(sub.billing_cycle_anchor * 1000);
       const now = new Date();
 
-      // Find the next billing date after now
-      while (anchor <= now) {
+      // Find the next billing date after now (with safety limit)
+      const maxIterations = 120; // 10 years of monthly billing
+      let iterations = 0;
+      while (anchor <= now && iterations < maxIterations) {
         if (isYearly) {
           anchor.setFullYear(anchor.getFullYear() + 1);
         } else {
           anchor.setMonth(anchor.getMonth() + 1);
         }
+        iterations++;
       }
       currentPeriodEnd = Math.floor(anchor.getTime() / 1000);
     }
@@ -314,29 +321,16 @@ export const PATCH = async (req: NextRequest) => {
     } = context;
 
     const body = await req.json();
-    const { quantity } = body;
+    const quantityResult = validateQuantity(body.quantity);
 
-    // Validate quantity
-    if (
-      !quantity ||
-      typeof quantity !== "number" ||
-      !Number.isFinite(quantity) ||
-      !Number.isInteger(quantity) ||
-      quantity < 2
-    ) {
+    if (!quantityResult.valid) {
       return NextResponse.json(
-        { error: "Quantity must be a finite integer of at least 2" },
+        { error: quantityResult.error },
         { status: 400 },
       );
     }
 
-    if (quantity > MAX_SEATS) {
-      return NextResponse.json(
-        { error: `Maximum ${MAX_SEATS} seats allowed` },
-        { status: 400 },
-      );
-    }
-
+    const quantity = quantityResult.value;
     const currentQuantity = subscriptionItem.quantity || 1;
     const isIncrease = quantity > currentQuantity;
     const isDecrease = quantity < currentQuantity;
@@ -492,22 +486,40 @@ export const PATCH = async (req: NextRequest) => {
       }
     } else {
       // Seat DECREASE: Issue prorated credit
-      await stripe.subscriptions.update(activeSubscription.id, {
-        items: [
-          {
-            id: subscriptionItem.id,
-            quantity: quantity,
-          },
-        ],
-        proration_behavior: "create_prorations",
-        proration_date: Math.floor(Date.now() / 1000),
-      });
+      try {
+        await stripe.subscriptions.update(activeSubscription.id, {
+          items: [
+            {
+              id: subscriptionItem.id,
+              quantity: quantity,
+            },
+          ],
+          proration_behavior: "create_prorations",
+          proration_date: Math.floor(Date.now() / 1000),
+        });
 
-      return NextResponse.json({
-        success: true,
-        message: `Seats reduced to ${quantity}. A prorated credit has been applied to your account.`,
-        newQuantity: quantity,
-      });
+        return NextResponse.json({
+          success: true,
+          message: `Seats reduced to ${quantity}. A prorated credit has been applied to your account.`,
+          newQuantity: quantity,
+        });
+      } catch (updateError) {
+        console.error("Error updating subscription for seat decrease:", {
+          error: updateError,
+          subscriptionId: activeSubscription.id,
+          requestedQuantity: quantity,
+        });
+
+        const errorMessage =
+          updateError instanceof Error
+            ? updateError.message
+            : "Failed to reduce seats";
+
+        return NextResponse.json(
+          { error: `Failed to reduce seats: ${errorMessage}. Please try again.` },
+          { status: 500 },
+        );
+      }
     }
   } catch (error: unknown) {
     const errorMessage =
