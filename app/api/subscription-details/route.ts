@@ -87,15 +87,15 @@ export const POST = async (req: NextRequest) => {
 
     let proratedCredit = 0;
     let currentAmount = 0;
-    let totalDue = targetAmount;
+    let totalDue = targetAmount * quantity;
     let additionalCredit = 0; // credit left over to be added to customer balance
     let paymentMethodInfo = "";
     let planType: "free" | "pro" | "ultra" | "team" = "free";
     let interval: "monthly" | "yearly" = "monthly";
     let currentPeriodStart: number | null = null; // unix seconds
     let currentPeriodEnd: number | null = null; // unix seconds
-    let nextInvoiceAmountEstimate = targetAmount; // will be adjusted below
-    let proratedAmount = targetAmount; // actual prorated charge for remaining time
+    let nextInvoiceAmountEstimate = targetAmount * quantity; // will be adjusted below
+    let proratedAmount = targetAmount * quantity; // actual prorated charge for remaining time
 
     if (subscriptions.data.length > 0) {
       const subscription = subscriptions.data[0];
@@ -215,10 +215,11 @@ export const POST = async (req: NextRequest) => {
 
         // Credit is the unused portion of the current subscription
         const estimatedCredit = Math.max(0, currentAmount * proratedRatio);
-        totalDue = Math.max(0, targetAmount - estimatedCredit);
+        const targetTotal = targetAmount * quantity;
+        totalDue = Math.max(0, targetTotal - estimatedCredit);
 
         // Calculate actual proration credit from what they pay (keeps display consistent)
-        proratedCredit = Math.max(0, targetAmount - totalDue);
+        proratedCredit = Math.max(0, targetTotal - totalDue);
 
         additionalCredit = 0; // Fallback doesn't calculate excess credit
         nextInvoiceAmountEstimate = targetAmount * quantity;
