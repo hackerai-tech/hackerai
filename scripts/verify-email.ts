@@ -31,19 +31,28 @@ async function verifyUserEmail(email: string) {
     return;
   }
 
-  const user = users.data[0];
-  console.log(chalk.cyan(`Found user: ${user.id}`));
-  console.log(`Email verified: ${user.emailVerified ? chalk.green("Yes") : chalk.red("No")}`);
-
-  if (!user.emailVerified) {
-    console.log(chalk.yellow("\n📧 Verifying email..."));
-    const updated = await workos.userManagement.updateUser({
-      userId: user.id,
-      emailVerified: true,
+  if (users.data.length > 1) {
+    console.log(chalk.yellow(`⚠️  Found ${users.data.length} users with email ${email}`));
+    users.data.forEach((u, idx) => {
+      console.log(chalk.cyan(`  ${idx + 1}. User ID: ${u.id} (Verified: ${u.emailVerified ? "Yes" : "No"})`));
     });
-    console.log(chalk.green(`✓ Email verified: ${updated.emailVerified}`));
-  } else {
-    console.log(chalk.green("\n✓ Email already verified"));
+    console.log(chalk.yellow("\nVerifying all users...\n"));
+  }
+
+  for (const user of users.data) {
+    console.log(chalk.cyan(`Found user: ${user.id}`));
+    console.log(`Email verified: ${user.emailVerified ? chalk.green("Yes") : chalk.red("No")}`);
+
+    if (!user.emailVerified) {
+      console.log(chalk.yellow("\n📧 Verifying email..."));
+      const updated = await workos.userManagement.updateUser({
+        userId: user.id,
+        emailVerified: true,
+      });
+      console.log(chalk.green(`✓ Email verified: ${updated.emailVerified}`));
+    } else {
+      console.log(chalk.green("\n✓ Email already verified"));
+    }
   }
 
   console.log(chalk.bold.green("\n✨ Done!\n"));
