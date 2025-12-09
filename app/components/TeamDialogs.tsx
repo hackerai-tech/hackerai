@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Loader2 } from "lucide-react";
+import { Loader2, Plus, Minus } from "lucide-react";
 
 interface TeamMember {
   id: string;
@@ -53,16 +53,6 @@ interface TeamDialogsProps {
   revokingInvite: string | null;
   handleRevokeInvite: () => void;
 
-  // Seat management dialog props
-  showSeatDialog: boolean;
-  setShowSeatDialog: (show: boolean) => void;
-  currentSeats: number;
-  newSeats: number;
-  setNewSeats: (seats: number) => void;
-  updatingSeats: boolean;
-  handleUpdateSeats: () => void;
-  totalUsedSeats: number;
-
   // Leave team dialog props
   showLeaveDialog: boolean;
   setShowLeaveDialog: (show: boolean) => void;
@@ -85,14 +75,6 @@ export const TeamDialogs = ({
   setInviteToRevoke,
   revokingInvite,
   handleRevokeInvite,
-  showSeatDialog,
-  setShowSeatDialog,
-  currentSeats,
-  newSeats,
-  setNewSeats,
-  updatingSeats,
-  handleUpdateSeats,
-  totalUsedSeats,
   showLeaveDialog,
   setShowLeaveDialog,
   leaving,
@@ -247,84 +229,7 @@ export const TeamDialogs = ({
         </DialogContent>
       </Dialog>
 
-      {/* Decrease Seats Dialog */}
-      <Dialog
-        open={showSeatDialog}
-        onOpenChange={(open) => {
-          setShowSeatDialog(open);
-          if (!open) {
-            setNewSeats(currentSeats);
-          }
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Remove seats</DialogTitle>
-            <DialogDescription>
-              Reduce the number of seats for your team. The change will take
-              effect at your next billing cycle and you&apos;ll be charged less.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label htmlFor="seats" className="text-sm font-medium">
-                Number of seats
-              </label>
-              <Input
-                id="seats"
-                type="number"
-                min={Math.max(2, totalUsedSeats)}
-                max={currentSeats}
-                value={newSeats}
-                onChange={(e) =>
-                  setNewSeats(parseInt(e.target.value) || currentSeats)
-                }
-                disabled={updatingSeats}
-              />
-              <p className="text-xs text-muted-foreground">
-                Currently using {totalUsedSeats} seat
-                {totalUsedSeats !== 1 ? "s" : ""}
-              </p>
-            </div>
-            {newSeats < currentSeats && (
-              <div className="text-sm text-muted-foreground bg-muted p-3 rounded-md">
-                Removing {currentSeats - newSeats} seat
-                {currentSeats - newSeats !== 1 ? "s" : ""}.
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => {
-                setShowSeatDialog(false);
-                setNewSeats(currentSeats);
-              }}
-              disabled={updatingSeats}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleUpdateSeats}
-              disabled={
-                updatingSeats ||
-                newSeats >= currentSeats ||
-                newSeats < Math.max(2, totalUsedSeats)
-              }
-            >
-              {updatingSeats ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                  Removing...
-                </>
-              ) : (
-                "Remove seats"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Decrease Seats Dialog - Removed, now using ManageSeatsDialog in TeamTab */}
 
       {/* Leave Team Dialog */}
       <Dialog
@@ -413,6 +318,301 @@ export const InviteAcceptedDialog = ({
         </DialogHeader>
         <DialogFooter>
           <Button onClick={() => onOpenChange(false)}>Got it</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+interface SeatPreview {
+  currentQuantity: number;
+  newQuantity: number;
+  seatsDelta: number;
+  proratedCharge: number;
+  proratedCredit: number;
+  totalDue: number;
+  pricePerSeat: number;
+  proratedPerSeat: number;
+  paymentMethod: string;
+  currentPeriodEnd: number;
+  nextInvoiceAmount: number;
+  isIncrease: boolean;
+  isYearly: boolean;
+  totalUsed: number;
+}
+
+const formatUnixDate = (ts?: number) =>
+  typeof ts === "number" && Number.isFinite(ts) && ts > 0
+    ? new Date(ts * 1000).toLocaleDateString()
+    : "";
+
+export const ManageSeatsDialog = ({
+  open,
+  onOpenChange,
+  currentSeats,
+  totalUsedSeats,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  currentSeats: number;
+  totalUsedSeats: number;
+  onSuccess: () => void;
+}) => {
+  const [targetSeats, setTargetSeats] = useState(currentSeats);
+  const [preview, setPreview] = useState<SeatPreview | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState("");
+
+  const seatsDelta = targetSeats - currentSeats;
+  const isIncrease = seatsDelta > 0;
+  const isDecrease = seatsDelta < 0;
+  const maxSeats = 999;
+  const minSeats = Math.max(2, totalUsedSeats);
+
+  // Fetch preview when dialog opens or targetSeats changes
+  useEffect(() => {
+    if (!open || targetSeats === currentSeats) {
+      setPreview(null);
+      return;
+    }
+
+    const fetchPreview = async () => {
+      setLoadingPreview(true);
+      setError("");
+      try {
+        const res = await fetch("/api/team/seats", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quantity: targetSeats }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          throw new Error(data.error || "Failed to fetch preview");
+        }
+
+        const data = await res.json();
+        setPreview(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load preview");
+        setPreview(null);
+      } finally {
+        setLoadingPreview(false);
+      }
+    };
+
+    const debounce = setTimeout(fetchPreview, 300);
+    return () => clearTimeout(debounce);
+  }, [open, targetSeats, currentSeats]);
+
+  // Reset state when dialog opens
+  useEffect(() => {
+    if (open) {
+      setTargetSeats(currentSeats);
+      setError("");
+      setPreview(null);
+    }
+  }, [open, currentSeats]);
+
+  const handleConfirm = async () => {
+    setConfirming(true);
+    setError("");
+
+    try {
+      const res = await fetch("/api/team/seats", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quantity: targetSeats }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to update seats");
+      }
+
+      if (data.success) {
+        onOpenChange(false);
+        onSuccess();
+      } else if (data.requiresPayment && data.invoiceUrl) {
+        window.location.href = data.invoiceUrl;
+      } else {
+        throw new Error(data.message || "Failed to update seats");
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update seats");
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  const getButtonText = () => {
+    if (confirming) return null;
+    if (!preview || seatsDelta === 0) return "Select seat count";
+
+    if (isIncrease) {
+      return `Add ${seatsDelta} seat${seatsDelta > 1 ? "s" : ""} for $${preview.totalDue.toFixed(2)}`;
+    } else {
+      return `Remove ${Math.abs(seatsDelta)} seat${Math.abs(seatsDelta) > 1 ? "s" : ""} (+$${preview.proratedCredit.toFixed(2)} credit)`;
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[480px]">
+        <DialogHeader>
+          <DialogTitle>Manage seats</DialogTitle>
+          <DialogDescription>
+            Adjust the number of seats for your team. Adding seats charges a
+            prorated amount; removing seats applies a credit to your account.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-6 py-4">
+          {/* Seat Selector */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Number of seats</label>
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() =>
+                  setTargetSeats(Math.max(minSeats, targetSeats - 1))
+                }
+                disabled={targetSeats <= minSeats || confirming}
+              >
+                <Minus className="h-4 w-4" />
+              </Button>
+              <Input
+                type="number"
+                min={minSeats}
+                max={maxSeats}
+                value={targetSeats}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value) || currentSeats;
+                  setTargetSeats(Math.min(maxSeats, Math.max(minSeats, val)));
+                }}
+                className="w-24 text-center"
+                disabled={confirming}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                onClick={() =>
+                  setTargetSeats(Math.min(maxSeats, targetSeats + 1))
+                }
+                disabled={targetSeats >= maxSeats || confirming}
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+              <span className="text-sm text-muted-foreground">
+                {seatsDelta === 0
+                  ? `${currentSeats} seats (no change)`
+                  : isIncrease
+                    ? `(+${seatsDelta} new)`
+                    : `(${seatsDelta} fewer)`}
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Currently using {totalUsedSeats} of {currentSeats} seats
+            </p>
+          </div>
+
+          {/* Preview Section */}
+          {loadingPreview ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : preview && seatsDelta !== 0 ? (
+            <div className="space-y-4 rounded-lg border p-4">
+              <div className="flex justify-between text-sm">
+                <span>
+                  {isIncrease ? "Additional seats" : "Seats to remove"}
+                </span>
+                <span className="font-medium">
+                  {isIncrease ? `+${seatsDelta}` : seatsDelta}
+                </span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span>
+                  {isIncrease ? "Prorated charge" : "Prorated credit"}
+                  <span className="text-muted-foreground ml-1">
+                    (~${preview.proratedPerSeat.toFixed(2)}/seat)
+                  </span>
+                </span>
+                <span
+                  className={`font-medium ${isDecrease ? "text-green-600" : ""}`}
+                >
+                  {isIncrease
+                    ? `$${preview.proratedCharge.toFixed(2)}`
+                    : `+$${preview.proratedCredit.toFixed(2)}`}
+                </span>
+              </div>
+              <div className="border-t pt-3 flex justify-between">
+                <span className="font-medium">
+                  {isIncrease ? "Total due today" : "Credit to account"}
+                </span>
+                <span
+                  className={`font-semibold text-lg ${isDecrease ? "text-green-600" : ""}`}
+                >
+                  {isIncrease
+                    ? `$${preview.totalDue.toFixed(2)}`
+                    : `+$${preview.proratedCredit.toFixed(2)}`}
+                </span>
+              </div>
+              {preview.paymentMethod && isIncrease && (
+                <div className="flex justify-between text-sm text-muted-foreground">
+                  <span>Payment method</span>
+                  <span>{preview.paymentMethod}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-sm text-muted-foreground">
+                <span>
+                  Next invoice
+                  {formatUnixDate(preview.currentPeriodEnd) &&
+                    ` (${formatUnixDate(preview.currentPeriodEnd)})`}
+                </span>
+                <span>${preview.nextInvoiceAmount.toFixed(2)}</span>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Error Message */}
+          {error && (
+            <div className="p-3 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-md">
+              <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={confirming}
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={handleConfirm}
+            disabled={
+              confirming || loadingPreview || !preview || seatsDelta === 0
+            }
+          >
+            {confirming ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                Processing...
+              </>
+            ) : (
+              getButtonText()
+            )}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
