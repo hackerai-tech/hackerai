@@ -59,12 +59,12 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
     return date.toLocaleString();
   };
 
-  const renderPart = (part: MessagePart, idx: number) => {
+  const renderPart = (part: MessagePart, idx: number, isUser: boolean) => {
     // Text content
     if (part.type === "text" && part.text) {
       return (
         <div key={idx}>
-          <MemoizedMarkdown content={part.text} />
+          {isUser ? part.text : <MemoizedMarkdown content={part.text} />}
         </div>
       );
     }
@@ -396,10 +396,10 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
                   {/* Message Parts */}
                   {isUser ? (
                     <div className="whitespace-pre-wrap">
-                      {otherParts.map((part, idx) => renderPart(part, idx))}
+                      {otherParts.map((part, idx) => renderPart(part, idx, isUser))}
                     </div>
                   ) : (
-                    otherParts.map((part, idx) => renderPart(part, idx))
+                    otherParts.map((part, idx) => renderPart(part, idx, isUser))
                   )}
                 </div>
               )}
