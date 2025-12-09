@@ -53,6 +53,7 @@ import {
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -375,6 +376,11 @@ export const createChatHandler = () => {
                     : { sort: "latency" }),
                 },
               },
+              google: {
+                thinkingConfig: {
+                  thinkingBudget: 0, // Disables thinking
+                },
+              } satisfies GoogleGenerativeAIProviderOptions,
             },
             experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),

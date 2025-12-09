@@ -396,7 +396,9 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
                   {/* Message Parts */}
                   {isUser ? (
                     <div className="whitespace-pre-wrap">
-                      {otherParts.map((part, idx) => renderPart(part, idx, isUser))}
+                      {otherParts.map((part, idx) =>
+                        renderPart(part, idx, isUser),
+                      )}
                     </div>
                   ) : (
                     otherParts.map((part, idx) => renderPart(part, idx, isUser))

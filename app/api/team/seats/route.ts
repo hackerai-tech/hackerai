@@ -6,7 +6,9 @@ import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 
 const MAX_SEATS = 999;
 
-function validateQuantity(quantity: unknown): { valid: true; value: number } | { valid: false; error: string } {
+function validateQuantity(
+  quantity: unknown,
+): { valid: true; value: number } | { valid: false; error: string } {
   if (
     !quantity ||
     typeof quantity !== "number" ||
@@ -14,7 +16,10 @@ function validateQuantity(quantity: unknown): { valid: true; value: number } | {
     !Number.isInteger(quantity) ||
     quantity < 2
   ) {
-    return { valid: false, error: "Quantity must be a finite integer of at least 2" };
+    return {
+      valid: false,
+      error: "Quantity must be a finite integer of at least 2",
+    };
   }
   if (quantity > MAX_SEATS) {
     return { valid: false, error: `Maximum ${MAX_SEATS} seats allowed` };
@@ -516,7 +521,9 @@ export const PATCH = async (req: NextRequest) => {
             : "Failed to reduce seats";
 
         return NextResponse.json(
-          { error: `Failed to reduce seats: ${errorMessage}. Please try again.` },
+          {
+            error: `Failed to reduce seats: ${errorMessage}. Please try again.`,
+          },
           { status: 500 },
         );
       }
