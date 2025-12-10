@@ -58,7 +58,7 @@ export class CrossTabMutex {
             this.log("We already hold the lock");
             return true;
           }
-          this.log(`Lock held by ${lock.tabId.slice(0, 8)} (${age}ms old)`);
+          // this.log(`Lock held by ${lock.tabId.slice(0, 8)} (${age}ms old)`);
           return false;
         }
         this.log(`Stale lock from ${lock.tabId.slice(0, 8)}, taking over`);

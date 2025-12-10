@@ -63,7 +63,9 @@ export const FEATURE_ROLLOUTS = {
 /**
  * Check if cross-tab token sharing is enabled for a user.
  */
-export function isCrossTabTokenSharingEnabled(userId: string | undefined): boolean {
+export function isCrossTabTokenSharingEnabled(
+  userId: string | undefined,
+): boolean {
   if (!userId) return false;
 
   const enabled = isFeatureEnabled(
