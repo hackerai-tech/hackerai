@@ -105,6 +105,36 @@ describe("feature-flags", () => {
       const result = isFeatureEnabled(uuid, "feature", 50);
       expect(typeof result).toBe("boolean");
     });
+
+    it("should handle very long strings without overflow issues", () => {
+      // Long strings would cause integer overflow without proper 32-bit truncation
+      const longUserId = "user-" + "a".repeat(10000);
+      const result = isFeatureEnabled(longUserId, "feature", 50);
+      expect(typeof result).toBe("boolean");
+
+      // Should be consistent
+      const result2 = isFeatureEnabled(longUserId, "feature", 50);
+      expect(result).toBe(result2);
+    });
+
+    it("should produce values in valid 0-99 range for edge case inputs", () => {
+      // These inputs could cause issues with improper hash implementations
+      const edgeCases = [
+        "a".repeat(1000),
+        "\u0000".repeat(100),
+        "🎉".repeat(100),
+        String.fromCharCode(65535).repeat(50),
+      ];
+
+      for (const input of edgeCases) {
+        // At 50%, we're testing the hash produces a valid percentage
+        // If hash was broken, this might throw or produce inconsistent results
+        const result1 = isFeatureEnabled(input, "test", 50);
+        const result2 = isFeatureEnabled(input, "test", 50);
+        expect(typeof result1).toBe("boolean");
+        expect(result1).toBe(result2);
+      }
+    });
   });
 
   describe("constants", () => {

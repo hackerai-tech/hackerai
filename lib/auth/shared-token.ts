@@ -13,6 +13,15 @@ export type SharedToken = {
   refreshedAt: number;
 };
 
+function isValidSharedToken(parsed: unknown): parsed is SharedToken {
+  return (
+    typeof parsed === "object" &&
+    parsed !== null &&
+    typeof (parsed as SharedToken).token === "string" &&
+    typeof (parsed as SharedToken).refreshedAt === "number"
+  );
+}
+
 export function getSharedToken(): SharedToken | null {
   if (typeof localStorage === "undefined") {
     return null;
@@ -21,7 +30,11 @@ export function getSharedToken(): SharedToken | null {
   try {
     const data = localStorage.getItem(SHARED_TOKEN_KEY);
     if (!data) return null;
-    return JSON.parse(data) as SharedToken;
+    const parsed: unknown = JSON.parse(data);
+    if (isValidSharedToken(parsed)) {
+      return parsed;
+    }
+    return null;
   } catch {
     return null;
   }
@@ -48,8 +61,11 @@ export function clearExpiredSharedToken(): void {
   try {
     const data = localStorage.getItem(SHARED_TOKEN_KEY);
     if (data) {
-      const parsed = JSON.parse(data) as SharedToken;
-      if (Date.now() - parsed.refreshedAt >= TOKEN_FRESHNESS_MS) {
+      const parsed: unknown = JSON.parse(data);
+      if (
+        isValidSharedToken(parsed) &&
+        Date.now() - parsed.refreshedAt >= TOKEN_FRESHNESS_MS
+      ) {
         localStorage.removeItem(SHARED_TOKEN_KEY);
       }
     }

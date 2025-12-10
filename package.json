@@ -79,7 +79,6 @@
     "convex": "^1.29.2",
     "date-fns": "^4.1.0",
     "e2b": "^2.8.4",
-    "flags": "^4.0.2",
     "gpt-tokenizer": "^3.4.0",
     "isbinaryfile": "^6.0.0",
     "jszip": "^3.10.1",
