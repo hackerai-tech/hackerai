@@ -10,7 +10,7 @@ import {
   UserPlus,
   Users,
   MoreHorizontal,
-  ChevronDown,
+  Settings,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -19,7 +19,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { TeamDialogs } from "./TeamDialogs";
+import { TeamDialogs, ManageSeatsDialog } from "./TeamDialogs";
 import { TeamMembersList } from "./TeamMembersList";
 import { clientLogout } from "@/lib/utils/logout";
 
@@ -68,9 +68,7 @@ const TeamTab = () => {
   const [activeTab, setActiveTab] = useState<"all" | "pending">("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [showInviteDialog, setShowInviteDialog] = useState(false);
-  const [showSeatDialog, setShowSeatDialog] = useState(false);
-  const [newSeats, setNewSeats] = useState(0);
-  const [updatingSeats, setUpdatingSeats] = useState(false);
+  const [showManageSeatsDialog, setShowManageSeatsDialog] = useState(false);
   const [showLeaveDialog, setShowLeaveDialog] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const hasFetchedRef = React.useRef(false);
@@ -226,35 +224,6 @@ const TeamTab = () => {
     }
   };
 
-  const handleUpdateSeats = async () => {
-    try {
-      setUpdatingSeats(true);
-      const response = await fetch("/api/team/seats", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ quantity: newSeats }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || "Failed to update seats");
-      }
-
-      toast.success(`Seats reduced to ${newSeats} successfully!`);
-      setShowSeatDialog(false);
-      fetchMembers();
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to update seats",
-      );
-    } finally {
-      setUpdatingSeats(false);
-    }
-  };
-
   const handleLeaveTeam = async () => {
     try {
       setLeaving(true);
@@ -390,20 +359,10 @@ const TeamTab = () => {
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
-                        disabled={actualAvailableSeats === 0}
-                        onClick={() => {
-                          if (actualAvailableSeats === 0) {
-                            toast.error(
-                              "Cannot remove seats while all seats are in use. Please remove a member first.",
-                            );
-                            return;
-                          }
-                          setNewSeats(teamInfo?.totalSeats || 0);
-                          setShowSeatDialog(true);
-                        }}
+                        onClick={() => setShowManageSeatsDialog(true)}
                       >
-                        <ChevronDown className="h-4 w-4 mr-2" />
-                        Remove seats
+                        <Settings className="h-4 w-4 mr-2" />
+                        Manage seats
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -463,18 +422,21 @@ const TeamTab = () => {
         setInviteToRevoke={setInviteToRevoke}
         revokingInvite={revokingInvite}
         handleRevokeInvite={handleRevokeInvite}
-        showSeatDialog={showSeatDialog}
-        setShowSeatDialog={setShowSeatDialog}
-        currentSeats={teamInfo?.totalSeats || 0}
-        newSeats={newSeats}
-        setNewSeats={setNewSeats}
-        updatingSeats={updatingSeats}
-        handleUpdateSeats={handleUpdateSeats}
-        totalUsedSeats={totalUsedSeats}
         showLeaveDialog={showLeaveDialog}
         setShowLeaveDialog={setShowLeaveDialog}
         leaving={leaving}
         handleLeaveTeam={handleLeaveTeam}
+      />
+
+      <ManageSeatsDialog
+        open={showManageSeatsDialog}
+        onOpenChange={setShowManageSeatsDialog}
+        currentSeats={teamInfo?.totalSeats || 0}
+        totalUsedSeats={totalUsedSeats}
+        onSuccess={() => {
+          toast.success("Seats updated successfully!");
+          fetchMembers();
+        }}
       />
     </div>
   );
