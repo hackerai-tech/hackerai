@@ -38,6 +38,7 @@ describe("useAuthFromAuthKit", () => {
         refresh: mockRefresh,
       }),
       mutex: mockMutex,
+      isCrossTabEnabled: () => true, // Enable feature flag by default in tests
     };
 
     jest.useFakeTimers();
@@ -417,7 +418,7 @@ describe("useAuthFromAuthKit", () => {
   });
 
   describe("useSharedTokenCleanup", () => {
-    it("should set up interval to clear expired tokens", () => {
+    it("should set up interval to clear expired tokens when feature enabled", () => {
       // Set an expired token
       mockStorage[sharedToken.SHARED_TOKEN_KEY] = JSON.stringify({
         token: "expired-token",
@@ -454,6 +455,99 @@ describe("useAuthFromAuthKit", () => {
 
       // Token should still exist because interval was cleared
       expect(mockStorage[sharedToken.SHARED_TOKEN_KEY]).toBeDefined();
+    });
+
+    it("should NOT set up interval when feature disabled", () => {
+      mockDeps.isCrossTabEnabled = () => false;
+
+      // Set an expired token
+      mockStorage[sharedToken.SHARED_TOKEN_KEY] = JSON.stringify({
+        token: "expired-token",
+        refreshedAt: Date.now() - sharedToken.TOKEN_FRESHNESS_MS - 1000,
+      });
+
+      renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      act(() => {
+        jest.advanceTimersByTime(sharedToken.TOKEN_FRESHNESS_MS * 3);
+      });
+
+      // Token should still exist because cleanup is disabled
+      expect(mockStorage[sharedToken.SHARED_TOKEN_KEY]).toBeDefined();
+    });
+  });
+
+  describe("feature flag - legacy behavior when disabled", () => {
+    beforeEach(() => {
+      mockDeps.isCrossTabEnabled = () => false;
+    });
+
+    it("should use direct refresh without cross-tab coordination", async () => {
+      mockRefresh.mockResolvedValue("direct-refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      expect(token).toBe("direct-refreshed-token");
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("should NOT check shared token storage", async () => {
+      // Put a fresh token in storage
+      mockStorage[sharedToken.SHARED_TOKEN_KEY] = JSON.stringify({
+        token: "shared-token-should-be-ignored",
+        refreshedAt: Date.now() - 1000,
+      });
+
+      mockRefresh.mockResolvedValue("direct-refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      // Should call refresh directly, ignoring the shared token
+      expect(token).toBe("direct-refreshed-token");
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("should NOT store refreshed token in shared storage", async () => {
+      mockRefresh.mockResolvedValue("direct-refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      // Shared storage should remain empty
+      expect(mockStorage[sharedToken.SHARED_TOKEN_KEY]).toBeUndefined();
+    });
+
+    it("should NOT use mutex for coordination", async () => {
+      // Another tab holds the lock
+      mockStorage["test-token-refresh"] = JSON.stringify({
+        tabId: "other-tab-id",
+        timestamp: Date.now(),
+      });
+
+      mockRefresh.mockResolvedValue("direct-refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      // Should return immediately without waiting for lock
+      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      expect(token).toBe("direct-refreshed-token");
+      expect(mockRefresh).toHaveBeenCalledTimes(1);
+    });
+
+    it("should return null when refresh returns undefined", async () => {
+      mockRefresh.mockResolvedValue(undefined);
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      expect(token).toBeNull();
     });
   });
 });
