@@ -157,6 +157,16 @@ export const createChatHandler = () => {
           subscription,
         });
 
+      // Validate messages before proceeding to AI invocation
+      if (!processedMessages || processedMessages.length === 0) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          regenerate
+            ? "Cannot regenerate: No message history found. Please refresh the page and try again."
+            : "Unable to process your request. Your message may be too large or the conversation history is empty.",
+        );
+      }
+
       const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
       const posthog = PostHogClient();
