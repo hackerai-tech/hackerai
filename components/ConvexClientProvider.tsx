@@ -1,13 +1,10 @@
 "use client";
 
-import { ReactNode, useCallback, useState, useRef, useEffect } from "react";
+import { ReactNode, useState } from "react";
 import { ConvexReactClient } from "convex/react";
 import { ConvexProviderWithAuth } from "convex/react";
-import {
-  AuthKitProvider,
-  useAuth,
-  useAccessToken,
-} from "@workos-inc/authkit-nextjs/components";
+import { AuthKitProvider } from "@workos-inc/authkit-nextjs/components";
+import { useAuthFromAuthKit } from "@/lib/auth/use-auth-from-authkit";
 
 const noop = () => {};
 
@@ -26,46 +23,4 @@ export function ConvexClientProvider({ children }: { children: ReactNode }) {
       </ConvexProviderWithAuth>
     </AuthKitProvider>
   );
-}
-
-function useAuthFromAuthKit() {
-  const { user, loading: isLoading } = useAuth();
-  const { getAccessToken, accessToken, refresh } = useAccessToken();
-  const accessTokenRef = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    accessTokenRef.current = accessToken;
-  }, [accessToken]);
-
-  const isAuthenticated = !!user;
-
-  const fetchAccessToken = useCallback(
-    async ({
-      forceRefreshToken,
-    }: { forceRefreshToken?: boolean } = {}): Promise<string | null> => {
-      if (!user) {
-        return null;
-      }
-
-      try {
-        // If Convex requests a forced refresh (e.g., token was rejected by server),
-        // always get a fresh token. Otherwise, return cached token if still valid.
-        return forceRefreshToken
-          ? ((await refresh()) ?? null)
-          : ((await getAccessToken()) ?? null);
-      } catch {
-        // On network errors during laptop wake, fall back to cached token.
-        // Even if expired, Convex will treat it like null and clear auth.
-        // AuthKit's tokenStore schedules automatic retries in the background.
-        console.log("[Convex Auth] Using cached token during network issues");
-        return accessTokenRef.current ?? null;
-      }
-    },
-    [user, getAccessToken, refresh],
-  );
-
-  return {
-    isLoading,
-    isAuthenticated,
-    fetchAccessToken,
-  };
 }
