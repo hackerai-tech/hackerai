@@ -18,6 +18,7 @@ import type {
 } from "../types/file";
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./chats";
+import { getFileLimit } from "./fileStorage";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "../lib/token-utils";
 
@@ -524,24 +525,8 @@ export const saveFile = action({
     const shouldSkipTokenValidation =
       args.skipTokenValidation || args.mode === "agent";
 
-    // Check file limit (Pro: 300, Team: 500, Ultra: 1000, Free: 0)
-    let fileLimit = 0;
-    if (
-      entitlements.includes("ultra-plan") ||
-      entitlements.includes("ultra-monthly-plan") ||
-      entitlements.includes("ultra-yearly-plan")
-    ) {
-      fileLimit = 1000;
-    } else if (entitlements.includes("team-plan")) {
-      fileLimit = 500;
-    } else if (
-      entitlements.includes("pro-plan") ||
-      entitlements.includes("pro-monthly-plan") ||
-      entitlements.includes("pro-yearly-plan")
-    ) {
-      fileLimit = 300;
-    }
-
+    // Check file limit
+    const fileLimit = getFileLimit(entitlements);
     if (fileLimit === 0) {
       throw new ConvexError({
         code: "PAID_PLAN_REQUIRED",

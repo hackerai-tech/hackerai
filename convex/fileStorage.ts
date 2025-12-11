@@ -84,7 +84,7 @@ export const countUserFiles = internalQuery({
  * Determine file limit based on user entitlements
  * Pro: 300, Team: 500, Ultra: 1000, Free: 0
  */
-const getFileLimit = (entitlements: Array<string>): number => {
+export const getFileLimit = (entitlements: Array<string>): number => {
   if (
     entitlements.includes("ultra-plan") ||
     entitlements.includes("ultra-monthly-plan") ||

@@ -14,6 +14,16 @@ jest.mock("../chats", () => ({
   validateServiceKey: jest.fn(),
 }));
 
+// Mock fileStorage module to avoid aggregate import issues
+jest.mock("../fileStorage", () => ({
+  getFileLimit: jest.fn((entitlements: string[]) => {
+    if (entitlements.includes("ultra-plan")) return 1000;
+    if (entitlements.includes("team-plan")) return 500;
+    if (entitlements.includes("pro-plan")) return 300;
+    return 0;
+  }),
+}));
+
 describe("s3Actions", () => {
   beforeEach(async () => {
     // Reset mocks
@@ -46,14 +56,16 @@ describe("s3Actions", () => {
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
 
-      // Create mock context
+      // Create mock context with entitlements for file limit check
       const mockCtx = {
         auth: {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
+        runQuery: jest.fn().mockResolvedValue(0), // Current file count
       } as any;
 
       const result = await generateS3UploadUrlAction.handler(mockCtx, {
@@ -100,8 +112,10 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
+        runQuery: jest.fn().mockResolvedValue(0),
       } as any;
 
       await expect(
@@ -121,8 +135,10 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
+        runQuery: jest.fn().mockResolvedValue(0),
       } as any;
 
       await expect(
@@ -142,8 +158,10 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
+        runQuery: jest.fn().mockResolvedValue(0),
       } as any;
 
       await expect(
@@ -171,8 +189,10 @@ describe("s3Actions", () => {
           getUserIdentity: jest.fn().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
+            entitlements: ["pro-plan"],
           }),
         },
+        runQuery: jest.fn().mockResolvedValue(0),
       } as any;
 
       await expect(
@@ -204,14 +224,16 @@ describe("s3Actions", () => {
           s3Key: `users/user123/123-uuid-${testCase.fileName}`,
         });
 
-        // Create mock context
+        // Create mock context with entitlements
         const mockCtx = {
           auth: {
             getUserIdentity: jest.fn().mockResolvedValue({
               subject: "user123",
               email: "test@example.com",
+              entitlements: ["pro-plan"],
             }),
           },
+          runQuery: jest.fn().mockResolvedValue(0),
         } as any;
 
         await generateS3UploadUrlAction.handler(mockCtx, testCase);
@@ -222,6 +244,50 @@ describe("s3Actions", () => {
           "user123",
         );
       }
+    });
+
+    it("should throw error for free user (no entitlements)", async () => {
+      const { generateS3UploadUrlAction } = await import("../s3Actions");
+
+      const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({
+            subject: "user123",
+            email: "test@example.com",
+            entitlements: [],
+          }),
+        },
+        runQuery: jest.fn().mockResolvedValue(0),
+      } as any;
+
+      await expect(
+        generateS3UploadUrlAction.handler(mockCtx, {
+          fileName: "test.pdf",
+          contentType: "application/pdf",
+        }),
+      ).rejects.toThrow("Paid plan required");
+    });
+
+    it("should throw error when file limit exceeded", async () => {
+      const { generateS3UploadUrlAction } = await import("../s3Actions");
+
+      const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({
+            subject: "user123",
+            email: "test@example.com",
+            entitlements: ["pro-plan"],
+          }),
+        },
+        runQuery: jest.fn().mockResolvedValue(300), // At limit for pro plan
+      } as any;
+
+      await expect(
+        generateS3UploadUrlAction.handler(mockCtx, {
+          fileName: "test.pdf",
+          contentType: "application/pdf",
+        }),
+      ).rejects.toThrow("Upload limit exceeded");
     });
   });
 
