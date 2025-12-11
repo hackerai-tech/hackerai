@@ -24,6 +24,14 @@ jest.mock("../_generated/api", () => ({
   },
 }));
 
+const mockFileCountAggregate = {
+  deleteIfExists: jest.fn().mockResolvedValue(undefined),
+};
+
+jest.mock("../fileAggregate", () => ({
+  fileCountAggregate: mockFileCountAggregate,
+}));
+
 describe("userDeletion", () => {
   beforeEach(() => {
     jest.clearAllMocks();

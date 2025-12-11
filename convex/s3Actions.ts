@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./chats";
+import { getFileLimit } from "./fileStorage";
 
 /**
  * Generate presigned S3 upload URL for authenticated users
@@ -42,8 +43,30 @@ export const generateS3UploadUrlAction = action({
       throw new Error("Invalid contentType: contentType cannot be empty");
     }
 
-    // Get user ID from identity
+    // Get user ID and entitlements from identity
     const userId = identity.subject;
+    const entitlements = Array.isArray(identity.entitlements)
+      ? identity.entitlements.filter(
+          (e: unknown): e is string => typeof e === "string",
+        )
+      : [];
+
+    // Check file limit
+    const fileLimit = getFileLimit(entitlements);
+    if (fileLimit === 0) {
+      throw new Error("Paid plan required for file uploads");
+    }
+
+    const currentFileCount = await ctx.runQuery(
+      internal.fileStorage.countUserFiles,
+      { userId },
+    );
+
+    if (currentFileCount >= fileLimit) {
+      throw new Error(
+        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
+      );
+    }
 
     try {
       // Generate presigned upload URL with user-scoped S3 key

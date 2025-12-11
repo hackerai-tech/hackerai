@@ -2,6 +2,7 @@ import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
+import { fileCountAggregate } from "./fileAggregate";
 
 export function validateServiceKey(serviceKey: string): void {
   if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -560,6 +561,8 @@ export const deleteChat = mutation({
                   if (file.storage_id) {
                     await ctx.storage.delete(file.storage_id);
                   }
+                  // Delete from aggregate
+                  await fileCountAggregate.deleteIfExists(ctx, file);
                   await ctx.db.delete(file._id);
                 }
               } catch (error) {
@@ -753,6 +756,8 @@ export const deleteAllChats = mutation({
                     if (file.storage_id) {
                       await ctx.storage.delete(file.storage_id);
                     }
+                    // Delete from aggregate
+                    await fileCountAggregate.deleteIfExists(ctx, file);
                     await ctx.db.delete(file._id);
                   }
                 } catch (error) {

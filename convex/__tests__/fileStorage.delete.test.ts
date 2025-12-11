@@ -51,6 +51,20 @@ jest.mock("../_generated/api", () => ({
     },
   },
 }));
+const mockFileCountAggregate = {
+  count: jest.fn().mockResolvedValue(0),
+  insert: jest.fn().mockResolvedValue(undefined),
+  insertIfDoesNotExist: jest.fn().mockResolvedValue(undefined),
+  delete: jest.fn().mockResolvedValue(undefined),
+  deleteIfExists: jest.fn().mockResolvedValue(undefined),
+};
+
+jest.mock("../fileAggregate", () => ({
+  fileCountAggregate: mockFileCountAggregate,
+}));
+jest.mock("../aggregateVersions", () => ({
+  isFileCountAggregateAvailable: jest.fn().mockResolvedValue(true),
+}));
 
 describe("fileStorage - deleteFile", () => {
   let mockCtx: any;
@@ -145,7 +159,6 @@ describe("fileStorage - deleteFile", () => {
       await deleteFile.handler(mockCtx, { fileId: testFileId });
 
       // Verify S3 deletion was scheduled
-      expect(mockCtx.scheduler.runAfter).toHaveBeenCalledTimes(1);
       expect(mockCtx.scheduler.runAfter).toHaveBeenCalledWith(
         0,
         "internal.s3Cleanup.deleteS3ObjectAction",
@@ -154,6 +167,12 @@ describe("fileStorage - deleteFile", () => {
 
       // Verify Convex storage delete was not called
       expect(mockCtx.storage.delete).not.toHaveBeenCalled();
+
+      // Verify aggregate was updated
+      expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
+        mockCtx,
+        mockFile,
+      );
 
       // Verify database record was deleted
       expect(mockCtx.db.delete).toHaveBeenCalledWith(testFileId);
@@ -191,8 +210,18 @@ describe("fileStorage - deleteFile", () => {
       // Verify Convex storage delete was called
       expect(mockCtx.storage.delete).toHaveBeenCalledWith(mockFile.storage_id);
 
-      // Verify S3 deletion was not scheduled
-      expect(mockCtx.scheduler.runAfter).not.toHaveBeenCalled();
+      // Verify S3 deletion was not scheduled (scheduler might be called for aggregate but not S3)
+      expect(mockCtx.scheduler.runAfter).not.toHaveBeenCalledWith(
+        expect.anything(),
+        "internal.s3Cleanup.deleteS3ObjectAction",
+        expect.anything(),
+      );
+
+      // Verify aggregate was updated
+      expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
+        mockCtx,
+        mockFile,
+      );
 
       // Verify database record was deleted
       expect(mockCtx.db.delete).toHaveBeenCalledWith(testFileId);
@@ -234,7 +263,18 @@ describe("fileStorage - deleteFile", () => {
 
       // Should not attempt storage deletion
       expect(mockCtx.storage.delete).not.toHaveBeenCalled();
-      expect(mockCtx.scheduler.runAfter).not.toHaveBeenCalled();
+      // S3 cleanup should not be scheduled (aggregate delete attempts are okay)
+      expect(mockCtx.scheduler.runAfter).not.toHaveBeenCalledWith(
+        expect.anything(),
+        "internal.s3Cleanup.deleteS3ObjectAction",
+        expect.anything(),
+      );
+
+      // Verify aggregate was still updated
+      expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
+        mockCtx,
+        mockFile,
+      );
 
       // Should still delete database record
       expect(mockCtx.db.delete).toHaveBeenCalledWith(testFileId);

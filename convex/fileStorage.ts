@@ -8,6 +8,8 @@ import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./chats";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
+import { fileCountAggregate } from "./fileAggregate";
+import { isFileCountAggregateAvailable } from "./aggregateVersions";
 
 /**
  * Get download URL for a file by storageId (on-demand for non-image files)
@@ -54,7 +56,10 @@ export const getFileDownloadUrl = query({
 });
 
 /**
- * Internal query to count files for a user
+ * Internal query to count files for a user.
+ *
+ * Uses O(log(n)) aggregate if user has been migrated, otherwise falls back to O(n) DB count.
+ * Migration happens at login via ensureUserAggregatesMigrated.
  */
 export const countUserFiles = internalQuery({
   args: {
@@ -62,11 +67,15 @@ export const countUserFiles = internalQuery({
   },
   returns: v.number(),
   handler: async (ctx, args) => {
+    if (await isFileCountAggregateAvailable(ctx, args.userId)) {
+      return await fileCountAggregate.count(ctx, { namespace: args.userId });
+    }
+
+    // Fallback to DB count for non-migrated users
     const files = await ctx.db
       .query("files")
       .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
       .collect();
-
     return files.length;
   },
 });
@@ -75,7 +84,7 @@ export const countUserFiles = internalQuery({
  * Determine file limit based on user entitlements
  * Pro: 300, Team: 500, Ultra: 1000, Free: 0
  */
-const getFileLimit = (entitlements: Array<string>): number => {
+export const getFileLimit = (entitlements: Array<string>): number => {
   if (
     entitlements.includes("ultra-plan") ||
     entitlements.includes("ultra-monthly-plan") ||
@@ -240,6 +249,9 @@ export const deleteFile = mutation({
         `File ${args.fileId} has neither s3_key nor storage_id, skipping storage deletion`,
       );
     }
+
+    // Delete from aggregate (uses deleteIfExists for idempotency with pre-backfill data)
+    await fileCountAggregate.deleteIfExists(ctx, file);
 
     // Delete database record
     await ctx.db.delete(args.fileId);
@@ -416,6 +428,9 @@ export const purgeExpiredUnattachedFiles = internalMutation({
         console.error(`Failed to delete storage for file ${file._id}:`, e);
       }
 
+      // Delete from aggregate (uses deleteIfExists for idempotency with pre-backfill data)
+      await fileCountAggregate.deleteIfExists(ctx, file);
+
       // Delete database record regardless of storage deletion result
       await ctx.db.delete(file._id);
       deletedCount++;
@@ -483,6 +498,14 @@ export const saveFileToDb = internalMutation({
       content: args.content,
       is_attached: false,
     });
+
+    // Insert into aggregate for O(log(n)) counting
+    // Uses insertIfDoesNotExist for idempotency in case of race with backfill
+    const doc = await ctx.db.get(fileId);
+    if (doc) {
+      await fileCountAggregate.insertIfDoesNotExist(ctx, doc);
+    }
+
     return fileId;
   },
 });

@@ -198,4 +198,13 @@ export default defineSchema({
     .index("by_command_id", ["command_id"])
     .index("by_user_id", ["user_id"])
     .index("by_completed_at", ["completed_at"]),
+
+  // Tracks aggregate migration state per user
+  // Version 0 (default/missing) = no aggregates migrated
+  // Version 1 = file count aggregate available
+  user_aggregate_state: defineTable({
+    user_id: v.string(),
+    version: v.number(),
+    updated_at: v.number(),
+  }).index("by_user_id", ["user_id"]),
 });
