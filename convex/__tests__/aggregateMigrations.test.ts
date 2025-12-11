@@ -7,7 +7,6 @@ const mockFileCountAggregate = {
 
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config) => config),
-  internalMutation: jest.fn((config) => config),
   MutationCtx: {},
 }));
 jest.mock("convex/values", () => ({
@@ -43,7 +42,23 @@ describe("aggregateMigrations", () => {
     jest.clearAllMocks();
   });
 
-  describe("migrateUserAggregates", () => {
+  describe("ensureUserAggregatesMigrated", () => {
+    it("should throw error when user is not authenticated", async () => {
+      const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue(null),
+        },
+      };
+
+      const { ensureUserAggregatesMigrated } = await import(
+        "../aggregateMigrations"
+      );
+
+      await expect(
+        ensureUserAggregatesMigrated.handler(mockCtx, {}),
+      ).rejects.toThrow("User not authenticated");
+    });
+
     it("should migrate v0 user to v1 and backfill files", async () => {
       const mockFiles = [
         { _id: "file-1" as Id<"files">, user_id: testUserId },
@@ -58,6 +73,11 @@ describe("aggregateMigrations", () => {
       };
 
       const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
         db: {
           query: jest.fn().mockReturnValue(mockQueryBuilder),
           insert: jest.fn().mockResolvedValue(testStateId),
@@ -66,16 +86,12 @@ describe("aggregateMigrations", () => {
 
       mockFileCountAggregate.insertIfDoesNotExist.mockResolvedValue(undefined);
 
-      const { migrateUserAggregates } = await import("../aggregateMigrations");
-      const result = await migrateUserAggregates.handler(mockCtx, {
-        userId: testUserId,
-      });
+      const { ensureUserAggregatesMigrated } = await import(
+        "../aggregateMigrations"
+      );
+      const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
-      expect(result).toEqual({
-        previousVersion: 0,
-        newVersion: 1,
-        migrated: true,
-      });
+      expect(result).toEqual({ migrated: true });
       expect(mockFileCountAggregate.insertIfDoesNotExist).toHaveBeenCalledTimes(
         3,
       );
@@ -102,6 +118,11 @@ describe("aggregateMigrations", () => {
       };
 
       const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
         db: {
           query: jest.fn().mockReturnValue(mockQueryBuilder),
           insert: jest.fn(),
@@ -109,22 +130,18 @@ describe("aggregateMigrations", () => {
         },
       };
 
-      const { migrateUserAggregates } = await import("../aggregateMigrations");
-      const result = await migrateUserAggregates.handler(mockCtx, {
-        userId: testUserId,
-      });
+      const { ensureUserAggregatesMigrated } = await import(
+        "../aggregateMigrations"
+      );
+      const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
-      expect(result).toEqual({
-        previousVersion: 1,
-        newVersion: 1,
-        migrated: false,
-      });
+      expect(result).toEqual({ migrated: false });
       expect(mockFileCountAggregate.insertIfDoesNotExist).not.toHaveBeenCalled();
       expect(mockCtx.db.insert).not.toHaveBeenCalled();
       expect(mockCtx.db.patch).not.toHaveBeenCalled();
     });
 
-    it("should update existing state record when migrating", async () => {
+    it("should update existing state record when migrating from v0", async () => {
       const existingState = {
         _id: testStateId,
         user_id: testUserId,
@@ -139,18 +156,23 @@ describe("aggregateMigrations", () => {
       };
 
       const mockCtx = {
+        auth: {
+          getUserIdentity: jest.fn().mockResolvedValue({
+            subject: testUserId,
+          }),
+        },
         db: {
           query: jest.fn().mockReturnValue(mockQueryBuilder),
           patch: jest.fn().mockResolvedValue(undefined),
         },
       };
 
-      const { migrateUserAggregates } = await import("../aggregateMigrations");
-      const result = await migrateUserAggregates.handler(mockCtx, {
-        userId: testUserId,
-      });
+      const { ensureUserAggregatesMigrated } = await import(
+        "../aggregateMigrations"
+      );
+      const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
-      expect(result.migrated).toBe(true);
+      expect(result).toEqual({ migrated: true });
       expect(mockCtx.db.patch).toHaveBeenCalledWith(
         testStateId,
         expect.objectContaining({
@@ -160,52 +182,6 @@ describe("aggregateMigrations", () => {
     });
 
     it("should migrate user with no files", async () => {
-      const mockQueryBuilder = {
-        withIndex: jest.fn().mockReturnThis(),
-        unique: jest.fn().mockResolvedValue(null),
-        collect: jest.fn().mockResolvedValue([]),
-      };
-
-      const mockCtx = {
-        db: {
-          query: jest.fn().mockReturnValue(mockQueryBuilder),
-          insert: jest.fn().mockResolvedValue(testStateId),
-        },
-      };
-
-      const { migrateUserAggregates } = await import("../aggregateMigrations");
-      const result = await migrateUserAggregates.handler(mockCtx, {
-        userId: testUserId,
-      });
-
-      expect(result).toEqual({
-        previousVersion: 0,
-        newVersion: 1,
-        migrated: true,
-      });
-      expect(mockFileCountAggregate.insertIfDoesNotExist).not.toHaveBeenCalled();
-      expect(mockCtx.db.insert).toHaveBeenCalled();
-    });
-  });
-
-  describe("ensureUserAggregatesMigrated", () => {
-    it("should throw error when user is not authenticated", async () => {
-      const mockCtx = {
-        auth: {
-          getUserIdentity: jest.fn().mockResolvedValue(null),
-        },
-      };
-
-      const { ensureUserAggregatesMigrated } = await import(
-        "../aggregateMigrations"
-      );
-
-      await expect(
-        ensureUserAggregatesMigrated.handler(mockCtx, {}),
-      ).rejects.toThrow("User not authenticated");
-    });
-
-    it("should call runMigration with authenticated user subject", async () => {
       const mockQueryBuilder = {
         withIndex: jest.fn().mockReturnThis(),
         unique: jest.fn().mockResolvedValue(null),
@@ -230,38 +206,8 @@ describe("aggregateMigrations", () => {
       const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
       expect(result).toEqual({ migrated: true });
-    });
-
-    it("should return migrated: false when already migrated", async () => {
-      const existingState = {
-        _id: testStateId,
-        user_id: testUserId,
-        version: 1,
-        updated_at: Date.now(),
-      };
-
-      const mockQueryBuilder = {
-        withIndex: jest.fn().mockReturnThis(),
-        unique: jest.fn().mockResolvedValue(existingState),
-      };
-
-      const mockCtx = {
-        auth: {
-          getUserIdentity: jest.fn().mockResolvedValue({
-            subject: testUserId,
-          }),
-        },
-        db: {
-          query: jest.fn().mockReturnValue(mockQueryBuilder),
-        },
-      };
-
-      const { ensureUserAggregatesMigrated } = await import(
-        "../aggregateMigrations"
-      );
-      const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
-
-      expect(result).toEqual({ migrated: false });
+      expect(mockFileCountAggregate.insertIfDoesNotExist).not.toHaveBeenCalled();
+      expect(mockCtx.db.insert).toHaveBeenCalled();
     });
   });
 });

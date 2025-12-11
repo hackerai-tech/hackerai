@@ -1,5 +1,5 @@
 import { v, ConvexError } from "convex/values";
-import { internalMutation, mutation, MutationCtx } from "./_generated/server";
+import { mutation, MutationCtx } from "./_generated/server";
 import { fileCountAggregate } from "./fileAggregate";
 import { CURRENT_AGGREGATE_VERSION } from "./aggregateVersions";
 
@@ -73,28 +73,6 @@ async function migrateToV1(ctx: MutationCtx, userId: string): Promise<void> {
     await fileCountAggregate.insertIfDoesNotExist(ctx, file);
   }
 }
-
-/**
- * Internal mutation: Migrate a user's aggregates to the current version.
- *
- * This should be called during user login or session initialization.
- * It's idempotent - safe to call multiple times.
- *
- * Migration v0 -> v1: Backfill file count aggregate
- */
-export const migrateUserAggregates = internalMutation({
-  args: {
-    userId: v.string(),
-  },
-  returns: v.object({
-    previousVersion: v.number(),
-    newVersion: v.number(),
-    migrated: v.boolean(),
-  }),
-  handler: async (ctx, args) => {
-    return runMigration(ctx, args.userId);
-  },
-});
 
 /**
  * Public mutation to trigger aggregate migration for the authenticated user.

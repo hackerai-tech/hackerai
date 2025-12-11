@@ -59,7 +59,7 @@ export const getFileDownloadUrl = query({
  * Internal query to count files for a user.
  *
  * Uses O(log(n)) aggregate if user has been migrated, otherwise falls back to O(n) DB count.
- * Migration happens at login via migrateUserAggregates.
+ * Migration happens at login via ensureUserAggregatesMigrated.
  */
 export const countUserFiles = internalQuery({
   args: {
