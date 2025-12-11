@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
+import { fileCountAggregate } from "./fileAggregate";
 
 /**
  * Extract text content from message parts for search and display
@@ -516,6 +517,8 @@ export const deleteLastAssistantMessage = mutation({
                 } else if (file.storage_id) {
                   await ctx.storage.delete(file.storage_id);
                 }
+                // Delete from aggregate
+                await fileCountAggregate.deleteIfExists(ctx, file);
                 await ctx.db.delete(file._id);
               }
             } catch (error) {
@@ -1021,6 +1024,8 @@ export const regenerateWithNewContent = mutation({
                 } else if (file.storage_id) {
                   await ctx.storage.delete(file.storage_id);
                 }
+                // Delete from aggregate
+                await fileCountAggregate.deleteIfExists(ctx, file);
                 await ctx.db.delete(file._id);
               }
             } catch (error) {

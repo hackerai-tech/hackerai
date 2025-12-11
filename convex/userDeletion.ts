@@ -1,6 +1,7 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import { fileCountAggregate } from "./fileAggregate";
 
 /**
  * Delete all data for the authenticated user in correct dependency order.
@@ -121,6 +122,9 @@ export const deleteAllUserData = mutation({
                 );
               }
             }
+
+            // Delete from aggregate
+            await fileCountAggregate.deleteIfExists(ctx, file);
 
             // Delete database record
             await ctx.db.delete(file._id);
