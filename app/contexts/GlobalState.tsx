@@ -10,6 +10,8 @@ import React, {
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import type {
   ChatMode,
   SidebarContent,
@@ -314,6 +316,21 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       );
     }
   }, [user, entitlements]);
+
+  // Trigger aggregate migration for authenticated users (on-demand backfill)
+  const ensureAggregatesMigrated = useMutation(
+    api.aggregateMigrations.ensureUserAggregatesMigrated,
+  );
+  const hasMigrationRun = useRef(false);
+
+  useEffect(() => {
+    if (!user || hasMigrationRun.current) return;
+
+    hasMigrationRun.current = true;
+    ensureAggregatesMigrated().catch((error) => {
+      console.error("Failed to migrate user aggregates:", error);
+    });
+  }, [user, ensureAggregatesMigrated]);
 
   // Refresh entitlements only when explicitly requested via URL param
   useEffect(() => {
