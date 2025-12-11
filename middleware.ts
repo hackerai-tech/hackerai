@@ -1,6 +1,14 @@
 import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
 
+function getRedirectUri(): string | undefined {
+  if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}/callback`;
+  }
+  return undefined;
+}
+
 export default authkitMiddleware({
+  redirectUri: getRedirectUri(),
   eagerAuth: true,
   middlewareAuth: {
     enabled: true,
