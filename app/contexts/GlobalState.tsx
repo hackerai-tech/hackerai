@@ -322,8 +322,17 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     api.aggregateMigrations.ensureUserAggregatesMigrated,
   );
   const hasMigrationRun = useRef(false);
+  const previousUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    const currentUserId = user?.id ?? null;
+
+    // Reset migration flag if user changed (logout/login as different user)
+    if (previousUserIdRef.current !== currentUserId) {
+      hasMigrationRun.current = false;
+      previousUserIdRef.current = currentUserId;
+    }
+
     if (!user || hasMigrationRun.current) return;
 
     hasMigrationRun.current = true;
