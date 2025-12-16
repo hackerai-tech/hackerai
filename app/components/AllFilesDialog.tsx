@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { X, Download, Circle, CircleCheck, File } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -137,14 +137,15 @@ const AllFilesDialog = ({
   const [fileUrls, setFileUrls] = useState<Map<number, string>>(new Map());
   const [isLoadingUrls, setIsLoadingUrls] = useState(false);
 
-  // Reset URLs when dialog closes
-  useEffect(() => {
-    if (!open) {
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) {
       setFileUrls(new Map());
       setIsLoadingUrls(false);
+      setSelectionMode(false);
+      setSelectedFiles(new Set());
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+    onOpenChange(newOpen);
+  };
 
   // Batch fetch all URLs when dialog opens
   useEffect(() => {
@@ -217,15 +218,6 @@ const AllFilesDialog = ({
     };
   }, [open, files, getFileUrlAction, convex, fileUrlCache]);
 
-  // Reset selection when dialog closes
-  useEffect(() => {
-    if (!open) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setSelectionMode(false);
-
-      setSelectedFiles(new Set());
-    }
-  }, [open]);
 
   const handleEnterSelectionMode = () => {
     setSelectionMode(true);
@@ -340,7 +332,7 @@ const AllFilesDialog = ({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         className="bg-background rounded-[20px] border border-border fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 max-w-[95%] max-h-[95%] overflow-auto h-[680px] flex flex-col p-0"
         style={{ width: "600px" }}
@@ -388,7 +380,7 @@ const AllFilesDialog = ({
                 <Download className="size-5 text-muted-foreground" />
               </Button>
               <Button
-                onClick={() => onOpenChange(false)}
+                onClick={() => handleOpenChange(false)}
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"

@@ -287,9 +287,9 @@ export const createChatHandler = () => {
             // Refresh system prompt when memory updates occur, cache and reuse until next update
             prepareStep: async ({ steps, messages }) => {
               try {
-                // Run summarization check on every step (agent mode, non-temporary)
+                // Run summarization check on every step (non-temporary chats only)
                 // but only summarize once
-                if (mode === "agent" && !temporary && !hasSummarized) {
+                if (!temporary && !hasSummarized) {
                   const {
                     needsSummarization,
                     summarizedMessages,
@@ -300,6 +300,7 @@ export const createChatHandler = () => {
                     finalMessages,
                     subscription,
                     trackedProvider.languageModel("summarization-model"),
+                    mode,
                   );
 
                   if (needsSummarization && cutoffMessageId && summaryText) {

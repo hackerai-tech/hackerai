@@ -1037,11 +1037,12 @@ export const regenerateWithNewContent = mutation({
         await ctx.db.delete(msg._id);
       }
 
-      // Check if deleted messages invalidate the chat summary
+      // Check if deleted OR edited messages invalidate the chat summary
+      // Include the edited message ID since modifying the cutoff message also invalidates
       await checkAndInvalidateSummary(
         ctx,
         message.chat_id,
-        messages.map((m) => m.id),
+        [message.id, ...messages.map((m) => m.id)],
       );
 
       return null;
