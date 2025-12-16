@@ -38,7 +38,9 @@
     "e2b:build:dev": "npx tsx e2b/build.dev.ts",
     "e2b:build:prod": "npx tsx e2b/build.prod.ts",
     "local-sandbox": "npx tsx packages/local/src/index.ts",
-    "local-sandbox:build": "cd packages/local && pnpm build"
+    "local-sandbox:build": "cd packages/local && pnpm build",
+    "desktop:dev": "cd packages/desktop && pnpm dev",
+    "desktop:build": "cd packages/desktop && pnpm build"
   },
   "dependencies": {
     "@ai-sdk/google": "^2.0.45",

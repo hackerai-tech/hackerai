@@ -1,0 +1,90 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "HackerAI",
+  "version": "0.1.0",
+  "identifier": "co.hackerai.desktop",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "https://hackerai.co",
+    "beforeBuildCommand": "",
+    "frontendDist": "../src"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "HackerAI",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "decorations": true,
+        "transparent": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' https://hackerai.co https://*.hackerai.co https://*.convex.cloud https://*.convex.dev https://auth.hackerai.co https://api.workos.com; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://hackerai.co https://*.hackerai.co https://*.convex.cloud; style-src 'self' 'unsafe-inline' https://hackerai.co https://*.hackerai.co; img-src 'self' data: https: blob:; font-src 'self' data: https:; connect-src 'self' https://hackerai.co https://*.hackerai.co https://*.convex.cloud wss://*.convex.cloud https://auth.hackerai.co https://api.workos.com https://*.posthog.com https://*.stripe.com; frame-src 'self' https://*.stripe.com; media-src 'self' blob:;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "externalBin": [],
+    "copyright": "Copyright 2024 HackerAI",
+    "category": "DeveloperTool",
+    "shortDescription": "AI-powered penetration testing assistant",
+    "longDescription": "HackerAI is an AI-powered penetration testing assistant that helps security professionals identify vulnerabilities.",
+    "macOS": {
+      "entitlements": null,
+      "exceptionDomain": "",
+      "frameworks": [],
+      "providerShortName": null,
+      "signingIdentity": null,
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "wix": null,
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "installMode": "currentUser"
+      }
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": []
+      }
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["hackerai"]
+      }
+    },
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://releases.hackerai.co/desktop/{{target}}/{{arch}}/{{current_version}}"
+      ],
+      "dialog": true,
+      "pubkey": ""
+    }
+  }
+}

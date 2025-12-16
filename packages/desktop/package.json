@@ -1,0 +1,24 @@
+{
+  "name": "@hackerai/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HackerAI Desktop Application",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-deep-link": "^2.2.0",
+    "@tauri-apps/plugin-os": "^2.2.0",
+    "@tauri-apps/plugin-process": "^2.2.0",
+    "@tauri-apps/plugin-shell": "^2.2.0",
+    "@tauri-apps/plugin-updater": "^2.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "sharp": "^0.34.5",
+    "typescript": "^5.0.0"
+  }
+}
