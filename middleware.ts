@@ -20,6 +20,7 @@ const baseMiddleware = authkitMiddleware({
       "/logout",
       "/api/clear-auth-cookies",
       "/callback",
+      "/auth-error",
       "/privacy-policy",
       "/terms-of-service",
       "/manifest.json",
@@ -54,11 +55,7 @@ export default async function middleware(
       return response;
     }
 
-    const originalPath = request.nextUrl.pathname;
     const accept = request.headers.get("accept") ?? "";
-
-    // Only browser navigations can follow cross-origin redirects
-    // Browser navigations have text/html in Accept header
     const isBrowserNavigation = accept.includes("text/html");
 
     // Non-browser requests: API, fetch, RSC, Server Actions - return 401

@@ -9,12 +9,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { AutoRetryButton } from "./auto-retry-button";
 
 type ErrorCode = "429" | "401" | "403" | "500" | "502" | "503" | "504";
 
 const ERROR_MESSAGES: Record<
   ErrorCode,
-  { title: string; description: string }
+  { title: string; description: string; autoRetry?: boolean }
 > = {
   "429": {
     title: "Too Many Requests",
@@ -33,7 +34,9 @@ const ERROR_MESSAGES: Record<
   },
   "500": {
     title: "Authentication Failed",
-    description: "Something went wrong during sign in. Please try again.",
+    description:
+      "Something went wrong during sign in. This can happen when multiple browser tabs try to authenticate at the same time.",
+    autoRetry: true,
   },
   "502": {
     title: "Service Unavailable",
@@ -54,7 +57,8 @@ const ERROR_MESSAGES: Record<
 
 const DEFAULT_ERROR = {
   title: "Authentication Error",
-  description: "An unexpected error occurred during sign in. Please try again.",
+  description:
+    "An unexpected error occurred during sign in. Please try again.",
 };
 
 type SearchParams = Promise<{ code?: string }>;
@@ -87,12 +91,16 @@ export default async function AuthErrorPage({
           )}
         </CardContent>
         <CardFooter className="flex flex-col gap-3 sm:flex-row w-full">
-          <Button asChild className="flex-1 min-w-0">
-            <a href="/login">
-              <RefreshCw className="h-4 w-4" />
-              Try Again
-            </a>
-          </Button>
+          {errorInfo.autoRetry ? (
+            <AutoRetryButton loginUrl="/login" />
+          ) : (
+            <Button asChild className="flex-1 min-w-0">
+              <a href="/login">
+                <RefreshCw className="h-4 w-4" />
+                Try Again
+              </a>
+            </Button>
+          )}
           <Button asChild variant="outline" className="flex-1 min-w-0">
             <Link href="/">
               <Home className="h-4 w-4" />
