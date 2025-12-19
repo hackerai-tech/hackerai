@@ -40,12 +40,19 @@ const FilePartRendererComponent = ({
   useEffect(() => {
     // Create stable identifier for this file
     const currentFileIdentifier = part.fileId || part.storageId || part.url;
+    const fileIdentifierChanged = prevFileIdentifierRef.current !== currentFileIdentifier;
 
     // Only reset state if the file identifier has actually changed (prevents image flicker during streaming)
-    if (prevFileIdentifierRef.current !== currentFileIdentifier) {
+    if (fileIdentifierChanged) {
       setFileUrl(null);
       setUrlError(null);
       prevFileIdentifierRef.current = currentFileIdentifier;
+    }
+
+    // Skip fetching if we already have a valid URL and the file hasn't changed
+    // This prevents unnecessary fetches during streaming that cause scroll glitches
+    if (!fileIdentifierChanged && fileUrl && !urlError) {
+      return;
     }
 
     async function fetchUrl() {
@@ -135,6 +142,8 @@ const FilePartRendererComponent = ({
     getFileUrlAction,
     convex,
     fileUrlCache,
+    fileUrl,
+    urlError,
   ]);
 
   const handleDownload = useCallback(async (url: string, fileName: string) => {
