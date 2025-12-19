@@ -1,5 +1,12 @@
 import Image from "next/image";
-import React, { useState, memo, useMemo, useCallback, useEffect } from "react";
+import React, {
+  useState,
+  memo,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+} from "react";
 import { useConvex, useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
@@ -26,11 +33,20 @@ const FilePartRendererComponent = ({
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [urlError, setUrlError] = useState<string | null>(null);
 
+  // Track the current file identifier to detect when it changes
+  const prevFileIdentifierRef = useRef<string | undefined>(undefined);
+
   // Fetch URL ONLY for images (inline display) - non-images are fetched lazily on click
   useEffect(() => {
-    // Reset state when file part identifiers change to avoid stale URLs
-    setFileUrl(null);
-    setUrlError(null);
+    // Create stable identifier for this file
+    const currentFileIdentifier = part.fileId || part.storageId || part.url;
+
+    // Only reset state if the file identifier has actually changed (prevents image flicker during streaming)
+    if (prevFileIdentifierRef.current !== currentFileIdentifier) {
+      setFileUrl(null);
+      setUrlError(null);
+      prevFileIdentifierRef.current = currentFileIdentifier;
+    }
 
     async function fetchUrl() {
       // Only fetch URLs eagerly for images (they display inline)
