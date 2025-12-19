@@ -9,7 +9,7 @@ import type { SubscriptionTier } from "@/types";
 const baseProviders = {
   "ask-model": openrouter("qwen/qwen3-coder:exacto"),
   "ask-model-free": openrouter("qwen/qwen3-coder"),
-  "ask-vision-model": openrouter("qwen/qwen3-vl-235b-a22b-instruct"),
+  "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter(
     "google/gemini-3-flash-preview",
   ),
