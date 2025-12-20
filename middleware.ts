@@ -66,7 +66,17 @@ export default async function middleware(request: NextRequest) {
     );
   }
 
-  return NextResponse.redirect(authorizationUrl!, { headers: responseHeaders });
+  if (!authorizationUrl) {
+    console.error("[Auth Middleware] authorizationUrl unavailable", {
+      pathname,
+      hasSession: !!session.user,
+    });
+    const errorUrl = new URL("/auth-error", request.url);
+    errorUrl.searchParams.set("code", "503");
+    return NextResponse.redirect(errorUrl, { headers: responseHeaders });
+  }
+
+  return NextResponse.redirect(authorizationUrl, { headers: responseHeaders });
 }
 
 function buildRequestHeaders(request: NextRequest, authkitHeaders: Headers): Headers {
