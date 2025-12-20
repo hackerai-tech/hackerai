@@ -1,5 +1,12 @@
 import Image from "next/image";
-import React, { useState, memo, useMemo, useCallback, useEffect } from "react";
+import React, {
+  useState,
+  memo,
+  useMemo,
+  useCallback,
+  useEffect,
+  useRef,
+} from "react";
 import { useConvex, useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
@@ -18,6 +25,11 @@ const FilePartRendererComponent = ({
   const convex = useConvex();
   const getFileUrlAction = useAction(api.s3Actions.getFileUrlAction);
   const fileUrlCache = useFileUrlCacheContext();
+  // Use ref to access cache without adding to useEffect dependencies
+  // This prevents re-renders from triggering URL refetches
+  const fileUrlCacheRef = useRef(fileUrlCache);
+  fileUrlCacheRef.current = fileUrlCache;
+
   const [selectedImage, setSelectedImage] = useState<{
     src: string;
     alt: string;
@@ -26,24 +38,45 @@ const FilePartRendererComponent = ({
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [urlError, setUrlError] = useState<string | null>(null);
 
+  // Track the last fetched identifiers to avoid unnecessary refetches
+  const lastFetchedRef = useRef<{
+    fileId?: string;
+    storageId?: string;
+    url?: string;
+  }>({});
+
   // Fetch URL ONLY for images (inline display) - non-images are fetched lazily on click
   useEffect(() => {
-    // Reset state when file part identifiers change to avoid stale URLs
-    setFileUrl(null);
-    setUrlError(null);
+    const isImage = part.mediaType?.startsWith("image/");
+    if (!isImage) {
+      return;
+    }
+
+    // Check if we already fetched for these same identifiers
+    const sameIdentifiers =
+      lastFetchedRef.current.fileId === part.fileId &&
+      lastFetchedRef.current.storageId === part.storageId &&
+      lastFetchedRef.current.url === part.url;
+
+    // If identifiers haven't changed and we have a URL, skip refetch
+    if (sameIdentifiers && fileUrl) {
+      return;
+    }
+
+    // Update tracking ref
+    lastFetchedRef.current = {
+      fileId: part.fileId,
+      storageId: part.storageId,
+      url: part.url,
+    };
 
     async function fetchUrl() {
-      // Only fetch URLs eagerly for images (they display inline)
-      // Non-images will be fetched lazily when user clicks download button
-      const isImage = part.mediaType?.startsWith("image/");
-      if (!isImage) {
-        return;
-      }
+      const cache = fileUrlCacheRef.current;
 
       // If we have fileId (for S3 files), check cache first
       if (part.fileId) {
-        if (fileUrlCache) {
-          const cachedUrl = fileUrlCache.getCachedUrl(part.fileId);
+        if (cache) {
+          const cachedUrl = cache.getCachedUrl(part.fileId);
           if (cachedUrl) {
             setFileUrl(cachedUrl);
             return;
@@ -51,13 +84,14 @@ const FilePartRendererComponent = ({
         }
 
         // Not in cache, fetch URL for image
+        // Don't reset to null - keep showing previous image while fetching
         setUrlError(null);
         try {
           const url = await getFileUrlAction({ fileId: part.fileId });
           setFileUrl(url);
           // Cache the fetched URL
-          if (fileUrlCache) {
-            fileUrlCache.setCachedUrl(part.fileId, url);
+          if (cache) {
+            cache.setCachedUrl(part.fileId, url);
           }
         } catch (error) {
           console.error("Failed to fetch file URL:", error);
@@ -111,15 +145,10 @@ const FilePartRendererComponent = ({
     }
 
     fetchUrl();
-  }, [
-    part.url,
-    part.fileId,
-    part.storageId,
-    part.mediaType,
-    getFileUrlAction,
-    convex,
-    fileUrlCache,
-  ]);
+    // Note: fileUrl is intentionally not in deps - we check it inside the effect
+    // fileUrlCacheRef is a ref, so it doesn't need to be in deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [part.url, part.fileId, part.storageId, part.mediaType, getFileUrlAction, convex]);
 
   const handleDownload = useCallback(async (url: string, fileName: string) => {
     try {
@@ -147,6 +176,8 @@ const FilePartRendererComponent = ({
 
   const handleNonImageFileClick = useCallback(
     async (fileName: string) => {
+      const cache = fileUrlCacheRef.current;
+
       // Check if we already have the URL cached or in state
       if (fileUrl) {
         await handleDownload(fileUrl, fileName);
@@ -154,8 +185,8 @@ const FilePartRendererComponent = ({
       }
 
       // Check cache first
-      if (fileUrlCache && part.fileId) {
-        const cachedUrl = fileUrlCache.getCachedUrl(part.fileId);
+      if (cache && part.fileId) {
+        const cachedUrl = cache.getCachedUrl(part.fileId);
         if (cachedUrl) {
           await handleDownload(cachedUrl, fileName);
           return;
@@ -174,8 +205,8 @@ const FilePartRendererComponent = ({
           url = await getFileUrlAction({ fileId: part.fileId });
 
           // Cache it for future clicks
-          if (url && fileUrlCache) {
-            fileUrlCache.setCachedUrl(part.fileId, url);
+          if (url && cache) {
+            cache.setCachedUrl(part.fileId, url);
           }
         } else if (part.storageId) {
           // Convex storage file - fetch URL
@@ -205,15 +236,7 @@ const FilePartRendererComponent = ({
         toast.error(errorMessage);
       }
     },
-    [
-      fileUrl,
-      handleDownload,
-      part.fileId,
-      part.storageId,
-      fileUrlCache,
-      getFileUrlAction,
-      convex,
-    ],
+    [fileUrl, handleDownload, part.fileId, part.storageId, getFileUrlAction, convex],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders
