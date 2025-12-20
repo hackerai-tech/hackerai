@@ -65,14 +65,17 @@ export function AutoRetryButton({ loginUrl }: AutoRetryButtonProps) {
   }, []);
 
   useEffect(() => {
-    if (cancelled || countdown === null || countdown <= 0) return;
+    if (cancelled) return;
 
     const timer = setInterval(() => {
-      setCountdown((prev) => (prev !== null ? prev - 1 : null));
+      setCountdown((prev) => {
+        if (prev === null || prev <= 0) return prev;
+        return prev - 1;
+      });
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [cancelled, countdown]);
+  }, [cancelled]);
 
   useEffect(() => {
     if (countdown === 0 && !cancelled) {
