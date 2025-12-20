@@ -4,7 +4,8 @@
   "private": true,
   "description": "HackerAI Desktop Application",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "tauri dev -c src-tauri/tauri.dev.conf.json",
+    "dev:prod": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri"
   },
