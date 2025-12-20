@@ -480,8 +480,8 @@ import OpenAI from "openai";
 import { internal } from "./_generated/api";
 
 /**
- * Create a user with a given name.
- */
+  * Create a user with a given name.
+  */
 export const createUser = mutation({
   args: {
     name: v.string(),
@@ -493,8 +493,8 @@ export const createUser = mutation({
 });
 
 /**
- * Create a channel with a given name.
- */
+  * Create a channel with a given name.
+  */
 export const createChannel = mutation({
   args: {
     name: v.string(),
@@ -506,8 +506,8 @@ export const createChannel = mutation({
 });
 
 /**
- * List the 10 most recent messages from a channel in descending creation order.
- */
+  * List the 10 most recent messages from a channel in descending creation order.
+  */
 export const listMessages = query({
   args: {
     channelId: v.id("channels"),
@@ -532,8 +532,8 @@ export const listMessages = query({
 });
 
 /**
- * Send a message to a channel and schedule a response from the AI.
- */
+  * Send a message to a channel and schedule a response from the AI.
+  */
 export const sendMessage = mutation({
   args: {
     channelId: v.id("channels"),
@@ -673,4 +673,3 @@ export default function App() {
   return <div>Hello World</div>;
 }
 ```
-

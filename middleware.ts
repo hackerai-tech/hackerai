@@ -1,5 +1,18 @@
-import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
-import { NextFetchEvent, NextRequest, NextResponse } from "next/server";
+import { authkit } from "@workos-inc/authkit-nextjs";
+import { NextRequest, NextResponse } from "next/server";
+
+const UNAUTHENTICATED_PATHS = new Set([
+  "/",
+  "/login",
+  "/signup",
+  "/logout",
+  "/api/clear-auth-cookies",
+  "/callback",
+  "/auth-error",
+  "/privacy-policy",
+  "/terms-of-service",
+  "/manifest.json",
+]);
 
 function getRedirectUri(): string | undefined {
   if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
@@ -8,72 +21,68 @@ function getRedirectUri(): string | undefined {
   return undefined;
 }
 
-const baseMiddleware = authkitMiddleware({
-  redirectUri: getRedirectUri(),
-  eagerAuth: true,
-  middlewareAuth: {
-    enabled: true,
-    unauthenticatedPaths: [
-      "/",
-      "/login",
-      "/signup",
-      "/logout",
-      "/api/clear-auth-cookies",
-      "/callback",
-      "/auth-error",
-      "/privacy-policy",
-      "/terms-of-service",
-      "/manifest.json",
-      "/share/:path*",
-    ],
-  },
-});
+function isUnauthenticatedPath(pathname: string): boolean {
+  if (UNAUTHENTICATED_PATHS.has(pathname)) {
+    return true;
+  }
+  if (pathname.startsWith("/share/")) {
+    return true;
+  }
+  return false;
+}
 
-export default async function middleware(
-  request: NextRequest,
-  event: NextFetchEvent
-) {
-  const response = await baseMiddleware(request, event);
+function isBrowserRequest(request: NextRequest): boolean {
+  const accept = request.headers.get("accept") ?? "";
+  return accept.includes("text/html");
+}
 
-  const isRedirect = response && response.status >= 300 && response.status < 400;
-  if (!isRedirect) {
-    return response;
+const SESSION_HEADER = "x-workos-session";
+
+export default async function middleware(request: NextRequest) {
+  const { session, headers, authorizationUrl } = await authkit(request, {
+    redirectUri: getRedirectUri(),
+    eagerAuth: true,
+  });
+
+  const pathname = request.nextUrl.pathname;
+  const requestHeaders = buildRequestHeaders(request, headers);
+  const responseHeaders = buildResponseHeaders(headers);
+
+  if (session.user || isUnauthenticatedPath(pathname)) {
+    return NextResponse.next({
+      request: { headers: requestHeaders },
+      headers: responseHeaders,
+    });
   }
 
-  const location = response.headers.get("location");
-  if (!location) {
-    return response;
+  if (!isBrowserRequest(request)) {
+    return NextResponse.json(
+      {
+        code: "unauthorized:auth",
+        message: "You need to sign in before continuing.",
+        cause: "Session expired or invalid",
+      },
+      { status: 401, headers: responseHeaders }
+    );
   }
 
-  try {
-    const redirectUrl = new URL(location, request.url);
-    const isAuthRedirect =
-      redirectUrl.pathname === "/login" ||
-      redirectUrl.hostname === "api.workos.com";
+  return NextResponse.redirect(authorizationUrl!, { headers: responseHeaders });
+}
 
-    if (!isAuthRedirect) {
-      return response;
+function buildRequestHeaders(request: NextRequest, authkitHeaders: Headers): Headers {
+  const merged = new Headers(request.headers);
+  authkitHeaders.forEach((value, key) => {
+    if (key.startsWith("x-")) {
+      merged.set(key, value);
     }
+  });
+  return merged;
+}
 
-    const accept = request.headers.get("accept") ?? "";
-    const isBrowserNavigation = accept.includes("text/html");
-
-    // Non-browser requests: API, fetch, RSC, Server Actions - return 401
-    if (!isBrowserNavigation) {
-      return NextResponse.json(
-        {
-          code: "unauthorized:auth",
-          message: "You need to sign in before continuing.",
-          cause: "Session expired or invalid",
-        },
-        { status: 401 }
-      );
-    }
-  } catch {
-    // URL parsing failed, let original redirect through
-  }
-
-  return response;
+function buildResponseHeaders(authkitHeaders: Headers): Headers {
+  const responseHeaders = new Headers(authkitHeaders);
+  responseHeaders.delete(SESSION_HEADER);
+  return responseHeaders;
 }
 
 export const config = {
