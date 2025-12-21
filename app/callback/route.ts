@@ -28,8 +28,6 @@ export async function GET(request: NextRequest) {
   }
 
   if (response.status >= 400) {
-    const body = await response.json().catch(() => null);
-    console.warn("Authkit returned an error code", response.status, body);
     return NextResponse.redirect(
       new URL(`/auth-error?code=${response.status}`, request.url),
     );
