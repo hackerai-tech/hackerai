@@ -218,7 +218,6 @@ const AllFilesDialog = ({
     };
   }, [open, files, getFileUrlAction, convex, fileUrlCache]);
 
-
   const handleEnterSelectionMode = () => {
     setSelectionMode(true);
     // Select all files by default

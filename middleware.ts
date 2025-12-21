@@ -62,7 +62,7 @@ export default async function middleware(request: NextRequest) {
         message: "You need to sign in before continuing.",
         cause: "Session expired or invalid",
       },
-      { status: 401, headers: responseHeaders }
+      { status: 401, headers: responseHeaders },
     );
   }
 
@@ -79,7 +79,10 @@ export default async function middleware(request: NextRequest) {
   return NextResponse.redirect(authorizationUrl, { headers: responseHeaders });
 }
 
-function buildRequestHeaders(request: NextRequest, authkitHeaders: Headers): Headers {
+function buildRequestHeaders(
+  request: NextRequest,
+  authkitHeaders: Headers,
+): Headers {
   const merged = new Headers(request.headers);
   authkitHeaders.forEach((value, key) => {
     if (key.startsWith("x-")) {

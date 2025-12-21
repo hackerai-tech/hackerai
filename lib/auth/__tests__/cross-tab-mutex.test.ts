@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals";
 import { CrossTabMutex } from "../cross-tab-mutex";
 
 describe("CrossTabMutex", () => {
@@ -9,9 +16,11 @@ describe("CrossTabMutex", () => {
     jest.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
       return mockStorage[key] ?? null;
     });
-    jest.spyOn(Storage.prototype, "setItem").mockImplementation((key, value) => {
-      mockStorage[key] = value;
-    });
+    jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation((key, value) => {
+        mockStorage[key] = value;
+      });
     jest.spyOn(Storage.prototype, "removeItem").mockImplementation((key) => {
       delete mockStorage[key];
     });

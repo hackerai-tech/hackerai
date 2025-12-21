@@ -1,10 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useMemo } from "react";
-import {
-  useAuth,
-  useAccessToken,
-} from "@workos-inc/authkit-nextjs/components";
+import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
 import { CrossTabMutex } from "@/lib/auth/cross-tab-mutex";
 import {
   clearExpiredSharedToken,
@@ -50,7 +47,9 @@ const defaultDeps: AuthKitDeps = {
   isCrossTabEnabled: isCrossTabTokenSharingEnabled,
 };
 
-export function useAuthFromAuthKit(deps: AuthKitDeps = defaultDeps): ConvexAuthState {
+export function useAuthFromAuthKit(
+  deps: AuthKitDeps = defaultDeps,
+): ConvexAuthState {
   const { user, loading: isLoading } = deps.useAuth();
   const { getAccessToken, accessToken, refresh } = deps.useAccessToken();
   const accessTokenRef = useRef<string | undefined>(undefined);

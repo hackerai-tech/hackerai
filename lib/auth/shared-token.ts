@@ -121,4 +121,3 @@ export async function getFreshSharedTokenWithFallback(
   }
   return newToken ?? null;
 }
-

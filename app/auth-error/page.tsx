@@ -57,8 +57,7 @@ const ERROR_MESSAGES: Record<
 
 const DEFAULT_ERROR = {
   title: "Authentication Error",
-  description:
-    "An unexpected error occurred during sign in. Please try again.",
+  description: "An unexpected error occurred during sign in. Please try again.",
 };
 
 type SearchParams = Promise<{ code?: string }>;

@@ -50,9 +50,8 @@ describe("aggregateMigrations", () => {
         },
       };
 
-      const { ensureUserAggregatesMigrated } = await import(
-        "../aggregateMigrations"
-      );
+      const { ensureUserAggregatesMigrated } =
+        await import("../aggregateMigrations");
 
       await expect(
         ensureUserAggregatesMigrated.handler(mockCtx, {}),
@@ -86,9 +85,8 @@ describe("aggregateMigrations", () => {
 
       mockFileCountAggregate.insertIfDoesNotExist.mockResolvedValue(undefined);
 
-      const { ensureUserAggregatesMigrated } = await import(
-        "../aggregateMigrations"
-      );
+      const { ensureUserAggregatesMigrated } =
+        await import("../aggregateMigrations");
       const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
       expect(result).toEqual({ migrated: true });
@@ -130,13 +128,14 @@ describe("aggregateMigrations", () => {
         },
       };
 
-      const { ensureUserAggregatesMigrated } = await import(
-        "../aggregateMigrations"
-      );
+      const { ensureUserAggregatesMigrated } =
+        await import("../aggregateMigrations");
       const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
       expect(result).toEqual({ migrated: false });
-      expect(mockFileCountAggregate.insertIfDoesNotExist).not.toHaveBeenCalled();
+      expect(
+        mockFileCountAggregate.insertIfDoesNotExist,
+      ).not.toHaveBeenCalled();
       expect(mockCtx.db.insert).not.toHaveBeenCalled();
       expect(mockCtx.db.patch).not.toHaveBeenCalled();
     });
@@ -167,9 +166,8 @@ describe("aggregateMigrations", () => {
         },
       };
 
-      const { ensureUserAggregatesMigrated } = await import(
-        "../aggregateMigrations"
-      );
+      const { ensureUserAggregatesMigrated } =
+        await import("../aggregateMigrations");
       const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
       expect(result).toEqual({ migrated: true });
@@ -200,13 +198,14 @@ describe("aggregateMigrations", () => {
         },
       };
 
-      const { ensureUserAggregatesMigrated } = await import(
-        "../aggregateMigrations"
-      );
+      const { ensureUserAggregatesMigrated } =
+        await import("../aggregateMigrations");
       const result = await ensureUserAggregatesMigrated.handler(mockCtx, {});
 
       expect(result).toEqual({ migrated: true });
-      expect(mockFileCountAggregate.insertIfDoesNotExist).not.toHaveBeenCalled();
+      expect(
+        mockFileCountAggregate.insertIfDoesNotExist,
+      ).not.toHaveBeenCalled();
       expect(mockCtx.db.insert).toHaveBeenCalled();
     });
   });
