@@ -54,3 +54,7 @@ next-env.d.ts
 .auth/
 CLAUDE.md
 packages/local/node_modules/
+
+# Desktop (Tauri)
+packages/desktop/node_modules/
+packages/desktop/src-tauri/target/

@@ -1,0 +1,48 @@
+[package]
+name = "hackerai-desktop"
+version = "0.1.0"
+description = "HackerAI Desktop Application"
+authors = ["HackerAI"]
+edition = "2021"
+rust-version = "1.70"
+
+[lib]
+name = "hackerai_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "hackerai-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+keyring = "3"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+url = "2"
+reqwest = { version = "0.12", features = ["json"] }
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
