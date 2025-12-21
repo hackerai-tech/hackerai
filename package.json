@@ -41,7 +41,6 @@
     "local-sandbox:build": "cd packages/local && pnpm build"
   },
   "dependencies": {
-    "@ai-sdk/google": "^2.0.45",
     "@ai-sdk/openai": "^2.0.80",
     "@ai-sdk/react": "^2.0.109",
     "@ai-sdk/xai": "^2.0.39",

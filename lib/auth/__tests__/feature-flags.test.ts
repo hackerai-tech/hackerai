@@ -139,7 +139,9 @@ describe("feature-flags", () => {
 
   describe("constants", () => {
     it("should have CROSS_TAB_TOKEN_SHARING feature flag defined", () => {
-      expect(FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING).toBe("cross-tab-token-sharing");
+      expect(FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING).toBe(
+        "cross-tab-token-sharing",
+      );
     });
 
     it("should default to 0% rollout when env var is not set", () => {

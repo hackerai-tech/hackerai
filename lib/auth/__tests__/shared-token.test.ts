@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals";
 import {
   getSharedToken,
   setSharedToken,
@@ -20,9 +27,11 @@ describe("shared-token", () => {
     jest.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
       return mockStorage[key] ?? null;
     });
-    jest.spyOn(Storage.prototype, "setItem").mockImplementation((key, value) => {
-      mockStorage[key] = value;
-    });
+    jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation((key, value) => {
+        mockStorage[key] = value;
+      });
     jest.spyOn(Storage.prototype, "removeItem").mockImplementation((key) => {
       delete mockStorage[key];
     });
@@ -312,7 +321,9 @@ describe("shared-token", () => {
       expect(isTokenFresh(sharedToken)).toBe(true);
 
       // Simulate time passing past freshness window
-      jest.spyOn(Date, "now").mockReturnValue(tabATime + TOKEN_FRESHNESS_MS + 1000);
+      jest
+        .spyOn(Date, "now")
+        .mockReturnValue(tabATime + TOKEN_FRESHNESS_MS + 1000);
 
       // Tab C checks freshness (should now be false)
       const staleCheck = isTokenFresh(sharedToken);
@@ -337,7 +348,8 @@ describe("shared-token", () => {
     });
 
     it("should handle tokens with special characters", () => {
-      const specialToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ";
+      const specialToken =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ";
       setSharedToken(specialToken);
 
       const result = getSharedToken();
@@ -362,7 +374,9 @@ describe("shared-token", () => {
       };
       mockStorage[SHARED_TOKEN_KEY] = JSON.stringify(tokenData);
 
-      const fallback = jest.fn<() => Promise<string | null>>().mockResolvedValue("fallback-token");
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValue("fallback-token");
 
       const result = await getFreshSharedTokenWithFallback(fallback);
 
@@ -371,7 +385,9 @@ describe("shared-token", () => {
     });
 
     it("should call fallback when no fresh token exists", async () => {
-      const fallback = jest.fn<() => Promise<string | null>>().mockResolvedValue("new-token");
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValue("new-token");
 
       const result = await getFreshSharedTokenWithFallback(fallback);
 
@@ -380,7 +396,9 @@ describe("shared-token", () => {
     });
 
     it("should store fallback token for other tabs", async () => {
-      const fallback = jest.fn<() => Promise<string | null>>().mockResolvedValue("shared-new-token");
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValue("shared-new-token");
 
       await getFreshSharedTokenWithFallback(fallback);
 
@@ -389,7 +407,9 @@ describe("shared-token", () => {
     });
 
     it("should return null when fallback returns null", async () => {
-      const fallback = jest.fn<() => Promise<string | null>>().mockResolvedValue(null);
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValue(null);
 
       const result = await getFreshSharedTokenWithFallback(fallback);
 
@@ -397,7 +417,9 @@ describe("shared-token", () => {
     });
 
     it("should return null when fallback returns undefined", async () => {
-      const fallback = jest.fn<() => Promise<string | undefined>>().mockResolvedValue(undefined);
+      const fallback = jest
+        .fn<() => Promise<string | undefined>>()
+        .mockResolvedValue(undefined);
 
       const result = await getFreshSharedTokenWithFallback(fallback);
 
@@ -405,7 +427,9 @@ describe("shared-token", () => {
     });
 
     it("should not store token when fallback returns null", async () => {
-      const fallback = jest.fn<() => Promise<string | null>>().mockResolvedValue(null);
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValue(null);
 
       await getFreshSharedTokenWithFallback(fallback);
 
@@ -419,7 +443,9 @@ describe("shared-token", () => {
       };
       mockStorage[SHARED_TOKEN_KEY] = JSON.stringify(expiredData);
 
-      const fallback = jest.fn<() => Promise<string | null>>().mockResolvedValue("refreshed-token");
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValue("refreshed-token");
 
       const result = await getFreshSharedTokenWithFallback(fallback);
 
@@ -434,7 +460,9 @@ describe("shared-token", () => {
       };
       mockStorage[SHARED_TOKEN_KEY] = JSON.stringify(expiredData);
 
-      const fallback = jest.fn<() => Promise<string | null>>().mockResolvedValue("new-token");
+      const fallback = jest
+        .fn<() => Promise<string | null>>()
+        .mockResolvedValue("new-token");
 
       await getFreshSharedTokenWithFallback(fallback);
 

@@ -148,7 +148,14 @@ const FilePartRendererComponent = ({
     // Note: fileUrl is intentionally not in deps - we check it inside the effect
     // fileUrlCacheRef is a ref, so it doesn't need to be in deps
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [part.url, part.fileId, part.storageId, part.mediaType, getFileUrlAction, convex]);
+  }, [
+    part.url,
+    part.fileId,
+    part.storageId,
+    part.mediaType,
+    getFileUrlAction,
+    convex,
+  ]);
 
   const handleDownload = useCallback(async (url: string, fileName: string) => {
     try {
@@ -236,7 +243,14 @@ const FilePartRendererComponent = ({
         toast.error(errorMessage);
       }
     },
-    [fileUrl, handleDownload, part.fileId, part.storageId, getFileUrlAction, convex],
+    [
+      fileUrl,
+      handleDownload,
+      part.fileId,
+      part.storageId,
+      getFileUrlAction,
+      convex,
+    ],
   );
 
   // Memoize file preview component to prevent unnecessary re-renders

@@ -38,14 +38,6 @@ export const generateTitleFromUserMessage = async (
     object: { title },
   } = await generateObject({
     model: myProvider.languageModel("title-generator-model"),
-    providerOptions: {
-      google: {
-        thinkingConfig: {
-          // Disables thinking
-          thinkingBudget: 0,
-        },
-      },
-    },
     schema: z.object({
       title: z.string().describe("The generated title (3-5 words)"),
     }),

@@ -14,7 +14,7 @@ const FILE_COUNT_AGGREGATE_MIN_VERSION = 1;
 
 async function getUserAggregateVersion(
   ctx: QueryCtx,
-  userId: string
+  userId: string,
 ): Promise<number> {
   const state = await ctx.db
     .query("user_aggregate_state")
@@ -30,7 +30,7 @@ async function getUserAggregateVersion(
  */
 export async function isFileCountAggregateAvailable(
   ctx: QueryCtx,
-  userId: string
+  userId: string,
 ): Promise<boolean> {
   const version = await getUserAggregateVersion(ctx, userId);
   return version >= FILE_COUNT_AGGREGATE_MIN_VERSION;

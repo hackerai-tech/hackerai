@@ -1,7 +1,6 @@
 import { customProvider } from "ai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 import { xai } from "@ai-sdk/xai";
-import { google } from "@ai-sdk/google";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
@@ -10,13 +9,11 @@ const baseProviders = {
   "ask-model": openrouter("qwen/qwen3-coder:exacto"),
   "ask-model-free": openrouter("qwen/qwen3-coder"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-vision-model-for-pdfs": openrouter(
-    "google/gemini-3-flash-preview",
-  ),
+  "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": xai("grok-code-fast-1"),
-  "agent-vision-model": xai("grok-4-fast-reasoning"),
+  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
-  "summarization-model": xai("grok-4-1-fast-non-reasoning"),
+  "summarization-model": openrouter("google/gemini-3-flash-preview"),
 };
 
 export type ModelName = keyof typeof baseProviders;
@@ -27,9 +24,9 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "ask-vision-model": "January 2025",
   "ask-vision-model-for-pdfs": "January 2025",
   "agent-model": "November 2024",
-  "agent-vision-model": "November 2024",
+  "agent-vision-model": "January 2025",
   "title-generator-model": "November 2024",
-  "summarization-model": "November 2024",
+  "summarization-model": "January 2025",
 };
 
 export const getModelCutoffDate = (modelName: ModelName): string => {
