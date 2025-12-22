@@ -73,11 +73,6 @@
     }
   },
   "plugins": {
-    "deep-link": {
-      "desktop": {
-        "schemes": ["hackerai"]
-      }
-    },
     "updater": {
       "active": true,
       "endpoints": [

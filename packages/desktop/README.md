@@ -6,9 +6,7 @@ Native desktop application for HackerAI built with [Tauri](https://tauri.app/).
 
 The desktop app wraps the HackerAI web application in a native shell, providing:
 
-- **Native OAuth flow** via `hackerai://` deep links
-- **Secure token storage** in OS keychain (Keychain on macOS, Credential Manager on Windows, Secret Service on Linux)
-- **Local Docker sandbox** management for code execution
+- **Native window** with system integration
 - **Auto-updates** via Tauri's updater plugin
 - **Cross-platform** builds for macOS, Windows, and Linux
 
@@ -51,27 +49,18 @@ pnpm install
 pnpm dev
 ```
 
-This opens the desktop app pointing to `https://hackerai.co`. The Rust backend hot-reloads on changes.
+This opens the desktop app pointing to `https://hackerai.co`.
 
 ### Run with local web server
 
-To develop against a local Next.js server, edit `src-tauri/tauri.conf.json`:
+To develop against a local Next.js server:
 
-```json
-{
-  "build": {
-    "devUrl": "http://localhost:3000"
-  }
-}
-```
-
-Then run:
 ```bash
-# Terminal 1: Start the web app
-pnpm dev:next
-
-# Terminal 2: Start the desktop app
+# Terminal 1: Start the web app (from repo root)
 pnpm dev
+
+# Terminal 2: Start the desktop app with dev config
+pnpm dev --config src-tauri/tauri.dev.conf.json
 ```
 
 ## Building
@@ -104,65 +93,12 @@ pnpm build
 │                    Tauri Desktop App                        │
 ├─────────────────────────────────────────────────────────────┤
 │  Rust Backend (src-tauri/)     │  WebView                   │
-│  ├─ auth.rs                    │  └─ Loads hackerai.co      │
-│  │  ├─ OAuth deep link handler │                            │
-│  │  ├─ Keychain storage        │                            │
-│  │  └─ Token refresh           │                            │
-│  ├─ docker.rs                  │                            │
-│  │  ├─ Docker availability     │                            │
-│  │  └─ Sandbox process mgmt    │                            │
-│  └─ main.rs                    │                            │
-│     └─ Plugin registration     │                            │
+│  └─ main.rs/lib.rs             │  └─ Loads hackerai.co      │
+│     └─ Plugin registration     │     (uses web auth flow)   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Authentication Flow
-
-1. User clicks "Login" → Rust opens system browser to `/api/desktop-auth/login`
-2. Browser → WorkOS OAuth → `/api/desktop-auth/callback`
-3. Server redirects to `hackerai://auth/callback?access_token=X&refresh_token=Y`
-4. Tauri captures deep link, stores tokens in OS keychain
-5. Tokens passed to Convex client for API authentication
-
-### Rust Commands
-
-Available Tauri commands (invoke from JavaScript):
-
-**Authentication:**
-- `start_login(base_url?)` - Initiates OAuth, returns URL to open
-- `get_stored_tokens()` - Retrieves tokens from keychain
-- `store_tokens(tokens)` - Stores tokens in keychain
-- `refresh_tokens(refresh_token, base_url?)` - Refreshes access token
-- `logout()` - Clears stored tokens
-- `get_auth_status()` - Returns current auth state
-
-**Docker/Sandbox:**
-- `check_docker()` - Checks if Docker is available
-- `check_sandbox_image(image?)` - Checks if sandbox image exists
-- `pull_sandbox_image(image?)` - Pulls the sandbox image
-- `start_sandbox(config)` - Starts local sandbox CLI
-- `stop_sandbox()` - Stops running sandbox
-- `get_sandbox_status()` - Returns sandbox state
-
-## Configuration
-
-### tauri.conf.json
-
-Key settings:
-
-| Setting | Description |
-|---------|-------------|
-| `build.devUrl` | URL to load in development |
-| `app.security.csp` | Content Security Policy |
-| `plugins.deep-link.desktop.schemes` | Custom URL schemes |
-| `plugins.updater.endpoints` | Auto-update server URLs |
-
-### Deep Link Protocol
-
-The app registers `hackerai://` as a custom protocol:
-
-- `hackerai://auth/callback?access_token=X&refresh_token=Y` - OAuth callback
-- `hackerai://auth/error?reason=X` - OAuth error
+The app is a thin native wrapper around the web application. Authentication and all features are handled by the web app.
 
 ## CI/CD
 
@@ -238,21 +174,6 @@ Install development libraries:
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 ```
-
-### Deep links not working
-
-**macOS:** Check System Preferences → Privacy & Security → Default Apps
-
-**Windows:** Re-run the app to re-register the protocol
-
-**Linux:** Run:
-```bash
-xdg-mime default hackerai.desktop x-scheme-handler/hackerai
-```
-
-### Keychain access denied (macOS)
-
-The app needs keychain access on first run. Click "Always Allow" when prompted.
 
 ## License
 

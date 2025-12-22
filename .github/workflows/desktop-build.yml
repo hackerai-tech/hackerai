@@ -113,12 +113,11 @@ jobs:
         run: ls -R artifacts
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
         with:
-          name: HackerAI Desktop ${{ env.TAG_NAME }}
+          name: HackerAI Desktop ${{ github.ref_name }}
           draft: true
           prerelease: false
           files: |
