@@ -13,7 +13,7 @@ const baseProviders = {
   "agent-model": xai("grok-code-fast-1"),
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
-  "summarization-model": openrouter("google/gemini-3-flash-preview"),
+  "summarization-model": xai("grok-4-1-fast-non-reasoning"),
 };
 
 export type ModelName = keyof typeof baseProviders;
@@ -26,7 +26,7 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "agent-model": "November 2024",
   "agent-vision-model": "January 2025",
   "title-generator-model": "November 2024",
-  "summarization-model": "January 2025",
+  "summarization-model": "November 2024",
 };
 
 export const getModelCutoffDate = (modelName: ModelName): string => {
