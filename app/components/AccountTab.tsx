@@ -13,7 +13,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
-import { X, ChevronDown, Sparkle } from "lucide-react";
+import { X, ChevronDown, Sparkle, Loader2 } from "lucide-react";
 import {
   proFeatures,
   ultraFeatures,
@@ -25,6 +25,7 @@ const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
   const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
+  const [isRedirectingToBilling, setIsRedirectingToBilling] = useState(false);
   const { isMigrating } = usePentestgptMigration();
 
   // Fetch admin status for team subscriptions
@@ -47,8 +48,14 @@ const AccountTab = () => {
   const currentPlanFeatures =
     subscription === "team" ? teamFeatures : proFeatures;
 
-  const handleCancelSubscription = () => {
-    redirectToBillingPortal();
+  const handleCancelSubscription = async () => {
+    setIsRedirectingToBilling(true);
+    await redirectToBillingPortal();
+  };
+
+  const handleManageBilling = async () => {
+    setIsRedirectingToBilling(true);
+    await redirectToBillingPortal();
   };
 
   const handleOpenMigrateConfirm = () => {
@@ -75,9 +82,13 @@ const AccountTab = () => {
             canManageBilling ? (
               <DropdownMenu modal={false}>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="outline" size="sm">
-                    Manage
-                    <ChevronDown className="h-4 w-4" />
+                  <Button type="button" variant="outline" size="sm" disabled={isRedirectingToBilling}>
+                    {isRedirectingToBilling ? "Redirecting..." : "Manage"}
+                    {isRedirectingToBilling ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4" />
+                    )}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
@@ -93,6 +104,7 @@ const AccountTab = () => {
                   <DropdownMenuItem
                     variant="destructive"
                     onClick={handleCancelSubscription}
+                    disabled={isRedirectingToBilling}
                   >
                     <X className="h-4 w-4" />
                     <span>Cancel subscription</span>
@@ -171,9 +183,14 @@ const AccountTab = () => {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => redirectToBillingPortal()}
+                onClick={handleManageBilling}
+                disabled={isRedirectingToBilling}
               >
-                Manage
+                {isRedirectingToBilling ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Manage"
+                )}
               </Button>
             </div>
           </div>

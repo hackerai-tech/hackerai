@@ -11,6 +11,7 @@ import {
   Settings,
   Settings2,
   CircleUserRound,
+  Loader2,
 } from "lucide-react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
@@ -93,6 +94,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { isCheckingProPlan, subscription } = useGlobalState();
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const isMobile = useIsMobile();
 
   if (!user) return null;
@@ -101,6 +103,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const isProUser = subscription !== "free";
 
   const handleLogOut = async () => {
+    setIsLoggingOut(true);
     clientLogout();
   };
 
@@ -332,10 +335,15 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuItem
             data-testid="logout-button"
             onClick={handleLogOut}
+            disabled={isLoggingOut}
             className="py-2.5"
           >
-            <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
-            <span>Log out</span>
+            {isLoggingOut ? (
+              <Loader2 className="mr-2.5 h-5 w-5 text-foreground animate-spin" />
+            ) : (
+              <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
+            )}
+            <span>{isLoggingOut ? "Logging out..." : "Log out"}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
