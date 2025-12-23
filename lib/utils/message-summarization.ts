@@ -160,7 +160,7 @@ export const checkAndSummarizeIfNeeded = async (
       model: languageModel,
       system: getSummarizationPrompt(mode),
       messages: [
-        ...convertToModelMessages(messagesToSummarize),
+        ...(await convertToModelMessages(messagesToSummarize)),
         {
           role: "user",
           content:

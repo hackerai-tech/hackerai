@@ -281,7 +281,7 @@ export const createChatHandler = () => {
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
-            messages: convertToModelMessages(finalMessages),
+            messages: await convertToModelMessages(finalMessages),
             tools,
             // Refresh system prompt when memory updates occur, cache and reuse until next update
             prepareStep: async ({ steps, messages }) => {
@@ -321,7 +321,7 @@ export const createChatHandler = () => {
                     summarizationParts.push(createSummarizationCompletedPart());
                     // Return updated messages for this step
                     return {
-                      messages: convertToModelMessages(finalMessages),
+                      messages: await convertToModelMessages(finalMessages),
                     };
                   }
                 }

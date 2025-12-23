@@ -14,7 +14,8 @@ const baseProviders = {
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": xai("grok-4-1-fast-non-reasoning"),
-};
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+} as Record<string, any>;
 
 export type ModelName = keyof typeof baseProviders;
 
