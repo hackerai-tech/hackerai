@@ -32,6 +32,9 @@ before coming back to the user.\n"
 const getDefaultSandboxEnvironmentSection = (): string => `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
 
+If the user wants to connect HackerAI to their local machine or local network, direct them to: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
+This guide explains how to use Agent Mode to run commands on their own device, use penetration-testing tools on their local network, and access local resources.
+
 System Environment:
 - OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
 - User: \`root\` (with sudo privileges)
