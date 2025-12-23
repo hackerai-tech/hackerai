@@ -1,9 +1,10 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { Loader2 } from "lucide-react";
 
 interface HeaderProps {
   chatTitle?: string;
@@ -11,12 +12,15 @@ interface HeaderProps {
 
 const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
   const { user, loading } = useAuth();
+  const [navigating, setNavigating] = useState<"signin" | "signup" | null>(null);
 
   const handleSignIn = () => {
+    setNavigating("signin");
     window.location.href = "/login";
   };
 
   const handleSignUp = () => {
+    setNavigating("signup");
     window.location.href = "/signup";
   };
 
@@ -44,20 +48,30 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
               <Button
                 data-testid="sign-in-button"
                 onClick={handleSignIn}
+                disabled={navigating !== null}
                 variant="default"
                 size="default"
                 className="min-w-[74px] rounded-[10px]"
               >
-                Sign in
+                {navigating === "signin" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Sign in"
+                )}
               </Button>
               <Button
                 data-testid="sign-up-button"
                 onClick={handleSignUp}
+                disabled={navigating !== null}
                 variant="outline"
                 size="default"
                 className="min-w-16 rounded-[10px]"
               >
-                Sign up
+                {navigating === "signup" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  "Sign up"
+                )}
               </Button>
             </div>
           )}
@@ -77,20 +91,30 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
             <Button
               data-testid="sign-in-button-mobile"
               onClick={handleSignIn}
+              disabled={navigating !== null}
               variant="default"
               size="sm"
               className="rounded-[10px]"
             >
-              Sign in
+              {navigating === "signin" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                "Sign in"
+              )}
             </Button>
             <Button
               data-testid="sign-up-button-mobile"
               onClick={handleSignUp}
+              disabled={navigating !== null}
               variant="outline"
               size="sm"
               className="rounded-[10px]"
             >
-              Sign up
+              {navigating === "signup" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                "Sign up"
+              )}
             </Button>
           </div>
         )}
