@@ -10,7 +10,7 @@ const baseProviders = {
   "ask-model-free": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
-  "agent-model": xai("grok-code-fast-1"),
+  "agent-model": openrouter("google/gemini-3-flash-preview"),
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": xai("grok-4-1-fast-non-reasoning"),
