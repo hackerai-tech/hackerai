@@ -112,3 +112,33 @@ export type QueueBehavior = "queue" | "stop-and-send";
 
 // Sandbox preference: "e2b" for cloud, or a connection ID for local sandbox
 export type SandboxPreference = "e2b" | string;
+
+/**
+ * Memory entry returned by Convex memories queries
+ */
+export interface Memory {
+  memory_id: string;
+  content: string;
+  update_time: number;
+}
+
+/**
+ * Preview message for share dialog (simplified message structure)
+ */
+export interface PreviewMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content?: string;
+}
+
+/**
+ * Shared chat entry returned by getUserSharedChats query
+ */
+export interface SharedChat {
+  _id: Id<"chats">;
+  id: string;
+  title: string;
+  share_id: string;
+  share_date: number;
+  update_time: number;
+}

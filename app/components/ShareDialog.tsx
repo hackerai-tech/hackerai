@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { PreviewMessage } from "@/types";
 import {
   Dialog,
   DialogContent,
@@ -209,7 +210,7 @@ export const ShareDialog = ({
                   <div className="h-full w-full p-4">
                     <div className="w-full flex flex-col space-y-4">
                       {previewMessages &&
-                        previewMessages.map((message) => {
+                        previewMessages.map((message: PreviewMessage) => {
                           const isUser = message.role === "user";
                           return (
                             <div

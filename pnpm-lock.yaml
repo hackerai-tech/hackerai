@@ -32,17 +32,17 @@ importers:
         version: 3.957.0
       "@convex-dev/aggregate":
         specifier: ^0.2.0
-        version: 0.2.0(convex@1.29.2(react@19.2.3))
-      "@convex-dev/workos":
+        version: 0.2.0(convex@1.31.2(react@19.2.3))
+      '@convex-dev/workos':
         specifier: ^0.0.1
-        version: 0.0.1(@types/debug@4.1.12)(@types/node@25.0.3)(convex@1.29.2(react@19.2.3))(jiti@2.5.1)(jsdom@26.1.0)(lightningcss@1.30.1)(react@19.2.3)(typescript@5.9.2)(yaml@2.8.1)
-      "@e2b/code-interpreter":
+        version: 0.0.1(@types/debug@4.1.12)(@types/node@25.0.3)(convex@1.31.2(react@19.2.3))(jiti@2.5.1)(jsdom@26.1.0)(lightningcss@1.30.1)(react@19.2.3)(typescript@5.9.2)(yaml@2.8.1)
+      '@e2b/code-interpreter':
         specifier: 2.3.3
         version: 2.3.3
       "@langchain/community":
         specifier: ^1.1.1
-        version: 1.1.1(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.957.0)(@aws-sdk/credential-provider-node@3.957.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.57.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(zod@4.2.1))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.1.8(@opentelemetry/api@1.9.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.8))(@upstash/redis@1.35.8)(convex@1.29.2(react@19.2.3))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.3)(mammoth@1.11.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(playwright@1.57.0)(redis@5.10.0)(word-extractor@1.0.4)(ws@8.18.3)
-      "@openrouter/ai-sdk-provider":
+        version: 1.1.1(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.957.0)(@aws-sdk/credential-provider-node@3.957.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.57.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(zod@4.2.1))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.1.8(@opentelemetry/api@1.9.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.8))(@upstash/redis@1.35.8)(convex@1.31.2(react@19.2.3))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.3)(mammoth@1.11.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(playwright@1.57.0)(redis@5.10.0)(word-extractor@1.0.4)(ws@8.18.3)
+      '@openrouter/ai-sdk-provider':
         specifier: ^1.5.4
         version: 1.5.4(ai@6.0.3(zod@4.2.1))(zod@4.2.1)
       "@posthog/ai":
@@ -121,8 +121,8 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
       convex:
-        specifier: ^1.29.2
-        version: 1.29.2(react@19.2.3)
+        specifier: ^1.31.2
+        version: 1.31.2(react@19.2.3)
       date-fns:
         specifier: ^4.1.0
         version: 4.1.0
@@ -6166,12 +6166,9 @@ packages:
         integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==,
       }
 
-  convex@1.29.2:
-    resolution:
-      {
-        integrity: sha512-9QCj53/zFV+hHZRP8epU41a3NmOkYDdEtpvSPKjAZp6l60NMN+O3fyOX4r5Y6yzPIhsUpJvMH6xB5xwJTLz92A==,
-      }
-    engines: { node: ">=18.0.0", npm: ">=7.0.0" }
+  convex@1.31.2:
+    resolution: {integrity: sha512-RFuJOwlL2bM5X63egvBI5ZZZH6wESREpAbHsLjODxzDeJuewTLKrEnbvHV/NWp1uJYpgEFJziuGHmZ0tnAmmJg==}
+    engines: {node: '>=18.0.0', npm: '>=7.0.0'}
     hasBin: true
     peerDependencies:
       "@auth0/auth0-react": ^2.0.1
@@ -13195,14 +13192,14 @@ snapshots:
     dependencies:
       "@bufbuild/protobuf": 2.6.3
 
-  "@convex-dev/aggregate@0.2.0(convex@1.29.2(react@19.2.3))":
+  '@convex-dev/aggregate@0.2.0(convex@1.31.2(react@19.2.3))':
     dependencies:
-      convex: 1.29.2(react@19.2.3)
+      convex: 1.31.2(react@19.2.3)
 
-  "@convex-dev/workos@0.0.1(@types/debug@4.1.12)(@types/node@25.0.3)(convex@1.29.2(react@19.2.3))(jiti@2.5.1)(jsdom@26.1.0)(lightningcss@1.30.1)(react@19.2.3)(typescript@5.9.2)(yaml@2.8.1)":
+  '@convex-dev/workos@0.0.1(@types/debug@4.1.12)(@types/node@25.0.3)(convex@1.31.2(react@19.2.3))(jiti@2.5.1)(jsdom@26.1.0)(lightningcss@1.30.1)(react@19.2.3)(typescript@5.9.2)(yaml@2.8.1)':
     dependencies:
-      "@workos-inc/authkit-react": 0.11.0(react@19.2.3)
-      convex: 1.29.2(react@19.2.3)
+      '@workos-inc/authkit-react': 0.11.0(react@19.2.3)
+      convex: 1.31.2(react@19.2.3)
       react: 19.2.3
       tsdown: 0.12.9(typescript@5.9.2)
       vitest: 3.2.4(@types/debug@4.1.12)(@types/node@25.0.3)(jiti@2.5.1)(jsdom@26.1.0)(lightningcss@1.30.1)(yaml@2.8.1)
@@ -13900,7 +13897,7 @@ snapshots:
       - openai
       - ws
 
-  "@langchain/community@1.1.1(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.957.0)(@aws-sdk/credential-provider-node@3.957.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.57.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(zod@4.2.1))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.1.8(@opentelemetry/api@1.9.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.8))(@upstash/redis@1.35.8)(convex@1.29.2(react@19.2.3))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.3)(mammoth@1.11.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(playwright@1.57.0)(redis@5.10.0)(word-extractor@1.0.4)(ws@8.18.3)":
+  '@langchain/community@1.1.1(@aws-crypto/sha256-js@5.2.0)(@aws-sdk/client-s3@3.957.0)(@aws-sdk/credential-provider-node@3.957.0)(@browserbasehq/sdk@2.6.0)(@browserbasehq/stagehand@1.14.0(@playwright/test@1.57.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(zod@4.2.1))(@ibm-cloud/watsonx-ai@1.6.12)(@langchain/core@1.1.8(@opentelemetry/api@1.9.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1)))(@opentelemetry/api@1.9.0)(@smithy/util-utf8@2.3.0)(@upstash/ratelimit@2.0.7(@upstash/redis@1.35.8))(@upstash/redis@1.35.8)(convex@1.31.2(react@19.2.3))(fast-xml-parser@5.2.5)(google-auth-library@10.5.0)(ibm-cloud-sdk-core@5.4.2)(ignore@5.3.2)(jsdom@26.1.0)(jsonwebtoken@9.0.3)(mammoth@1.11.0)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(playwright@1.57.0)(redis@5.10.0)(word-extractor@1.0.4)(ws@8.18.3)':
     dependencies:
       "@browserbasehq/stagehand": 1.14.0(@playwright/test@1.57.0)(deepmerge@4.3.1)(dotenv@17.2.3)(openai@6.15.0(ws@8.18.3)(zod@4.2.1))(zod@4.2.1)
       "@ibm-cloud/watsonx-ai": 1.6.12
@@ -13916,14 +13913,14 @@ snapshots:
       uuid: 10.0.0
       zod: 4.2.1
     optionalDependencies:
-      "@aws-crypto/sha256-js": 5.2.0
-      "@aws-sdk/client-s3": 3.957.0
-      "@aws-sdk/credential-provider-node": 3.957.0
-      "@browserbasehq/sdk": 2.6.0
-      "@smithy/util-utf8": 2.3.0
-      "@upstash/ratelimit": 2.0.7(@upstash/redis@1.35.8)
-      "@upstash/redis": 1.35.8
-      convex: 1.29.2(react@19.2.3)
+      '@aws-crypto/sha256-js': 5.2.0
+      '@aws-sdk/client-s3': 3.957.0
+      '@aws-sdk/credential-provider-node': 3.957.0
+      '@browserbasehq/sdk': 2.6.0
+      '@smithy/util-utf8': 2.3.0
+      '@upstash/ratelimit': 2.0.7(@upstash/redis@1.35.8)
+      '@upstash/redis': 1.35.8
+      convex: 1.31.2(react@19.2.3)
       fast-xml-parser: 5.2.5
       google-auth-library: 10.5.0
       ignore: 5.3.2
@@ -16246,7 +16243,7 @@ snapshots:
 
   convert-source-map@2.0.0: {}
 
-  convex@1.29.2(react@19.2.3):
+  convex@1.31.2(react@19.2.3):
     dependencies:
       esbuild: 0.25.4
       prettier: 3.7.4

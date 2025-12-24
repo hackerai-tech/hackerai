@@ -198,7 +198,7 @@ export const exampleQuery = query({
     handler: async (ctx, args) => {
         const idToUsername: Record<Id<"users">, string> = {};
         for (const userId of args.userIds) {
-            const user = await ctx.db.get(userId);
+            const user = await ctx.db.get("users", userId);
             if (user) {
                 idToUsername[user._id] = user.username;
             }
@@ -236,8 +236,8 @@ const messages = await ctx.db
 
 
 ## Mutation guidelines
-- Use `ctx.db.replace` to fully replace an existing document. This method will throw an error if the document does not exist.
-- Use `ctx.db.patch` to shallow merge updates into an existing document. This method will throw an error if the document does not exist.
+- Use `ctx.db.replace` to fully replace an existing document. This method will throw an error if the document does not exist. Syntax: `await ctx.db.replace('tasks', taskId, { name: 'Buy milk', completed: false })`
+- Use `ctx.db.patch` to shallow merge updates into an existing document. This method will throw an error if the document does not exist. Syntax: `await ctx.db.patch('tasks', taskId, { completed: true })`
 
 ## Action guidelines
 - Always add `"use node";` to the top of files containing actions that use Node.js built-in modules.
@@ -307,7 +307,7 @@ export const exampleQuery = query({
     args: { fileId: v.id("_storage") },
     returns: v.null(),
     handler: async (ctx, args) => {
-        const metadata: FileMetadata | null = await ctx.db.system.get(args.fileId);
+        const metadata: FileMetadata | null = await ctx.db.system.get("_storage", args.fileId);
         console.log(metadata);
         return null;
     },
@@ -434,7 +434,7 @@ Internal Functions:
   "description": "This example shows how to build a chat app without authentication.",
   "version": "1.0.0",
   "dependencies": {
-    "convex": "^1.17.4",
+    "convex": "^1.31.2",
     "openai": "^4.79.0"
   },
   "devDependencies": {
@@ -480,8 +480,8 @@ import OpenAI from "openai";
 import { internal } from "./_generated/api";
 
 /**
-  * Create a user with a given name.
-  */
+ * Create a user with a given name.
+ */
 export const createUser = mutation({
   args: {
     name: v.string(),
@@ -493,8 +493,8 @@ export const createUser = mutation({
 });
 
 /**
-  * Create a channel with a given name.
-  */
+ * Create a channel with a given name.
+ */
 export const createChannel = mutation({
   args: {
     name: v.string(),
@@ -506,8 +506,8 @@ export const createChannel = mutation({
 });
 
 /**
-  * List the 10 most recent messages from a channel in descending creation order.
-  */
+ * List the 10 most recent messages from a channel in descending creation order.
+ */
 export const listMessages = query({
   args: {
     channelId: v.id("channels"),
@@ -532,8 +532,8 @@ export const listMessages = query({
 });
 
 /**
-  * Send a message to a channel and schedule a response from the AI.
-  */
+ * Send a message to a channel and schedule a response from the AI.
+ */
 export const sendMessage = mutation({
   args: {
     channelId: v.id("channels"),
@@ -667,9 +667,39 @@ export default defineSchema({
 });
 ```
 
+#### convex/tsconfig.json
+```typescript
+{
+  /* This TypeScript project config describes the environment that
+   * Convex functions run in and is used to typecheck them.
+   * You can modify it, but some settings required to use Convex.
+   */
+  "compilerOptions": {
+    /* These settings are not required by Convex and can be modified. */
+    "allowJs": true,
+    "strict": true,
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+
+    /* These compiler options are required by Convex */
+    "target": "ESNext",
+    "lib": ["ES2021", "dom"],
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["./**/*"],
+  "exclude": ["./_generated"]
+}
+```
+
 #### src/App.tsx
 ```typescript
 export default function App() {
   return <div>Hello World</div>;
 }
 ```
+
