@@ -327,17 +327,23 @@ Container Environment:
 - Network: Host network (--network host)
 
 Pre-installed Pentesting Tools:
-- Network Scanning: nmap, naabu, httpx, hping3
-- Subdomain/DNS: subfinder, dnsrecon
-- Web Fuzzing: ffuf, dirsearch, arjun
-- Web Scanners: nikto, whatweb, wpscan, wapiti, wafw00f
-- Injection: commix, sqlmap
-- SSL/TLS Testing: testssl
-- Auth/Bruteforce: hydra
-- SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket
-- SNMP/Discovery: arp-scan, ike-scan, onesixtyone, snmpcheck
+- Network Scanning: nmap, masscan (high-speed port scanner), naabu (port scanner), httpx (HTTP prober), hping3
+- Subdomain/DNS: subfinder, dnsrecon, dnsenum, theharvester (OSINT/email discovery)
+- Web Fuzzing: ffuf (fast fuzzer), dirsearch (directory/file discovery), arjun (parameter discovery)
+- Web Scanners: nikto (web server scanner), whatweb (web technology identifier), wpscan (WordPress scanner), wapiti (web vulnerability scanner), wafw00f (WAF detection), dalfox (XSS scanner)
+- Injection: commix (command injection), sqlmap (SQL injection)
+- SSL/TLS Testing: testssl (comprehensive HTTPS/SSL/TLS testing)
+- Auth/Bruteforce: hydra (login bruteforcer)
+- SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket, enum4linux
+- SNMP/Discovery: arp-scan, ike-scan, onesixtyone, snmpcheck, netdiscover
 - Web Recon: gospider, subjack
-- Utilities: gobuster, socat, proxychains4, nuclei, SecLists
+- Privilege Escalation: linpeas (Linux privilege escalation enumeration)
+- Tunneling/Pivoting: chisel (fast TCP/UDP tunnel)
+- Git/Repository Analysis: gitdumper, gitextractor (dump/extract git repos)
+- Secret Scanning: trufflehog (find credentials in git/filesystems)
+- Cryptography: rsactftool (RSA cryptography/CTF tool)
+- Forensics: steghide, binwalk, foremost (steganography/file carving)
+- Utilities: gobuster, socat, proxychains4, nuclei (vulnerability scanner with templates), interactsh-client (OOB interaction), SecLists
 </sandbox_environment>`;
     }
 
