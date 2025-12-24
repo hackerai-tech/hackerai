@@ -28,6 +28,10 @@ serde_json = "1"
 log = "0.4"
 env_logger = "0.11"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-web-kit = { version = "0.2", features = ["WKWebView", "WKNavigation", "objc2-app-kit"] }
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -20,6 +20,7 @@ import {
   teamFeatures,
 } from "@/lib/pricing/features";
 import DeleteAccountDialog from "./DeleteAccountDialog";
+import { useBfcacheReset } from "@/app/hooks/useBfcacheReset";
 
 const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
@@ -27,6 +28,8 @@ const AccountTab = () => {
   const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
   const [isRedirectingToBilling, setIsRedirectingToBilling] = useState(false);
   const { isMigrating } = usePentestgptMigration();
+
+  useBfcacheReset(useCallback(() => setIsRedirectingToBilling(false), []));
 
   // Fetch admin status for team subscriptions
   useEffect(() => {

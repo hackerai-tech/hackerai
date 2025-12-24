@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2 } from "lucide-react";
+import { useBfcacheReset } from "@/app/hooks/useBfcacheReset";
 
 interface HeaderProps {
   chatTitle?: string;
@@ -13,6 +14,8 @@ interface HeaderProps {
 const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
   const { user, loading } = useAuth();
   const [navigating, setNavigating] = useState<"signin" | "signup" | null>(null);
+
+  useBfcacheReset(useCallback(() => setNavigating(null), []));
 
   const handleSignIn = () => {
     setNavigating("signin");

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   LogOut,
@@ -35,6 +35,7 @@ import {
 import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { clientLogout } from "@/lib/utils/logout";
+import { useBfcacheReset } from "@/app/hooks/useBfcacheReset";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -96,6 +97,8 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const isMobile = useIsMobile();
+
+  useBfcacheReset(useCallback(() => setIsLoggingOut(false), []));
 
   if (!user) return null;
 
