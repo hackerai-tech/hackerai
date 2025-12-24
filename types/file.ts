@@ -89,3 +89,15 @@ export interface FileDetails {
   storageId?: string;
   s3Key?: string;
 }
+
+/**
+ * File content returned by getFileContentByFileIds query
+ * Used for processing file content in ask mode
+ */
+export interface FileContent {
+  id: Id<"files">;
+  name: string;
+  mediaType: string;
+  content: string | null;
+  tokenSize: number;
+}

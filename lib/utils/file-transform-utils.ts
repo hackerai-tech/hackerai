@@ -3,7 +3,7 @@ import "server-only";
 import { api } from "@/convex/_generated/api";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessage } from "ai";
-import type { ChatMode } from "@/types";
+import type { ChatMode, FileContent } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import { isSupportedImageMediaType } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
@@ -290,7 +290,7 @@ const addDocumentContentToMessages = async (
       { name: string; reason: string }
     >();
 
-    fileContents.forEach((file) => {
+    fileContents.forEach((file: FileContent) => {
       // Check if file exceeds token limit for ask mode
       if (file.tokenSize > MAX_TOKENS_FILE) {
         unprocessableFiles.set(file.id, {

@@ -532,7 +532,7 @@ export const createChatHandler = () => {
 
                       // Filter out null entries and send via custom stream event
                       const validFileMetadata = fileMetadata.filter(
-                        (f) => f !== null,
+                        (f): f is NonNullable<typeof f> => f !== null,
                       );
 
                       if (validFileMetadata.length > 0) {

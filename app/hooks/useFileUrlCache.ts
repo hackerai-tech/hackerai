@@ -122,7 +122,7 @@ export function useFileUrlCache(messages: ChatMessage[]) {
         // Cache the fetched URLs (only if urlMap is valid)
         if (urlMap && typeof urlMap === "object") {
           const now = Date.now();
-          for (const [fileId, url] of Object.entries(urlMap)) {
+          for (const [fileId, url] of Object.entries(urlMap) as Array<[string, string]>) {
             urlCacheRef.current.set(fileId, { url, timestamp: now });
             prefetchedIdsRef.current.add(fileId);
           }

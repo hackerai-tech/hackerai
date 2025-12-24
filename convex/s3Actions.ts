@@ -6,6 +6,10 @@ import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./chats";
 import { getFileLimit } from "./fileStorage";
+import { Doc } from "./_generated/dataModel";
+
+/** File record returned by internal.fileStorage.getFileById */
+type FileRecord = Doc<"files"> | null;
 
 /**
  * Generate presigned S3 upload URL for authenticated users
@@ -104,7 +108,7 @@ export const getFileUrlAction = action({
     fileId: v.id("files"),
   },
   returns: v.string(),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<string> => {
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
@@ -115,9 +119,8 @@ export const getFileUrlAction = action({
 
     try {
       // Get file record using internal query
-      // TODO: Remove type assertion once circular dependency is resolved
-      const file = await ctx.runQuery(
-        (internal as any).fileStorage.getFileById,
+      const file: FileRecord = await ctx.runQuery(
+        internal.fileStorage.getFileById,
         {
           fileId: args.fileId,
         },
@@ -186,7 +189,7 @@ export const getFileUrlsByFileIdsAction = action({
     fileIds: v.array(v.id("files")),
   },
   returns: v.array(v.union(v.string(), v.null())),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<Array<string | null>> => {
     // Verify service role key
     validateServiceKey(args.serviceKey);
 
@@ -199,12 +202,12 @@ export const getFileUrlsByFileIdsAction = action({
     }
 
     // Get file records and generate URLs
-    const urls = await Promise.all(
-      args.fileIds.map(async (fileId) => {
+    const urls: Array<string | null> = await Promise.all(
+      args.fileIds.map(async (fileId): Promise<string | null> => {
         try {
           // Get file record using internal query
-          const file = await ctx.runQuery(
-            (internal as any).fileStorage.getFileById,
+          const file: FileRecord = await ctx.runQuery(
+            internal.fileStorage.getFileById,
             { fileId },
           );
 
@@ -252,7 +255,7 @@ export const getFileUrlsBatchAction = action({
     fileIds: v.array(v.id("files")),
   },
   returns: v.record(v.string(), v.string()),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<Record<string, string>> => {
     // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
@@ -275,9 +278,8 @@ export const getFileUrlsBatchAction = action({
     for (const fileId of args.fileIds) {
       try {
         // Get file record using internal query
-        // TODO: Remove type assertion once circular dependency is resolved
-        const file = await ctx.runQuery(
-          (internal as any).fileStorage.getFileById,
+        const file: FileRecord = await ctx.runQuery(
+          internal.fileStorage.getFileById,
           {
             fileId,
           },
