@@ -7,12 +7,12 @@ import type { SubscriptionTier } from "@/types";
 import { vertex } from "@ai-sdk/google-vertex";
 
 const baseProviders = {
-  "ask-model": vertex("gemini-3-flash-preview"),
-  "ask-model-free": openrouter("google/gemini-3-flash-preview"),
-  "ask-vision-model": vertex("gemini-3-flash-preview"),
-  "ask-vision-model-for-pdfs": vertex("gemini-3-flash-preview"),
-  "agent-model": vertex("gemini-3-flash-preview"),
-  "agent-vision-model": vertex("gemini-3-flash-preview"),
+  "ask-model": openrouter("google/gemini-3-flash-preview"),
+  "ask-model-free": vertex("gemini-3-flash-preview"),
+  "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
+  "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
+  "agent-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": xai("grok-4-1-fast-non-reasoning"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
