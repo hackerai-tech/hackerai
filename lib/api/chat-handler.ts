@@ -367,13 +367,13 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
-              ...(isReasoningModel && {
-                google: {
-                  thinkingConfig: {
-                    includeThoughts: true,
-                  },
-                } as GoogleGenerativeAIProviderOptions,
-              }),
+              google: {
+                thinkingConfig: {
+                  ...(isReasoningModel
+                    ? { includeThoughts: true }
+                    : { thinkingBudget: 0 }),
+                },
+              } as GoogleGenerativeAIProviderOptions,
               openrouter: {
                 ...(isReasoningModel ? { reasoning: { enabled: true } } : {}),
                 provider: {
