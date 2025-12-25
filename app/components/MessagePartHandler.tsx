@@ -1,4 +1,4 @@
-import { UIMessage } from "@ai-sdk/react";
+import { UIMessage, UseChatHelpers } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
@@ -8,7 +8,7 @@ import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
-import type { ChatStatus } from "@/types";
+import type { ChatMessage, ChatStatus } from "@/types";
 import { ReasoningHandler } from "./ReasoningHandler";
 
 interface MessagePartHandlerProps {
@@ -17,6 +17,7 @@ interface MessagePartHandlerProps {
   partIndex: number;
   status: ChatStatus;
   isLastMessage?: boolean;
+  addToolApprovalResponse?: UseChatHelpers<ChatMessage>["addToolApprovalResponse"];
 }
 
 export const MessagePartHandler = ({
@@ -25,6 +26,7 @@ export const MessagePartHandler = ({
   partIndex,
   status,
   isLastMessage,
+  addToolApprovalResponse,
 }: MessagePartHandlerProps) => {
   const renderTextPart = () => {
     const partId = `${message.id}-text-${partIndex}`;
@@ -84,7 +86,12 @@ export const MessagePartHandler = ({
     case "data-terminal":
     case "tool-run_terminal_cmd":
       return (
-        <TerminalToolHandler message={message} part={part} status={status} />
+        <TerminalToolHandler
+          message={message}
+          part={part}
+          status={status}
+          addToolApprovalResponse={addToolApprovalResponse}
+        />
       );
 
     case "data-python":

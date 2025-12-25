@@ -116,7 +116,25 @@ export const saveMessage = mutation({
         .first();
 
       if (existingMessage) {
-        // If message exists and we have fileIds to add, update it
+        // If message exists, update it with new parts and/or fileIds
+        const updateFields: {
+          parts?: any[];
+          content?: string;
+          file_ids?: Array<Id<"files">>;
+          update_time: number;
+        } = {
+          update_time: Date.now(),
+        };
+
+        // Always update parts if they're different (for approval state changes)
+        if (
+          JSON.stringify(existingMessage.parts) !== JSON.stringify(args.parts)
+        ) {
+          updateFields.parts = args.parts;
+          updateFields.content = extractTextFromParts(args.parts) || undefined;
+        }
+
+        // Update file_ids if new ones are provided
         if (args.fileIds && args.fileIds.length > 0) {
           const currentFileIds = existingMessage.file_ids || [];
           const newFileIds = args.fileIds.filter(
@@ -124,10 +142,7 @@ export const saveMessage = mutation({
           );
 
           if (newFileIds.length > 0) {
-            await ctx.db.patch(existingMessage._id, {
-              file_ids: [...currentFileIds, ...newFileIds],
-              update_time: Date.now(),
-            });
+            updateFields.file_ids = [...currentFileIds, ...newFileIds];
 
             // Mark new files as linked
             for (const fileId of newFileIds) {
@@ -145,6 +160,13 @@ export const saveMessage = mutation({
             }
           }
         }
+
+        // Only patch if there are actual changes
+        if (Object.keys(updateFields).length > 1) {
+          // > 1 because update_time is always present
+          await ctx.db.patch(existingMessage._id, updateFields);
+        }
+
         return null;
       } else {
         const chatExists: boolean = await ctx.runQuery(

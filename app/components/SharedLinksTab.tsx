@@ -198,7 +198,9 @@ const SharedLinksTab = () => {
             <AlertDialogAction
               onClick={() => {
                 if (unshareTarget) {
-                  const chat = sharedChats.find((c: SharedChat) => c.id === unshareTarget);
+                  const chat = sharedChats.find(
+                    (c: SharedChat) => c.id === unshareTarget,
+                  );
                   if (chat) {
                     handleUnshare(unshareTarget, chat.title);
                   }

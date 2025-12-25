@@ -12,7 +12,7 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import type { ChatMode, Todo, SandboxPreference } from "@/types";
+import type { ChatMode, Todo, SandboxPreference, AutoRunMode } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
@@ -42,6 +42,7 @@ import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
+import { isApprovalContinuation } from "@/lib/utils/approval-detection";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -93,6 +94,7 @@ export const createChatHandler = () => {
         regenerate,
         temporary,
         sandboxPreference,
+        autoRunMode,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -101,6 +103,7 @@ export const createChatHandler = () => {
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
+        autoRunMode?: string;
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
@@ -147,7 +150,14 @@ export const createChatHandler = () => {
         });
       }
 
-      const rateLimitInfo = await checkRateLimit(userId, mode, subscription);
+      // Check if this is an approval continuation (tool approval or rate limit approval)
+      // If so, skip rate limit check to avoid double-charging the user's quota
+      const isToolApprovalFlow = isApprovalContinuation(messages);
+
+      // Only check rate limit for NEW user requests, not approval continuations
+      const rateLimitInfo = isToolApprovalFlow
+        ? { remaining: 999, resetTime: new Date(), limit: 999 } // Mock info for approval flows
+        : await checkRateLimit(userId, mode, subscription);
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -159,7 +169,12 @@ export const createChatHandler = () => {
       const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
       const posthog = PostHogClient();
-      const assistantMessageId = uuidv4();
+
+      // For approval continuations, reuse the existing assistant message ID
+      // For new requests, generate a new ID
+      const assistantMessageId = isToolApprovalFlow
+        ? messages.find((msg) => msg.role === "assistant")?.id || uuidv4()
+        : uuidv4();
 
       // Start temp stream coordination for temporary chats
       if (temporary) {
@@ -218,6 +233,7 @@ export const createChatHandler = () => {
             subscription,
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
+            autoRunMode as AutoRunMode | undefined,
           );
 
           // Get sandbox context for system prompt (only for local sandboxes)
@@ -437,6 +453,23 @@ export const createChatHandler = () => {
                 // Stop cancellation poller
                 cancellationPoller.stop();
                 pollerStopped = true;
+
+                // Check if the stream stopped because of pending approvals
+                // If there are approval-requested states, don't show the finish reason notice
+                if (streamFinishReason === "tool-calls") {
+                  const hasPendingApprovals = messages.some((msg: any) =>
+                    msg.parts?.some(
+                      (part: any) =>
+                        "state" in part && part.state === "approval-requested",
+                    ),
+                  );
+
+                  // If there are pending approvals, clear the finish reason (no notice shown)
+                  // Otherwise, keep the "tool-calls" finish reason (max steps reached)
+                  if (hasPendingApprovals) {
+                    streamFinishReason = undefined;
+                  }
+                }
 
                 // Sandbox cleanup is automatic with auto-pause
                 // The sandbox will auto-pause after inactivity timeout (7 minutes)

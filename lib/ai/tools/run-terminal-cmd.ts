@@ -16,14 +16,34 @@ const MAX_COMMAND_EXECUTION_TIME = 7 * 60 * 1000; // 7 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer, backgroundProcessTracker, isE2BSandbox } =
-    context;
+  const {
+    sandboxManager,
+    writer,
+    backgroundProcessTracker,
+    autoRunMode = "auto-run-sandbox",
+    sandboxPreference,
+  } = context;
 
   // Wait instructions for E2B sandbox (local sandbox uses different commands)
   // Note: Code also handles 'while ps -p' loops for robustness, but we only document tail --pid
   const waitForProcessInstruction = `To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This blocks until the process exits and gets extended timeout (up to ${Math.floor(MAX_COMMAND_EXECUTION_TIME / 1000 / 60)} minutes). Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\``;
 
   const timeoutWaitInstruction = `If a foreground command times out after ${STREAM_TIMEOUT_SECONDS} seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`;
+
+  // Determine if approval is needed based on autoRunMode
+  let needsApproval: boolean;
+
+  if (autoRunMode === "run-everything") {
+    // Never ask for approval
+    needsApproval = false;
+  } else if (autoRunMode === "ask-every-time") {
+    // Always ask for approval
+    needsApproval = true;
+  } else {
+    // Default: "auto-run-sandbox" → only ask for local sandboxes
+    const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
+    needsApproval = Boolean(isLocalSandbox);
+  }
 
   return tool({
     description: `Execute a command on behalf of the user.
@@ -90,6 +110,7 @@ If you are generating files:
           "Whether the command should be run in the background. Set to FALSE if you need to retrieve output files immediately after with get_terminal_files. Only use TRUE for indefinite processes where you don't need immediate file access.",
         ),
     }),
+    ...(needsApproval ? { needsApproval: true } : {}),
     execute: async (
       {
         command,

@@ -1,26 +1,35 @@
 import React, { useEffect, useMemo } from "react";
-import { UIMessage } from "@ai-sdk/react";
+import { UIMessage, UseChatHelpers } from "@ai-sdk/react";
 import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import type { ChatStatus, SidebarTerminal } from "@/types/chat";
+import type { ChatMessage, ChatStatus, SidebarTerminal } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
+import { TerminalCommandApproval } from "./TerminalCommandApproval";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  addToolApprovalResponse?: UseChatHelpers<ChatMessage>["addToolApprovalResponse"];
 }
 
 export const TerminalToolHandler = ({
   message,
   part,
   status,
+  addToolApprovalResponse,
 }: TerminalToolHandlerProps) => {
-  const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
-    useGlobalState();
-  const { toolCallId, state, input, output, errorText } = part;
+  const {
+    openSidebar,
+    sidebarOpen,
+    sidebarContent,
+    updateSidebarContent,
+    autoRunMode,
+    setAutoRunMode,
+  } = useGlobalState();
+  const { toolCallId, state, input, output, errorText, approval } = part;
   const terminalInput = input as {
     command: string;
     is_background: boolean;
@@ -110,6 +119,23 @@ export const TerminalToolHandler = ({
           isShimmer={true}
         />
       ) : null;
+    case "approval-requested":
+    case "approval-responded":
+    case "output-denied":
+      return (
+        <TerminalCommandApproval
+          state={state}
+          terminalInput={terminalInput}
+          approval={approval}
+          autoRunMode={autoRunMode || "auto-run-sandbox"}
+          setAutoRunMode={setAutoRunMode!}
+          addToolApprovalResponse={addToolApprovalResponse}
+          toolCallId={toolCallId}
+          finalOutput={finalOutput}
+          handleOpenInSidebar={handleOpenInSidebar}
+          handleKeyDown={handleKeyDown}
+        />
+      );
     case "input-available":
       return (
         <ToolBlock

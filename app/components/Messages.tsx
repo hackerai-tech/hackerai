@@ -8,6 +8,7 @@ import {
   SetStateAction,
   Fragment,
 } from "react";
+import { UseChatHelpers } from "@ai-sdk/react";
 import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
@@ -60,6 +61,7 @@ interface MessagesProps {
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
+  addToolApprovalResponse?: UseChatHelpers<ChatMessage>["addToolApprovalResponse"];
 }
 
 export const Messages = ({
@@ -84,6 +86,7 @@ export const Messages = ({
   chatTitle,
   branchedFromChatId,
   branchedFromChatTitle,
+  addToolApprovalResponse,
 }: MessagesProps) => {
   // Prefetch and cache image URLs for better performance
   const { getCachedUrl, setCachedUrl } = useFileUrlCache(messages);
@@ -369,6 +372,9 @@ export const Messages = ({
                                   part={part}
                                   partIndex={partIndex}
                                   status={status}
+                                  addToolApprovalResponse={
+                                    addToolApprovalResponse
+                                  }
                                 />
                               ))}
                             </div>
@@ -382,6 +388,9 @@ export const Messages = ({
                                 partIndex={partIndex}
                                 status={status}
                                 isLastMessage={index === messages.length - 1}
+                                addToolApprovalResponse={
+                                  addToolApprovalResponse
+                                }
                               />
                             ))
                           )}
@@ -400,6 +409,9 @@ export const Messages = ({
                                 part={part}
                                 partIndex={partIndex}
                                 status={status}
+                                addToolApprovalResponse={
+                                  addToolApprovalResponse
+                                }
                               />
                             ))}
                           </div>
