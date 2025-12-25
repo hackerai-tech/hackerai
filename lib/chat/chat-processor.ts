@@ -98,6 +98,31 @@ export function addAuthMessage(messages: UIMessage[]) {
 }
 
 /**
+ * Filters out messages with no valid content
+ * A valid message must have at least one part with actual content
+ */
+function filterEmptyMessages(messages: UIMessage[]): UIMessage[] {
+  return messages.filter((msg) => {
+    // Check if message has parts array
+    if (!msg.parts || msg.parts.length === 0) {
+      return false;
+    }
+
+    // Check if at least one part has valid content
+    return msg.parts.some((part: any) => {
+      if (part.type === "text") {
+        return part.text && part.text.trim().length > 0;
+      }
+      // Image, file, and other non-text parts are always considered valid
+      if (part.type === "image" || part.type === "file") {
+        return true;
+      }
+      return false;
+    });
+  });
+}
+
+/**
  * Processes chat messages with moderation, truncation, and analytics
  */
 export async function processChatMessages({
@@ -117,6 +142,9 @@ export async function processChatMessages({
     containsPdfFiles,
   } = await processMessageFiles(messages, mode);
 
+  // Filter out empty messages before sending to AI
+  const filteredMessages = filterEmptyMessages(messagesWithUrls);
+
   // Select the appropriate model
   const selectedModel = selectModel(
     mode,
@@ -127,17 +155,17 @@ export async function processChatMessages({
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(
-    messagesWithUrls,
+    filteredMessages,
     subscription === "pro" || subscription === "ultra",
   );
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(messagesWithUrls);
+    addAuthMessage(filteredMessages);
   }
 
   return {
-    processedMessages: messagesWithUrls,
+    processedMessages: filteredMessages,
     selectedModel,
     sandboxFiles,
   };
