@@ -277,7 +277,7 @@ export const createChatHandler = () => {
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let hasSummarized = false;
-          const isReasoningModel = mode === "agent"
+          const isReasoningModel = mode === "agent";
 
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
@@ -378,8 +378,8 @@ export const createChatHandler = () => {
               },
             },
             experimental_transform: isReasoningModel
-            ? undefined
-            : smoothStream({ chunking: "word" }),
+              ? undefined
+              : smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
