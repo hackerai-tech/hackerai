@@ -53,6 +53,7 @@ import {
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -366,13 +367,18 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
+              ...(isReasoningModel && {
+                google: {
+                  thinkingConfig: {
+                    includeThoughts: true,
+                  },
+                } as GoogleGenerativeAIProviderOptions,
+              }),
               openrouter: {
                 ...(isReasoningModel ? { reasoning: { enabled: true } } : {}),
                 provider: {
                   ...(subscription === "free"
-                    ? {
-                        sort: "price",
-                      }
+                    ? { sort: "price" }
                     : { sort: "latency" }),
                 },
               },

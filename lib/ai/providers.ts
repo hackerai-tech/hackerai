@@ -7,11 +7,11 @@ import type { SubscriptionTier } from "@/types";
 import { vertex } from "@ai-sdk/google-vertex";
 
 const baseProviders = {
-  "ask-model": vertex("gemini-3-flash-preview"),
-  "ask-model-free": openrouter("google/gemini-3-flash-preview"),
+  "ask-model": openrouter("google/gemini-3-flash-preview"),
+  "ask-model-free": vertex("gemini-3-flash-preview"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
-  "agent-model": vertex("gemini-3-flash-preview"),
+  "agent-model": openrouter("google/gemini-3-flash-preview"),
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": xai("grok-4-1-fast-non-reasoning"),
@@ -25,7 +25,7 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "ask-model-free": "January 2025",
   "ask-vision-model": "January 2025",
   "ask-vision-model-for-pdfs": "January 2025",
-  "agent-model": "November 2024",
+  "agent-model": "January 2025",
   "agent-vision-model": "January 2025",
   "title-generator-model": "November 2024",
   "summarization-model": "November 2024",
