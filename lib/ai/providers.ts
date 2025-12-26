@@ -24,8 +24,8 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "ask-model-free": "January 2025",
   "ask-vision-model": "January 2025",
   "ask-vision-model-for-pdfs": "January 2025",
-  "agent-model": "January 2025",
-  "agent-vision-model": "January 2025",
+  "agent-model": "November 2024",
+  "agent-vision-model": "November 2024",
   "title-generator-model": "November 2024",
   "summarization-model": "November 2024",
 };
