@@ -10,8 +10,8 @@ const baseProviders = {
   "ask-model-free": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
-  "agent-model": openrouter("google/gemini-3-flash-preview"),
-  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-model": openrouter("x-ai/grok-4.1-fast"),
+  "agent-vision-model": openrouter("x-ai/grok-4.1-fast"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": xai("grok-4-1-fast-non-reasoning"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -24,8 +24,8 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "ask-model-free": "January 2025",
   "ask-vision-model": "January 2025",
   "ask-vision-model-for-pdfs": "January 2025",
-  "agent-model": "January 2025",
-  "agent-vision-model": "January 2025",
+  "agent-model": "November 2024",
+  "agent-vision-model": "November 2024",
   "title-generator-model": "November 2024",
   "summarization-model": "November 2024",
 };
