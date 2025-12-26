@@ -14,17 +14,10 @@ export const isApprovalContinuation = (messages: UIMessage[]): boolean => {
   return messages.some((msg) =>
     msg.parts?.some((part) => {
       const state = (part as any).state;
-      const type = (part as any).type;
 
       // Check for any approval response states
-      const isApprovalState =
-        state === "approval-responded" || state === "output-denied";
-
-      // Check for tool or rate limit approval types
-      const isApprovalType =
-        type?.startsWith("tool-") || type === "rate-limit-confirmation";
-
-      return isApprovalState && isApprovalType;
+      // Only approval-requiring parts (tools, rate limits) have these states
+      return state === "approval-responded" || state === "output-denied";
     }),
   );
 };

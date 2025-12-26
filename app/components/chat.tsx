@@ -22,6 +22,7 @@ import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
+import { isApprovalContinuation } from "@/lib/utils/approval-detection";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
@@ -217,24 +218,8 @@ export const Chat = ({
           !isExistingChatRef.current && temporaryChatsEnabledRef.current;
 
         // Detect if this is an approval continuation (tool approval or rate limit approval)
-        // When user approves/denies a tool, we only need to send the assistant message with approval
-        const approvedMessage = normalizedMessages.find((msg) =>
-          msg.parts?.some((part: any) => {
-            const state = part.state;
-            const type = part.type;
-
-            // Check for any approval response states
-            const isApprovalState =
-              state === "approval-responded" || state === "output-denied";
-
-            // Check for tool or rate limit approval types
-            const isApprovalType =
-              type?.startsWith("tool-") || type === "rate-limit-confirmation";
-
-            return isApprovalState && isApprovalType;
-          }),
-        );
-        const isApprovalContinuation = Boolean(approvedMessage);
+        // Use the centralized helper to avoid duplicate logic
+        const isApprovalFlow = isApprovalContinuation(normalizedMessages);
 
         // Strip URLs from file parts before sending to backend
         // This ensures backend always generates fresh URLs (prevents 403 errors from expired URLs)
@@ -259,12 +244,12 @@ export const Chat = ({
 
         // Send messages based on the request type:
         // 1. Temporary chats: all messages (not persisted to DB yet)
-        // 2. Approval continuations: just the assistant message with approval state
+        // 2. Approval continuations: all normalized messages (contains approval state)
         // 3. Normal requests: just the last user message
         const messagesToSend = isTemporaryChat
           ? normalizedMessages
-          : isApprovalContinuation && approvedMessage
-            ? [approvedMessage]
+          : isApprovalFlow
+            ? normalizedMessages
             : lastMessage;
         const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
 
