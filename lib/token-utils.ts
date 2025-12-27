@@ -35,7 +35,7 @@ export const TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
     : `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
 
 /**
- * Count tokens for a single message part
+ * Count tokens for a single message part, excluding providerMetadata/callProviderMetadata
  */
 const countPartTokens = (
   part: UIMessagePart<any, any>,
@@ -52,23 +52,31 @@ const countPartTokens = (
     const fileId = (part as { fileId: Id<"files"> }).fileId;
     return fileTokens[fileId] || 0;
   }
-  // For tool-call, tool-result, and other part types, count their JSON structure
+
+  // For other part types, exclude provider metadata (e.g., OpenRouter reasoning_details)
+  const partAny = part as any;
+  const hasMetadata = partAny.providerMetadata || partAny.callProviderMetadata;
+
+  if (hasMetadata) {
+    const { providerMetadata, callProviderMetadata, ...partWithoutMetadata } =
+      partAny;
+    return countTokens(JSON.stringify(partWithoutMetadata));
+  }
+
   return countTokens(JSON.stringify(part));
 };
 
 /**
- * Extracts and counts tokens from message text and file tokens (excluding reasoning blocks)
+ * Count tokens for a message, excluding step-start and reasoning parts
  */
 const getMessageTokenCountWithFiles = (
   message: UIMessage,
   fileTokens: Record<Id<"files">, number> = {},
 ): number => {
-  // Filter out reasoning blocks before counting tokens
   const partsWithoutReasoning = message.parts.filter(
     (part) => part.type !== "step-start" && part.type !== "reasoning",
   );
 
-  // Count tokens for all parts
   const totalTokens = partsWithoutReasoning.reduce(
     (sum, part) => sum + countPartTokens(part, fileTokens),
     0,
