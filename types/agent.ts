@@ -26,6 +26,12 @@ export interface SandboxContext {
   setSandbox: (sandbox: Sandbox) => void;
 }
 
+// Auto-run mode: controls when to show tool approval dialogs
+export type AutoRunMode =
+  | "ask-every-time" // Always ask before executing any command
+  | "auto-run-sandbox" // Auto-run in E2B, ask for local sandboxes (default)
+  | "run-everything"; // Never ask, auto-run everything (dangerous)
+
 export interface ToolContext {
   sandboxManager: SandboxManager;
   writer: UIMessageStreamWriter;
@@ -37,4 +43,6 @@ export interface ToolContext {
   backgroundProcessTracker: BackgroundProcessTracker;
   mode: ChatMode;
   isE2BSandbox: IsE2BSandboxFn;
+  autoRunMode?: "ask-every-time" | "auto-run-sandbox" | "run-everything";
+  sandboxPreference?: string; // "e2b" or connection ID
 }

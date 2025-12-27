@@ -334,8 +334,29 @@ export async function getMessagesByChatId({
     // The backend query already excluded the last message being regenerated
     allMessages = existingMessages;
   } else {
-    // For normal chat, merge existing messages with the new user message
-    allMessages = [...existingMessages, ...newMessages];
+    // Check if newMessages contains an approval response (tool or rate limit)
+    // If so, we need to UPDATE the existing message instead of appending
+    const approvalMessage = newMessages.find((msg) =>
+      msg.parts?.some((part: any) => {
+        const state = part.state;
+        const type = part.type;
+        const isApprovalState =
+          state === "approval-responded" || state === "output-denied";
+        const isApprovalType =
+          type?.startsWith("tool-") || type === "rate-limit-confirmation";
+        return isApprovalState && isApprovalType;
+      }),
+    );
+
+    if (approvalMessage) {
+      // Replace the existing message with the approved one
+      allMessages = existingMessages.map((msg) =>
+        msg.id === approvalMessage.id ? approvalMessage : msg,
+      );
+    } else {
+      // For normal chat, merge existing messages with the new user message
+      allMessages = [...existingMessages, ...newMessages];
+    }
   }
 
   const truncatedMessages = await truncateMessagesWithFileTokens(

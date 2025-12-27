@@ -22,6 +22,7 @@ import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
+import { isApprovalContinuation } from "@/lib/utils/approval-detection";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
@@ -76,6 +77,7 @@ export const Chat = ({
     todos,
     sandboxPreference,
     setSandboxPreference,
+    autoRunMode,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -171,12 +173,27 @@ export const Chat = ({
     error,
     regenerate,
     resumeStream,
-  } = useChat({
+    addToolApprovalResponse,
+  } = useChat<ChatMessage>({
     id: chatId,
     messages: initialMessages,
     experimental_throttle: 100,
     generateId: () => uuidv4(),
-
+    // Auto-continue after tool approval (only for APPROVED tools)
+    // Denied tools don't need server continuation - state is saved on next user message
+    sendAutomaticallyWhen: ({ messages: currentMessages }) => {
+      const lastMessage = currentMessages.at(-1);
+      // Only continue if a tool was APPROVED (not denied)
+      const shouldContinue =
+        lastMessage?.parts?.some(
+          (part) =>
+            "state" in part &&
+            part.state === "approval-responded" &&
+            "approval" in part &&
+            (part.approval as { approved?: boolean })?.approved === true,
+        ) ?? false;
+      return shouldContinue;
+    },
     transport: new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
@@ -200,6 +217,10 @@ export const Chat = ({
         const isTemporaryChat =
           !isExistingChatRef.current && temporaryChatsEnabledRef.current;
 
+        // Detect if this is an approval continuation (tool approval or rate limit approval)
+        // Use the centralized helper to avoid duplicate logic
+        const isApprovalFlow = isApprovalContinuation(normalizedMessages);
+
         // Strip URLs from file parts before sending to backend
         // This ensures backend always generates fresh URLs (prevents 403 errors from expired URLs)
         // Backend will fetch URLs using fileId, supporting both S3 and Convex storage
@@ -221,15 +242,22 @@ export const Chat = ({
           });
         };
 
+        // Send messages based on the request type:
+        // 1. Temporary chats: all messages (not persisted to DB yet)
+        // 2. Approval continuations: all normalized messages (contains approval state)
+        // 3. Normal requests: just the last user message
         const messagesToSend = isTemporaryChat
           ? normalizedMessages
-          : lastMessage;
+          : isApprovalFlow
+            ? normalizedMessages
+            : lastMessage;
         const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
 
         return {
           body: {
             chatId: id,
             messages: messagesWithoutUrls,
+            autoRunMode,
             ...body,
           },
         };
@@ -703,6 +731,7 @@ export const Chat = ({
                     chatTitle={chatTitle}
                     branchedFromChatId={branchedFromChatId}
                     branchedFromChatTitle={branchedFromChatTitle}
+                    addToolApprovalResponse={addToolApprovalResponse}
                   />
                 ) : (
                   <div className="flex-1 flex flex-col min-h-0">
