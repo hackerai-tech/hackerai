@@ -89,9 +89,16 @@ const downloadFileToSandbox = async (
   if (dir) {
     await sandbox.commands.run(`mkdir -p "${dir}"`);
   }
+
+  // Use single quotes for the URL to avoid shell expansion of characters like $
+  // and escape any single quotes already in the URL.
+  const escapedUrl = url.replace(/'/g, "'\\''");
+  const escapedLocalPath = localPath.replace(/'/g, "'\\''");
+
   const result = await sandbox.commands.run(
-    `curl -fsSL -o "${localPath}" "${url}"`,
+    `curl -fsSL -o '${escapedLocalPath}' '${escapedUrl}'`,
   );
+
   if (result.exitCode !== 0) {
     throw new Error(`Failed to download file: ${result.stderr}`);
   }
