@@ -12,7 +12,7 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import type { ChatMode, Todo, SandboxPreference } from "@/types";
+import type { ChatMode, Todo, SandboxPreference, AutoRunMode } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { ChatSDKError } from "@/lib/errors";
@@ -42,6 +42,7 @@ import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
+import { isApprovalContinuation } from "@/lib/utils/approval-detection";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -93,6 +94,7 @@ export const createChatHandler = () => {
         regenerate,
         temporary,
         sandboxPreference,
+        autoRunMode,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -101,6 +103,7 @@ export const createChatHandler = () => {
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
+        autoRunMode?: string;
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
@@ -137,7 +140,13 @@ export const createChatHandler = () => {
         { isTemporary: !!temporary, regenerate },
       );
 
-      if (!temporary) {
+      // Check if this is an approval continuation (tool approval or rate limit approval)
+      // If so, skip rate limit check and message save to avoid double-charging and duplicate saves
+      const isToolApprovalFlow = isApprovalContinuation(messages);
+
+      // Only save user message for NEW requests, not approval continuations
+      // Frontend already saved the approval state on the assistant message
+      if (!temporary && !isToolApprovalFlow) {
         await handleInitialChatAndUserMessage({
           chatId,
           userId,
@@ -147,7 +156,10 @@ export const createChatHandler = () => {
         });
       }
 
-      const rateLimitInfo = await checkRateLimit(userId, mode, subscription);
+      // Only check rate limit for NEW user requests, not approval continuations
+      const rateLimitInfo = isToolApprovalFlow
+        ? { remaining: 999, resetTime: new Date(), limit: 999 } // Mock info for approval flows
+        : await checkRateLimit(userId, mode, subscription);
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -159,7 +171,12 @@ export const createChatHandler = () => {
       const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
       const posthog = PostHogClient();
-      const assistantMessageId = uuidv4();
+
+      // For approval continuations, reuse the existing assistant message ID
+      // For new requests, generate a new ID
+      const assistantMessageId = isToolApprovalFlow
+        ? messages.findLast((msg) => msg.role === "assistant")?.id || uuidv4()
+        : uuidv4();
 
       // Start temp stream coordination for temporary chats
       if (temporary) {
@@ -184,8 +201,18 @@ export const createChatHandler = () => {
       // Track summarization events to add to message parts
       const summarizationParts: UIMessagePart<any, any>[] = [];
 
+      // Declare variables in higher scope so they're accessible in both execute and onFinish
+      let getTodoManager: any;
+      let getFileAccumulator: any;
+      let streamFinishReason: string | undefined;
+      let titlePromise: Promise<string | undefined>;
+      let writer: any;
+
       const stream = createUIMessageStream({
-        execute: async ({ writer }) => {
+        originalMessages: isToolApprovalFlow ? messages : undefined,
+        execute: async ({ writer: writerParam }) => {
+          // Assign writer to higher scope for access in onFinish
+          writer = writerParam;
           // Send rate limit warning if at or below threshold
           const isPaidUser = subscription !== "free";
           const warningThreshold = isPaidUser ? 10 : 5;
@@ -203,8 +230,8 @@ export const createChatHandler = () => {
             tools,
             getSandbox,
             ensureSandbox,
-            getTodoManager,
-            getFileAccumulator,
+            getTodoManager: todoManagerFn,
+            getFileAccumulator: fileAccumulatorFn,
             sandboxManager,
           } = createTools(
             userId,
@@ -218,7 +245,12 @@ export const createChatHandler = () => {
             subscription,
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
+            autoRunMode as AutoRunMode | undefined,
           );
+
+          // Assign to higher-scope variables for access in onFinish
+          getTodoManager = todoManagerFn;
+          getFileAccumulator = fileAccumulatorFn;
 
           // Get sandbox context for system prompt (only for local sandboxes)
           let sandboxContext: string | null = null;
@@ -247,7 +279,7 @@ export const createChatHandler = () => {
           }
 
           // Generate title in parallel only for non-temporary new chats
-          const titlePromise =
+          titlePromise =
             isNewChat && !temporary
               ? generateTitleFromUserMessageWithWriter(
                   processedMessages,
@@ -273,7 +305,6 @@ export const createChatHandler = () => {
             sandboxContext,
           );
 
-          let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let hasSummarized = false;
@@ -433,135 +464,150 @@ export const createChatHandler = () => {
           writer.merge(
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
-              onFinish: async ({ messages, isAborted }) => {
-                // Clear pre-emptive timeout
-                preemptiveTimeout?.clear();
-
-                // Stop cancellation poller
-                cancellationPoller.stop();
-                pollerStopped = true;
-
-                // Sandbox cleanup is automatic with auto-pause
-                // The sandbox will auto-pause after inactivity timeout (7 minutes)
-                // No manual pause needed
-
-                // Always wait for title generation to complete
-                const generatedTitle = await titlePromise;
-
-                if (!temporary) {
-                  const mergedTodos = getTodoManager().mergeWith(
-                    baseTodos,
-                    assistantMessageId,
-                  );
-
-                  const shouldPersist = regenerate
-                    ? true
-                    : Boolean(
-                        generatedTitle ||
-                        streamFinishReason ||
-                        mergedTodos.length > 0,
-                      );
-
-                  if (shouldPersist) {
-                    // updateChat automatically clears stream state (active_stream_id and canceled_at)
-                    await updateChat({
-                      chatId,
-                      title: generatedTitle,
-                      finishReason: streamFinishReason,
-                      todos: mergedTodos,
-                      defaultModelSlug: mode,
-                    });
-                  } else {
-                    // If not persisting, still need to clear stream state
-                    await prepareForNewStream({ chatId });
-                  }
-
-                  const newFileIds = getFileAccumulator().getAll();
-
-                  // If user aborted (not pre-emptive) and no files to add, skip message save (frontend already saved)
-                  // Pre-emptive aborts should always save to ensure data persistence before timeout
-                  if (
-                    isAborted &&
-                    !preemptiveTimeout?.isPreemptive() &&
-                    (!newFileIds || newFileIds.length === 0)
-                  ) {
-                    return;
-                  }
-
-                  // Save messages (either full save or just append extraFileIds)
-                  for (const message of messages) {
-                    // For assistant messages, prepend summarization parts if any
-                    const messageToSave =
-                      message.role === "assistant" &&
-                      summarizationParts.length > 0
-                        ? {
-                            ...message,
-                            parts: [...summarizationParts, ...message.parts],
-                          }
-                        : message;
-
-                    // Skip saving messages with no parts or files
-                    // This prevents saving empty messages on error that would accumulate on retry
-                    if (
-                      (!messageToSave.parts ||
-                        messageToSave.parts.length === 0) &&
-                      (!newFileIds || newFileIds.length === 0)
-                    ) {
-                      continue;
-                    }
-
-                    await saveMessage({
-                      chatId,
-                      userId,
-                      message: messageToSave,
-                      extraFileIds:
-                        message.role === "assistant" ? newFileIds : undefined,
-                    });
-                  }
-                } else {
-                  // For temporary chats, send file metadata via stream before cleanup
-                  const newFileIds = getFileAccumulator().getAll();
-
-                  if (newFileIds && newFileIds.length > 0) {
-                    try {
-                      // Fetch file metadata in batch
-                      const fileMetadata = await convex.query(
-                        api.fileStorage.getFileMetadataByFileIds,
-                        {
-                          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-                          fileIds: newFileIds,
-                        },
-                      );
-
-                      // Filter out null entries and send via custom stream event
-                      const validFileMetadata = fileMetadata.filter(
-                        (f): f is NonNullable<typeof f> => f !== null,
-                      );
-
-                      if (validFileMetadata.length > 0) {
-                        writer.write({
-                          type: "data-file-metadata",
-                          data: {
-                            messageId: assistantMessageId,
-                            fileDetails: validFileMetadata,
-                          },
-                        });
-                      }
-                    } catch (error) {
-                      console.error(
-                        "Failed to fetch file metadata for temporary chat:",
-                        error,
-                      );
-                    }
-                  }
-
-                  // Ensure temp stream row is removed backend-side
-                  await deleteTempStreamForBackend({ chatId });
-                }
-              },
               sendReasoning: true,
             }),
           );
+        },
+        onFinish: async ({ messages, isAborted }) => {
+          // Clear pre-emptive timeout
+          preemptiveTimeout?.clear();
+
+          // Stop cancellation poller
+          cancellationPoller.stop();
+          pollerStopped = true;
+
+          // Check if the stream stopped because of pending approvals
+          // If there are approval-requested states, don't show the finish reason notice
+          if (streamFinishReason === "tool-calls") {
+            const hasPendingApprovals = messages.some((msg: any) =>
+              msg.parts?.some(
+                (part: any) =>
+                  "state" in part && part.state === "approval-requested",
+              ),
+            );
+
+            // If there are pending approvals, clear the finish reason (no notice shown)
+            // Otherwise, keep the "tool-calls" finish reason (max steps reached)
+            if (hasPendingApprovals) {
+              streamFinishReason = undefined;
+            }
+          }
+
+          // Sandbox cleanup is automatic with auto-pause
+          // The sandbox will auto-pause after inactivity timeout (7 minutes)
+          // No manual pause needed
+
+          // Always wait for title generation to complete
+          const generatedTitle = await titlePromise;
+
+          if (!temporary) {
+            const mergedTodos = getTodoManager().mergeWith(
+              baseTodos,
+              assistantMessageId,
+            );
+
+            const shouldPersist = regenerate
+              ? true
+              : Boolean(
+                  generatedTitle ||
+                  streamFinishReason ||
+                  mergedTodos.length > 0,
+                );
+
+            if (shouldPersist) {
+              // updateChat automatically clears stream state (active_stream_id and canceled_at)
+              await updateChat({
+                chatId,
+                title: generatedTitle,
+                finishReason: streamFinishReason,
+                todos: mergedTodos,
+                defaultModelSlug: mode,
+              });
+            } else {
+              // If not persisting, still need to clear stream state
+              await prepareForNewStream({ chatId });
+            }
+
+            const newFileIds = getFileAccumulator().getAll();
+
+            // If user aborted (not pre-emptive) and no files to add, skip message save (frontend already saved)
+            // Pre-emptive aborts should always save to ensure data persistence before timeout
+            if (
+              isAborted &&
+              !preemptiveTimeout?.isPreemptive() &&
+              (!newFileIds || newFileIds.length === 0)
+            ) {
+              return;
+            }
+
+            // Save messages (either full save or just append extraFileIds)
+            for (const message of messages) {
+              // For assistant messages, prepend summarization parts if any
+              const messageToSave =
+                message.role === "assistant" && summarizationParts.length > 0
+                  ? {
+                      ...message,
+                      parts: [...summarizationParts, ...message.parts],
+                    }
+                  : message;
+
+              // Skip saving messages with no parts or files
+              // This prevents saving empty messages on error that would accumulate on retry
+              if (
+                (!messageToSave.parts || messageToSave.parts.length === 0) &&
+                (!newFileIds || newFileIds.length === 0)
+              ) {
+                continue;
+              }
+
+              await saveMessage({
+                chatId,
+                userId,
+                message: messageToSave,
+                extraFileIds:
+                  message.role === "assistant" ? newFileIds : undefined,
+              });
+            }
+          } else {
+            // For temporary chats, send file metadata via stream before cleanup
+            const newFileIds = getFileAccumulator().getAll();
+
+            if (newFileIds && newFileIds.length > 0) {
+              try {
+                // Fetch file metadata in batch
+                const fileMetadata = await convex.query(
+                  api.fileStorage.getFileMetadataByFileIds,
+                  {
+                    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+                    fileIds: newFileIds,
+                  },
+                );
+
+                // Filter out null entries and send via custom stream event
+                const validFileMetadata = fileMetadata.filter(
+                  (f): f is NonNullable<typeof f> => f !== null,
+                );
+
+                if (validFileMetadata.length > 0) {
+                  writer.write({
+                    type: "data-file-metadata",
+                    data: {
+                      messageId: assistantMessageId,
+                      fileDetails: validFileMetadata,
+                    },
+                  });
+                }
+              } catch (error) {
+                console.error(
+                  "Failed to fetch file metadata for temporary chat:",
+                  error,
+                );
+              }
+            }
+
+            // Ensure temp stream row is removed backend-side
+            await deleteTempStreamForBackend({ chatId });
+          }
         },
       });
 

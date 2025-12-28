@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import type { QueueBehavior } from "@/types/chat";
+import type { QueueBehavior, AutoRunMode } from "@/types";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
 
 // Production Convex URL (must match @hackerai/local@latest package)
@@ -105,6 +105,8 @@ const AgentsTab = () => {
     subscription,
     sandboxPreference,
     setSandboxPreference,
+    autoRunMode,
+    setAutoRunMode,
   } = useGlobalState();
 
   const [showToken, setShowToken] = useState(false);
@@ -213,6 +215,49 @@ const AgentsTab = () => {
                 size="md"
               />
             </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-3 border-b gap-3">
+            <div className="flex-1">
+              <div className="font-medium">Tool Approval</div>
+              <div className="text-sm text-muted-foreground">
+                Choose when to ask for approval before executing commands
+              </div>
+            </div>
+            <Select
+              value={autoRunMode}
+              onValueChange={(value) => setAutoRunMode(value as AutoRunMode)}
+            >
+              <SelectTrigger className="w-full sm:w-auto">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="auto-run-sandbox">
+                  <div className="flex flex-col items-start">
+                    <span>Auto-Run in Sandbox</span>
+                    <span className="text-xs text-muted-foreground">
+                      Auto-run in E2B, ask for local
+                    </span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="ask-every-time">
+                  <div className="flex flex-col items-start">
+                    <span>Ask Every Time</span>
+                    <span className="text-xs text-muted-foreground">
+                      Always ask before executing
+                    </span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="run-everything">
+                  <div className="flex flex-col items-start">
+                    <span>Run Everything (Unsandboxed)</span>
+                    <span className="text-xs text-muted-foreground">
+                      Never ask, auto-run all commands
+                    </span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
       )}

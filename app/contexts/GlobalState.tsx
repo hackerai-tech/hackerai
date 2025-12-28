@@ -10,7 +10,7 @@ import React, {
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import { useMutation, useQuery } from "convex/react";
+import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type {
   ChatMode,
@@ -18,8 +18,9 @@ import type {
   QueuedMessage,
   QueueBehavior,
   SandboxPreference,
-} from "@/types/chat";
-import type { Todo } from "@/types";
+  AutoRunMode,
+  Todo,
+} from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
   computeReplaceAssistantTodos,
@@ -123,6 +124,10 @@ interface GlobalStateType {
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
+
+  // Auto-run mode (controls when to show tool approvals)
+  autoRunMode: AutoRunMode;
+  setAutoRunMode: (mode: AutoRunMode) => void;
 
   // Utility methods
   clearInput: () => void;
@@ -248,6 +253,22 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       localStorage.setItem("sandbox-preference", sandboxPreference);
     }
   }, [sandboxPreference]);
+
+  // Auto-run mode (persisted to localStorage)
+  const [autoRunMode, setAutoRunMode] = useState<AutoRunMode>(() => {
+    if (typeof window === "undefined") return "auto-run-sandbox";
+    return (
+      (localStorage.getItem("auto-run-mode") as AutoRunMode) ||
+      "auto-run-sandbox"
+    );
+  });
+
+  // Persist auto-run mode to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("auto-run-mode", autoRunMode);
+    }
+  }, [autoRunMode]);
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -740,6 +761,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference: setSandboxPreferenceState,
+
+    autoRunMode,
+    setAutoRunMode,
   };
 
   return (

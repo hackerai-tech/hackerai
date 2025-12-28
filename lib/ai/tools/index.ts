@@ -15,7 +15,13 @@ import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
 // import { createPythonTool } from "./python";
 import type { UIMessageStreamWriter } from "ai";
-import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
+import type {
+  ChatMode,
+  ToolContext,
+  Todo,
+  AnySandbox,
+  AutoRunMode,
+} from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
@@ -41,6 +47,7 @@ export const createTools = (
   subscription: "free" | "pro" | "team" | "ultra" = "free",
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
+  autoRunMode?: AutoRunMode,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -79,6 +86,8 @@ export const createTools = (
     backgroundProcessTracker,
     mode,
     isE2BSandbox,
+    autoRunMode,
+    sandboxPreference,
   };
 
   // Create all available tools
