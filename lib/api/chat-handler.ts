@@ -56,6 +56,17 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
+/**
+ * Filters out problematic message parts that cause issues with AI providers.
+ */
+const filterProblematicParts = (
+  parts: UIMessagePart<any, any>[],
+): UIMessagePart<any, any>[] => {
+  return parts.filter(
+    (part: any) => part.state !== "output-error" && part.type !== "tool-",
+  );
+};
+
 let globalStreamContext: any | null = null;
 
 export const getStreamContext = () => {
@@ -215,9 +226,9 @@ export const createChatHandler = () => {
             memoryEnabled,
             temporary,
             assistantMessageId,
-            subscription,
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
+            selectedModel,
           );
 
           // Get sandbox context for system prompt (only for local sandboxes)
@@ -490,15 +501,23 @@ export const createChatHandler = () => {
 
                   // Save messages (either full save or just append extraFileIds)
                   for (const message of messages) {
+                    // Filter out problematic parts that cause issues with AI providers
+                    const filteredParts = message.parts
+                      ? filterProblematicParts(message.parts)
+                      : [];
+
                     // For assistant messages, prepend summarization parts if any
                     const messageToSave =
                       message.role === "assistant" &&
                       summarizationParts.length > 0
                         ? {
                             ...message,
-                            parts: [...summarizationParts, ...message.parts],
+                            parts: [...summarizationParts, ...filteredParts],
                           }
-                        : message;
+                        : {
+                            ...message,
+                            parts: filteredParts,
+                          };
 
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry

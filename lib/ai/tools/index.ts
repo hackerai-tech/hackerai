@@ -13,12 +13,13 @@ import { createSearchReplace } from "./search-replace";
 import { createWebTool } from "./web";
 import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
-// import { createPythonTool } from "./python";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
+import { xai } from "@ai-sdk/xai";
+import type { ModelName } from "@/lib/ai/providers";
 
 /**
  * Check if a sandbox instance is an E2B Sandbox (vs local ConvexSandbox)
@@ -26,6 +27,18 @@ import { BackgroundProcessTracker } from "./utils/background-process-tracker";
  */
 export const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
   return s !== null && "jupyterUrl" in s;
+};
+
+// Helper to check if a model is a Grok model (uses xai provider)
+const isGrokModel = (model?: ModelName): boolean => {
+  if (!model) return false;
+  const grokModels: ModelName[] = [
+    "ask-model",
+    "ask-model-free",
+    "title-generator-model",
+    "summarization-model",
+  ];
+  return grokModels.includes(model);
 };
 
 // Factory function to create tools with context
@@ -38,9 +51,9 @@ export const createTools = (
   memoryEnabled: boolean = true,
   isTemporary: boolean = false,
   assistantMessageId?: string,
-  subscription: "free" | "pro" | "team" | "ultra" = "free",
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
+  selectedModel?: ModelName,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -89,7 +102,6 @@ export const createTools = (
     write_file: createWriteFile(context),
     search_replace: createSearchReplace(context),
     todo_write: createTodoWrite(context),
-    // python: createPythonTool(context),
     ...(!isTemporary &&
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(process.env.EXA_API_KEY &&
@@ -98,17 +110,30 @@ export const createTools = (
       }),
   };
 
+  // Build ask mode tools based on model type
+  const buildAskModeTools = () => {
+    const askTools: Record<string, any> = {};
+
+    // Use xai web search for Grok models, EXA/JINA web tool for other models
+    if (isGrokModel(selectedModel)) {
+      askTools.web_search = xai.tools.webSearch({
+        enableImageUnderstanding: true,
+      });
+    } else {
+      if (process.env.EXA_API_KEY && process.env.JINA_API_KEY) {
+        askTools.web = createWebTool(context);
+      }
+      // Add memory tool if enabled
+      if (!isTemporary && memoryEnabled) {
+        askTools.update_memory = allTools.update_memory;
+      }
+    }
+
+    return askTools;
+  };
+
   // Filter tools based on mode
-  const tools =
-    mode === "ask"
-      ? {
-          ...(!isTemporary &&
-            memoryEnabled && { update_memory: allTools.update_memory }),
-          // ...(subscription !== "free" && { python: allTools.python }),
-          ...(process.env.EXA_API_KEY &&
-            process.env.JINA_API_KEY && { web: allTools.web }),
-        }
-      : allTools;
+  const tools = mode === "ask" ? buildAskModeTools() : allTools;
 
   const getSandbox = () => sandbox;
   const ensureSandbox = async () => {

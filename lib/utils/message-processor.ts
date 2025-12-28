@@ -105,13 +105,22 @@ export const normalizeMessages = (
       }
     });
 
-    // Process each part, transform incomplete tools, and filter out data-terminal parts
+    // Process each part, transform incomplete tools, and filter out problematic parts
     message.parts.forEach((part: any) => {
       const toolPart = part as BaseToolPart;
 
       // Skip data-terminal parts - we've already collected their data
       if (toolPart.type === "data-terminal") {
         messageChanged = true; // Part is being removed
+        return;
+      }
+
+      // Skip error parts and malformed tool parts (cause xAI API issues)
+      if (
+        (toolPart as any).state === "output-error" ||
+        toolPart.type === "tool-"
+      ) {
+        messageChanged = true;
         return;
       }
 
