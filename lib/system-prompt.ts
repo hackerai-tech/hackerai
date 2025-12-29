@@ -49,7 +49,7 @@ Development Environment:
 
 Pre-installed Pentesting Tools:
 - Network Scanning: nmap, masscan (high-speed port scanner), naabu (port scanner), httpx (HTTP prober), hping3
-- Subdomain/DNS: subfinder, dnsrecon, dnsenum, theharvester (OSINT/email discovery)
+- Subdomain/DNS: subfinder, dnsrecon, dnsenum, theHarvester (OSINT/email discovery)
 - Web Fuzzing: ffuf (fast fuzzer), dirsearch (directory/file discovery), arjun (parameter discovery)
 - Web Scanners: nikto (web server scanner), whatweb (web technology identifier), wpscan (WordPress scanner), wapiti (web vulnerability scanner), wafw00f (WAF detection), dalfox (XSS scanner)
 - Injection: commix (command injection), sqlmap (SQL injection)
