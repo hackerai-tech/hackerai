@@ -34,6 +34,16 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
   return modelCutoffDates[modelName];
 };
 
+// Models with :online suffix have built-in web search capability
+const modelsWithOnlineCapability: Set<ModelName> = new Set([
+  "ask-model",
+  "ask-model-free",
+]);
+
+export const hasOnlineCapability = (modelName: ModelName): boolean => {
+  return modelsWithOnlineCapability.has(modelName);
+};
+
 export const myProvider = customProvider({
   languageModels: baseProviders,
 });

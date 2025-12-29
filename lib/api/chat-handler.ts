@@ -216,9 +216,9 @@ export const createChatHandler = () => {
             memoryEnabled,
             temporary,
             assistantMessageId,
-            subscription,
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
+            selectedModel,
           );
 
           // Get sandbox context for system prompt (only for local sandboxes)
