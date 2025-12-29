@@ -6,8 +6,8 @@ import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
-  "ask-model": xai("grok-4-1-fast-non-reasoning"),
-  "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
+  "ask-model": openrouter("x-ai/grok-4.1-fast:online"),
+  "ask-model-free": openrouter("x-ai/grok-4.1-fast:online"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": openrouter("x-ai/grok-4.1-fast"),

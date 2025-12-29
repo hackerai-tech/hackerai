@@ -8,6 +8,7 @@ import {
   smoothStream,
   JsonToSseTransformStream,
 } from "ai";
+import { stripProviderMetadata } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -367,7 +368,9 @@ export const createChatHandler = () => {
             abortSignal: userStopSignal.signal,
             providerOptions: {
               openrouter: {
-                ...(isReasoningModel ? { reasoning: { enabled: true } } : {}),
+                ...(isReasoningModel
+                  ? { reasoning: { enabled: true } }
+                  : { reasoning: { enabled: false } }),
                 provider: {
                   ...(subscription === "free"
                     ? {
@@ -491,7 +494,7 @@ export const createChatHandler = () => {
                   // Save messages (either full save or just append extraFileIds)
                   for (const message of messages) {
                     // For assistant messages, prepend summarization parts if any
-                    const messageToSave =
+                    const messageWithSummarization =
                       message.role === "assistant" &&
                       summarizationParts.length > 0
                         ? {
@@ -499,6 +502,11 @@ export const createChatHandler = () => {
                             parts: [...summarizationParts, ...message.parts],
                           }
                         : message;
+
+                    // Strip providerMetadata from parts before saving
+                    const messageToSave = stripProviderMetadata(
+                      messageWithSummarization,
+                    );
 
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry
