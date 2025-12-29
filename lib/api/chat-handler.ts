@@ -393,6 +393,26 @@ export const createChatHandler = () => {
               : smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
+              // Track xAI native tools (web_search and x_search) via tool-input-start
+              if (chunk.chunk.type === "tool-input-start") {
+                const toolName = (chunk.chunk as any).toolName;
+                const toolCallId = (chunk.chunk as any).toolCallId;
+
+                // web_search: toolCallId starts with "ws_"
+                if (
+                  toolCallId?.startsWith("ws_") ||
+                  toolName === "web_search"
+                ) {
+                  if (posthog) {
+                    posthog.capture({
+                      distinctId: userId,
+                      event: "hackerai-web_search",
+                    });
+                  }
+                  return;
+                }
+              }
+
               // Track all tool calls immediately (no throttle)
               if (chunk.chunk.type === "tool-call") {
                 const command =
