@@ -1,5 +1,39 @@
 import { ChatMessage } from "@/types/chat";
 
+/**
+ * Strips OpenRouter providerMetadata from a single message part.
+ * OpenRouter metadata contains internal data like encrypted reasoning that shouldn't be persisted.
+ * Only strips if the providerMetadata is specifically from OpenRouter.
+ */
+export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
+  part: T,
+): T => {
+  if (
+    "providerMetadata" in part &&
+    part.providerMetadata &&
+    typeof part.providerMetadata === "object" &&
+    "openrouter" in part.providerMetadata
+  ) {
+    const { providerMetadata, ...rest } = part;
+    return rest as T;
+  }
+  return part;
+};
+
+/**
+ * Strips OpenRouter providerMetadata from all parts in a message.
+ * Used to clean messages before saving or for temporary chat handling.
+ */
+export const stripProviderMetadata = <T extends { parts?: any[] }>(
+  message: T,
+): T => {
+  if (!message.parts) return message;
+  return {
+    ...message,
+    parts: message.parts.map(stripProviderMetadataFromPart),
+  };
+};
+
 // Generic interface for all tool parts
 interface BaseToolPart {
   type: string;
@@ -105,7 +139,7 @@ export const normalizeMessages = (
       }
     });
 
-    // Process each part, transform incomplete tools, and filter out data-terminal parts
+    // Process each part, transform incomplete tools, filter out data-terminal parts, and strip providerMetadata
     message.parts.forEach((part: any) => {
       const toolPart = part as BaseToolPart;
 
@@ -115,12 +149,25 @@ export const normalizeMessages = (
         return;
       }
 
+      // Strip OpenRouter providerMetadata from the part (contains internal data like encrypted reasoning)
+      const hasOpenRouterMetadata =
+        "providerMetadata" in part &&
+        part.providerMetadata &&
+        typeof part.providerMetadata === "object" &&
+        "openrouter" in part.providerMetadata;
+      const cleanPart = hasOpenRouterMetadata
+        ? stripProviderMetadataFromPart(part)
+        : part;
+      if (hasOpenRouterMetadata) {
+        messageChanged = true;
+      }
+
       // Check if this is a tool part that needs transformation
       if (toolPart.type?.startsWith("tool-")) {
         if (toolPart.state === "input-available") {
           // Transform incomplete tools to completed state
           const transformedPart = transformIncompleteToolPart(
-            toolPart,
+            cleanPart as BaseToolPart,
             terminalDataMap,
           );
           processedParts.push(transformedPart);
@@ -128,18 +175,18 @@ export const normalizeMessages = (
         } else if (toolPart.state === "input-streaming") {
           // Transform streaming tools to completed state (they were interrupted)
           const transformedPart = transformIncompleteToolPart(
-            { ...toolPart, state: "input-available" },
+            { ...(cleanPart as BaseToolPart), state: "input-available" },
             terminalDataMap,
           );
           processedParts.push(transformedPart);
           messageChanged = true; // Part is being transformed
         } else {
           // Keep completed tools unchanged
-          processedParts.push(part);
+          processedParts.push(cleanPart);
         }
       } else {
         // Keep non-tool parts unchanged
-        processedParts.push(part);
+        processedParts.push(cleanPart);
       }
     });
 

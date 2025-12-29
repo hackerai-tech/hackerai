@@ -271,7 +271,7 @@ RUN set -eux; \
     which subfinder && echo "✓ subfinder" && \
     which dnsrecon && echo "✓ dnsrecon" && \
     which dnsenum && echo "✓ dnsenum" && \
-    which theharvester && echo "✓ theharvester" && \
+    which theHarvester && echo "✓ theHarvester" && \
     which ffuf && echo "✓ ffuf" && \
     which arjun && echo "✓ arjun" && \
     which gobuster && echo "✓ gobuster" && \
