@@ -94,6 +94,7 @@ export const createChatHandler = () => {
         regenerate,
         temporary,
         sandboxPreference,
+        regenerationCount,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -102,6 +103,7 @@ export const createChatHandler = () => {
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
+        regenerationCount?: number;
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
@@ -280,6 +282,13 @@ export const createChatHandler = () => {
           let hasSummarized = false;
           const isReasoningModel = mode === "agent";
 
+          // Track metrics for data collection
+          const streamStartTime = Date.now();
+          const configuredModelId =
+            trackedProvider.languageModel(selectedModel).modelId;
+          let streamUsage: Record<string, unknown> | undefined;
+          let responseModel: string | undefined;
+
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
@@ -424,13 +433,16 @@ export const createChatHandler = () => {
                 }
               }
             },
-            onFinish: async ({ finishReason }) => {
+            onFinish: async ({ finishReason, usage, response }) => {
               // If preemptive timeout triggered, use "timeout" as finish reason
               if (preemptiveTimeout?.isPreemptive()) {
                 streamFinishReason = "timeout";
               } else {
                 streamFinishReason = finishReason;
               }
+              // Capture full usage and model
+              streamUsage = usage as Record<string, unknown>;
+              responseModel = response?.modelId;
             },
             onError: async (error) => {
               console.error("Error:", error);
@@ -526,8 +538,15 @@ export const createChatHandler = () => {
                       chatId,
                       userId,
                       message: messageToSave,
-                      extraFileIds:
-                        message.role === "assistant" ? newFileIds : undefined,
+                      // Only include metrics for assistant messages
+                      extraFileIds: newFileIds,
+                      model: responseModel || configuredModelId,
+                      generationTimeMs: Date.now() - streamStartTime,
+                      finishReason: streamFinishReason,
+                      usage: streamUsage,
+                      regenerationCount: regenerate
+                        ? regenerationCount
+                        : undefined,
                     });
                   }
                 } else {

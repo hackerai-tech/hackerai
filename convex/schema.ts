@@ -63,6 +63,11 @@ export default defineSchema({
     feedback_id: v.optional(v.id("feedback")),
     source_message_id: v.optional(v.string()),
     update_time: v.number(),
+    model: v.optional(v.string()),
+    generation_time_ms: v.optional(v.number()),
+    finish_reason: v.optional(v.string()),
+    usage: v.optional(v.any()),
+    regeneration_count: v.optional(v.number()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])

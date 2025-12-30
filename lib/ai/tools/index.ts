@@ -106,8 +106,7 @@ export const createTools = (
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
           ...(process.env.EXA_API_KEY &&
-            process.env.JINA_API_KEY &&
-            { web: allTools.web }),
+            process.env.JINA_API_KEY && { web: allTools.web }),
         }
       : allTools;
 

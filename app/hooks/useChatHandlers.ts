@@ -303,8 +303,13 @@ export const useChatHandlers = ({
     if (!temporaryChatsEnabled) {
       // Only delete if the last assistant message has content
       // This prevents deleting previous valid messages when an error occurred
+      let regenerationCount = 1;
       if (hasContent) {
-        await deleteLastAssistantMessage({ chatId, todos: cleanedTodos });
+        const result = await deleteLastAssistantMessage({
+          chatId,
+          todos: cleanedTodos,
+        });
+        regenerationCount = result?.regenerationCount ?? 1;
       }
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
@@ -315,6 +320,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
+          regenerationCount,
         },
       });
     } else {
@@ -380,7 +386,11 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleEditMessage = async (messageId: string, newContent: string, remainingFileIds?: string[]) => {
+  const handleEditMessage = async (
+    messageId: string,
+    newContent: string,
+    remainingFileIds?: string[],
+  ) => {
     setIsAutoResuming(false);
     // Find the edited message index to identify subsequent messages
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
@@ -419,20 +429,23 @@ export const useChatHandlers = ({
     // Build updated parts: text + remaining file parts
     const buildUpdatedParts = (currentParts: any[]) => {
       const newParts: any[] = [];
-      
+
       // Add text part if there's content
       if (newContent.trim()) {
         newParts.push({ type: "text", text: newContent });
       }
-      
+
       // Keep file parts that are in remainingFileIds
       if (remainingFileIds && remainingFileIds.length > 0) {
         const remainingFileParts = currentParts.filter(
-          (part) => part.type === "file" && part.fileId && remainingFileIds.includes(part.fileId)
+          (part) =>
+            part.type === "file" &&
+            part.fileId &&
+            remainingFileIds.includes(part.fileId),
         );
         newParts.push(...remainingFileParts);
       }
-      
+
       return newParts;
     };
 
@@ -482,7 +495,7 @@ export const useChatHandlers = ({
       // For temporary chats, send messages up to and including the edited message
       const messagesUpToEdit = messages.slice(0, editedMessageIndex + 1);
       const editedMessage = messages[editedMessageIndex];
-      
+
       // Build updated parts for the edited message
       const updatedParts: any[] = [];
       if (newContent.trim()) {
@@ -490,11 +503,14 @@ export const useChatHandlers = ({
       }
       if (remainingFileIds && remainingFileIds.length > 0) {
         const remainingFileParts = editedMessage.parts.filter(
-          (part: any) => part.type === "file" && part.fileId && remainingFileIds.includes(part.fileId)
+          (part: any) =>
+            part.type === "file" &&
+            part.fileId &&
+            remainingFileIds.includes(part.fileId),
         );
         updatedParts.push(...remainingFileParts);
       }
-      
+
       messagesUpToEdit[editedMessageIndex] = {
         ...editedMessage,
         parts: updatedParts,

@@ -58,6 +58,11 @@ export async function saveMessage({
   userId,
   message,
   extraFileIds,
+  model,
+  generationTimeMs,
+  finishReason,
+  usage,
+  regenerationCount,
 }: {
   chatId: string;
   userId: string;
@@ -67,6 +72,11 @@ export async function saveMessage({
     parts: UIMessagePart<any, any>[];
   };
   extraFileIds?: Array<Id<"files">>;
+  model?: string;
+  generationTimeMs?: number;
+  finishReason?: string;
+  usage?: Record<string, unknown>;
+  regenerationCount?: number;
 }) {
   try {
     // Extract file IDs from file parts
@@ -84,6 +94,11 @@ export async function saveMessage({
       role: message.role,
       parts: message.parts,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
+      model,
+      generationTimeMs,
+      finishReason,
+      usage,
+      regenerationCount,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");

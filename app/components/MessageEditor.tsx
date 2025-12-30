@@ -51,7 +51,7 @@ export const MessageEditor = ({
 
   const handleSave = () => {
     const trimmedContent = content.trim();
-    
+
     // Must have either content or files
     if (!trimmedContent && files.length === 0) return;
 
@@ -154,7 +154,9 @@ export const MessageEditor = ({
         className="w-full p-3 text-foreground rounded-md resize-none focus:outline-none"
         minRows={2}
         maxRows={10}
-        placeholder={files.length > 0 ? "Add a message (optional)" : "Enter your message"}
+        placeholder={
+          files.length > 0 ? "Add a message (optional)" : "Enter your message"
+        }
       />
       <div className="flex justify-end space-x-2">
         <Button variant="outline" size="sm" onClick={onCancel}>

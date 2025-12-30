@@ -39,7 +39,11 @@ interface MessagesProps {
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
   onRetry: () => void;
-  onEditMessage: (messageId: string, newContent: string, remainingFileIds?: string[]) => Promise<void>;
+  onEditMessage: (
+    messageId: string,
+    newContent: string,
+    remainingFileIds?: string[],
+  ) => Promise<void>;
   onBranchMessage?: (messageId: string) => Promise<void>;
   status: ChatStatus;
   error: Error | null;
@@ -324,14 +328,20 @@ export const Messages = ({
                       <MessageEditor
                         initialContent={messageText}
                         initialFiles={fileParts
-                          .filter((part) => part.type === "file" && (part as any).fileId)
+                          .filter(
+                            (part) =>
+                              part.type === "file" && (part as any).fileId,
+                          )
                           .map((part) => {
                             const filePart = part as any;
                             return {
                               fileId: filePart.fileId as string,
-                              name: filePart.name || filePart.filename || "File",
+                              name:
+                                filePart.name || filePart.filename || "File",
                               mediaType: filePart.mediaType,
-                              url: filePart.url || getCachedUrl(filePart.fileId as string),
+                              url:
+                                filePart.url ||
+                                getCachedUrl(filePart.fileId as string),
                             } as EditableFile;
                           })}
                         onSave={handleSaveEdit}
