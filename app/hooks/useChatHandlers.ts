@@ -380,7 +380,7 @@ export const useChatHandlers = ({
     }
   };
 
-  const handleEditMessage = async (messageId: string, newContent: string) => {
+  const handleEditMessage = async (messageId: string, newContent: string, remainingFileIds?: string[]) => {
     setIsAutoResuming(false);
     // Find the edited message index to identify subsequent messages
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
@@ -408,12 +408,33 @@ export const useChatHandlers = ({
         await regenerateWithNewContent({
           messageId: messageId as Id<"messages">,
           newContent,
+          fileIds: remainingFileIds,
         });
       } catch (error) {
         // Swallow benign errors (e.g., racing edits where the message was already removed)
         // Avoid logging to keep console clean
       }
     }
+
+    // Build updated parts: text + remaining file parts
+    const buildUpdatedParts = (currentParts: any[]) => {
+      const newParts: any[] = [];
+      
+      // Add text part if there's content
+      if (newContent.trim()) {
+        newParts.push({ type: "text", text: newContent });
+      }
+      
+      // Keep file parts that are in remainingFileIds
+      if (remainingFileIds && remainingFileIds.length > 0) {
+        const remainingFileParts = currentParts.filter(
+          (part) => part.type === "file" && part.fileId && remainingFileIds.includes(part.fileId)
+        );
+        newParts.push(...remainingFileParts);
+      }
+      
+      return newParts;
+    };
 
     // Update local state to reflect the edit and remove subsequent messages
     setMessages((prevMessages) => {
@@ -424,9 +445,10 @@ export const useChatHandlers = ({
       if (editedMessageIndex === -1) return prevMessages;
 
       const updatedMessages = prevMessages.slice(0, editedMessageIndex + 1);
+      const currentMessage = updatedMessages[editedMessageIndex];
       updatedMessages[editedMessageIndex] = {
-        ...updatedMessages[editedMessageIndex],
-        parts: [{ type: "text", text: newContent }],
+        ...currentMessage,
+        parts: buildUpdatedParts(currentMessage.parts),
       };
 
       return updatedMessages;
@@ -460,9 +482,22 @@ export const useChatHandlers = ({
       // For temporary chats, send messages up to and including the edited message
       const messagesUpToEdit = messages.slice(0, editedMessageIndex + 1);
       const editedMessage = messages[editedMessageIndex];
+      
+      // Build updated parts for the edited message
+      const updatedParts: any[] = [];
+      if (newContent.trim()) {
+        updatedParts.push({ type: "text", text: newContent });
+      }
+      if (remainingFileIds && remainingFileIds.length > 0) {
+        const remainingFileParts = editedMessage.parts.filter(
+          (part: any) => part.type === "file" && part.fileId && remainingFileIds.includes(part.fileId)
+        );
+        updatedParts.push(...remainingFileParts);
+      }
+      
       messagesUpToEdit[editedMessageIndex] = {
         ...editedMessage,
-        parts: [{ type: "text", text: newContent }],
+        parts: updatedParts,
       };
 
       regenerate({
