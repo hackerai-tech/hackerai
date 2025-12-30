@@ -74,6 +74,59 @@ export function getMaxFileSize(): number {
 }
 
 /**
+ * Validate that an image file can be decoded/rendered
+ * Uses createImageBitmap for reliable validation
+ * Only validates LLM-supported image formats (PNG, JPEG, WebP, GIF)
+ * @param file - The image file to validate
+ * @returns Promise with validation result
+ */
+export async function validateImageFile(file: File): Promise<{
+  valid: boolean;
+  error?: string;
+}> {
+  // Only validate LLM-supported image formats
+  // Other image types (SVG, BMP, etc.) are skipped as they're not processed by AI
+  if (!isSupportedImageMediaType(file.type)) {
+    return { valid: true };
+  }
+
+  try {
+    // Use createImageBitmap for validation (works in browser)
+    if (typeof createImageBitmap === "function") {
+      const bitmap = await createImageBitmap(file);
+      bitmap.close();
+      return { valid: true };
+    }
+
+    // Fallback: Use Image API
+    return new Promise((resolve) => {
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve({ valid: true });
+      };
+
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve({
+          valid: false,
+          error: "Image file is corrupt or cannot be decoded",
+        });
+      };
+
+      img.src = objectUrl;
+    });
+  } catch (error) {
+    return {
+      valid: false,
+      error: `Image validation failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
+
+/**
  * Validate file for upload
  */
 export function validateFile(file: File): { valid: boolean; error?: string } {
