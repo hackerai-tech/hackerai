@@ -19,7 +19,7 @@ import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
-import { hasOnlineCapability, type ModelName } from "@/lib/ai/providers";
+import { type ModelName } from "@/lib/ai/providers";
 
 /**
  * Check if a sandbox instance is an E2B Sandbox (vs local ConvexSandbox)
@@ -99,20 +99,15 @@ export const createTools = (
       }),
   };
 
-  // Check if model has built-in online capability (for ask mode)
-  const modelHasOnlineCapability =
-    selectedModel && hasOnlineCapability(selectedModel);
-
   // Filter tools based on mode
   const tools =
     mode === "ask"
       ? {
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
-          // Include web tool in ask mode only if model doesn't have online capability
           ...(process.env.EXA_API_KEY &&
             process.env.JINA_API_KEY &&
-            !modelHasOnlineCapability && { web: allTools.web }),
+            { web: allTools.web }),
         }
       : allTools;
 
