@@ -8,7 +8,7 @@ import type { SubscriptionTier } from "@/types";
 const baseProviders = {
   "ask-model": openrouter("x-ai/grok-4.1-fast:online"),
   "ask-model-free": openrouter("x-ai/grok-4.1-fast:online"),
-  "ask-vision-model": openrouter("x-ai/grok-4.1-fast:online"),
+  "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": openrouter("x-ai/grok-4.1-fast"),
   "agent-vision-model": openrouter("x-ai/grok-4.1-fast"),
@@ -22,7 +22,7 @@ export type ModelName = keyof typeof baseProviders;
 export const modelCutoffDates: Record<ModelName, string> = {
   "ask-model": "November 2024",
   "ask-model-free": "November 2024",
-  "ask-vision-model": "November 2024",
+  "ask-vision-model": "January 2025",
   "ask-vision-model-for-pdfs": "January 2025",
   "agent-model": "November 2024",
   "agent-vision-model": "November 2024",
@@ -38,7 +38,6 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
 const modelsWithOnlineCapability: Set<ModelName> = new Set([
   "ask-model",
   "ask-model-free",
-  "ask-vision-model",
 ]);
 
 export const hasOnlineCapability = (modelName: ModelName): boolean => {
