@@ -6,8 +6,8 @@ import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
-  "ask-model": openrouter("x-ai/grok-4.1-fast:online"),
-  "ask-model-free": openrouter("x-ai/grok-4.1-fast:online"),
+  "ask-model": xai("grok-4-1-fast-non-reasoning"),
+  "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": openrouter("x-ai/grok-4.1-fast"),
@@ -32,16 +32,6 @@ export const modelCutoffDates: Record<ModelName, string> = {
 
 export const getModelCutoffDate = (modelName: ModelName): string => {
   return modelCutoffDates[modelName];
-};
-
-// Models with :online suffix have built-in web search capability
-const modelsWithOnlineCapability: Set<ModelName> = new Set([
-  "ask-model",
-  "ask-model-free",
-]);
-
-export const hasOnlineCapability = (modelName: ModelName): boolean => {
-  return modelsWithOnlineCapability.has(modelName);
 };
 
 export const myProvider = customProvider({

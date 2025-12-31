@@ -130,8 +130,8 @@ export const MessageActions = ({
               delayDuration={300}
             />
 
-            {/* Show edit only for user messages without images */}
-            {isUser && !hasFileContent && (
+            {/* Show edit only for user messages */}
+            {isUser && (
               <WithTooltip
                 display={"Edit message"}
                 trigger={

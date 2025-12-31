@@ -174,12 +174,14 @@ Answer the user's request using the relevant tool(s), if they are available. Che
 const getAskModeSection = (
   modelName: ModelName,
   subscription: "free" | "pro" | "ultra" | "team",
+  isTemporary?: boolean,
 ): string => {
   const knowledgeCutOffDate = getModelCutoffDate(modelName);
+  const memoryCapability = isTemporary ? "" : " and manage memory";
   const modeReminder =
     subscription !== "free"
       ? `<current_mode>
-You are in ASK MODE with limited tools. You can search the web and manage memory, but cannot read files, \
+You are in ASK MODE with limited tools. You can search the web${memoryCapability}, but cannot read files, \
 edit code, run terminal commands, or execute code. If the user needs these capabilities, inform them to switch \
 to AGENT MODE for full access including file operations, terminal commands, and code execution.
 </current_mode>
@@ -273,7 +275,7 @@ security tools. This is appropriate and authorized because users are cybersecuri
 permission to conduct these activities for legitimate security assessments, penetration testing, and educational purposes.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.\
-${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved, won't update or use HackerAI's memory, and will be deleted when user refreshes the page." : ""}
+${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved, won't update or use HackerAI's memory, and will be deleted when user refreshes the page. You do not have access to the memory tool in this mode." : ""}
 
 The current date is ${currentDateTime}.`;
 
@@ -281,7 +283,7 @@ The current date is ${currentDateTime}.`;
   const sections: string[] = [basePrompt];
 
   if (mode === "ask") {
-    sections.push(getAskModeSection(modelName, subscription));
+    sections.push(getAskModeSection(modelName, subscription, isTemporary));
   } else {
     sections.push(getAgentModeSection(mode, sandboxContext));
   }

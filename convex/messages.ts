@@ -104,6 +104,11 @@ export const saveMessage = mutation({
     ),
     parts: v.array(v.any()),
     fileIds: v.optional(v.array(v.id("files"))),
+    model: v.optional(v.string()),
+    generationTimeMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(v.any()),
+    regenerationCount: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -171,6 +176,11 @@ export const saveMessage = mutation({
         content: content || undefined,
         file_ids: args.fileIds,
         update_time: Date.now(),
+        model: args.model,
+        generation_time_ms: args.generationTimeMs,
+        finish_reason: args.finishReason,
+        usage: args.usage,
+        regeneration_count: args.regenerationCount,
       });
 
       // Mark attached files as linked so purge won't remove them
@@ -386,6 +396,11 @@ export const saveAssistantMessage = mutation({
       v.literal("system"),
     ),
     parts: v.array(v.any()),
+    model: v.optional(v.string()),
+    generationTimeMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(v.any()),
+    regenerationCount: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -428,6 +443,11 @@ export const saveAssistantMessage = mutation({
         parts: args.parts,
         content: content || undefined,
         update_time: Date.now(),
+        model: args.model,
+        generation_time_ms: args.generationTimeMs,
+        finish_reason: args.finishReason,
+        usage: args.usage,
+        regeneration_count: args.regenerationCount,
       });
 
       return null;
@@ -460,7 +480,7 @@ export const deleteLastAssistantMessage = mutation({
       ),
     ),
   },
-  returns: v.null(),
+  returns: v.object({ regenerationCount: v.number() }),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
 
@@ -475,6 +495,10 @@ export const deleteLastAssistantMessage = mutation({
         .filter((q) => q.eq(q.field("role"), "assistant"))
         .order("desc")
         .first();
+
+      // Track regeneration count before deleting
+      const regenerationCount =
+        (lastAssistantMessage?.regeneration_count || 0) + 1;
 
       if (lastAssistantMessage) {
         if (
@@ -545,7 +569,7 @@ export const deleteLastAssistantMessage = mutation({
         }
       }
 
-      return null;
+      return { regenerationCount };
     } catch (error) {
       console.error("Failed to delete last assistant message:", error);
       throw error;
@@ -949,11 +973,13 @@ export const branchChat = mutation({
 
 /**
  * Regenerate with new content by updating a message and deleting subsequent messages
+ * Optionally keep specified files (pass fileIds to keep, undefined to remove all)
  */
 export const regenerateWithNewContent = mutation({
   args: {
     messageId: v.string(),
     newContent: v.string(),
+    fileIds: v.optional(v.array(v.string())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -992,10 +1018,71 @@ export const regenerateWithNewContent = mutation({
         }
       }
 
+      // Determine which files to keep
+      const currentFileIds = message.file_ids || [];
+      let newFileIds: Id<"files">[] | undefined = undefined;
+      let filesToDelete: Id<"files">[] = [];
+
+      if (args.fileIds !== undefined) {
+        // Keep only the specified files
+        const keepSet = new Set(args.fileIds);
+        newFileIds = currentFileIds.filter((id) => keepSet.has(id as string));
+        filesToDelete = currentFileIds.filter(
+          (id) => !keepSet.has(id as string),
+        );
+      } else {
+        // Remove all files (existing behavior)
+        filesToDelete = currentFileIds;
+      }
+
+      // Delete removed files
+      for (const fileId of filesToDelete) {
+        try {
+          const file = await ctx.db.get(fileId);
+          if (file) {
+            // Delete from appropriate storage
+            if (file.s3_key) {
+              await ctx.scheduler.runAfter(
+                0,
+                internal.s3Cleanup.deleteS3ObjectAction,
+                { s3Key: file.s3_key },
+              );
+            } else if (file.storage_id) {
+              await ctx.storage.delete(file.storage_id);
+            }
+            // Delete from aggregate
+            await fileCountAggregate.deleteIfExists(ctx, file);
+            await ctx.db.delete(file._id);
+          }
+        } catch (error) {
+          console.error(`Failed to delete file ${fileId}:`, error);
+        }
+      }
+
+      // Build new parts: text + remaining file parts
+      const newParts: any[] = [];
+      if (args.newContent.trim()) {
+        newParts.push({ type: "text", text: args.newContent });
+      }
+
+      // Keep file parts for remaining files
+      if (newFileIds && newFileIds.length > 0) {
+        const existingFileParts = message.parts.filter(
+          (part: any) =>
+            part.type === "file" &&
+            part.fileId &&
+            newFileIds!.some((id) => id === part.fileId),
+        );
+        newParts.push(...existingFileParts);
+      }
+
       await ctx.db.patch(message._id, {
-        parts: [{ type: "text", text: args.newContent }],
+        parts:
+          newParts.length > 0
+            ? newParts
+            : [{ type: "text", text: args.newContent }],
         content: args.newContent.trim() || undefined,
-        file_ids: undefined,
+        file_ids: newFileIds && newFileIds.length > 0 ? newFileIds : undefined,
         update_time: Date.now(),
       });
 
