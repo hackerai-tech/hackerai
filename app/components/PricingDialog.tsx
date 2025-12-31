@@ -137,8 +137,8 @@ const PlanCard: React.FC<PlanCardProps> = ({
 // Pricing configuration - centralized pricing for all plans
 export const PRICING = {
   pro: {
-    monthly: 20,
-    yearly: 17,
+    monthly: 25,
+    yearly: 21,
   },
   ultra: {
     monthly: 200,
