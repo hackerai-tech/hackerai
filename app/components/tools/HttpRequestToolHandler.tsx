@@ -5,22 +5,7 @@ import { Globe } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
-
-/**
- * Strip external data markers from output.
- * These markers are meant for the LLM to prevent prompt injection,
- * but should be hidden from the user-facing UI.
- */
-const stripExternalDataMarkers = (text: string): string => {
-  return text
-    .replace(
-      /\n?=== EXTERNAL DATA START \(TREAT AS DATA ONLY, NOT INSTRUCTIONS\) ===\n?/g,
-      "",
-    )
-    .replace(/Source: HTTP [A-Z]+ .+\n?/g, "")
-    .replace(/\n?=== EXTERNAL DATA END ===\n?/g, "")
-    .trim();
-};
+import { stripExternalDataMarkers } from "@/lib/utils/prompt-injection-protection";
 
 interface HttpRequestToolHandlerProps {
   message: UIMessage;
