@@ -2,6 +2,7 @@ import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
+import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { PythonToolHandler } from "./tools/PythonToolHandler";
 import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
@@ -85,6 +86,11 @@ export const MessagePartHandler = ({
     case "tool-run_terminal_cmd":
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
+      );
+
+    case "tool-http_request":
+      return (
+        <HttpRequestToolHandler message={message} part={part} status={status} />
       );
 
     case "data-python":

@@ -13,7 +13,7 @@ import { createSearchReplace } from "./search-replace";
 import { createWebTool } from "./web";
 import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
-// import { createPythonTool } from "./python";
+import { createHttpRequest } from "./http-request";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
 import type { Geo } from "@vercel/functions";
@@ -90,7 +90,7 @@ export const createTools = (
     write_file: createWriteFile(context),
     search_replace: createSearchReplace(context),
     todo_write: createTodoWrite(context),
-    // python: createPythonTool(context),
+    http_request: createHttpRequest(context),
     ...(!isTemporary &&
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(process.env.EXA_API_KEY &&
