@@ -352,7 +352,7 @@ export const createChatHandler = () => {
                   (lastStep && (lastStep as any).toolResults) || [];
                 const wasMemoryUpdate =
                   Array.isArray(toolResults) &&
-                  toolResults.some((r) => r?.toolName === "memory");
+                  toolResults.some((r) => r?.toolName === "update_memory");
 
                 // Always return stripped messages to save tokens on each step
                 if (!wasMemoryUpdate) {
