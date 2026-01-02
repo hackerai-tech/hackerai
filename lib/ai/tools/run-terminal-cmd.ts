@@ -15,6 +15,11 @@ import {
   parseScopeExclusions,
   checkCommandScopeExclusion,
 } from "./utils/scope-exclusions";
+import {
+  parseGuardrailConfig,
+  getEffectiveGuardrails,
+  checkCommandGuardrails,
+} from "./utils/guardrails";
 
 const MAX_COMMAND_EXECUTION_TIME = 7 * 60 * 1000; // 7 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
@@ -26,8 +31,13 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     backgroundProcessTracker,
     isE2BSandbox,
     scopeExclusions,
+    guardrailsConfig,
   } = context;
   const exclusionsList = parseScopeExclusions(scopeExclusions || "");
+
+  // Parse user guardrail configuration and get effective guardrails
+  const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
+  const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
 
   // Wait instructions for E2B sandbox (local sandbox uses different commands)
   // Note: Code also handles 'while ps -p' loops for robustness, but we only document tail --pid
@@ -110,6 +120,18 @@ If you are generating files:
       },
       { toolCallId, abortSignal },
     ) => {
+      // Check guardrails before executing the command
+      const guardrailResult = checkCommandGuardrails(command, effectiveGuardrails);
+      if (!guardrailResult.allowed) {
+        return {
+          result: {
+            output: "",
+            exitCode: 1,
+            error: `Command blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This command pattern has been blocked for safety. If you believe this is a false positive, the user can adjust guardrail settings.`,
+          },
+        };
+      }
+
       // Check scope exclusions before executing the command
       const scopeViolation = checkCommandScopeExclusion(
         command,

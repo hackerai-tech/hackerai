@@ -220,6 +220,7 @@ export const createChatHandler = () => {
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.scope_exclusions,
+            userCustomization?.guardrails_config,
           );
 
           // Get sandbox context for system prompt (only for local sandboxes)

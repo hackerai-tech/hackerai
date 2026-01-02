@@ -26,7 +26,7 @@ export const TOOL_DEFAULT_MAX_TOKENS = 2048;
 
 // Truncation messages
 export const TRUNCATION_MESSAGE =
-  "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
+  "\n\n[... OUTPUT TRUNCATED - middle content removed ...]\n\n";
 export const FILE_READ_TRUNCATION_MESSAGE =
   "\n\n[Content truncated due to size limit. Use line ranges to read in chunks]";
 export const TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>

@@ -38,4 +38,5 @@ export interface ToolContext {
   mode: ChatMode;
   isE2BSandbox: IsE2BSandboxFn;
   scopeExclusions?: string;
+  guardrailsConfig?: string;
 }

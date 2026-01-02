@@ -42,6 +42,7 @@ export const createTools = (
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
   scopeExclusions?: string,
+  guardrailsConfig?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -81,6 +82,7 @@ export const createTools = (
     mode,
     isE2BSandbox,
     scopeExclusions,
+    guardrailsConfig,
   };
 
   // Create all available tools

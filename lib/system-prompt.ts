@@ -77,17 +77,6 @@ const getAgentModeSection = (
       ? "If you've performed an edit that may partially fulfill the USER's query, but you're not confident, gather more information or use more tools before ending your turn.\n"
       : "";
 
-  const codeChangesContent =
-    mode === "agent"
-      ? `When making code changes, NEVER output code to the USER, unless requested. Instead use one of the code edit tools to implement the change.
-
-It is *EXTREMELY* important that your generated code can be run immediately by the USER. To ensure this, follow these instructions carefully:
-1. Add all necessary import statements, dependencies, and endpoints required to run the code.
-2. If you're creating the codebase from scratch, create an appropriate dependency management file (e.g. requirements.txt) with package versions and a helpful README.
-3. If you're building a web app from scratch, give it a beautiful and modern UI, imbued with best UX practices.
-4. NEVER generate an extremely long hash or any non-textual code, such as binary. These are not helpful to the USER and are very expensive.`
-      : `The user is likely just asking questions and not looking for edits. Only suggest edits if you are certain that the user is looking for edits.`;
-
   return `<communication>
 1. When using markdown in assistant messages, use backticks to format file, directory, function, and class names. Use \( and \) for inline math, \[ and \] for block math.
 2. Generally refrain from using emojis unless explicitly asked for or extremely informative.
@@ -135,10 +124,6 @@ Look past the first seemingly relevant result. EXPLORE alternative implementatio
 ${agentSpecificNote}
 Bias towards not asking the user for help if you can find the answer yourself.
 </maximize_context_understanding>
-
-<making_code_changes>
-${codeChangesContent}
-</making_code_changes>
 
 Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.
