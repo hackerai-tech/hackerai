@@ -1306,24 +1306,3 @@ export const getPreviewMessages = query({
   },
 });
 
-/**
- * Migration: Remove regeneration_count from all messages that have it
- */
-export const removeRegenerationCount = internalMutation({
-  args: {},
-  returns: v.number(),
-  handler: async (ctx) => {
-    const messages = await ctx.db
-      .query("messages")
-      .withIndex("by_regeneration_count", (q) => q.gte("regeneration_count", 0))
-      .collect();
-
-    for (const message of messages) {
-      await ctx.db.patch(message._id, {
-        regeneration_count: undefined,
-      } as any);
-    }
-
-    return messages.length;
-  },
-});
