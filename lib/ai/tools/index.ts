@@ -41,7 +41,7 @@ export const createTools = (
   assistantMessageId?: string,
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
-  selectedModel?: ModelName,
+  scopeExclusions?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -80,6 +80,7 @@ export const createTools = (
     backgroundProcessTracker,
     mode,
     isE2BSandbox,
+    scopeExclusions,
   };
 
   // Create all available tools

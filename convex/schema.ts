@@ -112,6 +112,7 @@ export default defineSchema({
     additional_info: v.optional(v.string()),
     updated_at: v.number(),
     include_memory_entries: v.optional(v.boolean()),
+    scope_exclusions: v.optional(v.string()),
   }).index("by_user_id", ["user_id"]),
 
   memories: defineTable({

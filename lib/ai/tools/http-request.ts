@@ -5,6 +5,10 @@ import type { ToolContext } from "@/types";
 import { truncateContent } from "@/lib/token-utils";
 import { waitForSandboxReady } from "./utils/sandbox-health";
 import { sanitizeExternalResponse } from "@/lib/utils/prompt-injection-protection";
+import {
+  parseScopeExclusions,
+  checkUrlScopeExclusion,
+} from "./utils/scope-exclusions";
 
 // Maximum response size in bytes before truncation
 const MAX_RESPONSE_SIZE = 500_000; // 500KB
@@ -131,7 +135,8 @@ const tryParseJson = (
 };
 
 export const createHttpRequest = (context: ToolContext) => {
-  const { sandboxManager, writer } = context;
+  const { sandboxManager, writer, scopeExclusions } = context;
+  const exclusionsList = parseScopeExclusions(scopeExclusions || "");
 
   return tool({
     description: `Make an HTTP request to a target URL for web application testing.
@@ -292,6 +297,16 @@ Examples:
           success: false,
           output: "",
           error: `Invalid URL: ${url}. URL must include scheme (http:// or https://)`,
+        };
+      }
+
+      // Check scope exclusions
+      const excludedPattern = checkUrlScopeExclusion(url, exclusionsList);
+      if (excludedPattern) {
+        return {
+          success: false,
+          output: "",
+          error: `Target is out of scope. The URL matches the scope exclusion pattern: ${excludedPattern}. This target has been excluded from testing by the user's scope configuration.`,
         };
       }
 
