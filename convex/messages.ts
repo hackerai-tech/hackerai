@@ -1,4 +1,9 @@
-import { query, mutation, internalQuery } from "./_generated/server";
+import {
+  query,
+  mutation,
+  internalQuery,
+  internalMutation,
+} from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -108,7 +113,6 @@ export const saveMessage = mutation({
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     usage: v.optional(v.any()),
-    regenerationCount: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -180,7 +184,6 @@ export const saveMessage = mutation({
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: args.usage,
-        regeneration_count: args.regenerationCount,
       });
 
       // Mark attached files as linked so purge won't remove them
@@ -400,7 +403,6 @@ export const saveAssistantMessage = mutation({
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     usage: v.optional(v.any()),
-    regenerationCount: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -447,7 +449,6 @@ export const saveAssistantMessage = mutation({
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: args.usage,
-        regeneration_count: args.regenerationCount,
       });
 
       return null;
@@ -480,7 +481,7 @@ export const deleteLastAssistantMessage = mutation({
       ),
     ),
   },
-  returns: v.object({ regenerationCount: v.number() }),
+  returns: v.null(),
   handler: async (ctx, args) => {
     const user = await ctx.auth.getUserIdentity();
 
@@ -495,10 +496,6 @@ export const deleteLastAssistantMessage = mutation({
         .filter((q) => q.eq(q.field("role"), "assistant"))
         .order("desc")
         .first();
-
-      // Track regeneration count before deleting
-      const regenerationCount =
-        (lastAssistantMessage?.regeneration_count || 0) + 1;
 
       if (lastAssistantMessage) {
         if (
@@ -569,7 +566,7 @@ export const deleteLastAssistantMessage = mutation({
         }
       }
 
-      return { regenerationCount };
+      return null;
     } catch (error) {
       console.error("Failed to delete last assistant message:", error);
       throw error;
@@ -1306,5 +1303,27 @@ export const getPreviewMessages = query({
       console.error("Failed to get preview messages:", error);
       return [];
     }
+  },
+});
+
+/**
+ * Migration: Remove regeneration_count from all messages that have it
+ */
+export const removeRegenerationCount = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_regeneration_count", (q) => q.gte("regeneration_count", 0))
+      .collect();
+
+    for (const message of messages) {
+      await ctx.db.patch(message._id, {
+        regeneration_count: undefined,
+      } as any);
+    }
+
+    return messages.length;
   },
 });

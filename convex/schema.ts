@@ -67,12 +67,15 @@ export default defineSchema({
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     usage: v.optional(v.any()),
+    // TODO: Remove after migration completes
     regeneration_count: v.optional(v.number()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
     .index("by_feedback_id", ["feedback_id"])
     .index("by_user_id", ["user_id"])
+    // TODO: Remove after migration completes
+    .index("by_regeneration_count", ["regeneration_count"])
     .searchIndex("search_content", {
       searchField: "content",
       filterFields: ["user_id"],

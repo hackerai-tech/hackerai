@@ -95,7 +95,6 @@ export const createChatHandler = () => {
         regenerate,
         temporary,
         sandboxPreference,
-        regenerationCount,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -104,7 +103,6 @@ export const createChatHandler = () => {
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
-        regenerationCount?: number;
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
@@ -556,9 +554,6 @@ export const createChatHandler = () => {
                       generationTimeMs: Date.now() - streamStartTime,
                       finishReason: streamFinishReason,
                       usage: streamUsage,
-                      regenerationCount: regenerate
-                        ? regenerationCount
-                        : undefined,
                     });
                   }
                 } else {
