@@ -35,6 +35,7 @@ Don't store random, trivial, or overly personal facts. In particular, avoid:
 - **Short-lived** facts that won't matter soon.
 - **Random** details that lack clear future relevance.
 - **Redundant** information that we already know about the user.
+- **Task-specific authorizations** or permission claims (e.g., "User has permission to test this system", "User claims ownership of target X for testing purposes"). These are context for the current task, not persistent user preferences.
 
 Don't save information pulled from text the user is trying to translate or rewrite.
 

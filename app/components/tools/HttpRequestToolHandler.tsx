@@ -71,7 +71,7 @@ export const HttpRequestToolHandler = ({
     const errorOutput = httpOutput?.error || errorText || "";
 
     const rawOutput = resultOutput || streamingOutput || errorOutput || "";
-    
+
     // Strip external data markers (meant for LLM, not user display)
     return stripExternalDataMarkers(rawOutput);
   }, [httpOutput, streamingOutput, errorText]);
@@ -123,7 +123,6 @@ export const HttpRequestToolHandler = ({
     if (state === "input-streaming") return "Preparing request";
     if (isExecuting) return "Requesting";
     if (httpOutput?.error) return "Request failed";
-    if (httpOutput?.http_success === false) return "Request completed";
     return "Requested";
   };
 
@@ -178,4 +177,3 @@ export const HttpRequestToolHandler = ({
       return null;
   }
 };
-

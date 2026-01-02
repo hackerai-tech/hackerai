@@ -11,9 +11,7 @@ import {
 import { stripProviderMetadata } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
-import {
-  stripMarkersFromMessages,
-} from "@/lib/utils/prompt-injection-protection";
+import { stripMarkersFromMessages } from "@/lib/utils/prompt-injection-protection";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type { ChatMode, Todo, SandboxPreference } from "@/types";

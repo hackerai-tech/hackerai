@@ -133,4 +133,3 @@ export const stripMarkersFromMessages = (messages: any[]): any[] => {
 
   return result;
 };
-

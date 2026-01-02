@@ -227,7 +227,14 @@ Examples:
     execute: async (
       args: {
         url: string;
-        method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS";
+        method?:
+          | "GET"
+          | "POST"
+          | "PUT"
+          | "DELETE"
+          | "PATCH"
+          | "HEAD"
+          | "OPTIONS";
         headers?: Record<string, string>;
         cookies?: Record<string, string>;
         body?: string;
@@ -265,7 +272,8 @@ Examples:
         return {
           success: false,
           output: "",
-          error: "Only one of 'body', 'json_body', or 'form_data' can be provided at a time.",
+          error:
+            "Only one of 'body', 'json_body', or 'form_data' can be provided at a time.",
         };
       }
 
@@ -484,164 +492,179 @@ Examples:
                   stderr += data;
                 },
               })
-              .then((result: { stdout: string; stderr: string; exitCode: number }) => {
-                if (resolved) return;
-                resolved = true;
-                abortSignal?.removeEventListener("abort", onAbort);
+              .then(
+                (result: {
+                  stdout: string;
+                  stderr: string;
+                  exitCode: number;
+                }) => {
+                  if (resolved) return;
+                  resolved = true;
+                  abortSignal?.removeEventListener("abort", onAbort);
 
-                // Parse curl output
-                const parsed = parseCurlOutput(stdout, stderr);
+                  // Parse curl output
+                  const parsed = parseCurlOutput(stdout, stderr);
 
-                // Build output
-                const outputParts: string[] = [];
+                  // Build output
+                  const outputParts: string[] = [];
 
-                if (parsed.error) {
-                  createTerminalWriter(`Error: ${parsed.error}\n`);
-                  resolve({
-                    success: false,
-                    output: "",
-                    error: parsed.error,
-                    metadata: { url },
-                  });
-                  return;
-                }
+                  if (parsed.error) {
+                    createTerminalWriter(`Error: ${parsed.error}\n`);
+                    resolve({
+                      success: false,
+                      output: "",
+                      error: parsed.error,
+                      metadata: { url },
+                    });
+                    return;
+                  }
 
-                // Status line
-                const statusText = getStatusText(parsed.statusCode || 0);
-                outputParts.push(`Status: ${parsed.statusCode} ${statusText}`);
-
-                // URL (with redirect info)
-                if (parsed.finalUrl && parsed.finalUrl !== url) {
-                  outputParts.push(`URL: ${parsed.finalUrl} (redirected from ${url})`);
-                } else {
-                  outputParts.push(`URL: ${url}`);
-                }
-
-                // Timing
-                if (parsed.timing) {
-                  outputParts.push(`Time: ${parsed.timing.total.toFixed(2)}s`);
-                }
-
-                outputParts.push("");
-                outputParts.push("Response Headers:");
-
-                // Format headers
-                for (const [name, value] of Object.entries(parsed.headers)) {
-                  outputParts.push(`  ${name}: ${value}`);
-                }
-
-                outputParts.push("");
-
-                // Handle body
-                let responseBody = parsed.body;
-                let wasTruncated = false;
-                const originalSize = responseBody.length;
-
-                if (originalSize > MAX_RESPONSE_SIZE) {
-                  wasTruncated = true;
-                  responseBody = responseBody.slice(0, MAX_RESPONSE_SIZE);
+                  // Status line
+                  const statusText = getStatusText(parsed.statusCode || 0);
                   outputParts.push(
-                    `\nWARNING: Response truncated from ${originalSize.toLocaleString()} to ${MAX_RESPONSE_SIZE.toLocaleString()} bytes.`,
+                    `Status: ${parsed.statusCode} ${statusText}`,
                   );
-                }
 
-                // Format body based on content type
-                const contentType = parsed.headers["content-type"] || "";
+                  // URL (with redirect info)
+                  if (parsed.finalUrl && parsed.finalUrl !== url) {
+                    outputParts.push(
+                      `URL: ${parsed.finalUrl} (redirected from ${url})`,
+                    );
+                  } else {
+                    outputParts.push(`URL: ${url}`);
+                  }
 
-                if (parsed.statusCode === 204 || method === "HEAD") {
-                  outputParts.push("Body: (No Content)");
-                } else if (contentType.includes("application/json")) {
-                  const jsonResult = tryParseJson(responseBody);
-                  if (jsonResult) {
-                    let formatted = jsonResult.formatted;
-                    if (wasTruncated) {
-                      formatted += "\n[TRUNCATED]";
+                  // Timing
+                  if (parsed.timing) {
+                    outputParts.push(
+                      `Time: ${parsed.timing.total.toFixed(2)}s`,
+                    );
+                  }
+
+                  outputParts.push("");
+                  outputParts.push("Response Headers:");
+
+                  // Format headers
+                  for (const [name, value] of Object.entries(parsed.headers)) {
+                    outputParts.push(`  ${name}: ${value}`);
+                  }
+
+                  outputParts.push("");
+
+                  // Handle body
+                  let responseBody = parsed.body;
+                  let wasTruncated = false;
+                  const originalSize = responseBody.length;
+
+                  if (originalSize > MAX_RESPONSE_SIZE) {
+                    wasTruncated = true;
+                    responseBody = responseBody.slice(0, MAX_RESPONSE_SIZE);
+                    outputParts.push(
+                      `\nWARNING: Response truncated from ${originalSize.toLocaleString()} to ${MAX_RESPONSE_SIZE.toLocaleString()} bytes.`,
+                    );
+                  }
+
+                  // Format body based on content type
+                  const contentType = parsed.headers["content-type"] || "";
+
+                  if (parsed.statusCode === 204 || method === "HEAD") {
+                    outputParts.push("Body: (No Content)");
+                  } else if (contentType.includes("application/json")) {
+                    const jsonResult = tryParseJson(responseBody);
+                    if (jsonResult) {
+                      let formatted = jsonResult.formatted;
+                      if (wasTruncated) {
+                        formatted += "\n[TRUNCATED]";
+                      }
+                      outputParts.push(`Body (JSON):\n${formatted}`);
+                    } else {
+                      outputParts.push(`Body:\n${responseBody}`);
                     }
-                    outputParts.push(`Body (JSON):\n${formatted}`);
                   } else {
                     outputParts.push(`Body:\n${responseBody}`);
                   }
-                } else {
-                  outputParts.push(`Body:\n${responseBody}`);
-                }
 
-                // Build metadata
-                const metadata: Record<string, unknown> = {
-                  status_code: parsed.statusCode,
-                  url: parsed.finalUrl || url,
-                  content_type: contentType,
-                  content_length: originalSize,
-                  redirected: parsed.finalUrl !== url,
-                  elapsed_time: parsed.timing?.total,
-                  truncated: wasTruncated,
-                  exit_code: result.exitCode,
-                };
+                  // Build metadata
+                  const metadata: Record<string, unknown> = {
+                    status_code: parsed.statusCode,
+                    url: parsed.finalUrl || url,
+                    content_type: contentType,
+                    content_length: originalSize,
+                    redirected: parsed.finalUrl !== url,
+                    elapsed_time: parsed.timing?.total,
+                    truncated: wasTruncated,
+                    exit_code: result.exitCode,
+                  };
 
-                // Detect security indicators
-                const securityIndicators: string[] = [];
-                const serverHeader = (
-                  parsed.headers["server"] || ""
-                ).toLowerCase();
+                  // Detect security indicators
+                  const securityIndicators: string[] = [];
+                  const serverHeader = (
+                    parsed.headers["server"] || ""
+                  ).toLowerCase();
 
-                if (serverHeader.includes("cloudflare")) {
-                  securityIndicators.push("Cloudflare detected");
-                  metadata["waf_detected"] = "cloudflare";
-                }
-                if (
-                  serverHeader.includes("akamai") ||
-                  parsed.headers["x-akamai-request-id"]
-                ) {
-                  securityIndicators.push("Akamai detected");
-                  metadata["cdn_detected"] = "akamai";
-                }
-                if (parsed.headers["x-aws-waf-id"]) {
-                  securityIndicators.push("AWS WAF detected");
-                  metadata["waf_detected"] = "aws-waf";
-                }
+                  if (serverHeader.includes("cloudflare")) {
+                    securityIndicators.push("Cloudflare detected");
+                    metadata["waf_detected"] = "cloudflare";
+                  }
+                  if (
+                    serverHeader.includes("akamai") ||
+                    parsed.headers["x-akamai-request-id"]
+                  ) {
+                    securityIndicators.push("Akamai detected");
+                    metadata["cdn_detected"] = "akamai";
+                  }
+                  if (parsed.headers["x-aws-waf-id"]) {
+                    securityIndicators.push("AWS WAF detected");
+                    metadata["waf_detected"] = "aws-waf";
+                  }
 
-                // Check security headers
-                const securityHeaders = [
-                  "content-security-policy",
-                  "x-frame-options",
-                  "x-content-type-options",
-                  "strict-transport-security",
-                  "x-xss-protection",
-                ];
-                const presentSecurityHeaders = securityHeaders.filter(
-                  (h) => parsed.headers[h],
-                );
-                if (presentSecurityHeaders.length > 0) {
-                  metadata["security_headers"] = presentSecurityHeaders;
-                }
-
-                if (securityIndicators.length > 0) {
-                  outputParts.unshift(
-                    `[Security] ${securityIndicators.join("; ")}`,
+                  // Check security headers
+                  const securityHeaders = [
+                    "content-security-policy",
+                    "x-frame-options",
+                    "x-content-type-options",
+                    "strict-transport-security",
+                    "x-xss-protection",
+                  ];
+                  const presentSecurityHeaders = securityHeaders.filter(
+                    (h) => parsed.headers[h],
                   );
-                }
+                  if (presentSecurityHeaders.length > 0) {
+                    metadata["security_headers"] = presentSecurityHeaders;
+                  }
 
-                let output = outputParts.join("\n");
+                  if (securityIndicators.length > 0) {
+                    outputParts.unshift(
+                      `[Security] ${securityIndicators.join("; ")}`,
+                    );
+                  }
 
-                // Apply token-based truncation
-                output = truncateContent(output);
+                  let output = outputParts.join("\n");
 
-                // Sanitize external response
-                output = sanitizeExternalResponse(output, `HTTP ${method} ${url}`);
+                  // Apply token-based truncation
+                  output = truncateContent(output);
 
-                // Show summary in terminal
-                createTerminalWriter(
-                  `${parsed.statusCode} ${statusText} (${parsed.timing?.total.toFixed(2) || "?"}s)\n`,
-                );
+                  // Sanitize external response
+                  output = sanitizeExternalResponse(
+                    output,
+                    `HTTP ${method} ${url}`,
+                  );
 
-                resolve({
-                  success: true,
-                  output,
-                  metadata,
-                  http_success:
-                    (parsed.statusCode || 0) >= 200 &&
-                    (parsed.statusCode || 0) < 400,
-                });
-              })
+                  // Show summary in terminal
+                  createTerminalWriter(
+                    `${parsed.statusCode} ${statusText} (${parsed.timing?.total.toFixed(2) || "?"}s)\n`,
+                  );
+
+                  resolve({
+                    success: true,
+                    output,
+                    metadata,
+                    http_success:
+                      (parsed.statusCode || 0) >= 200 &&
+                      (parsed.statusCode || 0) < 400,
+                  });
+                },
+              )
               .catch((error: unknown) => {
                 if (resolved) return;
                 resolved = true;
