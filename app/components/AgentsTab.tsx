@@ -15,7 +15,14 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import { Shield, Save, Info, ShieldAlert, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  Shield,
+  Save,
+  Info,
+  ShieldAlert,
+  ChevronDown,
+  ChevronUp,
+} from "lucide-react";
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
@@ -47,8 +54,9 @@ const AgentsTab = () => {
   const [scopeExclusions, setScopeExclusions] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
-  const [guardrails, setGuardrails] =
-    useState<GuardrailConfigUI[]>(getDefaultGuardrailsUI());
+  const [guardrails, setGuardrails] = useState<GuardrailConfigUI[]>(
+    getDefaultGuardrailsUI(),
+  );
   const [guardrailsExpanded, setGuardrailsExpanded] = useState(false);
   const [isSavingGuardrails, setIsSavingGuardrails] = useState(false);
   const [guardrailChanges, setGuardrailChanges] = useState(false);

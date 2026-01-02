@@ -39,6 +39,7 @@ interface LocalConnection {
     release: string;
     hostname: string;
   };
+  lastSeen: number;
 }
 
 interface CommandBlockProps {
@@ -149,7 +150,7 @@ const LocalSandboxTab = () => {
         </h4>
         {connections && connections.length > 0 ? (
           <div className="space-y-2">
-            {(connections as LocalConnection[]).map((conn) => (
+            {connections.map((conn) => (
               <div
                 key={conn.connectionId}
                 className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"

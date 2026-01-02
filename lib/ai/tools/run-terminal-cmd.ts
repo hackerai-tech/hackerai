@@ -121,7 +121,10 @@ If you are generating files:
       { toolCallId, abortSignal },
     ) => {
       // Check guardrails before executing the command
-      const guardrailResult = checkCommandGuardrails(command, effectiveGuardrails);
+      const guardrailResult = checkCommandGuardrails(
+        command,
+        effectiveGuardrails,
+      );
       if (!guardrailResult.allowed) {
         return {
           result: {
