@@ -74,6 +74,8 @@ export default defineSchema({
     .index("by_chat_id", ["chat_id"])
     .index("by_feedback_id", ["feedback_id"])
     .index("by_user_id", ["user_id"])
+    // TODO: Remove after migration clears regeneration_count
+    .index("by_regeneration_count", ["regeneration_count"])
     .searchIndex("search_content", {
       searchField: "content",
       filterFields: ["user_id"],
