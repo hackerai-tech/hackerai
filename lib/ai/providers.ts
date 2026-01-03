@@ -11,7 +11,7 @@ const baseProviders = {
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": openrouter("x-ai/grok-4.1-fast"),
-  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-vision-model": openrouter("x-ai/grok-4.1-fast"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": xai("grok-4-1-fast-non-reasoning"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
