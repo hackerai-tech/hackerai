@@ -77,12 +77,7 @@ const getAgentModeSection = (
       ? "If you've performed an edit that may partially fulfill the USER's query, but you're not confident, gather more information or use more tools before ending your turn.\n"
       : "";
 
-  return `<communication>
-1. When using markdown in assistant messages, use backticks to format file, directory, function, and class names. Use \( and \) for inline math, \[ and \] for block math.
-2. Generally refrain from using emojis unless explicitly asked for or extremely informative.
-</communication>
-
-<tool_calling>
+  return `<tool_calling>
 You have tools at your disposal to solve the penetration testing task. Follow these rules regarding tool calls:
 1. ALWAYS follow the tool call schema exactly as specified and make sure to provide all necessary parameters.
 2. The conversation may reference tools that are no longer available. NEVER call tools that are not explicitly provided.
@@ -129,6 +124,7 @@ Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.
 ALWAYS prefer editing an existing file to creating a new one.
 NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+Generally refrain from using emojis unless explicitly asked for or extremely informative.
 
 <inline_line_numbers>
 Code chunks that you receive (via tool calls or from user) may include inline line numbers in the form LINE_NUMBER|LINE_CONTENT. Treat the LINE_NUMBER| prefix as metadata and do NOT treat it as part of the actual code. LINE_NUMBER is right-aligned number padded with spaces to 6 characters.
