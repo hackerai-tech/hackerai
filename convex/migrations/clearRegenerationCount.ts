@@ -3,33 +3,31 @@ import { v } from "convex/values";
 
 /**
  * Migration to clear regeneration_count from all messages.
- * This prepares for removing the by_regeneration_count index.
+ * Run repeatedly until isDone is true:
  *
- * Run this migration:
- * npx convex run migrations/clearRegenerationCount:clear --prod
+ * while true; do
+ *   result=$(npx convex run migrations/clearRegenerationCount:clear --prod)
+ *   echo "$result"
+ *   if echo "$result" | grep -q '"isDone":true'; then break; fi
+ * done
  *
  * After migration completes, remove:
  * 1. The regeneration_count field from schema
  * 2. The by_regeneration_count index from schema
  */
-
-/**
- * Clear regeneration_count from all messages.
- * Uses index with gte() to find documents where regeneration_count >= 0.
- * After we set it to undefined, they'll be removed from the index.
- */
 export const clear = internalMutation({
   args: {},
   returns: v.object({
     processed: v.number(),
+    isDone: v.boolean(),
   }),
   handler: async (ctx) => {
-    // Query all messages where regeneration_count is defined (>= 0)
-    // After we set it to undefined, they'll be removed from the index
+    // Take 500 at a time - after clearing, they're removed from index
+    // so next call gets the next batch automatically
     const messages = await ctx.db
       .query("messages")
       .withIndex("by_regeneration_count", (q) => q.gte("regeneration_count", 0))
-      .collect();
+      .take(500);
 
     for (const message of messages) {
       await ctx.db.patch(message._id, {
@@ -39,6 +37,7 @@ export const clear = internalMutation({
 
     return {
       processed: messages.length,
+      isDone: messages.length === 0,
     };
   },
 });
