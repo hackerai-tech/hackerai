@@ -19,7 +19,6 @@ import type * as fileStorage from "../fileStorage.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as memories from "../memories.js";
 import type * as messages from "../messages.js";
-import type * as migrations_clearRegenerationCount from "../migrations/clearRegenerationCount.js";
 import type * as s3Actions from "../s3Actions.js";
 import type * as s3Cleanup from "../s3Cleanup.js";
 import type * as s3Utils from "../s3Utils.js";
@@ -45,7 +44,6 @@ declare const fullApi: ApiFromModules<{
   localSandbox: typeof localSandbox;
   memories: typeof memories;
   messages: typeof messages;
-  "migrations/clearRegenerationCount": typeof migrations_clearRegenerationCount;
   s3Actions: typeof s3Actions;
   s3Cleanup: typeof s3Cleanup;
   s3Utils: typeof s3Utils;
