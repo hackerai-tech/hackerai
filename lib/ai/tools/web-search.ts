@@ -32,7 +32,6 @@ export const createWebSearch = (context: ToolContext) => {
         query,
       }: {
         query: string;
-        explanation: string;
       },
       { abortSignal },
     ) => {
@@ -70,7 +69,11 @@ export const createWebSearch = (context: ToolContext) => {
 
           searchResults = await response.json();
         } catch (firstError: unknown) {
-          // Always retry without userLocation as fallback
+          // Don't retry if the operation was aborted
+          if (firstError instanceof Error && firstError.name === "AbortError") {
+            throw firstError;
+          }
+          // Retry without userLocation as fallback
           const response = await fetch("https://api.exa.ai/search", {
             method: "POST",
             headers: {

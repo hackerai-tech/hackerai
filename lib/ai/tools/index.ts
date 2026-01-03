@@ -94,9 +94,10 @@ export const createTools = (
     http_request: createHttpRequest(context),
     ...(!isTemporary &&
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
-    ...(process.env.EXA_API_KEY && {
-      web_search: createWebSearch(context),
-    }),
+    ...(process.env.EXA_API_KEY &&
+      process.env.JINA_API_KEY && {
+        web_search: createWebSearch(context),
+      }),
   };
 
   // Filter tools based on mode

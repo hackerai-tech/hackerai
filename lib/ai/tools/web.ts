@@ -100,8 +100,15 @@ The \`web\` tool has the following commands:
             }
 
             searchResults = await response.json();
-          } catch (firstError: any) {
-            // Always retry without userLocation as fallback
+          } catch (firstError: unknown) {
+            // Don't retry if the operation was aborted
+            if (
+              firstError instanceof Error &&
+              firstError.name === "AbortError"
+            ) {
+              throw firstError;
+            }
+            // Retry without userLocation as fallback
             const response = await fetch("https://api.exa.ai/search", {
               method: "POST",
               headers: {

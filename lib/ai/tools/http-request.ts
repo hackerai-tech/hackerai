@@ -230,7 +230,6 @@ Examples:
     execute: async (
       args: {
         url: string;
-        explanation: string;
         method?:
           | "GET"
           | "POST"
