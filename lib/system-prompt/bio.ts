@@ -1,4 +1,4 @@
-import type { UserCustomization } from "./personality";
+import type { UserCustomization } from "@/types";
 
 // User bio generation with optimized logic
 export const generateUserBio = (

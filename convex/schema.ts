@@ -67,7 +67,6 @@ export default defineSchema({
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     usage: v.optional(v.any()),
-    regeneration_count: v.optional(v.number()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
@@ -109,6 +108,8 @@ export default defineSchema({
     additional_info: v.optional(v.string()),
     updated_at: v.number(),
     include_memory_entries: v.optional(v.boolean()),
+    scope_exclusions: v.optional(v.string()),
+    guardrails_config: v.optional(v.string()),
   }).index("by_user_id", ["user_id"]),
 
   memories: defineTable({

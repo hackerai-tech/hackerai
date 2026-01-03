@@ -37,4 +37,6 @@ export interface ToolContext {
   backgroundProcessTracker: BackgroundProcessTracker;
   mode: ChatMode;
   isE2BSandbox: IsE2BSandboxFn;
+  scopeExclusions?: string;
+  guardrailsConfig?: string;
 }

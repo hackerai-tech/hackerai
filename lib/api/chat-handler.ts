@@ -94,7 +94,6 @@ export const createChatHandler = () => {
         regenerate,
         temporary,
         sandboxPreference,
-        regenerationCount,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -103,7 +102,6 @@ export const createChatHandler = () => {
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
-        regenerationCount?: number;
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
@@ -220,7 +218,8 @@ export const createChatHandler = () => {
             assistantMessageId,
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
-            selectedModel,
+            userCustomization?.scope_exclusions,
+            userCustomization?.guardrails_config,
           );
 
           // Get sandbox context for system prompt (only for local sandboxes)
@@ -347,9 +346,10 @@ export const createChatHandler = () => {
                   toolResults.some((r) => r?.toolName === "update_memory");
 
                 if (!wasMemoryUpdate) {
-                  return currentSystemPrompt
-                    ? { system: currentSystemPrompt }
-                    : {};
+                  return {
+                    messages,
+                    ...(currentSystemPrompt && { system: currentSystemPrompt }),
+                  };
                 }
 
                 // Refresh and cache the updated system prompt
@@ -365,6 +365,7 @@ export const createChatHandler = () => {
                 );
 
                 return {
+                  messages,
                   system: currentSystemPrompt,
                 };
               } catch (error) {
@@ -544,9 +545,6 @@ export const createChatHandler = () => {
                       generationTimeMs: Date.now() - streamStartTime,
                       finishReason: streamFinishReason,
                       usage: streamUsage,
-                      regenerationCount: regenerate
-                        ? regenerationCount
-                        : undefined,
                     });
                   }
                 } else {

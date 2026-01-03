@@ -13,6 +13,8 @@ export const saveUserCustomization = mutation({
     traits: v.optional(v.string()),
     additional_info: v.optional(v.string()),
     include_memory_entries: v.optional(v.boolean()),
+    scope_exclusions: v.optional(v.string()),
+    guardrails_config: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -25,6 +27,7 @@ export const saveUserCustomization = mutation({
     }
 
     const MAX_CHAR_LIMIT = 1500;
+    const MAX_SCOPE_EXCLUSIONS_LIMIT = 5000;
 
     // Validate character limits
     if (args.nickname && args.nickname.length > MAX_CHAR_LIMIT) {
@@ -57,6 +60,24 @@ export const saveUserCustomization = mutation({
         message: `Additional info exceeds ${MAX_CHAR_LIMIT} character limit`,
       });
     }
+    if (
+      args.scope_exclusions &&
+      args.scope_exclusions.length > MAX_SCOPE_EXCLUSIONS_LIMIT
+    ) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: `Scope exclusions exceeds ${MAX_SCOPE_EXCLUSIONS_LIMIT} character limit`,
+      });
+    }
+    if (
+      args.guardrails_config &&
+      args.guardrails_config.length > MAX_SCOPE_EXCLUSIONS_LIMIT
+    ) {
+      throw new ConvexError({
+        code: "VALIDATION_ERROR",
+        message: `Guardrails config exceeds ${MAX_SCOPE_EXCLUSIONS_LIMIT} character limit`,
+      });
+    }
 
     try {
       // Check if user already has customization data
@@ -76,6 +97,8 @@ export const saveUserCustomization = mutation({
           args.include_memory_entries !== undefined
             ? args.include_memory_entries
             : true, // Default to enabled
+        scope_exclusions: args.scope_exclusions?.trim() || undefined,
+        guardrails_config: args.guardrails_config?.trim() || undefined,
         updated_at: Date.now(),
       };
 
@@ -116,6 +139,8 @@ export const getUserCustomization = query({
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_memory_entries: v.boolean(),
+      scope_exclusions: v.optional(v.string()),
+      guardrails_config: v.optional(v.string()),
       updated_at: v.number(),
     }),
   ),
@@ -142,6 +167,8 @@ export const getUserCustomization = query({
         traits: customization.traits,
         additional_info: customization.additional_info,
         include_memory_entries: customization.include_memory_entries ?? true, // Default to enabled if not set
+        scope_exclusions: customization.scope_exclusions,
+        guardrails_config: customization.guardrails_config,
         updated_at: customization.updated_at,
       };
     } catch (error) {
@@ -168,6 +195,8 @@ export const getUserCustomizationForBackend = query({
       traits: v.optional(v.string()),
       additional_info: v.optional(v.string()),
       include_memory_entries: v.boolean(),
+      scope_exclusions: v.optional(v.string()),
+      guardrails_config: v.optional(v.string()),
       updated_at: v.number(),
     }),
   ),
@@ -191,6 +220,8 @@ export const getUserCustomizationForBackend = query({
         traits: customization.traits,
         additional_info: customization.additional_info,
         include_memory_entries: customization.include_memory_entries ?? true, // Default to enabled if not set
+        scope_exclusions: customization.scope_exclusions,
+        guardrails_config: customization.guardrails_config,
         updated_at: customization.updated_at,
       };
     } catch (error) {

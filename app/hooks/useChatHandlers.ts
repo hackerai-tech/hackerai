@@ -303,13 +303,11 @@ export const useChatHandlers = ({
     if (!temporaryChatsEnabled) {
       // Only delete if the last assistant message has content
       // This prevents deleting previous valid messages when an error occurred
-      let regenerationCount = 1;
       if (hasContent) {
-        const result = await deleteLastAssistantMessage({
+        await deleteLastAssistantMessage({
           chatId,
           todos: cleanedTodos,
         });
-        regenerationCount = result?.regenerationCount ?? 1;
       }
       // For persisted chats, backend fetches from database - explicitly send no messages
       regenerate({
@@ -320,7 +318,6 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          regenerationCount,
         },
       });
     } else {

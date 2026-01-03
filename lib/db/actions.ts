@@ -62,7 +62,6 @@ export async function saveMessage({
   generationTimeMs,
   finishReason,
   usage,
-  regenerationCount,
 }: {
   chatId: string;
   userId: string;
@@ -76,7 +75,6 @@ export async function saveMessage({
   generationTimeMs?: number;
   finishReason?: string;
   usage?: Record<string, unknown>;
-  regenerationCount?: number;
 }) {
   try {
     // Extract file IDs from file parts
@@ -98,7 +96,6 @@ export async function saveMessage({
       generationTimeMs,
       finishReason,
       usage,
-      regenerationCount,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");

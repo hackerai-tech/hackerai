@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useQuery, useMutation } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import {
   Select,
@@ -11,92 +12,35 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
-  Circle,
-  Copy,
-  Eye,
-  EyeOff,
-  RefreshCw,
-  AlertTriangle,
-  Terminal,
-  Server,
+  Shield,
+  Save,
+  Info,
+  ShieldAlert,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
 import { SandboxSelector } from "@/app/components/SandboxSelector";
+import {
+  type GuardrailConfigUI,
+  getDefaultGuardrailsUI,
+  parseAndMergeGuardrailsConfig,
+  formatGuardrailsConfigForSave,
+  hasGuardrailChanges,
+} from "@/lib/ai/tools/utils/guardrails";
 
-// Production Convex URL (must match @hackerai/local@latest package)
-const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
-
-// Add --convex-url flag if running against non-production backend
-const convexUrlFlag =
-  process.env.NEXT_PUBLIC_CONVEX_URL &&
-  process.env.NEXT_PUBLIC_CONVEX_URL !== PRODUCTION_CONVEX_URL
-    ? ` --convex-url ${process.env.NEXT_PUBLIC_CONVEX_URL}`
-    : "";
-
-interface LocalConnection {
-  connectionId: string;
-  name: string;
-  mode: "docker" | "dangerous" | "custom";
-  imageName?: string;
-  containerId?: string;
-  osInfo?: {
-    platform: string;
-    arch: string;
-    release: string;
-    hostname: string;
-  };
-}
-
-interface CommandBlockProps {
-  label: string;
-  command: string;
-  onCopy: () => void;
-  warning?: boolean;
-}
-
-const CommandBlock = ({
-  label,
-  command,
-  onCopy,
-  warning,
-}: CommandBlockProps) => (
-  <div className="space-y-1.5">
-    <div
-      className={`text-xs font-medium flex items-center gap-1.5 ${warning ? "text-yellow-700 dark:text-yellow-400" : ""}`}
-    >
-      {label}
-      {warning && <AlertTriangle className="h-3 w-3" />}
-    </div>
-    <div className="flex gap-2">
-      <code
-        className={`flex-1 p-2.5 rounded-lg font-mono text-xs overflow-x-auto ${
-          warning
-            ? "bg-yellow-500/5 border border-yellow-500/20 text-yellow-900 dark:text-yellow-100"
-            : "bg-zinc-900 dark:bg-zinc-950 text-zinc-300 dark:text-zinc-400"
-        }`}
-      >
-        {command}
-      </code>
-      <Button
-        variant="outline"
-        size="icon"
-        className="shrink-0 h-9 w-9"
-        onClick={onCopy}
-      >
-        <Copy className="h-4 w-4" />
-      </Button>
-    </div>
-    {warning && (
-      <p className="text-xs text-yellow-600 dark:text-yellow-400">
-        Commands run directly on host OS - no isolation
-      </p>
-    )}
-  </div>
-);
+const severityColors: Record<GuardrailConfigUI["severity"], string> = {
+  critical: "text-red-500",
+  high: "text-orange-500",
+  medium: "text-yellow-500",
+  low: "text-blue-500",
+};
 
 const AgentsTab = () => {
   const {
@@ -107,13 +51,61 @@ const AgentsTab = () => {
     setSandboxPreference,
   } = useGlobalState();
 
-  const [showToken, setShowToken] = useState(false);
-  const [token, setToken] = useState<string | null>(null);
-  const [isLoadingToken, setIsLoadingToken] = useState(false);
+  const [scopeExclusions, setScopeExclusions] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [hasChanges, setHasChanges] = useState(false);
+  const [guardrails, setGuardrails] = useState<GuardrailConfigUI[]>(
+    getDefaultGuardrailsUI(),
+  );
+  const [guardrailsExpanded, setGuardrailsExpanded] = useState(false);
+  const [isSavingGuardrails, setIsSavingGuardrails] = useState(false);
+  const [guardrailChanges, setGuardrailChanges] = useState(false);
 
-  const connections = useQuery(api.localSandbox.listConnections);
-  const tokenResult = useMutation(api.localSandbox.getToken);
-  const regenerateToken = useMutation(api.localSandbox.regenerateToken);
+  const userCustomization = useQuery(
+    api.userCustomization.getUserCustomization,
+    {},
+  );
+  const saveCustomization = useMutation(
+    api.userCustomization.saveUserCustomization,
+  );
+
+  // Load initial scope exclusions and guardrails from user customization
+  useEffect(() => {
+    if (userCustomization?.scope_exclusions !== undefined) {
+      setScopeExclusions(userCustomization.scope_exclusions || "");
+    }
+  }, [userCustomization?.scope_exclusions]);
+
+  // Load guardrails config
+  useEffect(() => {
+    if (userCustomization?.guardrails_config !== undefined) {
+      const mergedGuardrails = parseAndMergeGuardrailsConfig(
+        userCustomization.guardrails_config,
+      );
+      setGuardrails(mergedGuardrails);
+    }
+  }, [userCustomization?.guardrails_config]);
+
+  // Track changes for scope exclusions
+  useEffect(() => {
+    const original = userCustomization?.scope_exclusions || "";
+    setHasChanges(scopeExclusions !== original);
+  }, [scopeExclusions, userCustomization?.scope_exclusions]);
+
+  // Track changes for guardrails
+  useEffect(() => {
+    const hasChanges = hasGuardrailChanges(
+      guardrails,
+      userCustomization?.guardrails_config,
+    );
+    setGuardrailChanges(hasChanges);
+  }, [guardrails, userCustomization?.guardrails_config]);
+
+  const handleToggleGuardrail = (id: string) => {
+    setGuardrails((prev) =>
+      prev.map((g) => (g.id === id ? { ...g, enabled: !g.enabled } : g)),
+    );
+  };
 
   const queueBehaviorOptions: Array<{
     value: QueueBehavior;
@@ -129,41 +121,57 @@ const AgentsTab = () => {
     },
   ];
 
-  const handleGetToken = async () => {
-    setIsLoadingToken(true);
+  const handleSaveScopeExclusions = async () => {
+    setIsSaving(true);
     try {
-      const result = await tokenResult();
-      setToken(result.token);
+      await saveCustomization({
+        scope_exclusions: scopeExclusions.trim() || undefined,
+      });
+      toast.success("Scope exclusions saved successfully");
+      setHasChanges(false);
     } catch (error) {
-      console.error("Failed to get token:", error);
-      toast.error("Failed to get token");
+      console.error("Failed to save scope exclusions:", error);
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to save scope exclusions"
+          : error instanceof Error
+            ? error.message
+            : "Failed to save scope exclusions";
+      toast.error(errorMessage);
     } finally {
-      setIsLoadingToken(false);
+      setIsSaving(false);
     }
   };
 
-  const handleRegenerateToken = async () => {
+  const handleSaveGuardrails = async () => {
+    setIsSavingGuardrails(true);
     try {
-      const result = await regenerateToken();
-      setToken(result.token);
-      toast.success("Token regenerated successfully");
-      setShowToken(false);
+      const guardrailsConfig = formatGuardrailsConfigForSave(guardrails);
+      await saveCustomization({
+        guardrails_config: guardrailsConfig || undefined,
+      });
+      toast.success("Guardrails saved successfully");
+      setGuardrailChanges(false);
     } catch (error) {
-      console.error("Failed to regenerate token:", error);
-      toast.error("Failed to regenerate token");
+      console.error("Failed to save guardrails:", error);
+      const errorMessage =
+        error instanceof ConvexError
+          ? (error.data as { message?: string })?.message ||
+            error.message ||
+            "Failed to save guardrails"
+          : error instanceof Error
+            ? error.message
+            : "Failed to save guardrails";
+      toast.error(errorMessage);
+    } finally {
+      setIsSavingGuardrails(false);
     }
   };
 
-  const handleCopyCommand = (command: string) => {
-    navigator.clipboard.writeText(command);
-    toast.success("Command copied to clipboard");
-  };
-
-  const handleCopyToken = () => {
-    if (token) {
-      navigator.clipboard.writeText(token);
-      toast.success("Token copied to clipboard");
-    }
+  const handleResetGuardrails = () => {
+    setGuardrails(getDefaultGuardrailsUI());
   };
 
   return (
@@ -217,179 +225,152 @@ const AgentsTab = () => {
         </div>
       )}
 
-      {/* Local Sandbox Setup Section - Only show for Pro/Ultra/Team users */}
+      {/* Security Guardrails Section - Only show for Pro/Ultra/Team users */}
       {subscription !== "free" && (
-        <div className="space-y-5 pt-2">
-          {/* Section Header */}
-          <div className="flex items-center gap-2 border-b pb-3">
-            <Server className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Local Sandbox</h3>
-          </div>
+        <div className="space-y-4 pt-2">
+          <button
+            onClick={() => setGuardrailsExpanded(!guardrailsExpanded)}
+            className="flex items-center justify-between w-full border-b pb-3 hover:opacity-80 transition-opacity"
+            type="button"
+            aria-expanded={guardrailsExpanded}
+            aria-label="Toggle security guardrails section"
+          >
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4 text-muted-foreground" />
+              <h3 className="text-sm font-semibold">Security Guardrails</h3>
+            </div>
+            {guardrailsExpanded ? (
+              <ChevronUp className="h-4 w-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            )}
+          </button>
 
-          {/* Active Connections */}
-          <div className="space-y-3">
-            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Connections
-            </h4>
-            {connections && connections.length > 0 ? (
-              <div className="space-y-2">
-                {(connections as LocalConnection[]).map((conn) => (
+          {guardrailsExpanded && (
+            <div className="space-y-4">
+              <div className="flex items-start gap-2 p-3 bg-amber-500/10 rounded-lg text-xs">
+                <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                <div className="text-amber-800 dark:text-amber-200">
+                  <span className="font-medium">
+                    Security guardrails protect against dangerous commands.
+                  </span>{" "}
+                  <span className="text-amber-700 dark:text-amber-300">
+                    These safeguards block destructive system commands, reverse
+                    shells, and other malicious patterns. Disable at your own
+                    risk.
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                {guardrails.map((guardrail) => (
                   <div
-                    key={conn.connectionId}
-                    className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
+                    key={guardrail.id}
+                    className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/50 transition-colors"
                   >
-                    <div className="relative">
-                      <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
-                      <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium text-sm">{conn.name}</div>
-                      <div className="text-xs text-muted-foreground truncate">
-                        {conn.mode === "docker"
-                          ? `Docker: ${conn.containerId?.slice(0, 12) || "unknown"}`
-                          : `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`}
+                    <div className="flex-1 pr-4">
+                      <div className="flex items-center gap-2">
+                        <Label
+                          htmlFor={guardrail.id}
+                          className="text-sm font-medium cursor-pointer"
+                        >
+                          {guardrail.name}
+                        </Label>
+                        <span
+                          className={`text-[10px] font-medium uppercase ${severityColors[guardrail.severity]}`}
+                        >
+                          {guardrail.severity}
+                        </span>
                       </div>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {guardrail.description}
+                      </p>
                     </div>
-                    {conn.mode === "dangerous" && (
-                      <span className="flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400 bg-yellow-100 dark:bg-yellow-900/30 px-2 py-0.5 rounded-full">
-                        <AlertTriangle className="h-3 w-3" />
-                        Dangerous
-                      </span>
-                    )}
+                    <Switch
+                      id={guardrail.id}
+                      checked={guardrail.enabled}
+                      onCheckedChange={() =>
+                        handleToggleGuardrail(guardrail.id)
+                      }
+                      aria-label={`Toggle ${guardrail.name}`}
+                    />
                   </div>
                 ))}
               </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center py-6 px-4 bg-muted/30 rounded-lg">
-                <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center mb-2">
-                  <Server className="h-4 w-4 text-muted-foreground" />
-                </div>
-                <p className="text-sm font-medium">No active connections</p>
-                <p className="text-xs text-muted-foreground">
-                  Connect using the commands below
-                </p>
-              </div>
-            )}
-          </div>
 
-          {/* Token Management */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                Auth Token
-              </h4>
-              {token && (
+              <div className="flex justify-between pt-2">
                 <Button
-                  variant="ghost"
+                  variant="outline"
+                  onClick={handleResetGuardrails}
                   size="sm"
-                  className="h-6 text-xs text-muted-foreground hover:text-foreground"
-                  onClick={handleRegenerateToken}
+                  type="button"
                 >
-                  <RefreshCw className="h-3 w-3 mr-1" />
-                  Regenerate
+                  Reset to Defaults
                 </Button>
-              )}
-            </div>
-
-            {!token ? (
-              <Button
-                onClick={handleGetToken}
-                disabled={isLoadingToken}
-                variant="outline"
-                size="sm"
-                className="w-full sm:w-auto"
-              >
-                <Terminal className="h-3.5 w-3.5 mr-2" />
-                {isLoadingToken ? "Loading..." : "Generate Token"}
-              </Button>
-            ) : (
-              <div className="flex gap-2">
-                <div className="flex-1 relative">
-                  <Input
-                    type={showToken ? "text" : "password"}
-                    value={token}
-                    readOnly
-                    className="font-mono text-xs pr-20 bg-muted/50 border-0"
-                  />
-                  <div className="absolute right-1 top-1/2 -translate-y-1/2 flex gap-0.5">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0"
-                      onClick={() => setShowToken(!showToken)}
-                    >
-                      {showToken ? (
-                        <EyeOff className="h-3.5 w-3.5" />
-                      ) : (
-                        <Eye className="h-3.5 w-3.5" />
-                      )}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 w-7 p-0"
-                      onClick={handleCopyToken}
-                    >
-                      <Copy className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
+                <Button
+                  onClick={handleSaveGuardrails}
+                  disabled={isSavingGuardrails || !guardrailChanges}
+                  size="sm"
+                  type="button"
+                >
+                  <Save className="h-4 w-4 mr-2" />
+                  {isSavingGuardrails ? "Saving..." : "Save Guardrails"}
+                </Button>
               </div>
-            )}
-          </div>
-
-          {/* Setup Commands */}
-          <div className="space-y-3">
-            <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-              Quick Start
-            </h4>
-
-            <div className="space-y-4">
-              {/* Docker command */}
-              <CommandBlock
-                label="Basic (Docker)"
-                command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
-                onCopy={() =>
-                  handleCopyCommand(
-                    `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
-                  )
-                }
-              />
-
-              {/* Kali command */}
-              <CommandBlock
-                label="Custom Image (Kali Linux)"
-                command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`}
-                onCopy={() =>
-                  handleCopyCommand(
-                    `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`,
-                  )
-                }
-              />
-
-              {/* Dangerous mode */}
-              <CommandBlock
-                label="Dangerous Mode (No Docker)"
-                warning
-                command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
-                onCopy={() =>
-                  handleCopyCommand(
-                    `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
-                  )
-                }
-              />
             </div>
+          )}
+        </div>
+      )}
+
+      {/* Scope Exclusions Section - Only show for Pro/Ultra/Team users */}
+      {subscription !== "free" && (
+        <div className="space-y-4 pt-2">
+          <div className="flex items-center gap-2 border-b pb-3">
+            <Shield className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">Scope Exclusions</h3>
           </div>
 
-          {/* Security Notice - Compact */}
-          <div className="flex items-start gap-2 p-3 bg-yellow-500/10 rounded-lg text-xs">
-            <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
-            <div className="text-yellow-800 dark:text-yellow-200 space-y-1">
-              <span className="font-medium">Security:</span>{" "}
-              <span className="text-yellow-700 dark:text-yellow-300">
-                Docker mode runs in isolation. Dangerous mode has direct OS
-                access. Stop anytime with Ctrl+C.
-              </span>
+          <div className="space-y-3">
+            <div className="flex items-start gap-2 p-3 bg-blue-500/10 rounded-lg text-xs">
+              <Info className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+              <div className="text-blue-800 dark:text-blue-200">
+                <span className="font-medium">
+                  Define targets that should never be attacked.
+                </span>{" "}
+                <span className="text-blue-700 dark:text-blue-300">
+                  Add domains, IPs, or network ranges (one per line) that
+                  HackerAI should exclude from all scans, HTTP requests, and
+                  terminal commands during Agent mode.
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Textarea
+                placeholder={`Example:\nexample.com\n*.internal.corp\n192.168.1.0/24\n10.0.0.1\nproduction.api.company.com`}
+                value={scopeExclusions}
+                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                  setScopeExclusions(e.target.value)
+                }
+                className="min-h-[150px] font-mono text-sm"
+                aria-label="Scope exclusions"
+              />
+              <p className="text-xs text-muted-foreground">
+                Enter one target per line. Supports domains, wildcards (*.),
+                IPs, and CIDR notation.
+              </p>
+            </div>
+
+            <div className="flex justify-end">
+              <Button
+                onClick={handleSaveScopeExclusions}
+                disabled={isSaving || !hasChanges}
+                size="sm"
+                type="button"
+              >
+                <Save className="h-4 w-4 mr-2" />
+                {isSaving ? "Saving..." : "Save Exclusions"}
+              </Button>
             </div>
           </div>
         </div>
