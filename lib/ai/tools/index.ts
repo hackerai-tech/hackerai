@@ -8,6 +8,7 @@ import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createGetTerminalFiles } from "./get-terminal-files";
 import { createReadFile } from "./read-file";
+import { createWriteFile } from "./write-file";
 import { createSearchReplace } from "./search-replace";
 import { createWebTool } from "./web";
 import { createWebSearch } from "./web-search";
@@ -89,6 +90,7 @@ export const createTools = (
     run_terminal_cmd: createRunTerminalCmd(context),
     get_terminal_files: createGetTerminalFiles(context),
     read_file: createReadFile(context),
+    write_file: createWriteFile(context),
     search_replace: createSearchReplace(context),
     todo_write: createTodoWrite(context),
     http_request: createHttpRequest(context),
