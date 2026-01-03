@@ -73,8 +73,8 @@ export async function GET(
 
   // Fallback: if no resumable stream, attempt to replay the most recent assistant message
   try {
-    const messages = await convex.query(
-      api.messages.getMessagesByChatIdForBackend,
+    const mostRecentMessage = await convex.query(
+      api.messages.getLastAssistantMessage,
       {
         serviceKey,
         chatId,
@@ -82,9 +82,7 @@ export async function GET(
       },
     );
 
-    const mostRecentMessage = Array.isArray(messages) ? messages.at(-1) : null;
-
-    if (!mostRecentMessage || mostRecentMessage.role !== "assistant") {
+    if (!mostRecentMessage) {
       return new Response(
         emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
         { status: 200 },

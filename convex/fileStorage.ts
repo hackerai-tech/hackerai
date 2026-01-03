@@ -172,35 +172,6 @@ export const generateUploadUrl = mutation({
 });
 
 /**
- * Get multiple file URLs from file IDs using service key (for backend processing)
- */
-export const getFileUrlsByFileIds = query({
-  args: {
-    serviceKey: v.string(),
-    fileIds: v.array(v.id("files")),
-  },
-  returns: v.array(v.union(v.string(), v.null())),
-  handler: async (ctx, args) => {
-    // Verify service role key
-    validateServiceKey(args.serviceKey);
-
-    // Get file records from database to extract storage IDs
-    const files = await Promise.all(
-      args.fileIds.map((fileId) => ctx.db.get(fileId)),
-    );
-
-    // Get URLs from storage using the storage IDs
-    const urls = await Promise.all(
-      files.map((file) =>
-        file && file.storage_id ? ctx.storage.getUrl(file.storage_id) : null,
-      ),
-    );
-
-    return urls;
-  },
-});
-
-/**
  * Delete file from storage by file ID
  * Handles both S3 and Convex storage files
  */
