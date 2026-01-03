@@ -5,7 +5,6 @@ import { Globe } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
-import { stripExternalDataMarkers } from "@/lib/utils/prompt-injection-protection";
 
 interface HttpRequestToolHandlerProps {
   message: UIMessage;
@@ -70,10 +69,7 @@ export const HttpRequestToolHandler = ({
     const resultOutput = httpOutput?.output || "";
     const errorOutput = httpOutput?.error || errorText || "";
 
-    const rawOutput = resultOutput || streamingOutput || errorOutput || "";
-
-    // Strip external data markers (meant for LLM, not user display)
-    return stripExternalDataMarkers(rawOutput);
+    return resultOutput || streamingOutput || errorOutput || "";
   }, [httpOutput, streamingOutput, errorText]);
 
   const isExecuting = state === "input-available" && status === "streaming";

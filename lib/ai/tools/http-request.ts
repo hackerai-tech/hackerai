@@ -4,7 +4,6 @@ import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
 import { truncateContent } from "@/lib/token-utils";
 import { waitForSandboxReady } from "./utils/sandbox-health";
-import { sanitizeExternalResponse } from "@/lib/utils/prompt-injection-protection";
 import {
   parseScopeExclusions,
   checkUrlScopeExclusion,
@@ -658,12 +657,6 @@ Examples:
 
                   // Apply token-based truncation
                   output = truncateContent(output);
-
-                  // Sanitize external response
-                  output = sanitizeExternalResponse(
-                    output,
-                    `HTTP ${method} ${url}`,
-                  );
 
                   // Show summary in terminal
                   createTerminalWriter(

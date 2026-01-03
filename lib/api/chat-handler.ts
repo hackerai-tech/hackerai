@@ -11,7 +11,6 @@ import {
 import { stripProviderMetadata } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
-import { stripMarkersFromMessages } from "@/lib/utils/prompt-injection-protection";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type { ChatMode, Todo, SandboxPreference } from "@/types";
@@ -295,14 +294,8 @@ export const createChatHandler = () => {
             messages: await convertToModelMessages(finalMessages),
             tools,
             // Refresh system prompt when memory updates occur, cache and reuse until next update
-            // Also strip external data markers from old tool outputs to save tokens
             prepareStep: async ({ steps, messages }) => {
               try {
-                // Strip external data markers from tool results to save tokens
-                // These markers protect against prompt injection but aren't needed
-                // for older messages already in the conversation
-                const strippedMessages = stripMarkersFromMessages(messages);
-
                 // Run summarization check on every step (non-temporary chats only)
                 // but only summarize once
                 if (!temporary && !hasSummarized) {
@@ -312,7 +305,7 @@ export const createChatHandler = () => {
                     cutoffMessageId,
                     summaryText,
                   } = await checkAndSummarizeIfNeeded(
-                    strippedMessages,
+                    messages,
                     finalMessages,
                     subscription,
                     trackedProvider.languageModel("summarization-model"),
@@ -336,11 +329,9 @@ export const createChatHandler = () => {
                     writeSummarizationCompleted(writer);
                     // Push only the completed event to parts array for persistence
                     summarizationParts.push(createSummarizationCompletedPart());
-                    // Return updated messages for this step (with markers stripped)
+                    // Return updated messages for this step
                     return {
-                      messages: stripMarkersFromMessages(
-                        await convertToModelMessages(finalMessages),
-                      ),
+                      messages: await convertToModelMessages(finalMessages),
                     };
                   }
                 }
@@ -354,10 +345,9 @@ export const createChatHandler = () => {
                   Array.isArray(toolResults) &&
                   toolResults.some((r) => r?.toolName === "update_memory");
 
-                // Always return stripped messages to save tokens on each step
                 if (!wasMemoryUpdate) {
                   return {
-                    messages: strippedMessages,
+                    messages,
                     ...(currentSystemPrompt && { system: currentSystemPrompt }),
                   };
                 }
@@ -375,7 +365,7 @@ export const createChatHandler = () => {
                 );
 
                 return {
-                  messages: strippedMessages,
+                  messages,
                   system: currentSystemPrompt,
                 };
               } catch (error) {
