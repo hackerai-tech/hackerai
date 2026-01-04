@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useMemo, useEffect, useRef } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus } from "@/types";
+import { isSidebarFile } from "@/types/chat";
 
 interface DiffDataPart {
   type: "data-diff";
@@ -26,7 +27,65 @@ export const FileToolsHandler = ({
   part,
   status,
 }: FileToolsHandlerProps) => {
-  const { openSidebar } = useGlobalState();
+  const { openSidebar, updateSidebarContent, sidebarContent, sidebarOpen } =
+    useGlobalState();
+
+  // Track the last streamed content to avoid unnecessary updates
+  const lastStreamedContentRef = useRef<string | null>(null);
+  // Track if this tool opened the sidebar (to know when to update it)
+  const isOwnSidebarRef = useRef(false);
+
+  // Extract streaming write content for write_file tool
+  const writeStreamingContent = useMemo(() => {
+    if (part.type !== "tool-write_file") return null;
+    const writeInput = part.input as
+      | { file_path: string; contents: string }
+      | undefined;
+    return writeInput?.contents || null;
+  }, [part.type, part.input]);
+
+  // Update sidebar content as write_file content streams in
+  useEffect(() => {
+    // Only update for write_file tool during streaming
+    if (part.type !== "tool-write_file") return;
+    if (part.state !== "input-streaming" && part.state !== "input-available")
+      return;
+    if (!writeStreamingContent) return;
+    if (!sidebarOpen || !isOwnSidebarRef.current) return;
+
+    // Check if sidebar is showing our file
+    if (!sidebarContent || !isSidebarFile(sidebarContent)) return;
+
+    const writeInput = part.input as
+      | { file_path: string; contents: string }
+      | undefined;
+    if (!writeInput?.file_path) return;
+    if (sidebarContent.path !== writeInput.file_path) return;
+
+    // Only update if content actually changed
+    if (lastStreamedContentRef.current === writeStreamingContent) return;
+    lastStreamedContentRef.current = writeStreamingContent;
+
+    updateSidebarContent({
+      content: writeStreamingContent,
+    });
+  }, [
+    part.type,
+    part.state,
+    part.input,
+    writeStreamingContent,
+    sidebarOpen,
+    sidebarContent,
+    updateSidebarContent,
+  ]);
+
+  // Reset tracking refs when tool completes or changes
+  useEffect(() => {
+    if (part.state === "output-available") {
+      isOwnSidebarRef.current = false;
+      lastStreamedContentRef.current = null;
+    }
+  }, [part.state]);
 
   // Extract diff data from data-diff parts in the message (streamed separately from tool result)
   // This data only exists in memory/stream - not persisted, so on reload we just show the result message
@@ -145,26 +204,64 @@ export const FileToolsHandler = ({
         }
       | undefined;
 
+    const handleOpenStreamingSidebar = () => {
+      if (!writeInput?.file_path) return;
+      isOwnSidebarRef.current = true;
+      lastStreamedContentRef.current = writeInput.contents || "";
+      openSidebar({
+        path: writeInput.file_path,
+        content: writeInput.contents || "",
+        action: "creating",
+        toolCallId,
+      });
+    };
+
+    const handleStreamingKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleOpenStreamingSidebar();
+      }
+    };
+
     switch (state) {
-      case "input-streaming":
-        return status === "streaming" ? (
+      case "input-streaming": {
+        // Show shimmer when just starting, clickable when content starts arriving
+        const hasContent = !!writeInput?.contents;
+        const hasFilePath = !!writeInput?.file_path;
+
+        if (status !== "streaming") return null;
+
+        return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePlus />}
-            action="Creating file"
+            action={hasContent ? "Creating" : "Creating file"}
+            target={hasFilePath ? writeInput.file_path : undefined}
             isShimmer={true}
+            isClickable={hasContent && hasFilePath}
+            onClick={
+              hasContent && hasFilePath ? handleOpenStreamingSidebar : undefined
+            }
+            onKeyDown={
+              hasContent && hasFilePath ? handleStreamingKeyDown : undefined
+            }
           />
-        ) : null;
+        );
+      }
       case "input-available":
-        return status === "streaming" ? (
+        if (status !== "streaming") return null;
+        return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePlus />}
             action="Writing to"
             target={writeInput?.file_path}
             isShimmer={true}
+            isClickable={!!writeInput?.file_path}
+            onClick={writeInput?.file_path ? handleOpenStreamingSidebar : undefined}
+            onKeyDown={writeInput?.file_path ? handleStreamingKeyDown : undefined}
           />
-        ) : null;
+        );
       case "output-available":
         if (!writeInput) return null;
         return (
@@ -175,6 +272,7 @@ export const FileToolsHandler = ({
             target={writeInput.file_path}
             isClickable={true}
             onClick={() => {
+              isOwnSidebarRef.current = false;
               openSidebar({
                 path: writeInput.file_path,
                 content: writeInput.contents,
@@ -184,6 +282,7 @@ export const FileToolsHandler = ({
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
+                isOwnSidebarRef.current = false;
                 openSidebar({
                   path: writeInput.file_path,
                   content: writeInput.contents,

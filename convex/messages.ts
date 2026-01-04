@@ -575,65 +575,51 @@ export const deleteLastAssistantMessage = mutation({
 });
 
 /**
- * Get all messages for a chat from the backend (for AI processing)
+ * Get only the most recent assistant message for stream replay
  */
-export const getMessagesByChatIdForBackend = query({
+export const getLastAssistantMessage = query({
   args: {
     serviceKey: v.string(),
     chatId: v.string(),
     userId: v.string(),
   },
-  returns: v.array(
+  returns: v.union(
     v.object({
       id: v.string(),
-      role: v.union(
-        v.literal("user"),
-        v.literal("assistant"),
-        v.literal("system"),
-      ),
+      role: v.literal("assistant"),
       parts: v.array(v.any()),
     }),
+    v.null(),
   ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
     try {
-      // Verify chat ownership - if chat doesn't exist, return empty array
       const chatExists: boolean = await ctx.runQuery(
         internal.messages.verifyChatOwnership,
-        {
-          chatId: args.chatId,
-          userId: args.userId,
-        },
+        { chatId: args.chatId, userId: args.userId },
       );
 
-      if (!chatExists) {
-        // Chat doesn't exist yet (new chat), return empty array
-        return [];
-      }
+      if (!chatExists) return null;
 
-      const LIMIT = 32;
-      // Get newest 32 messages and reverse for chronological AI processing
-      const messages = await ctx.db
+      const message = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
         .order("desc")
-        .take(LIMIT);
+        .first();
 
-      const chronologicalMessages = messages.reverse();
+      if (!message || message.role !== "assistant") {
+        return null;
+      }
 
-      return chronologicalMessages.map((message) => ({
+      return {
         id: message.id,
         role: message.role,
         parts: message.parts,
-      }));
+      };
     } catch (error) {
-      console.error("Failed to get messages for backend:", error);
-
-      if (error instanceof Error && error.message.includes("Unauthorized")) {
-        throw error;
-      }
-      return [];
+      console.error("Failed to get last assistant message:", error);
+      return null;
     }
   },
 });

@@ -185,7 +185,6 @@ export default defineSchema({
     ),
     created_at: v.number(),
   })
-    .index("by_user_id", ["user_id"])
     .index("by_command_id", ["command_id"])
     .index("by_connection_and_status", ["connection_id", "status"])
     .index("by_user_and_status", ["user_id", "status"])
@@ -202,7 +201,6 @@ export default defineSchema({
     completed_at: v.number(),
   })
     .index("by_command_id", ["command_id"])
-    .index("by_user_id", ["user_id"])
     .index("by_completed_at", ["completed_at"]),
 
   // Tracks aggregate migration state per user

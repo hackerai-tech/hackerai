@@ -148,9 +148,9 @@ Key features:
 - Supports GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS methods
 - Custom headers and cookies
 - JSON body, form data, or raw body content
-- Configurable redirect following
+- Automatically follows redirects
 - Timeout configuration (default: 30 seconds)
-- SSL verification toggle (default: disabled for testing)
+- SSL verification disabled for pentesting
 - Basic auth support
 - Proxy support (e.g., for Burp Suite interception)
 
@@ -171,6 +171,11 @@ Examples:
       url: z
         .string()
         .describe("Target URL (must include scheme, e.g., https://)"),
+      explanation: z
+        .string()
+        .describe(
+          "One sentence explanation as to why this request is being made and how it contributes to the goal.",
+        ),
       method: z
         .enum(["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
         .describe("HTTP method to use. Defaults to GET if not specified."),
@@ -200,20 +205,14 @@ Examples:
         .describe(
           "Form data to send (automatically sets Content-Type to application/x-www-form-urlencoded)",
         ),
-      follow_redirects: z
-        .boolean()
-        .optional()
-        .describe("Whether to follow HTTP redirects. Defaults to true."),
+      // follow_redirects: z
+      //   .boolean()
+      //   .optional()
+      //   .describe("Whether to follow HTTP redirects. Defaults to true."),
       timeout: z
         .number()
         .optional()
         .describe("Request timeout in seconds (1-300). Defaults to 30."),
-      verify_ssl: z
-        .boolean()
-        .optional()
-        .describe(
-          "Whether to verify SSL certificates. Defaults to false for testing.",
-        ),
       proxy: z
         .string()
         .optional()
@@ -244,9 +243,9 @@ Examples:
         body?: string;
         json_body?: Record<string, unknown>;
         form_data?: Record<string, string>;
-        follow_redirects?: boolean;
+        // follow_redirects?: boolean;
         timeout?: number;
-        verify_ssl?: boolean;
+        // verify_ssl?: boolean;
         proxy?: string;
         auth?: { username: string; password: string };
       },
@@ -260,9 +259,9 @@ Examples:
       const body = args.body;
       const json_body = args.json_body;
       const form_data = args.form_data;
-      const follow_redirects = args.follow_redirects ?? true;
+      const follow_redirects = true; // Hardcoded: always follow redirects
       const timeout = Math.min(Math.max(args.timeout ?? 30, 1), 300);
-      const verify_ssl = args.verify_ssl ?? false;
+      const verify_ssl = false; // Hardcoded: skip SSL verification for pentesting
       const proxy = args.proxy;
       const auth = args.auth;
 

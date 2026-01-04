@@ -11,6 +11,7 @@ import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 import { createSearchReplace } from "./search-replace";
 import { createWebTool } from "./web";
+import { createWebSearch } from "./web-search";
 import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
 import { createHttpRequest } from "./http-request";
@@ -19,7 +20,6 @@ import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
-import { type ModelName } from "@/lib/ai/providers";
 
 /**
  * Check if a sandbox instance is an E2B Sandbox (vs local ConvexSandbox)
@@ -98,7 +98,7 @@ export const createTools = (
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(process.env.EXA_API_KEY &&
       process.env.JINA_API_KEY && {
-        web: createWebTool(context),
+        web_search: createWebSearch(context),
       }),
   };
 
@@ -109,7 +109,9 @@ export const createTools = (
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
           ...(process.env.EXA_API_KEY &&
-            process.env.JINA_API_KEY && { web: allTools.web }),
+            process.env.JINA_API_KEY && {
+              web: createWebTool(context),
+            }),
         }
       : allTools;
 

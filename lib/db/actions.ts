@@ -233,8 +233,8 @@ export async function getMessagesByChatId({
           : null;
 
         // Adaptive paginated backfill: fetch pages until token budget is hit or cap reached
-        const PAGE_SIZE = 32;
-        const MAX_PAGES = 3;
+        const PAGE_SIZE = 24;
+        const MAX_PAGES = 4;
 
         let cursor: string | null = null;
         let pagesFetched = 0;
