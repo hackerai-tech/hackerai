@@ -169,28 +169,34 @@ export const checkAgentRateLimit = async (
       isLongContext,
     );
 
-    // Deduct from weekly first
-    const weeklyResult = await weekly.limiter.limit(weekly.key, {
-      rate: estimatedCost,
-    });
-    if (!weeklyResult.success) {
+    // Step 1: Check both limits first WITHOUT deducting (rate: 0 peeks at current state)
+    // This prevents the race condition where we deduct from weekly but session fails
+    const [weeklyCheck, sessionCheck] = await Promise.all([
+      weekly.limiter.limit(weekly.key, { rate: 0 }),
+      session.limiter.limit(session.key, { rate: 0 }),
+    ]);
+
+    // Step 2: Validate both limits have enough capacity
+    if (weeklyCheck.remaining < estimatedCost) {
       throw new ChatSDKError(
         "rate_limit:chat",
-        `You've reached your weekly agent limit, please try again after ${formatTimeRemaining(new Date(weeklyResult.reset))}.\n\nYou can continue using ask mode in the meantime.`,
+        `You've reached your weekly agent limit, please try again after ${formatTimeRemaining(new Date(weeklyCheck.reset))}.\n\nYou can continue using ask mode in the meantime.`,
       );
     }
 
-    // Deduct from session
-    const sessionResult = await session.limiter.limit(session.key, {
-      rate: estimatedCost,
-    });
-    if (!sessionResult.success) {
+    if (sessionCheck.remaining < estimatedCost) {
       const msg =
         subscription === "pro"
-          ? `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionResult.reset))}.\n\nYou can continue using ask mode in the meantime or upgrade to Ultra for higher limits.`
-          : `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionResult.reset))}.\n\nYou can continue using ask mode in the meantime.`;
+          ? `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionCheck.reset))}.\n\nYou can continue using ask mode in the meantime or upgrade to Ultra for higher limits.`
+          : `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionCheck.reset))}.\n\nYou can continue using ask mode in the meantime.`;
       throw new ChatSDKError("rate_limit:chat", msg);
     }
+
+    // Step 3: Both limits have capacity, now deduct from both atomically
+    const [weeklyResult, sessionResult] = await Promise.all([
+      weekly.limiter.limit(weekly.key, { rate: estimatedCost }),
+      session.limiter.limit(session.key, { rate: estimatedCost }),
+    ]);
 
     return {
       remaining: Math.min(sessionResult.remaining, weeklyResult.remaining),
@@ -250,9 +256,11 @@ export const deductAgentUsage = async (
 
     if (additionalCost <= 0) return;
 
-    // Deduct from both buckets
-    await session.limiter.limit(session.key, { rate: additionalCost });
-    await weekly.limiter.limit(weekly.key, { rate: additionalCost });
+    // Deduct from both buckets in parallel
+    await Promise.all([
+      session.limiter.limit(session.key, { rate: additionalCost }),
+      weekly.limiter.limit(weekly.key, { rate: additionalCost }),
+    ]);
   } catch {
     // Silently fail for post-request deductions
   }

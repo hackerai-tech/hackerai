@@ -2,7 +2,10 @@
 
 import { action } from "./_generated/server";
 import { v } from "convex/values";
-import { getBudgetLimits, getSubscriptionPrice } from "../lib/rate-limit/token-bucket";
+import {
+  getBudgetLimits,
+  getSubscriptionPrice,
+} from "../lib/rate-limit/token-bucket";
 import type { SubscriptionTier } from "../types";
 
 /**

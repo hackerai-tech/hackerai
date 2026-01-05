@@ -258,8 +258,12 @@ export const FileToolsHandler = ({
             target={writeInput?.file_path}
             isShimmer={true}
             isClickable={!!writeInput?.file_path}
-            onClick={writeInput?.file_path ? handleOpenStreamingSidebar : undefined}
-            onKeyDown={writeInput?.file_path ? handleStreamingKeyDown : undefined}
+            onClick={
+              writeInput?.file_path ? handleOpenStreamingSidebar : undefined
+            }
+            onKeyDown={
+              writeInput?.file_path ? handleStreamingKeyDown : undefined
+            }
           />
         );
       case "output-available":
