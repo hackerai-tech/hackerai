@@ -15,7 +15,8 @@ import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type { ChatMode, Todo, SandboxPreference } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, deductAgentUsage } from "@/lib/rate-limit";
+import { countMessagesTokens } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
@@ -148,7 +149,16 @@ export const createChatHandler = () => {
         });
       }
 
-      const rateLimitInfo = await checkRateLimit(userId, mode, subscription);
+      // For agent mode, estimate input tokens for rate limit check
+      const estimatedInputTokens =
+        mode === "agent" ? countMessagesTokens(truncatedMessages, {}) : 0;
+
+      const rateLimitInfo = await checkRateLimit(
+        userId,
+        mode,
+        subscription,
+        estimatedInputTokens,
+      );
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -444,6 +454,18 @@ export const createChatHandler = () => {
               // Capture full usage and model
               streamUsage = usage as Record<string, unknown>;
               responseModel = response?.modelId;
+
+              // For agent mode, deduct additional cost (output + any input difference)
+              // Input cost was already deducted upfront in checkRateLimit
+              if (mode === "agent" && usage) {
+                await deductAgentUsage(
+                  userId,
+                  subscription,
+                  estimatedInputTokens,
+                  usage.inputTokens || 0,
+                  usage.outputTokens || 0,
+                );
+              }
             },
             onError: async (error) => {
               console.error("Error:", error);

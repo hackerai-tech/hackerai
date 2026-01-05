@@ -13,6 +13,7 @@ import {
   proFeatures,
   ultraFeatures,
   teamFeatures,
+  PRICING,
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
@@ -133,22 +134,6 @@ const PlanCard: React.FC<PlanCardProps> = ({
     </div>
   );
 };
-
-// Pricing configuration - centralized pricing for all plans
-export const PRICING = {
-  pro: {
-    monthly: 25,
-    yearly: 21,
-  },
-  ultra: {
-    monthly: 200,
-    yearly: 166,
-  },
-  team: {
-    monthly: 40,
-    yearly: 33,
-  },
-} as const;
 
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();

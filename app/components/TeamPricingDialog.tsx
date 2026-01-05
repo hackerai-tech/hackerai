@@ -12,7 +12,7 @@ import { useUpgrade } from "../hooks/useUpgrade";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "../contexts/GlobalState";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
-import { PRICING } from "./PricingDialog";
+import { PRICING } from "@/lib/pricing/features";
 
 interface TeamPricingDialogProps {
   isOpen: boolean;
