@@ -55,9 +55,6 @@ const UsageTab = () => {
   // Fetch token usage on mount and when subscription changes
   useEffect(() => {
     fetchTokenUsage();
-    // Refresh every 60 seconds
-    const interval = setInterval(fetchTokenUsage, 60000);
-    return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscription]);
 

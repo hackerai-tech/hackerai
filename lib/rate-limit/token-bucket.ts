@@ -85,7 +85,7 @@ export const calculateBucketLimit = (subscription: SubscriptionTier): number =>
 export const calculateWeeklyLimit = (subscription: SubscriptionTier): number =>
   getBudgetLimits(subscription).weekly;
 
-/** Get monthly agent budget (75% of subscription) */
+/** Get monthly agent budget (70% of subscription) */
 export const getSubscriptionPrice = (
   subscription: SubscriptionTier,
 ): number => {
