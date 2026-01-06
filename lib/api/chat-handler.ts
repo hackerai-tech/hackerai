@@ -406,10 +406,6 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
-              xai: {
-                // Disable storing the conversation in XAI's database
-                store: false,
-              },
               openrouter: {
                 ...(isReasoningModel
                   ? { reasoning: { enabled: true } }
@@ -423,9 +419,7 @@ export const createChatHandler = () => {
                 },
               },
             },
-            experimental_transform: isReasoningModel
-              ? undefined
-              : smoothStream({ chunking: "word" }),
+            experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
