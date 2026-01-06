@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { countTokens } from "gpt-tokenizer";
 import { SubscriptionTier, ChatMode } from "@/types";
+import { stripProviderMetadataFromPart } from "@/lib/utils/message-processor";
 
 // Keep last N messages unsummarized for context
 const MESSAGES_TO_KEEP_UNSUMMARIZED = 2;
@@ -56,37 +57,31 @@ const getSummarizationPrompt = (mode: ChatMode): string =>
   mode === "agent" ? AGENT_SUMMARIZATION_PROMPT : ASK_SUMMARIZATION_PROMPT;
 
 /**
- * Count tokens for ModelMessage array
- * Uses countPartTokens-like logic for each message content part
- * Excludes reasoning blocks to match token-utils.ts behavior
+ * Count tokens for ModelMessage array.
+ * Excludes reasoning blocks and strips provider-specific fields before counting.
  */
 const countModelMessageTokens = (messages: ModelMessage[]): number => {
   let totalTokens = 0;
 
   for (const message of messages) {
-    // Count role tokens
-    let messageTokens = countTokens(message.role);
-
-    // Count content tokens based on type
     if (typeof message.content === "string") {
-      messageTokens += countTokens(message.content);
+      totalTokens += countTokens(message.content);
     } else if (Array.isArray(message.content)) {
       for (const part of message.content) {
-        // Skip reasoning parts (same as token-utils.ts)
+        // Skip reasoning parts
         if (part.type === "reasoning") {
           continue;
         }
 
         if (part.type === "text") {
-          messageTokens += countTokens(part.text || "");
+          totalTokens += countTokens(part.text || "");
         } else {
-          // For tool-call, tool-result, image, etc., count their JSON structure
-          messageTokens += countTokens(JSON.stringify(part));
+          // Strip provider fields before counting (providerMetadata, providerOptions, etc.)
+          const cleanPart = stripProviderMetadataFromPart(part);
+          totalTokens += countTokens(JSON.stringify(cleanPart));
         }
       }
     }
-
-    totalTokens += messageTokens;
   }
 
   return totalTokens;
@@ -108,7 +103,7 @@ export const checkAndSummarizeIfNeeded = async (
   cutoffMessageId: string | null;
   summaryText: string | null;
 }> => {
-  // Check if summarization is needed
+  // Early return if not enough messages to summarize
   if (uiMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED) {
     return {
       needsSummarization: false,
@@ -118,8 +113,7 @@ export const checkAndSummarizeIfNeeded = async (
     };
   }
 
-  // Count tokens using currentModelMessages (what's actually sent to AI)
-  // This includes tool calls, tool results, and all content
+  // Count tokens and check against threshold
   const totalTokens = countModelMessageTokens(currentModelMessages);
   const maxTokens = getMaxTokensForSubscription(subscription);
   const threshold = Math.floor(maxTokens * SUMMARIZATION_THRESHOLD_PERCENTAGE);

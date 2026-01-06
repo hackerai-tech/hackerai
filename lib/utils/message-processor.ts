@@ -1,27 +1,61 @@
 import { ChatMessage } from "@/types/chat";
 
 /**
- * Strips OpenRouter providerMetadata from a single message part.
- * OpenRouter metadata contains internal data like encrypted reasoning that shouldn't be persisted.
- * Only strips if the providerMetadata is specifically from OpenRouter.
+ * Checks if a metadata object contains OpenRouter data.
+ */
+const hasOpenRouterMetadata = (metadata: unknown): boolean => {
+  return (
+    metadata !== null &&
+    typeof metadata === "object" &&
+    "openrouter" in metadata
+  );
+};
+
+/**
+ * Strips provider-specific fields from a single message part.
+ * - providerMetadata/callProviderMetadata: only strips if it contains OpenRouter data
+ * - providerExecuted/providerOptions: always strips (provider-internal data)
  */
 export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
   part: T,
 ): T => {
+  let result = part;
+
+  // Strip providerMetadata if it contains OpenRouter data
   if (
-    "providerMetadata" in part &&
-    part.providerMetadata &&
-    typeof part.providerMetadata === "object" &&
-    "openrouter" in part.providerMetadata
+    "providerMetadata" in result &&
+    hasOpenRouterMetadata(result.providerMetadata)
   ) {
-    const { providerMetadata, ...rest } = part;
-    return rest as T;
+    const { providerMetadata, ...rest } = result;
+    result = rest as T;
   }
-  return part;
+
+  // Strip callProviderMetadata if it contains OpenRouter data
+  if (
+    "callProviderMetadata" in result &&
+    hasOpenRouterMetadata(result.callProviderMetadata)
+  ) {
+    const { callProviderMetadata, ...rest } = result;
+    result = rest as T;
+  }
+
+  // Always strip providerExecuted
+  if ("providerExecuted" in result) {
+    const { providerExecuted, ...rest } = result;
+    result = rest as T;
+  }
+
+  // Always strip providerOptions
+  if ("providerOptions" in result) {
+    const { providerOptions, ...rest } = result;
+    result = rest as T;
+  }
+
+  return result;
 };
 
 /**
- * Strips OpenRouter providerMetadata from all parts in a message.
+ * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
  * Used to clean messages before saving or for temporary chat handling.
  */
 export const stripProviderMetadata = <T extends { parts?: any[] }>(
@@ -149,16 +183,18 @@ export const normalizeMessages = (
         return;
       }
 
-      // Strip OpenRouter providerMetadata from the part (contains internal data like encrypted reasoning)
-      const hasOpenRouterMetadata =
-        "providerMetadata" in part &&
-        part.providerMetadata &&
-        typeof part.providerMetadata === "object" &&
-        "openrouter" in part.providerMetadata;
-      const cleanPart = hasOpenRouterMetadata
+      // Strip provider-specific fields from the part (contains internal data like encrypted reasoning, provider options)
+      const hasProviderFields =
+        ("providerMetadata" in part &&
+          hasOpenRouterMetadata(part.providerMetadata)) ||
+        ("callProviderMetadata" in part &&
+          hasOpenRouterMetadata(part.callProviderMetadata)) ||
+        "providerExecuted" in part ||
+        "providerOptions" in part;
+      const cleanPart = hasProviderFields
         ? stripProviderMetadataFromPart(part)
         : part;
-      if (hasOpenRouterMetadata) {
+      if (hasProviderFields) {
         messageChanged = true;
       }
 
