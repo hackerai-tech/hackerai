@@ -496,6 +496,12 @@ export const createChatHandler = () => {
                 cancellationPoller.stop();
                 pollerStopped = true;
 
+                // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
+                // This prevents showing "going off course" message when user clicks stop
+                if (isAborted && !preemptiveTimeout?.isPreemptive()) {
+                  streamFinishReason = undefined;
+                }
+
                 // Sandbox cleanup is automatic with auto-pause
                 // The sandbox will auto-pause after inactivity timeout (7 minutes)
                 // No manual pause needed
