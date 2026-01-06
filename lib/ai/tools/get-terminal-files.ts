@@ -79,7 +79,13 @@ Usage:
                 skipTokenValidation: true, // Skip token limits for assistant-generated files
               });
 
-              context.fileAccumulator.add(saved.fileId);
+              context.fileAccumulator.add({
+                fileId: saved.fileId,
+                name: saved.name,
+                mediaType: saved.mediaType,
+                s3Key: saved.s3Key,
+                storageId: saved.storageId,
+              });
               providedFiles.push({ path: originalPath });
               fileProcessed = true;
               break; // Success! No need to try other paths

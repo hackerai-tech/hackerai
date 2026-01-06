@@ -12,6 +12,27 @@ import {
   Code,
 } from "lucide-react";
 
+/**
+ * Centralized pricing configuration for all plans.
+ * Prices are in USD.
+ */
+export const PRICING = {
+  pro: {
+    monthly: 25,
+    yearly: 21,
+  },
+  ultra: {
+    monthly: 200,
+    yearly: 166,
+  },
+  team: {
+    monthly: 40,
+    yearly: 33,
+  },
+} as const;
+
+export type PricingTier = keyof typeof PRICING;
+
 export type PricingFeature = {
   icon: React.ComponentType<{ className?: string }>;
   text: string;

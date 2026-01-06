@@ -10,6 +10,7 @@ import {
   Users,
   Infinity,
   Server,
+  ChartNoAxesCombined,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
@@ -21,6 +22,7 @@ import { DataControlsTab } from "@/app/components/DataControlsTab";
 import { TeamTab } from "@/app/components/TeamTab";
 import { AgentsTab } from "@/app/components/AgentsTab";
 import { LocalSandboxTab } from "@/app/components/LocalSandboxTab";
+import { UsageTab } from "@/app/components/UsageTab";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
@@ -49,15 +51,16 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
     label: "Local Sandbox",
     icon: Server,
   };
+  const usageTab = { id: "Usage", label: "Usage", icon: ChartNoAxesCombined };
   const teamTab = { id: "Team", label: "Team", icon: Users };
   const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
 
   const tabs =
     subscription === "team"
-      ? [...baseTabs, localSandboxTab, teamTab, accountTab]
+      ? [...baseTabs, localSandboxTab, usageTab, teamTab, accountTab]
       : subscription !== "free"
-        ? [...baseTabs, localSandboxTab, accountTab]
-        : [...baseTabs, accountTab];
+        ? [...baseTabs, localSandboxTab, usageTab, accountTab]
+        : [...baseTabs, usageTab, accountTab];
 
   const handleCustomInstructions = () => {
     setShowCustomizeDialog(true);
@@ -164,6 +167,8 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                 {activeTab === "Agents" && <AgentsTab />}
 
                 {activeTab === "Local Sandbox" && <LocalSandboxTab />}
+
+                {activeTab === "Usage" && <UsageTab />}
 
                 {activeTab === "Team" && <TeamTab />}
 
