@@ -15,6 +15,11 @@ export type UploadedFileInfo = {
   url: string;
   fileId: Id<"files">;
   tokens: number;
+  // Metadata for file accumulator (avoids re-querying DB)
+  name: string;
+  mediaType: string;
+  s3Key?: string;
+  storageId?: Id<"_storage">;
 };
 
 let convexClient: ConvexHttpClient | null = null;
@@ -107,7 +112,12 @@ export async function uploadSandboxFileToConvex(args: {
         skipTokenValidation: args.skipTokenValidation,
       });
 
-      return saved as UploadedFileInfo;
+      return {
+        ...saved,
+        name,
+        mediaType,
+        s3Key,
+      } as UploadedFileInfo;
     } catch (error) {
       throw new Error(extractErrorMessage(error));
     }
@@ -165,7 +175,12 @@ export async function uploadSandboxFileToConvex(args: {
         skipTokenValidation: args.skipTokenValidation,
       });
 
-      return saved as UploadedFileInfo;
+      return {
+        ...saved,
+        name,
+        mediaType,
+        s3Key,
+      } as UploadedFileInfo;
     } catch (error) {
       // Re-throw with properly extracted error message
       throw new Error(extractErrorMessage(error));
@@ -202,7 +217,12 @@ export async function uploadSandboxFileToConvex(args: {
         skipTokenValidation: args.skipTokenValidation,
       });
 
-      return saved as UploadedFileInfo;
+      return {
+        ...saved,
+        name,
+        mediaType,
+        storageId: storageId as Id<"_storage">,
+      } as UploadedFileInfo;
     } catch (error) {
       // Re-throw with properly extracted error message
       throw new Error(extractErrorMessage(error));

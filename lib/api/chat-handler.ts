@@ -52,11 +52,8 @@ import {
   createSummarizationCompletedPart,
   writeRateLimitWarning,
 } from "@/lib/utils/stream-writer-utils";
-import { ConvexHttpClient } from "convex/browser";
-import { api } from "@/convex/_generated/api";
+import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 let globalStreamContext: any | null = null;
 
@@ -231,6 +228,28 @@ export const createChatHandler = () => {
             userCustomization?.scope_exclusions,
             userCustomization?.guardrails_config,
           );
+
+          // Helper to send file metadata via stream for resumable stream clients
+          // Uses accumulated metadata directly - no DB query needed!
+          const sendFileMetadataToStream = (
+            fileMetadata: Array<{
+              fileId: Id<"files">;
+              name: string;
+              mediaType: string;
+              s3Key?: string;
+              storageId?: Id<"_storage">;
+            }>,
+          ) => {
+            if (!fileMetadata || fileMetadata.length === 0) return;
+
+            writer.write({
+              type: "data-file-metadata",
+              data: {
+                messageId: assistantMessageId,
+                fileDetails: fileMetadata,
+              },
+            });
+          };
 
           // Get sandbox context for system prompt (only for local sandboxes)
           let sandboxContext: string | null = null;
@@ -518,14 +537,15 @@ export const createChatHandler = () => {
                     await prepareForNewStream({ chatId });
                   }
 
-                  const newFileIds = getFileAccumulator().getAll();
+                  const accumulatedFiles = getFileAccumulator().getAll();
+                  const newFileIds = accumulatedFiles.map((f) => f.fileId);
 
                   // If user aborted (not pre-emptive) and no files to add, skip message save (frontend already saved)
                   // Pre-emptive aborts should always save to ensure data persistence before timeout
                   if (
                     isAborted &&
                     !preemptiveTimeout?.isPreemptive() &&
-                    (!newFileIds || newFileIds.length === 0)
+                    newFileIds.length === 0
                   ) {
                     return;
                   }
@@ -552,7 +572,7 @@ export const createChatHandler = () => {
                     if (
                       (!messageToSave.parts ||
                         messageToSave.parts.length === 0) &&
-                      (!newFileIds || newFileIds.length === 0)
+                      newFileIds.length === 0
                     ) {
                       continue;
                     }
@@ -569,42 +589,14 @@ export const createChatHandler = () => {
                       usage: streamUsage,
                     });
                   }
+
+                  // Send file metadata via stream for resumable stream clients
+                  // Uses accumulated metadata directly - no DB query needed!
+                  sendFileMetadataToStream(accumulatedFiles);
                 } else {
                   // For temporary chats, send file metadata via stream before cleanup
-                  const newFileIds = getFileAccumulator().getAll();
-
-                  if (newFileIds && newFileIds.length > 0) {
-                    try {
-                      // Fetch file metadata in batch
-                      const fileMetadata = await convex.query(
-                        api.fileStorage.getFileMetadataByFileIds,
-                        {
-                          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-                          fileIds: newFileIds,
-                        },
-                      );
-
-                      // Filter out null entries and send via custom stream event
-                      const validFileMetadata = fileMetadata.filter(
-                        (f): f is NonNullable<typeof f> => f !== null,
-                      );
-
-                      if (validFileMetadata.length > 0) {
-                        writer.write({
-                          type: "data-file-metadata",
-                          data: {
-                            messageId: assistantMessageId,
-                            fileDetails: validFileMetadata,
-                          },
-                        });
-                      }
-                    } catch (error) {
-                      console.error(
-                        "Failed to fetch file metadata for temporary chat:",
-                        error,
-                      );
-                    }
-                  }
+                  const tempFiles = getFileAccumulator().getAll();
+                  sendFileMetadataToStream(tempFiles);
 
                   // Ensure temp stream row is removed backend-side
                   await deleteTempStreamForBackend({ chatId });
