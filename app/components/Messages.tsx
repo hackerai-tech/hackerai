@@ -298,10 +298,9 @@ export const Messages = ({
               : undefined;
 
             // Get saved files for assistant messages (include files with url, storageId, or s3Key)
+            // Always show files - don't hide during streaming to prevent flash on stream end
             const savedFiles =
-              !isUser &&
-              (isLastAssistantMessage ? status !== "streaming" : true) &&
-              effectiveFileDetails
+              !isUser && effectiveFileDetails
                 ? effectiveFileDetails.filter(
                     (f) => f.url || f.storageId || f.s3Key,
                   )
@@ -430,7 +429,7 @@ export const Messages = ({
 
                   {/* Saved files from tools (shown after message content for assistant) */}
                   {!isUser && savedFiles.length > 0 && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 w-full">
+                    <div className="mt-2 flex flex-wrap items-center gap-2 w-full animate-in fade-in-0 duration-200">
                       {savedFiles.length > 2 ? (
                         <>
                           {/* Show only last file when more than 2 */}

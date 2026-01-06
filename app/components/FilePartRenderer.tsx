@@ -35,7 +35,16 @@ const FilePartRendererComponent = ({
     alt: string;
   } | null>(null);
   const [downloadingFile, setDownloadingFile] = useState(false);
-  const [fileUrl, setFileUrl] = useState<string | null>(null);
+  // Initialize fileUrl from cache or part.url to prevent flash on remount
+  const [fileUrl, setFileUrl] = useState<string | null>(() => {
+    // First check cache for S3 files
+    if (part.fileId && fileUrlCache) {
+      const cachedUrl = fileUrlCache.getCachedUrl(part.fileId);
+      if (cachedUrl) return cachedUrl;
+    }
+    // Fallback to part.url if available
+    return part.url || null;
+  });
   const [urlError, setUrlError] = useState<string | null>(null);
 
   // Track the last fetched identifiers to avoid unnecessary refetches
