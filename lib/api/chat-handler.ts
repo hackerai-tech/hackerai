@@ -406,10 +406,6 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
-              xai: {
-                // Disable storing the conversation in XAI's database
-                store: false,
-              },
               openrouter: {
                 ...(isReasoningModel
                   ? { reasoning: { enabled: true } }
@@ -423,9 +419,7 @@ export const createChatHandler = () => {
                 },
               },
             },
-            experimental_transform: isReasoningModel
-              ? undefined
-              : smoothStream({ chunking: "word" }),
+            experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
@@ -501,6 +495,12 @@ export const createChatHandler = () => {
                 // Stop cancellation poller
                 cancellationPoller.stop();
                 pollerStopped = true;
+
+                // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
+                // This prevents showing "going off course" message when user clicks stop
+                if (isAborted && !preemptiveTimeout?.isPreemptive()) {
+                  streamFinishReason = undefined;
+                }
 
                 // Sandbox cleanup is automatic with auto-pause
                 // The sandbox will auto-pause after inactivity timeout (7 minutes)

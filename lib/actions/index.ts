@@ -1,4 +1,4 @@
-import { generateObject, UIMessage, UIMessageStreamWriter } from "ai";
+import { generateText, Output, UIMessage, UIMessageStreamWriter } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
 
@@ -27,19 +27,19 @@ ${truncateMiddle(message, 8000)}`;
 
 export const generateTitleFromUserMessage = async (
   truncatedMessages: UIMessage[],
-): Promise<string> => {
+): Promise<string | undefined> => {
   const firstMessage = truncatedMessages[0];
   const textContent = firstMessage.parts
     .filter((part: { type: string; text?: string }) => part.type === "text")
     .map((part: { type: string; text?: string }) => part.text || "")
     .join(" ");
 
-  const {
-    object: { title },
-  } = await generateObject({
+  const { output } = await generateText({
     model: myProvider.languageModel("title-generator-model"),
-    schema: z.object({
-      title: z.string().describe("The generated title (3-5 words)"),
+    output: Output.object({
+      schema: z.object({
+        title: z.string().describe("The generated title (3-5 words)"),
+      }),
     }),
     messages: [
       {
@@ -49,7 +49,7 @@ export const generateTitleFromUserMessage = async (
     ],
   });
 
-  return title;
+  return output?.title;
 };
 
 export const generateTitleFromUserMessageWithWriter = async (
