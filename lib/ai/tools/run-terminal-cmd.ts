@@ -21,7 +21,6 @@ import {
   checkCommandGuardrails,
 } from "./utils/guardrails";
 
-const MAX_COMMAND_EXECUTION_TIME = 7 * 60 * 1000; // 7 minutes
 const STREAM_TIMEOUT_SECONDS = 60;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
@@ -39,12 +38,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
   const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
 
-  // Wait instructions for E2B sandbox (local sandbox uses different commands)
-  // Note: Code also handles 'while ps -p' loops for robustness, but we only document tail --pid
-  const waitForProcessInstruction = `To wait for a background process to complete, use \`tail --pid=<pid> -f /dev/null\`. This blocks until the process exits and gets extended timeout (up to ${Math.floor(MAX_COMMAND_EXECUTION_TIME / 1000 / 60)} minutes). Example workflow: Start scan with is_background=true (returns PID 12345) → Wait with \`tail --pid=12345 -f /dev/null\``;
-
-  const timeoutWaitInstruction = `If a foreground command times out after ${STREAM_TIMEOUT_SECONDS} seconds but is still running and producing results (you'll see the timeout message), the process continues in the background. To wait for it: 1) Note the PID from the error/timeout message or use \`ps aux | grep <command_name>\` to find it, 2) Use \`tail --pid=<pid> -f /dev/null\` to wait for completion. This is common for long scans like comprehensive nmap, sqlmap, or nuclei scans.`;
-
   return tool({
     description: `Execute a command on behalf of the user.
 If you have this tool, note that you DO have the ability to run commands directly in the sandbox environment.
@@ -57,8 +50,6 @@ In using these tools, adhere to the following guidelines:
 3. For ANY commands that would require user interaction, ASSUME THE USER IS NOT AVAILABLE TO INTERACT and PASS THE NON-INTERACTIVE FLAGS (e.g. --yes for npx).
 4. If the command would use a pager, append \` | cat\` to the command.
 5. For commands that are long running/expected to run indefinitely until interruption, please run them in the background. To run jobs in the background, set \`is_background\` to true rather than changing the details of the command. EXCEPTION: Never use background mode if you plan to retrieve the output file immediately afterward.
-  - ${waitForProcessInstruction}
-  - ${timeoutWaitInstruction}
 6. Dont include any newlines in the command.
 7. Handle large outputs and save scan results to files:
   - For complex and long-running scans (e.g., nmap, dirb, gobuster), save results to files using appropriate output flags (e.g., -oN for nmap) if the tool supports it, otherwise use redirect with > operator.
@@ -266,36 +257,10 @@ If you are generating files:
               });
             }
 
-            // For wait commands (tail --pid or while ps -p loops), use MAX_COMMAND_EXECUTION_TIME
-            // instead of STREAM_TIMEOUT_SECONDS since they're designed to wait for long-running processes
-            const isTailWait = command.trim().startsWith("tail --pid");
-            const isWhilePsWait = /while\s+ps\s+-p\s+\d+/.test(command);
-            const isWaitCommand = isTailWait || isWhilePsWait;
-            const streamTimeout = isWaitCommand
-              ? Math.floor(MAX_COMMAND_EXECUTION_TIME / 1000)
-              : STREAM_TIMEOUT_SECONDS;
-
-            // Extract PID from wait command for user-friendly messages
-            let waitingForPid: number | null = null;
-            if (isWaitCommand) {
-              // Try tail --pid pattern first
-              let pidMatch = command.match(/tail\s+--pid[=\s]+(\d+)/);
-              // If not found, try while ps -p pattern
-              if (!pidMatch) {
-                pidMatch = command.match(/while\s+ps\s+-p\s+(\d+)/);
-              }
-              if (pidMatch) {
-                waitingForPid = parseInt(pidMatch[1], 10);
-                createTerminalWriter(
-                  `Waiting for process ${waitingForPid} to complete...\n`,
-                );
-              }
-            }
-
             handler = createTerminalHandler(
               (output) => createTerminalWriter(output),
               {
-                timeoutSeconds: streamTimeout,
+                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
                 onTimeout: async () => {
                   if (resolved) {
                     return;
@@ -313,21 +278,12 @@ If you are generating files:
                     processId = await findProcessPid(sandboxInstance, command);
                   }
 
-                  // Only show "continues in background" for STREAM_TIMEOUT_SECONDS (60s)
-                  // For MAX_COMMAND_EXECUTION_TIME (10min), the process is killed by e2b
-                  const isContinuingInBackground =
-                    streamTimeout === STREAM_TIMEOUT_SECONDS;
-
-                  if (isContinuingInBackground) {
-                    createTerminalWriter(
-                      TIMEOUT_MESSAGE(streamTimeout, processId ?? undefined),
-                    );
-                  } else {
-                    // Max execution time reached - process will be killed by e2b
-                    createTerminalWriter(
-                      `\n\nCommand timed out after ${streamTimeout} seconds and was terminated.`,
-                    );
-                  }
+                  createTerminalWriter(
+                    TIMEOUT_MESSAGE(
+                      STREAM_TIMEOUT_SECONDS,
+                      processId ?? undefined,
+                    ),
+                  );
 
                   resolved = true;
                   const result = handler
@@ -458,13 +414,6 @@ If you are generating files:
                       processId,
                       command,
                       outputFiles,
-                    );
-                  }
-
-                  // Add completion message for tail --pid commands
-                  if (waitingForPid) {
-                    createTerminalWriter(
-                      `Process ${waitingForPid} completed\n`,
                     );
                   }
 

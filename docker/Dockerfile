@@ -86,7 +86,6 @@ RUN set -eux; \
     less \
     # Network scanning & enumeration (from Kali repos - pre-compiled!)
     nmap \
-    masscan \
     naabu \
     nikto \
     whatweb \
@@ -99,7 +98,6 @@ RUN set -eux; \
     subfinder \
     dnsrecon \
     dnsenum \
-    theharvester \
     # Web fuzzing & discovery
     ffuf \
     arjun \
@@ -118,7 +116,6 @@ RUN set -eux; \
     proxychains4 \
     seclists \
     hashid \
-    commix \
     libimage-exiftool-perl \
     cewl \
     # SSL/TLS testing
@@ -260,7 +257,6 @@ RUN set -eux; \
     test -d /usr/share/seclists && \
     echo "✓ SecLists installed" && \
     which nmap && echo "✓ nmap" && \
-    which masscan && echo "✓ masscan" && \
     which naabu && echo "✓ naabu" && \
     which nikto && echo "✓ nikto" && \
     which whatweb && echo "✓ whatweb" && \
@@ -271,7 +267,6 @@ RUN set -eux; \
     which subfinder && echo "✓ subfinder" && \
     which dnsrecon && echo "✓ dnsrecon" && \
     which dnsenum && echo "✓ dnsenum" && \
-    which theHarvester && echo "✓ theHarvester" && \
     which ffuf && echo "✓ ffuf" && \
     which arjun && echo "✓ arjun" && \
     which gobuster && echo "✓ gobuster" && \
@@ -284,7 +279,6 @@ RUN set -eux; \
     which smbmap && echo "✓ smbmap" && \
     which nbtscan && echo "✓ nbtscan" && \
     which enum4linux && echo "✓ enum4linux" && \
-    which commix && echo "✓ commix" && \
     which gospider && echo "✓ gospider" && \
     which dalfox && echo "✓ dalfox" && \
     which chisel && echo "✓ chisel" && \
