@@ -21,7 +21,8 @@ import {
   checkCommandGuardrails,
 } from "./utils/guardrails";
 
-const STREAM_TIMEOUT_SECONDS = 60;
+const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
+const MAX_TIMEOUT_SECONDS = 600;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
@@ -100,17 +101,32 @@ If you are generating files:
         .describe(
           "Whether the command should be run in the background. Set to FALSE if you need to retrieve output files immediately after with get_terminal_files. Only use TRUE for indefinite processes where you don't need immediate file access.",
         ),
+      timeout: z
+        .number()
+        .optional()
+        .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
+        .describe(
+          `Timeout in seconds to wait for command execution. On timeout, command continues running in background. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+        ),
     }),
     execute: async (
       {
         command,
         is_background,
+        timeout,
       }: {
         command: string;
         is_background: boolean;
+        timeout?: number;
       },
       { toolCallId, abortSignal },
     ) => {
+      // Calculate effective stream timeout (capped at MAX_TIMEOUT_SECONDS)
+      // This controls how long we wait for output, not how long the command runs
+      const effectiveStreamTimeout = Math.min(
+        timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
+        MAX_TIMEOUT_SECONDS,
+      );
       // Check guardrails before executing the command
       const guardrailResult = checkCommandGuardrails(
         command,
@@ -260,7 +276,7 @@ If you are generating files:
             handler = createTerminalHandler(
               (output) => createTerminalWriter(output),
               {
-                timeoutSeconds: STREAM_TIMEOUT_SECONDS,
+                timeoutSeconds: effectiveStreamTimeout,
                 onTimeout: async () => {
                   if (resolved) {
                     return;
@@ -280,7 +296,7 @@ If you are generating files:
 
                   createTerminalWriter(
                     TIMEOUT_MESSAGE(
-                      STREAM_TIMEOUT_SECONDS,
+                      effectiveStreamTimeout,
                       processId ?? undefined,
                     ),
                   );
