@@ -21,6 +21,14 @@ export const createWebSearch = (context: ToolContext) => {
         .describe(
           "The search term to look up on the web. Be specific and include relevant keywords for better results. For technical queries, include version numbers or dates if relevant.",
         ),
+      recency: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Optional filter to limit results to those published within the last N days. Common values: 1 (today), 7 (past week), 30 (past month), 365 (past year). If omitted, no time filter is applied.",
+        ),
       explanation: z
         .string()
         .describe(
@@ -30,12 +38,19 @@ export const createWebSearch = (context: ToolContext) => {
     execute: async (
       {
         query,
+        recency,
       }: {
         query: string;
+        recency?: number;
       },
       { abortSignal },
     ) => {
       try {
+        // Calculate startPublishedDate based on recency (number of days)
+        const startPublishedDate = recency
+          ? new Date(Date.now() - recency * 24 * 60 * 60 * 1000).toISOString()
+          : undefined;
+
         let searchResults;
 
         try {
@@ -49,6 +64,10 @@ export const createWebSearch = (context: ToolContext) => {
 
           if (country) {
             searchBody.userLocation = country;
+          }
+
+          if (startPublishedDate) {
+            searchBody.startPublishedDate = startPublishedDate;
           }
 
           // First attempt with location if available
@@ -74,17 +93,23 @@ export const createWebSearch = (context: ToolContext) => {
             throw firstError;
           }
           // Retry without userLocation as fallback
+          const fallbackBody: Record<string, unknown> = {
+            query: query,
+            type: "auto",
+            numResults: 10,
+          };
+
+          if (startPublishedDate) {
+            fallbackBody.startPublishedDate = startPublishedDate;
+          }
+
           const response = await fetch("https://api.exa.ai/search", {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               "x-api-key": process.env.EXA_API_KEY || "",
             },
-            body: JSON.stringify({
-              query: query,
-              type: "auto",
-              numResults: 10,
-            }),
+            body: JSON.stringify(fallbackBody),
             signal: abortSignal,
           });
 

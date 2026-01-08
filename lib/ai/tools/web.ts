@@ -36,6 +36,14 @@ The \`web\` tool has the following commands:
         .describe(
           "For search command: The search term to look up on the web. Be specific and include relevant keywords for better results. For technical queries, include version numbers or dates if relevant.",
         ),
+      recency: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "For search command: Optional filter to limit results to those published within the last N days. Common values: 1 (today), 7 (past week), 30 (past month), 365 (past year). If omitted, no time filter is applied.",
+        ),
       url: z
         .string()
         .optional()
@@ -52,10 +60,12 @@ The \`web\` tool has the following commands:
       {
         command,
         query,
+        recency,
         url,
       }: {
         command: "search" | "open_url";
         query?: string;
+        recency?: number;
         url?: string;
       },
       { abortSignal },
@@ -66,12 +76,17 @@ The \`web\` tool has the following commands:
             return "Error: Query is required for search command";
           }
 
+          // Calculate startPublishedDate based on recency (number of days)
+          const startPublishedDate = recency
+            ? new Date(Date.now() - recency * 24 * 60 * 60 * 1000).toISOString()
+            : undefined;
+
           let searchResults;
 
           try {
             // Safely access userLocation country
             const country = userLocation?.country;
-            const searchBody: any = {
+            const searchBody: Record<string, unknown> = {
               query,
               type: "auto",
               numResults: 10,
@@ -79,6 +94,10 @@ The \`web\` tool has the following commands:
 
             if (country) {
               searchBody.userLocation = country;
+            }
+
+            if (startPublishedDate) {
+              searchBody.startPublishedDate = startPublishedDate;
             }
 
             // First attempt with location if available
@@ -109,17 +128,23 @@ The \`web\` tool has the following commands:
               throw firstError;
             }
             // Retry without userLocation as fallback
+            const fallbackBody: Record<string, unknown> = {
+              query,
+              type: "auto",
+              numResults: 10,
+            };
+
+            if (startPublishedDate) {
+              fallbackBody.startPublishedDate = startPublishedDate;
+            }
+
             const response = await fetch("https://api.exa.ai/search", {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 "x-api-key": process.env.EXA_API_KEY || "",
               },
-              body: JSON.stringify({
-                query,
-                type: "auto",
-                numResults: 10,
-              }),
+              body: JSON.stringify(fallbackBody),
               signal: abortSignal,
             });
 
