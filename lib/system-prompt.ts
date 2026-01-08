@@ -17,6 +17,25 @@ const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
 // Cache the current date to avoid repeated Date creation
 export const currentDateTime = `${new Date().toLocaleDateString("en-US", DATE_FORMAT_OPTIONS)}`;
 
+// Shared pentesting tools list for sandbox environments
+export const PREINSTALLED_PENTESTING_TOOLS = `Pre-installed Pentesting Tools:
+- Network Scanning: nmap (network mapping/port scanning), naabu (fast port scanner), httpx (HTTP prober)
+- Subdomain/DNS: subfinder (subdomain enumeration), dnsrecon, dnsenum
+- Web Fuzzing: ffuf (fast fuzzer), dirsearch (directory/file discovery), arjun (parameter discovery)
+- Web Scanners: nikto (web server scanner), whatweb (web technology identifier), wpscan (WordPress scanner), wapiti (web vulnerability scanner), wafw00f (WAF detection)
+- Injection: sqlmap (SQL injection detection/exploitation)
+- Auth/Bruteforce: hydra (login bruteforcer)
+- SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket, enum4linux
+- Network Discovery: arp-scan
+- Web Recon: gospider (web spider/crawler), katana (advanced web crawler)
+- Git/Repository Analysis: gitdumper, gitextractor (dump/extract git repos)
+- Secret Scanning: trufflehog (find credentials in git/filesystems)
+- Vulnerability Assessment: nuclei (vulnerability scanner with templates), trivy (container/dependency scanner), zaproxy (OWASP ZAP), vulnx/cvemap (CVE vulnerability mapping)
+- Forensics: binwalk, foremost (file carving)
+- Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
+- Specialized: jwt_tool (JWT manipulation), interactsh-client (OOB interaction testing), SecLists (/home/user/SecLists or /usr/share/seclists)
+- Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc, odfpy`;
+
 // Template sections for better organization
 const getAgentModeInstructions = (mode: ChatMode): string => {
   return mode === "agent"
@@ -45,27 +64,7 @@ Development Environment:
 - Node.js 20.19.4 (commands: node, npm)
 - Golang 1.24.2 (commands: go)
 
-Pre-installed Pentesting Tools:
-- Network Scanning: nmap, masscan (high-speed port scanner), naabu (port scanner), httpx (HTTP prober), hping3
-- Subdomain/DNS: subfinder, dnsrecon, dnsenum, theHarvester (OSINT/email discovery)
-- Web Fuzzing: ffuf (fast fuzzer), dirsearch (directory/file discovery), arjun (parameter discovery)
-- Web Scanners: nikto (web server scanner), whatweb (web technology identifier), wpscan (WordPress scanner), wapiti (web vulnerability scanner), wafw00f (WAF detection), dalfox (XSS scanner)
-- Injection: commix (command injection), sqlmap (SQL injection)
-- SSL/TLS Testing: testssl (comprehensive HTTPS/SSL/TLS testing)
-- Auth/Bruteforce: hydra (login bruteforcer)
-- SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket, enum4linux
-- SNMP/Discovery: arp-scan, ike-scan, onesixtyone, snmpcheck, netdiscover
-- Web Recon: gospider, subjack
-- WebDAV: cadaver, davtest
-- Privilege Escalation: linpeas (Linux privilege escalation enumeration)
-- Tunneling/Pivoting: chisel (fast TCP/UDP tunnel)
-- Git/Repository Analysis: gitdumper, gitextractor (dump/extract git repos)
-- Secret Scanning: trufflehog (find credentials in git/filesystems)
-- Cryptography: rsactftool (RSA cryptography/CTF tool)
-- Forensics: steghide, binwalk, foremost (steganography/file carving)
-- Utilities: gobuster, socat, proxychains4, hashid, libimage-exiftool-perl (exiftool), cewl
-- Specialized: jwt_tool (JWT manipulation), nuclei (vulnerability scanner with templates), interactsh-client (OOB interaction), SecLists (/home/user/SecLists or /usr/share/seclists)
-- Documents: reportlab, python-docx, openpyxl, python-pptx, pandas, pypandoc, pandoc, odfpy
+${PREINSTALLED_PENTESTING_TOOLS}
 </sandbox_environment>`;
 
 const getAgentModeSection = (

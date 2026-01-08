@@ -12,7 +12,10 @@
  * - 3fde55c: Restored user:root for E2B only
  */
 
-import { buildSandboxCommandOptions } from "../utils/sandbox-command-options";
+import {
+  buildSandboxCommandOptions,
+  MAX_COMMAND_EXECUTION_TIME,
+} from "../utils/sandbox-command-options";
 import { isE2BSandbox } from "../utils/sandbox-types";
 
 // Mock E2B sandbox (has jupyterUrl property - this is how isE2BSandbox detects it)
@@ -35,7 +38,7 @@ describe("Sandbox Capabilities for Network Tools", () => {
 
       expect(options).toHaveProperty("user", "root");
       expect(options).toHaveProperty("cwd", "/home/user");
-      expect(options.timeoutMs).toBe(7 * 60 * 1000);
+      expect(options.timeoutMs).toBe(MAX_COMMAND_EXECUTION_TIME);
     });
 
     it("should NOT include user:root for ConvexSandbox (uses Docker capabilities)", () => {
@@ -45,7 +48,7 @@ describe("Sandbox Capabilities for Network Tools", () => {
 
       expect(options).not.toHaveProperty("user");
       expect(options).not.toHaveProperty("cwd");
-      expect(options.timeoutMs).toBe(7 * 60 * 1000);
+      expect(options.timeoutMs).toBe(MAX_COMMAND_EXECUTION_TIME);
     });
 
     it("should include handlers when provided", () => {
