@@ -1,7 +1,7 @@
 import type { AnySandbox } from "@/types";
 import { isE2BSandbox } from "./sandbox-types";
 
-const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
+export const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
 
 /**
  * Build command options for sandbox execution.
