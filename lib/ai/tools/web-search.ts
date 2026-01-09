@@ -22,12 +22,10 @@ export const createWebSearch = (context: ToolContext) => {
           "The search term to look up on the web. Be specific and include relevant keywords for better results. For technical queries, include version numbers or dates if relevant.",
         ),
       recency: z
-        .number()
-        .int()
-        .positive()
+        .enum(["all", "past_day", "past_week", "past_month", "past_year"])
         .optional()
         .describe(
-          "Optional filter to limit results to those published within the last N days. Common values: 1 (today), 7 (past week), 30 (past month), 365 (past year). If omitted, no time filter is applied.",
+          "Optional time filter to limit results to a recent time range. Defaults to 'all'.",
         ),
       explanation: z
         .string()
@@ -41,14 +39,21 @@ export const createWebSearch = (context: ToolContext) => {
         recency,
       }: {
         query: string;
-        recency?: number;
+        recency?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
       },
       { abortSignal },
     ) => {
       try {
-        // Calculate startPublishedDate based on recency (number of days)
-        const startPublishedDate = recency
-          ? new Date(Date.now() - recency * 24 * 60 * 60 * 1000).toISOString()
+        // Calculate startPublishedDate based on recency enum
+        const recencyToDays: Record<string, number> = {
+          past_day: 1,
+          past_week: 7,
+          past_month: 30,
+          past_year: 365,
+        };
+        const days = recency ? recencyToDays[recency] : undefined;
+        const startPublishedDate = days
+          ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
           : undefined;
 
         let searchResults;
