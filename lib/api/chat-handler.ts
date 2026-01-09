@@ -146,16 +146,9 @@ export const createChatHandler = () => {
         });
       }
 
-      // For agent mode, estimate input tokens for rate limit check
-      const estimatedInputTokens =
-        mode === "agent" ? countMessagesTokens(truncatedMessages, {}) : 0;
-
-      const rateLimitInfo = await checkRateLimit(
-        userId,
-        mode,
-        subscription,
-        estimatedInputTokens,
-      );
+      // Ask mode: check rate limit first (avoid processing if over limit)
+      const askRateLimitInfo =
+        mode === "ask" ? await checkRateLimit(userId, mode, subscription) : null;
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -163,6 +156,20 @@ export const createChatHandler = () => {
           mode,
           subscription,
         });
+
+      // Agent mode: check rate limit with model-specific pricing after knowing the model
+      const estimatedInputTokens =
+        mode === "agent" ? countMessagesTokens(truncatedMessages, {}) : 0;
+
+      const rateLimitInfo =
+        askRateLimitInfo ??
+        (await checkRateLimit(
+          userId,
+          mode,
+          subscription,
+          estimatedInputTokens,
+          selectedModel,
+        ));
 
       const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
@@ -481,6 +488,7 @@ export const createChatHandler = () => {
                   estimatedInputTokens,
                   usage.inputTokens || 0,
                   usage.outputTokens || 0,
+                  selectedModel,
                 );
               }
             },
