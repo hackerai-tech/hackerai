@@ -159,6 +159,7 @@ export const createCancellationSubscriber = async ({
       // Auto-cleanup when abort is triggered externally
       const onAbort = async () => {
         stopped = true;
+        onStop();
         await cleanupSubscriber();
       };
 
