@@ -34,7 +34,7 @@ import {
   saveChatSummary,
 } from "@/lib/db/actions";
 import {
-  createCancellationPoller,
+  createCancellationSubscriber,
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
@@ -178,14 +178,14 @@ export const createChatHandler = () => {
         }
       }
 
-      // Start cancellation poller (works for both regular and temporary chats)
-      let pollerStopped = false;
-      const cancellationPoller = createCancellationPoller({
+      // Start cancellation subscriber (Redis pub/sub with fallback to polling)
+      let subscriberStopped = false;
+      const cancellationSubscriber = await createCancellationSubscriber({
         chatId,
         isTemporary: !!temporary,
         abortController: userStopSignal,
         onStop: () => {
-          pollerStopped = true;
+          subscriberStopped = true;
         },
       });
 
@@ -492,9 +492,9 @@ export const createChatHandler = () => {
                 // Clear pre-emptive timeout
                 preemptiveTimeout?.clear();
 
-                // Stop cancellation poller
-                cancellationPoller.stop();
-                pollerStopped = true;
+                // Stop cancellation subscriber
+                await cancellationSubscriber.stop();
+                subscriberStopped = true;
 
                 // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
                 // This prevents showing "going off course" message when user clicks stop
