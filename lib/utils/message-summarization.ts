@@ -153,6 +153,12 @@ export const checkAndSummarizeIfNeeded = async (
     const result = await generateText({
       model: languageModel,
       system: getSummarizationPrompt(mode),
+      providerOptions: {
+      xai: {
+          // Disable storing the conversation in XAI's database
+          store: false,
+        },
+      },
       messages: [
         ...(await convertToModelMessages(messagesToSummarize)),
         {

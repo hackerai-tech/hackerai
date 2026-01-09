@@ -406,6 +406,10 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
+              xai: {
+                // Disable storing the conversation in XAI's database
+                store: false,
+              },
               openrouter: {
                 ...(isReasoningModel
                   ? { reasoning: { enabled: true } }
