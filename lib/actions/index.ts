@@ -36,6 +36,12 @@ export const generateTitleFromUserMessage = async (
 
   const { output } = await generateText({
     model: myProvider.languageModel("title-generator-model"),
+    providerOptions: {
+      xai: {
+        // Disable storing the conversation in XAI's database
+        store: false,
+      },
+    },
     output: Output.object({
       schema: z.object({
         title: z.string().describe("The generated title (3-5 words)"),

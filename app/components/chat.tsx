@@ -134,11 +134,11 @@ export const Chat = ({
     }
   }, [routeChatId, currentChatId, setChatTitle]);
 
-  // Use paginated query to load messages in batches of 15
+  // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
     shouldFetchMessages ? { chatId } : "skip",
-    { initialNumItems: 15 },
+    { initialNumItems: 14 },
   );
 
   // Get chat data to retrieve title when loading existing chat

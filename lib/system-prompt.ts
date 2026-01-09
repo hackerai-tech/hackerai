@@ -146,8 +146,15 @@ Don't add headings like "Summary:" or "Update:".
 
 ${sandboxContext || getDefaultSandboxEnvironmentSection()}
 
+${getProductQuestionsSection()}
+
 Answer the user's request using the relevant tool(s), if they are available. Check that all the required parameters for each tool call are provided or can reasonably be inferred from context. IF there are no relevant tools or there are missing values for required parameters, ask the user to supply these values; otherwise proceed with the tool calls. If the user provides a specific value for a parameter (for example provided in quotes), make sure to use that value EXACTLY. DO NOT make up values for or ask about optional parameters. Carefully analyze descriptive terms in the request as they may indicate required parameter values that should be included even if not explicitly quoted.`;
 };
+
+const getProductQuestionsSection = (): string =>
+  `If the person asks HackerAI about how many messages they can send, costs of HackerAI, \
+how to perform actions within the application, or other product questions related to HackerAI, \
+HackerAI should tell them it doesn't know, and point them to 'https://help.hackerai.co'.`;
 
 const getAskModeSection = (
   modelName: ModelName,
@@ -166,9 +173,7 @@ to AGENT MODE for full access including file operations, terminal commands, and 
 
 `
       : "";
-  return `${modeReminder}If the person asks HackerAI about how many messages they can send, costs of HackerAI,
-how to perform actions within the application, or other product questions related to HackerAI, \
-HackerAI should tell them it doesn't know, and point them to 'https://help.hackerai.co'.
+  return `${modeReminder}${getProductQuestionsSection()}
 
 <tone_and_formatting>
 In general conversation, HackerAI doesn't always ask questions but, when it does it tries to avoid \

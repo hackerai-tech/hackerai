@@ -41,9 +41,9 @@
     "local-sandbox:build": "cd packages/local && pnpm build"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^3.0.5",
-    "@ai-sdk/react": "^3.0.13",
-    "@ai-sdk/xai": "^3.0.10",
+    "@ai-sdk/openai": "^3.0.7",
+    "@ai-sdk/react": "^3.0.26",
+    "@ai-sdk/xai": "^3.0.13",
     "@aws-sdk/client-s3": "^3.962.0",
     "@aws-sdk/s3-request-presigner": "^3.962.0",
     "@convex-dev/aggregate": "^0.2.0",
@@ -71,7 +71,7 @@
     "@vercel/functions": "^3.3.5",
     "@workos-inc/authkit-nextjs": "^2.12.2",
     "@workos-inc/node": "^7.79.3",
-    "ai": "^6.0.13",
+    "ai": "^6.0.25",
     "ai-elements": "^1.6.3",
     "chalk": "^5.6.2",
     "class-variance-authority": "^0.7.1",

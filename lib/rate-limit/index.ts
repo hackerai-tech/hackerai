@@ -47,6 +47,7 @@ import { checkAskRateLimit } from "./sliding-window";
  * @param mode - The chat mode ("agent" or "ask")
  * @param subscription - The user's subscription tier
  * @param estimatedInputTokens - Estimated input tokens (agent mode only)
+ * @param modelName - Model name for pricing (agent mode only)
  * @returns Rate limit info including remaining quota
  */
 export const checkRateLimit = async (
@@ -54,9 +55,15 @@ export const checkRateLimit = async (
   mode: ChatMode,
   subscription: SubscriptionTier,
   estimatedInputTokens?: number,
+  modelName = "",
 ): Promise<RateLimitInfo> => {
   if (mode === "agent") {
-    return checkAgentRateLimit(userId, subscription, estimatedInputTokens || 0);
+    return checkAgentRateLimit(
+      userId,
+      subscription,
+      estimatedInputTokens || 0,
+      modelName,
+    );
   }
 
   return checkAskRateLimit(userId, subscription);

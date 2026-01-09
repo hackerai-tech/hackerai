@@ -1,5 +1,6 @@
 import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
+import { internal } from "./_generated/api";
 
 export function validateServiceKey(serviceKey: string): void {
   if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -73,6 +74,11 @@ export const cancelTempStreamFromClient = mutation({
     }
 
     await ctx.db.delete(row._id);
+
+    // Publish cancellation to Redis for instant backend notification
+    await ctx.scheduler.runAfter(0, internal.redisPubsub.publishCancellation, {
+      chatId: args.chatId,
+    });
 
     return null;
   },

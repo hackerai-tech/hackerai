@@ -34,7 +34,7 @@ import {
   saveChatSummary,
 } from "@/lib/db/actions";
 import {
-  createCancellationPoller,
+  createCancellationSubscriber,
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
@@ -146,16 +146,11 @@ export const createChatHandler = () => {
         });
       }
 
-      // For agent mode, estimate input tokens for rate limit check
-      const estimatedInputTokens =
-        mode === "agent" ? countMessagesTokens(truncatedMessages, {}) : 0;
-
-      const rateLimitInfo = await checkRateLimit(
-        userId,
-        mode,
-        subscription,
-        estimatedInputTokens,
-      );
+      // Ask mode: check rate limit first (avoid processing if over limit)
+      const askRateLimitInfo =
+        mode === "ask"
+          ? await checkRateLimit(userId, mode, subscription)
+          : null;
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -163,6 +158,20 @@ export const createChatHandler = () => {
           mode,
           subscription,
         });
+
+      // Agent mode: check rate limit with model-specific pricing after knowing the model
+      const estimatedInputTokens =
+        mode === "agent" ? countMessagesTokens(truncatedMessages, {}) : 0;
+
+      const rateLimitInfo =
+        askRateLimitInfo ??
+        (await checkRateLimit(
+          userId,
+          mode,
+          subscription,
+          estimatedInputTokens,
+          selectedModel,
+        ));
 
       const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
@@ -178,14 +187,14 @@ export const createChatHandler = () => {
         }
       }
 
-      // Start cancellation poller (works for both regular and temporary chats)
-      let pollerStopped = false;
-      const cancellationPoller = createCancellationPoller({
+      // Start cancellation subscriber (Redis pub/sub with fallback to polling)
+      let subscriberStopped = false;
+      const cancellationSubscriber = await createCancellationSubscriber({
         chatId,
         isTemporary: !!temporary,
         abortController: userStopSignal,
         onStop: () => {
-          pollerStopped = true;
+          subscriberStopped = true;
         },
       });
 
@@ -406,6 +415,10 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
+              xai: {
+                // Disable storing the conversation in XAI's database
+                store: false,
+              },
               openrouter: {
                 ...(isReasoningModel
                   ? { reasoning: { enabled: true } }
@@ -477,6 +490,7 @@ export const createChatHandler = () => {
                   estimatedInputTokens,
                   usage.inputTokens || 0,
                   usage.outputTokens || 0,
+                  selectedModel,
                 );
               }
             },
@@ -492,9 +506,9 @@ export const createChatHandler = () => {
                 // Clear pre-emptive timeout
                 preemptiveTimeout?.clear();
 
-                // Stop cancellation poller
-                cancellationPoller.stop();
-                pollerStopped = true;
+                // Stop cancellation subscriber
+                await cancellationSubscriber.stop();
+                subscriberStopped = true;
 
                 // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
                 // This prevents showing "going off course" message when user clicks stop

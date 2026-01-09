@@ -38,14 +38,15 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
   const isMobile = useIsMobile();
   const { subscription } = useGlobalState();
 
+  // Base tabs visible to all users
   const baseTabs = [
     { id: "Personalization", label: "Personalization", icon: Settings },
     { id: "Security", label: "Security", icon: Shield },
     { id: "Data controls", label: "Data controls", icon: Database },
-    { id: "Agents", label: "Agents", icon: Infinity },
   ];
 
-  // Local Sandbox tab only for Pro/Ultra/Team users
+  // Tabs only for paid users (Pro/Ultra/Team)
+  const agentsTab = { id: "Agents", label: "Agents", icon: Infinity };
   const localSandboxTab = {
     id: "Local Sandbox",
     label: "Local Sandbox",
@@ -57,10 +58,10 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
 
   const tabs =
     subscription === "team"
-      ? [...baseTabs, localSandboxTab, usageTab, teamTab, accountTab]
+      ? [...baseTabs, agentsTab, localSandboxTab, usageTab, teamTab, accountTab]
       : subscription !== "free"
-        ? [...baseTabs, localSandboxTab, usageTab, accountTab]
-        : [...baseTabs, usageTab, accountTab];
+        ? [...baseTabs, agentsTab, localSandboxTab, usageTab, accountTab]
+        : [...baseTabs, accountTab];
 
   const handleCustomInstructions = () => {
     setShowCustomizeDialog(true);

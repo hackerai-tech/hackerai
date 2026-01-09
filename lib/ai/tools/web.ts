@@ -22,7 +22,7 @@ export const createWebTool = (context: ToolContext) => {
 - Accuracy: If the cost of a small mistake or outdated information is high (e.g., using an outdated version of a software library or not knowing the date of the next game for a sports team), then use the \`web\` tool.
 
 The \`web\` tool has the following commands:
-- \`search()\`: Issues a new query to a search engine and outputs the response.
+- \`search()\`: Issues a new query to a search engine and outputs the response. You can include search operators like site:reddit.com, filetype:pdf, or exact phrases in quotes.
 - \`open_url(url: str)\` Opens the given URL and displays it.`,
     inputSchema: z.object({
       command: z
@@ -37,12 +37,10 @@ The \`web\` tool has the following commands:
           "For search command: The search term to look up on the web. Be specific and include relevant keywords for better results. For technical queries, include version numbers or dates if relevant.",
         ),
       recency: z
-        .number()
-        .int()
-        .positive()
+        .enum(["all", "past_day", "past_week", "past_month", "past_year"])
         .optional()
         .describe(
-          "For search command: Optional filter to limit results to those published within the last N days. Common values: 1 (today), 7 (past week), 30 (past month), 365 (past year). If omitted, no time filter is applied.",
+          "For search command: Optional time filter to limit results to a recent time range. Defaults to 'all'.",
         ),
       url: z
         .string()
@@ -65,7 +63,7 @@ The \`web\` tool has the following commands:
       }: {
         command: "search" | "open_url";
         query?: string;
-        recency?: number;
+        recency?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
         url?: string;
       },
       { abortSignal },
@@ -76,9 +74,16 @@ The \`web\` tool has the following commands:
             return "Error: Query is required for search command";
           }
 
-          // Calculate startPublishedDate based on recency (number of days)
-          const startPublishedDate = recency
-            ? new Date(Date.now() - recency * 24 * 60 * 60 * 1000).toISOString()
+          // Calculate startPublishedDate based on recency enum
+          const recencyToDays: Record<string, number> = {
+            past_day: 1,
+            past_week: 7,
+            past_month: 30,
+            past_year: 365,
+          };
+          const days = recency ? recencyToDays[recency] : undefined;
+          const startPublishedDate = days
+            ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
             : undefined;
 
           let searchResults;

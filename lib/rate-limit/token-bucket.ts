@@ -8,12 +8,18 @@ import { PRICING } from "@/lib/pricing/features";
 // Configuration
 // =============================================================================
 
-/** Grok 4.1 pricing: $/1M tokens */
-const GROK_PRICING = {
+/** Default model pricing (Grok 4.1): $/1M tokens */
+const DEFAULT_PRICING = {
   input: 0.2,
   output: 0.5,
   inputLong: 0.4, // >128K context
   outputLong: 1.0,
+};
+
+/** Agent Vision model pricing: $/1M tokens */
+const AGENT_VISION_PRICING = {
+  input: 0.5,
+  output: 3.0,
 };
 
 /** Points per dollar (1 point = $0.0001) */
@@ -33,23 +39,28 @@ export const AGENT_BUDGET_ALLOCATION = 0.7;
  * Calculate point cost for tokens.
  * @param tokens - Number of tokens
  * @param type - "input" or "output"
- * @param isLongContext - Whether context > 128K
+ * @param isLongContext - Whether context > 128K (only applies to default model)
+ * @param modelName - Model name to determine pricing (defaults to empty string for default pricing)
  */
 export const calculateTokenCost = (
   tokens: number,
   type: "input" | "output",
   isLongContext = false,
+  modelName = "",
 ): number => {
   if (tokens <= 0) return 0;
 
+  const isAgentVision = modelName === "agent-vision-model";
+  const pricing = isAgentVision ? AGENT_VISION_PRICING : DEFAULT_PRICING;
+
   const price =
     type === "input"
-      ? isLongContext
-        ? GROK_PRICING.inputLong
-        : GROK_PRICING.input
-      : isLongContext
-        ? GROK_PRICING.outputLong
-        : GROK_PRICING.output;
+      ? !isAgentVision && isLongContext
+        ? DEFAULT_PRICING.inputLong
+        : pricing.input
+      : !isAgentVision && isLongContext
+        ? DEFAULT_PRICING.outputLong
+        : pricing.output;
 
   return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
 };
@@ -137,6 +148,7 @@ export const checkAgentRateLimit = async (
   userId: string,
   subscription: SubscriptionTier,
   estimatedInputTokens: number = 0,
+  modelName = "",
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
@@ -167,6 +179,7 @@ export const checkAgentRateLimit = async (
       estimatedInputTokens,
       "input",
       isLongContext,
+      modelName,
     );
 
     // Step 1: Check both limits first WITHOUT deducting (rate: 0 peeks at current state)
@@ -221,6 +234,7 @@ export const deductAgentUsage = async (
   estimatedInputTokens: number,
   actualInputTokens: number,
   actualOutputTokens: number,
+  modelName = "",
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -240,16 +254,19 @@ export const deductAgentUsage = async (
       estimatedInputTokens,
       "input",
       isLongContext,
+      modelName,
     );
     const actualInputCost = calculateTokenCost(
       actualInputTokens,
       "input",
       isLongContext,
+      modelName,
     );
     const outputCost = calculateTokenCost(
       actualOutputTokens,
       "output",
       isLongContext,
+      modelName,
     );
     const additionalCost =
       Math.max(0, actualInputCost - estimatedInputCost) + outputCost;
