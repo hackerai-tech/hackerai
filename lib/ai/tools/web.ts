@@ -22,7 +22,7 @@ export const createWebTool = (context: ToolContext) => {
 - Accuracy: If the cost of a small mistake or outdated information is high (e.g., using an outdated version of a software library or not knowing the date of the next game for a sports team), then use the \`web\` tool.
 
 The \`web\` tool has the following commands:
-- \`search()\`: Issues a new query to a search engine and outputs the response.
+- \`search()\`: Issues a new query to a search engine and outputs the response. You can include search operators like site:reddit.com, filetype:pdf, or exact phrases in quotes.
 - \`open_url(url: str)\` Opens the given URL and displays it.`,
     inputSchema: z.object({
       command: z

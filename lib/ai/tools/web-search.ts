@@ -14,7 +14,7 @@ export const createWebSearch = (context: ToolContext) => {
   const { userLocation } = context;
 
   return tool({
-    description: `Search the web for real-time information about any topic. Use this tool when you need up-to-date information that might not be available in your training data, or when you need to verify current facts. The search results will include relevant snippets and URLs from web pages. This is particularly useful for questions about current events, technology updates, or any topic that requires recent information.`,
+    description: `Search the web for real-time information about any topic. Use this tool when you need up-to-date information that might not be available in your training data, or when you need to verify current facts. The search results will include relevant snippets and URLs from web pages. This is particularly useful for questions about current events, technology updates, or any topic that requires recent information. You can include search operators like site:reddit.com, filetype:pdf, or exact phrases in quotes.`,
     inputSchema: z.object({
       query: z
         .string()
