@@ -148,7 +148,9 @@ export const createChatHandler = () => {
 
       // Ask mode: check rate limit first (avoid processing if over limit)
       const askRateLimitInfo =
-        mode === "ask" ? await checkRateLimit(userId, mode, subscription) : null;
+        mode === "ask"
+          ? await checkRateLimit(userId, mode, subscription)
+          : null;
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
