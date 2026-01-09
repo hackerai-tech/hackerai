@@ -154,7 +154,7 @@ export const checkAndSummarizeIfNeeded = async (
       model: languageModel,
       system: getSummarizationPrompt(mode),
       providerOptions: {
-      xai: {
+        xai: {
           // Disable storing the conversation in XAI's database
           store: false,
         },
