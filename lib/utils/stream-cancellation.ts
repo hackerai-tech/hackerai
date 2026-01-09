@@ -120,18 +120,24 @@ export const createCancellationSubscriber = async ({
 }: PollOptions): Promise<CancellationSubscriberResult> => {
   let subscriber: RedisClient | null = null;
   let stopped = false;
+  let onStopCalled = false;
   const channel = getCancelChannel(chatId);
 
-  // Cleanup function for Redis subscriber
-  const cleanupSubscriber = async () => {
+  // Ensure onStop is only called once
+  const callOnStopOnce = () => {
+    if (!onStopCalled) {
+      onStopCalled = true;
+      onStop();
+    }
+  };
+
+  // Cleanup function for Redis subscriber (fire-and-forget safe)
+  const cleanupSubscriber = () => {
     if (subscriber) {
-      try {
-        await subscriber.unsubscribe(channel);
-        await subscriber.quit();
-      } catch {
-        // Ignore cleanup errors
-      }
+      const sub = subscriber;
       subscriber = null;
+      sub.unsubscribe(channel).catch(() => {});
+      sub.quit().catch(() => {});
     }
   };
 
@@ -139,8 +145,16 @@ export const createCancellationSubscriber = async ({
     subscriber = await createRedisSubscriber();
 
     if (subscriber) {
-      // Subscribe to cancellation channel
-      await subscriber.subscribe(channel, async (message) => {
+      // Named handler so we can remove it on manual stop
+      const handleAbort = () => {
+        stopped = true;
+        callOnStopOnce();
+        cleanupSubscriber();
+      };
+
+      // Subscribe to cancellation channel (synchronous callback)
+      // Just trigger abort - the abort handler is the single source of truth for cleanup
+      await subscriber.subscribe(channel, (message) => {
         if (stopped) return;
 
         try {
@@ -148,40 +162,29 @@ export const createCancellationSubscriber = async ({
           if (data.canceled) {
             stopped = true;
             abortController.abort();
-            onStop();
-            await cleanupSubscriber();
+            // handleAbort will be called by the abort event listener
           }
         } catch {
           // Invalid message format, ignore
         }
       });
 
-      // Auto-cleanup when abort is triggered externally
-      const onAbort = async () => {
-        stopped = true;
-        onStop();
-        await cleanupSubscriber();
-      };
-
-      abortController.signal.addEventListener(
-        "abort",
-        () => {
-          onAbort().catch(() => {});
-        },
-        { once: true },
-      );
+      abortController.signal.addEventListener("abort", handleAbort, {
+        once: true,
+      });
 
       return {
         stop: async () => {
           stopped = true;
-          await cleanupSubscriber();
+          abortController.signal.removeEventListener("abort", handleAbort);
+          cleanupSubscriber();
         },
         isUsingPubSub: true,
       };
     }
   } catch (error) {
     console.error("[Redis Pub/Sub] Subscription failed:", error);
-    await cleanupSubscriber();
+    cleanupSubscriber();
   }
 
   // Fallback to polling when Redis is unavailable
