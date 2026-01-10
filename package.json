@@ -83,6 +83,7 @@
     "date-fns": "^4.1.0",
     "e2b": "^2.8.4",
     "gpt-tokenizer": "^3.4.0",
+    "iron-session": "^8.0.4",
     "isbinaryfile": "^6.0.0",
     "jszip": "^3.10.1",
     "langchain": "^1.1.5",

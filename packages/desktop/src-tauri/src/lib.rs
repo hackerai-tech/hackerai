@@ -16,6 +16,31 @@ fn navigate_back(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 fn navigate_back(_window: &tauri::WebviewWindow) {}
 
+fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
+    if url.scheme() != "hackerai" {
+        return;
+    }
+
+    if url.host_str() == Some("auth") || url.path() == "/auth" || url.path() == "auth" {
+        if let Some(token) = url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v) {
+            if let Some(window) = app.get_webview_window("main") {
+                // Get the origin from the deep link query params, or use production as fallback
+                let origin = url.query_pairs()
+                    .find(|(k, _)| k == "origin")
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or_else(|| "https://hackerai.co".to_string());
+
+                let callback_url = format!("{}/desktop-callback?token={}", origin, token);
+                log::info!("Navigating to desktop callback: {}", callback_url);
+
+                if let Err(e) = window.navigate(callback_url.parse().unwrap()) {
+                    log::error!("Failed to navigate to callback URL: {}", e);
+                }
+            }
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -23,7 +48,22 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_deep_link::init())
         .setup(|app| {
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    let urls = event.urls();
+                    log::info!("Deep link received: {:?}", urls);
+
+                    for url in urls {
+                        handle_auth_deep_link(&handle, &url);
+                    }
+                });
+            }
             let go_back_item = MenuItemBuilder::new("Go Back")
                 .id("go_back")
                 .accelerator("CmdOrCtrl+[")

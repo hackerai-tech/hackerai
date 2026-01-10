@@ -22,6 +22,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ShareDialog } from "./ShareDialog";
+import { useTauri, openInBrowser } from "@/app/hooks/useTauri";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -55,6 +56,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   branchedFromChatTitle,
 }) => {
   const { user, loading } = useAuth();
+  const { isTauri } = useTauri();
   const {
     toggleChatSidebar,
     subscription,
@@ -65,7 +67,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     temporaryChatsEnabled,
     setTemporaryChatsEnabled,
   } = useGlobalState();
-  // Removed useUpgrade hook - we now redirect to pricing dialog instead
   const router = useRouter();
   const isMobile = useIsMobile();
   const [showShareDialog, setShowShareDialog] = useState(false);
@@ -79,11 +80,27 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   // Check if this is a branched chat
   const isBranchedChat = !!chatData?.branched_from_chat_id;
 
-  const handleSignIn = () => {
+  const handleSignIn = async () => {
+    if (isTauri) {
+      const opened = await openInBrowser(
+        `${window.location.origin}/desktop-login`,
+      );
+      if (opened) {
+        return;
+      }
+    }
     window.location.href = "/login";
   };
 
-  const handleSignUp = () => {
+  const handleSignUp = async () => {
+    if (isTauri) {
+      const opened = await openInBrowser(
+        `${window.location.origin}/desktop-login`,
+      );
+      if (opened) {
+        return;
+      }
+    }
     window.location.href = "/signup";
   };
 

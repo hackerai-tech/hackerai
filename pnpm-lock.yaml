@@ -136,6 +136,9 @@ importers:
       gpt-tokenizer:
         specifier: ^3.4.0
         version: 3.4.0
+      iron-session:
+        specifier: ^8.0.4
+        version: 8.0.4
       isbinaryfile:
         specifier: ^6.0.0
         version: 6.0.0
@@ -13083,7 +13086,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.12.2(debug@4.4.3))
+      retry-axios: 2.6.0(axios@1.12.2)
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -15168,7 +15171,7 @@ snapshots:
 
   resumable-stream@2.2.8: {}
 
-  retry-axios@2.6.0(axios@1.12.2(debug@4.4.3)):
+  retry-axios@2.6.0(axios@1.12.2):
     dependencies:
       axios: 1.12.2(debug@4.4.3)
 

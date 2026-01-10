@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import {
   LogOut,
@@ -11,7 +11,6 @@ import {
   Settings,
   Settings2,
   CircleUserRound,
-  Loader2,
 } from "lucide-react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
@@ -35,7 +34,6 @@ import {
 import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
 import { SettingsDialog } from "./SettingsDialog";
 import { clientLogout } from "@/lib/utils/logout";
-import { useBfcacheReset } from "@/app/hooks/useBfcacheReset";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -95,18 +93,14 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { isCheckingProPlan, subscription } = useGlobalState();
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
-  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const isMobile = useIsMobile();
-
-  useBfcacheReset(useCallback(() => setIsLoggingOut(false), []));
 
   if (!user) return null;
 
   // Determine if user has pro subscription
   const isProUser = subscription !== "free";
 
-  const handleLogOut = async () => {
-    setIsLoggingOut(true);
+  const handleLogOut = () => {
     clientLogout();
   };
 
@@ -338,15 +332,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuItem
             data-testid="logout-button"
             onClick={handleLogOut}
-            disabled={isLoggingOut}
             className="py-2.5"
           >
-            {isLoggingOut ? (
-              <Loader2 className="mr-2.5 h-5 w-5 text-foreground animate-spin" />
-            ) : (
-              <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
-            )}
-            <span>{isLoggingOut ? "Logging out..." : "Log out"}</span>
+            <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
+            <span>Log out</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

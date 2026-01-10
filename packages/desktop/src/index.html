@@ -42,9 +42,8 @@
       <p>Loading HackerAI...</p>
     </div>
     <script>
-      // Redirect to production site
-      // This page is shown briefly during app startup
-      window.location.href = "https://hackerai.co";
+      // Redirect to app URL (injected at build time)
+      window.location.href = "__APP_URL__";
     </script>
   </body>
 </html>
