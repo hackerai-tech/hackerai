@@ -15,7 +15,7 @@ export interface SidebarFile {
     start: number;
     end: number;
   };
-  action?: "reading" | "creating" | "editing" | "writing";
+  action?: "reading" | "creating" | "editing" | "writing" | "searching";
   toolCallId?: string;
   /** Original content before edit (for diff view) */
   originalContent?: string;

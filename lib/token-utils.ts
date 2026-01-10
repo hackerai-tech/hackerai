@@ -4,8 +4,8 @@ import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
 export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_PRO_AND_TEAM = 64000;
-export const MAX_TOKENS_ULTRA = 100000;
+export const MAX_TOKENS_PRO_AND_TEAM = 60000;
+export const MAX_TOKENS_ULTRA = 120000;
 /**
  * Maximum total tokens allowed across all files
  */
@@ -21,8 +21,8 @@ export const getMaxTokensForSubscription = (
 };
 
 // Token limits for different contexts
-export const STREAM_MAX_TOKENS = 2048;
-export const TOOL_DEFAULT_MAX_TOKENS = 2048;
+export const STREAM_MAX_TOKENS = 4096;
+export const TOOL_DEFAULT_MAX_TOKENS = 4096;
 
 // Truncation messages
 export const TRUNCATION_MESSAGE =
