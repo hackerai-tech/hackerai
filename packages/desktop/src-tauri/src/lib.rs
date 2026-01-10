@@ -42,7 +42,7 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                         });
 
                     let callback_url = format!("{}/desktop-callback?token={}", origin, token);
-                    log::info!("Navigating to desktop callback: {}", callback_url);
+                    log::info!("Navigating to desktop callback (token: {}...)", &token[..8.min(token.len())]);
 
                     match callback_url.parse() {
                         Ok(parsed_url) => {

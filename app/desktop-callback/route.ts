@@ -1,6 +1,17 @@
 import { NextResponse } from "next/server";
 import { exchangeDesktopTransferToken } from "@/lib/desktop-auth";
 
+function getCookieMaxAge(): number {
+  const envMaxAge = process.env.WORKOS_COOKIE_MAX_AGE;
+  if (envMaxAge) {
+    const parsed = parseInt(envMaxAge, 10);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return 60 * 60 * 24 * 400; // 400 days default (WorkOS default)
+}
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const token = url.searchParams.get("token");
@@ -24,6 +35,7 @@ export async function GET(request: Request) {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
+    maxAge: getCookieMaxAge(),
   });
 
   return response;
