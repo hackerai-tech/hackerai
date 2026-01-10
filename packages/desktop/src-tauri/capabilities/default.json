@@ -18,6 +18,13 @@
     "os:default",
     "process:default",
     "updater:default",
-    "deep-link:default"
+    "deep-link:default",
+    "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        { "path": "$DOWNLOAD/**" }
+      ]
+    }
   ]
 }
