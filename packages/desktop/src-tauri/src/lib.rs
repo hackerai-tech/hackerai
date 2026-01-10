@@ -16,10 +16,19 @@ fn navigate_back(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 fn navigate_back(_window: &tauri::WebviewWindow) {}
 
-const ALLOWED_ORIGINS: &[&str] = &["https://hackerai.co", "http://localhost:3000"];
+const ALLOWED_HOSTS: &[&str] = &["hackerai.co", "localhost"];
 
 fn validate_origin(origin: &str) -> bool {
-    ALLOWED_ORIGINS.iter().any(|allowed| origin.starts_with(allowed))
+    match url::Url::parse(origin) {
+        Ok(parsed) => {
+            let host = parsed.host_str().unwrap_or("");
+            let scheme = parsed.scheme();
+            let is_allowed_host = ALLOWED_HOSTS.iter().any(|allowed| host == *allowed);
+            let is_valid_scheme = scheme == "https" || (host == "localhost" && scheme == "http");
+            is_allowed_host && is_valid_scheme
+        }
+        Err(_) => false,
+    }
 }
 
 fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {

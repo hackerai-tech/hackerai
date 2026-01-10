@@ -1,7 +1,9 @@
 import { Redis } from "@upstash/redis";
 
 const TRANSFER_TOKEN_TTL_SECONDS = 60;
+const OAUTH_STATE_TTL_SECONDS = 300;
 const TRANSFER_TOKEN_PREFIX = "desktop-auth-transfer:";
+const OAUTH_STATE_PREFIX = "desktop-oauth-state:";
 const TOKEN_FORMAT_REGEX = /^[a-f0-9]{64}$/;
 
 type TransferTokenData = {
@@ -110,4 +112,47 @@ export async function exchangeDesktopTransferToken(
   return {
     sealedSession: data.sealedSession,
   };
+}
+
+export async function createOAuthState(): Promise<string | null> {
+  const redis = getRedis();
+  if (!redis) {
+    console.error("[Desktop Auth] Redis not configured, cannot create OAuth state");
+    return null;
+  }
+
+  const state = generateTransferToken();
+  const key = `${OAUTH_STATE_PREFIX}${state}`;
+
+  try {
+    await redis.set(key, "1", { ex: OAUTH_STATE_TTL_SECONDS });
+  } catch (err) {
+    console.error("[Desktop Auth] Failed to store OAuth state in Redis:", err);
+    return null;
+  }
+
+  return state;
+}
+
+export async function verifyAndConsumeOAuthState(state: string): Promise<boolean> {
+  if (!TOKEN_FORMAT_REGEX.test(state)) {
+    console.warn("[Desktop Auth] Invalid OAuth state format");
+    return false;
+  }
+
+  const redis = getRedis();
+  if (!redis) {
+    console.error("[Desktop Auth] Redis not configured, cannot verify OAuth state");
+    return false;
+  }
+
+  const key = `${OAUTH_STATE_PREFIX}${state}`;
+
+  try {
+    const deleted = await redis.del(key);
+    return deleted === 1;
+  } catch (err) {
+    console.error("[Desktop Auth] Failed to verify OAuth state:", err);
+    return false;
+  }
 }

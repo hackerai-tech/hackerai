@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import { WorkOS } from "@workos-inc/node";
 import { sealData } from "iron-session";
-import { createDesktopTransferToken } from "@/lib/desktop-auth";
+import { createDesktopTransferToken, verifyAndConsumeOAuthState } from "@/lib/desktop-auth";
 
 const workos = new WorkOS(process.env.WORKOS_API_KEY);
 
@@ -18,9 +18,27 @@ export async function GET(request: NextRequest) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const error = url.searchParams.get("error");
+  const state = url.searchParams.get("state");
 
   if (error || !code) {
     return new Response(renderErrorPage("Authentication failed. Please try again."), {
+      status: 400,
+      headers: { "Content-Type": "text/html" },
+    });
+  }
+
+  if (!state) {
+    console.warn("[Desktop Auth] Missing OAuth state parameter");
+    return new Response(renderErrorPage("Invalid authentication request. Please try again."), {
+      status: 400,
+      headers: { "Content-Type": "text/html" },
+    });
+  }
+
+  const isValidState = await verifyAndConsumeOAuthState(state);
+  if (!isValidState) {
+    console.warn("[Desktop Auth] Invalid or expired OAuth state");
+    return new Response(renderErrorPage("Authentication session expired. Please try again."), {
       status: 400,
       headers: { "Content-Type": "text/html" },
     });
@@ -69,7 +87,8 @@ export async function GET(request: NextRequest) {
 }
 
 function renderSuccessPage(deepLinkUrl: string): string {
-  const safeUrl = escapeHtml(deepLinkUrl);
+  const safeUrlForHtml = escapeHtml(deepLinkUrl);
+  const safeUrlForJs = JSON.stringify(deepLinkUrl);
   return `
 <!DOCTYPE html>
 <html>
@@ -107,10 +126,10 @@ function renderSuccessPage(deepLinkUrl: string): string {
   <div class="container">
     <h1>Opening HackerAI Desktop...</h1>
     <p>If the app doesn't open automatically, click the button below.</p>
-    <a href="${safeUrl}">Open HackerAI</a>
+    <a href="${safeUrlForHtml}">Open HackerAI</a>
   </div>
   <script>
-    window.location.href = "${safeUrl}";
+    window.location.href = ${safeUrlForJs};
   </script>
 </body>
 </html>`;
