@@ -10,6 +10,7 @@ import { createGetTerminalFiles } from "./get-terminal-files";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 import { createSearchReplace } from "./search-replace";
+import { createMatch } from "./match";
 import { createWebTool } from "./web";
 import { createWebSearch } from "./web-search";
 import { createTodoWrite } from "./todo-write";
@@ -92,6 +93,7 @@ export const createTools = (
     read_file: createReadFile(context),
     write_file: createWriteFile(context),
     search_replace: createSearchReplace(context),
+    match: createMatch(context),
     todo_write: createTodoWrite(context),
     http_request: createHttpRequest(context),
     ...(!isTemporary &&

@@ -171,6 +171,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
         creating: "Creating file",
         editing: "Editing file",
         writing: "Writing file",
+        searching: "Search results",
       };
       return actionMap[sidebarContent.action || "reading"];
     } else if (isTerminal) {
