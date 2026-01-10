@@ -16,25 +16,56 @@ fn navigate_back(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 fn navigate_back(_window: &tauri::WebviewWindow) {}
 
+const ALLOWED_ORIGINS: &[&str] = &["https://hackerai.co", "http://localhost:3000"];
+
+fn validate_origin(origin: &str) -> bool {
+    ALLOWED_ORIGINS.iter().any(|allowed| origin.starts_with(allowed))
+}
+
 fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     if url.scheme() != "hackerai" {
         return;
     }
 
     if url.host_str() == Some("auth") || url.path() == "/auth" || url.path() == "auth" {
-        if let Some(token) = url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v) {
-            if let Some(window) = app.get_webview_window("main") {
-                // Get the origin from the deep link query params, or use production as fallback
-                let origin = url.query_pairs()
-                    .find(|(k, _)| k == "origin")
-                    .map(|(_, v)| v.to_string())
-                    .unwrap_or_else(|| "https://hackerai.co".to_string());
+        match url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v) {
+            Some(token) => {
+                if let Some(window) = app.get_webview_window("main") {
+                    // Get and validate origin from deep link query params
+                    let origin = url.query_pairs()
+                        .find(|(k, _)| k == "origin")
+                        .map(|(_, v)| v.to_string())
+                        .filter(|o| validate_origin(o))
+                        .unwrap_or_else(|| {
+                            log::warn!("Deep link has missing or invalid origin, using production");
+                            "https://hackerai.co".to_string()
+                        });
 
-                let callback_url = format!("{}/desktop-callback?token={}", origin, token);
-                log::info!("Navigating to desktop callback: {}", callback_url);
+                    let callback_url = format!("{}/desktop-callback?token={}", origin, token);
+                    log::info!("Navigating to desktop callback: {}", callback_url);
 
-                if let Err(e) = window.navigate(callback_url.parse().unwrap()) {
-                    log::error!("Failed to navigate to callback URL: {}", e);
+                    match callback_url.parse() {
+                        Ok(parsed_url) => {
+                            if let Err(e) = window.navigate(parsed_url) {
+                                log::error!("Failed to navigate to callback URL: {}", e);
+                                // Try to navigate to error page
+                                let error_url = format!("{}/login?error=navigation_failed", origin);
+                                if let Ok(error_parsed) = error_url.parse() {
+                                    let _ = window.navigate(error_parsed);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("Invalid callback URL format: {}", e);
+                        }
+                    }
+                }
+            }
+            None => {
+                if let Some((_, error)) = url.query_pairs().find(|(k, _)| k == "error") {
+                    log::error!("Auth deep link received with error: {}", error);
+                } else {
+                    log::warn!("Auth deep link received without token: {:?}", url);
                 }
             }
         }

@@ -2,6 +2,7 @@ import { Redis } from "@upstash/redis";
 
 const TRANSFER_TOKEN_TTL_SECONDS = 60;
 const TRANSFER_TOKEN_PREFIX = "desktop-auth-transfer:";
+const TOKEN_FORMAT_REGEX = /^[a-f0-9]{64}$/;
 
 type TransferTokenData = {
   sealedSession: string;
@@ -49,7 +50,12 @@ export async function createDesktopTransferToken(
     createdAt: Date.now(),
   };
 
-  await redis.set(key, JSON.stringify(data), { ex: TRANSFER_TOKEN_TTL_SECONDS });
+  try {
+    await redis.set(key, JSON.stringify(data), { ex: TRANSFER_TOKEN_TTL_SECONDS });
+  } catch (err) {
+    console.error("[Desktop Auth] Failed to store transfer token in Redis:", err);
+    return null;
+  }
 
   return transferToken;
 }
@@ -57,6 +63,12 @@ export async function createDesktopTransferToken(
 export async function exchangeDesktopTransferToken(
   transferToken: string,
 ): Promise<{ sealedSession: string } | null> {
+  // Validate token format to prevent injection
+  if (!TOKEN_FORMAT_REGEX.test(transferToken)) {
+    console.warn("[Desktop Auth] Invalid transfer token format");
+    return null;
+  }
+
   const redis = getRedis();
   if (!redis) {
     console.error(
@@ -67,15 +79,33 @@ export async function exchangeDesktopTransferToken(
 
   const key = `${TRANSFER_TOKEN_PREFIX}${transferToken}`;
 
-  const rawData = await redis.get<string>(key);
-  if (!rawData) {
+  let rawData: string | null;
+  try {
+    rawData = await redis.get<string>(key);
+  } catch (err) {
+    console.error("[Desktop Auth] Failed to retrieve transfer token from Redis:", err);
     return null;
   }
 
-  await redis.del(key);
+  if (!rawData) {
+    console.warn("[Desktop Auth] Transfer token not found or expired");
+    return null;
+  }
 
-  const data: TransferTokenData =
-    typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+  // Delete token immediately to prevent reuse (best effort - logged but doesn't fail exchange)
+  try {
+    await redis.del(key);
+  } catch (err) {
+    console.error("[Desktop Auth] Failed to delete transfer token from Redis:", err);
+  }
+
+  let data: TransferTokenData;
+  try {
+    data = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+  } catch (err) {
+    console.error("[Desktop Auth] Failed to parse transfer token data:", err);
+    return null;
+  }
 
   return {
     sealedSession: data.sealedSession,

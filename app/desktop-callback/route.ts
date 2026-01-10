@@ -6,13 +6,15 @@ export async function GET(request: Request) {
   const token = url.searchParams.get("token");
 
   if (!token) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    console.warn("[Desktop Callback] No token provided in callback URL");
+    return NextResponse.redirect(new URL("/login?error=missing_token", request.url));
   }
 
   const sessionData = await exchangeDesktopTransferToken(token);
 
   if (!sessionData) {
-    return NextResponse.redirect(new URL("/login", request.url));
+    console.warn("[Desktop Callback] Token exchange failed");
+    return NextResponse.redirect(new URL("/login?error=token_expired", request.url));
   }
 
   const response = NextResponse.redirect(new URL("/", request.url));

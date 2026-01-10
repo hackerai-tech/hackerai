@@ -29,8 +29,15 @@ export async function openInBrowser(url: string): Promise<boolean> {
   }
 
   if (window.__TAURI__?.shell?.open) {
-    await window.__TAURI__.shell.open(url);
-    return true;
+    try {
+      await window.__TAURI__.shell.open(url);
+      return true;
+    } catch (err) {
+      console.error("[Tauri] Failed to open URL in browser:", url, err);
+      // Fallback to window.open
+      window.open(url, "_blank");
+      return false;
+    }
   }
 
   return false;

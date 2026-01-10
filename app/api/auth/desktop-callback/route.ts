@@ -5,6 +5,15 @@ import { createDesktopTransferToken } from "@/lib/desktop-auth";
 
 const workos = new WorkOS(process.env.WORKOS_API_KEY);
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 export async function GET(request: NextRequest) {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
@@ -60,6 +69,7 @@ export async function GET(request: NextRequest) {
 }
 
 function renderSuccessPage(deepLinkUrl: string): string {
+  const safeUrl = escapeHtml(deepLinkUrl);
   return `
 <!DOCTYPE html>
 <html>
@@ -97,16 +107,17 @@ function renderSuccessPage(deepLinkUrl: string): string {
   <div class="container">
     <h1>Opening HackerAI Desktop...</h1>
     <p>If the app doesn't open automatically, click the button below.</p>
-    <a href="${deepLinkUrl}">Open HackerAI</a>
+    <a href="${safeUrl}">Open HackerAI</a>
   </div>
   <script>
-    window.location.href = "${deepLinkUrl}";
+    window.location.href = "${safeUrl}";
   </script>
 </body>
 </html>`;
 }
 
 function renderErrorPage(message: string): string {
+  const safeMessage = escapeHtml(message);
   return `
 <!DOCTYPE html>
 <html>
@@ -143,7 +154,7 @@ function renderErrorPage(message: string): string {
 <body>
   <div class="container">
     <h1>Authentication Error</h1>
-    <p>${message}</p>
+    <p>${safeMessage}</p>
     <a href="hackerai://auth?error=auth_failed">Return to App</a>
   </div>
 </body>
