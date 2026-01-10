@@ -8,10 +8,7 @@ interface MatchToolHandlerProps {
   status: ChatStatus;
 }
 
-export const MatchToolHandler = ({
-  part,
-  status,
-}: MatchToolHandlerProps) => {
+export const MatchToolHandler = ({ part, status }: MatchToolHandlerProps) => {
   const { openSidebar } = useGlobalState();
   const { toolCallId, state, input, output } = part;
   const matchInput = input as
@@ -63,7 +60,10 @@ export const MatchToolHandler = ({
     if (outputText.startsWith("Search timed out")) {
       return "Search timed out";
     }
-    if (outputText.startsWith("Error:") || outputText.startsWith("Search failed")) {
+    if (
+      outputText.startsWith("Error:") ||
+      outputText.startsWith("Search failed")
+    ) {
       return "Search failed";
     }
     return isGlob ? "Search complete" : "Search complete";

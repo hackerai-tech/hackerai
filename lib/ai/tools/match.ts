@@ -173,9 +173,7 @@ export const createMatch = (context: ToolContext) => {
 
         // Format output based on action
         if (action === "glob") {
-          const files = rawOutput
-            .split("\n")
-            .filter((line) => line.length > 0);
+          const files = rawOutput.split("\n").filter((line) => line.length > 0);
 
           if (files.length === 0) {
             return {
