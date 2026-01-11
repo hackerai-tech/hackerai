@@ -6,14 +6,14 @@ import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
-  "ask-model": openrouter("grok-4-1-fast-non-reasoning"),
-  "ask-model-free": openrouter("grok-4-1-fast-non-reasoning"),
+  "ask-model": openrouter("x-ai/grok-4.1-fast"),
+  "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": openrouter("x-ai/grok-4.1-fast"),
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
-  "title-generator-model": openrouter("grok-4-1-fast-non-reasoning"),
-  "summarization-model": openrouter("grok-4-1-fast-non-reasoning"),
+  "title-generator-model": openrouter("x-ai/grok-4.1-fast"),
+  "summarization-model": openrouter("x-ai/grok-4.1-fast"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as Record<string, any>;
 
