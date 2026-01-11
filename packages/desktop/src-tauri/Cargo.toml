@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "HackerAI Desktop Application"
 authors = ["HackerAI"]
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.78"
 
 [lib]
 name = "hackerai_desktop_lib"

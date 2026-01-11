@@ -2,11 +2,6 @@
 
 declare global {
   interface Window {
-    __TAURI__?: {
-      shell: {
-        open: (url: string) => Promise<void>;
-      };
-    };
     __TAURI_INTERNALS__?: unknown;
   }
 }
@@ -14,7 +9,7 @@ declare global {
 function detectTauri(): boolean {
   return (
     typeof window !== "undefined" &&
-    (window.__TAURI__ !== undefined || window.__TAURI_INTERNALS__ !== undefined)
+    window.__TAURI_INTERNALS__ !== undefined
   );
 }
 
@@ -28,22 +23,18 @@ export function useTauri(): { isTauri: boolean } {
 }
 
 export async function openInBrowser(url: string): Promise<boolean> {
-  if (typeof window === "undefined") {
+  if (!detectTauri()) {
     return false;
   }
 
-  if (window.__TAURI__?.shell?.open) {
-    try {
-      await window.__TAURI__.shell.open(url);
-      return true;
-    } catch (err) {
-      console.error("[Tauri] Failed to open URL in browser:", url, err);
-      window.open(url, "_blank");
-      return false;
-    }
+  try {
+    const opener = await import("@tauri-apps/plugin-opener");
+    await opener.openUrl(url);
+    return true;
+  } catch (err) {
+    console.error("[Tauri] Failed to open URL in browser:", url, err);
+    return false;
   }
-
-  return false;
 }
 
 export async function openDownloadsFolder(): Promise<boolean> {

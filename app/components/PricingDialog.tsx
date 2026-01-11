@@ -179,11 +179,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   const handleSignIn = async () => {
     if (isTauri) {
-      const opened = await openInBrowser(
-        `${window.location.origin}/desktop-login`,
-      );
-      if (opened) {
-        return;
+      try {
+        const opened = await openInBrowser(
+          `${window.location.origin}/desktop-login`,
+        );
+        if (opened) return;
+      } catch {
+        // Fall through to web navigation
       }
     }
     // eslint-disable-next-line react-hooks/immutability
@@ -192,11 +194,13 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   const handleSignUp = async () => {
     if (isTauri) {
-      const opened = await openInBrowser(
-        `${window.location.origin}/desktop-login`,
-      );
-      if (opened) {
-        return;
+      try {
+        const opened = await openInBrowser(
+          `${window.location.origin}/desktop-login`,
+        );
+        if (opened) return;
+      } catch {
+        // Fall through to web navigation
       }
     }
     // eslint-disable-next-line react-hooks/immutability

@@ -16,11 +16,13 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
 
   const handleSignIn = async () => {
     if (isTauri) {
-      const opened = await openInBrowser(
-        `${window.location.origin}/desktop-login`,
-      );
-      if (opened) {
-        return;
+      try {
+        const opened = await openInBrowser(
+          `${window.location.origin}/desktop-login`,
+        );
+        if (opened) return;
+      } catch {
+        // Fall through to web navigation
       }
     }
     window.location.href = "/login";
@@ -28,11 +30,13 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
 
   const handleSignUp = async () => {
     if (isTauri) {
-      const opened = await openInBrowser(
-        `${window.location.origin}/desktop-login`,
-      );
-      if (opened) {
-        return;
+      try {
+        const opened = await openInBrowser(
+          `${window.location.origin}/desktop-login`,
+        );
+        if (opened) return;
+      } catch {
+        // Fall through to web navigation
       }
     }
     window.location.href = "/signup";

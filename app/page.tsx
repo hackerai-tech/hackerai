@@ -22,11 +22,13 @@ const UnauthenticatedContent = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isTauri) {
-      const opened = await openInBrowser(
-        `${window.location.origin}/desktop-login`,
-      );
-      if (opened) {
-        return;
+      try {
+        const opened = await openInBrowser(
+          `${window.location.origin}/desktop-login`,
+        );
+        if (opened) return;
+      } catch {
+        // Fall through to web navigation
       }
     }
     window.location.href = "/login";

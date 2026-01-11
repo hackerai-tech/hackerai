@@ -5,12 +5,14 @@ use tauri::Manager;
 fn navigate_back(window: &tauri::WebviewWindow) {
     use objc2_web_kit::WKWebView;
 
-    let _ = window.with_webview(|webview| unsafe {
+    if let Err(e) = window.with_webview(|webview| unsafe {
         let wk_webview: &WKWebView = &*webview.inner().cast();
         if wk_webview.canGoBack() {
             wk_webview.goBack();
         }
-    });
+    }) {
+        log::warn!("Failed to navigate back: {}", e);
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -50,7 +52,8 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
                             "https://hackerai.co".to_string()
                         });
 
-                    let callback_url = format!("{}/desktop-callback?token={}", origin, token);
+                    let encoded_token: String = url::form_urlencoded::byte_serialize(token.as_bytes()).collect();
+                    let callback_url = format!("{}/desktop-callback?token={}", origin, encoded_token);
                     log::info!("Navigating to desktop callback (token: {}...)", &token[..8.min(token.len())]);
 
                     match callback_url.parse() {

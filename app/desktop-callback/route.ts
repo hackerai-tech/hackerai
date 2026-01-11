@@ -12,13 +12,26 @@ function getCookieMaxAge(): number {
   return 60 * 60 * 24 * 400; // 400 days default (WorkOS default)
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function renderErrorPage(title: string, message: string, retryUrl: string): string {
+  const safeTitle = escapeHtml(title);
+  const safeMessage = escapeHtml(message);
+  const safeRetryUrl = JSON.stringify(retryUrl);
+
   return `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>${title}</title>
+  <title>${safeTitle}</title>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -54,21 +67,28 @@ function renderErrorPage(title: string, message: string, retryUrl: string): stri
 </head>
 <body>
   <div class="container">
-    <h1>${title}</h1>
-    <p>${message}</p>
+    <h1>${safeTitle}</h1>
+    <p>${safeMessage}</p>
     <div class="buttons">
       <button class="secondary" onclick="window.location.href='/'">Home</button>
       <button onclick="handleRetry()">Try Again</button>
     </div>
   </div>
   <script>
-    function handleRetry() {
-      if (window.__TAURI__ || window.__TAURI_INTERNALS__) {
-        window.__TAURI__.shell.open("${retryUrl}");
-      } else {
-        window.location.href = "${retryUrl}";
-      }
-    }
+    (function() {
+      var retryUrl = ${safeRetryUrl};
+      window.handleRetry = function() {
+        if (window.__TAURI_INTERNALS__) {
+          import('@tauri-apps/plugin-opener').then(function(opener) {
+            opener.openUrl(retryUrl);
+          }).catch(function() {
+            window.location.href = retryUrl;
+          });
+        } else {
+          window.location.href = retryUrl;
+        }
+      };
+    })();
   </script>
 </body>
 </html>`;

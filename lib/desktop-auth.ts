@@ -83,7 +83,8 @@ export async function exchangeDesktopTransferToken(
 
   let rawData: string | null;
   try {
-    rawData = await redis.get<string>(key);
+    // Use getdel for atomic get-and-delete to prevent race conditions
+    rawData = await redis.getdel<string>(key);
   } catch (err) {
     console.error("[Desktop Auth] Failed to retrieve transfer token from Redis:", err);
     return null;
@@ -94,18 +95,16 @@ export async function exchangeDesktopTransferToken(
     return null;
   }
 
-  // Delete token immediately to prevent reuse (best effort - logged but doesn't fail exchange)
-  try {
-    await redis.del(key);
-  } catch (err) {
-    console.error("[Desktop Auth] Failed to delete transfer token from Redis:", err);
-  }
-
   let data: TransferTokenData;
   try {
-    data = typeof rawData === "string" ? JSON.parse(rawData) : rawData;
+    data = JSON.parse(rawData) as TransferTokenData;
   } catch (err) {
     console.error("[Desktop Auth] Failed to parse transfer token data:", err);
+    return null;
+  }
+
+  if (!data || typeof data.sealedSession !== "string" || data.sealedSession.length === 0) {
+    console.error("[Desktop Auth] Invalid transfer token payload");
     return null;
   }
 

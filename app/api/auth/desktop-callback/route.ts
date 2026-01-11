@@ -44,11 +44,22 @@ export async function GET(request: NextRequest) {
     });
   }
 
+  const clientId = process.env.WORKOS_CLIENT_ID;
+  const cookiePassword = process.env.WORKOS_COOKIE_PASSWORD;
+
+  if (!clientId || !cookiePassword) {
+    console.error("[Desktop Auth] Missing required environment variables");
+    return new Response(renderErrorPage("Server configuration error. Please try again later."), {
+      status: 500,
+      headers: { "Content-Type": "text/html" },
+    });
+  }
+
   try {
     const { user, accessToken, refreshToken, impersonator } =
       await workos.userManagement.authenticateWithCode({
         code,
-        clientId: process.env.WORKOS_CLIENT_ID!,
+        clientId,
       });
 
     const session = {
@@ -59,7 +70,7 @@ export async function GET(request: NextRequest) {
     };
 
     const sealedSession = await sealData(session, {
-      password: process.env.WORKOS_COOKIE_PASSWORD!,
+      password: cookiePassword,
     });
 
     const transferToken = await createDesktopTransferToken(sealedSession);
