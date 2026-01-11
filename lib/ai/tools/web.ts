@@ -34,10 +34,11 @@ export const createWebTool = (context: ToolContext) => {
 - Use \`search\` for news, current events, prices, schedules, policies, documentation, or announcements
 - Use \`search\` for location-based queries like weather, local businesses, or events
 - Use \`open_url\` to extract details from official pages, press releases, or primary sources
-- Prefer multiple narrow searches over a single broad query
-- Cross-check facts using more than one source when accuracy is critical
-- Use when up-to-date information could change or enhance the answer
-- Use for niche information not widely known (small businesses, arcane regulations, lesser-known topics)
+- Do NOT search for general knowledge, concepts, or facts that don't change over time
+- Do NOT search for programming fundamentals, algorithms, or established technical concepts
+- Do NOT search for cybersecurity principles, common vulnerabilities, or attack methodologies
+- Combine related questions into a single comprehensive search query rather than multiple narrow searches
+- Rely on training knowledge first; only search when information is genuinely unknown or time-sensitive
 </recommended_usage>`,
     inputSchema: z.object({
       command: z
