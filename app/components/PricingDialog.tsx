@@ -8,6 +8,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
+import { useTauri, openInBrowser } from "../hooks/useTauri";
 import {
   freeFeatures,
   proFeatures,
@@ -152,6 +153,7 @@ export const PRICING = {
 
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
+  const { isTauri } = useTauri();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
@@ -175,12 +177,28 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     setIsYearly(value === "yearly");
   };
 
-  const handleSignIn = () => {
+  const handleSignIn = async () => {
+    if (isTauri) {
+      const opened = await openInBrowser(
+        `${window.location.origin}/desktop-login`,
+      );
+      if (opened) {
+        return;
+      }
+    }
     // eslint-disable-next-line react-hooks/immutability
     window.location.href = "/login";
   };
 
-  const handleSignUp = () => {
+  const handleSignUp = async () => {
+    if (isTauri) {
+      const opened = await openInBrowser(
+        `${window.location.origin}/desktop-login`,
+      );
+      if (opened) {
+        return;
+      }
+    }
     // eslint-disable-next-line react-hooks/immutability
     window.location.href = "/signup";
   };

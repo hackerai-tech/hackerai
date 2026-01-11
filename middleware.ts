@@ -1,4 +1,5 @@
 import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
+import { NextFetchEvent, NextRequest, NextResponse } from "next/server";
 
 function getRedirectUri(): string | undefined {
   if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
@@ -7,28 +8,61 @@ function getRedirectUri(): string | undefined {
   return undefined;
 }
 
-export default authkitMiddleware({
+function isDesktopApp(request: NextRequest): boolean {
+  const userAgent = request.headers.get("user-agent") || "";
+  return userAgent.includes("HackerAI-Desktop");
+}
+
+const unauthenticatedPaths = [
+  "/",
+  "/login",
+  "/signup",
+  "/logout",
+  "/api/clear-auth-cookies",
+  "/api/auth/desktop-callback",
+  "/callback",
+  "/desktop-login",
+  "/desktop-callback",
+  "/privacy-policy",
+  "/terms-of-service",
+  "/manifest.json",
+  "/share/:path*",
+];
+
+const workosMiddleware = authkitMiddleware({
   redirectUri: getRedirectUri(),
   eagerAuth: true,
   middlewareAuth: {
     enabled: true,
-    unauthenticatedPaths: [
-      "/",
-      "/login",
-      "/signup",
-      "/logout",
-      "/api/clear-auth-cookies",
-      "/api/auth/desktop-callback",
-      "/callback",
-      "/desktop-login",
-      "/desktop-callback",
-      "/privacy-policy",
-      "/terms-of-service",
-      "/manifest.json",
-      "/share/:path*", // Allow public access to shared chats
-    ],
+    unauthenticatedPaths,
   },
 });
+
+export default async function middleware(
+  request: NextRequest,
+  event: NextFetchEvent,
+) {
+  if (isDesktopApp(request)) {
+    const hasSession = request.cookies.has("wos-session");
+    const pathname = request.nextUrl.pathname;
+
+    const isUnauthenticatedPath = unauthenticatedPaths.some((path) => {
+      if (path.endsWith(":path*")) {
+        const prefix = path.replace(":path*", "");
+        return pathname.startsWith(prefix);
+      }
+      return pathname === path;
+    });
+
+    if (!hasSession && !isUnauthenticatedPath) {
+      return NextResponse.redirect(
+        new URL("/desktop-callback?error=unauthenticated", request.url),
+      );
+    }
+  }
+
+  return workosMiddleware(request, event);
+}
 
 export const config = {
   matcher: [

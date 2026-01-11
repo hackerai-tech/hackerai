@@ -22,7 +22,8 @@
         "fullscreen": false,
         "center": true,
         "decorations": true,
-        "transparent": false
+        "transparent": false,
+        "userAgent": "HackerAI-Desktop/1.0"
       }
     ],
     "security": {
