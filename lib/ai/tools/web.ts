@@ -14,16 +14,31 @@ export const createWebTool = (context: ToolContext) => {
   const { userLocation } = context;
 
   return tool({
-    description: `Use the \`web\` tool to access up-to-date information from the web or when responding to the user requires information about their location. Some examples of when to use the \`web\` tool include:
+    description: `Search and retrieve live, external internet information to answer time-sensitive or verifiable questions.
 
-- Local Information: Use the \`web\` tool to respond to questions that require information about the user's location, such as the weather, local businesses, or events.
-- Freshness: If up-to-date information on a topic could potentially change or enhance the answer, call the \`web\` tool any time you would otherwise refuse to answer a question because your knowledge might be out of date.
-- Niche Information: If the answer would benefit from detailed information not widely known or understood (which might be found on the internet), such as details about a small neighborhood, a less well-known company, or arcane regulations, use web sources directly rather than relying on the distilled knowledge from pretraining.
-- Accuracy: If the cost of a small mistake or outdated information is high (e.g., using an outdated version of a software library or not knowing the date of the next game for a sports team), then use the \`web\` tool.
+<supported_actions>
+- \`search\`: Query a web search engine and return relevant sources with content snippets
+- \`open_url\`: Retrieve the full contents of a specific webpage by URL
+</supported_actions>
 
-The \`web\` tool has the following commands:
-- \`search()\`: Issues a new query to a search engine and outputs the response. You can include search operators like site:reddit.com, filetype:pdf, or exact phrases in quotes.
-- \`open_url(url: str)\` Opens the given URL and displays it.`,
+<instructions>
+- Use \`search\` when information may be recent, changing, or requires verification
+- Use \`open_url\` to fetch and read a specific webpage, usually obtained from a prior search
+- \`recency\` optionally biases results toward more recent sources (past_day, past_week, past_month, past_year)
+- Search queries can include operators like site:reddit.com, filetype:pdf, or exact phrases in quotes
+- URLs passed to \`open_url\` must be valid and publicly accessible
+- All factual statements derived from this tool must be cited in the final answer
+</instructions>
+
+<recommended_usage>
+- Use \`search\` for news, current events, prices, schedules, policies, documentation, or announcements
+- Use \`search\` for location-based queries like weather, local businesses, or events
+- Use \`open_url\` to extract details from official pages, press releases, or primary sources
+- Prefer multiple narrow searches over a single broad query
+- Cross-check facts using more than one source when accuracy is critical
+- Use when up-to-date information could change or enhance the answer
+- Use for niche information not widely known (small businesses, arcane regulations, lesser-known topics)
+</recommended_usage>`,
     inputSchema: z.object({
       command: z
         .enum(["search", "open_url"])

@@ -14,7 +14,25 @@ export const createWebSearch = (context: ToolContext) => {
   const { userLocation } = context;
 
   return tool({
-    description: `Search the web for real-time information about any topic. Use this tool when you need up-to-date information that might not be available in your training data, or when you need to verify current facts. The search results will include relevant snippets and URLs from web pages. This is particularly useful for questions about current events, technology updates, or any topic that requires recent information. You can include search operators like site:reddit.com, filetype:pdf, or exact phrases in quotes.`,
+    description: `Search the web for real-time information to answer time-sensitive or verifiable questions.
+
+<instructions>
+- Use when information may be recent, changing, or requires verification
+- \`recency\` optionally biases results toward more recent sources (past_day, past_week, past_month, past_year)
+- Queries can include operators like site:reddit.com, filetype:pdf, or exact phrases in quotes
+- Multiple searches may be issued in parallel for different aspects of a question
+- All factual statements derived from this tool must be cited in the final answer
+</instructions>
+
+<recommended_usage>
+- Use for news, current events, prices, schedules, policies, documentation, or announcements
+- Use for location-based queries like weather, local businesses, or events
+- Use for technology updates, version information, or API documentation
+- Prefer multiple narrow searches over a single broad query
+- Cross-check facts using more than one source when accuracy is critical
+- Use when up-to-date information could change or enhance the answer
+- Use for niche information not widely known (small businesses, arcane regulations, lesser-known topics)
+</recommended_usage>`,
     inputSchema: z.object({
       query: z
         .string()

@@ -1,132 +1,132 @@
-import { tool } from "ai";
-import { z } from "zod";
-import type { ToolContext } from "@/types";
+// import { tool } from "ai";
+// import { z } from "zod";
+// import type { ToolContext } from "@/types";
 
-export interface SearchReplaceOutput {
-  result: string;
-}
+// export interface SearchReplaceOutput {
+//   result: string;
+// }
 
-export const createSearchReplace = (context: ToolContext) => {
-  const { sandboxManager, writer } = context;
+// export const createSearchReplace = (context: ToolContext) => {
+//   const { sandboxManager, writer } = context;
 
-  return tool({
-    description: `Performs exact string replacements in files.
+//   return tool({
+//     description: `Performs exact string replacements in files.
 
-Usage:
-- When editing text, ensure you preserve the exact indentation (tabs/spaces) as it appears before.
-- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
-- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance of old_string.
-- Use replace_all for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
-- To create or overwrite a file, you should prefer the write tool.`,
-    inputSchema: z.object({
-      file_path: z
-        .string()
-        .describe(
-          "The path to the file to modify. Always specify the target file as the first argument. You can use either a relative path in the workspace or an absolute path.",
-        ),
-      old_string: z.string().describe("The text to replace"),
-      new_string: z
-        .string()
-        .describe(
-          "The text to replace it with (must be different from old_string)",
-        ),
-      replace_all: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe("Replace all occurences of old_string (default false)"),
-    }),
-    execute: async (
-      {
-        file_path,
-        old_string,
-        new_string,
-        replace_all = false,
-      }: {
-        file_path: string;
-        old_string: string;
-        new_string: string;
-        replace_all?: boolean;
-      },
-      { toolCallId },
-    ): Promise<SearchReplaceOutput> => {
-      try {
-        const { sandbox } = await sandboxManager.getSandbox();
+// Usage:
+// - When editing text, ensure you preserve the exact indentation (tabs/spaces) as it appears before.
+// - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+// - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
+// - The edit will FAIL if old_string is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance of old_string.
+// - Use replace_all for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.
+// - To create or overwrite a file, you should prefer the write tool.`,
+//     inputSchema: z.object({
+//       file_path: z
+//         .string()
+//         .describe(
+//           "The path to the file to modify. Always specify the target file as the first argument. You can use either a relative path in the workspace or an absolute path.",
+//         ),
+//       old_string: z.string().describe("The text to replace"),
+//       new_string: z
+//         .string()
+//         .describe(
+//           "The text to replace it with (must be different from old_string)",
+//         ),
+//       replace_all: z
+//         .boolean()
+//         .optional()
+//         .default(false)
+//         .describe("Replace all occurences of old_string (default false)"),
+//     }),
+//     execute: async (
+//       {
+//         file_path,
+//         old_string,
+//         new_string,
+//         replace_all = false,
+//       }: {
+//         file_path: string;
+//         old_string: string;
+//         new_string: string;
+//         replace_all?: boolean;
+//       },
+//       { toolCallId },
+//     ): Promise<SearchReplaceOutput> => {
+//       try {
+//         const { sandbox } = await sandboxManager.getSandbox();
 
-        try {
-          // Read the file content
-          const fileContent = await sandbox.files.read(file_path, {
-            user: "user" as const,
-          });
+//         try {
+//           // Read the file content
+//           const fileContent = await sandbox.files.read(file_path, {
+//             user: "user" as const,
+//           });
 
-          // Validate that old_string and new_string are different
-          if (old_string === new_string) {
-            return {
-              result: "Invalid: old_string and new_string are exactly the same",
-            };
-          }
+//           // Validate that old_string and new_string are different
+//           if (old_string === new_string) {
+//             return {
+//               result: "Invalid: old_string and new_string are exactly the same",
+//             };
+//           }
 
-          // Check if old_string exists in the file
-          if (!fileContent.includes(old_string)) {
-            return {
-              result: `String not found in file: "${old_string}"`,
-            };
-          }
+//           // Check if old_string exists in the file
+//           if (!fileContent.includes(old_string)) {
+//             return {
+//               result: `String not found in file: "${old_string}"`,
+//             };
+//           }
 
-          let updatedContent: string;
-          let replacementCount: number;
+//           let updatedContent: string;
+//           let replacementCount: number;
 
-          if (replace_all) {
-            // Replace all occurrences
-            const regex = new RegExp(
-              old_string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-              "g",
-            );
-            updatedContent = fileContent.replace(regex, new_string);
-            replacementCount = (fileContent.match(regex) || []).length;
-          } else {
-            // Replace only the first occurrence
-            const occurrences = fileContent.split(old_string).length - 1;
-            if (occurrences > 1) {
-              return {
-                result: `String "${old_string}" appears ${occurrences} times in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.`,
-              };
-            }
-            updatedContent = fileContent.replace(old_string, new_string);
-            replacementCount = 1;
-          }
+//           if (replace_all) {
+//             // Replace all occurrences
+//             const regex = new RegExp(
+//               old_string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+//               "g",
+//             );
+//             updatedContent = fileContent.replace(regex, new_string);
+//             replacementCount = (fileContent.match(regex) || []).length;
+//           } else {
+//             // Replace only the first occurrence
+//             const occurrences = fileContent.split(old_string).length - 1;
+//             if (occurrences > 1) {
+//               return {
+//                 result: `String "${old_string}" appears ${occurrences} times in the file. Either provide a larger string with more surrounding context to make it unique or use replace_all to change every instance.`,
+//               };
+//             }
+//             updatedContent = fileContent.replace(old_string, new_string);
+//             replacementCount = 1;
+//           }
 
-          // Write the updated content back to the file
-          await sandbox.files.write(file_path, updatedContent, {
-            user: "user" as const,
-          });
+//           // Write the updated content back to the file
+//           await sandbox.files.write(file_path, updatedContent, {
+//             user: "user" as const,
+//           });
 
-          // Emit diff data to UI stream (NOT part of tool result, AI won't see this)
-          writer.write({
-            type: "data-diff",
-            data: {
-              toolCallId,
-              filePath: file_path,
-              originalContent: fileContent,
-              modifiedContent: updatedContent,
-            },
-          });
+//           // Emit diff data to UI stream (NOT part of tool result, AI won't see this)
+//           writer.write({
+//             type: "data-diff",
+//             data: {
+//               toolCallId,
+//               filePath: file_path,
+//               originalContent: fileContent,
+//               modifiedContent: updatedContent,
+//             },
+//           });
 
-          const action = replace_all ? "replacements" : "replacement";
-          return {
-            result: `Successfully made ${replacementCount} ${action} in ${file_path}`,
-          };
-        } catch (error) {
-          return {
-            result: `Error editing file: ${error instanceof Error ? error.message : String(error)}`,
-          };
-        }
-      } catch (error) {
-        return {
-          result: `Error editing file: ${error instanceof Error ? error.message : String(error)}`,
-        };
-      }
-    },
-  });
-};
+//           const action = replace_all ? "replacements" : "replacement";
+//           return {
+//             result: `Successfully made ${replacementCount} ${action} in ${file_path}`,
+//           };
+//         } catch (error) {
+//           return {
+//             result: `Error editing file: ${error instanceof Error ? error.message : String(error)}`,
+//           };
+//         }
+//       } catch (error) {
+//         return {
+//           result: `Error editing file: ${error instanceof Error ? error.message : String(error)}`,
+//         };
+//       }
+//     },
+//   });
+// };
