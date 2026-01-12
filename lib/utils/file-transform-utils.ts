@@ -3,7 +3,7 @@ import "server-only";
 import { api } from "@/convex/_generated/api";
 import { ConvexHttpClient } from "convex/browser";
 import { UIMessage } from "ai";
-import type { ChatMode } from "@/types";
+import type { ChatMode, FileContent } from "@/types";
 import { Id } from "@/convex/_generated/dataModel";
 import { isSupportedImageMediaType } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
@@ -130,6 +130,7 @@ const applyUrlsToFileParts = async (
       positions: Array<{ messageIndex: number; partIndex: number }>;
     }
   >,
+  mode: ChatMode,
 ) => {
   const fileIdsNeedingUrls = Array.from(filesToProcess.entries())
     .filter(([_, file]) => !file.url)
@@ -147,8 +148,10 @@ const applyUrlsToFileParts = async (
   for (const [_, file] of filesToProcess) {
     if (!file.url) continue;
 
+    // Only convert PDFs to base64 in "ask" mode for inline viewing.
+    // In "agent" mode, we want the original URL for sandbox curl download.
     const finalUrl =
-      file.mediaType === "application/pdf"
+      mode === "ask" && file.mediaType === "application/pdf"
         ? await convertUrlToBase64DataUrl(file.url, "application/pdf").catch(
             () => file.url!,
           )
@@ -223,7 +226,7 @@ export const processMessageFiles = async (
   const { hasMedia, files } = collectFilesToProcess(updatedMessages, mode);
 
   if (files.size > 0) {
-    await applyUrlsToFileParts(updatedMessages, files);
+    await applyUrlsToFileParts(updatedMessages, files, mode);
   }
 
   await applyModeSpecificTransforms(updatedMessages, mode, sandboxFiles);
@@ -290,7 +293,7 @@ const addDocumentContentToMessages = async (
       { name: string; reason: string }
     >();
 
-    fileContents.forEach((file) => {
+    fileContents.forEach((file: FileContent) => {
       // Check if file exceeds token limit for ask mode
       if (file.tokenSize > MAX_TOKENS_FILE) {
         unprocessableFiles.set(file.id, {

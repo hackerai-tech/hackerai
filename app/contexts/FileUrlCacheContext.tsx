@@ -1,4 +1,4 @@
-import React, { createContext, useContext } from "react";
+import React, { createContext, useContext, useMemo } from "react";
 
 interface FileUrlCacheContextValue {
   getCachedUrl: (fileId: string) => string | null;
@@ -18,8 +18,15 @@ export function FileUrlCacheProvider({
   getCachedUrl: (fileId: string) => string | null;
   setCachedUrl: (fileId: string, url: string) => void;
 }) {
+  // Memoize context value to prevent unnecessary re-renders of consumers
+  // This is critical for preventing image flicker during streaming updates
+  const contextValue = useMemo(
+    () => ({ getCachedUrl, setCachedUrl }),
+    [getCachedUrl, setCachedUrl],
+  );
+
   return (
-    <FileUrlCacheContext.Provider value={{ getCachedUrl, setCachedUrl }}>
+    <FileUrlCacheContext.Provider value={contextValue}>
       {children}
     </FileUrlCacheContext.Provider>
   );

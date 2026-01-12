@@ -14,16 +14,32 @@ export const createWebTool = (context: ToolContext) => {
   const { userLocation } = context;
 
   return tool({
-    description: `Use the \`web\` tool to access up-to-date information from the web or when responding to the user requires information about their location. Some examples of when to use the \`web\` tool include:
+    description: `Search and retrieve live, external internet information to answer time-sensitive or verifiable questions.
 
-- Local Information: Use the \`web\` tool to respond to questions that require information about the user's location, such as the weather, local businesses, or events.
-- Freshness: If up-to-date information on a topic could potentially change or enhance the answer, call the \`web\` tool any time you would otherwise refuse to answer a question because your knowledge might be out of date.
-- Niche Information: If the answer would benefit from detailed information not widely known or understood (which might be found on the internet), such as details about a small neighborhood, a less well-known company, or arcane regulations, use web sources directly rather than relying on the distilled knowledge from pretraining.
-- Accuracy: If the cost of a small mistake or outdated information is high (e.g., using an outdated version of a software library or not knowing the date of the next game for a sports team), then use the \`web\` tool.
+<supported_actions>
+- \`search\`: Query a web search engine and return relevant sources with content snippets
+- \`open_url\`: Retrieve the full contents of a specific webpage by URL
+</supported_actions>
 
-The \`web\` tool has the following commands:
-- \`search()\`: Issues a new query to a search engine and outputs the response.
-- \`open_url(url: str)\` Opens the given URL and displays it.`,
+<instructions>
+- Use \`search\` when information may be recent, changing, or requires verification
+- Use \`open_url\` to fetch and read a specific webpage, usually obtained from a prior search
+- \`recency\` optionally biases results toward more recent sources (past_day, past_week, past_month, past_year)
+- Search queries can include operators like site:reddit.com, filetype:pdf, or exact phrases in quotes
+- URLs passed to \`open_url\` must be valid and publicly accessible
+- All factual statements derived from this tool must be cited in the final answer
+</instructions>
+
+<recommended_usage>
+- Use \`search\` for news, current events, prices, schedules, policies, documentation, or announcements
+- Use \`search\` for location-based queries like weather, local businesses, or events
+- Use \`open_url\` to extract details from official pages, press releases, or primary sources
+- Do NOT search for general knowledge, concepts, or facts that don't change over time
+- Do NOT search for programming fundamentals, algorithms, or established technical concepts
+- Do NOT search for cybersecurity principles, common vulnerabilities, or attack methodologies
+- Combine related questions into a single comprehensive search query rather than multiple narrow searches
+- Rely on training knowledge first; only search when information is genuinely unknown or time-sensitive
+</recommended_usage>`,
     inputSchema: z.object({
       command: z
         .enum(["search", "open_url"])
@@ -35,6 +51,12 @@ The \`web\` tool has the following commands:
         .optional()
         .describe(
           "For search command: The search term to look up on the web. Be specific and include relevant keywords for better results. For technical queries, include version numbers or dates if relevant.",
+        ),
+      recency: z
+        .enum(["all", "past_day", "past_week", "past_month", "past_year"])
+        .optional()
+        .describe(
+          "For search command: Optional time filter to limit results to a recent time range. Defaults to 'all'.",
         ),
       url: z
         .string()
@@ -52,10 +74,12 @@ The \`web\` tool has the following commands:
       {
         command,
         query,
+        recency,
         url,
       }: {
         command: "search" | "open_url";
         query?: string;
+        recency?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
         url?: string;
       },
       { abortSignal },
@@ -66,12 +90,24 @@ The \`web\` tool has the following commands:
             return "Error: Query is required for search command";
           }
 
+          // Calculate startPublishedDate based on recency enum
+          const recencyToDays: Record<string, number> = {
+            past_day: 1,
+            past_week: 7,
+            past_month: 30,
+            past_year: 365,
+          };
+          const days = recency ? recencyToDays[recency] : undefined;
+          const startPublishedDate = days
+            ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+            : undefined;
+
           let searchResults;
 
           try {
             // Safely access userLocation country
             const country = userLocation?.country;
-            const searchBody: any = {
+            const searchBody: Record<string, unknown> = {
               query,
               type: "auto",
               numResults: 10,
@@ -79,6 +115,10 @@ The \`web\` tool has the following commands:
 
             if (country) {
               searchBody.userLocation = country;
+            }
+
+            if (startPublishedDate) {
+              searchBody.startPublishedDate = startPublishedDate;
             }
 
             // First attempt with location if available
@@ -100,19 +140,32 @@ The \`web\` tool has the following commands:
             }
 
             searchResults = await response.json();
-          } catch (firstError: any) {
-            // Always retry without userLocation as fallback
+          } catch (firstError: unknown) {
+            // Don't retry if the operation was aborted
+            if (
+              firstError instanceof Error &&
+              firstError.name === "AbortError"
+            ) {
+              throw firstError;
+            }
+            // Retry without userLocation as fallback
+            const fallbackBody: Record<string, unknown> = {
+              query,
+              type: "auto",
+              numResults: 10,
+            };
+
+            if (startPublishedDate) {
+              fallbackBody.startPublishedDate = startPublishedDate;
+            }
+
             const response = await fetch("https://api.exa.ai/search", {
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
                 "x-api-key": process.env.EXA_API_KEY || "",
               },
-              body: JSON.stringify({
-                query,
-                type: "auto",
-                numResults: 10,
-              }),
+              body: JSON.stringify(fallbackBody),
               signal: abortSignal,
             });
 

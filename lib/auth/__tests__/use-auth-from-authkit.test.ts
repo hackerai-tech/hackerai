@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach, jest } from "@jest/globals";
+import {
+  describe,
+  it,
+  expect,
+  beforeEach,
+  afterEach,
+  jest,
+} from "@jest/globals";
 import { renderHook, act } from "@testing-library/react";
 import { useAuthFromAuthKit, AuthKitDeps } from "../use-auth-from-authkit";
 import { CrossTabMutex } from "../cross-tab-mutex";
@@ -16,9 +23,11 @@ describe("useAuthFromAuthKit", () => {
     jest.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
       return mockStorage[key] ?? null;
     });
-    jest.spyOn(Storage.prototype, "setItem").mockImplementation((key, value) => {
-      mockStorage[key] = value;
-    });
+    jest
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation((key, value) => {
+        mockStorage[key] = value;
+      });
     jest.spyOn(Storage.prototype, "removeItem").mockImplementation((key) => {
       delete mockStorage[key];
     });
@@ -115,11 +124,14 @@ describe("useAuthFromAuthKit", () => {
         token: "fresh-shared-token",
         refreshedAt: Date.now() - 1000,
       };
-      mockStorage[sharedToken.SHARED_TOKEN_KEY] = JSON.stringify(freshTokenData);
+      mockStorage[sharedToken.SHARED_TOKEN_KEY] =
+        JSON.stringify(freshTokenData);
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       expect(token).toBe("fresh-shared-token");
       expect(mockRefresh).not.toHaveBeenCalled();
@@ -132,7 +144,8 @@ describe("useAuthFromAuthKit", () => {
         token: "fresh-shared-token",
         refreshedAt: originalTimestamp,
       };
-      mockStorage[sharedToken.SHARED_TOKEN_KEY] = JSON.stringify(freshTokenData);
+      mockStorage[sharedToken.SHARED_TOKEN_KEY] =
+        JSON.stringify(freshTokenData);
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
@@ -150,7 +163,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Should have called refresh (via lock acquisition path)
       expect(mockRefresh).toHaveBeenCalledTimes(1);
@@ -167,7 +182,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Should have called refresh since token was expired
       expect(mockRefresh).toHaveBeenCalledTimes(1);
@@ -181,7 +198,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       expect(token).toBe("refreshed-token");
       expect(mockRefresh).toHaveBeenCalledTimes(1);
@@ -208,7 +227,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const tokenPromise = result.current.fetchAccessToken({ forceRefreshToken: true });
+      const tokenPromise = result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Simulate other tab refreshing and releasing lock
       await act(async () => {
@@ -237,7 +258,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const tokenPromise = result.current.fetchAccessToken({ forceRefreshToken: true });
+      const tokenPromise = result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Simulate other tab refreshing and releasing lock
       await act(async () => {
@@ -274,7 +297,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const tokenPromise = result.current.fetchAccessToken({ forceRefreshToken: true });
+      const tokenPromise = result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Advance time past lock timeout
       await act(async () => {
@@ -299,7 +324,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const tokenPromise = result.current.fetchAccessToken({ forceRefreshToken: true });
+      const tokenPromise = result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Advance time past lock timeout
       await act(async () => {
@@ -323,7 +350,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const tokenPromise = result.current.fetchAccessToken({ forceRefreshToken: true });
+      const tokenPromise = result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Advance time, then simulate other tab storing token before timeout
       await act(async () => {
@@ -354,7 +383,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const tokenPromise = result.current.fetchAccessToken({ forceRefreshToken: true });
+      const tokenPromise = result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Simulate other tab storing token before our timeout
       await act(async () => {
@@ -487,7 +518,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       expect(token).toBe("direct-refreshed-token");
       expect(mockRefresh).toHaveBeenCalledTimes(1);
@@ -504,7 +537,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       // Should call refresh directly, ignoring the shared token
       expect(token).toBe("direct-refreshed-token");
@@ -534,7 +569,9 @@ describe("useAuthFromAuthKit", () => {
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
       // Should return immediately without waiting for lock
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       expect(token).toBe("direct-refreshed-token");
       expect(mockRefresh).toHaveBeenCalledTimes(1);
@@ -545,7 +582,9 @@ describe("useAuthFromAuthKit", () => {
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const token = await result.current.fetchAccessToken({ forceRefreshToken: true });
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
 
       expect(token).toBeNull();
     });

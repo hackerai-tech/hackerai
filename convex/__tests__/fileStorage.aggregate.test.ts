@@ -33,7 +33,9 @@ jest.mock("convex/values", () => ({
   ConvexError: class ConvexError extends Error {
     data: unknown;
     constructor(data: unknown) {
-      super(typeof data === "string" ? data : (data as { message: string }).message);
+      super(
+        typeof data === "string" ? data : (data as { message: string }).message,
+      );
       this.data = data;
       this.name = "ConvexError";
     }
@@ -49,7 +51,8 @@ jest.mock("../_generated/api", () => ({
   internal: {
     fileStorage: {
       countUserFiles: "internal.fileStorage.countUserFiles",
-      purgeExpiredUnattachedFiles: "internal.fileStorage.purgeExpiredUnattachedFiles",
+      purgeExpiredUnattachedFiles:
+        "internal.fileStorage.purgeExpiredUnattachedFiles",
       getFileById: "internal.fileStorage.getFileById",
       saveFileToDb: "internal.fileStorage.saveFileToDb",
     },
@@ -88,10 +91,15 @@ describe("fileStorage - Aggregate Integration", () => {
       };
 
       const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, { userId: testUserId });
+      const result = await countUserFiles.handler(mockCtx, {
+        userId: testUserId,
+      });
 
       expect(result).toBe(42);
-      expect(mockIsFileCountAggregateAvailable).toHaveBeenCalledWith(mockCtx, testUserId);
+      expect(mockIsFileCountAggregateAvailable).toHaveBeenCalledWith(
+        mockCtx,
+        testUserId,
+      );
       expect(mockFileCountAggregate.count).toHaveBeenCalledWith(mockCtx, {
         namespace: testUserId,
       });
@@ -119,10 +127,15 @@ describe("fileStorage - Aggregate Integration", () => {
       };
 
       const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, { userId: testUserId });
+      const result = await countUserFiles.handler(mockCtx, {
+        userId: testUserId,
+      });
 
       expect(result).toBe(3);
-      expect(mockIsFileCountAggregateAvailable).toHaveBeenCalledWith(mockCtx, testUserId);
+      expect(mockIsFileCountAggregateAvailable).toHaveBeenCalledWith(
+        mockCtx,
+        testUserId,
+      );
       expect(mockFileCountAggregate.count).not.toHaveBeenCalled();
       expect(mockCtx.db.query).toHaveBeenCalledWith("files");
     });
@@ -142,7 +155,9 @@ describe("fileStorage - Aggregate Integration", () => {
       };
 
       const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, { userId: testUserId });
+      const result = await countUserFiles.handler(mockCtx, {
+        userId: testUserId,
+      });
 
       expect(result).toBe(0);
     });
@@ -158,7 +173,9 @@ describe("fileStorage - Aggregate Integration", () => {
       };
 
       const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, { userId: testUserId });
+      const result = await countUserFiles.handler(mockCtx, {
+        userId: testUserId,
+      });
 
       expect(result).toBe(0);
       expect(mockFileCountAggregate.count).toHaveBeenCalledWith(mockCtx, {
@@ -199,12 +216,18 @@ describe("fileStorage - Aggregate Integration", () => {
       });
 
       expect(result).toBe(testFileId);
-      expect(mockCtx.db.insert).toHaveBeenCalledWith("files", expect.objectContaining({
-        user_id: testUserId,
-        name: "test.pdf",
-        is_attached: false,
-      }));
-      expect(mockFileCountAggregate.insertIfDoesNotExist).toHaveBeenCalledWith(mockCtx, mockFile);
+      expect(mockCtx.db.insert).toHaveBeenCalledWith(
+        "files",
+        expect.objectContaining({
+          user_id: testUserId,
+          name: "test.pdf",
+          is_attached: false,
+        }),
+      );
+      expect(mockFileCountAggregate.insertIfDoesNotExist).toHaveBeenCalledWith(
+        mockCtx,
+        mockFile,
+      );
     });
   });
 
@@ -247,7 +270,10 @@ describe("fileStorage - Aggregate Integration", () => {
       });
 
       expect(result).toEqual({ deletedCount: 1 });
-      expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(mockCtx, mockFiles[0]);
+      expect(mockFileCountAggregate.deleteIfExists).toHaveBeenCalledWith(
+        mockCtx,
+        mockFiles[0],
+      );
       expect(mockCtx.db.delete).toHaveBeenCalledWith("file-1");
     });
   });

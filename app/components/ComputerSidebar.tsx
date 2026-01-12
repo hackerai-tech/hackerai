@@ -71,7 +71,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     if (sidebarOpen && toolExecutions.length > 0) {
       previousToolCountRef.current = toolExecutions.length;
     }
-  }, [sidebarOpen]); // Only run when sidebar opens/closes
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Intentionally only sync on sidebar open/close, not on every tool execution
+  }, [sidebarOpen]);
 
   // Auto-follow new tools when at live position during streaming
   useEffect(() => {
@@ -170,6 +171,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
         creating: "Creating file",
         editing: "Editing file",
         writing: "Writing file",
+        searching: "Search results",
       };
       return actionMap[sidebarContent.action || "reading"];
     } else if (isTerminal) {

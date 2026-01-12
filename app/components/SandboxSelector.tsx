@@ -41,6 +41,7 @@ interface LocalConnection {
   osInfo?: {
     platform: string;
   };
+  lastSeen: number;
 }
 
 interface ConnectionOption {
@@ -71,7 +72,7 @@ export function SandboxSelector({
       description: "",
       warning: null,
     },
-    ...((connections as LocalConnection[] | undefined)?.map((conn) => ({
+    ...(connections?.map((conn) => ({
       id: conn.connectionId,
       label: conn.name,
       icon: Laptop,

@@ -12,7 +12,7 @@ import { MessageActions } from "./MessageActions";
 import { MessagePartHandler } from "./MessagePartHandler";
 import { FilePartRenderer } from "./FilePartRenderer";
 import { MessageErrorState } from "./MessageErrorState";
-import { MessageEditor } from "./MessageEditor";
+import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { AllFilesDialog } from "./AllFilesDialog";
@@ -39,7 +39,11 @@ interface MessagesProps {
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
   onRetry: () => void;
-  onEditMessage: (messageId: string, newContent: string) => Promise<void>;
+  onEditMessage: (
+    messageId: string,
+    newContent: string,
+    remainingFileIds?: string[],
+  ) => Promise<void>;
   onBranchMessage?: (messageId: string) => Promise<void>;
   status: ChatStatus;
   error: Error | null;
@@ -133,10 +137,10 @@ export const Messages = ({
   }, []);
 
   const handleSaveEdit = useCallback(
-    async (newContent: string) => {
+    async (newContent: string, remainingFileIds: string[]) => {
       if (editingMessageId) {
         try {
-          await onEditMessage(editingMessageId, newContent);
+          await onEditMessage(editingMessageId, newContent, remainingFileIds);
         } catch (error) {
           console.error("Failed to edit message:", error);
           toast.error("Failed to edit message. Please try again.");
@@ -294,10 +298,9 @@ export const Messages = ({
               : undefined;
 
             // Get saved files for assistant messages (include files with url, storageId, or s3Key)
+            // Always show files - don't hide during streaming to prevent flash on stream end
             const savedFiles =
-              !isUser &&
-              (isLastAssistantMessage ? status !== "streaming" : true) &&
-              effectiveFileDetails
+              !isUser && effectiveFileDetails
                 ? effectiveFileDetails.filter(
                     (f) => f.url || f.storageId || f.s3Key,
                   )
@@ -323,6 +326,23 @@ export const Messages = ({
                     <div className="w-full">
                       <MessageEditor
                         initialContent={messageText}
+                        initialFiles={fileParts
+                          .filter(
+                            (part) =>
+                              part.type === "file" && (part as any).fileId,
+                          )
+                          .map((part) => {
+                            const filePart = part as any;
+                            return {
+                              fileId: filePart.fileId as string,
+                              name:
+                                filePart.name || filePart.filename || "File",
+                              mediaType: filePart.mediaType,
+                              url:
+                                filePart.url ||
+                                getCachedUrl(filePart.fileId as string),
+                            } as EditableFile;
+                          })}
                         onSave={handleSaveEdit}
                         onCancel={handleCancelEdit}
                       />
@@ -409,7 +429,7 @@ export const Messages = ({
 
                   {/* Saved files from tools (shown after message content for assistant) */}
                   {!isUser && savedFiles.length > 0 && (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 w-full">
+                    <div className="mt-2 flex flex-wrap items-center gap-2 w-full animate-in fade-in-0 duration-200">
                       {savedFiles.length > 2 ? (
                         <>
                           {/* Show only last file when more than 2 */}

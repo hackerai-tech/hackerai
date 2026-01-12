@@ -1,5 +1,21 @@
-import { authkitMiddleware } from "@workos-inc/authkit-nextjs";
-import { NextFetchEvent, NextRequest, NextResponse } from "next/server";
+import { authkit } from "@workos-inc/authkit-nextjs";
+import { NextRequest, NextResponse } from "next/server";
+
+const UNAUTHENTICATED_PATHS = new Set([
+  "/",
+  "/login",
+  "/signup",
+  "/logout",
+  "/api/clear-auth-cookies",
+  "/api/auth/desktop-callback",
+  "/callback",
+  "/desktop-login",
+  "/desktop-callback",
+  "/auth-error",
+  "/privacy-policy",
+  "/terms-of-service",
+  "/manifest.json",
+]);
 
 function getRedirectUri(): string | undefined {
   if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
@@ -13,55 +29,93 @@ function isDesktopApp(request: NextRequest): boolean {
   return userAgent.includes("HackerAI-Desktop");
 }
 
-const unauthenticatedPaths = [
-  "/",
-  "/login",
-  "/signup",
-  "/logout",
-  "/api/clear-auth-cookies",
-  "/api/auth/desktop-callback",
-  "/callback",
-  "/desktop-login",
-  "/desktop-callback",
-  "/privacy-policy",
-  "/terms-of-service",
-  "/manifest.json",
-  "/share/:path*",
-];
+function isUnauthenticatedPath(pathname: string): boolean {
+  if (UNAUTHENTICATED_PATHS.has(pathname)) {
+    return true;
+  }
+  if (pathname.startsWith("/share/")) {
+    return true;
+  }
+  return false;
+}
 
-const workosMiddleware = authkitMiddleware({
-  redirectUri: getRedirectUri(),
-  eagerAuth: true,
-  middlewareAuth: {
-    enabled: true,
-    unauthenticatedPaths,
-  },
-});
+function isBrowserRequest(request: NextRequest): boolean {
+  const accept = request.headers.get("accept") ?? "";
+  return accept.includes("text/html");
+}
 
-export default async function middleware(
-  request: NextRequest,
-  event: NextFetchEvent,
-) {
+const SESSION_HEADER = "x-workos-session";
+
+export default async function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+
+  // Desktop app: redirect unauthenticated users to desktop-specific error page
   if (isDesktopApp(request)) {
     const hasSession = request.cookies.has("wos-session");
-    const pathname = request.nextUrl.pathname;
 
-    const isUnauthenticatedPath = unauthenticatedPaths.some((path) => {
-      if (path.endsWith(":path*")) {
-        const prefix = path.replace(":path*", "");
-        return pathname.startsWith(prefix);
-      }
-      return pathname === path;
-    });
-
-    if (!hasSession && !isUnauthenticatedPath) {
+    if (!hasSession && !isUnauthenticatedPath(pathname)) {
       return NextResponse.redirect(
         new URL("/desktop-callback?error=unauthenticated", request.url),
       );
     }
   }
 
-  return workosMiddleware(request, event);
+  const { session, headers, authorizationUrl } = await authkit(request, {
+    redirectUri: getRedirectUri(),
+    eagerAuth: true,
+  });
+
+  const requestHeaders = buildRequestHeaders(request, headers);
+  const responseHeaders = buildResponseHeaders(headers);
+
+  if (session.user || isUnauthenticatedPath(pathname)) {
+    return NextResponse.next({
+      request: { headers: requestHeaders },
+      headers: responseHeaders,
+    });
+  }
+
+  if (!isBrowserRequest(request)) {
+    return NextResponse.json(
+      {
+        code: "unauthorized:auth",
+        message: "You need to sign in before continuing.",
+        cause: "Session expired or invalid",
+      },
+      { status: 401, headers: responseHeaders },
+    );
+  }
+
+  if (!authorizationUrl) {
+    console.error("[Auth Middleware] authorizationUrl unavailable", {
+      pathname,
+      hasSession: !!session.user,
+    });
+    const errorUrl = new URL("/auth-error", request.url);
+    errorUrl.searchParams.set("code", "503");
+    return NextResponse.redirect(errorUrl, { headers: responseHeaders });
+  }
+
+  return NextResponse.redirect(authorizationUrl, { headers: responseHeaders });
+}
+
+function buildRequestHeaders(
+  request: NextRequest,
+  authkitHeaders: Headers,
+): Headers {
+  const merged = new Headers(request.headers);
+  authkitHeaders.forEach((value, key) => {
+    if (key.startsWith("x-")) {
+      merged.set(key, value);
+    }
+  });
+  return merged;
+}
+
+function buildResponseHeaders(authkitHeaders: Headers): Headers {
+  const responseHeaders = new Headers(authkitHeaders);
+  responseHeaders.delete(SESSION_HEADER);
+  return responseHeaders;
 }
 
 export const config = {

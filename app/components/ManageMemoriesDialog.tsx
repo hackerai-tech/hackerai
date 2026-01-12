@@ -5,6 +5,7 @@ import { useQuery, useMutation } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { toast } from "sonner";
+import type { Memory } from "@/types";
 import {
   Dialog,
   DialogContent,
@@ -97,7 +98,7 @@ const ManageMemoriesDialog = ({
               ) : (
                 <table className="w-full border-separate border-spacing-0">
                   <tbody>
-                    {memories.map((memory) => (
+                    {memories.map((memory: Memory) => (
                       <tr key={memory.memory_id}>
                         <td className="align-top px-3 text-left border-b-[0.5px] border-border/50">
                           <div className="flex min-h-[40px] items-center">

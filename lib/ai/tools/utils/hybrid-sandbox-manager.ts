@@ -4,6 +4,7 @@ import { ConvexSandbox } from "./convex-sandbox";
 import { ensureSandboxConnection } from "./sandbox";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { PREINSTALLED_PENTESTING_TOOLS } from "@/lib/system-prompt";
 
 type SandboxType = Sandbox | ConvexSandbox;
 
@@ -326,18 +327,7 @@ Container Environment:
 - Mode: Docker container
 - Network: Host network (--network host)
 
-Pre-installed Pentesting Tools:
-- Network Scanning: nmap, naabu, httpx, hping3
-- Subdomain/DNS: subfinder, dnsrecon
-- Web Fuzzing: ffuf, dirsearch, arjun
-- Web Scanners: nikto, whatweb, wpscan, wapiti, wafw00f
-- Injection: commix, sqlmap
-- SSL/TLS Testing: testssl
-- Auth/Bruteforce: hydra
-- SMB/NetBIOS: smbclient, smbmap, nbtscan, python3-impacket
-- SNMP/Discovery: arp-scan, ike-scan, onesixtyone, snmpcheck
-- Web Recon: gospider, subjack
-- Utilities: gobuster, socat, proxychains4, nuclei, SecLists
+${PREINSTALLED_PENTESTING_TOOLS}
 </sandbox_environment>`;
     }
 

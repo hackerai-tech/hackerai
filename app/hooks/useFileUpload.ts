@@ -7,7 +7,9 @@ import {
   MAX_FILES_LIMIT,
   uploadSingleFileToConvex,
   validateFile,
+  validateImageFile,
   createFileMessagePartFromUploadedFile,
+  isImageFile,
 } from "@/lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
@@ -47,7 +49,7 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
 
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
-    (files: File[]): FileProcessingResult => {
+    async (files: File[]): Promise<FileProcessingResult> => {
       const existingUploadedCount = uploadedFiles.length;
       const totalFiles = existingUploadedCount + files.length;
 
@@ -69,17 +71,28 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
         truncated = true;
       }
 
-      // Validate each file
+      // Validate each file (including image validation)
       const validFiles: File[] = [];
       const invalidFiles: string[] = [];
 
       for (const file of filesToProcess) {
-        const validation = validateFile(file);
-        if (validation.valid) {
-          validFiles.push(file);
-        } else {
-          invalidFiles.push(`${file.name}: ${validation.error}`);
+        // Basic validation (size, etc.)
+        const basicValidation = validateFile(file);
+        if (!basicValidation.valid) {
+          invalidFiles.push(`${file.name}: ${basicValidation.error}`);
+          continue;
         }
+
+        // Image-specific validation
+        if (isImageFile(file)) {
+          const imageValidation = await validateImageFile(file);
+          if (!imageValidation.valid) {
+            invalidFiles.push(`${file.name}: ${imageValidation.error}`);
+            continue;
+          }
+        }
+
+        validFiles.push(file);
       }
 
       return {
@@ -324,7 +337,7 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
         return;
       }
 
-      const result = validateAndFilterFiles(files);
+      const result = await validateAndFilterFiles(files);
 
       // Check if we have slots available
       const existingUploadedCount = uploadedFiles.length;

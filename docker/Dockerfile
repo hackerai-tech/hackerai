@@ -86,7 +86,6 @@ RUN set -eux; \
     less \
     # Network scanning & enumeration (from Kali repos - pre-compiled!)
     nmap \
-    masscan \
     naabu \
     nikto \
     whatweb \
@@ -99,7 +98,6 @@ RUN set -eux; \
     subfinder \
     dnsrecon \
     dnsenum \
-    theharvester \
     # Web fuzzing & discovery
     ffuf \
     arjun \
@@ -113,12 +111,12 @@ RUN set -eux; \
     enum4linux \
     # Network discovery
     hping3 \
+    arp-scan \
     # Utilities
     socat \
     proxychains4 \
     seclists \
     hashid \
-    commix \
     libimage-exiftool-perl \
     cewl \
     # SSL/TLS testing
@@ -133,11 +131,12 @@ RUN set -eux; \
     nodejs \
     npm \
     # Forensics
-    steghide \
     binwalk \
     foremost \
     # Document conversion
     pandoc \
+    # Web application security scanner
+    zaproxy \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # ============================================================================
@@ -188,26 +187,16 @@ RUN set -eux; \
     git clone https://github.com/internetwache/GitTools.git /opt/gittools && \
     chmod +x /opt/gittools/Dumper/gitdumper.sh /opt/gittools/Extractor/extractor.sh && \
     ln -sf /opt/gittools/Dumper/gitdumper.sh /usr/local/bin/gitdumper && \
-    ln -sf /opt/gittools/Extractor/extractor.sh /usr/local/bin/gitextractor && \
-    # RSA CTF tool - install dependencies
-    apt-get update && apt-get install -y --no-install-recommends libgmp-dev libmpfr-dev libmpc-dev && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* && \
-    git clone https://github.com/RsaCtfTool/RsaCtfTool.git /opt/rsactftool && \
-    cd /opt/rsactftool && \
-    pip3 install --break-system-packages -r requirements.txt && \
-    ln -sf /opt/rsactftool/RsaCtfTool.py /usr/local/bin/rsactftool || true
+    ln -sf /opt/gittools/Extractor/extractor.sh /usr/local/bin/gitextractor
 
 # ============================================================================
 # Binary Downloads (Platform-aware)
 # ============================================================================
 RUN set -eux; \
-    # Linux privilege escalation scripts
-    mkdir -p /opt/peass && \
-    wget -qO /opt/peass/linpeas.sh https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh && \
-    chmod +x /opt/peass/linpeas.sh && \
-    ln -sf /opt/peass/linpeas.sh /usr/local/bin/linpeas && \
     # Secret scanning tool
     curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin && \
+    # Vulnerability scanner for containers and filesystems
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin && \
     # httpx with proper architecture detection
     arch=$(uname -m); \
     if [ "$arch" = "x86_64" ]; then platform="linux_amd64"; \
@@ -236,8 +225,8 @@ RUN set -eux; \
 # ============================================================================
 RUN set -eux; \
     go install github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest && \
-    go install github.com/hahwul/dalfox/v2@latest && \
-    go install github.com/jpillora/chisel@latest
+    go install github.com/projectdiscovery/katana/cmd/katana@latest && \
+    go install github.com/projectdiscovery/cvemap/cmd/cvemap@latest
 
 # ============================================================================
 # TestSSL Symlink - Allow access via both 'testssl' and 'testssl.sh'
@@ -248,6 +237,11 @@ RUN set -eux; \
     fi
 
 # ============================================================================
+# Update Nuclei Templates
+# ============================================================================
+RUN nuclei -update-templates
+
+# ============================================================================
 # Tool Validation
 # ============================================================================
 RUN set -eux; \
@@ -255,7 +249,6 @@ RUN set -eux; \
     test -d /usr/share/seclists && \
     echo "✓ SecLists installed" && \
     which nmap && echo "✓ nmap" && \
-    which masscan && echo "✓ masscan" && \
     which naabu && echo "✓ naabu" && \
     which nikto && echo "✓ nikto" && \
     which whatweb && echo "✓ whatweb" && \
@@ -266,7 +259,6 @@ RUN set -eux; \
     which subfinder && echo "✓ subfinder" && \
     which dnsrecon && echo "✓ dnsrecon" && \
     which dnsenum && echo "✓ dnsenum" && \
-    which theharvester && echo "✓ theharvester" && \
     which ffuf && echo "✓ ffuf" && \
     which arjun && echo "✓ arjun" && \
     which gobuster && echo "✓ gobuster" && \
@@ -279,15 +271,16 @@ RUN set -eux; \
     which smbmap && echo "✓ smbmap" && \
     which nbtscan && echo "✓ nbtscan" && \
     which enum4linux && echo "✓ enum4linux" && \
-    which commix && echo "✓ commix" && \
+    which arp-scan && echo "✓ arp-scan" && \
     which gospider && echo "✓ gospider" && \
-    which dalfox && echo "✓ dalfox" && \
-    which chisel && echo "✓ chisel" && \
     which interactsh-client && echo "✓ interactsh-client" && \
+    which katana && echo "✓ katana" && \
+    which cvemap && echo "✓ cvemap" && \
     which jwt-tool && echo "✓ jwt_tool" && \
     which gitdumper && echo "✓ gitdumper" && \
-    which linpeas && echo "✓ linpeas" && \
     which trufflehog && echo "✓ trufflehog" && \
+    which trivy && echo "✓ trivy" && \
+    which zaproxy && echo "✓ zaproxy" && \
     which httpx && echo "✓ httpx" && \
     which go && echo "✓ go" && \
     which python3 && echo "✓ python3" && \

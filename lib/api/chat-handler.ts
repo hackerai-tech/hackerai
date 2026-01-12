@@ -8,13 +8,15 @@ import {
   smoothStream,
   JsonToSseTransformStream,
 } from "ai";
+import { stripProviderMetadata } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type { ChatMode, Todo, SandboxPreference } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
-import { checkRateLimit } from "@/lib/rate-limit";
+import { checkRateLimit, deductAgentUsage } from "@/lib/rate-limit";
+import { countMessagesTokens } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { geolocation } from "@vercel/functions";
@@ -32,7 +34,7 @@ import {
   saveChatSummary,
 } from "@/lib/db/actions";
 import {
-  createCancellationPoller,
+  createCancellationSubscriber,
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
@@ -50,12 +52,8 @@ import {
   createSummarizationCompletedPart,
   writeRateLimitWarning,
 } from "@/lib/utils/stream-writer-utils";
-import { ConvexHttpClient } from "convex/browser";
-import { api } from "@/convex/_generated/api";
+import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
-import { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
-
-const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 let globalStreamContext: any | null = null;
 
@@ -148,7 +146,11 @@ export const createChatHandler = () => {
         });
       }
 
-      const rateLimitInfo = await checkRateLimit(userId, mode, subscription);
+      // Ask mode: check rate limit first (avoid processing if over limit)
+      const askRateLimitInfo =
+        mode === "ask"
+          ? await checkRateLimit(userId, mode, subscription)
+          : null;
 
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
@@ -156,6 +158,20 @@ export const createChatHandler = () => {
           mode,
           subscription,
         });
+
+      // Agent mode: check rate limit with model-specific pricing after knowing the model
+      const estimatedInputTokens =
+        mode === "agent" ? countMessagesTokens(truncatedMessages, {}) : 0;
+
+      const rateLimitInfo =
+        askRateLimitInfo ??
+        (await checkRateLimit(
+          userId,
+          mode,
+          subscription,
+          estimatedInputTokens,
+          selectedModel,
+        ));
 
       const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled = userCustomization?.include_memory_entries ?? true;
@@ -171,14 +187,14 @@ export const createChatHandler = () => {
         }
       }
 
-      // Start cancellation poller (works for both regular and temporary chats)
-      let pollerStopped = false;
-      const cancellationPoller = createCancellationPoller({
+      // Start cancellation subscriber (Redis pub/sub with fallback to polling)
+      let subscriberStopped = false;
+      const cancellationSubscriber = await createCancellationSubscriber({
         chatId,
         isTemporary: !!temporary,
         abortController: userStopSignal,
         onStop: () => {
-          pollerStopped = true;
+          subscriberStopped = true;
         },
       });
 
@@ -216,10 +232,33 @@ export const createChatHandler = () => {
             memoryEnabled,
             temporary,
             assistantMessageId,
-            subscription,
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
+            userCustomization?.scope_exclusions,
+            userCustomization?.guardrails_config,
           );
+
+          // Helper to send file metadata via stream for resumable stream clients
+          // Uses accumulated metadata directly - no DB query needed!
+          const sendFileMetadataToStream = (
+            fileMetadata: Array<{
+              fileId: Id<"files">;
+              name: string;
+              mediaType: string;
+              s3Key?: string;
+              storageId?: Id<"_storage">;
+            }>,
+          ) => {
+            if (!fileMetadata || fileMetadata.length === 0) return;
+
+            writer.write({
+              type: "data-file-metadata",
+              data: {
+                messageId: assistantMessageId,
+                fileDetails: fileMetadata,
+              },
+            });
+          };
 
           // Get sandbox context for system prompt (only for local sandboxes)
           let sandboxContext: string | null = null;
@@ -278,18 +317,26 @@ export const createChatHandler = () => {
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let hasSummarized = false;
+          const isReasoningModel = mode === "agent";
+
+          // Track metrics for data collection
+          const streamStartTime = Date.now();
+          const configuredModelId =
+            trackedProvider.languageModel(selectedModel).modelId;
+          let streamUsage: Record<string, unknown> | undefined;
+          let responseModel: string | undefined;
 
           const result = streamText({
             model: trackedProvider.languageModel(selectedModel),
             system: currentSystemPrompt,
-            messages: convertToModelMessages(finalMessages),
+            messages: await convertToModelMessages(finalMessages),
             tools,
             // Refresh system prompt when memory updates occur, cache and reuse until next update
             prepareStep: async ({ steps, messages }) => {
               try {
-                // Run summarization check on every step (agent mode, non-temporary)
+                // Run summarization check on every step (non-temporary chats only)
                 // but only summarize once
-                if (mode === "agent" && !temporary && !hasSummarized) {
+                if (!temporary && !hasSummarized) {
                   const {
                     needsSummarization,
                     summarizedMessages,
@@ -300,6 +347,7 @@ export const createChatHandler = () => {
                     finalMessages,
                     subscription,
                     trackedProvider.languageModel("summarization-model"),
+                    mode,
                   );
 
                   if (needsSummarization && cutoffMessageId && summaryText) {
@@ -321,7 +369,7 @@ export const createChatHandler = () => {
                     summarizationParts.push(createSummarizationCompletedPart());
                     // Return updated messages for this step
                     return {
-                      messages: convertToModelMessages(finalMessages),
+                      messages: await convertToModelMessages(finalMessages),
                     };
                   }
                 }
@@ -336,9 +384,10 @@ export const createChatHandler = () => {
                   toolResults.some((r) => r?.toolName === "update_memory");
 
                 if (!wasMemoryUpdate) {
-                  return currentSystemPrompt
-                    ? { system: currentSystemPrompt }
-                    : {};
+                  return {
+                    messages,
+                    ...(currentSystemPrompt && { system: currentSystemPrompt }),
+                  };
                 }
 
                 // Refresh and cache the updated system prompt
@@ -354,6 +403,7 @@ export const createChatHandler = () => {
                 );
 
                 return {
+                  messages,
                   system: currentSystemPrompt,
                 };
               } catch (error) {
@@ -365,9 +415,14 @@ export const createChatHandler = () => {
             },
             abortSignal: userStopSignal.signal,
             providerOptions: {
+              xai: {
+                // Disable storing the conversation in XAI's database
+                store: false,
+              },
               openrouter: {
-                // Current ask model doesn't support sequential tool calls
-                // ...(mode === "ask" && { parallel_tool_calls: false }),
+                ...(isReasoningModel
+                  ? { reasoning: { enabled: true } }
+                  : { reasoning: { enabled: false } }),
                 provider: {
                   ...(subscription === "free"
                     ? {
@@ -376,11 +431,6 @@ export const createChatHandler = () => {
                     : { sort: "latency" }),
                 },
               },
-              google: {
-                thinkingConfig: {
-                  thinkingBudget: 0, // Disables thinking
-                },
-              } satisfies GoogleGenerativeAIProviderOptions,
             },
             experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
@@ -420,12 +470,28 @@ export const createChatHandler = () => {
                 }
               }
             },
-            onFinish: async ({ finishReason }) => {
+            onFinish: async ({ finishReason, usage, response }) => {
               // If preemptive timeout triggered, use "timeout" as finish reason
               if (preemptiveTimeout?.isPreemptive()) {
                 streamFinishReason = "timeout";
               } else {
                 streamFinishReason = finishReason;
+              }
+              // Capture full usage and model
+              streamUsage = usage as Record<string, unknown>;
+              responseModel = response?.modelId;
+
+              // For agent mode, deduct additional cost (output + any input difference)
+              // Input cost was already deducted upfront in checkRateLimit
+              if (mode === "agent" && usage) {
+                await deductAgentUsage(
+                  userId,
+                  subscription,
+                  estimatedInputTokens,
+                  usage.inputTokens || 0,
+                  usage.outputTokens || 0,
+                  selectedModel,
+                );
               }
             },
             onError: async (error) => {
@@ -440,9 +506,15 @@ export const createChatHandler = () => {
                 // Clear pre-emptive timeout
                 preemptiveTimeout?.clear();
 
-                // Stop cancellation poller
-                cancellationPoller.stop();
-                pollerStopped = true;
+                // Stop cancellation subscriber
+                await cancellationSubscriber.stop();
+                subscriberStopped = true;
+
+                // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
+                // This prevents showing "going off course" message when user clicks stop
+                if (isAborted && !preemptiveTimeout?.isPreemptive()) {
+                  streamFinishReason = undefined;
+                }
 
                 // Sandbox cleanup is automatic with auto-pause
                 // The sandbox will auto-pause after inactivity timeout (7 minutes)
@@ -479,14 +551,15 @@ export const createChatHandler = () => {
                     await prepareForNewStream({ chatId });
                   }
 
-                  const newFileIds = getFileAccumulator().getAll();
+                  const accumulatedFiles = getFileAccumulator().getAll();
+                  const newFileIds = accumulatedFiles.map((f) => f.fileId);
 
                   // If user aborted (not pre-emptive) and no files to add, skip message save (frontend already saved)
                   // Pre-emptive aborts should always save to ensure data persistence before timeout
                   if (
                     isAborted &&
                     !preemptiveTimeout?.isPreemptive() &&
-                    (!newFileIds || newFileIds.length === 0)
+                    newFileIds.length === 0
                   ) {
                     return;
                   }
@@ -494,7 +567,7 @@ export const createChatHandler = () => {
                   // Save messages (either full save or just append extraFileIds)
                   for (const message of messages) {
                     // For assistant messages, prepend summarization parts if any
-                    const messageToSave =
+                    const messageWithSummarization =
                       message.role === "assistant" &&
                       summarizationParts.length > 0
                         ? {
@@ -503,12 +576,17 @@ export const createChatHandler = () => {
                           }
                         : message;
 
+                    // Strip providerMetadata from parts before saving
+                    const messageToSave = stripProviderMetadata(
+                      messageWithSummarization,
+                    );
+
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry
                     if (
                       (!messageToSave.parts ||
                         messageToSave.parts.length === 0) &&
-                      (!newFileIds || newFileIds.length === 0)
+                      newFileIds.length === 0
                     ) {
                       continue;
                     }
@@ -517,46 +595,22 @@ export const createChatHandler = () => {
                       chatId,
                       userId,
                       message: messageToSave,
-                      extraFileIds:
-                        message.role === "assistant" ? newFileIds : undefined,
+                      // Only include metrics for assistant messages
+                      extraFileIds: newFileIds,
+                      model: responseModel || configuredModelId,
+                      generationTimeMs: Date.now() - streamStartTime,
+                      finishReason: streamFinishReason,
+                      usage: streamUsage,
                     });
                   }
+
+                  // Send file metadata via stream for resumable stream clients
+                  // Uses accumulated metadata directly - no DB query needed!
+                  sendFileMetadataToStream(accumulatedFiles);
                 } else {
                   // For temporary chats, send file metadata via stream before cleanup
-                  const newFileIds = getFileAccumulator().getAll();
-
-                  if (newFileIds && newFileIds.length > 0) {
-                    try {
-                      // Fetch file metadata in batch
-                      const fileMetadata = await convex.query(
-                        api.fileStorage.getFileMetadataByFileIds,
-                        {
-                          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-                          fileIds: newFileIds,
-                        },
-                      );
-
-                      // Filter out null entries and send via custom stream event
-                      const validFileMetadata = fileMetadata.filter(
-                        (f) => f !== null,
-                      );
-
-                      if (validFileMetadata.length > 0) {
-                        writer.write({
-                          type: "data-file-metadata",
-                          data: {
-                            messageId: assistantMessageId,
-                            fileDetails: validFileMetadata,
-                          },
-                        });
-                      }
-                    } catch (error) {
-                      console.error(
-                        "Failed to fetch file metadata for temporary chat:",
-                        error,
-                      );
-                    }
-                  }
+                  const tempFiles = getFileAccumulator().getAll();
+                  sendFileMetadataToStream(tempFiles);
 
                   // Ensure temp stream row is removed backend-side
                   await deleteTempStreamForBackend({ chatId });

@@ -1,4 +1,9 @@
-import { query, mutation, internalQuery } from "./_generated/server";
+import {
+  query,
+  mutation,
+  internalQuery,
+  internalMutation,
+} from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -104,6 +109,10 @@ export const saveMessage = mutation({
     ),
     parts: v.array(v.any()),
     fileIds: v.optional(v.array(v.id("files"))),
+    model: v.optional(v.string()),
+    generationTimeMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(v.any()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -171,6 +180,10 @@ export const saveMessage = mutation({
         content: content || undefined,
         file_ids: args.fileIds,
         update_time: Date.now(),
+        model: args.model,
+        generation_time_ms: args.generationTimeMs,
+        finish_reason: args.finishReason,
+        usage: args.usage,
       });
 
       // Mark attached files as linked so purge won't remove them
@@ -386,6 +399,10 @@ export const saveAssistantMessage = mutation({
       v.literal("system"),
     ),
     parts: v.array(v.any()),
+    model: v.optional(v.string()),
+    generationTimeMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    usage: v.optional(v.any()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -428,6 +445,10 @@ export const saveAssistantMessage = mutation({
         parts: args.parts,
         content: content || undefined,
         update_time: Date.now(),
+        model: args.model,
+        generation_time_ms: args.generationTimeMs,
+        finish_reason: args.finishReason,
+        usage: args.usage,
       });
 
       return null;
@@ -554,65 +575,51 @@ export const deleteLastAssistantMessage = mutation({
 });
 
 /**
- * Get all messages for a chat from the backend (for AI processing)
+ * Get only the most recent assistant message for stream replay
  */
-export const getMessagesByChatIdForBackend = query({
+export const getLastAssistantMessage = query({
   args: {
     serviceKey: v.string(),
     chatId: v.string(),
     userId: v.string(),
   },
-  returns: v.array(
+  returns: v.union(
     v.object({
       id: v.string(),
-      role: v.union(
-        v.literal("user"),
-        v.literal("assistant"),
-        v.literal("system"),
-      ),
+      role: v.literal("assistant"),
       parts: v.array(v.any()),
     }),
+    v.null(),
   ),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
     try {
-      // Verify chat ownership - if chat doesn't exist, return empty array
       const chatExists: boolean = await ctx.runQuery(
         internal.messages.verifyChatOwnership,
-        {
-          chatId: args.chatId,
-          userId: args.userId,
-        },
+        { chatId: args.chatId, userId: args.userId },
       );
 
-      if (!chatExists) {
-        // Chat doesn't exist yet (new chat), return empty array
-        return [];
-      }
+      if (!chatExists) return null;
 
-      const LIMIT = 32;
-      // Get newest 32 messages and reverse for chronological AI processing
-      const messages = await ctx.db
+      const message = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
         .order("desc")
-        .take(LIMIT);
+        .first();
 
-      const chronologicalMessages = messages.reverse();
+      if (!message || message.role !== "assistant") {
+        return null;
+      }
 
-      return chronologicalMessages.map((message) => ({
+      return {
         id: message.id,
         role: message.role,
         parts: message.parts,
-      }));
+      };
     } catch (error) {
-      console.error("Failed to get messages for backend:", error);
-
-      if (error instanceof Error && error.message.includes("Unauthorized")) {
-        throw error;
-      }
-      return [];
+      console.error("Failed to get last assistant message:", error);
+      return null;
     }
   },
 });
@@ -949,11 +956,13 @@ export const branchChat = mutation({
 
 /**
  * Regenerate with new content by updating a message and deleting subsequent messages
+ * Optionally keep specified files (pass fileIds to keep, undefined to remove all)
  */
 export const regenerateWithNewContent = mutation({
   args: {
     messageId: v.string(),
     newContent: v.string(),
+    fileIds: v.optional(v.array(v.string())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -992,10 +1001,71 @@ export const regenerateWithNewContent = mutation({
         }
       }
 
+      // Determine which files to keep
+      const currentFileIds = message.file_ids || [];
+      let newFileIds: Id<"files">[] | undefined = undefined;
+      let filesToDelete: Id<"files">[] = [];
+
+      if (args.fileIds !== undefined) {
+        // Keep only the specified files
+        const keepSet = new Set(args.fileIds);
+        newFileIds = currentFileIds.filter((id) => keepSet.has(id as string));
+        filesToDelete = currentFileIds.filter(
+          (id) => !keepSet.has(id as string),
+        );
+      } else {
+        // Remove all files (existing behavior)
+        filesToDelete = currentFileIds;
+      }
+
+      // Delete removed files
+      for (const fileId of filesToDelete) {
+        try {
+          const file = await ctx.db.get(fileId);
+          if (file) {
+            // Delete from appropriate storage
+            if (file.s3_key) {
+              await ctx.scheduler.runAfter(
+                0,
+                internal.s3Cleanup.deleteS3ObjectAction,
+                { s3Key: file.s3_key },
+              );
+            } else if (file.storage_id) {
+              await ctx.storage.delete(file.storage_id);
+            }
+            // Delete from aggregate
+            await fileCountAggregate.deleteIfExists(ctx, file);
+            await ctx.db.delete(file._id);
+          }
+        } catch (error) {
+          console.error(`Failed to delete file ${fileId}:`, error);
+        }
+      }
+
+      // Build new parts: text + remaining file parts
+      const newParts: any[] = [];
+      if (args.newContent.trim()) {
+        newParts.push({ type: "text", text: args.newContent });
+      }
+
+      // Keep file parts for remaining files
+      if (newFileIds && newFileIds.length > 0) {
+        const existingFileParts = message.parts.filter(
+          (part: any) =>
+            part.type === "file" &&
+            part.fileId &&
+            newFileIds!.some((id) => id === part.fileId),
+        );
+        newParts.push(...existingFileParts);
+      }
+
       await ctx.db.patch(message._id, {
-        parts: [{ type: "text", text: args.newContent }],
+        parts:
+          newParts.length > 0
+            ? newParts
+            : [{ type: "text", text: args.newContent }],
         content: args.newContent.trim() || undefined,
-        file_ids: undefined,
+        file_ids: newFileIds && newFileIds.length > 0 ? newFileIds : undefined,
         update_time: Date.now(),
       });
 
@@ -1037,12 +1107,12 @@ export const regenerateWithNewContent = mutation({
         await ctx.db.delete(msg._id);
       }
 
-      // Check if deleted messages invalidate the chat summary
-      await checkAndInvalidateSummary(
-        ctx,
-        message.chat_id,
-        messages.map((m) => m.id),
-      );
+      // Check if deleted OR edited messages invalidate the chat summary
+      // Include the edited message ID since modifying the cutoff message also invalidates
+      await checkAndInvalidateSummary(ctx, message.chat_id, [
+        message.id,
+        ...messages.map((m) => m.id),
+      ]);
 
       return null;
     } catch (error) {

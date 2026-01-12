@@ -1,5 +1,73 @@
 import { ChatMessage } from "@/types/chat";
 
+/**
+ * Checks if a metadata object contains OpenRouter data.
+ */
+const hasOpenRouterMetadata = (metadata: unknown): boolean => {
+  return (
+    metadata !== null &&
+    typeof metadata === "object" &&
+    "openrouter" in metadata
+  );
+};
+
+/**
+ * Strips provider-specific fields from a single message part.
+ * - providerMetadata/callProviderMetadata: only strips if it contains OpenRouter data
+ * - providerExecuted/providerOptions: always strips (provider-internal data)
+ */
+export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
+  part: T,
+): T => {
+  let result = part;
+
+  // Strip providerMetadata if it contains OpenRouter data
+  if (
+    "providerMetadata" in result &&
+    hasOpenRouterMetadata(result.providerMetadata)
+  ) {
+    const { providerMetadata, ...rest } = result;
+    result = rest as T;
+  }
+
+  // Strip callProviderMetadata if it contains OpenRouter data
+  if (
+    "callProviderMetadata" in result &&
+    hasOpenRouterMetadata(result.callProviderMetadata)
+  ) {
+    const { callProviderMetadata, ...rest } = result;
+    result = rest as T;
+  }
+
+  // Always strip providerExecuted
+  if ("providerExecuted" in result) {
+    const { providerExecuted, ...rest } = result;
+    result = rest as T;
+  }
+
+  // Always strip providerOptions
+  if ("providerOptions" in result) {
+    const { providerOptions, ...rest } = result;
+    result = rest as T;
+  }
+
+  return result;
+};
+
+/**
+ * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
+ * Used to clean messages before saving or for temporary chat handling.
+ */
+export const stripProviderMetadata = <T extends { parts?: any[] }>(
+  message: T,
+): T => {
+  if (!message.parts) return message;
+  return {
+    ...message,
+    parts: message.parts.map(stripProviderMetadataFromPart),
+  };
+};
+
 // Generic interface for all tool parts
 interface BaseToolPart {
   type: string;
@@ -105,7 +173,7 @@ export const normalizeMessages = (
       }
     });
 
-    // Process each part, transform incomplete tools, and filter out data-terminal parts
+    // Process each part, transform incomplete tools, filter out data-terminal parts, and strip providerMetadata
     message.parts.forEach((part: any) => {
       const toolPart = part as BaseToolPart;
 
@@ -115,12 +183,27 @@ export const normalizeMessages = (
         return;
       }
 
+      // Strip provider-specific fields from the part (contains internal data like encrypted reasoning, provider options)
+      const hasProviderFields =
+        ("providerMetadata" in part &&
+          hasOpenRouterMetadata(part.providerMetadata)) ||
+        ("callProviderMetadata" in part &&
+          hasOpenRouterMetadata(part.callProviderMetadata)) ||
+        "providerExecuted" in part ||
+        "providerOptions" in part;
+      const cleanPart = hasProviderFields
+        ? stripProviderMetadataFromPart(part)
+        : part;
+      if (hasProviderFields) {
+        messageChanged = true;
+      }
+
       // Check if this is a tool part that needs transformation
       if (toolPart.type?.startsWith("tool-")) {
         if (toolPart.state === "input-available") {
           // Transform incomplete tools to completed state
           const transformedPart = transformIncompleteToolPart(
-            toolPart,
+            cleanPart as BaseToolPart,
             terminalDataMap,
           );
           processedParts.push(transformedPart);
@@ -128,18 +211,18 @@ export const normalizeMessages = (
         } else if (toolPart.state === "input-streaming") {
           // Transform streaming tools to completed state (they were interrupted)
           const transformedPart = transformIncompleteToolPart(
-            { ...toolPart, state: "input-available" },
+            { ...(cleanPart as BaseToolPart), state: "input-available" },
             terminalDataMap,
           );
           processedParts.push(transformedPart);
           messageChanged = true; // Part is being transformed
         } else {
           // Keep completed tools unchanged
-          processedParts.push(part);
+          processedParts.push(cleanPart);
         }
       } else {
         // Keep non-tool parts unchanged
-        processedParts.push(part);
+        processedParts.push(cleanPart);
       }
     });
 

@@ -134,6 +134,34 @@ export function extractAllSidebarContent(
         });
       }
 
+      // HTTP Request
+      if (part.type === "tool-http_request" && part.input?.url) {
+        const method = part.input.method || "GET";
+        const url = part.input.url;
+        const command = `${method} ${url}`;
+
+        // Get streaming output from data-terminal parts (HTTP uses same streaming mechanism)
+        const streamingOutput =
+          terminalDataMap.get(part.toolCallId || "") || "";
+
+        // Extract output from result
+        let output = "";
+        if (part.output) {
+          output = part.output.output || part.output.error || "";
+        }
+
+        const finalOutput = output || streamingOutput || "";
+
+        contentList.push({
+          command,
+          output: finalOutput,
+          isExecuting:
+            part.state === "input-available" || part.state === "running",
+          isBackground: false,
+          toolCallId: part.toolCallId || "",
+        });
+      }
+
       // File Operations - only extract when output is available
       // This ensures content is ready when auto-following
       if (

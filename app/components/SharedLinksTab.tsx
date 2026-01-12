@@ -4,6 +4,7 @@ import React, { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
+import type { SharedChat } from "@/types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -133,7 +134,7 @@ const SharedLinksTab = () => {
 
       {/* Shared Chats List */}
       <div className="space-y-3">
-        {sharedChats.map((chat) => (
+        {sharedChats.map((chat: SharedChat) => (
           <div
             key={chat.id}
             className="flex items-center justify-between p-4 rounded-lg border bg-card hover:bg-accent/50 transition-colors"
@@ -197,7 +198,9 @@ const SharedLinksTab = () => {
             <AlertDialogAction
               onClick={() => {
                 if (unshareTarget) {
-                  const chat = sharedChats.find((c) => c.id === unshareTarget);
+                  const chat = sharedChats.find(
+                    (c: SharedChat) => c.id === unshareTarget,
+                  );
                   if (chat) {
                     handleUnshare(unshareTarget, chat.title);
                   }

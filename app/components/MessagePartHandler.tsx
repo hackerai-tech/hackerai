@@ -2,11 +2,13 @@ import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
+import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { PythonToolHandler } from "./tools/PythonToolHandler";
 import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
+import { MatchToolHandler } from "./tools/MatchToolHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import { ReasoningHandler } from "./ReasoningHandler";
@@ -87,6 +89,11 @@ export const MessagePartHandler = ({
         <TerminalToolHandler message={message} part={part} status={status} />
       );
 
+    case "tool-http_request":
+      return (
+        <HttpRequestToolHandler message={message} part={part} status={status} />
+      );
+
     case "data-python":
     case "tool-python":
       return (
@@ -101,6 +108,9 @@ export const MessagePartHandler = ({
 
     case "tool-update_memory":
       return <MemoryToolHandler part={part} status={status} />;
+
+    case "tool-match":
+      return <MatchToolHandler part={part} status={status} />;
 
     default:
       return null;

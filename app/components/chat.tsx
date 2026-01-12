@@ -134,11 +134,11 @@ export const Chat = ({
     }
   }, [routeChatId, currentChatId, setChatTitle]);
 
-  // Use paginated query to load messages in batches of 28
+  // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
     shouldFetchMessages ? { chatId } : "skip",
-    { initialNumItems: 28 },
+    { initialNumItems: 14 },
   );
 
   // Get chat data to retrieve title when loading existing chat
@@ -518,6 +518,7 @@ export const Chat = ({
       // Reset processing flag after brief delay
       setTimeout(() => setIsProcessingQueue(false), 100);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- todosRef and sandboxPreferenceRef are stable refs, .current is read at runtime
   }, [
     status,
     messageQueue.length,

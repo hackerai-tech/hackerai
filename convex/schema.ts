@@ -63,6 +63,10 @@ export default defineSchema({
     feedback_id: v.optional(v.id("feedback")),
     source_message_id: v.optional(v.string()),
     update_time: v.number(),
+    model: v.optional(v.string()),
+    generation_time_ms: v.optional(v.number()),
+    finish_reason: v.optional(v.string()),
+    usage: v.optional(v.any()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])
@@ -104,6 +108,8 @@ export default defineSchema({
     additional_info: v.optional(v.string()),
     updated_at: v.number(),
     include_memory_entries: v.optional(v.boolean()),
+    scope_exclusions: v.optional(v.string()),
+    guardrails_config: v.optional(v.string()),
   }).index("by_user_id", ["user_id"]),
 
   memories: defineTable({
@@ -179,7 +185,6 @@ export default defineSchema({
     ),
     created_at: v.number(),
   })
-    .index("by_user_id", ["user_id"])
     .index("by_command_id", ["command_id"])
     .index("by_connection_and_status", ["connection_id", "status"])
     .index("by_user_and_status", ["user_id", "status"])
@@ -196,7 +201,6 @@ export default defineSchema({
     completed_at: v.number(),
   })
     .index("by_command_id", ["command_id"])
-    .index("by_user_id", ["user_id"])
     .index("by_completed_at", ["completed_at"]),
 
   // Tracks aggregate migration state per user

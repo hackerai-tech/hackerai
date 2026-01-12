@@ -49,7 +49,9 @@ export const ReasoningHandler = ({
 
   const combined = collectReasoningText(parts, partIndex);
 
-  if (!combined && status !== "streaming") return null;
+  // Don't show reasoning if empty or only contains [REDACTED] (encrypted reasoning from providers like Gemini)
+  // Check for one or more [REDACTED] patterns (e.g., "[REDACTED]", "[REDACTED][REDACTED]", etc.)
+  if (!combined || /^(\[REDACTED\])+$/.test(combined.trim())) return null;
 
   const isLastPart = partIndex === parts.length - 1;
   const autoOpen =

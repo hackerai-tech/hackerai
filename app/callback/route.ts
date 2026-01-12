@@ -16,26 +16,22 @@ export async function GET(request: NextRequest) {
 
   if (redirectPath) cookieStore.delete("post_login_redirect");
 
-  try {
-    const response = await authHandler(request);
+  // Authkit returns error responses instead of throwing, so we check status codes
+  const response = await authHandler(request);
 
-    if (
-      redirectPath &&
-      isValidLocalPath(redirectPath) &&
-      [302, 307].includes(response.status)
-    ) {
-      return NextResponse.redirect(new URL(redirectPath, request.url));
-    }
-
-    return response;
-  } catch (error) {
-    const errorMessage = String(error);
-    if (
-      errorMessage.includes("invalid_grant") ||
-      errorMessage.includes("InvalidCharacterError")
-    ) {
-      return NextResponse.redirect(new URL("/", request.url));
-    }
-    throw error;
+  if (
+    redirectPath &&
+    isValidLocalPath(redirectPath) &&
+    [302, 307].includes(response.status)
+  ) {
+    return NextResponse.redirect(new URL(redirectPath, request.url));
   }
+
+  if (response.status >= 400) {
+    return NextResponse.redirect(
+      new URL(`/auth-error?code=${response.status}`, request.url),
+    );
+  }
+
+  return response;
 }

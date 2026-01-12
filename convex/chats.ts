@@ -400,6 +400,12 @@ export const cancelStreamFromClient = mutation({
       });
     }
 
+    // Publish cancellation to Redis for instant backend notification
+    // This runs async and doesn't block the mutation response
+    await ctx.scheduler.runAfter(0, internal.redisPubsub.publishCancellation, {
+      chatId: args.chatId,
+    });
+
     return null;
   },
 });

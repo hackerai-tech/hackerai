@@ -9,11 +9,13 @@ import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createGetTerminalFiles } from "./get-terminal-files";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
-import { createSearchReplace } from "./search-replace";
+// import { createSearchReplace } from "./search-replace";
+import { createMatch } from "./match";
 import { createWebTool } from "./web";
+import { createWebSearch } from "./web-search";
 import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
-// import { createPythonTool } from "./python";
+import { createHttpRequest } from "./http-request";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
 import type { Geo } from "@vercel/functions";
@@ -38,9 +40,10 @@ export const createTools = (
   memoryEnabled: boolean = true,
   isTemporary: boolean = false,
   assistantMessageId?: string,
-  subscription: "free" | "pro" | "team" | "ultra" = "free",
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
+  scopeExclusions?: string,
+  guardrailsConfig?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -79,6 +82,8 @@ export const createTools = (
     backgroundProcessTracker,
     mode,
     isE2BSandbox,
+    scopeExclusions,
+    guardrailsConfig,
   };
 
   // Create all available tools
@@ -87,14 +92,15 @@ export const createTools = (
     get_terminal_files: createGetTerminalFiles(context),
     read_file: createReadFile(context),
     write_file: createWriteFile(context),
-    search_replace: createSearchReplace(context),
+    // search_replace: createSearchReplace(context),
+    match: createMatch(context),
     todo_write: createTodoWrite(context),
-    // python: createPythonTool(context),
+    http_request: createHttpRequest(context),
     ...(!isTemporary &&
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
     ...(process.env.EXA_API_KEY &&
       process.env.JINA_API_KEY && {
-        web: createWebTool(context),
+        web_search: createWebSearch(context),
       }),
   };
 
@@ -104,9 +110,10 @@ export const createTools = (
       ? {
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
-          // ...(subscription !== "free" && { python: allTools.python }),
           ...(process.env.EXA_API_KEY &&
-            process.env.JINA_API_KEY && { web: allTools.web }),
+            process.env.JINA_API_KEY && {
+              web: createWebTool(context),
+            }),
         }
       : allTools;
 

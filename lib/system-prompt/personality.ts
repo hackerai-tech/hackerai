@@ -1,14 +1,4 @@
-interface UserCustomization {
-  readonly nickname?: string;
-  readonly occupation?: string;
-  readonly personality?: string;
-  readonly traits?: string;
-  readonly additional_info?: string;
-  readonly include_memory_entries?: boolean;
-  readonly updated_at: number;
-}
-
-type PersonalityType = "cynic" | "robot" | "listener" | "nerd";
+import type { PersonalityType } from "@/types";
 
 // Detailed personality instruction mappings
 const PERSONALITY_INSTRUCTIONS: Record<PersonalityType, string> = {
@@ -84,5 +74,3 @@ export const getPersonalityInstructions = (personality?: string): string => {
   }
   return PERSONALITY_INSTRUCTIONS[personality as PersonalityType];
 };
-
-export type { UserCustomization, PersonalityType };
