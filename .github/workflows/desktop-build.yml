@@ -121,6 +121,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Debug ref info
+        run: |
+          echo "github.ref: ${{ github.ref }}"
+          echo "github.ref_name: ${{ github.ref_name }}"
+          echo "github.sha: ${{ github.sha }}"
+          git describe --tags --always
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -164,14 +173,17 @@ jobs:
           DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           # Initialize latest.json
-          cat > release-files/latest.json << EOF
-          {
-            "version": "$VERSION",
-            "notes": "See release notes on GitHub",
-            "pub_date": "$DATE",
-            "platforms": {}
-          }
-          EOF
+          cat > release-files/latest.json << 'EOF'
+{
+  "version": "__VERSION__",
+  "notes": "See release notes on GitHub",
+  "pub_date": "__DATE__",
+  "platforms": {}
+}
+EOF
+          # Replace placeholders
+          sed -i "s/__VERSION__/$VERSION/g" release-files/latest.json
+          sed -i "s/__DATE__/$DATE/g" release-files/latest.json
 
           # Build platforms object using jq
           PLATFORMS='{}'
