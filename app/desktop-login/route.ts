@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server";
-import { WorkOS } from "@workos-inc/node";
 import { createOAuthState } from "@/lib/desktop-auth";
-
-const workos = new WorkOS(process.env.WORKOS_API_KEY);
+import { workos } from "@/app/api/workos";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);

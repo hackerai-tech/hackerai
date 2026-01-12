@@ -1,9 +1,7 @@
 import { NextRequest } from "next/server";
-import { WorkOS } from "@workos-inc/node";
 import { sealData } from "iron-session";
 import { createDesktopTransferToken, verifyAndConsumeOAuthState } from "@/lib/desktop-auth";
-
-const workos = new WorkOS(process.env.WORKOS_API_KEY);
+import { workos } from "@/app/api/workos";
 
 function escapeHtml(str: string): string {
   return str
