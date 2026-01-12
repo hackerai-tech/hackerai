@@ -238,16 +238,13 @@ jobs:
           cat release-files/latest.json
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          name: HackerAI Desktop ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          draft: true
-          prerelease: false
-          generate_release_notes: true
-          files: |
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "HackerAI Desktop ${{ github.ref_name }}" \
+            --draft \
+            --generate-notes \
             release-files/*
 
   build-macos-universal:
