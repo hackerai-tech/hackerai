@@ -37,6 +37,20 @@ export async function openInBrowser(url: string): Promise<boolean> {
   }
 }
 
+export async function navigateToAuth(fallbackPath: "/login" | "/signup"): Promise<void> {
+  if (detectTauri()) {
+    try {
+      const opened = await openInBrowser(
+        `${window.location.origin}/desktop-login`,
+      );
+      if (opened) return;
+    } catch {
+      // Fall through to web navigation
+    }
+  }
+  window.location.href = fallbackPath;
+}
+
 export async function openDownloadsFolder(): Promise<boolean> {
   if (!detectTauri()) {
     return false;

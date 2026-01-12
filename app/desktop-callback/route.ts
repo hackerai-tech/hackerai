@@ -100,6 +100,11 @@ export async function GET(request: Request) {
   const error = url.searchParams.get("error");
   const retryUrl = `${url.origin}/desktop-login`;
 
+  const noStoreHeaders = {
+    "Content-Type": "text/html",
+    "Cache-Control": "no-store",
+  };
+
   if (error === "unauthenticated") {
     return new Response(
       renderErrorPage(
@@ -107,7 +112,7 @@ export async function GET(request: Request) {
         "You need to sign in to access this page.",
         retryUrl
       ),
-      { status: 401, headers: { "Content-Type": "text/html" } }
+      { status: 401, headers: noStoreHeaders }
     );
   }
 
@@ -119,7 +124,7 @@ export async function GET(request: Request) {
         "No authentication token was provided. Please try signing in again.",
         retryUrl
       ),
-      { status: 400, headers: { "Content-Type": "text/html" } }
+      { status: 400, headers: noStoreHeaders }
     );
   }
 
@@ -133,7 +138,7 @@ export async function GET(request: Request) {
         "Your authentication session has expired. This can happen if the sign-in took longer than 60 seconds. Please try again.",
         retryUrl
       ),
-      { status: 400, headers: { "Content-Type": "text/html" } }
+      { status: 400, headers: noStoreHeaders }
     );
   }
 

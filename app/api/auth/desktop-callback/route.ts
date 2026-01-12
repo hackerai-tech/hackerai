@@ -20,10 +20,15 @@ export async function GET(request: NextRequest) {
   const error = url.searchParams.get("error");
   const state = url.searchParams.get("state");
 
+  const noStoreHeaders = {
+    "Content-Type": "text/html",
+    "Cache-Control": "no-store",
+  };
+
   if (error || !code) {
     return new Response(renderErrorPage("Authentication failed. Please try again."), {
       status: 400,
-      headers: { "Content-Type": "text/html" },
+      headers: noStoreHeaders,
     });
   }
 
@@ -31,7 +36,7 @@ export async function GET(request: NextRequest) {
     console.warn("[Desktop Auth] Missing OAuth state parameter");
     return new Response(renderErrorPage("Invalid authentication request. Please try again."), {
       status: 400,
-      headers: { "Content-Type": "text/html" },
+      headers: noStoreHeaders,
     });
   }
 
@@ -40,7 +45,7 @@ export async function GET(request: NextRequest) {
     console.warn("[Desktop Auth] Invalid or expired OAuth state");
     return new Response(renderErrorPage("Authentication session expired. Please try again."), {
       status: 400,
-      headers: { "Content-Type": "text/html" },
+      headers: noStoreHeaders,
     });
   }
 
@@ -51,7 +56,7 @@ export async function GET(request: NextRequest) {
     console.error("[Desktop Auth] Missing required environment variables");
     return new Response(renderErrorPage("Server configuration error. Please try again later."), {
       status: 500,
-      headers: { "Content-Type": "text/html" },
+      headers: noStoreHeaders,
     });
   }
 
@@ -78,21 +83,21 @@ export async function GET(request: NextRequest) {
     if (!transferToken) {
       return new Response(renderErrorPage("Failed to create session transfer. Please try again."), {
         status: 500,
-        headers: { "Content-Type": "text/html" },
+        headers: noStoreHeaders,
       });
     }
 
     const origin = url.origin;
-    const deepLinkUrl = `hackerai://auth?token=${transferToken}&origin=${encodeURIComponent(origin)}`;
+    const deepLinkUrl = `hackerai://auth?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}`;
     return new Response(renderSuccessPage(deepLinkUrl), {
       status: 200,
-      headers: { "Content-Type": "text/html" },
+      headers: noStoreHeaders,
     });
   } catch (err) {
     console.error("[Desktop Auth] Failed to authenticate:", err);
     return new Response(renderErrorPage("Authentication failed. Please try again."), {
       status: 500,
-      headers: { "Content-Type": "text/html" },
+      headers: noStoreHeaders,
     });
   }
 }

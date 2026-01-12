@@ -13,25 +13,13 @@ import MigratePentestgptDialog from "./components/MigratePentestgptDialog";
 import { usePricingDialog } from "./hooks/usePricingDialog";
 import { useGlobalState } from "./contexts/GlobalState";
 import { usePentestgptMigration } from "./hooks/usePentestgptMigration";
-import { useTauri, openInBrowser } from "./hooks/useTauri";
+import { navigateToAuth } from "./hooks/useTauri";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
-  const { isTauri } = useTauri();
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isTauri) {
-      try {
-        const opened = await openInBrowser(
-          `${window.location.origin}/desktop-login`,
-        );
-        if (opened) return;
-      } catch {
-        // Fall through to web navigation
-      }
-    }
-    window.location.href = "/login";
+    navigateToAuth("/login");
   };
 
   const handleStop = () => {

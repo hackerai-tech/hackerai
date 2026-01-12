@@ -8,7 +8,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
-import { useTauri, openInBrowser } from "../hooks/useTauri";
+import { navigateToAuth } from "../hooks/useTauri";
 import {
   freeFeatures,
   proFeatures,
@@ -138,7 +138,6 @@ const PlanCard: React.FC<PlanCardProps> = ({
 
 const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
-  const { isTauri } = useTauri();
   const { subscription, isCheckingProPlan, setTeamPricingDialogOpen } =
     useGlobalState();
   const { upgradeLoading, handleUpgrade } = useUpgrade();
@@ -160,36 +159,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   const handleBillingChange = (value: "monthly" | "yearly") => {
     setIsYearly(value === "yearly");
-  };
-
-  const handleSignIn = async () => {
-    if (isTauri) {
-      try {
-        const opened = await openInBrowser(
-          `${window.location.origin}/desktop-login`,
-        );
-        if (opened) return;
-      } catch {
-        // Fall through to web navigation
-      }
-    }
-    // eslint-disable-next-line react-hooks/immutability
-    window.location.href = "/login";
-  };
-
-  const handleSignUp = async () => {
-    if (isTauri) {
-      try {
-        const opened = await openInBrowser(
-          `${window.location.origin}/desktop-login`,
-        );
-        if (opened) return;
-      } catch {
-        // Fall through to web navigation
-      }
-    }
-    // eslint-disable-next-line react-hooks/immutability
-    window.location.href = "/signup";
   };
 
   const handleUpgradeClick = async (
@@ -223,7 +192,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   const handleTeamClick = () => {
     if (!user) {
-      handleSignIn();
+      navigateToAuth("/login");
       return;
     }
 
@@ -252,7 +221,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "",
         variant: "secondary" as const,
-        onClick: handleSignUp,
+        onClick: () => navigateToAuth("/signup"),
       };
     } else {
       return {
@@ -293,7 +262,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
-        onClick: handleSignIn,
+        onClick: () => navigateToAuth("/login"),
       };
     }
   };
@@ -327,7 +296,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "",
         variant: "default" as const,
-        onClick: handleSignIn,
+        onClick: () => navigateToAuth("/login"),
       };
     }
   };

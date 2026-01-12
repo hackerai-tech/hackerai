@@ -18,14 +18,24 @@ fn navigate_back(window: &tauri::WebviewWindow) {
 #[cfg(not(target_os = "macos"))]
 fn navigate_back(_window: &tauri::WebviewWindow) {}
 
-const ALLOWED_HOSTS: &[&str] = &["hackerai.co", "localhost"];
+fn get_allowed_hosts() -> Vec<String> {
+    match std::env::var("HACKERAI_ALLOWED_HOSTS") {
+        Ok(hosts) => hosts.split(',').map(|s| s.trim().to_string()).collect(),
+        Err(_) => vec!["hackerai.co".to_string(), "localhost".to_string()],
+    }
+}
+
+fn is_valid_token_format(token: &str) -> bool {
+    token.len() == 64 && token.chars().all(|c| c.is_ascii_hexdigit())
+}
 
 fn validate_origin(origin: &str) -> bool {
     match url::Url::parse(origin) {
         Ok(parsed) => {
             let host = parsed.host_str().unwrap_or("");
             let scheme = parsed.scheme();
-            let is_allowed_host = ALLOWED_HOSTS.iter().any(|allowed| host == *allowed);
+            let allowed_hosts = get_allowed_hosts();
+            let is_allowed_host = allowed_hosts.iter().any(|allowed| host == allowed);
             let is_valid_scheme = scheme == "https" || (host == "localhost" && scheme == "http");
             is_allowed_host && is_valid_scheme
         }
@@ -41,6 +51,11 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     if url.host_str() == Some("auth") || url.path() == "/auth" || url.path() == "auth" {
         match url.query_pairs().find(|(k, _)| k == "token").map(|(_, v)| v) {
             Some(token) => {
+                if !is_valid_token_format(&token) {
+                    log::error!("Invalid token format in deep link");
+                    return;
+                }
+
                 if let Some(window) = app.get_webview_window("main") {
                     // Get and validate origin from deep link query params
                     let origin = url.query_pairs()

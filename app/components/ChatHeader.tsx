@@ -22,7 +22,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ShareDialog } from "./ShareDialog";
-import { useTauri, openInBrowser } from "@/app/hooks/useTauri";
+import { navigateToAuth } from "@/app/hooks/useTauri";
 
 interface ChatHeaderProps {
   hasMessages: boolean;
@@ -56,7 +56,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   branchedFromChatTitle,
 }) => {
   const { user, loading } = useAuth();
-  const { isTauri } = useTauri();
   const {
     toggleChatSidebar,
     subscription,
@@ -79,34 +78,6 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
 
   // Check if this is a branched chat
   const isBranchedChat = !!chatData?.branched_from_chat_id;
-
-  const handleSignIn = async () => {
-    if (isTauri) {
-      try {
-        const opened = await openInBrowser(
-          `${window.location.origin}/desktop-login`,
-        );
-        if (opened) return;
-      } catch {
-        // Fall through to web navigation
-      }
-    }
-    window.location.href = "/login";
-  };
-
-  const handleSignUp = async () => {
-    if (isTauri) {
-      try {
-        const opened = await openInBrowser(
-          `${window.location.origin}/desktop-login`,
-        );
-        if (opened) return;
-      } catch {
-        // Fall through to web navigation
-      }
-    }
-    window.location.href = "/signup";
-  };
 
   const handleUpgradeClick = () => {
     // Navigate to pricing page
@@ -189,7 +160,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                 {!loading && !user && (
                   <>
                     <Button
-                      onClick={handleSignIn}
+                      onClick={() => navigateToAuth("/login")}
                       variant="default"
                       size="default"
                       className="min-w-[74px] rounded-[10px]"
@@ -197,7 +168,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                       Sign in
                     </Button>
                     <Button
-                      onClick={handleSignUp}
+                      onClick={() => navigateToAuth("/signup")}
                       variant="outline"
                       size="default"
                       className="min-w-16 rounded-[10px]"
@@ -272,7 +243,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               {!loading && !user && (
                 <>
                   <Button
-                    onClick={handleSignIn}
+                    onClick={() => navigateToAuth("/login")}
                     variant="default"
                     size="sm"
                     className="rounded-[10px]"
@@ -280,7 +251,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                     Sign in
                   </Button>
                   <Button
-                    onClick={handleSignUp}
+                    onClick={() => navigateToAuth("/signup")}
                     variant="outline"
                     size="sm"
                     className="rounded-[10px]"
