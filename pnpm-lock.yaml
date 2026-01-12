@@ -315,29 +315,29 @@ importers:
   packages/desktop:
     dependencies:
       '@tauri-apps/api':
-        specifier: ^2.1.1
+        specifier: ^2.9.1
         version: 2.9.1
       '@tauri-apps/plugin-deep-link':
-        specifier: ^2.2.0
+        specifier: ^2.4.6
         version: 2.4.6
       '@tauri-apps/plugin-opener':
-        specifier: ^2.2.0
+        specifier: ^2.5.3
         version: 2.5.3
       '@tauri-apps/plugin-os':
-        specifier: ^2.2.0
+        specifier: ^2.3.2
         version: 2.3.2
       '@tauri-apps/plugin-process':
-        specifier: ^2.2.0
+        specifier: ^2.3.1
         version: 2.3.1
       '@tauri-apps/plugin-shell':
-        specifier: ^2.2.0
+        specifier: ^2.3.4
         version: 2.3.4
       '@tauri-apps/plugin-updater':
-        specifier: ^2.3.0
+        specifier: ^2.9.0
         version: 2.9.0
     devDependencies:
       '@tauri-apps/cli':
-        specifier: ^2.1.0
+        specifier: ^2.9.6
         version: 2.9.6
       sharp:
         specifier: ^0.34.5
@@ -13083,7 +13083,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.12.2(debug@4.4.3))
+      retry-axios: 2.6.0(axios@1.12.2)
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -15128,7 +15128,7 @@ snapshots:
 
   resumable-stream@2.2.10: {}
 
-  retry-axios@2.6.0(axios@1.12.2(debug@4.4.3)):
+  retry-axios@2.6.0(axios@1.12.2):
     dependencies:
       axios: 1.12.2(debug@4.4.3)
 
