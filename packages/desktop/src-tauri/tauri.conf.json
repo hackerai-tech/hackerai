@@ -80,7 +80,7 @@
         "https://releases.hackerai.co/desktop/{{target}}/{{arch}}/{{current_version}}"
       ],
       "dialog": true,
-      "pubkey": ""
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIzRTlCNkQwRjA5MzdFNTYKUldSV2ZwUHcwTGJwSTlZQjc3Zmo2Tk1mU1VtU3NkekdvcTFKRWVMdzhNOXRZSDNRODRZb2tOZ1YK"
     },
     "deep-link": {
       "mobile": [],
