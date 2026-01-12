@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "",
+    "beforeBuildCommand": "node scripts/build.js",
     "frontendDist": "../src"
   },
   "app": {
