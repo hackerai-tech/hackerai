@@ -1,0 +1,43 @@
+[package]
+name = "hackerai-desktop"
+version = "0.1.0"
+description = "HackerAI Desktop Application"
+authors = ["HackerAI"]
+edition = "2021"
+rust-version = "1.78"
+
+[lib]
+name = "hackerai_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "hackerai-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-opener = "2"
+url = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-web-kit = { version = "0.2", features = ["WKWebView", "WKNavigation", "objc2-app-kit"] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

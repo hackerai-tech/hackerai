@@ -1,0 +1,283 @@
+name: Build Desktop App
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Create a release"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  APP_URL: https://hackerai.co
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            name: macOS-arm64
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            name: macOS-x64
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            name: Linux-x64
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            name: Windows-x64
+
+    runs-on: ${{ matrix.platform }}
+    name: Build (${{ matrix.name }})
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: packages/desktop/pnpm-lock.yaml
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri -> target
+
+      - name: Install dependencies (Ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: packages/desktop
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: packages/desktop
+          tauriScript: pnpm tauri
+          args: --target ${{ matrix.target }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+          if-no-files-found: error
+          retention-days: 7
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.release == 'true'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
+
+      - name: Prepare release files
+        id: prepare
+        run: |
+          mkdir -p release-files
+
+          # Find and copy all release artifacts
+          find artifacts -name "*.dmg" -exec cp {} release-files/ \;
+          find artifacts -name "*.app.tar.gz" -exec cp {} release-files/ \;
+          find artifacts -name "*.app.tar.gz.sig" -exec cp {} release-files/ \;
+          find artifacts -name "*.AppImage" -exec cp {} release-files/ \;
+          find artifacts -name "*.AppImage.sig" -exec cp {} release-files/ \;
+          find artifacts -name "*.AppImage.tar.gz" -exec cp {} release-files/ \;
+          find artifacts -name "*.AppImage.tar.gz.sig" -exec cp {} release-files/ \;
+          find artifacts -name "*.deb" -exec cp {} release-files/ \;
+          find artifacts -name "*.msi" -exec cp {} release-files/ \;
+          find artifacts -name "*.msi.sig" -exec cp {} release-files/ \;
+          find artifacts -name "*.msi.zip" -exec cp {} release-files/ \;
+          find artifacts -name "*.msi.zip.sig" -exec cp {} release-files/ \;
+          find artifacts -name "*.nsis.zip" -exec cp {} release-files/ \;
+          find artifacts -name "*.nsis.zip.sig" -exec cp {} release-files/ \;
+          find artifacts -name "*.exe" -exec cp {} release-files/ \;
+
+          echo "Release files:"
+          ls -la release-files/
+
+      - name: Generate latest.json for updater
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${GH_REF_NAME#desktop-v}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Initialize latest.json
+          cat > release-files/latest.json << EOF
+          {
+            "version": "$VERSION",
+            "notes": "See release notes on GitHub",
+            "pub_date": "$DATE",
+            "platforms": {}
+          }
+          EOF
+
+          # Build platforms object using jq
+          PLATFORMS='{}'
+
+          # macOS arm64
+          MACOS_FILE=$(ls release-files/*aarch64*.app.tar.gz 2>/dev/null | head -1 || echo "")
+          if [ -z "$MACOS_FILE" ]; then
+            MACOS_FILE=$(ls release-files/*.app.tar.gz 2>/dev/null | head -1 || echo "")
+          fi
+          if [ -n "$MACOS_FILE" ] && [ -f "$MACOS_FILE" ]; then
+            MACOS_BASENAME=$(basename "$MACOS_FILE")
+            SIG=$(cat "${MACOS_FILE}.sig" 2>/dev/null || echo "")
+            if [ -n "$SIG" ]; then
+              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${GH_REF_NAME}/${MACOS_BASENAME}" --arg sig "$SIG" '. + {"darwin-aarch64": {"url": $url, "signature": $sig}}')
+            fi
+          fi
+
+          # macOS x64
+          MACOS_X64_FILE=$(ls release-files/*x86_64*.app.tar.gz 2>/dev/null | head -1 || echo "")
+          if [ -z "$MACOS_X64_FILE" ]; then
+            MACOS_X64_FILE="$MACOS_FILE"
+          fi
+          if [ -n "$MACOS_X64_FILE" ] && [ -f "$MACOS_X64_FILE" ]; then
+            MACOS_X64_BASENAME=$(basename "$MACOS_X64_FILE")
+            SIG=$(cat "${MACOS_X64_FILE}.sig" 2>/dev/null || echo "")
+            if [ -n "$SIG" ]; then
+              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${GH_REF_NAME}/${MACOS_X64_BASENAME}" --arg sig "$SIG" '. + {"darwin-x86_64": {"url": $url, "signature": $sig}}')
+            fi
+          fi
+
+          # Linux x64
+          LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
+          if [ -n "$LINUX_FILE" ] && [ -f "$LINUX_FILE" ]; then
+            LINUX_BASENAME=$(basename "$LINUX_FILE")
+            SIG=$(cat "${LINUX_FILE}.sig" 2>/dev/null || echo "")
+            if [ -n "$SIG" ]; then
+              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${GH_REF_NAME}/${LINUX_BASENAME}" --arg sig "$SIG" '. + {"linux-x86_64": {"url": $url, "signature": $sig}}')
+            fi
+          fi
+
+          # Windows x64
+          WIN_FILE=$(ls release-files/*.nsis.zip 2>/dev/null | head -1 || echo "")
+          if [ -n "$WIN_FILE" ] && [ -f "$WIN_FILE" ]; then
+            WIN_BASENAME=$(basename "$WIN_FILE")
+            SIG=$(cat "${WIN_FILE}.sig" 2>/dev/null || echo "")
+            if [ -n "$SIG" ]; then
+              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${GH_REF_NAME}/${WIN_BASENAME}" --arg sig "$SIG" '. + {"windows-x86_64": {"url": $url, "signature": $sig}}')
+            fi
+          fi
+
+          # Update latest.json with platforms
+          jq --argjson platforms "$PLATFORMS" '.platforms = $platforms' release-files/latest.json > release-files/latest.json.tmp
+          mv release-files/latest.json.tmp release-files/latest.json
+
+          echo "Generated latest.json:"
+          cat release-files/latest.json
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          name: HackerAI Desktop ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-files/*
+
+  build-macos-universal:
+    needs: build
+    runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macOS-arm64
+          path: arm64
+
+      - name: Download macOS x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macOS-x64
+          path: x64
+
+      - name: Create universal binary
+        run: |
+          ARM64_APP=$(find arm64 -name "*.app" -type d | head -1)
+          X64_APP=$(find x64 -name "*.app" -type d | head -1)
+
+          if [ -z "$ARM64_APP" ] || [ -z "$X64_APP" ]; then
+            echo "Could not find app bundles"
+            exit 1
+          fi
+
+          mkdir -p universal
+          cp -R "$ARM64_APP" universal/
+
+          UNIVERSAL_APP="universal/$(basename "$ARM64_APP")"
+          ARM64_BIN="$ARM64_APP/Contents/MacOS/hackerai-desktop"
+          X64_BIN="$X64_APP/Contents/MacOS/hackerai-desktop"
+          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/hackerai-desktop"
+
+          lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
+
+          hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
+
+      - name: Upload universal artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macOS-universal
+          path: HackerAI-universal.dmg
+          if-no-files-found: error

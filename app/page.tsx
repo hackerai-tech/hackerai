@@ -13,13 +13,13 @@ import MigratePentestgptDialog from "./components/MigratePentestgptDialog";
 import { usePricingDialog } from "./hooks/usePricingDialog";
 import { useGlobalState } from "./contexts/GlobalState";
 import { usePentestgptMigration } from "./hooks/usePentestgptMigration";
+import { navigateToAuth } from "./hooks/useTauri";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // Preserve input draft for later; redirect to login
-    window.location.href = "/login";
+    navigateToAuth("/login");
   };
 
   const handleStop = () => {

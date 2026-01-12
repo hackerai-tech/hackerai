@@ -1,0 +1,28 @@
+{
+  "name": "@hackerai/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HackerAI Desktop Application",
+  "scripts": {
+    "dev": "tauri dev -c src-tauri/tauri.dev.conf.json",
+    "dev:prod": "tauri dev",
+    "build": "node scripts/build.js",
+    "build:dev": "APP_URL=http://localhost:3000 node scripts/build.js --debug",
+    "build:prod": "APP_URL=https://hackerai.co node scripts/build.js",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.9.1",
+    "@tauri-apps/plugin-deep-link": "^2.4.6",
+    "@tauri-apps/plugin-os": "^2.3.2",
+    "@tauri-apps/plugin-process": "^2.3.1",
+    "@tauri-apps/plugin-shell": "^2.3.4",
+    "@tauri-apps/plugin-updater": "^2.9.0",
+    "@tauri-apps/plugin-opener": "^2.5.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.6",
+    "sharp": "^0.34.5",
+    "typescript": "^5.0.0"
+  }
+}

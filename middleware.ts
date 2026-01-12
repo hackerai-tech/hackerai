@@ -7,7 +7,10 @@ const UNAUTHENTICATED_PATHS = new Set([
   "/signup",
   "/logout",
   "/api/clear-auth-cookies",
+  "/api/auth/desktop-callback",
   "/callback",
+  "/desktop-login",
+  "/desktop-callback",
   "/auth-error",
   "/privacy-policy",
   "/terms-of-service",
@@ -19,6 +22,11 @@ function getRedirectUri(): string | undefined {
     return `https://${process.env.VERCEL_URL}/callback`;
   }
   return undefined;
+}
+
+function isDesktopApp(request: NextRequest): boolean {
+  const userAgent = request.headers.get("user-agent") || "";
+  return userAgent.includes("HackerAI-Desktop");
 }
 
 function isUnauthenticatedPath(pathname: string): boolean {
@@ -39,12 +47,24 @@ function isBrowserRequest(request: NextRequest): boolean {
 const SESSION_HEADER = "x-workos-session";
 
 export default async function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+
+  // Desktop app: redirect unauthenticated users to desktop-specific error page
+  if (isDesktopApp(request)) {
+    const hasSession = request.cookies.has("wos-session");
+
+    if (!hasSession && !isUnauthenticatedPath(pathname)) {
+      return NextResponse.redirect(
+        new URL("/desktop-callback?error=unauthenticated", request.url),
+      );
+    }
+  }
+
   const { session, headers, authorizationUrl } = await authkit(request, {
     redirectUri: getRedirectUri(),
     eagerAuth: true,
   });
 
-  const pathname = request.nextUrl.pathname;
   const requestHeaders = buildRequestHeaders(request, headers);
   const responseHeaders = buildResponseHeaders(headers);
 

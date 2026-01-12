@@ -100,7 +100,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   // Determine if user has pro subscription
   const isProUser = subscription !== "free";
 
-  const handleLogOut = async () => {
+  const handleLogOut = () => {
     clientLogout();
   };
 

@@ -8,6 +8,7 @@ import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { Loader2, X } from "lucide-react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useUpgrade } from "../hooks/useUpgrade";
+import { navigateToAuth } from "../hooks/useTauri";
 import {
   freeFeatures,
   proFeatures,
@@ -160,16 +161,6 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     setIsYearly(value === "yearly");
   };
 
-  const handleSignIn = () => {
-    // eslint-disable-next-line react-hooks/immutability
-    window.location.href = "/login";
-  };
-
-  const handleSignUp = () => {
-    // eslint-disable-next-line react-hooks/immutability
-    window.location.href = "/signup";
-  };
-
   const handleUpgradeClick = async (
     plan:
       | "pro-monthly-plan"
@@ -201,7 +192,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   const handleTeamClick = () => {
     if (!user) {
-      handleSignIn();
+      navigateToAuth("/login");
       return;
     }
 
@@ -230,7 +221,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "",
         variant: "secondary" as const,
-        onClick: handleSignUp,
+        onClick: () => navigateToAuth("/signup"),
       };
     } else {
       return {
@@ -271,7 +262,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
         variant: "default" as const,
-        onClick: handleSignIn,
+        onClick: () => navigateToAuth("/login"),
       };
     }
   };
@@ -305,7 +296,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         disabled: false,
         className: "",
         variant: "default" as const,
-        onClick: handleSignIn,
+        onClick: () => navigateToAuth("/login"),
       };
     }
   };

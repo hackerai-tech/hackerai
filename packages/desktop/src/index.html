@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HackerAI</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+        background: #0a0a0a;
+        color: #fafafa;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+      }
+      .loader {
+        text-align: center;
+      }
+      .spinner {
+        width: 40px;
+        height: 40px;
+        border: 3px solid #333;
+        border-top-color: #10b981;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 16px;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+      .error-state {
+        display: none;
+      }
+      .error-state.visible {
+        display: block;
+      }
+      .error-icon {
+        width: 48px;
+        height: 48px;
+        margin: 0 auto 16px;
+        color: #ef4444;
+      }
+      .error-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+      .error-message {
+        color: #888;
+        margin-bottom: 24px;
+        font-size: 0.875rem;
+      }
+      .retry-btn {
+        background: #10b981;
+        color: #fff;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 1rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      .retry-btn:hover {
+        background: #059669;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="loader" id="loader">
+      <div class="spinner"></div>
+      <p id="status-text">Loading HackerAI...</p>
+    </div>
+    <div class="error-state" id="error-state">
+      <svg class="error-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+      </svg>
+      <p class="error-title">Connection Failed</p>
+      <p class="error-message" id="error-message">Unable to connect to HackerAI servers.</p>
+      <button class="retry-btn" id="retry-btn" onclick="retry()">Retry</button>
+    </div>
+    <script>
+      const APP_URL = "__APP_URL__";
+
+      function showLoader() {
+        document.getElementById("loader").style.display = "block";
+        document.getElementById("error-state").classList.remove("visible");
+      }
+
+      function showError(message) {
+        document.getElementById("loader").style.display = "none";
+        document.getElementById("error-state").classList.add("visible");
+        document.getElementById("error-message").textContent = message;
+      }
+
+      async function checkConnectivity() {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+          await fetch(APP_URL, {
+            method: "HEAD",
+            mode: "no-cors",
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          return true;
+        } catch {
+          return false;
+        }
+      }
+
+      async function retry() {
+        showLoader();
+        document.getElementById("status-text").textContent = "Connecting to HackerAI...";
+
+        const isOnline = await checkConnectivity();
+
+        if (isOnline || navigator.onLine) {
+          window.location.href = APP_URL;
+          setTimeout(() => {
+            if (document.visibilityState !== "hidden") {
+              showError("Unable to connect. Please check your internet connection.");
+            }
+          }, 3000);
+        } else {
+          showError("Unable to connect. Please check your internet connection.");
+        }
+      }
+
+      window.addEventListener("online", retry);
+
+      retry();
+    </script>
+  </body>
+</html>

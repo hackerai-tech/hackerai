@@ -15,6 +15,7 @@ import { AlertCircle, File, Download } from "lucide-react";
 import { FilePart, FilePartRendererProps } from "@/types/file";
 import { toast } from "sonner";
 import { useFileUrlCacheContext } from "../contexts/FileUrlCacheContext";
+import { isTauriEnvironment, openDownloadsFolder } from "../hooks/useTauri";
 
 const FilePartRendererComponent = ({
   part,
@@ -181,6 +182,16 @@ const FilePartRendererComponent = ({
       document.body.removeChild(link);
 
       URL.revokeObjectURL(blobUrl);
+
+      if (isTauriEnvironment()) {
+        toast.success(`Downloaded ${fileName}`, {
+          description: "Saved to Downloads folder",
+          action: {
+            label: "Show in folder",
+            onClick: () => openDownloadsFolder(),
+          },
+        });
+      }
     } catch (error) {
       console.error("Error downloading file:", error);
       toast.error("Failed to download file");

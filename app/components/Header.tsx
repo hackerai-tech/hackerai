@@ -4,6 +4,7 @@ import React from "react";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { navigateToAuth } from "@/app/hooks/useTauri";
 
 interface HeaderProps {
   chatTitle?: string;
@@ -11,14 +12,6 @@ interface HeaderProps {
 
 const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
   const { user, loading } = useAuth();
-
-  const handleSignIn = () => {
-    window.location.href = "/login";
-  };
-
-  const handleSignUp = () => {
-    window.location.href = "/signup";
-  };
 
   return (
     <header className="w-full px-6 max-sm:px-4 flex-shrink-0">
@@ -43,7 +36,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
             <div className="flex gap-2 items-center">
               <Button
                 data-testid="sign-in-button"
-                onClick={handleSignIn}
+                onClick={() => navigateToAuth("/login")}
                 variant="default"
                 size="default"
                 className="min-w-[74px] rounded-[10px]"
@@ -52,7 +45,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
               </Button>
               <Button
                 data-testid="sign-up-button"
-                onClick={handleSignUp}
+                onClick={() => navigateToAuth("/signup")}
                 variant="outline"
                 size="default"
                 className="min-w-16 rounded-[10px]"
@@ -76,7 +69,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
           <div className="flex items-center gap-2">
             <Button
               data-testid="sign-in-button-mobile"
-              onClick={handleSignIn}
+              onClick={() => navigateToAuth("/login")}
               variant="default"
               size="sm"
               className="rounded-[10px]"
@@ -85,7 +78,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
             </Button>
             <Button
               data-testid="sign-up-button-mobile"
-              onClick={handleSignUp}
+              onClick={() => navigateToAuth("/signup")}
               variant="outline"
               size="sm"
               className="rounded-[10px]"
