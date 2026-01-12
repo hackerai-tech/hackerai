@@ -1,6 +1,6 @@
 import { Redis } from "@upstash/redis";
 
-const TRANSFER_TOKEN_TTL_SECONDS = 60;
+const TRANSFER_TOKEN_TTL_SECONDS = 300;
 const OAUTH_STATE_TTL_SECONDS = 300;
 const TRANSFER_TOKEN_PREFIX = "desktop-auth-transfer:";
 const OAUTH_STATE_PREFIX = "desktop-oauth-state:";
@@ -53,7 +53,7 @@ export async function createDesktopTransferToken(
   };
 
   try {
-    await redis.set(key, JSON.stringify(data), { ex: TRANSFER_TOKEN_TTL_SECONDS });
+    await redis.set(key, data, { ex: TRANSFER_TOKEN_TTL_SECONDS });
   } catch (err) {
     console.error("[Desktop Auth] Failed to store transfer token in Redis:", err);
     return null;
@@ -65,7 +65,6 @@ export async function createDesktopTransferToken(
 export async function exchangeDesktopTransferToken(
   transferToken: string,
 ): Promise<{ sealedSession: string } | null> {
-  // Validate token format to prevent injection
   if (!TOKEN_FORMAT_REGEX.test(transferToken)) {
     console.warn("[Desktop Auth] Invalid transfer token format");
     return null;
@@ -81,10 +80,10 @@ export async function exchangeDesktopTransferToken(
 
   const key = `${TRANSFER_TOKEN_PREFIX}${transferToken}`;
 
-  let rawData: string | null;
+  let rawData: TransferTokenData | string | null;
   try {
     // Use getdel for atomic get-and-delete to prevent race conditions
-    rawData = await redis.getdel<string>(key);
+    rawData = await redis.getdel<TransferTokenData>(key);
   } catch (err) {
     console.error("[Desktop Auth] Failed to retrieve transfer token from Redis:", err);
     return null;
@@ -96,11 +95,16 @@ export async function exchangeDesktopTransferToken(
   }
 
   let data: TransferTokenData;
-  try {
-    data = JSON.parse(rawData) as TransferTokenData;
-  } catch (err) {
-    console.error("[Desktop Auth] Failed to parse transfer token data:", err);
-    return null;
+  if (typeof rawData === "object") {
+    // Upstash auto-deserialized the JSON
+    data = rawData as unknown as TransferTokenData;
+  } else {
+    try {
+      data = JSON.parse(rawData) as TransferTokenData;
+    } catch (err) {
+      console.error("[Desktop Auth] Failed to parse transfer token data:", err);
+      return null;
+    }
   }
 
   if (!data || typeof data.sealedSession !== "string" || data.sealedSession.length === 0) {
@@ -108,9 +112,7 @@ export async function exchangeDesktopTransferToken(
     return null;
   }
 
-  return {
-    sealedSession: data.sealedSession,
-  };
+  return { sealedSession: data.sealedSession };
 }
 
 export async function createOAuthState(): Promise<string | null> {

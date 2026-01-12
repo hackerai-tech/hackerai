@@ -135,7 +135,7 @@ export async function GET(request: Request) {
     return new Response(
       renderErrorPage(
         "Session Expired",
-        "Your authentication session has expired. This can happen if the sign-in took longer than 60 seconds. Please try again.",
+        "Your authentication session has expired. Please try signing in again.",
         retryUrl
       ),
       { status: 400, headers: noStoreHeaders }
