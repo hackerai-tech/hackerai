@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "",
     "devUrl": "http://localhost:3000",
-    "beforeBuildCommand": "",
+    "beforeBuildCommand": "node scripts/build.js",
     "frontendDist": "../src"
   },
   "app": {
@@ -80,7 +80,7 @@
         "https://github.com/hackerai-tech/hackerai/releases/latest/download/latest.json"
       ],
       "dialog": true,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDIzRTlCNkQwRjA5MzdFNTYKUldSV2ZwUHcwTGJwSTlZQjc3Zmo2Tk1mU1VtU3NkekdvcTFKRWVMdzhNOXRZSDNRODRZb2tOZ1YK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdCNEQzNTM3RDE4MDEzRkEKUldUNkU0RFJOelZOZTBCYld6aCtHalFVZGxCZmQvNFc2OVQwdEFZbUVHOFJ3MjJzVzdlTUdkRUwK"
     },
     "deep-link": {
       "mobile": [],

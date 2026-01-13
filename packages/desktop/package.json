@@ -6,9 +6,9 @@
   "scripts": {
     "dev": "tauri dev -c src-tauri/tauri.dev.conf.json",
     "dev:prod": "tauri dev",
-    "build": "node scripts/build.js",
-    "build:dev": "APP_URL=http://localhost:3000 node scripts/build.js --debug",
-    "build:prod": "APP_URL=https://hackerai.co node scripts/build.js",
+    "build": "tauri build",
+    "build:dev": "APP_URL=http://localhost:3000 tauri build --debug",
+    "build:prod": "APP_URL=https://hackerai.co tauri build",
     "tauri": "tauri"
   },
   "dependencies": {

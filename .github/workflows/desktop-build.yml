@@ -91,28 +91,159 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: packages/desktop
 
+      - name: Update version from tag
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          echo "Setting version to $VERSION"
+          cd packages/desktop/src-tauri
+          sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" tauri.conf.json
+          rm -f tauri.conf.json.bak
+          grep version tauri.conf.json
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: packages/desktop
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
+
+      - name: Sign updater artifacts
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        working-directory: packages/desktop
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          # Write key to file, removing any trailing whitespace/special chars
+          KEY_FILE=$(mktemp)
+          PASSWORD_FILE=$(mktemp)
+          echo -n "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '\n\r\t ' > "$KEY_FILE"
+          echo -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" > "$PASSWORD_FILE"
+          trap "rm -f $KEY_FILE $PASSWORD_FILE" EXIT
+
+          # Debug: show key length and last few chars (masked)
+          echo "Key file size: $(wc -c < "$KEY_FILE") bytes"
+
+          sign_file() {
+            local file="$1"
+            echo "Signing $file"
+            # Use --silent to prevent pnpm from echoing command
+            pnpm --silent tauri signer sign --private-key-path "$KEY_FILE" --password "$(cat $PASSWORD_FILE)" "$file"
+          }
+
+          # Sign macOS app bundle
+          shopt -s nullglob
+          for f in "$BUNDLE_DIR/macos/"*.app.tar.gz; do
+            [ -f "$f" ] && sign_file "$f"
+          done
+
+          # Sign Linux AppImage
+          for f in "$BUNDLE_DIR/appimage/"*.AppImage; do
+            if [ -f "$f" ]; then
+              echo "Creating tar.gz for $f"
+              tar -czf "$f.tar.gz" -C "$(dirname "$f")" "$(basename "$f")"
+              sign_file "$f.tar.gz"
+            fi
+          done
+
+          # Sign Windows NSIS installer
+          for f in "$BUNDLE_DIR/nsis/"*-setup.exe; do
+            if [ -f "$f" ]; then
+              echo "Creating zip for $f"
+              ZIP_NAME="${f%.exe}.nsis.zip"
+              DIR=$(dirname "$f")
+              BASE=$(basename "$f")
+              ZIP_BASE=$(basename "$ZIP_NAME")
+              # Use PowerShell on Windows, zip on Unix
+              if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+                powershell -Command "Compress-Archive -Path '$DIR/$BASE' -DestinationPath '$DIR/$ZIP_BASE' -Force"
+              else
+                (cd "$DIR" && zip -q "$ZIP_BASE" "$BASE")
+              fi
+              sign_file "$ZIP_NAME"
+            fi
+          done
+          shopt -u nullglob
+
+      - name: List bundle contents
+        shell: bash
+        run: |
+          echo "=== All updater-related files ==="
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) 2>/dev/null || true
+          echo ""
+          echo "=== Full macos/nsis/appimage directories ==="
+          ls -la packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/ 2>/dev/null || true
+          ls -la packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/ 2>/dev/null || true
+          ls -la packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/ 2>/dev/null || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.name }}
           path: |
-            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*
           if-no-files-found: error
           retention-days: 7
 
-  create-release:
+  build-macos-universal:
     needs: build
+    runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+
+    steps:
+      - name: Download macOS arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macOS-arm64
+          path: arm64
+
+      - name: Download macOS x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macOS-x64
+          path: x64
+
+      - name: Create universal binary
+        run: |
+          ARM64_APP=$(find arm64 -name "*.app" -type d | head -1)
+          X64_APP=$(find x64 -name "*.app" -type d | head -1)
+
+          if [ -z "$ARM64_APP" ] || [ -z "$X64_APP" ]; then
+            echo "Could not find app bundles"
+            exit 1
+          fi
+
+          mkdir -p universal
+          cp -R "$ARM64_APP" universal/
+
+          UNIVERSAL_APP="universal/$(basename "$ARM64_APP")"
+          ARM64_BIN="$ARM64_APP/Contents/MacOS/hackerai-desktop"
+          X64_BIN="$X64_APP/Contents/MacOS/hackerai-desktop"
+          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/hackerai-desktop"
+
+          lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
+          chmod +x "$UNIVERSAL_BIN"
+
+          # Add Applications symlink for drag-and-drop installation
+          ln -s /Applications universal/Applications
+
+          hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
+
+      - name: Upload universal artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macOS-universal
+          path: HackerAI-universal.dmg
+          if-no-files-found: error
+
+  create-release:
+    needs: [build, build-macos-universal]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.release == 'true'
     permissions:
@@ -121,6 +252,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Debug ref info
+        run: |
+          echo "github.ref: ${{ github.ref }}"
+          echo "github.ref_name: ${{ github.ref_name }}"
+          git tag -l | grep desktop || echo "No desktop tags found"
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -230,66 +369,16 @@ jobs:
           cat release-files/latest.json
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          name: HackerAI Desktop ${{ github.ref_name }}
-          tag_name: ${{ github.ref_name }}
-          draft: true
-          prerelease: false
-          generate_release_notes: true
-          files: |
-            release-files/*
-
-  build-macos-universal:
-    needs: build
-    runs-on: macos-latest
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download macOS arm64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-macOS-arm64
-          path: arm64
-
-      - name: Download macOS x64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-macOS-x64
-          path: x64
-
-      - name: Create universal binary
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ARM64_APP=$(find arm64 -name "*.app" -type d | head -1)
-          X64_APP=$(find x64 -name "*.app" -type d | head -1)
-
-          if [ -z "$ARM64_APP" ] || [ -z "$X64_APP" ]; then
-            echo "Could not find app bundles"
-            exit 1
-          fi
-
-          mkdir -p universal
-          cp -R "$ARM64_APP" universal/
-
-          UNIVERSAL_APP="universal/$(basename "$ARM64_APP")"
-          ARM64_BIN="$ARM64_APP/Contents/MacOS/hackerai-desktop"
-          X64_BIN="$X64_APP/Contents/MacOS/hackerai-desktop"
-          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/hackerai-desktop"
-
-          lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
-
-          hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
-
-      - name: Upload universal artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-macOS-universal
-          path: HackerAI-universal.dmg
-          if-no-files-found: error
+          echo "Creating release for tag: ${{ github.ref_name }}"
+          echo "Full ref: ${{ github.ref }}"
+          echo "Verifying tag exists..."
+          git tag -l "${{ github.ref_name }}"
+          gh release create "${{ github.ref_name }}" \
+            --title "HackerAI Desktop ${{ github.ref_name }}" \
+            --draft \
+            --generate-notes \
+            --verify-tag \
+            release-files/*
