@@ -120,31 +120,11 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
-          # Write key to temp file to avoid shell escaping issues
-          KEY_FILE=$(mktemp)
-          KEY_B64=$(mktemp)
-          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$KEY_B64"
-
-          # Debug: check if key is set (just length, not content)
-          echo "Key length: $(wc -c < "$KEY_B64")"
-
-          # Decode base64 - try different methods
-          if command -v python3 &>/dev/null; then
-            python3 -c "import base64,sys; sys.stdout.buffer.write(base64.b64decode(open('$KEY_B64').read()))" > "$KEY_FILE"
-          elif [[ "$OSTYPE" == "darwin"* ]]; then
-            base64 -D -i "$KEY_B64" -o "$KEY_FILE"
-          else
-            base64 -d "$KEY_B64" > "$KEY_FILE"
-          fi
-          rm -f "$KEY_B64"
-          trap "rm -f $KEY_FILE" EXIT
-
-          echo "Decoded key length: $(wc -c < "$KEY_FILE")"
-
           sign_file() {
             local file="$1"
             echo "Signing $file"
-            pnpm tauri signer sign "$file" --private-key-path "$KEY_FILE" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            # Tauri reads TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD from env
+            pnpm tauri signer sign "$file"
           }
 
           # Sign macOS app bundle
