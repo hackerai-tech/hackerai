@@ -142,21 +142,39 @@ jobs:
 
       - name: Create universal binary
         run: |
+          echo "=== ARM64 artifact structure ==="
+          find arm64 -type f | head -50
+          echo ""
+          echo "=== X64 artifact structure ==="
+          find x64 -type f | head -50
+          echo ""
+
           ARM64_APP=$(find arm64 -name "*.app" -type d | head -1)
           X64_APP=$(find x64 -name "*.app" -type d | head -1)
+
+          echo "ARM64_APP: $ARM64_APP"
+          echo "X64_APP: $X64_APP"
 
           if [ -z "$ARM64_APP" ] || [ -z "$X64_APP" ]; then
             echo "Could not find app bundles"
             exit 1
           fi
 
+          echo "=== ARM64 app contents ==="
+          ls -la "$ARM64_APP/Contents/MacOS/" || echo "MacOS dir not found"
+
           mkdir -p universal
           cp -R "$ARM64_APP" universal/
 
           UNIVERSAL_APP="universal/$(basename "$ARM64_APP")"
-          ARM64_BIN="$ARM64_APP/Contents/MacOS/HackerAI"
-          X64_BIN="$X64_APP/Contents/MacOS/HackerAI"
-          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/HackerAI"
+
+          # Find the actual binary name
+          BINARY_NAME=$(ls "$ARM64_APP/Contents/MacOS/" | head -1)
+          echo "Binary name found: $BINARY_NAME"
+
+          ARM64_BIN="$ARM64_APP/Contents/MacOS/$BINARY_NAME"
+          X64_BIN="$X64_APP/Contents/MacOS/$BINARY_NAME"
+          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/$BINARY_NAME"
 
           lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
 
