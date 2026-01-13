@@ -120,11 +120,18 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
+          # Write key to file to avoid shell escaping issues
+          KEY_FILE=$(mktemp)
+          PASSWORD_FILE=$(mktemp)
+          printenv TAURI_SIGNING_PRIVATE_KEY > "$KEY_FILE"
+          printenv TAURI_SIGNING_PRIVATE_KEY_PASSWORD > "$PASSWORD_FILE"
+          trap "rm -f $KEY_FILE $PASSWORD_FILE" EXIT
+
           sign_file() {
             local file="$1"
             echo "Signing $file"
-            # Use -k flag with env var (GitHub Actions auto-masks secrets in logs)
-            pnpm tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$file"
+            # Use --silent to prevent pnpm from echoing command
+            pnpm --silent tauri signer sign --private-key-path "$KEY_FILE" --password "$(cat $PASSWORD_FILE)" "$file"
           }
 
           # Sign macOS app bundle
