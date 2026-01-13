@@ -120,38 +120,40 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
+          # Write key to temp file to avoid shell escaping issues
+          KEY_FILE=$(mktemp)
+          echo "$TAURI_SIGNING_PRIVATE_KEY" | base64 -d > "$KEY_FILE"
+          trap "rm -f $KEY_FILE" EXIT
+
+          sign_file() {
+            local file="$1"
+            echo "Signing $file"
+            pnpm tauri signer sign "$file" --private-key-path "$KEY_FILE" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+          }
+
           # Sign macOS app bundle
-          if [ -f "$BUNDLE_DIR/macos/"*.app.tar.gz ]; then
-            for f in "$BUNDLE_DIR/macos/"*.app.tar.gz; do
-              echo "Signing $f"
-              pnpm tauri signer sign "$f" --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-            done
-          fi
+          for f in "$BUNDLE_DIR/macos/"*.app.tar.gz 2>/dev/null; do
+            [ -f "$f" ] && sign_file "$f"
+          done
 
           # Sign Linux AppImage
-          if [ -d "$BUNDLE_DIR/appimage" ]; then
-            for f in "$BUNDLE_DIR/appimage/"*.AppImage; do
-              if [ -f "$f" ]; then
-                echo "Creating tar.gz for $f"
-                tar -czf "$f.tar.gz" -C "$(dirname "$f")" "$(basename "$f")"
-                echo "Signing $f.tar.gz"
-                pnpm tauri signer sign "$f.tar.gz" --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-              fi
-            done
-          fi
+          for f in "$BUNDLE_DIR/appimage/"*.AppImage 2>/dev/null; do
+            if [ -f "$f" ]; then
+              echo "Creating tar.gz for $f"
+              tar -czf "$f.tar.gz" -C "$(dirname "$f")" "$(basename "$f")"
+              sign_file "$f.tar.gz"
+            fi
+          done
 
           # Sign Windows NSIS installer
-          if [ -d "$BUNDLE_DIR/nsis" ]; then
-            for f in "$BUNDLE_DIR/nsis/"*-setup.exe; do
-              if [ -f "$f" ]; then
-                echo "Creating zip for $f"
-                ZIP_NAME="${f%.exe}.nsis.zip"
-                cd "$(dirname "$f")" && zip -q "$(basename "$ZIP_NAME")" "$(basename "$f")" && cd -
-                echo "Signing $ZIP_NAME"
-                pnpm tauri signer sign "$ZIP_NAME" --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
-              fi
-            done
-          fi
+          for f in "$BUNDLE_DIR/nsis/"*-setup.exe 2>/dev/null; do
+            if [ -f "$f" ]; then
+              echo "Creating zip for $f"
+              ZIP_NAME="${f%.exe}.nsis.zip"
+              (cd "$(dirname "$f")" && zip -q "$(basename "$ZIP_NAME")" "$(basename "$f")")
+              sign_file "$ZIP_NAME"
+            fi
+          done
 
       - name: List bundle contents
         shell: bash
