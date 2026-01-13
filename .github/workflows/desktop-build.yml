@@ -120,12 +120,15 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
-          # Write key to file to avoid shell escaping issues (no trailing newline)
+          # Write key to file, removing any trailing whitespace/special chars
           KEY_FILE=$(mktemp)
           PASSWORD_FILE=$(mktemp)
-          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$KEY_FILE"
-          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" > "$PASSWORD_FILE"
+          echo -n "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '\n\r\t ' > "$KEY_FILE"
+          echo -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" > "$PASSWORD_FILE"
           trap "rm -f $KEY_FILE $PASSWORD_FILE" EXIT
+
+          # Debug: show key length and last few chars (masked)
+          echo "Key file size: $(wc -c < "$KEY_FILE") bytes"
 
           sign_file() {
             local file="$1"
