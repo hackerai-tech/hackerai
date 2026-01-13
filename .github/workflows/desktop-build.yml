@@ -122,7 +122,12 @@ jobs:
 
           # Write key to temp file to avoid shell escaping issues
           KEY_FILE=$(mktemp)
-          echo "$TAURI_SIGNING_PRIVATE_KEY" | base64 -d > "$KEY_FILE"
+          # Use -D on macOS, -d on Linux
+          if [[ "$OSTYPE" == "darwin"* ]]; then
+            echo "$TAURI_SIGNING_PRIVATE_KEY" | base64 -D > "$KEY_FILE"
+          else
+            echo "$TAURI_SIGNING_PRIVATE_KEY" | base64 -d > "$KEY_FILE"
+          fi
           trap "rm -f $KEY_FILE" EXIT
 
           sign_file() {
