@@ -106,12 +106,52 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: packages/desktop
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
+
+      - name: Sign updater artifacts
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        working-directory: packages/desktop
+        run: |
+          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          # Sign macOS app bundle
+          if [ -f "$BUNDLE_DIR/macos/"*.app.tar.gz ]; then
+            for f in "$BUNDLE_DIR/macos/"*.app.tar.gz; do
+              echo "Signing $f"
+              pnpm tauri signer sign "$f" --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            done
+          fi
+
+          # Sign Linux AppImage
+          if [ -d "$BUNDLE_DIR/appimage" ]; then
+            for f in "$BUNDLE_DIR/appimage/"*.AppImage; do
+              if [ -f "$f" ]; then
+                echo "Creating tar.gz for $f"
+                tar -czf "$f.tar.gz" -C "$(dirname "$f")" "$(basename "$f")"
+                echo "Signing $f.tar.gz"
+                pnpm tauri signer sign "$f.tar.gz" --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+              fi
+            done
+          fi
+
+          # Sign Windows NSIS installer
+          if [ -d "$BUNDLE_DIR/nsis" ]; then
+            for f in "$BUNDLE_DIR/nsis/"*-setup.exe; do
+              if [ -f "$f" ]; then
+                echo "Creating zip for $f"
+                ZIP_NAME="${f%.exe}.nsis.zip"
+                cd "$(dirname "$f")" && zip -q "$(basename "$ZIP_NAME")" "$(basename "$f")" && cd -
+                echo "Signing $ZIP_NAME"
+                pnpm tauri signer sign "$ZIP_NAME" --private-key "$TAURI_SIGNING_PRIVATE_KEY" --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+              fi
+            done
+          fi
 
       - name: List bundle contents
         shell: bash
