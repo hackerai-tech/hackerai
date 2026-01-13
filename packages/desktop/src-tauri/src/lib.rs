@@ -100,6 +100,59 @@ fn handle_auth_deep_link(app: &tauri::AppHandle, url: &url::Url) {
     }
 }
 
+async fn check_for_updates_silent(app: tauri::AppHandle) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let updater = match app.updater() {
+        Ok(updater) => updater,
+        Err(e) => {
+            log::warn!("Auto-update check failed to get updater: {}", e);
+            return;
+        }
+    };
+
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let version = update.version.clone();
+            log::info!("Update available: {}", version);
+
+            let should_update = app.dialog()
+                .message(format!(
+                    "A new version ({}) is available. Would you like to update now?",
+                    version
+                ))
+                .title("Update Available")
+                .kind(MessageDialogKind::Info)
+                .buttons(MessageDialogButtons::OkCancel)
+                .blocking_show();
+
+            if should_update {
+                log::info!("User accepted update to version {}", version);
+                if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+                    log::error!("Failed to install update: {}", e);
+                    let _ = app.dialog()
+                        .message(format!("Failed to install update: {}", e))
+                        .kind(MessageDialogKind::Error)
+                        .title("Update Error")
+                        .blocking_show();
+                } else {
+                    let _ = app.dialog()
+                        .message("Update installed. Please restart the application.")
+                        .kind(MessageDialogKind::Info)
+                        .title("Update Complete")
+                        .blocking_show();
+                }
+            }
+        }
+        Ok(None) => {
+            log::info!("No updates available (auto-check)");
+        }
+        Err(e) => {
+            log::warn!("Auto-update check failed: {}", e);
+        }
+    }
+}
+
 async fn check_for_updates(app: tauri::AppHandle) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -213,6 +266,12 @@ pub fn run() {
                 .build()?;
 
             app.set_menu(menu)?;
+
+            // Auto-check for updates on launch
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                check_for_updates_silent(handle).await;
+            });
 
             log::info!("HackerAI Desktop initialized with menus");
             Ok(())
