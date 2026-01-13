@@ -157,7 +157,15 @@ jobs:
             if [ -f "$f" ]; then
               echo "Creating zip for $f"
               ZIP_NAME="${f%.exe}.nsis.zip"
-              (cd "$(dirname "$f")" && zip -q "$(basename "$ZIP_NAME")" "$(basename "$f")")
+              DIR=$(dirname "$f")
+              BASE=$(basename "$f")
+              ZIP_BASE=$(basename "$ZIP_NAME")
+              # Use PowerShell on Windows, zip on Unix
+              if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
+                powershell -Command "Compress-Archive -Path '$DIR/$BASE' -DestinationPath '$DIR/$ZIP_BASE' -Force"
+              else
+                (cd "$DIR" && zip -q "$ZIP_BASE" "$BASE")
+              fi
               sign_file "$ZIP_NAME"
             fi
           done
