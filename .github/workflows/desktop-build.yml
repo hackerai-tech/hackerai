@@ -120,11 +120,11 @@ jobs:
         run: |
           BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
 
-          # Write key to file to avoid shell escaping issues
+          # Write key to file to avoid shell escaping issues (no trailing newline)
           KEY_FILE=$(mktemp)
           PASSWORD_FILE=$(mktemp)
-          printenv TAURI_SIGNING_PRIVATE_KEY > "$KEY_FILE"
-          printenv TAURI_SIGNING_PRIVATE_KEY_PASSWORD > "$PASSWORD_FILE"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" > "$KEY_FILE"
+          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" > "$PASSWORD_FILE"
           trap "rm -f $KEY_FILE $PASSWORD_FILE" EXIT
 
           sign_file() {
