@@ -33,7 +33,7 @@ You'll need the following accounts:
 **Optional:**
 
 - [Amazon S3](https://aws.amazon.com/s3/) - File storage (alternative to Convex storage)
-- [Exa](https://exa.ai/) - Web search functionality
+- [Perplexity](https://perplexity.ai/) - Web search functionality
 - [Jina AI](https://jina.ai/reader) - Web URL content retrieval
 - [Redis](https://redis.io/) - Stream resumption
 - [Upstash Redis](https://upstash.com/) - Rate limiting

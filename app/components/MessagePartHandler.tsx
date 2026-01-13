@@ -4,7 +4,7 @@ import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { PythonToolHandler } from "./tools/PythonToolHandler";
-import { WebSearchToolHandler, WebToolHandler } from "./tools/WebToolHandler";
+import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
@@ -76,11 +76,9 @@ export const MessagePartHandler = ({
     case "tool-multi_edit":
       return <FileToolsHandler message={message} part={part} status={status} />;
 
-    // Keep the old export for backward compatibility
     case "tool-web_search":
-      return <WebSearchToolHandler part={part} status={status} />;
-
-    case "tool-web":
+    case "tool-open_url":
+    case "tool-web": // Legacy support
       return <WebToolHandler part={part} status={status} />;
 
     case "data-terminal":

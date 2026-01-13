@@ -2,39 +2,69 @@ import ToolBlock from "@/components/ui/tool-block";
 import { Search, ExternalLink } from "lucide-react";
 import type { ChatStatus } from "@/types";
 
+interface WebSearchInput {
+  queries?: string[];
+}
+
+interface OpenUrlInput {
+  url?: string;
+}
+
+// Legacy web tool input (combined search + open_url)
+interface LegacyWebInput {
+  command?: "search" | "open_url";
+  query?: string; // Legacy used single query string
+  url?: string;
+}
+
 interface WebToolHandlerProps {
-  part: any;
+  part: {
+    toolCallId: string;
+    toolName: string;
+    state: string;
+    input?: WebSearchInput | OpenUrlInput | LegacyWebInput;
+  };
   status: ChatStatus;
 }
 
 export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
-  const { toolCallId, state, input } = part;
+  const { toolCallId, toolName, state, input } = part;
 
-  // Handle both new web tool format and legacy web_search format
-  const webInput = input as
-    | {
-        command?: "search" | "open_url";
-        query?: string;
-        url?: string;
-        explanation?: string;
-      }
-    | undefined;
-
-  // Determine tool type - for backward compatibility: if no command, assume it's a search (legacy web_search)
-  const isUrlCommand = webInput?.command === "open_url";
+  // Determine if this is an open_url action
+  const isOpenUrl =
+    toolName === "open_url" ||
+    (toolName === "web" && (input as LegacyWebInput)?.command === "open_url");
 
   const getIcon = () => {
-    return isUrlCommand ? <ExternalLink /> : <Search />;
+    return isOpenUrl ? <ExternalLink /> : <Search />;
   };
 
   const getAction = (isCompleted = false) => {
-    const action = isUrlCommand ? "Opening URL" : "Searching web";
+    const action = isOpenUrl ? "Opening URL" : "Searching web";
     return isCompleted ? action.replace("ing", "ed") : action;
   };
 
   const getTarget = () => {
-    if (!webInput) return undefined;
-    return isUrlCommand ? webInput.url : webInput.query;
+    if (!input) return undefined;
+
+    // Handle open_url tool or legacy web tool with open_url command
+    if (isOpenUrl) {
+      return (input as OpenUrlInput | LegacyWebInput).url;
+    }
+
+    // Handle web_search tool (queries array)
+    const searchInput = input as WebSearchInput;
+    if (searchInput.queries && searchInput.queries.length > 0) {
+      return searchInput.queries.join(", ");
+    }
+
+    // Handle legacy web tool (single query string)
+    const legacyInput = input as LegacyWebInput;
+    if (legacyInput.query) {
+      return legacyInput.query;
+    }
+
+    return undefined;
   };
 
   switch (state) {
@@ -73,6 +103,3 @@ export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
       return null;
   }
 };
-
-// Keep the old export for backward compatibility
-export const WebSearchToolHandler = WebToolHandler;

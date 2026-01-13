@@ -11,8 +11,8 @@ import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
 // import { createSearchReplace } from "./search-replace";
 import { createMatch } from "./match";
-import { createWebTool } from "./web";
 import { createWebSearch } from "./web-search";
+import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
 import { createUpdateMemory } from "./update-memory";
 import { createHttpRequest } from "./http-request";
@@ -98,10 +98,9 @@ export const createTools = (
     http_request: createHttpRequest(context),
     ...(!isTemporary &&
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
-    ...(process.env.EXA_API_KEY &&
-      process.env.JINA_API_KEY && {
-        web_search: createWebSearch(context),
-      }),
+    ...(process.env.PERPLEXITY_API_KEY && {
+      web_search: createWebSearch(context),
+    }),
   };
 
   // Filter tools based on mode
@@ -110,10 +109,12 @@ export const createTools = (
       ? {
           ...(!isTemporary &&
             memoryEnabled && { update_memory: allTools.update_memory }),
-          ...(process.env.EXA_API_KEY &&
-            process.env.JINA_API_KEY && {
-              web: createWebTool(context),
-            }),
+          ...(process.env.PERPLEXITY_API_KEY && {
+            web_search: createWebSearch(context),
+          }),
+          ...(process.env.JINA_API_KEY && {
+            open_url: createOpenUrlTool(),
+          }),
         }
       : allTools;
 
