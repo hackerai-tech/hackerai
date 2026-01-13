@@ -154,9 +154,9 @@ jobs:
           cp -R "$ARM64_APP" universal/
 
           UNIVERSAL_APP="universal/$(basename "$ARM64_APP")"
-          ARM64_BIN="$ARM64_APP/Contents/MacOS/hackerai-desktop"
-          X64_BIN="$X64_APP/Contents/MacOS/hackerai-desktop"
-          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/hackerai-desktop"
+          ARM64_BIN="$ARM64_APP/Contents/MacOS/HackerAI"
+          X64_BIN="$X64_APP/Contents/MacOS/HackerAI"
+          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/HackerAI"
 
           lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
 
