@@ -1,216 +1,107 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { ToolContext } from "@/types";
-import { sliceByTokens } from "@/lib/token-utils";
-
-// Max tokens per search result content field (recommended: 100-300 tokens per result)
-const SEARCH_RESULT_CONTENT_MAX_TOKENS = 250;
+import {
+  PerplexitySearchResult,
+  PerplexitySearchResponse,
+  RECENCY_MAP,
+  buildPerplexitySearchBody,
+  formatSearchResults,
+} from "./perplexity";
 
 /**
- * Web search tool using Exa API for search and Jina AI for content retrieval
- * Provides search capabilities for up-to-date web information
+ * Web search tool using Perplexity Search API
+ * Provides ranked web search results with content extraction
  */
 export const createWebSearch = (context: ToolContext) => {
   const { userLocation } = context;
 
   return tool({
-    description: `Search the web for real-time information to answer time-sensitive or verifiable questions.
+    description: `Search for information across various sources.
 
 <instructions>
-- Use when information may be recent, changing, or requires verification
-- \`recency\` optionally biases results toward more recent sources (past_day, past_week, past_month, past_year)
-- Queries can include operators like site:reddit.com, filetype:pdf, or exact phrases in quotes
-- All factual statements derived from this tool must be cited in the final answer
-</instructions>
-
-<recommended_usage>
-- Use for news, current events, prices, schedules, policies, documentation, or announcements
-- Use for location-based queries like weather, local businesses, or events
-- Use for technology updates, version information, or API documentation
-- Do NOT search for general knowledge, concepts, or facts that don't change over time
-- Do NOT search for programming fundamentals, algorithms, or established technical concepts
-- Do NOT search for cybersecurity principles, common vulnerabilities, or attack methodologies
-- Combine related questions into a single comprehensive search query rather than multiple narrow searches
-- Rely on training knowledge first; only search when information is genuinely unknown or time-sensitive
-</recommended_usage>`,
+- MUST use this tool to access up-to-date or external information when needed; DO NOT rely solely on internal knowledge
+- Each search may contain up to 3 \`queries\`, which MUST be variants of the same intent (i.e., query expansions), NOT different goals
+- For non-English queries, MUST include at least one English query as the final variant to expand coverage
+- For complex searches, MUST break down into step-by-step searches instead of using a single complex query
+- Access multiple URLs from search results for comprehensive information or cross-validation
+- CAN use Google dork syntax (site:, filetype:, inurl:, intitle:, etc.) for targeted reconnaissance and pentest enumeration
+- Only use \`time\` parameter when explicitly required by task, otherwise leave time range unrestricted
+- Prioritize cybersecurity-relevant information: CVEs, CVSS scores, exploits, PoCs, security tools, and pentest methodologies
+- Include specific versions, configurations, and technical details; cite reliable sources (NIST, OWASP, CVE databases)
+- For commands/installations, prioritize Kali Linux compatibility using apt or pre-installed tools
+</instructions>`,
     inputSchema: z.object({
-      query: z
-        .string()
-        .describe(
-          "The search term to look up on the web. Be specific and include relevant keywords for better results. For technical queries, include version numbers or dates if relevant.",
-        ),
-      recency: z
+      queries: z
+        .array(z.string())
+        .max(3)
+        .describe("Up to 3 query variants that express the same search intent"),
+      time: z
         .enum(["all", "past_day", "past_week", "past_month", "past_year"])
         .optional()
         .describe(
-          "Optional time filter to limit results to a recent time range. Defaults to 'all'.",
+          "Optional time filter to limit results to a recent time range",
         ),
       explanation: z
         .string()
         .describe(
-          "One sentence explanation as to why this tool is being used, and how it contributes to the goal.",
+          "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
         ),
     }),
     execute: async (
       {
-        query,
-        recency,
+        queries,
+        time,
       }: {
-        query: string;
-        recency?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
+        explanation: string;
+        queries: string[];
+        time?: "all" | "past_day" | "past_week" | "past_month" | "past_year";
       },
       { abortSignal },
     ) => {
       try {
-        // Calculate startPublishedDate based on recency enum
-        const recencyToDays: Record<string, number> = {
-          past_day: 1,
-          past_week: 7,
-          past_month: 30,
-          past_year: 365,
-        };
-        const days = recency ? recencyToDays[recency] : undefined;
-        const startPublishedDate = days
-          ? new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
-          : undefined;
-
-        let searchResults;
-
-        try {
-          // Safely access userLocation country
-          const country = userLocation?.country;
-          const searchBody: Record<string, unknown> = {
-            query: query,
-            type: "auto",
-            numResults: 10,
-          };
-
-          if (country) {
-            searchBody.userLocation = country;
-          }
-
-          if (startPublishedDate) {
-            searchBody.startPublishedDate = startPublishedDate;
-          }
-
-          // First attempt with location if available
-          const response = await fetch("https://api.exa.ai/search", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": process.env.EXA_API_KEY || "",
-            },
-            body: JSON.stringify(searchBody),
-            signal: abortSignal,
-          });
-
-          if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Exa API error: ${response.status} - ${errorText}`);
-          }
-
-          searchResults = await response.json();
-        } catch (firstError: unknown) {
-          // Don't retry if the operation was aborted
-          if (firstError instanceof Error && firstError.name === "AbortError") {
-            throw firstError;
-          }
-          // Retry without userLocation as fallback
-          const fallbackBody: Record<string, unknown> = {
-            query: query,
-            type: "auto",
-            numResults: 10,
-          };
-
-          if (startPublishedDate) {
-            fallbackBody.startPublishedDate = startPublishedDate;
-          }
-
-          const response = await fetch("https://api.exa.ai/search", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "x-api-key": process.env.EXA_API_KEY || "",
-            },
-            body: JSON.stringify(fallbackBody),
-            signal: abortSignal,
-          });
-
-          if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Exa API error: ${response.status} - ${errorText}`);
-          }
-
-          searchResults = await response.json();
-        }
-
-        // Extract URLs from Exa results
-        const urls = searchResults.results.map(
-          (result: { url: string }) => result.url,
-        );
-
-        // Fetch content for each URL using Jina AI (runs in parallel)
-        const contentPromises = urls.map(async (url: string) => {
-          try {
-            const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
-            const response = await fetch(jinaUrl, {
-              method: "GET",
-              headers: {
-                Authorization: `Bearer ${process.env.JINA_API_KEY}`,
-                "X-Engine": "direct",
-                "X-Timeout": "10",
-                "X-Base": "final",
-                "X-Token-Budget": "200000",
-              },
-              signal: abortSignal,
-            });
-
-            if (!response.ok) {
-              return null;
-            }
-
-            const content = await response.text();
-            const truncatedContent = sliceByTokens(
-              content,
-              SEARCH_RESULT_CONTENT_MAX_TOKENS,
-            );
-
-            return {
-              url,
-              content: truncatedContent,
-            };
-          } catch {
-            return null;
-          }
-        });
-
-        const contents = await Promise.all(contentPromises);
-
-        // Add text content to Exa results (exclude id, favicon, and null fields from Exa)
-        const results = searchResults.results.map(
-          (
-            result: { id?: string; favicon?: string; url: string },
-            index: number,
-          ) => {
-            const contentData = contents[index];
-            const { id, favicon, ...cleanResult } = result;
-
-            // Filter out null/undefined values from Exa results only
-            const filteredExaResult = Object.fromEntries(
-              Object.entries(cleanResult).filter(
-                ([_, value]) => value !== null && value !== undefined,
-              ),
-            );
-
-            // Add text field (can be null)
-            return {
-              ...filteredExaResult,
-              text: contentData?.content || null,
-            };
+        const searchBody = buildPerplexitySearchBody(
+          queries.length === 1 ? queries[0] : queries,
+          {
+            country: userLocation?.country,
+            recency: time && time !== "all" ? RECENCY_MAP[time] : undefined,
           },
         );
 
-        return results;
+        const response = await fetch("https://api.perplexity.ai/search", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY || ""}`,
+          },
+          body: JSON.stringify(searchBody),
+          signal: abortSignal,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            `Perplexity API error: ${response.status} - ${errorText}`,
+          );
+        }
+
+        const searchResponse: PerplexitySearchResponse = await response.json();
+
+        // Handle both single query (flat array) and multi-query (nested arrays) responses
+        const isMultiQuery = queries.length > 1;
+        let allResults: PerplexitySearchResult[];
+
+        if (isMultiQuery && Array.isArray(searchResponse.results[0])) {
+          // Multi-query response: flatten results from all queries
+          allResults = (
+            searchResponse.results as PerplexitySearchResult[][]
+          ).flat();
+        } else {
+          // Single query response: results is already a flat array
+          allResults = searchResponse.results as PerplexitySearchResult[];
+        }
+
+        return formatSearchResults(allResults);
       } catch (error) {
         // Handle abort errors gracefully without logging
         if (error instanceof Error && error.name === "AbortError") {

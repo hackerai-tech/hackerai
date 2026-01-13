@@ -8,18 +8,13 @@ import { PRICING } from "@/lib/pricing/features";
 // Configuration
 // =============================================================================
 
-/** Default model pricing (Grok 4.1): $/1M tokens */
-const DEFAULT_PRICING = {
-  input: 0.2,
-  output: 0.5,
-  inputLong: 0.4, // >128K context
-  outputLong: 1.0,
-};
-
-/** Agent Vision model pricing: $/1M tokens */
-const AGENT_VISION_PRICING = {
+/** Model pricing: $/1M tokens (same model for default and agent vision) */
+const MODEL_PRICING = {
   input: 0.5,
   output: 3.0,
+  // TODO: Re-enable long context pricing when needed
+  // inputLong: 1.0, // >128K context (2x input)
+  // outputLong: 6.0, // >128K context (2x output)
 };
 
 /** Points per dollar (1 point = $0.0001) */
@@ -39,28 +34,26 @@ export const AGENT_BUDGET_ALLOCATION = 0.7;
  * Calculate point cost for tokens.
  * @param tokens - Number of tokens
  * @param type - "input" or "output"
- * @param isLongContext - Whether context > 128K (only applies to default model)
- * @param modelName - Model name to determine pricing (defaults to empty string for default pricing)
+ * @param isLongContext - Whether context > 128K (reserved for future use)
+ * @param modelName - Model name (reserved for future use when models differ)
  */
 export const calculateTokenCost = (
   tokens: number,
   type: "input" | "output",
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   isLongContext = false,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   modelName = "",
 ): number => {
   if (tokens <= 0) return 0;
 
-  const isAgentVision = modelName === "agent-vision-model";
-  const pricing = isAgentVision ? AGENT_VISION_PRICING : DEFAULT_PRICING;
+  // TODO: Re-enable long context pricing when needed
+  // const price =
+  //   type === "input"
+  //     ? isLongContext ? MODEL_PRICING.inputLong : MODEL_PRICING.input
+  //     : isLongContext ? MODEL_PRICING.outputLong : MODEL_PRICING.output;
 
-  const price =
-    type === "input"
-      ? !isAgentVision && isLongContext
-        ? DEFAULT_PRICING.inputLong
-        : pricing.input
-      : !isAgentVision && isLongContext
-        ? DEFAULT_PRICING.outputLong
-        : pricing.output;
+  const price = type === "input" ? MODEL_PRICING.input : MODEL_PRICING.output;
 
   return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
 };
