@@ -93,6 +93,7 @@ jobs:
 
       - name: Update version from tag
         if: startsWith(github.ref, 'refs/tags/desktop-v')
+        shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME#desktop-v}"
           echo "Setting version to $VERSION"
