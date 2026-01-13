@@ -116,8 +116,13 @@ jobs:
       - name: List bundle contents
         shell: bash
         run: |
-          echo "=== Bundle directory contents ==="
-          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" | head -20
+          echo "=== All updater-related files ==="
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) 2>/dev/null || true
+          echo ""
+          echo "=== Full macos/nsis/appimage directories ==="
+          ls -la packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/ 2>/dev/null || true
+          ls -la packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/ 2>/dev/null || true
+          ls -la packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/ 2>/dev/null || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
