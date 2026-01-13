@@ -91,6 +91,16 @@ jobs:
         run: pnpm install --frozen-lockfile
         working-directory: packages/desktop
 
+      - name: Update version from tag
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        run: |
+          VERSION="${GITHUB_REF_NAME#desktop-v}"
+          echo "Setting version to $VERSION"
+          cd packages/desktop/src-tauri
+          sed -i.bak "s/\"version\": \".*\"/\"version\": \"$VERSION\"/" tauri.conf.json
+          rm -f tauri.conf.json.bak
+          grep version tauri.conf.json
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
