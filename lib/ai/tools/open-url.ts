@@ -50,7 +50,7 @@ export const createOpenUrlTool = () => {
         }
 
         const content = await response.text();
-        const truncated = truncateContent(content);
+        const truncated = truncateContent(content, undefined, 2048);
 
         return truncated;
       } catch (error) {

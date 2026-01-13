@@ -136,18 +136,17 @@ export const countMessagesTokens = (
 export const truncateContent = (
   content: string,
   marker: string = TRUNCATION_MESSAGE,
+  maxTokens: number = TOOL_DEFAULT_MAX_TOKENS,
 ): string => {
   const tokens = encode(content);
-  if (tokens.length <= TOOL_DEFAULT_MAX_TOKENS) return content;
+  if (tokens.length <= maxTokens) return content;
 
   const markerTokens = countTokens(marker);
-  if (TOOL_DEFAULT_MAX_TOKENS <= markerTokens) {
-    return TOOL_DEFAULT_MAX_TOKENS <= 0
-      ? ""
-      : decode(encode(marker).slice(-TOOL_DEFAULT_MAX_TOKENS));
+  if (maxTokens <= markerTokens) {
+    return maxTokens <= 0 ? "" : decode(encode(marker).slice(-maxTokens));
   }
 
-  const budgetForContent = TOOL_DEFAULT_MAX_TOKENS - markerTokens;
+  const budgetForContent = maxTokens - markerTokens;
 
   // 25% head + 75% tail strategy
   const headBudget = Math.floor(budgetForContent * 0.25);
