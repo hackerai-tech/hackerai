@@ -113,12 +113,18 @@ jobs:
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
 
+      - name: List bundle contents
+        shell: bash
+        run: |
+          echo "=== Bundle directory contents ==="
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" | head -20
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.name }}
           path: |
-            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/
+            packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*
           if-no-files-found: error
           retention-days: 7
 
