@@ -122,8 +122,55 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  create-release:
+  build-macos-universal:
     needs: build
+    runs-on: macos-latest
+    if: startsWith(github.ref, 'refs/tags/desktop-v')
+
+    steps:
+      - name: Download macOS arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macOS-arm64
+          path: arm64
+
+      - name: Download macOS x64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-macOS-x64
+          path: x64
+
+      - name: Create universal binary
+        run: |
+          ARM64_APP=$(find arm64 -name "*.app" -type d | head -1)
+          X64_APP=$(find x64 -name "*.app" -type d | head -1)
+
+          if [ -z "$ARM64_APP" ] || [ -z "$X64_APP" ]; then
+            echo "Could not find app bundles"
+            exit 1
+          fi
+
+          mkdir -p universal
+          cp -R "$ARM64_APP" universal/
+
+          UNIVERSAL_APP="universal/$(basename "$ARM64_APP")"
+          ARM64_BIN="$ARM64_APP/Contents/MacOS/hackerai-desktop"
+          X64_BIN="$X64_APP/Contents/MacOS/hackerai-desktop"
+          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/hackerai-desktop"
+
+          lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
+
+          hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
+
+      - name: Upload universal artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macOS-universal
+          path: HackerAI-universal.dmg
+          if-no-files-found: error
+
+  create-release:
+    needs: [build, build-macos-universal]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/desktop-v') || github.event.inputs.release == 'true'
     permissions:
@@ -262,55 +309,3 @@ jobs:
             --generate-notes \
             --verify-tag \
             release-files/*
-
-  build-macos-universal:
-    needs: build
-    runs-on: macos-latest
-    if: startsWith(github.ref, 'refs/tags/desktop-v')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download macOS arm64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-macOS-arm64
-          path: arm64
-
-      - name: Download macOS x64 artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: desktop-macOS-x64
-          path: x64
-
-      - name: Create universal binary
-        run: |
-          ARM64_APP=$(find arm64 -name "*.app" -type d | head -1)
-          X64_APP=$(find x64 -name "*.app" -type d | head -1)
-
-          if [ -z "$ARM64_APP" ] || [ -z "$X64_APP" ]; then
-            echo "Could not find app bundles"
-            exit 1
-          fi
-
-          mkdir -p universal
-          cp -R "$ARM64_APP" universal/
-
-          UNIVERSAL_APP="universal/$(basename "$ARM64_APP")"
-          ARM64_BIN="$ARM64_APP/Contents/MacOS/hackerai-desktop"
-          X64_BIN="$X64_APP/Contents/MacOS/hackerai-desktop"
-          UNIVERSAL_BIN="$UNIVERSAL_APP/Contents/MacOS/hackerai-desktop"
-
-          lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
-
-          hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
-
-      - name: Upload universal artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-macOS-universal
-          path: HackerAI-universal.dmg
-          if-no-files-found: error
