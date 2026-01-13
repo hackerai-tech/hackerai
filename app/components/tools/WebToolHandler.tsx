@@ -20,7 +20,8 @@ interface LegacyWebInput {
 interface WebToolHandlerProps {
   part: {
     toolCallId: string;
-    toolName: string;
+    toolName?: string;
+    type?: string;
     state: string;
     input?: WebSearchInput | OpenUrlInput | LegacyWebInput;
   };
@@ -28,12 +29,14 @@ interface WebToolHandlerProps {
 }
 
 export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
-  const { toolCallId, toolName, state, input } = part;
+  const { toolCallId, toolName, type, state, input } = part;
 
   // Determine if this is an open_url action
+  // Check toolName, part.type, or legacy command field
   const isOpenUrl =
     toolName === "open_url" ||
-    (toolName === "web" && (input as LegacyWebInput)?.command === "open_url");
+    type === "tool-open_url" ||
+    (input as LegacyWebInput)?.command === "open_url";
 
   const getIcon = () => {
     return isOpenUrl ? <ExternalLink /> : <Search />;
