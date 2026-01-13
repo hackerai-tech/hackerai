@@ -148,12 +148,13 @@ jobs:
           }
 
           # Sign macOS app bundle
-          for f in "$BUNDLE_DIR/macos/"*.app.tar.gz 2>/dev/null; do
+          shopt -s nullglob
+          for f in "$BUNDLE_DIR/macos/"*.app.tar.gz; do
             [ -f "$f" ] && sign_file "$f"
           done
 
           # Sign Linux AppImage
-          for f in "$BUNDLE_DIR/appimage/"*.AppImage 2>/dev/null; do
+          for f in "$BUNDLE_DIR/appimage/"*.AppImage; do
             if [ -f "$f" ]; then
               echo "Creating tar.gz for $f"
               tar -czf "$f.tar.gz" -C "$(dirname "$f")" "$(basename "$f")"
@@ -162,7 +163,7 @@ jobs:
           done
 
           # Sign Windows NSIS installer
-          for f in "$BUNDLE_DIR/nsis/"*-setup.exe 2>/dev/null; do
+          for f in "$BUNDLE_DIR/nsis/"*-setup.exe; do
             if [ -f "$f" ]; then
               echo "Creating zip for $f"
               ZIP_NAME="${f%.exe}.nsis.zip"
@@ -170,6 +171,7 @@ jobs:
               sign_file "$ZIP_NAME"
             fi
           done
+          shopt -u nullglob
 
       - name: List bundle contents
         shell: bash
