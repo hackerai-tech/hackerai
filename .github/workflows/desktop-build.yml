@@ -123,8 +123,8 @@ jobs:
           sign_file() {
             local file="$1"
             echo "Signing $file"
-            # Tauri reads TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD from env
-            pnpm tauri signer sign "$file"
+            # Use -k flag with env var (GitHub Actions auto-masks secrets in logs)
+            pnpm tauri signer sign -k "$TAURI_SIGNING_PRIVATE_KEY" -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" "$file"
           }
 
           # Sign macOS app bundle
