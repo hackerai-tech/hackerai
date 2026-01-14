@@ -136,11 +136,8 @@ async fn check_for_updates_silent(app: tauri::AppHandle) {
                         .title("Update Error")
                         .blocking_show();
                 } else {
-                    let _ = app.dialog()
-                        .message("Update installed. Please restart the application.")
-                        .kind(MessageDialogKind::Info)
-                        .title("Update Complete")
-                        .blocking_show();
+                    log::info!("Update installed, restarting...");
+                    app.restart();
                 }
             }
         }
@@ -192,11 +189,8 @@ async fn check_for_updates(app: tauri::AppHandle) {
                         .title("Update Error")
                         .blocking_show();
                 } else {
-                    let _ = app.dialog()
-                        .message("Update installed. Please restart the application.")
-                        .kind(MessageDialogKind::Info)
-                        .title("Update Complete")
-                        .blocking_show();
+                    log::info!("Update installed, restarting...");
+                    app.restart();
                 }
             }
         }
