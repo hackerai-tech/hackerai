@@ -205,6 +205,34 @@ jobs:
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
 
+      - name: Notarize macOS DMG
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "Notarization credentials not configured, skipping"
+            exit 0
+          fi
+
+          BUNDLE_DIR="packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          for DMG in "$BUNDLE_DIR/dmg/"*.dmg; do
+            if [ -f "$DMG" ]; then
+              echo "Notarizing $DMG..."
+              xcrun notarytool submit "$DMG" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" \
+                --wait
+
+              echo "Stapling notarization ticket to $DMG..."
+              xcrun stapler staple "$DMG"
+            fi
+          done
+
       - name: Sign updater artifacts
         shell: bash
         env:
@@ -279,6 +307,9 @@ jobs:
     if: needs.prepare.outputs.should_release == 'true'
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download macOS arm64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -349,16 +380,20 @@ jobs:
             exit 0
           fi
 
-          echo "Signing universal app bundle..."
+          ENTITLEMENTS="packages/desktop/src-tauri/entitlements.plist"
+
+          echo "Signing universal app bundle with entitlements..."
           codesign --sign "$APPLE_SIGNING_IDENTITY" \
             --deep \
             --force \
             --options runtime \
             --timestamp \
+            --entitlements "$ENTITLEMENTS" \
             "$UNIVERSAL_APP"
 
           echo "Verifying signature..."
           codesign --verify --verbose=2 "$UNIVERSAL_APP"
+          codesign -d --entitlements - "$UNIVERSAL_APP"
 
       - name: Notarize universal app
         env:
@@ -391,6 +426,27 @@ jobs:
           ln -s /Applications universal/Applications
 
           hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
+
+      - name: Notarize universal DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "Notarization credentials not configured, skipping"
+            exit 0
+          fi
+
+          echo "Notarizing universal DMG..."
+          xcrun notarytool submit HackerAI-universal.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          echo "Stapling notarization ticket to DMG..."
+          xcrun stapler staple HackerAI-universal.dmg
 
       - name: Upload universal artifact
         uses: actions/upload-artifact@v4
