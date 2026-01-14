@@ -291,6 +291,32 @@ jobs:
           name: desktop-macOS-x64
           path: x64
 
+      - name: Import Apple certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No Apple certificate configured, skipping signing"
+            exit 0
+          fi
+
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          rm $CERTIFICATE_PATH
+
       - name: Create universal binary
         run: |
           ARM64_APP=$(find arm64 -name "*.app" -type d | head -1)
@@ -312,6 +338,56 @@ jobs:
           lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
           chmod +x "$UNIVERSAL_BIN"
 
+          echo "UNIVERSAL_APP=$UNIVERSAL_APP" >> $GITHUB_ENV
+
+      - name: Sign universal binary
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "No signing identity configured, skipping signing"
+            exit 0
+          fi
+
+          echo "Signing universal app bundle..."
+          codesign --sign "$APPLE_SIGNING_IDENTITY" \
+            --deep \
+            --force \
+            --options runtime \
+            --timestamp \
+            "$UNIVERSAL_APP"
+
+          echo "Verifying signature..."
+          codesign --verify --verbose=2 "$UNIVERSAL_APP"
+
+      - name: Notarize universal app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "Notarization credentials not configured, skipping"
+            exit 0
+          fi
+
+          echo "Creating zip for notarization..."
+          ditto -c -k --keepParent "$UNIVERSAL_APP" universal-app.zip
+
+          echo "Submitting for notarization..."
+          xcrun notarytool submit universal-app.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple "$UNIVERSAL_APP"
+
+          rm universal-app.zip
+
+      - name: Create DMG
+        run: |
           ln -s /Applications universal/Applications
 
           hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
