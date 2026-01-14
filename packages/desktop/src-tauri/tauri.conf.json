@@ -47,11 +47,12 @@
     "shortDescription": "AI-powered penetration testing assistant",
     "longDescription": "HackerAI is an AI-powered penetration testing assistant that helps security professionals identify vulnerabilities.",
     "macOS": {
-      "entitlements": null,
+      "entitlements": "entitlements.plist",
       "exceptionDomain": "",
       "frameworks": [],
       "providerShortName": null,
       "signingIdentity": null,
+      "hardenedRuntime": true,
       "minimumSystemVersion": "10.15"
     },
     "windows": {
