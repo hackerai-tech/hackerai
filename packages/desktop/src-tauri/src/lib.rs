@@ -146,12 +146,15 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
                         .blocking_show();
                 } else {
                     log::info!("Update installed successfully");
-                    let _ = app.dialog()
-                        .message("Update installed. The application will now restart.")
+                    let restart_now = app.dialog()
+                        .message("Update installed successfully. Restart now to apply changes?")
                         .kind(MessageDialogKind::Info)
                         .title("Update Complete")
+                        .buttons(MessageDialogButtons::OkCancelCustom("Restart Now".into(), "Later".into()))
                         .blocking_show();
-                    app.restart();
+                    if restart_now {
+                        app.restart();
+                    }
                 }
             }
         }
