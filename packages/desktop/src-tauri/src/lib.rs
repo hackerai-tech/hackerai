@@ -1,5 +1,51 @@
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
+
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
+
+fn get_last_update_check_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|dir| dir.join("last_update_check"))
+}
+
+fn should_check_for_updates(app: &tauri::AppHandle) -> bool {
+    let Some(file_path) = get_last_update_check_file(app) else {
+        return true;
+    };
+
+    match fs::read_to_string(&file_path) {
+        Ok(content) => {
+            let last_check: u64 = content.trim().parse().unwrap_or(0);
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            now.saturating_sub(last_check) >= UPDATE_CHECK_INTERVAL.as_secs()
+        }
+        Err(_) => true,
+    }
+}
+
+fn save_update_check_timestamp(app: &tauri::AppHandle) {
+    let Some(file_path) = get_last_update_check_file(app) else {
+        return;
+    };
+
+    if let Some(parent) = file_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if let Err(e) = fs::write(&file_path, now.to_string()) {
+        log::warn!("Failed to save update check timestamp: {}", e);
+    }
+}
 
 fn get_allowed_hosts() -> Vec<String> {
     match std::env::var("HACKERAI_ALLOWED_HOSTS") {
@@ -192,10 +238,22 @@ pub fn run() {
                     }
                 });
             }
-            // Auto-check for updates on launch (silent mode)
+            // Check for updates on every launch
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                check_for_updates(handle, true).await;
+                log::info!("Running update check on launch");
+                save_update_check_timestamp(&handle);
+                check_for_updates(handle.clone(), true).await;
+
+                // Then check every hour if 24h has passed (for long-running sessions)
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+                    if should_check_for_updates(&handle) {
+                        log::info!("Running scheduled update check (24h interval)");
+                        save_update_check_timestamp(&handle);
+                        check_for_updates(handle.clone(), true).await;
+                    }
+                }
             });
 
             log::info!("HackerAI Desktop initialized");
