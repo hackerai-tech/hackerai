@@ -129,9 +129,7 @@ export const PythonToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Code2 />}
-          action={
-            status === "streaming" ? "Executing Python" : "Executed Python"
-          }
+          action="Executing Python"
           target={codePreview}
           isShimmer={status === "streaming"}
           isClickable={true}
@@ -144,7 +142,7 @@ export const PythonToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Code2 />}
-          action="Executed Python"
+          action="Executing Python"
           target={codePreview}
           isClickable={true}
           onClick={handleOpenInSidebar}
@@ -156,7 +154,7 @@ export const PythonToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Code2 />}
-          action="Executed Python"
+          action="Executing Python"
           target={codePreview}
           isClickable={true}
           onClick={handleOpenInSidebar}

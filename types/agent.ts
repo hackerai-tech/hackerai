@@ -32,6 +32,7 @@ export interface ToolContext {
   userLocation: Geo;
   todoManager: TodoManager;
   userID: string;
+  chatId: string;
   assistantMessageId?: string;
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;

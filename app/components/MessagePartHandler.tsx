@@ -2,6 +2,7 @@ import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
+import { ShellToolHandler } from "./tools/ShellToolHandler";
 import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { PythonToolHandler } from "./tools/PythonToolHandler";
 import { WebToolHandler } from "./tools/WebToolHandler";
@@ -86,6 +87,9 @@ export const MessagePartHandler = ({
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
       );
+
+    case "tool-shell":
+      return <ShellToolHandler message={message} part={part} status={status} />;
 
     case "tool-http_request":
       return (

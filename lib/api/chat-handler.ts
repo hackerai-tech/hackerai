@@ -236,6 +236,7 @@ export const createChatHandler = () => {
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.scope_exclusions,
             userCustomization?.guardrails_config,
+            chatId,
           );
 
           // Helper to send file metadata via stream for resumable stream clients
@@ -444,7 +445,7 @@ export const createChatHandler = () => {
                 if (posthog) {
                   // Tools that interact with the sandbox environment
                   const sandboxEnvironmentTools = [
-                    "run_terminal_cmd",
+                    "shell",
                     "get_terminal_files",
                     "read_file",
                     "write_file",

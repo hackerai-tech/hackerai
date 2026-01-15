@@ -115,7 +115,7 @@ export const TerminalToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={status === "streaming" ? "Executing" : "Executed"}
+          action="Executing"
           target={terminalInput?.command || ""}
           isShimmer={status === "streaming"}
           isClickable={true}
@@ -128,7 +128,7 @@ export const TerminalToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action="Executed"
+          action="Executing"
           target={terminalInput?.command || ""}
           isClickable={true}
           onClick={handleOpenInSidebar}
@@ -140,7 +140,7 @@ export const TerminalToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action="Executed"
+          action="Executing"
           target={terminalInput?.command || ""}
           isClickable={true}
           onClick={handleOpenInSidebar}

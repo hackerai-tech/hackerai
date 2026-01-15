@@ -175,13 +175,21 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       };
       return actionMap[sidebarContent.action || "reading"];
     } else if (isTerminal) {
-      return sidebarContent.isExecuting
-        ? "Executing command"
-        : "Command executed";
+      // Use shellAction if available for accurate action text
+      if (sidebarContent.shellAction) {
+        const shellActionMap = {
+          exec: "Running command",
+          send: "Writing to terminal",
+          wait: "Waiting for completion",
+          kill: "Terminating process",
+          view: "Reading terminal",
+        };
+        return shellActionMap[sidebarContent.shellAction];
+      }
+      // Fallback for legacy terminal entries without shellAction
+      return "Executing command";
     } else if (isPython) {
-      return sidebarContent.isExecuting
-        ? "Executing Python"
-        : "Python executed";
+      return "Executing Python";
     }
     return "Unknown action";
   };
@@ -212,6 +220,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     if (isFile) {
       return sidebarContent.path.split("/").pop() || sidebarContent.path;
     } else if (isTerminal) {
+      // If it's a shell tool call, just show the session ID (command field)
       return sidebarContent.command;
     } else if (isPython) {
       return sidebarContent.code.replace(/\n/g, " ");
@@ -289,10 +298,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 {/* Title - far left */}
                 <div className="flex items-center gap-2">
                   {isTerminal ? (
-                    <Terminal
-                      size={14}
-                      className="text-muted-foreground flex-shrink-0"
-                    />
+                    sidebarContent.sessionName ? (
+                      <span className="text-muted-foreground text-sm font-mono truncate max-w-[200px]">
+                        {sidebarContent.sessionName}
+                      </span>
+                    ) : null
                   ) : isPython ? (
                     <Code2
                       size={14}
@@ -385,6 +395,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           output={sidebarContent.output}
                           isExecuting={sidebarContent.isExecuting}
                           isBackground={sidebarContent.isBackground}
+                          showContentOnly={sidebarContent.showContentOnly}
                           status={
                             sidebarContent.isExecuting ? "streaming" : "ready"
                           }

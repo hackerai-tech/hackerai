@@ -89,15 +89,41 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
     // Terminal commands
     if (
       part.type === "data-terminal" ||
-      part.type === "tool-run_terminal_cmd"
+      part.type === "tool-run_terminal_cmd" ||
+      part.type === "tool-shell"
     ) {
-      const terminalInput = part.input as { command?: string };
-      const terminalOutput = part.output as {
-        result?: string;
-        output?: string;
+      const terminalInput = part.input as {
+        command?: string;
+        input?: string;
+        action?: string;
       };
-      const command = terminalInput?.command || "";
-      const output = terminalOutput?.result || terminalOutput?.output || "";
+      const terminalOutput = part.output as {
+        result?: any;
+        output?: string;
+        content?: string;
+      };
+
+      const command =
+        terminalInput?.command ||
+        terminalInput?.input ||
+        terminalInput?.action ||
+        "";
+
+      let output = "";
+      if (terminalOutput?.result) {
+        if (typeof terminalOutput.result === "string") {
+          output = terminalOutput.result;
+        } else if (typeof terminalOutput.result === "object") {
+          output =
+            terminalOutput.result.output ||
+            terminalOutput.result.content ||
+            (terminalOutput.result.stdout || "") +
+              (terminalOutput.result.stderr || "") ||
+            "";
+        }
+      } else {
+        output = terminalOutput?.output || terminalOutput?.content || "";
+      }
 
       if (
         part.state === "input-available" ||

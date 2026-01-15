@@ -37,36 +37,8 @@ export const MatchToolHandler = ({ part, status }: MatchToolHandlerProps) => {
     return matchInput.scope;
   };
 
-  // Parse the output to get a summary label
-  const getResultLabel = (outputText: string) => {
-    if (outputText.startsWith("Found ")) {
-      // Extract "Found X file(s)" or "Found X match(es)"
-      const match = outputText.match(/^Found (\d+) (file|match)/);
-      if (match) {
-        const count = parseInt(match[1], 10);
-        const type = match[2];
-        if (type === "file") {
-          return `Found ${count} file${count === 1 ? "" : "s"}`;
-        }
-        return `Found ${count} match${count === 1 ? "" : "es"}`;
-      }
-    }
-    if (outputText.startsWith("No files found")) {
-      return "No files found";
-    }
-    if (outputText.startsWith("No matches found")) {
-      return "No matches found";
-    }
-    if (outputText.startsWith("Search timed out")) {
-      return "Search timed out";
-    }
-    if (
-      outputText.startsWith("Error:") ||
-      outputText.startsWith("Search failed")
-    ) {
-      return "Search failed";
-    }
-    return isGlob ? "Search complete" : "Search complete";
+  const getResultLabel = () => {
+    return isGlob ? "Finding files" : "Searching";
   };
 
   switch (state) {
@@ -113,7 +85,7 @@ export const MatchToolHandler = ({ part, status }: MatchToolHandlerProps) => {
         <ToolBlock
           key={toolCallId}
           icon={<FolderSearch />}
-          action={getResultLabel(outputText)}
+          action={getResultLabel()}
           target={getTarget()}
           isClickable={true}
           onClick={handleOpenInSidebar}

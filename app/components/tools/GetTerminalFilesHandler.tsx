@@ -52,23 +52,20 @@ export const GetTerminalFilesHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action={status === "streaming" ? "Sharing" : "Shared"}
+          action="Sharing"
           target={getFileNames(filesInput?.files || [])}
           isShimmer={status === "streaming"}
         />
       );
 
     case "output-available": {
-      // Support both new (files) and legacy (fileUrls) formats
-      const fileCount =
-        filesOutput?.files?.length || filesOutput?.fileUrls?.length || 0;
       const fileNames = getFileNames(filesInput?.files || []);
 
       return (
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action={`Shared ${fileCount} file${fileCount !== 1 ? "s" : ""}`}
+          action="Sharing"
           target={fileNames}
         />
       );
@@ -79,7 +76,7 @@ export const GetTerminalFilesHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<FileDown />}
-          action="Failed to share"
+          action="Sharing"
           target={getFileNames(filesInput?.files || [])}
         />
       );

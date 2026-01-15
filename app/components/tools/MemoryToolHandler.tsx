@@ -28,19 +28,6 @@ export const MemoryToolHandler = ({ part, status }: MemoryToolHandlerProps) => {
   const getActionText = (action?: string) => {
     switch (action) {
       case "create":
-        return "Created memory";
-      case "update":
-        return "Updated memory";
-      case "delete":
-        return "Deleted memory";
-      default:
-        return "Updated memory";
-    }
-  };
-
-  const getStreamingActionText = (action?: string) => {
-    switch (action) {
-      case "create":
         return "Creating memory";
       case "update":
         return "Updating memory";
@@ -113,7 +100,7 @@ export const MemoryToolHandler = ({ part, status }: MemoryToolHandlerProps) => {
         <ToolBlock
           key={toolCallId}
           icon={<NotebookPen />}
-          action={getStreamingActionText(memoryInput.action)}
+          action={getActionText(memoryInput.action)}
           isShimmer={true}
         />
       ) : null;
@@ -123,7 +110,7 @@ export const MemoryToolHandler = ({ part, status }: MemoryToolHandlerProps) => {
         <ToolBlock
           key={toolCallId}
           icon={<NotebookPen />}
-          action={getStreamingActionText(memoryInput.action)}
+          action={getActionText(memoryInput.action)}
           target={memoryInput.title}
           isShimmer={true}
         />
