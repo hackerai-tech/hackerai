@@ -28,6 +28,14 @@ import {
   type ChatStatus,
 } from "@/types/chat";
 
+const SHELL_ACTION_LABELS: Record<string, string> = {
+  exec: "Running command",
+  send: "Writing to terminal",
+  wait: "Waiting for completion",
+  kill: "Terminating process",
+  view: "Reading terminal",
+};
+
 interface ComputerSidebarProps {
   sidebarOpen: boolean;
   sidebarContent: SidebarContent | null;
@@ -177,14 +185,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     } else if (isTerminal) {
       // Use shellAction if available for accurate action text
       if (sidebarContent.shellAction) {
-        const shellActionMap = {
-          exec: "Running command",
-          send: "Writing to terminal",
-          wait: "Waiting for completion",
-          kill: "Terminating process",
-          view: "Reading terminal",
-        };
-        return shellActionMap[sidebarContent.shellAction];
+        return SHELL_ACTION_LABELS[sidebarContent.shellAction];
       }
       // Fallback for legacy terminal entries without shellAction
       return "Executing command";
