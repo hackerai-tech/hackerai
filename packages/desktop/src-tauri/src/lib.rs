@@ -1,23 +1,5 @@
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
-
-#[cfg(target_os = "macos")]
-fn navigate_back(window: &tauri::WebviewWindow) {
-    use objc2_web_kit::WKWebView;
-
-    if let Err(e) = window.with_webview(|webview| unsafe {
-        let wk_webview: &WKWebView = &*webview.inner().cast();
-        if wk_webview.canGoBack() {
-            wk_webview.goBack();
-        }
-    }) {
-        log::warn!("Failed to navigate back: {}", e);
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn navigate_back(_window: &tauri::WebviewWindow) {}
 
 fn get_allowed_hosts() -> Vec<String> {
     match std::env::var("HACKERAI_ALLOWED_HOSTS") {
@@ -210,49 +192,14 @@ pub fn run() {
                     }
                 });
             }
-            let go_back_item = MenuItemBuilder::new("Go Back")
-                .id("go_back")
-                .accelerator("CmdOrCtrl+[")
-                .build(app)?;
-
-            let check_updates_item = MenuItemBuilder::new("Check for Updates...")
-                .id("check_updates")
-                .build(app)?;
-
-            let navigation_menu = SubmenuBuilder::new(app, "Navigation")
-                .item(&go_back_item)
-                .build()?;
-
-            let help_menu = SubmenuBuilder::new(app, "Help")
-                .item(&check_updates_item)
-                .build()?;
-
-            let menu = MenuBuilder::new(app)
-                .items(&[&navigation_menu, &help_menu])
-                .build()?;
-
-            app.set_menu(menu)?;
-
             // Auto-check for updates on launch (silent mode)
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 check_for_updates(handle, true).await;
             });
 
-            log::info!("HackerAI Desktop initialized with menus");
+            log::info!("HackerAI Desktop initialized");
             Ok(())
-        })
-        .on_menu_event(|app, event| {
-            if event.id().as_ref() == "go_back" {
-                if let Some(window) = app.get_webview_window("main") {
-                    navigate_back(&window);
-                }
-            } else if event.id().as_ref() == "check_updates" {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    check_for_updates(handle, false).await;
-                });
-            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
