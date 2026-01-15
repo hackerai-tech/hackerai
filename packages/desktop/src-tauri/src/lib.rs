@@ -223,10 +223,37 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Handle deep links passed as CLI args (Linux/Windows)
+            log::info!("Single instance callback with args: {:?}", args);
+            for arg in args.iter().skip(1) {
+                if let Ok(url) = url::Url::parse(arg) {
+                    if url.scheme() == "hackerai" {
+                        log::info!("Processing deep link from CLI arg: {}", arg);
+                        handle_auth_deep_link(app, &url);
+                    }
+                }
+            }
+            // Focus the main window
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|app| {
             #[cfg(desktop)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
+
+                // Register deep links at runtime for Linux/Windows
+                // This is required for AppImage and non-installed Windows builds
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
+                {
+                    if let Err(e) = app.deep_link().register_all() {
+                        log::warn!("Failed to register deep links: {}", e);
+                    } else {
+                        log::info!("Deep links registered successfully");
+                    }
+                }
 
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
