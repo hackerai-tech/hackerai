@@ -94,6 +94,9 @@ jobs:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             name: Linux-x64
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Linux-arm64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             name: Windows-x64
@@ -140,7 +143,7 @@ jobs:
           workspaces: packages/desktop/src-tauri -> target
 
       - name: Install dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -590,12 +593,24 @@ jobs:
             fi
           fi
 
-          LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
+          LINUX_FILE=$(ls release-files/*_amd64.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
+          if [ -z "$LINUX_FILE" ]; then
+            LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | grep -v aarch64 | head -1 || echo "")
+          fi
           if [ -n "$LINUX_FILE" ] && [ -f "$LINUX_FILE" ]; then
             LINUX_BASENAME=$(basename "$LINUX_FILE")
             SIG=$(cat "${LINUX_FILE}.sig" 2>/dev/null || echo "")
             if [ -n "$SIG" ]; then
               PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_BASENAME}" --arg sig "$SIG" '. + {"linux-x86_64": {"url": $url, "signature": $sig}}')
+            fi
+          fi
+
+          LINUX_ARM_FILE=$(ls release-files/*aarch64*.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
+          if [ -n "$LINUX_ARM_FILE" ] && [ -f "$LINUX_ARM_FILE" ]; then
+            LINUX_ARM_BASENAME=$(basename "$LINUX_ARM_FILE")
+            SIG=$(cat "${LINUX_ARM_FILE}.sig" 2>/dev/null || echo "")
+            if [ -n "$SIG" ]; then
+              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_ARM_BASENAME}" --arg sig "$SIG" '. + {"linux-aarch64": {"url": $url, "signature": $sig}}')
             fi
           fi
 
