@@ -3,7 +3,7 @@ import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import type { ChatStatus } from "@/types";
+import type { ChatStatus, SidebarContent } from "@/types";
 import { isSidebarFile } from "@/types/chat";
 
 interface DiffDataPart {
@@ -20,15 +20,20 @@ interface FileToolsHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  // Optional: pass openSidebar to make handler context-agnostic
+  externalOpenSidebar?: (content: SidebarContent) => void;
 }
 
 export const FileToolsHandler = ({
   message,
   part,
   status,
+  externalOpenSidebar,
 }: FileToolsHandlerProps) => {
-  const { openSidebar, updateSidebarContent, sidebarContent, sidebarOpen } =
-    useGlobalState();
+  const globalState = useGlobalState();
+  // Use external openSidebar if provided, otherwise use from GlobalState
+  const openSidebar = externalOpenSidebar ?? globalState.openSidebar;
+  const { updateSidebarContent, sidebarContent, sidebarOpen } = globalState;
 
   // Track the last streamed content to avoid unnecessary updates
   const lastStreamedContentRef = useRef<string | null>(null);
@@ -45,7 +50,10 @@ export const FileToolsHandler = ({
   }, [part.type, part.input]);
 
   // Update sidebar content as write_file content streams in
+  // Only applies when using GlobalState (not external openSidebar)
   useEffect(() => {
+    // Skip if using external openSidebar (read-only mode)
+    if (externalOpenSidebar) return;
     // Only update for write_file tool during streaming
     if (part.type !== "tool-write_file") return;
     if (part.state !== "input-streaming" && part.state !== "input-available")
@@ -77,6 +85,7 @@ export const FileToolsHandler = ({
     sidebarOpen,
     sidebarContent,
     updateSidebarContent,
+    externalOpenSidebar,
   ]);
 
   // Reset tracking refs when tool completes or changes

@@ -3,22 +3,27 @@ import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Code2 } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import type { ChatStatus, SidebarPython } from "@/types/chat";
+import type { ChatStatus, SidebarPython, SidebarContent } from "@/types/chat";
 import { isSidebarPython } from "@/types/chat";
 
 interface PythonToolHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  // Optional: pass openSidebar to make handler context-agnostic
+  externalOpenSidebar?: (content: SidebarContent) => void;
 }
 
 export const PythonToolHandler = ({
   message,
   part,
   status,
+  externalOpenSidebar,
 }: PythonToolHandlerProps) => {
-  const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
-    useGlobalState();
+  const globalState = useGlobalState();
+  // Use external openSidebar if provided, otherwise use from GlobalState
+  const openSidebar = externalOpenSidebar ?? globalState.openSidebar;
+  const { sidebarOpen, sidebarContent, updateSidebarContent } = globalState;
   const { toolCallId, state, input, output, errorText } = part;
   const pythonInput = input as { code: string };
   const pythonOutput = output as {
@@ -91,16 +96,18 @@ export const PythonToolHandler = ({
     [handleOpenInSidebar],
   );
 
-  // Track if this sidebar is currently active
+  // Track if this sidebar is currently active (only for GlobalState mode)
   const isSidebarActive =
+    !externalOpenSidebar &&
     sidebarOpen &&
     sidebarContent &&
     isSidebarPython(sidebarContent) &&
     sidebarContent.toolCallId === toolCallId;
 
   // Update sidebar content in real-time if it's currently open for this tool call
+  // Only applies when using GlobalState (not external openSidebar)
   useEffect(() => {
-    if (!isSidebarActive) return;
+    if (!isSidebarActive || externalOpenSidebar) return;
 
     updateSidebarContent({
       code: codePreview,
@@ -108,7 +115,7 @@ export const PythonToolHandler = ({
       isExecuting,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSidebarActive, codePreview, finalOutput, isExecuting]);
+  }, [isSidebarActive, codePreview, finalOutput, isExecuting, externalOpenSidebar]);
 
   switch (state) {
     case "input-streaming":

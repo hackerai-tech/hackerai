@@ -13,6 +13,7 @@ import ChatHeader from "@/app/components/ChatHeader";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { TodoBlockProvider } from "@/app/contexts/TodoBlockContext";
 import { useEffect } from "react";
 
 // Desktop wrapper component that connects ComputerSidebarBase to SharedChatContext
@@ -144,8 +145,9 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
   }
 
   return (
-    <SharedChatProvider>
-      <div className="h-screen bg-background flex flex-col overflow-hidden">
+    <TodoBlockProvider>
+      <SharedChatProvider>
+        <div className="h-screen bg-background flex flex-col overflow-hidden">
         {/* Header for unlogged users */}
         {!authLoading && !user && (
           <div className="flex-shrink-0">
@@ -228,7 +230,8 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
             </SidebarProvider>
           </div>
         )}
-      </div>
-    </SharedChatProvider>
+        </div>
+      </SharedChatProvider>
+    </TodoBlockProvider>
   );
 }

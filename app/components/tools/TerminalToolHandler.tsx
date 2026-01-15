@@ -4,22 +4,27 @@ import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import type { ChatStatus, SidebarTerminal } from "@/types/chat";
+import type { ChatStatus, SidebarTerminal, SidebarContent } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  // Optional: pass openSidebar to make handler context-agnostic
+  externalOpenSidebar?: (content: SidebarContent) => void;
 }
 
 export const TerminalToolHandler = ({
   message,
   part,
   status,
+  externalOpenSidebar,
 }: TerminalToolHandlerProps) => {
-  const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
-    useGlobalState();
+  const globalState = useGlobalState();
+  // Use external openSidebar if provided, otherwise use from GlobalState
+  const openSidebar = externalOpenSidebar ?? globalState.openSidebar;
+  const { sidebarOpen, sidebarContent, updateSidebarContent } = globalState;
   const { toolCallId, state, input, output, errorText } = part;
   const terminalInput = input as {
     command: string;
@@ -75,23 +80,25 @@ export const TerminalToolHandler = ({
     openSidebar(sidebarTerminal);
   };
 
-  // Track if this sidebar is currently active
+  // Track if this sidebar is currently active (only for GlobalState mode)
   const isSidebarActive =
+    !externalOpenSidebar &&
     sidebarOpen &&
     sidebarContent &&
     isSidebarTerminal(sidebarContent) &&
     sidebarContent.toolCallId === toolCallId;
 
   // Update sidebar content in real-time if it's currently open for this tool call
+  // Only applies when using GlobalState (not external openSidebar)
   useEffect(() => {
-    if (!isSidebarActive) return;
+    if (!isSidebarActive || externalOpenSidebar) return;
 
     updateSidebarContent({
       output: finalOutput,
       isExecuting,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSidebarActive, finalOutput, isExecuting]);
+  }, [isSidebarActive, finalOutput, isExecuting, externalOpenSidebar]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
