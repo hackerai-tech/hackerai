@@ -205,6 +205,55 @@ jobs:
           tauriScript: pnpm tauri
           args: --target ${{ matrix.target }}
 
+      - name: Notarize macOS DMG
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "::error::Notarization credentials not configured!"
+            echo "Required secrets: APPLE_ID, APPLE_PASSWORD (app-specific), APPLE_TEAM_ID"
+            exit 1
+          fi
+
+          BUNDLE_DIR="packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+
+          for DMG in "$BUNDLE_DIR/dmg/"*.dmg; do
+            if [ -f "$DMG" ]; then
+              echo "Notarizing $DMG..."
+
+              # Submit and capture the submission ID
+              SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" \
+                --wait 2>&1) || {
+                echo "::error::Notarization failed!"
+                echo "$SUBMIT_OUTPUT"
+
+                # Try to get the submission ID and fetch the log
+                SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep -o 'id: [a-f0-9-]*' | head -1 | cut -d' ' -f2)
+                if [ -n "$SUBMISSION_ID" ]; then
+                  echo "Fetching notarization log for $SUBMISSION_ID..."
+                  xcrun notarytool log "$SUBMISSION_ID" \
+                    --apple-id "$APPLE_ID" \
+                    --password "$APPLE_PASSWORD" \
+                    --team-id "$APPLE_TEAM_ID" || true
+                fi
+                exit 1
+              }
+
+              echo "$SUBMIT_OUTPUT"
+              echo "Stapling notarization ticket to $DMG..."
+              xcrun stapler staple "$DMG"
+
+              echo "Verifying notarization..."
+              spctl --assess --type open --context context:primary-signature -v "$DMG" || true
+            fi
+          done
+
       - name: Sign updater artifacts
         shell: bash
         env:
@@ -279,6 +328,9 @@ jobs:
     if: needs.prepare.outputs.should_release == 'true'
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Download macOS arm64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -290,6 +342,32 @@ jobs:
         with:
           name: desktop-macOS-x64
           path: x64
+
+      - name: Import Apple certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No Apple certificate configured, skipping signing"
+            exit 0
+          fi
+
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          security import $CERTIFICATE_PATH -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychain -d user -s $KEYCHAIN_PATH
+
+          rm $CERTIFICATE_PATH
 
       - name: Create universal binary
         run: |
@@ -312,9 +390,116 @@ jobs:
           lipo -create -output "$UNIVERSAL_BIN" "$ARM64_BIN" "$X64_BIN"
           chmod +x "$UNIVERSAL_BIN"
 
+          echo "UNIVERSAL_APP=$UNIVERSAL_APP" >> $GITHUB_ENV
+
+      - name: Sign universal binary
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "No signing identity configured, skipping signing"
+            exit 0
+          fi
+
+          ENTITLEMENTS="packages/desktop/src-tauri/entitlements.plist"
+
+          echo "Signing universal app bundle with entitlements..."
+          codesign --sign "$APPLE_SIGNING_IDENTITY" \
+            --deep \
+            --force \
+            --options runtime \
+            --timestamp \
+            --entitlements "$ENTITLEMENTS" \
+            "$UNIVERSAL_APP"
+
+          echo "Verifying signature..."
+          codesign --verify --verbose=2 "$UNIVERSAL_APP"
+          codesign -d --entitlements - "$UNIVERSAL_APP"
+
+      - name: Notarize universal app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "::error::Notarization credentials not configured!"
+            exit 1
+          fi
+
+          echo "Creating zip for notarization..."
+          ditto -c -k --keepParent "$UNIVERSAL_APP" universal-app.zip
+
+          echo "Submitting for notarization..."
+          SUBMIT_OUTPUT=$(xcrun notarytool submit universal-app.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait 2>&1) || {
+            echo "::error::Notarization failed!"
+            echo "$SUBMIT_OUTPUT"
+
+            SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep -o 'id: [a-f0-9-]*' | head -1 | cut -d' ' -f2)
+            if [ -n "$SUBMISSION_ID" ]; then
+              echo "Fetching notarization log..."
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" || true
+            fi
+            rm -f universal-app.zip
+            exit 1
+          }
+
+          echo "$SUBMIT_OUTPUT"
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple "$UNIVERSAL_APP"
+
+          rm universal-app.zip
+
+      - name: Create DMG
+        run: |
           ln -s /Applications universal/Applications
 
           hdiutil create -volname "HackerAI" -srcfolder universal -ov -format UDZO HackerAI-universal.dmg
+
+      - name: Notarize universal DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_ID" ] || [ -z "$APPLE_PASSWORD" ] || [ -z "$APPLE_TEAM_ID" ]; then
+            echo "::error::Notarization credentials not configured!"
+            exit 1
+          fi
+
+          echo "Notarizing universal DMG..."
+          SUBMIT_OUTPUT=$(xcrun notarytool submit HackerAI-universal.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait 2>&1) || {
+            echo "::error::Notarization failed!"
+            echo "$SUBMIT_OUTPUT"
+
+            SUBMISSION_ID=$(echo "$SUBMIT_OUTPUT" | grep -o 'id: [a-f0-9-]*' | head -1 | cut -d' ' -f2)
+            if [ -n "$SUBMISSION_ID" ]; then
+              echo "Fetching notarization log..."
+              xcrun notarytool log "$SUBMISSION_ID" \
+                --apple-id "$APPLE_ID" \
+                --password "$APPLE_PASSWORD" \
+                --team-id "$APPLE_TEAM_ID" || true
+            fi
+            exit 1
+          }
+
+          echo "$SUBMIT_OUTPUT"
+          echo "Stapling notarization ticket to DMG..."
+          xcrun stapler staple HackerAI-universal.dmg
+
+          echo "Verifying notarization..."
+          spctl --assess --type open --context context:primary-signature -v HackerAI-universal.dmg || true
 
       - name: Upload universal artifact
         uses: actions/upload-artifact@v4
