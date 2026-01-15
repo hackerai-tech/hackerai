@@ -23,7 +23,8 @@
         "center": true,
         "decorations": true,
         "transparent": false,
-        "userAgent": "HackerAI-Desktop/1.0"
+        "userAgent": "HackerAI-Desktop/1.0",
+        "theme": "Dark"
       }
     ],
     "security": {
