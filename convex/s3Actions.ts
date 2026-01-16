@@ -1,7 +1,7 @@
 "use node";
 
 import { action } from "./_generated/server";
-import { v } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./chats";
@@ -67,9 +67,10 @@ export const generateS3UploadUrlAction = action({
     );
 
     if (currentFileCount >= fileLimit) {
-      throw new Error(
-        `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
-      );
+      throw new ConvexError({
+        code: "FILE_LIMIT_EXCEEDED",
+        message: `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
+      });
     }
 
     try {
