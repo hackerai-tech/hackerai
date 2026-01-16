@@ -204,6 +204,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: packages/desktop
           tauriScript: pnpm tauri
@@ -258,64 +260,11 @@ jobs:
             fi
           done
 
-      - name: Sign updater artifacts
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        working-directory: packages/desktop
-        run: |
-          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
-
-          KEY_FILE=$(mktemp)
-          PASSWORD_FILE=$(mktemp)
-          echo -n "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '\n\r\t ' > "$KEY_FILE"
-          echo -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" > "$PASSWORD_FILE"
-          trap "rm -f $KEY_FILE $PASSWORD_FILE" EXIT
-
-          echo "Key file size: $(wc -c < "$KEY_FILE") bytes"
-
-          sign_file() {
-            local file="$1"
-            echo "Signing $file"
-            pnpm --silent tauri signer sign --private-key-path "$KEY_FILE" --password "$(cat $PASSWORD_FILE)" "$file"
-          }
-
-          shopt -s nullglob
-          for f in "$BUNDLE_DIR/macos/"*.app.tar.gz; do
-            [ -f "$f" ] && sign_file "$f"
-          done
-
-          for f in "$BUNDLE_DIR/appimage/"*.AppImage; do
-            if [ -f "$f" ]; then
-              echo "Creating tar.gz for $f"
-              tar -czf "$f.tar.gz" -C "$(dirname "$f")" "$(basename "$f")"
-              sign_file "$f.tar.gz"
-            fi
-          done
-
-          for f in "$BUNDLE_DIR/nsis/"*-setup.exe; do
-            if [ -f "$f" ]; then
-              echo "Creating zip for $f"
-              ZIP_NAME="${f%.exe}.nsis.zip"
-              DIR=$(dirname "$f")
-              BASE=$(basename "$f")
-              ZIP_BASE=$(basename "$ZIP_NAME")
-              if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
-                powershell -Command "Compress-Archive -Path '$DIR/$BASE' -DestinationPath '$DIR/$ZIP_BASE' -Force"
-              else
-                (cd "$DIR" && zip -q "$ZIP_BASE" "$BASE")
-              fi
-              sign_file "$ZIP_NAME"
-            fi
-          done
-          shopt -u nullglob
-
       - name: List bundle contents
         shell: bash
         run: |
-          echo "=== All updater-related files ==="
-          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) 2>/dev/null || true
+          echo "=== All bundle files ==="
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f 2>/dev/null || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
