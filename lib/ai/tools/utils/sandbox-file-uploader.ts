@@ -187,10 +187,13 @@ export async function uploadSandboxFileToConvex(args: {
     }
   } else {
     // Convex upload path (existing)
-    const postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-    });
+    const { uploadUrl: postUrl } = await convex.action(
+      api.fileActions.generateUploadUrlAction,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+      },
+    );
 
     const uploadRes = await fetch(postUrl, {
       method: "POST",
@@ -296,10 +299,13 @@ export async function uploadBase64ToConvex(args: {
     }
   } else {
     // Convex upload path (existing)
-    const postUrl = await convex.mutation(api.fileStorage.generateUploadUrl, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      userId,
-    });
+    const { uploadUrl: postUrl } = await convex.action(
+      api.fileActions.generateUploadUrlAction,
+      {
+        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+        userId,
+      },
+    );
 
     const uploadRes = await fetch(postUrl, {
       method: "POST",

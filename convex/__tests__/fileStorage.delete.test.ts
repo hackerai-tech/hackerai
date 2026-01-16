@@ -38,7 +38,6 @@ jest.mock("../../lib/utils/file-utils", () => ({
 jest.mock("../_generated/api", () => ({
   internal: {
     fileStorage: {
-      countUserFiles: "internal.fileStorage.countUserFiles",
       purgeExpiredUnattachedFiles:
         "internal.fileStorage.purgeExpiredUnattachedFiles",
       getFileById: "internal.fileStorage.getFileById",

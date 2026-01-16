@@ -25,6 +25,98 @@ import { MAX_TOKENS_FILE } from "../lib/token-utils";
 // Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
 
+// File upload rate limit: 80 files per 5 hours for paid tiers
+const FILE_UPLOAD_LIMIT = 80;
+const FILE_UPLOAD_WINDOW = "5 h";
+
+/** Rate limit check result with remaining count */
+export type RateLimitResult = {
+  remaining: number;
+  limit: number;
+  reset: number;
+};
+
+/**
+ * Check file upload rate limit using sliding window algorithm.
+ * Allows 80 file uploads per 5 hours for paid tiers.
+ *
+ * @param userId - The user's unique identifier
+ * @param consume - If true, consumes a token from the bucket. If false, just peeks at the current state.
+ * @returns RateLimitResult with remaining count, or null if Redis is not configured
+ * @throws ConvexError if rate limited
+ */
+export const checkFileUploadRateLimit = async (
+  userId: string,
+  consume: boolean = true,
+): Promise<RateLimitResult | null> => {
+  // Check if Redis is configured
+  const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
+  const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
+
+  if (!redisUrl || !redisToken) {
+    // If Redis is not configured, allow the request (fail-open)
+    return null;
+  }
+
+  try {
+    // Dynamic imports in Convex Node runtime expose modules via .default
+    const ratelimitModule = await import("@upstash/ratelimit");
+    const Ratelimit = ratelimitModule.default.Ratelimit;
+
+    const { Redis } = await import("@upstash/redis");
+
+    const redis = new Redis({
+      url: redisUrl,
+      token: redisToken,
+    });
+
+    const ratelimit = new Ratelimit({
+      redis,
+      limiter: Ratelimit.slidingWindow(FILE_UPLOAD_LIMIT, FILE_UPLOAD_WINDOW),
+      prefix: "file_upload_limit",
+    });
+
+    const rateLimitKey = `${userId}:file_upload`;
+    // Use rate: 0 to peek without consuming, rate: 1 (default) to consume
+    const { success, reset, remaining, limit } = await ratelimit.limit(
+      rateLimitKey,
+      {
+        rate: consume ? 1 : 0,
+      },
+    );
+
+    if (!success) {
+      // Calculate time remaining
+      const now = Date.now();
+      const resetMs = reset - now;
+      const hours = Math.floor(resetMs / (1000 * 60 * 60));
+      const minutes = Math.floor((resetMs % (1000 * 60 * 60)) / (1000 * 60));
+
+      let timeString = "";
+      if (hours > 0) {
+        timeString = `${hours}h ${minutes}m`;
+      } else {
+        timeString = `${minutes}m`;
+      }
+
+      throw new ConvexError({
+        code: "FILE_UPLOAD_RATE_LIMIT",
+        message: `You've reached your file upload limit of ${FILE_UPLOAD_LIMIT} files per 5 hours. Please try again after ${timeString}.`,
+      });
+    }
+
+    return { remaining, limit, reset };
+  } catch (error) {
+    // Re-throw ConvexError
+    if (error instanceof ConvexError) {
+      throw error;
+    }
+    // Log and allow for other errors (fail-open)
+    console.warn("File upload rate limit check failed:", error);
+    return null;
+  }
+};
+
 /**
  * Truncate content to a maximum number of tokens
  * @param content - The content to truncate
@@ -525,7 +617,7 @@ export const saveFile = action({
     const shouldSkipTokenValidation =
       args.skipTokenValidation || args.mode === "agent";
 
-    // Check file limit
+    // Check if paid tier (free tier cannot upload)
     const fileLimit = getFileLimit(entitlements);
     if (fileLimit === 0) {
       throw new ConvexError({
@@ -534,17 +626,9 @@ export const saveFile = action({
       });
     }
 
-    const currentFileCount = await ctx.runQuery(
-      internal.fileStorage.countUserFiles,
-      { userId: actingUserId },
-    );
-
-    if (currentFileCount >= fileLimit) {
-      throw new ConvexError({
-        code: "FILE_LIMIT_EXCEEDED",
-        message: `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
-      });
-    }
+    // Check file upload rate limit (peek mode - verify limit not exceeded)
+    // Token was already consumed at URL generation step
+    await checkFileUploadRateLimit(actingUserId, false);
 
     // Enforce file size limit (20 MB) regardless of skipTokenValidation
     if (args.size > MAX_FILE_SIZE_BYTES) {
@@ -731,6 +815,70 @@ export const saveFile = action({
       url: fileUrl,
       fileId,
       tokens: tokenSize,
+    };
+  },
+});
+
+/**
+ * Generate upload URL for file storage with authentication and rate limiting.
+ * This action replaces the mutation to enable Redis-based rate limiting.
+ * Returns the upload URL and rate limit info (remaining uploads).
+ */
+export const generateUploadUrlAction = action({
+  args: {
+    serviceKey: v.optional(v.string()),
+    userId: v.optional(v.string()),
+  },
+  returns: v.object({
+    uploadUrl: v.string(),
+    rateLimit: v.optional(
+      v.object({
+        remaining: v.number(),
+        limit: v.number(),
+        reset: v.number(),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    let actingUserId: string;
+
+    // Service key flow (backend)
+    if (args.serviceKey) {
+      validateServiceKey(args.serviceKey);
+      if (!args.userId) {
+        throw new ConvexError({
+          code: "MISSING_USER_ID",
+          message: "userId is required when using serviceKey",
+        });
+      }
+      actingUserId = args.userId;
+    } else {
+      // User-authenticated flow
+      const user = await ctx.auth.getUserIdentity();
+      if (!user) {
+        throw new ConvexError({
+          code: "UNAUTHORIZED",
+          message: "Unauthorized: User not authenticated",
+        });
+      }
+      actingUserId = user.subject;
+    }
+
+    // Check rate limit and consume a token
+    // This prevents abuse by spamming URL generation
+    const rateLimitResult = await checkFileUploadRateLimit(actingUserId, true);
+
+    const uploadUrl = await ctx.storage.generateUploadUrl();
+
+    return {
+      uploadUrl,
+      rateLimit: rateLimitResult
+        ? {
+            remaining: rateLimitResult.remaining,
+            limit: rateLimitResult.limit,
+            reset: rateLimitResult.reset,
+          }
+        : undefined,
     };
   },
 });

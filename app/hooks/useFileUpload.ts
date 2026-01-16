@@ -10,6 +10,7 @@ import {
   validateImageFile,
   createFileMessagePartFromUploadedFile,
   isImageFile,
+  RateLimitInfo,
 } from "@/lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
@@ -17,6 +18,9 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 
 const USE_S3_STORAGE = process.env.NEXT_PUBLIC_USE_S3_STORAGE === "true";
+
+// Show warning when remaining uploads are at or below this threshold
+const RATE_LIMIT_WARNING_THRESHOLD = 10;
 
 export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -34,17 +38,49 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
   const [showDragOverlay, setShowDragOverlay] = useState(false);
   const dragCounterRef = useRef(0);
 
-  const generateUploadUrl = useMutation(api.fileStorage.generateUploadUrl);
+  // Track last shown rate limit warning to avoid spamming (show once per minute max)
+  const lastRateLimitWarningRef = useRef<number>(0);
+
+  const generateUploadUrlAction = useAction(
+    api.fileActions.generateUploadUrlAction,
+  );
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
   const generateS3UploadUrlAction = useAction(
     api.s3Actions.generateS3UploadUrlAction,
   );
 
-  // Wrap Convex mutation to match `() => Promise<string>` signature expected by the util
+  // Helper to show rate limit warning (throttled to once per minute)
+  const showRateLimitWarning = useCallback((rateLimit: RateLimitInfo) => {
+    if (rateLimit.remaining > RATE_LIMIT_WARNING_THRESHOLD) {
+      return;
+    }
+
+    const now = Date.now();
+    const timeSinceLastWarning = now - lastRateLimitWarningRef.current;
+    const ONE_MINUTE = 60 * 1000;
+
+    if (timeSinceLastWarning < ONE_MINUTE) {
+      return;
+    }
+
+    lastRateLimitWarningRef.current = now;
+
+    // Calculate time until reset
+    const resetMs = rateLimit.reset - now;
+    const hours = Math.floor(resetMs / (1000 * 60 * 60));
+    const minutes = Math.floor((resetMs % (1000 * 60 * 60)) / (1000 * 60));
+    const timeString = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+
+    toast.warning(
+      `You have ${rateLimit.remaining} file uploads remaining. Resets in ${timeString}.`,
+    );
+  }, []);
+
+  // Wrap Convex action to return object with uploadUrl and rateLimit
   const generateUploadUrlFn = useCallback(
-    () => generateUploadUrl({}),
-    [generateUploadUrl],
+    () => generateUploadUrlAction({}),
+    [generateUploadUrlAction],
   );
 
   // Helper function to check and validate files before processing
@@ -149,10 +185,17 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
     async (file: File, uploadIndex: number) => {
       try {
         // Step 1: Generate presigned S3 upload URL
-        const { uploadUrl, s3Key } = await generateS3UploadUrlAction({
-          fileName: file.name,
-          contentType: file.type || "application/octet-stream",
-        });
+        const { uploadUrl, s3Key, rateLimit } = await generateS3UploadUrlAction(
+          {
+            fileName: file.name,
+            contentType: file.type || "application/octet-stream",
+          },
+        );
+
+        // Show warning if approaching rate limit
+        if (rateLimit) {
+          showRateLimitWarning(rateLimit);
+        }
 
         // Step 2: Upload file to S3 using presigned URL
         const uploadResponse = await fetch(uploadUrl, {
@@ -234,6 +277,7 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
       deleteFile,
       removeUploadedFile,
       updateUploadedFile,
+      showRateLimitWarning,
       mode,
     ],
   );
@@ -242,12 +286,18 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
   const uploadFileToConvex = useCallback(
     async (file: File, uploadIndex: number) => {
       try {
-        const { fileId, url, tokens } = await uploadSingleFileToConvex(
-          file,
-          generateUploadUrlFn,
-          saveFile,
-          mode,
-        );
+        const { fileId, url, tokens, rateLimit } =
+          await uploadSingleFileToConvex(
+            file,
+            generateUploadUrlFn,
+            saveFile,
+            mode,
+          );
+
+        // Show warning if approaching rate limit
+        if (rateLimit) {
+          showRateLimitWarning(rateLimit);
+        }
 
         // Only check token limit for "ask" mode
         // In "agent" mode, files are accessed in sandbox, no token limit applies
@@ -299,6 +349,7 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
       deleteFile,
       removeUploadedFile,
       updateUploadedFile,
+      showRateLimitWarning,
       mode,
     ],
   );

@@ -9,8 +9,6 @@ const mockFileCountAggregate = {
   deleteIfExists: jest.fn(),
 };
 
-const mockIsFileCountAggregateAvailable = jest.fn();
-
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config) => config),
   internalMutation: jest.fn((config) => config),
@@ -50,7 +48,6 @@ jest.mock("../../lib/utils/file-utils", () => ({
 jest.mock("../_generated/api", () => ({
   internal: {
     fileStorage: {
-      countUserFiles: "internal.fileStorage.countUserFiles",
       purgeExpiredUnattachedFiles:
         "internal.fileStorage.purgeExpiredUnattachedFiles",
       getFileById: "internal.fileStorage.getFileById",
@@ -64,9 +61,6 @@ jest.mock("../_generated/api", () => ({
 jest.mock("../fileAggregate", () => ({
   fileCountAggregate: mockFileCountAggregate,
 }));
-jest.mock("../aggregateVersions", () => ({
-  isFileCountAggregateAvailable: mockIsFileCountAggregateAvailable,
-}));
 
 describe("fileStorage - Aggregate Integration", () => {
   const testUserId = "test-user-123";
@@ -77,112 +71,6 @@ describe("fileStorage - Aggregate Integration", () => {
     jest.spyOn(console, "log").mockImplementation(() => {});
     jest.spyOn(console, "error").mockImplementation(() => {});
     jest.spyOn(console, "warn").mockImplementation(() => {});
-  });
-
-  describe("countUserFiles", () => {
-    it("should return aggregate count when user is migrated", async () => {
-      mockIsFileCountAggregateAvailable.mockResolvedValue(true);
-      mockFileCountAggregate.count.mockResolvedValue(42);
-
-      const mockCtx = {
-        db: {
-          query: jest.fn(),
-        },
-      };
-
-      const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, {
-        userId: testUserId,
-      });
-
-      expect(result).toBe(42);
-      expect(mockIsFileCountAggregateAvailable).toHaveBeenCalledWith(
-        mockCtx,
-        testUserId,
-      );
-      expect(mockFileCountAggregate.count).toHaveBeenCalledWith(mockCtx, {
-        namespace: testUserId,
-      });
-      expect(mockCtx.db.query).not.toHaveBeenCalled();
-    });
-
-    it("should fallback to DB count when user is not migrated", async () => {
-      mockIsFileCountAggregateAvailable.mockResolvedValue(false);
-
-      const mockFiles = [
-        { _id: "file-1", user_id: testUserId },
-        { _id: "file-2", user_id: testUserId },
-        { _id: "file-3", user_id: testUserId },
-      ];
-
-      const mockQueryBuilder = {
-        withIndex: jest.fn().mockReturnThis(),
-        collect: jest.fn().mockResolvedValue(mockFiles),
-      };
-
-      const mockCtx = {
-        db: {
-          query: jest.fn().mockReturnValue(mockQueryBuilder),
-        },
-      };
-
-      const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, {
-        userId: testUserId,
-      });
-
-      expect(result).toBe(3);
-      expect(mockIsFileCountAggregateAvailable).toHaveBeenCalledWith(
-        mockCtx,
-        testUserId,
-      );
-      expect(mockFileCountAggregate.count).not.toHaveBeenCalled();
-      expect(mockCtx.db.query).toHaveBeenCalledWith("files");
-    });
-
-    it("should return 0 when user is not migrated and has no files", async () => {
-      mockIsFileCountAggregateAvailable.mockResolvedValue(false);
-
-      const mockQueryBuilder = {
-        withIndex: jest.fn().mockReturnThis(),
-        collect: jest.fn().mockResolvedValue([]),
-      };
-
-      const mockCtx = {
-        db: {
-          query: jest.fn().mockReturnValue(mockQueryBuilder),
-        },
-      };
-
-      const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, {
-        userId: testUserId,
-      });
-
-      expect(result).toBe(0);
-    });
-
-    it("should return 0 when user is migrated and has no files", async () => {
-      mockIsFileCountAggregateAvailable.mockResolvedValue(true);
-      mockFileCountAggregate.count.mockResolvedValue(0);
-
-      const mockCtx = {
-        db: {
-          query: jest.fn(),
-        },
-      };
-
-      const { countUserFiles } = await import("../fileStorage");
-      const result = await countUserFiles.handler(mockCtx, {
-        userId: testUserId,
-      });
-
-      expect(result).toBe(0);
-      expect(mockFileCountAggregate.count).toHaveBeenCalledWith(mockCtx, {
-        namespace: testUserId,
-      });
-      expect(mockCtx.db.query).not.toHaveBeenCalled();
-    });
   });
 
   describe("saveFileToDb", () => {

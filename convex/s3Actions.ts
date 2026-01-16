@@ -5,7 +5,7 @@ import { v, ConvexError } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./chats";
-import { getFileLimit } from "./fileStorage";
+import { checkFileUploadRateLimit } from "./fileActions";
 import { Doc } from "./_generated/dataModel";
 
 /** File record returned by internal.fileStorage.getFileById */
@@ -18,7 +18,7 @@ type FileRecord = Doc<"files"> | null;
  * - Authenticates the user via ctx.auth
  * - Validates input parameters (fileName, contentType)
  * - Generates a user-scoped S3 key
- * - Returns a presigned upload URL and the S3 key
+ * - Returns a presigned upload URL, the S3 key, and rate limit info
  */
 export const generateS3UploadUrlAction = action({
   args: {
@@ -28,6 +28,13 @@ export const generateS3UploadUrlAction = action({
   returns: v.object({
     uploadUrl: v.string(),
     s3Key: v.string(),
+    rateLimit: v.optional(
+      v.object({
+        remaining: v.number(),
+        limit: v.number(),
+        reset: v.number(),
+      }),
+    ),
   }),
   handler: async (ctx, args) => {
     // Authenticate user
@@ -47,31 +54,12 @@ export const generateS3UploadUrlAction = action({
       throw new Error("Invalid contentType: contentType cannot be empty");
     }
 
-    // Get user ID and entitlements from identity
+    // Get user ID from identity
     const userId = identity.subject;
-    const entitlements = Array.isArray(identity.entitlements)
-      ? identity.entitlements.filter(
-          (e: unknown): e is string => typeof e === "string",
-        )
-      : [];
 
-    // Check file limit
-    const fileLimit = getFileLimit(entitlements);
-    if (fileLimit === 0) {
-      throw new Error("Paid plan required for file uploads");
-    }
-
-    const currentFileCount = await ctx.runQuery(
-      internal.fileStorage.countUserFiles,
-      { userId },
-    );
-
-    if (currentFileCount >= fileLimit) {
-      throw new ConvexError({
-        code: "FILE_LIMIT_EXCEEDED",
-        message: `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
-      });
-    }
+    // Check rate limit and consume a token
+    // This prevents abuse by spamming URL generation
+    const rateLimitResult = await checkFileUploadRateLimit(userId, true);
 
     try {
       // Generate presigned upload URL with user-scoped S3 key
@@ -81,7 +69,17 @@ export const generateS3UploadUrlAction = action({
         userId,
       );
 
-      return { uploadUrl, s3Key };
+      return {
+        uploadUrl,
+        s3Key,
+        rateLimit: rateLimitResult
+          ? {
+              remaining: rateLimitResult.remaining,
+              limit: rateLimitResult.limit,
+              reset: rateLimitResult.reset,
+            }
+          : undefined,
+      };
     } catch (error) {
       console.error("Failed to generate S3 upload URL:", error);
       throw new Error(
