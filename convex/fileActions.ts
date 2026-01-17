@@ -84,13 +84,24 @@ export const checkFileUploadRateLimit = async (
     });
 
     const rateLimitKey = `${userId}:file_upload`;
-    // Use rate: 0 to peek without consuming, rate: 1 (default) to consume
-    const { success, reset, remaining, limit } = await ratelimit.limit(
-      rateLimitKey,
-      {
-        rate: consume ? 1 : 0,
-      },
-    );
+
+    let success: boolean;
+    let reset: number;
+    let remaining: number;
+    let limit: number;
+
+    if (consume) {
+      // Consume a token from the rate limit bucket
+      ({ success, reset, remaining, limit } = await ratelimit.limit(
+        rateLimitKey,
+      ));
+    } else {
+      // Peek at the current state without consuming a token
+      ({ remaining, limit, reset } = await ratelimit.getRemaining(
+        rateLimitKey,
+      ));
+      success = remaining > 0;
+    }
 
     if (!success) {
       // Calculate time remaining
