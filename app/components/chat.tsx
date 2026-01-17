@@ -41,7 +41,7 @@ export const Chat = ({
   autoResume: boolean;
 }) => {
   const isMobile = useIsMobile();
-  const { setDataStream, isAutoResuming, setIsAutoResuming } = useDataStream();
+  const { setDataStream, setIsAutoResuming } = useDataStream();
   const [uploadStatus, setUploadStatus] = useState<{
     message: string;
     isUploading: boolean;
@@ -741,7 +741,6 @@ export const Chat = ({
                               onStop={handleStop}
                               onSendNow={handleSendNow}
                               status={status}
-                              hideStop={isAutoResuming}
                               isCentered={true}
                               hasMessages={hasMessages}
                               isAtBottom={isAtBottom}
@@ -775,7 +774,6 @@ export const Chat = ({
                       onStop={handleStop}
                       onSendNow={handleSendNow}
                       status={status}
-                      hideStop={isAutoResuming}
                       hasMessages={hasMessages}
                       isAtBottom={isAtBottom}
                       onScrollToBottom={handleScrollToBottom}

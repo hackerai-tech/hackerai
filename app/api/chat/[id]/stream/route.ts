@@ -5,6 +5,7 @@ import type { ChatMessage } from "@/types/chat";
 import { getStreamContext } from "@/lib/api/chat-handler";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { createCancellationSubscriber } from "@/lib/utils/stream-cancellation";
 
 export const maxDuration = 800;
 
@@ -56,6 +57,7 @@ export async function GET(
   }
 
   const recentStreamId: string | undefined = chat.active_stream_id;
+  const isTemporary = chat.temporary === true;
 
   const emptyDataStream = createUIMessageStream<ChatMessage>({
     execute: () => {},
@@ -67,7 +69,47 @@ export async function GET(
     );
 
     if (stream) {
-      return new Response(stream, { status: 200 });
+      const abortController = new AbortController();
+
+      // Abort on client disconnect (tab close, network error, etc.)
+      req.signal.addEventListener("abort", () => abortController.abort(), {
+        once: true,
+      });
+
+      // Abort on explicit stop button click (via Redis pub/sub or polling)
+      const cancellationSubscriber = await createCancellationSubscriber({
+        chatId,
+        isTemporary,
+        abortController,
+        onStop: () => {},
+      });
+
+      const reader = stream.getReader();
+
+      const abortableStream = new ReadableStream({
+        async pull(controller) {
+          try {
+            if (abortController.signal.aborted) {
+              controller.close();
+              return;
+            }
+            const { done, value } = await reader.read();
+            if (done) {
+              controller.close();
+            } else {
+              controller.enqueue(value);
+            }
+          } catch {
+            controller.close();
+          }
+        },
+        cancel() {
+          reader.cancel();
+          cancellationSubscriber.stop();
+        },
+      });
+
+      return new Response(abortableStream, { status: 200 });
     }
   }
 
