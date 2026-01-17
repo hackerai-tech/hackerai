@@ -3,19 +3,20 @@
  *
  * This module provides two rate limiting strategies:
  *
- * 1. Token Bucket (Agent Mode):
+ * 1. Token Bucket (Agent Mode + Ask Mode for paid users):
  *    - Allows burst requests while maintaining sustainable rate
  *    - Points are consumed based on model usage costs
- *    - Bucket refills over time (per hour)
+ *    - Bucket refills over time (per hour for session, per week for weekly)
+ *    - Agent and Ask modes share the same budget pool (100% of subscription)
  *
- * 2. Sliding Window (Ask Mode):
+ * 2. Sliding Window (Ask Mode for free users only):
  *    - Simple request counting within a rolling window
  *    - Fixed number of requests per 5-hour period
  */
 
 import type { ChatMode, SubscriptionTier, RateLimitInfo } from "@/types";
 
-// Re-export token bucket functions
+// Re-export token bucket functions (used by both agent and ask modes for paid users)
 export {
   checkAgentRateLimit,
   deductAgentUsage,
@@ -41,13 +42,14 @@ import { checkAskRateLimit } from "./sliding-window";
  *
  * Routes to the appropriate rate limiting strategy based on mode:
  * - Agent mode: Token bucket (checks if estimated cost fits in budget)
- * - Ask mode: Sliding window (simple request counting)
+ * - Ask mode (paid users): Token bucket (checks if estimated cost fits in budget)
+ * - Ask mode (free users): Sliding window (simple request counting)
  *
  * @param userId - The user's unique identifier
  * @param mode - The chat mode ("agent" or "ask")
  * @param subscription - The user's subscription tier
- * @param estimatedInputTokens - Estimated input tokens (agent mode only)
- * @param modelName - Model name for pricing (agent mode only)
+ * @param estimatedInputTokens - Estimated input tokens (for token bucket modes)
+ * // @param modelName - Model name for pricing (for token bucket modes)
  * @returns Rate limit info including remaining quota
  */
 export const checkRateLimit = async (
@@ -55,16 +57,12 @@ export const checkRateLimit = async (
   mode: ChatMode,
   subscription: SubscriptionTier,
   estimatedInputTokens?: number,
-  modelName = "",
+  // modelName = "",
 ): Promise<RateLimitInfo> => {
   if (mode === "agent") {
-    return checkAgentRateLimit(
-      userId,
-      subscription,
-      estimatedInputTokens || 0,
-      modelName,
-    );
+    return checkAgentRateLimit(userId, subscription, estimatedInputTokens || 0);
   }
 
-  return checkAskRateLimit(userId, subscription);
+  // Ask mode: token bucket for paid users, sliding window for free users
+  return checkAskRateLimit(userId, subscription, estimatedInputTokens || 0);
 };

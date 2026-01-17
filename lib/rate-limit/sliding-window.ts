@@ -2,6 +2,7 @@ import { Ratelimit } from "@upstash/ratelimit";
 import { ChatSDKError } from "@/lib/errors";
 import type { SubscriptionTier, RateLimitInfo } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
+import { checkAgentRateLimit } from "./token-bucket";
 
 // =============================================================================
 // Sliding Window Configuration
@@ -44,19 +45,29 @@ const getAskModeErrorMessage = (
 // =============================================================================
 
 /**
- * Check rate limit for ask mode using sliding window algorithm.
+ * Check rate limit for ask mode.
  *
- * The sliding window provides a simple request counting mechanism
- * that limits the number of requests within a 5-hour rolling window.
+ * - Free users: Sliding window (simple request counting)
+ * - Paid users: Token bucket (cost-based, same as agent mode)
  *
  * @param userId - The user's unique identifier
  * @param subscription - The user's subscription tier
- * @returns Rate limit info including remaining requests
+ * @param estimatedInputTokens - Estimated input tokens (for token bucket)
+ * // @param modelName - Model name for pricing (for token bucket)
+ * @returns Rate limit info including remaining requests/quota
  */
 export const checkAskRateLimit = async (
   userId: string,
   subscription: SubscriptionTier,
+  estimatedInputTokens: number = 0,
+  // modelName = "",
 ): Promise<RateLimitInfo> => {
+  // Paid users use token bucket (cost-based limiting, shared with agent mode)
+  if (subscription !== "free") {
+    return checkAgentRateLimit(userId, subscription, estimatedInputTokens);
+  }
+
+  // Free users use sliding window (simple request counting)
   const redis = createRedisClient();
 
   if (!redis) {

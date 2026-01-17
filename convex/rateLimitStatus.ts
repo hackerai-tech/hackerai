@@ -123,10 +123,10 @@ export const getAgentRateLimitStatus = action({
       const sessionRatelimit = new Ratelimit({
         redis,
         limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
-        prefix: "agent_bucket",
+        prefix: "usage_bucket",
       });
 
-      const sessionKey = `${userId}:agent:${subscription}`;
+      const sessionKey = `${userId}:usage:${subscription}`;
       const sessionResult = await sessionRatelimit.limit(sessionKey, {
         rate: 0,
       });
@@ -136,10 +136,10 @@ export const getAgentRateLimitStatus = action({
       const weeklyRatelimit = new Ratelimit({
         redis,
         limiter: Ratelimit.tokenBucket(weeklyLimit, "7 d", weeklyLimit),
-        prefix: "agent_weekly",
+        prefix: "usage_weekly",
       });
 
-      const weeklyKey = `${userId}:agent:weekly:${subscription}`;
+      const weeklyKey = `${userId}:usage:weekly:${subscription}`;
       const weeklyResult = await weeklyRatelimit.limit(weeklyKey, { rate: 0 });
 
       // Clamp remaining to [0, limit] to handle edge cases where bucket

@@ -20,11 +20,8 @@ const MODEL_PRICING = {
 /** Points per dollar (1 point = $0.0001) */
 export const POINTS_PER_DOLLAR = 10_000;
 
-/** Long context threshold (128K tokens) */
-const LONG_CONTEXT_THRESHOLD = 128_000;
-
-/** Agent mode gets 70% of subscription price */
-export const AGENT_BUDGET_ALLOCATION = 0.7;
+// /** Long context threshold (128K tokens) */
+// const LONG_CONTEXT_THRESHOLD = 128_000;
 
 // =============================================================================
 // Cost Calculation
@@ -34,16 +31,14 @@ export const AGENT_BUDGET_ALLOCATION = 0.7;
  * Calculate point cost for tokens.
  * @param tokens - Number of tokens
  * @param type - "input" or "output"
- * @param isLongContext - Whether context > 128K (reserved for future use)
- * @param modelName - Model name (reserved for future use when models differ)
+ * // @param isLongContext - Whether context > 128K (reserved for future use)
+ * // @param modelName - Model name (reserved for future use when models differ)
  */
 export const calculateTokenCost = (
   tokens: number,
   type: "input" | "output",
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  isLongContext = false,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  modelName = "",
+  // isLongContext = false,
+  // modelName = "",
 ): number => {
   if (tokens <= 0) return 0;
 
@@ -54,7 +49,6 @@ export const calculateTokenCost = (
   //     : isLongContext ? MODEL_PRICING.outputLong : MODEL_PRICING.output;
 
   const price = type === "input" ? MODEL_PRICING.input : MODEL_PRICING.output;
-
   return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
 };
 
@@ -63,7 +57,7 @@ export const calculateTokenCost = (
 // =============================================================================
 
 /**
- * Get agent budget limits for a subscription tier.
+ * Get budget limits for a subscription tier (shared between agent and ask modes).
  * @returns { session: daily budget, weekly: weekly budget } in points
  */
 export const getBudgetLimits = (
@@ -72,8 +66,7 @@ export const getBudgetLimits = (
   if (subscription === "free") return { session: 0, weekly: 0 };
 
   const monthlyPrice = PRICING[subscription]?.monthly ?? 0;
-  const monthlyPoints =
-    monthlyPrice * AGENT_BUDGET_ALLOCATION * POINTS_PER_DOLLAR;
+  const monthlyPoints = monthlyPrice * POINTS_PER_DOLLAR;
 
   return {
     session: Math.round(monthlyPoints / 30), // Daily budget
@@ -89,12 +82,12 @@ export const calculateBucketLimit = (subscription: SubscriptionTier): number =>
 export const calculateWeeklyLimit = (subscription: SubscriptionTier): number =>
   getBudgetLimits(subscription).weekly;
 
-/** Get monthly agent budget (70% of subscription) */
+/** Get monthly budget (full subscription price, shared between modes) */
 export const getSubscriptionPrice = (
   subscription: SubscriptionTier,
 ): number => {
   if (subscription === "free") return 0;
-  return (PRICING[subscription]?.monthly ?? 0) * AGENT_BUDGET_ALLOCATION;
+  return PRICING[subscription]?.monthly ?? 0;
 };
 
 // =============================================================================
@@ -102,7 +95,7 @@ export const getSubscriptionPrice = (
 // =============================================================================
 
 /**
- * Create rate limiters for a user.
+ * Create rate limiters for a user (shared between agent and ask modes).
  */
 const createRateLimiters = (
   redis: ReturnType<typeof createRedisClient>,
@@ -119,17 +112,17 @@ const createRateLimiters = (
       limiter: new Ratelimit({
         redis: redis!,
         limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
-        prefix: "agent_bucket",
+        prefix: "usage_bucket",
       }),
-      key: `${userId}:agent:${subscription}`,
+      key: `${userId}:usage:${subscription}`,
     },
     weekly: {
       limiter: new Ratelimit({
         redis: redis!,
         limiter: Ratelimit.tokenBucket(weeklyLimit, "7 d", weeklyLimit),
-        prefix: "agent_weekly",
+        prefix: "usage_weekly",
       }),
-      key: `${userId}:agent:weekly:${subscription}`,
+      key: `${userId}:usage:weekly:${subscription}`,
     },
   };
 };
@@ -141,7 +134,7 @@ export const checkAgentRateLimit = async (
   userId: string,
   subscription: SubscriptionTier,
   estimatedInputTokens: number = 0,
-  modelName = "",
+  // modelName = "",
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
@@ -167,13 +160,8 @@ export const checkAgentRateLimit = async (
       );
     }
 
-    const isLongContext = estimatedInputTokens > LONG_CONTEXT_THRESHOLD;
-    const estimatedCost = calculateTokenCost(
-      estimatedInputTokens,
-      "input",
-      isLongContext,
-      modelName,
-    );
+    // const isLongContext = estimatedInputTokens > LONG_CONTEXT_THRESHOLD;
+    const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
 
     // Step 1: Check both limits first WITHOUT deducting (rate: 0 peeks at current state)
     // This prevents the race condition where we deduct from weekly but session fails
@@ -184,17 +172,18 @@ export const checkAgentRateLimit = async (
 
     // Step 2: Validate both limits have enough capacity
     if (weeklyCheck.remaining < estimatedCost) {
-      throw new ChatSDKError(
-        "rate_limit:chat",
-        `You've reached your weekly agent limit, please try again after ${formatTimeRemaining(new Date(weeklyCheck.reset))}.\n\nYou can continue using ask mode in the meantime.`,
-      );
+      const msg =
+        subscription === "pro"
+          ? `You've reached your weekly limit, please try again after ${formatTimeRemaining(new Date(weeklyCheck.reset))}.\n\nUpgrade to Ultra for higher limits.`
+          : `You've reached your weekly limit, please try again after ${formatTimeRemaining(new Date(weeklyCheck.reset))}.`;
+      throw new ChatSDKError("rate_limit:chat", msg);
     }
 
     if (sessionCheck.remaining < estimatedCost) {
       const msg =
         subscription === "pro"
-          ? `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionCheck.reset))}.\n\nYou can continue using ask mode in the meantime or upgrade to Ultra for higher limits.`
-          : `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionCheck.reset))}.\n\nYou can continue using ask mode in the meantime.`;
+          ? `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionCheck.reset))}.\n\nUpgrade to Ultra for higher limits.`
+          : `You've reached your session limit, please try again after ${formatTimeRemaining(new Date(sessionCheck.reset))}.`;
       throw new ChatSDKError("rate_limit:chat", msg);
     }
 
@@ -227,7 +216,7 @@ export const deductAgentUsage = async (
   estimatedInputTokens: number,
   actualInputTokens: number,
   actualOutputTokens: number,
-  modelName = "",
+  // modelName = "",
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -240,27 +229,12 @@ export const deductAgentUsage = async (
     );
     if (sessionLimit === 0) return;
 
-    const isLongContext = actualInputTokens > LONG_CONTEXT_THRESHOLD;
+    // const isLongContext = actualInputTokens > LONG_CONTEXT_THRESHOLD;
 
     // Calculate additional cost
-    const estimatedInputCost = calculateTokenCost(
-      estimatedInputTokens,
-      "input",
-      isLongContext,
-      modelName,
-    );
-    const actualInputCost = calculateTokenCost(
-      actualInputTokens,
-      "input",
-      isLongContext,
-      modelName,
-    );
-    const outputCost = calculateTokenCost(
-      actualOutputTokens,
-      "output",
-      isLongContext,
-      modelName,
-    );
+    const estimatedInputCost = calculateTokenCost(estimatedInputTokens, "input");
+    const actualInputCost = calculateTokenCost(actualInputTokens, "input");
+    const outputCost = calculateTokenCost(actualOutputTokens, "output");
     const additionalCost =
       Math.max(0, actualInputCost - estimatedInputCost) + outputCost;
 

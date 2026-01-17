@@ -146,9 +146,10 @@ export const createChatHandler = () => {
         });
       }
 
-      // Ask mode: check rate limit first (avoid processing if over limit)
-      const askRateLimitInfo =
-        mode === "ask"
+      // Free users in ask mode: check rate limit early (sliding window, no token counting needed)
+      // This avoids unnecessary processing if they're over the limit
+      const freeAskRateLimitInfo =
+        mode === "ask" && subscription === "free"
           ? await checkRateLimit(userId, mode, subscription)
           : null;
 
@@ -159,18 +160,20 @@ export const createChatHandler = () => {
           subscription,
         });
 
-      // Agent mode: check rate limit with model-specific pricing after knowing the model
+      // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
+      // Token bucket requires estimated token count for cost calculation
       const estimatedInputTokens =
-        mode === "agent" ? countMessagesTokens(truncatedMessages, {}) : 0;
+        mode === "agent" || subscription !== "free"
+          ? countMessagesTokens(truncatedMessages, {})
+          : 0;
 
       const rateLimitInfo =
-        askRateLimitInfo ??
+        freeAskRateLimitInfo ??
         (await checkRateLimit(
           userId,
           mode,
           subscription,
           estimatedInputTokens,
-          selectedModel,
         ));
 
       const userCustomization = await getUserCustomization({ userId });
@@ -481,16 +484,16 @@ export const createChatHandler = () => {
               streamUsage = usage as Record<string, unknown>;
               responseModel = response?.modelId;
 
-              // For agent mode, deduct additional cost (output + any input difference)
+              // Deduct additional cost (output + any input difference)
               // Input cost was already deducted upfront in checkRateLimit
-              if (mode === "agent" && usage) {
+              // Both agent and paid ask modes share the same budget
+              if ((mode === "agent" || subscription !== "free") && usage) {
                 await deductAgentUsage(
                   userId,
                   subscription,
                   estimatedInputTokens,
                   usage.inputTokens || 0,
                   usage.outputTokens || 0,
-                  selectedModel,
                 );
               }
             },

@@ -141,7 +141,7 @@ const UsageTab = () => {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div>
-                <div className="font-medium text-sm">Agent mode (session)</div>
+                <div className="font-medium text-sm">Current session</div>
                 <div className="text-xs text-muted-foreground">
                   {formatSessionResetTime(tokenUsage.session.resetTime)}
                 </div>
@@ -165,7 +165,7 @@ const UsageTab = () => {
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div>
-                <div className="font-medium text-sm">Agent mode (weekly)</div>
+                <div className="font-medium text-sm">Weekly usage</div>
                 <div className="text-xs text-muted-foreground">
                   {formatWeeklyResetTime(tokenUsage.weekly.resetTime)}
                 </div>
