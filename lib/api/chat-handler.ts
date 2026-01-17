@@ -1,12 +1,13 @@
 import {
   convertToModelMessages,
   createUIMessageStream,
+  createUIMessageStreamResponse,
+  generateId,
   stepCountIs,
   streamText,
   UIMessage,
   UIMessagePart,
   smoothStream,
-  JsonToSseTransformStream,
 } from "ai";
 import { stripProviderMetadata } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
@@ -55,27 +56,15 @@ import {
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 
-let globalStreamContext: any | null = null;
-
-export const getStreamContext = () => {
-  if (!globalStreamContext) {
-    try {
-      globalStreamContext = createResumableStreamContext({ waitUntil: after });
-    } catch (error: any) {
-      if (
-        typeof error?.message === "string" &&
-        error.message.includes("REDIS_URL")
-      ) {
-        console.log(
-          " > Resumable streams are disabled due to missing REDIS_URL",
-        );
-      } else {
-        console.warn("Resumable stream context init failed:", error);
-      }
-    }
+function getStreamContext() {
+  try {
+    return createResumableStreamContext({ waitUntil: after });
+  } catch (_) {
+    return null;
   }
-  return globalStreamContext;
-};
+}
+
+export { getStreamContext };
 
 export const createChatHandler = () => {
   return async (req: NextRequest) => {
@@ -625,22 +614,29 @@ export const createChatHandler = () => {
         },
       });
 
-      // Wrap the UI message stream as SSE
-      const sse = stream.pipeThrough(new JsonToSseTransformStream());
+      return createUIMessageStreamResponse({
+        stream,
+        async consumeSseStream({ stream: sseStream }) {
+          // Temporary chats do not support resumption
+          if (temporary) {
+            return;
+          }
 
-      // Create a resumable stream and persist the active stream id (non-temporary chats)
-      if (!temporary) {
-        const streamContext = getStreamContext();
-        if (streamContext) {
-          const streamId = uuidv4();
-          await startStream({ chatId, streamId });
-          const body = await streamContext.resumableStream(streamId, () => sse);
-          return new Response(body);
-        }
-      }
-
-      // Temporary chats do not support resumption; return SSE directly
-      return new Response(sse);
+          try {
+            const streamContext = getStreamContext();
+            if (streamContext) {
+              const streamId = generateId();
+              await startStream({ chatId, streamId });
+              await streamContext.createNewResumableStream(
+                streamId,
+                () => sseStream,
+              );
+            }
+          } catch (_) {
+            // ignore redis errors
+          }
+        },
+      });
     } catch (error) {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
