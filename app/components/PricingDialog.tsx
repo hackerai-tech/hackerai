@@ -15,6 +15,7 @@ import {
   ultraFeatures,
   teamFeatures,
   PRICING,
+  PLAN_HEADERS,
 } from "@/lib/pricing/features";
 import BillingFrequencySelector from "./BillingFrequencySelector";
 import UpgradeConfirmationDialog from "./UpgradeConfirmationDialog";
@@ -42,6 +43,7 @@ interface PlanCardProps {
   badgeText?: string;
   badgeClassName?: string;
   footerNote?: string;
+  featureHeader?: string | null;
 }
 
 const PlanCard: React.FC<PlanCardProps> = ({
@@ -59,6 +61,7 @@ const PlanCard: React.FC<PlanCardProps> = ({
   badgeText,
   badgeClassName = "",
   footerNote,
+  featureHeader,
 }) => {
   return (
     <div
@@ -116,6 +119,9 @@ const PlanCard: React.FC<PlanCardProps> = ({
       </div>
 
       <div className="flex flex-col grow gap-2">
+        {featureHeader && (
+          <p className="text-base font-semibold mb-2">{featureHeader}</p>
+        )}
         <ul className="mb-2 flex flex-col gap-5">
           {features.map((feature, index) => (
             <li key={index} className="relative">
@@ -246,7 +252,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       return {
         text: "Get Pro",
         disabled: upgradeLoading,
-        className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
+        className: "",
         variant: "default" as const,
         onClick: () =>
           handleUpgradeClick(
@@ -260,7 +266,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       return {
         text: "Get Pro",
         disabled: false,
-        className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
+        className: "",
         variant: "default" as const,
         onClick: () => navigateToAuth("/login"),
       };
@@ -354,19 +360,20 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   <PlanCard
                     planName="Free"
                     price={0}
-                    description="Intelligence for everyday tasks"
+                    description="Try HackerAI"
                     features={freeFeatures}
                     buttonText={freeButtonConfig.text}
                     buttonVariant={freeButtonConfig.variant}
                     buttonClassName={freeButtonConfig.className}
                     onButtonClick={freeButtonConfig.onClick}
                     isButtonDisabled={freeButtonConfig.disabled}
+                    featureHeader={PLAN_HEADERS.free}
                   />
                 ) : subscription === "pro" ? (
                   <PlanCard
                     planName="Pro"
                     price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
-                    description="More access to advanced intelligence"
+                    description="For everyday productivity"
                     features={proFeatures}
                     buttonText={proButtonConfig.text}
                     buttonVariant={proButtonConfig.variant}
@@ -374,6 +381,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                     onButtonClick={proButtonConfig.onClick}
                     isButtonDisabled={proButtonConfig.disabled}
                     isButtonLoading={proButtonConfig.loading}
+                    featureHeader={PLAN_HEADERS.pro}
                   />
                 ) : null}
 
@@ -387,11 +395,9 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                     subscription === "pro" ? "Upgrade to Team" : "Get Team"
                   }
                   buttonVariant={"default"}
-                  buttonClassName="font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white"
                   onButtonClick={handleTeamClick}
                   isButtonDisabled={false}
-                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
-                  badgeText="RECOMMENDED"
+                  featureHeader={PLAN_HEADERS.team}
                 />
               </>
             ) : (
@@ -401,13 +407,14 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   <PlanCard
                     planName="Free"
                     price={0}
-                    description="Intelligence for everyday tasks"
+                    description="Try HackerAI"
                     features={freeFeatures}
                     buttonText={freeButtonConfig.text}
                     buttonVariant={freeButtonConfig.variant}
                     buttonClassName={freeButtonConfig.className}
                     onButtonClick={freeButtonConfig.onClick}
                     isButtonDisabled={freeButtonConfig.disabled}
+                    featureHeader={PLAN_HEADERS.free}
                   />
                 )}
 
@@ -415,7 +422,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                 <PlanCard
                   planName="Pro"
                   price={isYearly ? PRICING.pro.yearly : PRICING.pro.monthly}
-                  description="More access to advanced intelligence"
+                  description="For everyday productivity"
                   features={proFeatures}
                   buttonText={proButtonConfig.text}
                   buttonVariant={proButtonConfig.variant}
@@ -423,8 +430,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   onButtonClick={proButtonConfig.onClick}
                   isButtonDisabled={proButtonConfig.disabled}
                   isButtonLoading={proButtonConfig.loading}
-                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
-                  badgeText="POPULAR"
+                  featureHeader={PLAN_HEADERS.pro}
                 />
 
                 {/* Ultra Plan */}
@@ -433,7 +439,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   price={
                     isYearly ? PRICING.ultra.yearly : PRICING.ultra.monthly
                   }
-                  description="Full access to the best of HackerAI"
+                  description="Get the most out of HackerAI"
                   features={ultraFeatures}
                   buttonText={ultraButtonConfig.text}
                   buttonVariant={ultraButtonConfig.variant}
@@ -441,7 +447,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   isButtonDisabled={ultraButtonConfig.disabled}
                   isButtonLoading={ultraButtonConfig.loading}
                   onButtonClick={ultraButtonConfig.onClick}
-                  footerNote="Unlimited subject to abuse guardrails."
+                  featureHeader={PLAN_HEADERS.ultra}
                 />
               </>
             )}

@@ -1,16 +1,5 @@
 import type React from "react";
-import {
-  Sparkle,
-  MessagesSquare,
-  Brain,
-  Clock,
-  Upload,
-  FlaskConical,
-  SquareTerminal,
-  CreditCard,
-  Users,
-  Code,
-} from "lucide-react";
+import { Check } from "lucide-react";
 
 /**
  * Centralized pricing configuration for all plans.
@@ -38,32 +27,36 @@ export type PricingFeature = {
   text: string;
 };
 
+export const PLAN_HEADERS = {
+  free: null,
+  pro: "Everything in Free, plus:",
+  ultra: "Everything in Pro, plus:",
+  team: "Everything in Pro, plus:",
+} as const;
+
 export const freeFeatures: Array<PricingFeature> = [
-  { icon: Sparkle, text: "Access to basic AI model" },
-  { icon: Clock, text: "Limited and slower responses" },
-  { icon: Brain, text: "Basic memory and context" },
+  { icon: Check, text: "Access to basic AI model" },
+  { icon: Check, text: "Limited and slower responses" },
+  { icon: Check, text: "Basic memory and context" },
 ];
 
 export const proFeatures: Array<PricingFeature> = [
-  { icon: Sparkle, text: "Access to smartest AI model" },
-  { icon: MessagesSquare, text: "Expanded messaging" },
-  { icon: Upload, text: "Access to file uploads" },
-  { icon: SquareTerminal, text: "Agent mode with terminal" },
-  { icon: Brain, text: "Expanded memory and context" },
+  { icon: Check, text: "Access to smartest AI model" },
+  { icon: Check, text: "Expanded messaging" },
+  { icon: Check, text: "Access to file uploads" },
+  { icon: Check, text: "Agent mode with terminal" },
+  { icon: Check, text: "Connect agent to your machine" },
+  { icon: Check, text: "Expanded memory and context" },
 ];
 
 export const ultraFeatures: Array<PricingFeature> = [
-  { icon: MessagesSquare, text: "Unlimited messages and uploads" },
-  { icon: Brain, text: "Maximum memory and context" },
-  { icon: SquareTerminal, text: "Expanded Agent mode" },
-  { icon: FlaskConical, text: "Research preview of new features" },
+  { icon: Check, text: "20x more usage than Pro" },
+  { icon: Check, text: "Maximum memory and context" },
+  { icon: Check, text: "Expanded Agent mode" },
+  { icon: Check, text: "Early access to beta features" },
 ];
 
 export const teamFeatures: Array<PricingFeature> = [
-  {
-    icon: Sparkle,
-    text: "Everything in Pro and more: access to smartest AI model, expanded messaging, file uploads, agent mode with terminal, expanded memory and context",
-  },
-  { icon: CreditCard, text: "Centralized billing and invoicing" },
-  { icon: Users, text: "Advanced team + seat management" },
+  { icon: Check, text: "Centralized billing and invoicing" },
+  { icon: Check, text: "Advanced team + seat management" },
 ];
