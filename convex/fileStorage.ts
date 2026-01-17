@@ -9,7 +9,10 @@ import { validateServiceKey } from "./chats";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
-import { isFileCountAggregateAvailable } from "./aggregateVersions";
+import { isFileSizeAggregateAvailable } from "./aggregateVersions";
+
+// Maximum storage per user: 10 GB
+const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
 
 /**
  * Get download URL for a file by storageId (on-demand for non-image files)
@@ -56,31 +59,6 @@ export const getFileDownloadUrl = query({
 });
 
 /**
- * Internal query to count files for a user.
- *
- * Uses O(log(n)) aggregate if user has been migrated, otherwise falls back to O(n) DB count.
- * Migration happens at login via ensureUserAggregatesMigrated.
- */
-export const countUserFiles = internalQuery({
-  args: {
-    userId: v.string(),
-  },
-  returns: v.number(),
-  handler: async (ctx, args) => {
-    if (await isFileCountAggregateAvailable(ctx, args.userId)) {
-      return await fileCountAggregate.count(ctx, { namespace: args.userId });
-    }
-
-    // Fallback to DB count for non-migrated users
-    const files = await ctx.db
-      .query("files")
-      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
-      .collect();
-    return files.length;
-  },
-});
-
-/**
  * Determine file limit based on user entitlements
  * Pro: 300, Team: 500, Ultra: 1000, Free: 0
  */
@@ -104,72 +82,6 @@ export const getFileLimit = (entitlements: Array<string>): number => {
   }
   return 0; // Free users
 };
-
-/**
- * Generate upload URL for file storage with authentication
- */
-export const generateUploadUrl = mutation({
-  args: {
-    serviceKey: v.optional(v.string()),
-    userId: v.optional(v.string()),
-  },
-  returns: v.string(),
-  handler: async (ctx, args) => {
-    let actingUserId: string;
-    let entitlements: Array<string> = [];
-
-    // Service key flow (backend)
-    if (args.serviceKey) {
-      validateServiceKey(args.serviceKey);
-      if (!args.userId) {
-        throw new ConvexError({
-          code: "MISSING_USER_ID",
-          message: "userId is required when using serviceKey",
-        });
-      }
-      actingUserId = args.userId;
-      entitlements = ["ultra-plan"]; // Max limit for service flows
-    } else {
-      // User-authenticated flow
-      const user = await ctx.auth.getUserIdentity();
-      if (!user) {
-        throw new ConvexError({
-          code: "UNAUTHORIZED",
-          message: "Unauthorized: User not authenticated",
-        });
-      }
-      actingUserId = user.subject;
-      entitlements = Array.isArray(user.entitlements)
-        ? user.entitlements.filter(
-            (e: unknown): e is string => typeof e === "string",
-          )
-        : [];
-    }
-
-    // Check file limit
-    const fileLimit = getFileLimit(entitlements);
-    if (fileLimit === 0) {
-      throw new ConvexError({
-        code: "PAID_PLAN_REQUIRED",
-        message: "Paid plan required for file uploads",
-      });
-    }
-
-    const currentFileCount = await ctx.runQuery(
-      internal.fileStorage.countUserFiles,
-      { userId: actingUserId },
-    );
-
-    if (currentFileCount >= fileLimit) {
-      throw new ConvexError({
-        code: "FILE_LIMIT_EXCEEDED",
-        message: `Upload limit exceeded: Maximum ${fileLimit} files allowed for your plan. Remove old chats with files to free up space.`,
-      });
-    }
-
-    return await ctx.storage.generateUploadUrl();
-  },
-});
 
 /**
  * Delete file from storage by file ID
@@ -458,6 +370,24 @@ export const saveFileToDb = internalMutation({
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
+    // Check storage limit if aggregate is available (user has been migrated)
+    const sizeAggregateAvailable = await isFileSizeAggregateAvailable(
+      ctx,
+      args.userId,
+    );
+    if (sizeAggregateAvailable) {
+      const currentStorageBytes = await fileCountAggregate.sum(ctx, {
+        namespace: args.userId,
+      });
+      if (currentStorageBytes + args.size > MAX_STORAGE_BYTES) {
+        const usedGB = (currentStorageBytes / (1024 * 1024 * 1024)).toFixed(2);
+        throw new ConvexError({
+          code: "STORAGE_LIMIT_EXCEEDED",
+          message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB.`,
+        });
+      }
+    }
+
     const fileId = await ctx.db.insert("files", {
       storage_id: args.storageId,
       s3_key: args.s3Key,
@@ -478,5 +408,42 @@ export const saveFileToDb = internalMutation({
     }
 
     return fileId;
+  },
+});
+
+/**
+ * Internal query to get user's current storage usage in bytes.
+ * Returns null if the aggregate is not yet available (user not migrated).
+ */
+export const getUserStorageUsage = internalQuery({
+  args: {
+    userId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      usedBytes: v.number(),
+      maxBytes: v.number(),
+      availableBytes: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const sizeAggregateAvailable = await isFileSizeAggregateAvailable(
+      ctx,
+      args.userId,
+    );
+    if (!sizeAggregateAvailable) {
+      return null;
+    }
+
+    const usedBytes = await fileCountAggregate.sum(ctx, {
+      namespace: args.userId,
+    });
+
+    return {
+      usedBytes,
+      maxBytes: MAX_STORAGE_BYTES,
+      availableBytes: Math.max(0, MAX_STORAGE_BYTES - usedBytes),
+    };
   },
 });

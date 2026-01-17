@@ -82,6 +82,56 @@ export const useChatHandlers = ({
     api.tempStreams.cancelTempStreamFromClient,
   );
 
+  /**
+   * Helper to stop an active stream, normalize messages, and persist state.
+   * Returns the normalized messages array.
+   * Should be called before any message management operation during streaming.
+   */
+  const stopActiveStream = async (): Promise<ChatMessage[]> => {
+    // Stop the stream immediately (client-side abort)
+    stop();
+
+    // Early return if no messages to process
+    if (messages.length === 0) return messages;
+
+    // Normalize messages to mark incomplete tools as interrupted/completed
+    const { messages: normalizedMessages, hasChanges } =
+      normalizeMessages(messages);
+
+    // Update local state if changes were made
+    if (hasChanges) {
+      setMessages(normalizedMessages);
+    }
+
+    if (!temporaryChatsEnabledRef.current) {
+      // Run cancel and save in parallel - they're independent operations
+      const lastMessage = normalizedMessages[normalizedMessages.length - 1];
+      const savePromise =
+        lastMessage?.role === "assistant"
+          ? saveAssistantMessage({
+              id: lastMessage.id,
+              chatId,
+              role: lastMessage.role,
+              parts: lastMessage.parts,
+            }).catch((error) => {
+              console.error("Failed to save message on stop:", error);
+            })
+          : Promise.resolve();
+
+      await Promise.all([
+        cancelStreamMutation({ chatId }).catch((error) => {
+          console.error("Failed to cancel stream:", error);
+        }),
+        savePromise,
+      ]);
+    } else {
+      // Temporary chats: signal cancel via temp stream coordination
+      await cancelTempStreamMutation({ chatId }).catch(() => {});
+    }
+
+    return normalizedMessages;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsAutoResuming(false);
@@ -233,48 +283,8 @@ export const useChatHandlers = ({
     // Set manual stop flag to prevent auto-processing of queue
     hasManuallyStoppedRef.current = true;
 
-    // Stop the stream immediately (client-side abort)
-    stop();
-
-    // Early return if no messages to process
-    if (messages.length === 0) return;
-
     try {
-      // Normalize messages to mark incomplete tools as interrupted/completed
-      // This removes shimmer effect from any tools that were in-progress
-      const { messages: normalizedMessages, hasChanges } =
-        normalizeMessages(messages);
-
-      // Update local state if changes were made
-      if (hasChanges) {
-        setMessages(normalizedMessages);
-      }
-
-      // Don't clear queued messages - let them remain in the queue
-      // User can manually delete them if needed
-
-      if (!temporaryChatsEnabled) {
-        // Cancel the stream in database first (sets canceled_at for backend detection)
-        await cancelStreamMutation({ chatId }).catch((error) => {
-          console.error("Failed to cancel stream:", error);
-        });
-
-        // Save the normalized message state to database (with interrupted tools marked as completed)
-        const lastMessage = normalizedMessages[normalizedMessages.length - 1];
-        if (lastMessage?.role === "assistant") {
-          await saveAssistantMessage({
-            id: lastMessage.id,
-            chatId,
-            role: lastMessage.role,
-            parts: lastMessage.parts,
-          }).catch((error) => {
-            console.error("Failed to save message on stop:", error);
-          });
-        }
-      } else {
-        // Temporary chats: signal cancel via temp stream coordination
-        await cancelTempStreamMutation({ chatId }).catch(() => {});
-      }
+      await stopActiveStream();
     } catch (error) {
       console.error("Error in handleStop:", error);
     }
@@ -282,6 +292,11 @@ export const useChatHandlers = ({
 
   const handleRegenerate = async () => {
     setIsAutoResuming(false);
+
+    // Stop any active stream first to prevent message order issues and wasted tokens
+    if (status === "streaming") {
+      await stopActiveStream();
+    }
 
     // Remove only todos from the last assistant message being regenerated.
     // This ensures that if the new run yields no todos, old assistant todos won't persist,
@@ -339,6 +354,12 @@ export const useChatHandlers = ({
 
   const handleRetry = async () => {
     setIsAutoResuming(false);
+
+    // Stop any active stream first to prevent message order issues and wasted tokens
+    if (status === "streaming") {
+      await stopActiveStream();
+    }
+
     const cleanedTodos = removeTodosBySourceMessages(
       todos,
       todos
@@ -389,6 +410,12 @@ export const useChatHandlers = ({
     remainingFileIds?: string[],
   ) => {
     setIsAutoResuming(false);
+
+    // Stop any active stream first to prevent message order issues and wasted tokens
+    if (status === "streaming") {
+      await stopActiveStream();
+    }
+
     // Find the edited message index to identify subsequent messages
     const editedMessageIndex = messages.findIndex((m) => m.id === messageId);
 
@@ -540,43 +567,9 @@ export const useChatHandlers = ({
       // Remove the message from queue FIRST (before stopping)
       removeQueuedMessage(messageId);
 
-      // Stop the stream - replicate handleStop logic but WITHOUT clearing the queue
+      // Stop the stream using the shared helper
       setIsAutoResuming(false);
-      stop(); // Client-side abort
-
-      // Normalize messages to mark incomplete tools as interrupted/completed
-      if (messages.length > 0) {
-        const { messages: normalizedMessages, hasChanges } =
-          normalizeMessages(messages);
-
-        // Update local state if changes were made
-        if (hasChanges) {
-          setMessages(normalizedMessages);
-        }
-
-        // Cancel stream and save normalized message state
-        if (!temporaryChatsEnabled) {
-          await cancelStreamMutation({ chatId }).catch((error) => {
-            console.error("Failed to cancel stream:", error);
-          });
-
-          // Save the normalized message state to database
-          const lastMessage = normalizedMessages[normalizedMessages.length - 1];
-          if (lastMessage?.role === "assistant") {
-            await saveAssistantMessage({
-              id: lastMessage.id,
-              chatId,
-              role: lastMessage.role,
-              parts: lastMessage.parts,
-            }).catch((error) => {
-              console.error("Failed to save message on stop:", error);
-            });
-          }
-        } else {
-          // Temporary chats: signal cancel via temp stream coordination
-          await cancelTempStreamMutation({ chatId }).catch(() => {});
-        }
-      }
+      await stopActiveStream();
 
       // Send the queued message immediately
       const validFiles = message.files || [];

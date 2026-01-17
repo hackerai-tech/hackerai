@@ -1,97 +1,72 @@
 import { FileMessagePart, UploadedFileState } from "@/types/file";
-import { Id } from "@/convex/_generated/dataModel";
+
+/** Rate limit info returned from upload URL generation */
+export type RateLimitInfo = {
+  remaining: number;
+  limit: number;
+  reset: number; // Unix timestamp (ms) when the limit resets
+};
+
+/** Result of upload URL generation with optional rate limit info */
+export type UploadUrlResult = {
+  uploadUrl: string;
+  rateLimit?: RateLimitInfo;
+};
+
+/** Maximum file size allowed (10MB) */
+export const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+/** Maximum number of files allowed to be uploaded at once */
+export const MAX_FILES_LIMIT = 5;
+
+/** Supported image formats for AI processing */
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/gif",
+]);
 
 /**
- * Upload a single file to Convex storage and return file ID and URL
+ * Check if media type is a supported image format for AI
  */
-export async function uploadSingleFileToConvex(
-  file: File,
-  generateUploadUrl: () => Promise<string>,
-  saveFile: (
-    args: any,
-  ) => Promise<{ url: string; fileId: string; tokens: number }>,
-  mode: "ask" | "agent" = "ask",
-): Promise<{ fileId: string; url: string; tokens: number }> {
-  // Step 1: Get upload URL
-  const postUrl = await generateUploadUrl();
-
-  // Step 2: Upload file to Convex storage
-  // Use a fallback Content-Type if browser doesn't provide one (common for .md, .txt files)
-  const contentType = file.type || "application/octet-stream";
-  const result = await fetch(postUrl, {
-    method: "POST",
-    headers: { "Content-Type": contentType },
-    body: file,
-  });
-
-  if (!result.ok) {
-    throw new Error(`Failed to upload file ${file.name}: ${result.statusText}`);
-  }
-
-  const { storageId } = await result.json();
-
-  // Step 3: Save file metadata to database and get URL, file ID, and tokens
-  const { url, fileId, tokens } = await saveFile({
-    storageId,
-    name: file.name,
-    mediaType: contentType,
-    size: file.size,
-    mode,
-  });
-
-  return { fileId, url, tokens };
+export function isSupportedImageMediaType(mediaType: string): boolean {
+  return SUPPORTED_IMAGE_TYPES.has(mediaType.toLowerCase());
 }
 
 /**
- * Create file message part from uploaded file state (includes fileId only)
- * URLs are generated on-demand to avoid expiration issues
+ * Check if file is an image
  */
-export function createFileMessagePart(
-  uploadedFile: UploadedFileState,
-): FileMessagePart {
-  if (!uploadedFile.fileId) {
-    throw new Error("File must have fileId to create message part");
-  }
-
-  // Use fallback for empty media types (common for .md, .txt files)
-  const mediaType = uploadedFile.file.type || "application/octet-stream";
-
-  return {
-    type: "file" as const,
-    mediaType,
-    fileId: uploadedFile.fileId,
-    name: uploadedFile.file.name,
-    size: uploadedFile.file.size,
-    // DON'T store URL - it expires! Generate on-demand via fileId
-  };
+export function isImageFile(file: File): boolean {
+  return file.type.startsWith("image/");
 }
 
 /**
- * Get the maximum file size allowed (in bytes)
+ * Validate file for upload
  */
-export function getMaxFileSize(): number {
-  return 10 * 1024 * 1024; // 10MB
+export function validateFile(file: File): { valid: boolean; error?: string } {
+  if (file.size > MAX_FILE_SIZE) {
+    return {
+      valid: false,
+      error: `File size must be less than ${MAX_FILE_SIZE / (1024 * 1024)}MB`,
+    };
+  }
+  return { valid: true };
 }
 
 /**
  * Validate that an image file can be decoded/rendered
- * Uses createImageBitmap for reliable validation
  * Only validates LLM-supported image formats (PNG, JPEG, WebP, GIF)
- * @param file - The image file to validate
- * @returns Promise with validation result
  */
-export async function validateImageFile(file: File): Promise<{
-  valid: boolean;
-  error?: string;
-}> {
-  // Only validate LLM-supported image formats
-  // Other image types (SVG, BMP, etc.) are skipped as they're not processed by AI
+export async function validateImageFile(
+  file: File,
+): Promise<{ valid: boolean; error?: string }> {
   if (!isSupportedImageMediaType(file.type)) {
     return { valid: true };
   }
 
   try {
-    // Use createImageBitmap for validation (works in browser)
     if (typeof createImageBitmap === "function") {
       const bitmap = await createImageBitmap(file);
       bitmap.close();
@@ -127,17 +102,64 @@ export async function validateImageFile(file: File): Promise<{
 }
 
 /**
- * Validate file for upload
+ * Upload a single file to Convex storage
  */
-export function validateFile(file: File): { valid: boolean; error?: string } {
-  if (file.size > getMaxFileSize()) {
-    return {
-      valid: false,
-      error: `File size must be less than ${getMaxFileSize() / (1024 * 1024)}MB`,
-    };
+export async function uploadSingleFileToConvex(
+  file: File,
+  generateUploadUrl: () => Promise<UploadUrlResult>,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  saveFile: (args: any) => Promise<{ url: string; fileId: string; tokens: number }>,
+  mode: "ask" | "agent" = "ask",
+): Promise<{
+  fileId: string;
+  url: string;
+  tokens: number;
+  rateLimit?: RateLimitInfo;
+}> {
+  const { uploadUrl, rateLimit } = await generateUploadUrl();
+  const contentType = file.type || "application/octet-stream";
+
+  const result = await fetch(uploadUrl, {
+    method: "POST",
+    headers: { "Content-Type": contentType },
+    body: file,
+  });
+
+  if (!result.ok) {
+    throw new Error(
+      `Failed to upload file ${file.name}: ${result.statusText}`,
+    );
   }
 
-  return { valid: true };
+  const { storageId } = await result.json();
+  const { url, fileId, tokens } = await saveFile({
+    storageId,
+    name: file.name,
+    mediaType: contentType,
+    size: file.size,
+    mode,
+  });
+
+  return { fileId, url, tokens, rateLimit };
+}
+
+/**
+ * Create file message part from uploaded file state
+ */
+export function createFileMessagePartFromUploadedFile(
+  uploadedFile: UploadedFileState,
+): FileMessagePart | null {
+  if (!uploadedFile.fileId || !uploadedFile.uploaded) {
+    return null;
+  }
+
+  return {
+    type: "file" as const,
+    mediaType: uploadedFile.file.type || "application/octet-stream",
+    fileId: uploadedFile.fileId,
+    name: uploadedFile.file.name,
+    size: uploadedFile.file.size,
+  };
 }
 
 /**
@@ -150,7 +172,7 @@ export function formatFileSize(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
 
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 }
 
 /**
@@ -163,52 +185,4 @@ export function fileToBase64(file: File): Promise<string> {
     reader.onerror = reject;
     reader.readAsDataURL(file);
   });
-}
-
-/**
- * Check if file is an image that can be previewed
- */
-export function isImageFile(file: File): boolean {
-  return file.type.startsWith("image/");
-}
-
-/**
- * Check if media type is a supported image format for AI
- * AI supports: PNG, JPEG, WEBP, and non-animated GIF
- */
-export function isSupportedImageMediaType(mediaType: string): boolean {
-  const supportedTypes = [
-    "image/png",
-    "image/jpeg",
-    "image/jpg",
-    "image/webp",
-    "image/gif",
-  ];
-  return supportedTypes.includes(mediaType.toLowerCase());
-}
-
-/**
- * Maximum number of files allowed to be uploaded at once
- */
-export const MAX_FILES_LIMIT = 5;
-
-/**
- * Helper to create file message part from uploadedFile that has both fileId and URL
- */
-export function createFileMessagePartFromUploadedFile(
-  uploadedFile: UploadedFileState,
-): FileMessagePart | null {
-  if (!uploadedFile.fileId || !uploadedFile.uploaded) {
-    return null;
-  }
-
-  return {
-    type: "file" as const,
-    mediaType: uploadedFile.file.type,
-    fileId: uploadedFile.fileId,
-    name: uploadedFile.file.name,
-    size: uploadedFile.file.size,
-    // DON'T store URL - it expires! Generate on-demand via fileId
-    // url: uploadedFile.url,
-  };
 }

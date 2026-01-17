@@ -6,7 +6,7 @@ import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
-  "ask-model": xai("grok-4-1-fast-non-reasoning"),
+  "ask-model": openrouter("google/gemini-3-flash-preview"),
   "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
@@ -20,11 +20,11 @@ const baseProviders = {
 export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> = {
-  "ask-model": "November 2024",
+  "ask-model": "January 2025",
   "ask-model-free": "November 2024",
   "ask-vision-model": "January 2025",
   "ask-vision-model-for-pdfs": "January 2025",
-  "agent-model": "November 2024",
+  "agent-model": "January 2025",
   "agent-vision-model": "January 2025",
   "title-generator-model": "November 2024",
   "summarization-model": "November 2024",

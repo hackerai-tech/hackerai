@@ -113,6 +113,25 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     toolExecutions,
   ]);
 
+  // Handle deleted messages: close sidebar or navigate to latest when content no longer exists
+  useEffect(() => {
+    if (!sidebarOpen || !sidebarContent) {
+      return;
+    }
+
+    // currentIndex === -1 means the current sidebarContent is not found in toolExecutions
+    // This happens when the message containing this tool was deleted
+    if (currentIndex === -1) {
+      if (toolExecutions.length > 0 && onNavigate) {
+        // Navigate to the latest available tool execution
+        onNavigate(toolExecutions[toolExecutions.length - 1]);
+      } else {
+        // No tool executions left, close the sidebar
+        closeSidebar();
+      }
+    }
+  }, [currentIndex, sidebarOpen, sidebarContent, toolExecutions, onNavigate, closeSidebar]);
+
   if (!sidebarOpen || !sidebarContent) {
     return null;
   }
