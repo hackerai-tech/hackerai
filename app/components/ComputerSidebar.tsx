@@ -185,7 +185,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     } else if (isTerminal) {
       // Use shellAction if available for accurate action text
       if (sidebarContent.shellAction) {
-        return SHELL_ACTION_LABELS[sidebarContent.shellAction];
+        return (
+          SHELL_ACTION_LABELS[sidebarContent.shellAction] ?? "Executing command"
+        );
       }
       // Fallback for legacy terminal entries without shellAction
       return "Executing command";
@@ -299,11 +301,9 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 {/* Title - far left */}
                 <div className="flex items-center gap-2">
                   {isTerminal ? (
-                    sidebarContent.sessionName ? (
-                      <span className="text-muted-foreground text-sm font-mono truncate max-w-[200px]">
-                        {sidebarContent.sessionName}
-                      </span>
-                    ) : null
+                    <span className="text-muted-foreground text-sm font-mono truncate max-w-[200px]">
+                      {sidebarContent.sessionName || "Shell"}
+                    </span>
                   ) : isPython ? (
                     <Code2
                       size={14}

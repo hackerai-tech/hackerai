@@ -3,10 +3,13 @@ import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import type { ChatStatus, SidebarTerminal, SidebarContent } from "@/types/chat";
+import type {
+  ChatStatus,
+  SidebarTerminal,
+  SidebarContent,
+  ShellAction,
+} from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
-
-type ShellAction = "view" | "exec" | "wait" | "send" | "kill";
 
 interface ShellInput {
   action: ShellAction;

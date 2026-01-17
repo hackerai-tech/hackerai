@@ -398,10 +398,7 @@ export const createShell = (context: ToolContext) => {
                 // Replace internal tmux session name with user-friendly name in messages
                 const result = {
                   ...parsedResult,
-                  content: parsedResult.content.replace(
-                    new RegExp(tmuxSessionName, "g"),
-                    session,
-                  ),
+                  content: parsedResult.content.split(tmuxSessionName).join(session),
                 };
 
                 // Only write final content if we haven't been streaming

@@ -113,26 +113,34 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
                   {/* Message Parts - use SharedMessagePartHandler for consistent rendering */}
                   {isUser ? (
                     <div className="whitespace-pre-wrap">
-                      {otherParts.map((part, idx) => (
+                      {otherParts.map((part, idx) => {
+                        // Compute the original index in message.parts for correct reasoning logic
+                        const originalIndex = message.parts.indexOf(part);
+                        return (
+                          <SharedMessagePartHandler
+                            key={`${message.id}-${idx}`}
+                            message={message}
+                            part={part}
+                            partIndex={originalIndex !== -1 ? originalIndex : idx}
+                            isUser={isUser}
+                          />
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    otherParts.map((part, idx) => {
+                      // Compute the original index in message.parts for correct reasoning logic
+                      const originalIndex = message.parts.indexOf(part);
+                      return (
                         <SharedMessagePartHandler
                           key={`${message.id}-${idx}`}
                           message={message}
                           part={part}
-                          partIndex={idx}
+                          partIndex={originalIndex !== -1 ? originalIndex : idx}
                           isUser={isUser}
                         />
-                      ))}
-                    </div>
-                  ) : (
-                    otherParts.map((part, idx) => (
-                      <SharedMessagePartHandler
-                        key={`${message.id}-${idx}`}
-                        message={message}
-                        part={part}
-                        partIndex={idx}
-                        isUser={isUser}
-                      />
-                    ))
+                      );
+                    })
                   )}
                 </div>
               )}
