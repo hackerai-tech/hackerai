@@ -1,12 +1,13 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
 
 // Mock dependencies
 jest.mock("../_generated/server", () => ({
-  mutation: jest.fn((config) => config),
-  internalMutation: jest.fn((config) => config),
-  query: jest.fn((config) => config),
-  internalQuery: jest.fn((config) => config),
+  mutation: jest.fn((config: any) => config),
+  internalMutation: jest.fn((config: any) => config),
+  query: jest.fn((config: any) => config),
+  internalQuery: jest.fn((config: any) => config),
 }));
 jest.mock("convex/values", () => ({
   v: {
@@ -50,19 +51,22 @@ jest.mock("../_generated/api", () => ({
     },
   },
 }));
+
 const mockFileCountAggregate = {
-  count: jest.fn().mockResolvedValue(0),
-  insert: jest.fn().mockResolvedValue(undefined),
-  insertIfDoesNotExist: jest.fn().mockResolvedValue(undefined),
-  delete: jest.fn().mockResolvedValue(undefined),
-  deleteIfExists: jest.fn().mockResolvedValue(undefined),
+  count: jest.fn<any>().mockResolvedValue(0),
+  sum: jest.fn<any>().mockResolvedValue(0),
+  insert: jest.fn<any>().mockResolvedValue(undefined),
+  insertIfDoesNotExist: jest.fn<any>().mockResolvedValue(undefined),
+  delete: jest.fn<any>().mockResolvedValue(undefined),
+  deleteIfExists: jest.fn<any>().mockResolvedValue(undefined),
 };
 
 jest.mock("../fileAggregate", () => ({
   fileCountAggregate: mockFileCountAggregate,
 }));
 jest.mock("../aggregateVersions", () => ({
-  isFileCountAggregateAvailable: jest.fn().mockResolvedValue(true),
+  isFileCountAggregateAvailable: jest.fn<any>().mockResolvedValue(true),
+  isFileSizeAggregateAvailable: jest.fn<any>().mockResolvedValue(true),
 }));
 
 describe("fileStorage - deleteFile", () => {

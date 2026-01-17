@@ -8,6 +8,12 @@ import { validateServiceKey } from "./chats";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { Doc } from "./_generated/dataModel";
 
+type StorageUsage = {
+  usedBytes: number;
+  maxBytes: number;
+  availableBytes: number;
+} | null;
+
 /** File record returned by internal.fileStorage.getFileById */
 type FileRecord = Doc<"files"> | null;
 
@@ -56,6 +62,19 @@ export const generateS3UploadUrlAction = action({
 
     // Get user ID from identity
     const userId = identity.subject;
+
+    // Check storage limit before allowing upload
+    const storageUsage: StorageUsage = await ctx.runQuery(
+      internal.fileStorage.getUserStorageUsage,
+      { userId },
+    );
+    if (storageUsage && storageUsage.availableBytes <= 0) {
+      const usedGB = (storageUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+      throw new ConvexError({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB. Please delete some files to upload new ones.`,
+      });
+    }
 
     // Check rate limit and consume a token
     // This prevents abuse by spamming URL generation

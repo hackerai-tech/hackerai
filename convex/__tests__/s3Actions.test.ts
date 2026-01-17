@@ -31,6 +31,15 @@ jest.mock("../fileActions", () => ({
   checkFileUploadRateLimit: mockCheckFileUploadRateLimit,
 }));
 
+// Mock internal API
+jest.mock("../_generated/api", () => ({
+  internal: {
+    fileStorage: {
+      getUserStorageUsage: "internal.fileStorage.getUserStorageUsage",
+    },
+  },
+}));
+
 describe("s3Actions", () => {
   beforeEach(async () => {
     // Reset mocks
@@ -71,14 +80,23 @@ describe("s3Actions", () => {
       const { generateS3UploadUrlAction } = await import("../s3Actions");
 
       // Create mock context - rate limiting is handled by mocked checkFileUploadRateLimit
-      const mockCtx = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mockCtx: any = {
         auth: {
-          getUserIdentity: jest.fn().mockResolvedValue({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
           }),
         },
-      } as any;
+        // Mock runQuery to return storage usage (user has space available)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        runQuery: jest.fn<any>().mockResolvedValue({
+          usedBytes: 1024 * 1024 * 1024, // 1 GB used
+          maxBytes: 10 * 1024 * 1024 * 1024, // 10 GB max
+          availableBytes: 9 * 1024 * 1024 * 1024, // 9 GB available
+        }),
+      };
 
       const result = await generateS3UploadUrlAction.handler(mockCtx, {
         fileName: "test.pdf",
@@ -196,15 +214,23 @@ describe("s3Actions", () => {
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
 
-      // Create mock context
-      const mockCtx = {
+      // Create mock context with runQuery for storage check
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mockCtx: any = {
         auth: {
-          getUserIdentity: jest.fn().mockResolvedValue({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
           }),
         },
-      } as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        runQuery: jest.fn<any>().mockResolvedValue({
+          usedBytes: 1024 * 1024 * 1024,
+          maxBytes: 10 * 1024 * 1024 * 1024,
+          availableBytes: 9 * 1024 * 1024 * 1024,
+        }),
+      };
 
       await expect(
         generateS3UploadUrlAction.handler(mockCtx, {
@@ -235,15 +261,23 @@ describe("s3Actions", () => {
           s3Key: `users/user123/123-uuid-${testCase.fileName}`,
         });
 
-        // Create mock context
-        const mockCtx = {
+        // Create mock context with runQuery for storage check
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const mockCtx: any = {
           auth: {
-            getUserIdentity: jest.fn().mockResolvedValue({
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            getUserIdentity: jest.fn<any>().mockResolvedValue({
               subject: "user123",
               email: "test@example.com",
             }),
           },
-        } as any;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          runQuery: jest.fn<any>().mockResolvedValue({
+            usedBytes: 1024 * 1024 * 1024,
+            maxBytes: 10 * 1024 * 1024 * 1024,
+            availableBytes: 9 * 1024 * 1024 * 1024,
+          }),
+        };
 
         await generateS3UploadUrlAction.handler(mockCtx, testCase);
 
@@ -270,14 +304,22 @@ describe("s3Actions", () => {
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
 
-      const mockCtx = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mockCtx: any = {
         auth: {
-          getUserIdentity: jest.fn().mockResolvedValue({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
           }),
         },
-      } as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        runQuery: jest.fn<any>().mockResolvedValue({
+          usedBytes: 1024 * 1024 * 1024,
+          maxBytes: 10 * 1024 * 1024 * 1024,
+          availableBytes: 9 * 1024 * 1024 * 1024,
+        }),
+      };
 
       await expect(
         generateS3UploadUrlAction.handler(mockCtx, {
@@ -302,14 +344,22 @@ describe("s3Actions", () => {
 
       const { generateS3UploadUrlAction } = await import("../s3Actions");
 
-      const mockCtx = {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const mockCtx: any = {
         auth: {
-          getUserIdentity: jest.fn().mockResolvedValue({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getUserIdentity: jest.fn<any>().mockResolvedValue({
             subject: "user123",
             email: "test@example.com",
           }),
         },
-      } as any;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        runQuery: jest.fn<any>().mockResolvedValue({
+          usedBytes: 1024 * 1024 * 1024,
+          maxBytes: 10 * 1024 * 1024 * 1024,
+          availableBytes: 9 * 1024 * 1024 * 1024,
+        }),
+      };
 
       const result = await generateS3UploadUrlAction.handler(mockCtx, {
         fileName: "test.pdf",

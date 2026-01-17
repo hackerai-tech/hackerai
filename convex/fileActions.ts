@@ -36,6 +36,13 @@ export type RateLimitResult = {
   reset: number;
 };
 
+/** Storage usage returned by internal query */
+type StorageUsage = {
+  usedBytes: number;
+  maxBytes: number;
+  availableBytes: number;
+} | null;
+
 /**
  * Check file upload rate limit using sliding window algorithm.
  * Allows 80 file uploads per 5 hours for paid tiers.
@@ -862,6 +869,19 @@ export const generateUploadUrlAction = action({
         });
       }
       actingUserId = user.subject;
+    }
+
+    // Check storage limit before allowing upload
+    const storageUsage: StorageUsage = await ctx.runQuery(
+      internal.fileStorage.getUserStorageUsage,
+      { userId: actingUserId },
+    );
+    if (storageUsage && storageUsage.availableBytes <= 0) {
+      const usedGB = (storageUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
+      throw new ConvexError({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB. Please delete some files to upload new ones.`,
+      });
     }
 
     // Check rate limit and consume a token

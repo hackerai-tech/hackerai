@@ -9,6 +9,10 @@ import { validateServiceKey } from "./chats";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
+import { isFileSizeAggregateAvailable } from "./aggregateVersions";
+
+// Maximum storage per user: 10 GB
+const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
 
 /**
  * Get download URL for a file by storageId (on-demand for non-image files)
@@ -366,6 +370,24 @@ export const saveFileToDb = internalMutation({
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
+    // Check storage limit if aggregate is available (user has been migrated)
+    const sizeAggregateAvailable = await isFileSizeAggregateAvailable(
+      ctx,
+      args.userId,
+    );
+    if (sizeAggregateAvailable) {
+      const currentStorageBytes = await fileCountAggregate.sum(ctx, {
+        namespace: args.userId,
+      });
+      if (currentStorageBytes + args.size > MAX_STORAGE_BYTES) {
+        const usedGB = (currentStorageBytes / (1024 * 1024 * 1024)).toFixed(2);
+        throw new ConvexError({
+          code: "STORAGE_LIMIT_EXCEEDED",
+          message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB.`,
+        });
+      }
+    }
+
     const fileId = await ctx.db.insert("files", {
       storage_id: args.storageId,
       s3_key: args.s3Key,
@@ -386,5 +408,42 @@ export const saveFileToDb = internalMutation({
     }
 
     return fileId;
+  },
+});
+
+/**
+ * Internal query to get user's current storage usage in bytes.
+ * Returns null if the aggregate is not yet available (user not migrated).
+ */
+export const getUserStorageUsage = internalQuery({
+  args: {
+    userId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      usedBytes: v.number(),
+      maxBytes: v.number(),
+      availableBytes: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const sizeAggregateAvailable = await isFileSizeAggregateAvailable(
+      ctx,
+      args.userId,
+    );
+    if (!sizeAggregateAvailable) {
+      return null;
+    }
+
+    const usedBytes = await fileCountAggregate.sum(ctx, {
+      namespace: args.userId,
+    });
+
+    return {
+      usedBytes,
+      maxBytes: MAX_STORAGE_BYTES,
+      availableBytes: Math.max(0, MAX_STORAGE_BYTES - usedBytes),
+    };
   },
 });

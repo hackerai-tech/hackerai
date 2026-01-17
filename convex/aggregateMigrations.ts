@@ -35,6 +35,9 @@ async function runMigration(
   if (currentVersion < 1) {
     await migrateToV1(ctx, userId);
   }
+  if (currentVersion < 2) {
+    await migrateToV2(ctx, userId);
+  }
 
   // Update or create the state record
   const now = Date.now();
@@ -71,6 +74,25 @@ async function migrateToV1(ctx: MutationCtx, userId: string): Promise<void> {
 
   for (const file of files) {
     await fileCountAggregate.insertIfDoesNotExist(ctx, file);
+  }
+}
+
+/**
+ * Migration v1 -> v2: Re-backfill aggregate with size sums
+ *
+ * Clears existing aggregate entries and re-inserts all files
+ * to capture the new sumValue (file size) tracking.
+ */
+async function migrateToV2(ctx: MutationCtx, userId: string): Promise<void> {
+  const files = await ctx.db
+    .query("files")
+    .withIndex("by_user_id", (q) => q.eq("user_id", userId))
+    .collect();
+
+  // Delete existing entries and re-insert to capture size sums
+  for (const file of files) {
+    await fileCountAggregate.deleteIfExists(ctx, file);
+    await fileCountAggregate.insert(ctx, file);
   }
 }
 
