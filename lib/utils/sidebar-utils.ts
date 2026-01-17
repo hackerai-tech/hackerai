@@ -58,14 +58,21 @@ export function extractAllSidebarContent(
     message.parts.forEach((part) => {
       // Terminal
       if (
-        (part.type === "tool-run_terminal_cmd" || part.type === "tool-shell") &&
-        (part.input?.command || part.input?.input || part.input?.action)
+        part.type === "tool-run_terminal_cmd" ||
+        (part.type === "tool-shell" && part.input?.action)
       ) {
-        const command =
-          part.input.command ||
-          part.input.input ||
-          part.input.action ||
-          "shell";
+        // For shell tool: use command for exec, input for send, session info for view/wait/kill
+        let command: string;
+        if (part.input?.command) {
+          command = part.input.command;
+        } else if (part.input?.input) {
+          command = part.input.input;
+        } else if (part.input?.session) {
+          // For view/wait/kill actions, show the session name
+          command = `Session: ${part.input.session}`;
+        } else {
+          command = "shell";
+        }
 
         // Get streaming output from data-terminal parts
         const streamingOutput =

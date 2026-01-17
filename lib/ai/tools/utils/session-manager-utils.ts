@@ -88,10 +88,18 @@ export const parseSessionResult = (
   stderr: string,
 ): SessionResult => {
   try {
-    // Find the JSON object in stdout (may have other output before it)
-    const jsonMatch = stdout.match(/\{[\s\S]*\}/);
+    // Find the last JSON object in stdout (command output may contain JSON-like text)
+    const lastBraceIndex = stdout.lastIndexOf("}");
+    const firstBraceForLastObject = stdout.lastIndexOf(
+      "{",
+      lastBraceIndex !== -1 ? lastBraceIndex : undefined,
+    );
+    const jsonMatch =
+      firstBraceForLastObject !== -1 && lastBraceIndex !== -1
+        ? stdout.slice(firstBraceForLastObject, lastBraceIndex + 1)
+        : null;
     if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
+      const parsed = JSON.parse(jsonMatch);
 
       // Map Python snake_case to TypeScript camelCase
       return {
