@@ -1,4 +1,4 @@
-import { SidebarContent, SidebarFile } from "@/types/chat";
+import { SidebarContent, SidebarFile, WebSearchResult } from "@/types/chat";
 
 interface MessagePart {
   type: string;
@@ -158,6 +158,38 @@ export function extractAllSidebarContent(
           isExecuting:
             part.state === "input-available" || part.state === "running",
           isBackground: false,
+          toolCallId: part.toolCallId || "",
+        });
+      }
+
+      // Web Search
+      if (part.type === "tool-web_search") {
+        const queries = part.input?.queries || [];
+        const query = Array.isArray(queries) ? queries.join(", ") : queries;
+
+        let results: WebSearchResult[] = [];
+        if (part.state === "output-available" && part.output) {
+          // Handle both formats: output as array directly, or output.result as array
+          const rawResults = Array.isArray(part.output)
+            ? part.output
+            : part.output.result;
+          if (Array.isArray(rawResults)) {
+            results = rawResults.map((r: WebSearchResult) => ({
+              title: r.title || "",
+              url: r.url || "",
+              content: r.content || "",
+              date: r.date || null,
+              lastUpdated: r.lastUpdated || null,
+            }));
+          }
+        }
+
+        contentList.push({
+          query,
+          results,
+          isSearching:
+            part.state === "input-available" ||
+            part.state === "input-streaming",
           toolCallId: part.toolCallId || "",
         });
       }
