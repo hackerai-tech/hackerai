@@ -46,6 +46,45 @@ const ACTION_LABELS: Record<ShellAction, string> = {
   view: "Reading terminal",
 };
 
+/**
+ * Format shell input text for display, converting special keys to readable format
+ */
+const formatShellInput = (inputText: string): string => {
+  if (!inputText) return "";
+
+  // Format Ctrl key combinations
+  if (inputText.startsWith("C-")) {
+    const key = inputText.slice(2).toUpperCase();
+    return `[Ctrl+${key}]`;
+  }
+  // Format Alt/Meta key combinations
+  if (inputText.startsWith("M-")) {
+    const key = inputText.slice(2).toUpperCase();
+    return `[Alt+${key}]`;
+  }
+  // Handle other special keys
+  const specialKeyMap: Record<string, string> = {
+    Enter: "[Enter]",
+    Escape: "[Escape]",
+    Tab: "[Tab]",
+    Space: "[Space]",
+    Up: "[Up]",
+    Down: "[Down]",
+    Left: "[Left]",
+    Right: "[Right]",
+    Home: "[Home]",
+    End: "[End]",
+    PageUp: "[PageUp]",
+    PageDown: "[PageDown]",
+    BSpace: "[Backspace]",
+  };
+  if (specialKeyMap[inputText]) {
+    return specialKeyMap[inputText];
+  }
+  // Return as-is for regular text
+  return inputText;
+};
+
 export const ShellToolHandler = ({
   message,
   part,
@@ -94,17 +133,12 @@ export const ShellToolHandler = ({
       case "exec":
         return shellInput.command || shellInput.session;
       case "send": {
-        // Show the input being sent, truncate if too long
         const inputText = shellInput.input || "";
-        // Format special keys nicely
-        if (inputText === "C-c") return "Ctrl+C";
-        if (inputText === "C-d") return "Ctrl+D";
-        if (inputText === "C-z") return "Ctrl+Z";
-        if (inputText === "C-\\") return "Ctrl+\\";
-        // Truncate long input
-        return inputText.length > 40
-          ? `${inputText.slice(0, 37)}...`
-          : inputText;
+        const formatted = formatShellInput(inputText);
+        // Truncate long input (only for non-special keys)
+        return formatted.length > 40
+          ? `${formatted.slice(0, 37)}...`
+          : formatted;
       }
       case "kill":
         return `session: ${shellInput.session}`;
@@ -125,8 +159,10 @@ export const ShellToolHandler = ({
     switch (shellInput.action) {
       case "exec":
         return shellInput.command || `Session: ${session}`;
-      case "send":
-        return `Input to ${session}`;
+      case "send": {
+        const formatted = formatShellInput(shellInput.input || "");
+        return formatted || `Input to ${session}`;
+      }
       case "wait":
         return `Waiting: ${session}`;
       case "kill":

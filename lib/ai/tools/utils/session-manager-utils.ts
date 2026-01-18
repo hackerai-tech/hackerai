@@ -2,6 +2,7 @@ import {
   SESSION_MANAGER_SCRIPT,
   SESSION_MANAGER_PATH,
 } from "./session-manager-script";
+import { truncateContent, TOOL_DEFAULT_MAX_TOKENS } from "@/lib/token-utils";
 
 /**
  * Sandbox interface for session manager operations.
@@ -81,26 +82,55 @@ export const escapeShellArg = (arg: string): string => {
 
 /**
  * Parse the JSON result from the session manager script.
- * Maps 'error' field to 'content' for consistency.
+ * Truncates content using the same token-based strategy as other tools.
  */
 export const parseSessionResult = (
   stdout: string,
   stderr: string,
 ): SessionResult => {
   try {
-    // Find the JSON object in stdout (may have other output before it)
+    // Find the last line that contains our result JSON
+    // The session manager outputs JSON on the last non-empty line
+    const lines = stdout.split("\n");
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith("{") && line.endsWith("}")) {
+        try {
+          const parsed = JSON.parse(line);
+          if ("status" in parsed && "working_dir" in parsed) {
+            // Truncate content using token-based strategy from lib/token-utils.ts
+            const content = parsed.content ?? "";
+            return {
+              content: truncateContent(content, undefined, TOOL_DEFAULT_MAX_TOKENS),
+              status: parsed.status ?? "error",
+              exitCode: parsed.exit_code ?? null,
+              workingDir: parsed.working_dir ?? "/home/user",
+            };
+          }
+        } catch {
+          // Not valid JSON, continue searching
+        }
+      }
+    }
+
+    // Fallback: try greedy regex for backwards compatibility
     const jsonMatch = stdout.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      // Map Python snake_case to TypeScript camelCase
-      return {
-        content: parsed.content ?? "",
-        status: parsed.status ?? "error",
-        exitCode: parsed.exit_code ?? null,
-        workingDir: parsed.working_dir ?? "/home/user",
-      };
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        const content = parsed.content ?? "";
+        return {
+          content: truncateContent(content, undefined, TOOL_DEFAULT_MAX_TOKENS),
+          status: parsed.status ?? "error",
+          exitCode: parsed.exit_code ?? null,
+          workingDir: parsed.working_dir ?? "/home/user",
+        };
+      } catch {
+        // JSON parse failed
+      }
     }
+
     return {
       content: stderr || "No JSON response from session manager",
       status: "error",

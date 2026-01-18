@@ -70,13 +70,21 @@ def create_session(session_id, work_dir="/home/user"):
     if session_exists(session_id):
         return True
 
-    cmd = f"tmux new-session -d -s '{session_id}' -c '{work_dir}'"
+    # Explicitly use bash for consistent PS1 behavior across platforms (macOS defaults to zsh)
+    cmd = f"tmux new-session -d -s '{session_id}' -c '{work_dir}' 'exec bash --norc --noprofile'"
     _, _, rc = run_cmd(cmd)
     if rc != 0:
-        return False
+        # Fallback: try without explicit bash (in case bash isn't available)
+        cmd = f"tmux new-session -d -s '{session_id}' -c '{work_dir}'"
+        _, _, rc = run_cmd(cmd)
+        if rc != 0:
+            return False
 
     time.sleep(0.3)
-    send_keys(session_id, f'export PS1="{PS1_MARKER}"', enter=True)
+    # Use PROMPT_COMMAND to ensure PS1 is set before every prompt display
+    # This is more robust than setting PS1 once - it survives commands that try to change it
+    # Also disable PS2 (continuation prompt) for simpler output parsing
+    send_keys(session_id, 'export PROMPT_COMMAND=\\'export PS1=\"[SESS_$?]$ \"\\'; export PS2=\"\"', enter=True)
     time.sleep(0.3)
     send_keys(session_id, "clear", enter=True)
     time.sleep(0.2)
@@ -157,8 +165,13 @@ def is_command_running(session_id):
     """Check if a command is currently running in the session."""
     pane_cmd = get_pane_command(session_id)
     shell_names = {"bash", "zsh", "sh", "fish", "dash", "ash", "ksh", "tcsh", "csh"}
-    if pane_cmd and pane_cmd not in shell_names:
-        return True
+    if pane_cmd:
+        # Normalize the command name:
+        # - Strip leading dash for login shells (e.g., "-zsh" -> "zsh")
+        # - Extract basename from full paths (e.g., "/bin/zsh" -> "zsh")
+        normalized_cmd = pane_cmd.lstrip("-").split("/")[-1]
+        if normalized_cmd not in shell_names:
+            return True
 
     content = capture_pane(session_id)
     if not content:
@@ -282,8 +295,9 @@ def stream_output(new_content, is_final=False):
 
 def make_result(content, status, exit_code, working_dir):
     """Create a standardized result object."""
+    # Content passed through - TypeScript handles token-based truncation
     return {
-        "content": content,
+        "content": content or "",
         "status": status,
         "exit_code": exit_code,
         "working_dir": working_dir
