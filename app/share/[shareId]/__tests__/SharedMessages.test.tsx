@@ -1,12 +1,21 @@
+import React from "react";
 import "@testing-library/jest-dom";
 import { describe, it, expect } from "@jest/globals";
 import { render, screen } from "@testing-library/react";
 import { SharedMessages } from "../SharedMessages";
 import { SharedChatProvider } from "../SharedChatContext";
+import { TodoBlockProvider } from "@/app/contexts/TodoBlockContext";
+import { GlobalStateProvider } from "@/app/contexts/GlobalState";
 
 // Wrapper component to provide context
 const renderWithContext = (ui: React.ReactElement) => {
-  return render(<SharedChatProvider>{ui}</SharedChatProvider>);
+  return render(
+    <GlobalStateProvider>
+      <TodoBlockProvider>
+        <SharedChatProvider>{ui}</SharedChatProvider>
+      </TodoBlockProvider>
+    </GlobalStateProvider>,
+  );
 };
 
 describe("SharedMessages", () => {
@@ -158,7 +167,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Executed")).toBeInTheDocument();
+      expect(screen.getByText("Executing")).toBeInTheDocument();
       expect(screen.getByText("ls -la")).toBeInTheDocument();
     });
   });
@@ -173,7 +182,8 @@ describe("SharedMessages", () => {
             {
               type: "tool-read_file",
               state: "output-available",
-              input: { file_path: "/path/to/file.txt" },
+              input: { target_file: "/path/to/file.txt" },
+              output: { result: "file content" },
             },
           ],
           update_time: mockShareDate,
@@ -183,7 +193,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Read")).toBeInTheDocument();
+      expect(screen.getByText("Reading")).toBeInTheDocument();
       expect(screen.getByText("/path/to/file.txt")).toBeInTheDocument();
     });
 
@@ -206,7 +216,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Wrote")).toBeInTheDocument();
+      expect(screen.getByText("Writing to")).toBeInTheDocument();
       expect(screen.getByText("/path/to/new-file.js")).toBeInTheDocument();
     });
 
@@ -229,7 +239,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Edited")).toBeInTheDocument();
+      expect(screen.getByText("Editing")).toBeInTheDocument();
       expect(screen.getByText("/path/to/edited.ts")).toBeInTheDocument();
     });
   });
@@ -254,7 +264,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Executed Python")).toBeInTheDocument();
+      expect(screen.getByText("Executing Python")).toBeInTheDocument();
       expect(screen.getByText("print('Hello World')")).toBeInTheDocument();
     });
   });
@@ -269,7 +279,7 @@ describe("SharedMessages", () => {
             {
               type: "tool-web_search",
               state: "output-available",
-              input: { query: "best practices for testing" },
+              input: { queries: ["best practices for testing"] },
             },
           ],
           update_time: mockShareDate,
@@ -279,7 +289,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Searched")).toBeInTheDocument();
+      expect(screen.getByText("Searching web")).toBeInTheDocument();
       expect(
         screen.getByText("best practices for testing"),
       ).toBeInTheDocument();
@@ -296,6 +306,12 @@ describe("SharedMessages", () => {
             {
               type: "tool-todo_write",
               state: "output-available",
+              input: { todos: [{ content: "Test task", status: "pending" }] },
+              output: {
+                result: "success",
+                counts: { completed: 0, total: 1 },
+                currentTodos: [{ content: "Test task", status: "pending" }],
+              },
             },
           ],
           update_time: mockShareDate,
@@ -305,7 +321,8 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Updated todos")).toBeInTheDocument();
+      // TodoBlock component renders the todo items
+      expect(screen.getByText("Test task")).toBeInTheDocument();
     });
 
     it("should render memory update tool block", () => {
@@ -317,6 +334,7 @@ describe("SharedMessages", () => {
             {
               type: "tool-update_memory",
               state: "output-available",
+              input: { action: "update" },
             },
           ],
           update_time: mockShareDate,
@@ -326,7 +344,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Updated memory")).toBeInTheDocument();
+      expect(screen.getByText("Updating memory")).toBeInTheDocument();
     });
   });
 
@@ -343,7 +361,8 @@ describe("SharedMessages", () => {
             {
               type: "tool-read_file",
               state: "output-available",
-              input: { file_path: "/test.js" },
+              input: { target_file: "/test.js" },
+              output: { result: "file content" },
             },
             { type: "text", text: "Here's what I found." },
           ],
@@ -355,7 +374,7 @@ describe("SharedMessages", () => {
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
       expect(screen.getByText("I'll help you with that.")).toBeInTheDocument();
-      expect(screen.getByText("Read")).toBeInTheDocument();
+      expect(screen.getByText("Reading")).toBeInTheDocument();
       expect(screen.getByText("Here's what I found.")).toBeInTheDocument();
     });
 

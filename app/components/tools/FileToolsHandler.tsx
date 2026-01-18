@@ -3,7 +3,7 @@ import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
-import type { ChatStatus } from "@/types";
+import type { ChatStatus, SidebarContent } from "@/types";
 import { isSidebarFile } from "@/types/chat";
 
 interface DiffDataPart {
@@ -20,15 +20,20 @@ interface FileToolsHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  // Optional: pass openSidebar to make handler context-agnostic
+  externalOpenSidebar?: (content: SidebarContent) => void;
 }
 
 export const FileToolsHandler = ({
   message,
   part,
   status,
+  externalOpenSidebar,
 }: FileToolsHandlerProps) => {
-  const { openSidebar, updateSidebarContent, sidebarContent, sidebarOpen } =
-    useGlobalState();
+  const globalState = useGlobalState();
+  // Use external openSidebar if provided, otherwise use from GlobalState
+  const openSidebar = externalOpenSidebar ?? globalState.openSidebar;
+  const { updateSidebarContent, sidebarContent, sidebarOpen } = globalState;
 
   // Track the last streamed content to avoid unnecessary updates
   const lastStreamedContentRef = useRef<string | null>(null);
@@ -45,7 +50,10 @@ export const FileToolsHandler = ({
   }, [part.type, part.input]);
 
   // Update sidebar content as write_file content streams in
+  // Only applies when using GlobalState (not external openSidebar)
   useEffect(() => {
+    // Skip if using external openSidebar (read-only mode)
+    if (externalOpenSidebar) return;
     // Only update for write_file tool during streaming
     if (part.type !== "tool-write_file") return;
     if (part.state !== "input-streaming" && part.state !== "input-available")
@@ -77,6 +85,7 @@ export const FileToolsHandler = ({
     sidebarOpen,
     sidebarContent,
     updateSidebarContent,
+    externalOpenSidebar,
   ]);
 
   // Reset tracking refs when tool completes or changes
@@ -182,7 +191,7 @@ export const FileToolsHandler = ({
           <ToolBlock
             key={toolCallId}
             icon={<FileText />}
-            action="Read"
+            action="Reading"
             target={`${readInput.target_file}${getFileRange()}`}
             isClickable={true}
             onClick={handleOpenInSidebar}
@@ -272,7 +281,7 @@ export const FileToolsHandler = ({
           <ToolBlock
             key={toolCallId}
             icon={<FilePlus />}
-            action="Successfully wrote"
+            action="Writing to"
             target={writeInput.file_path}
             isClickable={true}
             onClick={() => {
@@ -332,14 +341,12 @@ export const FileToolsHandler = ({
         ) : null;
       case "output-available": {
         if (!deleteInput) return null;
-        const deleteOutput = output as { result: string };
-        const isSuccess = deleteOutput.result.includes("Successfully deleted");
 
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FileMinus />}
-            action={isSuccess ? "Successfully deleted" : "Failed to delete"}
+            action="Deleting"
             target={deleteInput.target_file}
           />
         );
@@ -385,8 +392,6 @@ export const FileToolsHandler = ({
       case "output-available": {
         if (!searchReplaceInput) return null;
         const searchReplaceOutput = output as { result: string };
-        const isSuccess =
-          searchReplaceOutput.result.includes("Successfully made");
 
         const handleOpenInSidebar = () => {
           // Use diff data from stream if available (not persisted across reloads)
@@ -412,7 +417,9 @@ export const FileToolsHandler = ({
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={isSuccess ? "Successfully edited" : "Failed to edit"}
+            action={
+              searchReplaceInput?.replace_all ? "Replacing all in" : "Editing"
+            }
             target={searchReplaceInput.file_path}
             isClickable={true}
             onClick={handleOpenInSidebar}
@@ -464,20 +471,12 @@ export const FileToolsHandler = ({
         ) : null;
       case "output-available": {
         if (!multiEditInput) return null;
-        const multiEditOutput = output as { result: string };
-        const isSuccess = multiEditOutput.result.includes(
-          "Successfully applied",
-        );
 
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
-            action={
-              isSuccess
-                ? `Successfully applied ${multiEditInput.edits.length} edits`
-                : "Failed to apply edits"
-            }
+            action={`Making ${multiEditInput.edits.length} edits to`}
             target={multiEditInput.file_path}
           />
         );

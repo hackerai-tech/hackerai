@@ -117,9 +117,7 @@ export const HttpRequestToolHandler = ({
   // Determine action text based on state
   const getActionText = (): string => {
     if (state === "input-streaming") return "Preparing request";
-    if (isExecuting) return "Requesting";
-    if (httpOutput?.error) return "Request failed";
-    return "Requested";
+    return "Requesting";
   };
 
   switch (state) {
@@ -162,7 +160,7 @@ export const HttpRequestToolHandler = ({
         <ToolBlock
           key={toolCallId}
           icon={<Globe />}
-          action="Request failed"
+          action={getActionText()}
           target={displayCommand}
           isClickable={true}
           onClick={handleOpenInSidebar}

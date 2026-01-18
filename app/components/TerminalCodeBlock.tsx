@@ -11,6 +11,7 @@ interface TerminalCodeBlockProps {
   isExecuting?: boolean;
   status?: "ready" | "submitted" | "streaming" | "error";
   isBackground?: boolean;
+  showContentOnly?: boolean;
   variant?: "default" | "sidebar";
   wrap?: boolean;
 }
@@ -172,7 +173,7 @@ const AnsiCodeBlock = ({
     return (
       <div className="px-4 py-4 text-muted-foreground">
         <Shimmer>
-          {isStreaming ? "Processing output..." : "Rendering output..."}
+          {isStreaming ? "Processing output…" : "Rendering output…"}
         </Shimmer>
       </div>
     );
@@ -198,6 +199,7 @@ export const TerminalCodeBlock = ({
   isExecuting = false,
   status,
   isBackground = false,
+  showContentOnly = false,
   variant = "default",
   wrap = false,
 }: TerminalCodeBlockProps) => {
@@ -209,7 +211,13 @@ export const TerminalCodeBlock = ({
   }, [wrap]);
 
   // Combine command and output for full terminal session
-  const terminalContent = output ? `$ ${command}\n${output}` : `$ ${command}`;
+  // For views/non-exec actions, show raw output only
+  const terminalContent =
+    showContentOnly && output
+      ? output
+      : output
+        ? `$ ${command}\n${output}`
+        : `$ ${command}`;
   const displayContent = output || "";
 
   // For non-sidebar variant, keep the original terminal look

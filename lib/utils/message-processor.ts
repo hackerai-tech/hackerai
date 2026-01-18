@@ -79,17 +79,22 @@ interface BaseToolPart {
 
 // Specific interface for terminal tools that have special data handling
 interface TerminalToolPart extends BaseToolPart {
-  type: "tool-run_terminal_cmd";
+  type: "tool-run_terminal_cmd" | "tool-shell";
   input?: {
-    command: string;
-    explanation: string;
-    is_background: boolean;
+    command?: string;
+    input?: string;
+    action?: string;
+    explanation?: string;
+    is_background?: boolean;
   };
   output?: {
     result: {
-      exitCode: number;
+      success?: boolean;
+      exitCode?: number;
       stdout?: string;
       stderr?: string;
+      output?: string;
+      content?: string;
       error?: string;
     };
   };
@@ -258,7 +263,10 @@ const transformIncompleteToolPart = (
   terminalDataMap: Map<string, string>,
 ): BaseToolPart => {
   // Handle terminal tools with special terminal output handling
-  if (toolPart.type === "tool-run_terminal_cmd") {
+  if (
+    toolPart.type === "tool-run_terminal_cmd" ||
+    toolPart.type === "tool-shell"
+  ) {
     return transformTerminalToolPart(
       toolPart as TerminalToolPart,
       terminalDataMap,
@@ -277,6 +285,24 @@ const transformTerminalToolPart = (
   terminalDataMap: Map<string, string>,
 ): TerminalToolPart => {
   const stdout = terminalDataMap.get(terminalPart.toolCallId) || "";
+
+  if (terminalPart.type === "tool-shell") {
+    return {
+      type: "tool-shell",
+      toolCallId: terminalPart.toolCallId,
+      state: "output-available",
+      input: terminalPart.input,
+      output: {
+        result: {
+          success: false,
+          exitCode: 130,
+          content: stdout,
+          error:
+            stdout.length === 0 ? "Operation was stopped/aborted by user" : "",
+        },
+      },
+    };
+  }
 
   return {
     type: "tool-run_terminal_cmd",

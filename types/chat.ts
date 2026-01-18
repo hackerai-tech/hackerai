@@ -23,13 +23,20 @@ export interface SidebarFile {
   modifiedContent?: string;
 }
 
+export type ShellAction = "view" | "exec" | "wait" | "send" | "kill";
+
 export interface SidebarTerminal {
   command: string;
   output: string;
   isExecuting: boolean;
   isBackground?: boolean;
+  showContentOnly?: boolean;
   pid?: number | null;
   toolCallId: string;
+  /** Shell action type for correct action text display */
+  shellAction?: ShellAction;
+  /** Session name for display in sidebar header */
+  sessionName?: string;
 }
 
 export interface SidebarPython {

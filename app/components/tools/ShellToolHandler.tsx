@@ -1,0 +1,251 @@
+import React, { useEffect, useMemo } from "react";
+import { UIMessage } from "@ai-sdk/react";
+import ToolBlock from "@/components/ui/tool-block";
+import { Terminal } from "lucide-react";
+import { useOptionalGlobalState } from "../../contexts/GlobalState";
+import type {
+  ChatStatus,
+  SidebarTerminal,
+  SidebarContent,
+  ShellAction,
+} from "@/types/chat";
+import { isSidebarTerminal } from "@/types/chat";
+
+interface ShellInput {
+  action: ShellAction;
+  command?: string;
+  input?: string;
+  session: string;
+  timeout?: number;
+  brief?: string;
+}
+
+interface ShellResult {
+  success: boolean;
+  content?: string;
+  running?: boolean;
+  completed?: boolean;
+  exitCode?: number;
+  waiting_for_input?: boolean;
+  current_command?: string;
+}
+
+interface ShellToolHandlerProps {
+  message: UIMessage;
+  part: any;
+  status: ChatStatus;
+  // Optional: pass openSidebar to make handler context-agnostic
+  externalOpenSidebar?: (content: SidebarContent) => void;
+}
+
+const ACTION_LABELS: Record<ShellAction, string> = {
+  exec: "Running command",
+  send: "Writing to terminal",
+  wait: "Waiting for completion",
+  kill: "Terminating process",
+  view: "Reading terminal",
+};
+
+/**
+ * Format shell input text for display, converting special keys to readable format
+ */
+const formatShellInput = (inputText: string): string => {
+  if (!inputText) return "";
+
+  // Format Ctrl key combinations
+  if (inputText.startsWith("C-")) {
+    const key = inputText.slice(2).toUpperCase();
+    return `[Ctrl+${key}]`;
+  }
+  // Format Alt/Meta key combinations
+  if (inputText.startsWith("M-")) {
+    const key = inputText.slice(2).toUpperCase();
+    return `[Alt+${key}]`;
+  }
+  // Handle other special keys
+  const specialKeyMap: Record<string, string> = {
+    Enter: "[Enter]",
+    Escape: "[Escape]",
+    Tab: "[Tab]",
+    Space: "[Space]",
+    Up: "[Up]",
+    Down: "[Down]",
+    Left: "[Left]",
+    Right: "[Right]",
+    Home: "[Home]",
+    End: "[End]",
+    PageUp: "[PageUp]",
+    PageDown: "[PageDown]",
+    BSpace: "[Backspace]",
+  };
+  if (specialKeyMap[inputText]) {
+    return specialKeyMap[inputText];
+  }
+  // Return as-is for regular text
+  return inputText;
+};
+
+export const ShellToolHandler = ({
+  message,
+  part,
+  status,
+  externalOpenSidebar,
+}: ShellToolHandlerProps) => {
+  // Use optional hook to avoid throwing when used outside GlobalStateProvider
+  const globalState = useOptionalGlobalState();
+  // Use external openSidebar if provided, otherwise use from GlobalState
+  const openSidebar = externalOpenSidebar ?? globalState?.openSidebar;
+  const { sidebarOpen, sidebarContent, updateSidebarContent } = globalState ?? {};
+  const { toolCallId, state, input, output, errorText } = part;
+
+  const shellInput = input as ShellInput | undefined;
+  const shellOutput = output as { result: ShellResult } | undefined;
+
+  // Memoize streaming output computation
+  const streamingOutput = useMemo(() => {
+    const terminalDataParts = message.parts.filter(
+      (p) =>
+        p.type === "data-terminal" &&
+        (p as any).data?.toolCallId === toolCallId,
+    );
+    return terminalDataParts
+      .map((p) => (p as any).data?.terminal || "")
+      .join("");
+  }, [message.parts, toolCallId]);
+
+  // Memoize final output computation
+  // Use nullish coalescing to preserve explicit empty string content from the tool
+  const finalOutput = useMemo(() => {
+    const content = shellOutput?.result?.content;
+    // Only fall through to streaming/error if content is null/undefined (not empty string)
+    return content ?? streamingOutput ?? errorText ?? "";
+  }, [shellOutput, streamingOutput, errorText]);
+
+  const isStreaming = status === "streaming";
+  const isExecuting = state === "input-available" && isStreaming;
+
+  const action = shellInput?.action ?? "exec";
+
+  const getActionLabel = (): string => {
+    return ACTION_LABELS[action] ?? ACTION_LABELS.exec;
+  };
+
+  const getTargetLabel = (): string => {
+    if (!shellInput) return "";
+
+    switch (shellInput.action) {
+      case "exec":
+        return shellInput.command || shellInput.session;
+      case "send": {
+        const inputText = shellInput.input || "";
+        const formatted = formatShellInput(inputText);
+        // Truncate long input (only for non-special keys)
+        return formatted.length > 40
+          ? `${formatted.slice(0, 37)}...`
+          : formatted;
+      }
+      case "kill":
+        return `session: ${shellInput.session}`;
+      case "wait":
+        return `session: ${shellInput.session}`;
+      case "view":
+        return `session: ${shellInput.session}`;
+      default:
+        return shellInput.session || "";
+    }
+  };
+
+  const getSidebarTitle = (): string => {
+    if (!shellInput) return "Shell";
+
+    const session = shellInput.session || "default";
+
+    switch (shellInput.action) {
+      case "exec":
+        return shellInput.command || `Session: ${session}`;
+      case "send": {
+        const formatted = formatShellInput(shellInput.input || "");
+        return formatted || `Input to ${session}`;
+      }
+      case "wait":
+        return `Waiting: ${session}`;
+      case "kill":
+        return `Kill: ${session}`;
+      case "view":
+        return `Session: ${session}`;
+      default:
+        return `Session: ${session}`;
+    }
+  };
+
+  const handleOpenInSidebar = () => {
+    const sidebarTerminal: SidebarTerminal = {
+      command: getSidebarTitle(),
+      output: finalOutput,
+      isExecuting,
+      isBackground: false,
+      showContentOnly: shellInput?.action !== "exec",
+      toolCallId: toolCallId,
+      shellAction: shellInput?.action,
+      sessionName: shellInput?.session,
+    };
+
+    openSidebar?.(sidebarTerminal);
+  };
+
+  // Track if this sidebar is currently active (only for GlobalState mode)
+  const isSidebarActive =
+    !externalOpenSidebar &&
+    sidebarOpen &&
+    sidebarContent &&
+    isSidebarTerminal(sidebarContent) &&
+    sidebarContent.toolCallId === toolCallId;
+
+  // Update sidebar content in real-time if it's currently open for this tool call
+  // Only applies when using GlobalState (not external openSidebar)
+  useEffect(() => {
+    if (!isSidebarActive || externalOpenSidebar) return;
+
+    updateSidebarContent?.({
+      output: finalOutput,
+      isExecuting,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSidebarActive, finalOutput, isExecuting, externalOpenSidebar]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleOpenInSidebar();
+    }
+  };
+
+  switch (state) {
+    case "input-streaming":
+      return status === "streaming" ? (
+        <ToolBlock
+          key={toolCallId}
+          icon={<Terminal />}
+          action="Preparing shell"
+          isShimmer={true}
+        />
+      ) : null;
+    case "input-available":
+    case "output-available":
+    case "output-error":
+      return (
+        <ToolBlock
+          key={toolCallId}
+          icon={<Terminal />}
+          action={getActionLabel()}
+          target={getTargetLabel()}
+          isShimmer={state === "input-available" && status === "streaming"}
+          isClickable={true}
+          onClick={handleOpenInSidebar}
+          onKeyDown={handleKeyDown}
+        />
+      );
+    default:
+      return null;
+  }
+};

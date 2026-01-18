@@ -57,8 +57,22 @@ export function extractAllSidebarContent(
 
     message.parts.forEach((part) => {
       // Terminal
-      if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
-        const command = part.input.command;
+      if (
+        part.type === "tool-run_terminal_cmd" ||
+        (part.type === "tool-shell" && part.input?.action)
+      ) {
+        // For shell tool: use command for exec, input for send, session info for view/wait/kill
+        let command: string;
+        if (part.input?.command) {
+          command = part.input.command;
+        } else if (part.input?.input) {
+          command = part.input.input;
+        } else if (part.input?.session) {
+          // For view/wait/kill actions, show the session name
+          command = `Session: ${part.input.session}`;
+        } else {
+          command = "shell";
+        }
 
         // Get streaming output from data-terminal parts
         const streamingOutput =
@@ -69,9 +83,11 @@ export function extractAllSidebarContent(
         let output = "";
 
         if (result) {
-          // New format: result.output
+          // New format: result.output or result.content
           if (typeof result.output === "string") {
             output = result.output;
+          } else if (typeof result.content === "string") {
+            output = result.content;
           }
           // Legacy format: result.stdout + result.stderr
           else if (result.stdout !== undefined || result.stderr !== undefined) {
@@ -92,7 +108,7 @@ export function extractAllSidebarContent(
           output: finalOutput,
           isExecuting:
             part.state === "input-available" || part.state === "running",
-          isBackground: part.input.is_background,
+          isBackground: part.input.is_background || false,
           toolCallId: part.toolCallId || "",
         });
       }

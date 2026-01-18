@@ -42,9 +42,8 @@ export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
     return isOpenUrl ? <ExternalLink /> : <Search />;
   };
 
-  const getAction = (isCompleted = false) => {
-    const action = isOpenUrl ? "Opening URL" : "Searching web";
-    return isCompleted ? action.replace("ing", "ed") : action;
+  const getAction = () => {
+    return isOpenUrl ? "Opening URL" : "Searching web";
   };
 
   const getTarget = () => {
@@ -97,7 +96,7 @@ export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
         <ToolBlock
           key={toolCallId}
           icon={getIcon()}
-          action={getAction(true)}
+          action={getAction()}
           target={getTarget()}
         />
       );

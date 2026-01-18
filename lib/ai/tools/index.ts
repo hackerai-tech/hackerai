@@ -5,7 +5,8 @@ import {
   type SandboxPreference,
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
-import { createRunTerminalCmd } from "./run-terminal-cmd";
+// import { createRunTerminalCmd } from "./run-terminal-cmd";
+import { createShell } from "./shell";
 import { createGetTerminalFiles } from "./get-terminal-files";
 import { createReadFile } from "./read-file";
 import { createWriteFile } from "./write-file";
@@ -44,6 +45,7 @@ export const createTools = (
   serviceKey?: string,
   scopeExclusions?: string,
   guardrailsConfig?: string,
+  chatId?: string,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -77,6 +79,7 @@ export const createTools = (
     userLocation,
     todoManager,
     userID,
+    chatId: chatId || "unknown",
     assistantMessageId,
     fileAccumulator,
     backgroundProcessTracker,
@@ -88,7 +91,8 @@ export const createTools = (
 
   // Create all available tools
   const allTools = {
-    run_terminal_cmd: createRunTerminalCmd(context),
+    // run_terminal_cmd: createRunTerminalCmd(context),
+    shell: createShell(context),
     get_terminal_files: createGetTerminalFiles(context),
     read_file: createReadFile(context),
     write_file: createWriteFile(context),

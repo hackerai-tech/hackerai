@@ -3,12 +3,13 @@
  * Extracted for testability.
  */
 
-// Align with LLM context limits: ~2048 tokens ≈ 6000 chars
-export const MAX_OUTPUT_SIZE = 6000;
+// Large limit to prevent sandbox from breaking structured output (like JSON).
+// Actual token-based truncation is handled by the tools themselves.
+// This is just a safety limit to prevent memory issues with massive output.
+export const MAX_OUTPUT_SIZE = 100000;
 
-// Truncation marker for 25% head + 75% tail strategy
-export const TRUNCATION_MARKER =
-  "\n\n[... OUTPUT TRUNCATED - middle content removed to fit context limits ...]\n\n";
+// Minimal marker - tools handle their own truncation messages
+export const TRUNCATION_MARKER = "\n...\n";
 
 /**
  * Required Docker capabilities for penetration testing tools.
