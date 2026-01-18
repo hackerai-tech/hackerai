@@ -2,7 +2,7 @@ import React, { useEffect, useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
-import { useGlobalState } from "../../contexts/GlobalState";
+import { useOptionalGlobalState } from "../../contexts/GlobalState";
 import type {
   ChatStatus,
   SidebarTerminal,
@@ -91,10 +91,11 @@ export const ShellToolHandler = ({
   status,
   externalOpenSidebar,
 }: ShellToolHandlerProps) => {
-  const globalState = useGlobalState();
+  // Use optional hook to avoid throwing when used outside GlobalStateProvider
+  const globalState = useOptionalGlobalState();
   // Use external openSidebar if provided, otherwise use from GlobalState
-  const openSidebar = externalOpenSidebar ?? globalState.openSidebar;
-  const { sidebarOpen, sidebarContent, updateSidebarContent } = globalState;
+  const openSidebar = externalOpenSidebar ?? globalState?.openSidebar;
+  const { sidebarOpen, sidebarContent, updateSidebarContent } = globalState ?? {};
   const { toolCallId, state, input, output, errorText } = part;
 
   const shellInput = input as ShellInput | undefined;
@@ -113,8 +114,11 @@ export const ShellToolHandler = ({
   }, [message.parts, toolCallId]);
 
   // Memoize final output computation
+  // Use nullish coalescing to preserve explicit empty string content from the tool
   const finalOutput = useMemo(() => {
-    return shellOutput?.result?.content || streamingOutput || errorText || "";
+    const content = shellOutput?.result?.content;
+    // Only fall through to streaming/error if content is null/undefined (not empty string)
+    return content ?? streamingOutput ?? errorText ?? "";
   }, [shellOutput, streamingOutput, errorText]);
 
   const isStreaming = status === "streaming";
@@ -186,7 +190,7 @@ export const ShellToolHandler = ({
       sessionName: shellInput?.session,
     };
 
-    openSidebar(sidebarTerminal);
+    openSidebar?.(sidebarTerminal);
   };
 
   // Track if this sidebar is currently active (only for GlobalState mode)
@@ -202,7 +206,7 @@ export const ShellToolHandler = ({
   useEffect(() => {
     if (!isSidebarActive || externalOpenSidebar) return;
 
-    updateSidebarContent({
+    updateSidebarContent?.({
       output: finalOutput,
       isExecuting,
     });

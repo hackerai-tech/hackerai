@@ -353,29 +353,36 @@ export const createShell = (context: ToolContext) => {
             });
 
             // Execute the session manager command
-            retryWithBackoff(
-              () =>
-                sandboxInstance.commands.run(sessionManagerCmd, {
-                  ...commonOptions,
-                  timeoutMs: totalTimeoutMs,
-                }),
-              {
-                maxRetries: 3,
-                baseDelayMs: 500,
-                jitterMs: 50,
-                isPermanentError: (error: unknown) => {
-                  if (error instanceof Error) {
-                    return (
-                      error.name === "NotFoundError" ||
-                      error.message.includes("not running anymore") ||
-                      error.message.includes("signal:")
-                    );
-                  }
-                  return false;
-                },
-                logger: () => {},
-              },
-            )
+            // Only use retry for idempotent actions (view, wait, kill)
+            // exec and send are non-idempotent and could cause duplicate effects if retried
+            const isIdempotentAction = action === "view" || action === "wait" || action === "kill";
+
+            const executeCommand = () =>
+              sandboxInstance.commands.run(sessionManagerCmd, {
+                ...commonOptions,
+                timeoutMs: totalTimeoutMs,
+              });
+
+            const commandPromise = isIdempotentAction
+              ? retryWithBackoff(executeCommand, {
+                  maxRetries: 3,
+                  baseDelayMs: 500,
+                  jitterMs: 50,
+                  isPermanentError: (error: unknown) => {
+                    if (error instanceof Error) {
+                      return (
+                        error.name === "NotFoundError" ||
+                        error.message.includes("not running anymore") ||
+                        error.message.includes("signal:")
+                      );
+                    }
+                    return false;
+                  },
+                  logger: () => {},
+                })
+              : executeCommand();
+
+            commandPromise
               .then((exec) => {
                 handler.cleanup();
                 abortSignal?.removeEventListener("abort", onAbort);

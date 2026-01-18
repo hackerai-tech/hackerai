@@ -756,3 +756,12 @@ export const useGlobalState = (): GlobalStateType => {
   }
   return context;
 };
+
+/**
+ * Optional version of useGlobalState that returns undefined instead of throwing
+ * when used outside of GlobalStateProvider. Useful for components that can work
+ * both with and without the global state context.
+ */
+export const useOptionalGlobalState = (): GlobalStateType | undefined => {
+  return useContext(GlobalStateContext);
+};
