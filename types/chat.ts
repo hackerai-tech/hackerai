@@ -95,6 +95,9 @@ export type RateLimitInfo = {
   remaining: number;
   resetTime: Date;
   limit: number;
+  // Token bucket details for paid users (session = daily, weekly = weekly)
+  session?: { remaining: number; limit: number; resetTime: Date };
+  weekly?: { remaining: number; limit: number; resetTime: Date };
 };
 
 export interface QueuedMessage {

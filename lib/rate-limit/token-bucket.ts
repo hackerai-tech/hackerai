@@ -112,17 +112,17 @@ const createRateLimiters = (
       limiter: new Ratelimit({
         redis: redis!,
         limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
-        prefix: "usage_bucket",
+        prefix: "usage:session",
       }),
-      key: `${userId}:usage:${subscription}`,
+      key: `${userId}:${subscription}`,
     },
     weekly: {
       limiter: new Ratelimit({
         redis: redis!,
         limiter: Ratelimit.tokenBucket(weeklyLimit, "7 d", weeklyLimit),
-        prefix: "usage_weekly",
+        prefix: "usage:weekly",
       }),
-      key: `${userId}:usage:weekly:${subscription}`,
+      key: `${userId}:${subscription}`,
     },
   };
 };
@@ -197,6 +197,16 @@ export const checkAgentRateLimit = async (
       remaining: Math.min(sessionResult.remaining, weeklyResult.remaining),
       resetTime: new Date(Math.min(sessionResult.reset, weeklyResult.reset)),
       limit: Math.min(sessionLimit, weeklyLimit),
+      session: {
+        remaining: sessionResult.remaining,
+        limit: sessionLimit,
+        resetTime: new Date(sessionResult.reset),
+      },
+      weekly: {
+        remaining: weeklyResult.remaining,
+        limit: weeklyLimit,
+        resetTime: new Date(weeklyResult.reset),
+      },
     };
   } catch (error) {
     if (error instanceof ChatSDKError) throw error;

@@ -195,17 +195,42 @@ export const createChatHandler = () => {
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
-          // Send rate limit warning if at or below threshold
-          const isPaidUser = subscription !== "free";
-          const warningThreshold = isPaidUser ? 10 : 5;
+          // Send rate limit warnings based on subscription type
+          if (subscription === "free") {
+            // Free users: sliding window (remaining count)
+            if (rateLimitInfo.remaining <= 5) {
+              writeRateLimitWarning(writer, {
+                warningType: "sliding-window",
+                remaining: rateLimitInfo.remaining,
+                resetTime: rateLimitInfo.resetTime.toISOString(),
+                mode,
+                subscription,
+              });
+            }
+          } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
+            // Paid users: token bucket (remaining percentage at 10%)
+            const sessionPercent = (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) * 100;
+            const weeklyPercent = (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) * 100;
 
-          if (rateLimitInfo.remaining <= warningThreshold) {
-            writeRateLimitWarning(writer, {
-              remaining: rateLimitInfo.remaining,
-              resetTime: rateLimitInfo.resetTime.toISOString(),
-              mode,
-              subscription,
-            });
+            if (sessionPercent <= 10) {
+              writeRateLimitWarning(writer, {
+                warningType: "token-bucket",
+                bucketType: "session",
+                remainingPercent: Math.round(sessionPercent),
+                resetTime: rateLimitInfo.session.resetTime.toISOString(),
+                subscription,
+              });
+            }
+
+            if (weeklyPercent <= 10) {
+              writeRateLimitWarning(writer, {
+                warningType: "token-bucket",
+                bucketType: "weekly",
+                remainingPercent: Math.round(weeklyPercent),
+                resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
+                subscription,
+              });
+            }
           }
 
           const {

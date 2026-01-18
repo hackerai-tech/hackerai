@@ -8,6 +8,7 @@ import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
+import type { RateLimitWarningData } from "./RateLimitWarning";
 import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
 import MainSidebar from "./Sidebar";
@@ -46,12 +47,8 @@ export const Chat = ({
     message: string;
     isUploading: boolean;
   } | null>(null);
-  const [rateLimitWarning, setRateLimitWarning] = useState<{
-    remaining: number;
-    resetTime: Date;
-    mode: ChatMode;
-    subscription: SubscriptionTier;
-  } | null>(null);
+  const [rateLimitWarning, setRateLimitWarning] =
+    useState<RateLimitWarningData | null>(null);
 
   const {
     chatTitle,
@@ -248,21 +245,37 @@ export const Chat = ({
         setUploadStatus(uploadData.isUploading ? uploadData : null);
       }
       if (dataPart.type === "data-rate-limit-warning") {
-        const warningData = dataPart.data as {
-          remaining: number;
+        const rawData = dataPart.data as {
+          warningType: "sliding-window" | "token-bucket";
           resetTime: string;
-          mode: ChatMode;
           subscription: SubscriptionTier;
+          // sliding-window fields
+          remaining?: number;
+          mode?: ChatMode;
+          // token-bucket fields
+          bucketType?: "session" | "weekly";
+          remainingPercent?: number;
         };
 
         // Only show or update warning if user hasn't dismissed it
         if (!hasUserDismissedWarningRef.current) {
-          setRateLimitWarning({
-            remaining: warningData.remaining,
-            resetTime: new Date(warningData.resetTime),
-            mode: warningData.mode,
-            subscription: warningData.subscription,
-          });
+          if (rawData.warningType === "sliding-window") {
+            setRateLimitWarning({
+              warningType: "sliding-window",
+              remaining: rawData.remaining!,
+              resetTime: new Date(rawData.resetTime),
+              mode: rawData.mode!,
+              subscription: rawData.subscription,
+            });
+          } else {
+            setRateLimitWarning({
+              warningType: "token-bucket",
+              bucketType: rawData.bucketType!,
+              remainingPercent: rawData.remainingPercent!,
+              resetTime: new Date(rawData.resetTime),
+              subscription: rawData.subscription,
+            });
+          }
         }
       }
       if (dataPart.type === "data-file-metadata") {
