@@ -57,11 +57,15 @@ export const createShell = (context: ToolContext) => {
 - Use pipes (\`|\`) to simplify workflows by passing outputs between commands
 - NEVER run code directly via interpreter commands; MUST save code to a file using the \`write_file\` tool before execution
 - Set a short \`timeout\` (such as 5s) for commands that don't return (like starting web servers) to avoid meaningless waiting time
+- Commands are NEVER killed on timeout - they keep running in the background; timeout only controls how long to wait for output before returning
+- For daemons, servers, or very long-running jobs, append \`&\` to run in background (e.g., \`python app.py > server.log 2>&1 &\`)
 - Use \`wait\` action when a command needs additional time to complete and return
 - Only use \`wait\` after \`exec\`, and determine whether to wait based on the result of \`exec\`
 - DO NOT use \`wait\` for long-running daemon processes
 - When using \`send\`, add a newline character (\\n) at the end of the \`input\` parameter to simulate pressing Enter
-- For special keys, use tmux key names: C-c (Ctrl+C), C-d (Ctrl+D), C-z (Ctrl+Z), Up, Down, Left, Right, Escape, Tab, Enter
+- For special keys, use official tmux key names: C-c (Ctrl+C), C-d (Ctrl+D), C-z (Ctrl+Z), Up, Down, Left, Right, Home, End, Escape, Tab, Enter, Space, F1-F12, PageUp, PageDown
+- For modifier combinations: M-key (Alt), S-key (Shift), C-S-key (Ctrl+Shift)
+- Note: Use official tmux names (BSpace not Backspace, DC not Delete, Escape not Esc)
 - For non-key strings in \`input\`, DO NOT perform any escaping; send the raw string directly
 </instructions>
 
@@ -75,6 +79,7 @@ export const createShell = (context: ToolContext) => {
 - Use \`send\` with special keys like C-c to interrupt, C-d to send EOF
 - Use \`kill\` to stop background processes that are no longer needed
 - Use \`kill\` to clean up dead or unresponsive processes
+- After creating files that the user needs (reports, scan results, generated documents), use the \`get_terminal_files\` tool to share them as downloadable attachments
 </recommended_usage>`,
     inputSchema: z.object({
       action: z
@@ -93,7 +98,7 @@ export const createShell = (context: ToolContext) => {
         .string()
         .optional()
         .describe(
-          "Input text to send to the interactive session. End with \\n to simulate pressing Enter. For special keys use tmux names: C-c, C-d, Up, Down, Escape, etc. Required for `send` action.",
+          "Input text to send to the interactive session. End with a newline character (\\n) to simulate pressing Enter if needed. Required for `send` action.",
         ),
       session: z
         .string()
