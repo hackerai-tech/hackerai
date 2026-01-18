@@ -453,38 +453,32 @@ export const createChatHandler = () => {
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
-              if (chunk.chunk.type === "tool-call") {
-                const command =
-                  chunk.chunk.toolName === "web"
-                    ? (chunk.chunk.input as any)?.command
-                    : undefined;
-                if (posthog) {
-                  // Tools that interact with the sandbox environment
-                  const sandboxEnvironmentTools = [
-                    "run_terminal_cmd",
-                    "get_terminal_files",
-                    "read_file",
-                    "write_file",
-                    "search_replace",
-                  ];
+              if (chunk.chunk.type === "tool-call" && posthog) {
+                // Tools that interact with the sandbox environment
+                const sandboxEnvironmentTools = [
+                  "run_terminal_cmd",
+                  "get_terminal_files",
+                  "read_file",
+                  "write_file",
+                  "search_replace",
+                ];
 
-                  // Determine sandbox type for environment-interacting tools
-                  const sandboxType = sandboxEnvironmentTools.includes(
-                    chunk.chunk.toolName,
-                  )
-                    ? sandboxPreference && sandboxPreference !== "e2b"
-                      ? "local"
-                      : "e2b"
-                    : undefined;
+                // Determine sandbox type for environment-interacting tools
+                const sandboxType = sandboxEnvironmentTools.includes(
+                  chunk.chunk.toolName,
+                )
+                  ? sandboxPreference && sandboxPreference !== "e2b"
+                    ? "local"
+                    : "e2b"
+                  : undefined;
 
-                  posthog.capture({
-                    distinctId: userId,
-                    event: "hackerai-" + (command || chunk.chunk.toolName),
-                    properties: {
-                      ...(sandboxType && { sandboxType }),
-                    },
-                  });
-                }
+                posthog.capture({
+                  distinctId: userId,
+                  event: "hackerai-" + chunk.chunk.toolName,
+                  properties: {
+                    ...(sandboxType && { sandboxType }),
+                  },
+                });
               }
             },
             onFinish: async ({ finishReason, usage, response }) => {
