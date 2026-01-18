@@ -65,15 +65,29 @@ export const createSummarizationCompletedPart = (): UIMessagePart<
   },
 });
 
-// Rate limit warning notifications
+// Unified rate limit warning data types
+export type RateLimitWarningData =
+  | {
+      // Free users: sliding window (remaining count)
+      warningType: "sliding-window";
+      remaining: number;
+      resetTime: string;
+      mode: ChatMode;
+      subscription: SubscriptionTier;
+    }
+  | {
+      // Paid users: token bucket (remaining percentage)
+      warningType: "token-bucket";
+      bucketType: "session" | "weekly";
+      remainingPercent: number;
+      resetTime: string;
+      subscription: SubscriptionTier;
+    };
+
+// Unified rate limit warning notification
 export const writeRateLimitWarning = (
   writer: StreamWriter,
-  data: {
-    remaining: number;
-    resetTime: string; // ISO date string
-    mode: ChatMode;
-    subscription: SubscriptionTier;
-  },
+  data: RateLimitWarningData,
 ): void => {
   writer.write({
     type: "data-rate-limit-warning",

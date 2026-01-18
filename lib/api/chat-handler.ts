@@ -195,17 +195,42 @@ export const createChatHandler = () => {
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
-          // Send rate limit warning if at or below threshold
-          const isPaidUser = subscription !== "free";
-          const warningThreshold = isPaidUser ? 10 : 5;
+          // Send rate limit warnings based on subscription type
+          if (subscription === "free") {
+            // Free users: sliding window (remaining count)
+            if (rateLimitInfo.remaining <= 5) {
+              writeRateLimitWarning(writer, {
+                warningType: "sliding-window",
+                remaining: rateLimitInfo.remaining,
+                resetTime: rateLimitInfo.resetTime.toISOString(),
+                mode,
+                subscription,
+              });
+            }
+          } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
+            // Paid users: token bucket (remaining percentage at 10%)
+            const sessionPercent = (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) * 100;
+            const weeklyPercent = (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) * 100;
 
-          if (rateLimitInfo.remaining <= warningThreshold) {
-            writeRateLimitWarning(writer, {
-              remaining: rateLimitInfo.remaining,
-              resetTime: rateLimitInfo.resetTime.toISOString(),
-              mode,
-              subscription,
-            });
+            if (sessionPercent <= 10) {
+              writeRateLimitWarning(writer, {
+                warningType: "token-bucket",
+                bucketType: "session",
+                remainingPercent: Math.round(sessionPercent),
+                resetTime: rateLimitInfo.session.resetTime.toISOString(),
+                subscription,
+              });
+            }
+
+            if (weeklyPercent <= 10) {
+              writeRateLimitWarning(writer, {
+                warningType: "token-bucket",
+                bucketType: "weekly",
+                remainingPercent: Math.round(weeklyPercent),
+                resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
+                subscription,
+              });
+            }
           }
 
           const {
@@ -428,38 +453,32 @@ export const createChatHandler = () => {
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
               // Track all tool calls immediately (no throttle)
-              if (chunk.chunk.type === "tool-call") {
-                const command =
-                  chunk.chunk.toolName === "web"
-                    ? (chunk.chunk.input as any)?.command
-                    : undefined;
-                if (posthog) {
-                  // Tools that interact with the sandbox environment
-                  const sandboxEnvironmentTools = [
-                    "run_terminal_cmd",
-                    "get_terminal_files",
-                    "read_file",
-                    "write_file",
-                    "search_replace",
-                  ];
+              if (chunk.chunk.type === "tool-call" && posthog) {
+                // Tools that interact with the sandbox environment
+                const sandboxEnvironmentTools = [
+                  "run_terminal_cmd",
+                  "get_terminal_files",
+                  "read_file",
+                  "write_file",
+                  "search_replace",
+                ];
 
-                  // Determine sandbox type for environment-interacting tools
-                  const sandboxType = sandboxEnvironmentTools.includes(
-                    chunk.chunk.toolName,
-                  )
-                    ? sandboxPreference && sandboxPreference !== "e2b"
-                      ? "local"
-                      : "e2b"
-                    : undefined;
+                // Determine sandbox type for environment-interacting tools
+                const sandboxType = sandboxEnvironmentTools.includes(
+                  chunk.chunk.toolName,
+                )
+                  ? sandboxPreference && sandboxPreference !== "e2b"
+                    ? "local"
+                    : "e2b"
+                  : undefined;
 
-                  posthog.capture({
-                    distinctId: userId,
-                    event: "hackerai-" + (command || chunk.chunk.toolName),
-                    properties: {
-                      ...(sandboxType && { sandboxType }),
-                    },
-                  });
-                }
+                posthog.capture({
+                  distinctId: userId,
+                  event: "hackerai-" + chunk.chunk.toolName,
+                  properties: {
+                    ...(sandboxType && { sandboxType }),
+                  },
+                });
               }
             },
             onFinish: async ({ finishReason, usage, response }) => {

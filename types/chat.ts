@@ -39,7 +39,22 @@ export interface SidebarPython {
   toolCallId: string;
 }
 
-export type SidebarContent = SidebarFile | SidebarTerminal | SidebarPython;
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  content: string;
+  date: string | null;
+  lastUpdated: string | null;
+}
+
+export interface SidebarWebSearch {
+  query: string;
+  results: WebSearchResult[];
+  isSearching: boolean;
+  toolCallId: string;
+}
+
+export type SidebarContent = SidebarFile | SidebarTerminal | SidebarPython | SidebarWebSearch;
 
 export const isSidebarFile = (
   content: SidebarContent,
@@ -57,6 +72,12 @@ export const isSidebarPython = (
   content: SidebarContent,
 ): content is SidebarPython => {
   return "code" in content;
+};
+
+export const isSidebarWebSearch = (
+  content: SidebarContent,
+): content is SidebarWebSearch => {
+  return "results" in content && "query" in content;
 };
 
 export interface Todo {
@@ -95,6 +116,9 @@ export type RateLimitInfo = {
   remaining: number;
   resetTime: Date;
   limit: number;
+  // Token bucket details for paid users (session = daily, weekly = weekly)
+  session?: { remaining: number; limit: number; resetTime: Date };
+  weekly?: { remaining: number; limit: number; resetTime: Date };
 };
 
 export interface QueuedMessage {

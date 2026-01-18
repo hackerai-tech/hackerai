@@ -44,9 +44,11 @@ import {
   upsertDraft,
   removeDraft,
 } from "@/lib/utils/client-storage";
-import { RateLimitWarning } from "./RateLimitWarning";
+import {
+  RateLimitWarning,
+  type RateLimitWarningData,
+} from "./RateLimitWarning";
 import { SandboxSelector } from "./SandboxSelector";
-import type { ChatMode, SubscriptionTier } from "@/types";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -61,12 +63,7 @@ interface ChatInputProps {
   isNewChat?: boolean;
   clearDraftOnSubmit?: boolean;
   chatId?: string;
-  rateLimitWarning?: {
-    remaining: number;
-    resetTime: Date;
-    mode: ChatMode;
-    subscription: SubscriptionTier;
-  };
+  rateLimitWarning?: RateLimitWarningData;
   onDismissRateLimitWarning?: () => void;
 }
 
@@ -247,10 +244,7 @@ export const ChatInput = ({
         {/* Rate Limit Warning */}
         {rateLimitWarning && onDismissRateLimitWarning && (
           <RateLimitWarning
-            remaining={rateLimitWarning.remaining}
-            resetTime={rateLimitWarning.resetTime}
-            mode={rateLimitWarning.mode}
-            subscription={rateLimitWarning.subscription}
+            data={rateLimitWarning}
             onDismiss={onDismissRateLimitWarning}
           />
         )}

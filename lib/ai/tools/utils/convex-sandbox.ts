@@ -40,6 +40,8 @@ export class ConvexSandbox extends EventEmitter {
   private convex: ConvexHttpClient;
   private realtimeClient: ConvexClient;
   private connectionInfo: ConnectionInfo;
+  // Track active subscriptions for cleanup on close
+  private activeSubscriptions: Set<() => void> = new Set();
 
   constructor(
     private userId: string,
@@ -177,63 +179,90 @@ Commands run inside the Docker container with network access.`;
   ): Promise<CommandResult> {
     const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
-    return new Promise((resolve, reject) => {
-      let timeoutId: NodeJS.Timeout;
-      let unsubscribe: (() => void) | undefined;
+    let timeoutId: NodeJS.Timeout | undefined;
+    let unsubscribe: (() => void) | undefined;
+    let settled = false;
 
-      const cleanup = () => {
-        if (timeoutId) clearTimeout(timeoutId);
-        if (unsubscribe) unsubscribe();
-      };
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = undefined;
+      }
+      if (unsubscribe) {
+        this.activeSubscriptions.delete(unsubscribe);
+        try {
+          unsubscribe();
+        } catch {
+          // Ignore errors during unsubscribe (client may already be closed)
+        }
+        unsubscribe = undefined;
+      }
+    };
 
-      // Set up timeout
-      timeoutId = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Command timeout after ${maxWaitTime}ms`));
-      }, maxWaitTime);
-
-      // Subscribe to result using real-time client with signed session
-      unsubscribe = this.realtimeClient.onUpdate(
-        api.localSandbox.subscribeToResult,
-        { commandId, session },
-        async (result) => {
-          // Handle session auth errors
-          if (result?.authError) {
+    try {
+      return await new Promise<CommandResult>((resolve, reject) => {
+        // Set up timeout
+        timeoutId = setTimeout(() => {
+          if (!settled) {
+            settled = true;
             cleanup();
-            reject(
-              new Error(
-                "Session expired or invalid - command result unavailable",
-              ),
-            );
-            return;
+            reject(new Error(`Command timeout after ${maxWaitTime}ms`));
           }
+        }, maxWaitTime);
 
-          if (result?.found) {
-            cleanup();
+        // Subscribe to result using real-time client with signed session
+        unsubscribe = this.realtimeClient.onUpdate(
+          api.localSandbox.subscribeToResult,
+          { commandId, session },
+          (result) => {
+            if (settled) return; // Ignore updates after settlement
 
-            // Delete result after read to reduce storage
-            this.convex
-              .mutation(api.localSandbox.deleteResult, {
-                serviceKey: this.serviceKey,
-                userId: this.userId,
-                commandId,
-              })
-              .catch((error) => {
-                console.warn(
-                  `Failed to delete command result ${commandId}: ${error instanceof Error ? error.message : String(error)}`,
-                );
+            // Handle session auth errors
+            if (result?.authError) {
+              settled = true;
+              cleanup();
+              reject(
+                new Error(
+                  "Session expired or invalid - command result unavailable",
+                ),
+              );
+              return;
+            }
+
+            if (result?.found) {
+              settled = true;
+              cleanup();
+
+              // Delete result after read to reduce storage (fire and forget)
+              this.convex
+                .mutation(api.localSandbox.deleteResult, {
+                  serviceKey: this.serviceKey,
+                  userId: this.userId,
+                  commandId,
+                })
+                .catch((error) => {
+                  console.warn(
+                    `Failed to delete command result ${commandId}: ${error instanceof Error ? error.message : String(error)}`,
+                  );
+                });
+
+              resolve({
+                stdout: result.stdout ?? "",
+                stderr: result.stderr ?? "",
+                exitCode: result.exitCode ?? -1,
+                pid: result.pid,
               });
+            }
+          },
+        );
 
-            resolve({
-              stdout: result.stdout ?? "",
-              stderr: result.stderr ?? "",
-              exitCode: result.exitCode ?? -1,
-              pid: result.pid,
-            });
-          }
-        },
-      );
-    });
+        // Track subscription for cleanup on close()
+        this.activeSubscriptions.add(unsubscribe);
+      });
+    } finally {
+      // Ensure cleanup even if promise is externally rejected or cancelled
+      cleanup();
+    }
   }
 
   // E2B-compatible interface: files operations
@@ -460,6 +489,16 @@ Commands run inside the Docker container with network access.`;
 
   // E2B-compatible interface: close()
   async close(): Promise<void> {
+    // Clean up any active subscriptions first
+    for (const unsubscribe of this.activeSubscriptions) {
+      try {
+        unsubscribe();
+      } catch {
+        // Ignore errors during cleanup
+      }
+    }
+    this.activeSubscriptions.clear();
+
     await this.realtimeClient.close();
     this.emit("close");
   }

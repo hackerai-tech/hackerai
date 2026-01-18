@@ -288,6 +288,7 @@ describe("ChatInput - Integration Tests", () => {
               onStop={mockOnStop}
               status="ready"
               rateLimitWarning={{
+                warningType: "sliding-window",
                 remaining: 5,
                 resetTime: new Date(Date.now() + 3600000),
                 mode: "ask",

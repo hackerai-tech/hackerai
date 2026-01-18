@@ -1,6 +1,7 @@
 import ToolBlock from "@/components/ui/tool-block";
 import { Search, ExternalLink } from "lucide-react";
-import type { ChatStatus } from "@/types";
+import type { ChatStatus, SidebarWebSearch, WebSearchResult } from "@/types";
+import { useGlobalState } from "../../contexts/GlobalState";
 
 interface WebSearchInput {
   queries?: string[];
@@ -24,12 +25,14 @@ interface WebToolHandlerProps {
     type?: string;
     state: string;
     input?: WebSearchInput | OpenUrlInput | LegacyWebInput;
+    output?: WebSearchResult[] | { result?: WebSearchResult[] };
   };
   status: ChatStatus;
 }
 
 export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
-  const { toolCallId, toolName, type, state, input } = part;
+  const { openSidebar } = useGlobalState();
+  const { toolCallId, toolName, type, state, input, output } = part;
 
   // Determine if this is an open_url action
   // Check toolName, part.type, or legacy command field
@@ -70,6 +73,63 @@ export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
     return undefined;
   };
 
+  const getQuery = (): string => {
+    if (!input) return "";
+
+    const searchInput = input as WebSearchInput;
+    if (searchInput.queries && searchInput.queries.length > 0) {
+      return searchInput.queries.join(", ");
+    }
+
+    const legacyInput = input as LegacyWebInput;
+    if (legacyInput.query) {
+      return legacyInput.query;
+    }
+
+    return "";
+  };
+
+  const handleOpenInSidebar = () => {
+    if (isOpenUrl) return; // Don't open sidebar for URL opens
+
+    const query = getQuery();
+    if (!query) return;
+
+    // Handle both formats: output as array directly, or output.result as array
+    const rawResults = Array.isArray(output)
+      ? output
+      : (output as { result?: WebSearchResult[] })?.result;
+
+    const results: WebSearchResult[] = Array.isArray(rawResults)
+      ? rawResults.map((r: WebSearchResult) => ({
+          title: r.title || "",
+          url: r.url || "",
+          content: r.content || "",
+          date: r.date || null,
+          lastUpdated: r.lastUpdated || null,
+        }))
+      : [];
+
+    const sidebarWebSearch: SidebarWebSearch = {
+      query,
+      results,
+      isSearching:
+        state === "input-available" || state === "input-streaming",
+      toolCallId,
+    };
+
+    openSidebar(sidebarWebSearch);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleOpenInSidebar();
+    }
+  };
+
+  const canOpenSidebar = !isOpenUrl;
+
   switch (state) {
     case "input-streaming":
       return status === "streaming" ? (
@@ -89,6 +149,9 @@ export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
           action={getAction()}
           target={getTarget()}
           isShimmer={true}
+          isClickable={canOpenSidebar}
+          onClick={canOpenSidebar ? handleOpenInSidebar : undefined}
+          onKeyDown={canOpenSidebar ? handleKeyDown : undefined}
         />
       ) : null;
 
@@ -99,6 +162,9 @@ export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
           icon={getIcon()}
           action={getAction(true)}
           target={getTarget()}
+          isClickable={canOpenSidebar}
+          onClick={canOpenSidebar ? handleOpenInSidebar : undefined}
+          onKeyDown={canOpenSidebar ? handleKeyDown : undefined}
         />
       );
 

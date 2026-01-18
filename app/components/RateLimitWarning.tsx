@@ -3,11 +3,25 @@ import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
+// Discriminated union for warning data
+export type RateLimitWarningData =
+  | {
+      warningType: "sliding-window";
+      remaining: number;
+      resetTime: Date;
+      mode: ChatMode;
+      subscription: SubscriptionTier;
+    }
+  | {
+      warningType: "token-bucket";
+      bucketType: "session" | "weekly";
+      remainingPercent: number;
+      resetTime: Date;
+      subscription: SubscriptionTier;
+    };
+
 interface RateLimitWarningProps {
-  remaining: number;
-  resetTime: Date;
-  mode: ChatMode;
-  subscription: SubscriptionTier;
+  data: RateLimitWarningData;
   onDismiss: () => void;
 }
 
@@ -34,21 +48,29 @@ const formatTimeUntil = (resetTime: Date): string => {
   return `in ${hoursUntil}h ${minutesUntil}m`;
 };
 
+const getMessage = (data: RateLimitWarningData, timeString: string): string => {
+  if (data.warningType === "sliding-window") {
+    return data.remaining === 0
+      ? `You've reached your ${data.mode} mode limit. It resets ${timeString}.`
+      : `You have ${data.remaining} ${data.remaining === 1 ? "response" : "responses"} in ${data.mode} mode remaining until it resets ${timeString}.`;
+  }
+
+  // Token bucket warning
+  const limitType = data.bucketType === "session" ? "daily" : "weekly";
+  return data.remainingPercent === 0
+    ? `You've reached your ${limitType} usage limit. It resets ${timeString}.`
+    : `You have ${data.remainingPercent}% of your ${limitType} usage remaining. It resets ${timeString}.`;
+};
+
 export const RateLimitWarning = ({
-  remaining,
-  resetTime,
-  mode,
-  subscription,
+  data,
   onDismiss,
 }: RateLimitWarningProps) => {
-  const timeString = formatTimeUntil(resetTime);
-  const isFree = subscription === "free";
-
-  // Different message when user has 0 remaining
-  const message =
-    remaining === 0
-      ? `You've reached your ${mode} mode limit. It resets ${timeString}.`
-      : `You have ${remaining} ${remaining === 1 ? "response" : "responses"} in ${mode} mode remaining until it resets ${timeString}.`;
+  const timeString = formatTimeUntil(data.resetTime);
+  const message = getMessage(data, timeString);
+  const showUpgrade =
+    data.subscription === "free" ||
+    (data.warningType === "token-bucket" && data.subscription === "pro");
 
   return (
     <div
@@ -57,7 +79,7 @@ export const RateLimitWarning = ({
     >
       <div className="flex-1 flex items-center gap-2 flex-wrap">
         <span className="text-foreground">{message}</span>
-        {isFree && (
+        {showUpgrade && (
           <Button
             onClick={redirectToPricing}
             size="sm"

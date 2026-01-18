@@ -7,6 +7,7 @@ import {
   Play,
   SkipBack,
   SkipForward,
+  Search,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -24,6 +25,7 @@ import {
   isSidebarFile,
   isSidebarTerminal,
   isSidebarPython,
+  isSidebarWebSearch,
   type SidebarContent,
   type ChatStatus,
 } from "@/types/chat";
@@ -139,6 +141,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isFile = isSidebarFile(sidebarContent);
   const isTerminal = isSidebarTerminal(sidebarContent);
   const isPython = isSidebarPython(sidebarContent);
+  const isWebSearch = isSidebarWebSearch(sidebarContent);
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -201,6 +204,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return sidebarContent.isExecuting
         ? "Executing Python"
         : "Python executed";
+    } else if (isWebSearch) {
+      return sidebarContent.isSearching ? "Searching web" : "Search results";
     }
     return "Unknown action";
   };
@@ -212,6 +217,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return <Terminal className="w-5 h-5 text-muted-foreground" />;
     } else if (isPython) {
       return <Code2 className="w-5 h-5 text-muted-foreground" />;
+    } else if (isWebSearch) {
+      return <Search className="w-5 h-5 text-muted-foreground" />;
     }
     return <Edit className="w-5 h-5 text-muted-foreground" />;
   };
@@ -223,6 +230,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return "Terminal";
     } else if (isPython) {
       return "Python";
+    } else if (isWebSearch) {
+      return "Search";
     }
     return "Tool";
   };
@@ -234,6 +243,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return sidebarContent.command;
     } else if (isPython) {
       return sidebarContent.code.replace(/\n/g, " ");
+    } else if (isWebSearch) {
+      return sidebarContent.query;
     }
     return "";
   };
@@ -317,6 +328,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                       size={14}
                       className="text-muted-foreground flex-shrink-0"
                     />
+                  ) : isWebSearch ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
+                      Search
+                    </div>
                   ) : (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       {sidebarContent.path.split("/").pop() ||
@@ -326,35 +341,37 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                <CodeActionButtons
-                  content={
-                    isFile
-                      ? sidebarContent.content
-                      : isPython
-                        ? sidebarContent.code
-                        : sidebarContent.output
-                          ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
-                          : `$ ${sidebarContent.command}`
-                  }
-                  filename={
-                    isFile
-                      ? sidebarContent.path.split("/").pop() || "code.txt"
-                      : isPython
-                        ? "python-code.py"
-                        : "terminal-output.txt"
-                  }
-                  language={
-                    isFile
-                      ? sidebarContent.language ||
-                        getLanguageFromPath(sidebarContent.path)
-                      : isPython
-                        ? "python"
-                        : "ansi"
-                  }
-                  isWrapped={isWrapped}
-                  onToggleWrap={handleToggleWrap}
-                  variant="sidebar"
-                />
+                {!isWebSearch && (
+                  <CodeActionButtons
+                    content={
+                      isFile
+                        ? sidebarContent.content
+                        : isPython
+                          ? sidebarContent.code
+                          : sidebarContent.output
+                            ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
+                            : `$ ${sidebarContent.command}`
+                    }
+                    filename={
+                      isFile
+                        ? sidebarContent.path.split("/").pop() || "code.txt"
+                        : isPython
+                          ? "python-code.py"
+                          : "terminal-output.txt"
+                    }
+                    language={
+                      isFile
+                        ? sidebarContent.language ||
+                          getLanguageFromPath(sidebarContent.path)
+                        : isPython
+                          ? "python"
+                          : "ansi"
+                    }
+                    isWrapped={isWrapped}
+                    onToggleWrap={handleToggleWrap}
+                    variant="sidebar"
+                  />
+                )}
               </div>
 
               {/* Content */}
@@ -439,6 +456,53 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                               </div>
                             </>
                           )}
+                        </div>
+                      )}
+                      {isWebSearch && (
+                        <div className="flex-1 min-h-0 h-full overflow-y-auto">
+                          <div className="flex flex-col px-4 py-3">
+                            {sidebarContent.isSearching ? (
+                              <div className="flex items-center justify-center py-8">
+                                <div className="text-muted-foreground text-sm">
+                                  Searching...
+                                </div>
+                              </div>
+                            ) : sidebarContent.results.length === 0 ? (
+                              <div className="flex items-center justify-center py-8">
+                                <div className="text-muted-foreground text-sm">
+                                  No results found
+                                </div>
+                              </div>
+                            ) : (
+                              sidebarContent.results.map((result, index) => (
+                                <div
+                                  key={`${result.url}-${index}`}
+                                  className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.results.length - 1 ? "border-b border-border/30" : ""}`}
+                                >
+                                  <a
+                                    href={result.url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="block text-foreground text-sm font-medium hover:underline line-clamp-2 cursor-pointer"
+                                  >
+                                    <img
+                                      width={16}
+                                      height={16}
+                                      alt="favicon"
+                                      className="float-left mr-2 mt-0.5 rounded-full border border-border"
+                                      src={`https://s2.googleusercontent.com/s2/favicons?domain=${encodeURIComponent(result.url)}&sz=32`}
+                                    />
+                                    {result.title}
+                                  </a>
+                                  {result.content && (
+                                    <div className="text-muted-foreground text-xs mt-0.5 line-clamp-3">
+                                      {result.content}
+                                    </div>
+                                  )}
+                                </div>
+                              ))
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
