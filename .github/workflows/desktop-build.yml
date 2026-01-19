@@ -260,6 +260,22 @@ jobs:
             fi
           done
 
+      - name: Sign Windows executables with Azure Trusted Signing
+        if: matrix.platform == 'windows-latest'
+        uses: azure/trusted-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files-folder: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
       - name: List bundle contents
         shell: bash
         run: |
@@ -545,7 +561,7 @@ jobs:
 
           LINUX_FILE=$(ls release-files/*_amd64.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
           if [ -z "$LINUX_FILE" ]; then
-            LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | grep -v aarch64 | head -1 || echo "")
+            LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | { grep -v aarch64 || true; } | head -1 || echo "")
           fi
           if [ -n "$LINUX_FILE" ] && [ -f "$LINUX_FILE" ]; then
             LINUX_BASENAME=$(basename "$LINUX_FILE")
