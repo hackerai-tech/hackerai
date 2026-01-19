@@ -81,6 +81,7 @@ jobs:
     needs: prepare
     permissions:
       contents: write
+    environment: ${{ matrix.platform == 'windows-latest' && 'trusted-signing' || '' }}
     strategy:
       fail-fast: false
       matrix:
