@@ -755,98 +755,92 @@ export const deleteAllChats = mutation({
         .withIndex("by_user_and_updated", (q) => q.eq("user_id", user.subject))
         .collect();
 
-      if (userChats.length === 0) {
-        return null;
-      }
+      // Delete each chat and its associated data
+      for (const chat of userChats) {
+        // Delete all messages and their associated files for this chat
+        const messages = await ctx.db
+          .query("messages")
+          .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+          .collect();
 
-      // Process chats in chunks to avoid exceeding Convex's 16MB read limit
-      const CHUNK_SIZE = 5;
-
-      for (let i = 0; i < userChats.length; i += CHUNK_SIZE) {
-        const chatChunk = userChats.slice(i, i + CHUNK_SIZE);
-
-        // Batch fetch messages for this chunk of chats
-        const messagesPerChat = await Promise.all(
-          chatChunk.map((chat) =>
-            ctx.db
-              .query("messages")
-              .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-              .collect()
-          )
-        );
-        const chunkMessages = messagesPerChat.flat();
-
-        // Collect unique file IDs from non-copied messages in this chunk
-        const fileIds = [
-          ...new Set(
-            chunkMessages
-              .filter((msg) => !msg.source_message_id && msg.file_ids?.length)
-              .flatMap((msg) => msg.file_ids!)
-          ),
-        ];
-
-        // Batch fetch files for this chunk
-        const files = await Promise.all(fileIds.map((id) => ctx.db.get(id)));
-
-        // Delete files
-        for (const file of files) {
-          if (!file) continue;
-          try {
-            if (file.s3_key) {
-              await ctx.scheduler.runAfter(
-                0,
-                internal.s3Cleanup.deleteS3ObjectAction,
-                { s3Key: file.s3_key }
-              );
+        for (const message of messages) {
+          // Skip deleting files for copied messages (they reference original chat files)
+          if (!message.source_message_id) {
+            // Clean up files associated with this message
+            if (message.file_ids && message.file_ids.length > 0) {
+              for (const storageId of message.file_ids) {
+                try {
+                  const file = await ctx.db.get(storageId);
+                  if (file) {
+                    // Delete from appropriate storage
+                    if (file.s3_key) {
+                      await ctx.scheduler.runAfter(
+                        0,
+                        internal.s3Cleanup.deleteS3ObjectAction,
+                        { s3Key: file.s3_key },
+                      );
+                    }
+                    if (file.storage_id) {
+                      await ctx.storage.delete(file.storage_id);
+                    }
+                    // Delete from aggregate
+                    await fileCountAggregate.deleteIfExists(ctx, file);
+                    await ctx.db.delete(file._id);
+                  }
+                } catch (error) {
+                  console.error(`Failed to delete file ${storageId}:`, error);
+                  // Continue with deletion even if file cleanup fails
+                }
+              }
             }
-            if (file.storage_id) {
-              await ctx.storage.delete(file.storage_id);
-            }
-            await fileCountAggregate.deleteIfExists(ctx, file);
-            await ctx.db.delete(file._id);
-          } catch (error) {
-            console.error(`Failed to delete file ${file._id}:`, error);
           }
-        }
 
-        // Delete feedback and messages
-        for (const message of chunkMessages) {
+          // Clean up feedback associated with this message
           if (message.feedback_id) {
             try {
               await ctx.db.delete(message.feedback_id);
             } catch (error) {
               console.error(
                 `Failed to delete feedback ${message.feedback_id}:`,
-                error
+                error,
               );
+              // Continue with deletion even if feedback cleanup fails
             }
           }
+
           await ctx.db.delete(message._id);
         }
 
-        // Batch fetch and delete summaries for this chunk
-        const summariesPerChat = await Promise.all(
-          chatChunk.map((chat) =>
-            ctx.db
-              .query("chat_summaries")
-              .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-              .collect()
-          )
-        );
-        const chunkSummaries = summariesPerChat.flat();
+        // Delete chat summaries
+        if (chat.latest_summary_id) {
+          try {
+            await ctx.db.delete(chat.latest_summary_id);
+          } catch (error) {
+            console.error(
+              `Failed to delete summary ${chat.latest_summary_id}:`,
+              error,
+            );
+            // Continue with deletion even if summary cleanup fails
+          }
+        }
 
-        for (const summary of chunkSummaries) {
+        // Delete all historical summaries for this chat
+        const summaries = await ctx.db
+          .query("chat_summaries")
+          .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+          .collect();
+
+        for (const summary of summaries) {
           try {
             await ctx.db.delete(summary._id);
           } catch (error) {
             console.error(`Failed to delete summary ${summary._id}:`, error);
+            // Continue with deletion even if summary cleanup fails
           }
         }
 
-        // Delete chats in this chunk
-        for (const chat of chatChunk) {
-          await ctx.db.delete(chat._id);
-        }
+        // Delete the chat itself
+        await ctx.db.delete(chat._id);
       }
 
       return null;
