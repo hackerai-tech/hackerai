@@ -81,6 +81,7 @@ jobs:
     needs: prepare
     permissions:
       contents: write
+    environment: ${{ matrix.platform == 'windows-latest' && 'trusted-signing' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +95,9 @@ jobs:
           - platform: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             name: Linux-x64
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: Linux-arm64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             name: Windows-x64
@@ -140,14 +144,15 @@ jobs:
           workspaces: packages/desktop/src-tauri -> target
 
       - name: Install dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
+        if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             librsvg2-dev \
-            libayatana-appindicator3-dev
+            libayatana-appindicator3-dev \
+            xdg-utils
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
@@ -200,6 +205,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: packages/desktop
           tauriScript: pnpm tauri
@@ -254,64 +261,27 @@ jobs:
             fi
           done
 
-      - name: Sign updater artifacts
-        shell: bash
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        working-directory: packages/desktop
-        run: |
-          BUNDLE_DIR="src-tauri/target/${{ matrix.target }}/release/bundle"
-
-          KEY_FILE=$(mktemp)
-          PASSWORD_FILE=$(mktemp)
-          echo -n "$TAURI_SIGNING_PRIVATE_KEY" | tr -d '\n\r\t ' > "$KEY_FILE"
-          echo -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" > "$PASSWORD_FILE"
-          trap "rm -f $KEY_FILE $PASSWORD_FILE" EXIT
-
-          echo "Key file size: $(wc -c < "$KEY_FILE") bytes"
-
-          sign_file() {
-            local file="$1"
-            echo "Signing $file"
-            pnpm --silent tauri signer sign --private-key-path "$KEY_FILE" --password "$(cat $PASSWORD_FILE)" "$file"
-          }
-
-          shopt -s nullglob
-          for f in "$BUNDLE_DIR/macos/"*.app.tar.gz; do
-            [ -f "$f" ] && sign_file "$f"
-          done
-
-          for f in "$BUNDLE_DIR/appimage/"*.AppImage; do
-            if [ -f "$f" ]; then
-              echo "Creating tar.gz for $f"
-              tar -czf "$f.tar.gz" -C "$(dirname "$f")" "$(basename "$f")"
-              sign_file "$f.tar.gz"
-            fi
-          done
-
-          for f in "$BUNDLE_DIR/nsis/"*-setup.exe; do
-            if [ -f "$f" ]; then
-              echo "Creating zip for $f"
-              ZIP_NAME="${f%.exe}.nsis.zip"
-              DIR=$(dirname "$f")
-              BASE=$(basename "$f")
-              ZIP_BASE=$(basename "$ZIP_NAME")
-              if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "win32" ]]; then
-                powershell -Command "Compress-Archive -Path '$DIR/$BASE' -DestinationPath '$DIR/$ZIP_BASE' -Force"
-              else
-                (cd "$DIR" && zip -q "$ZIP_BASE" "$BASE")
-              fi
-              sign_file "$ZIP_NAME"
-            fi
-          done
-          shopt -u nullglob
+      - name: Sign Windows executables with Azure Trusted Signing
+        if: matrix.platform == 'windows-latest'
+        uses: azure/trusted-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.ARTIFACT_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.ARTIFACT_SIGNING_PROFILE }}
+          files-folder: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
 
       - name: List bundle contents
         shell: bash
         run: |
-          echo "=== All updater-related files ==="
-          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f \( -name "*.sig" -o -name "*.tar.gz" -o -name "*.zip" \) 2>/dev/null || true
+          echo "=== All bundle files ==="
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle -type f 2>/dev/null || true
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -590,12 +560,24 @@ jobs:
             fi
           fi
 
-          LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
+          LINUX_FILE=$(ls release-files/*_amd64.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
+          if [ -z "$LINUX_FILE" ]; then
+            LINUX_FILE=$(ls release-files/*.AppImage.tar.gz 2>/dev/null | { grep -v aarch64 || true; } | head -1 || echo "")
+          fi
           if [ -n "$LINUX_FILE" ] && [ -f "$LINUX_FILE" ]; then
             LINUX_BASENAME=$(basename "$LINUX_FILE")
             SIG=$(cat "${LINUX_FILE}.sig" 2>/dev/null || echo "")
             if [ -n "$SIG" ]; then
               PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_BASENAME}" --arg sig "$SIG" '. + {"linux-x86_64": {"url": $url, "signature": $sig}}')
+            fi
+          fi
+
+          LINUX_ARM_FILE=$(ls release-files/*aarch64*.AppImage.tar.gz 2>/dev/null | head -1 || echo "")
+          if [ -n "$LINUX_ARM_FILE" ] && [ -f "$LINUX_ARM_FILE" ]; then
+            LINUX_ARM_BASENAME=$(basename "$LINUX_ARM_FILE")
+            SIG=$(cat "${LINUX_ARM_FILE}.sig" 2>/dev/null || echo "")
+            if [ -n "$SIG" ]; then
+              PLATFORMS=$(echo "$PLATFORMS" | jq --arg url "https://github.com/${GH_REPO}/releases/download/${TAG_NAME}/${LINUX_ARM_BASENAME}" --arg sig "$SIG" '. + {"linux-aarch64": {"url": $url, "signature": $sig}}')
             fi
           fi
 

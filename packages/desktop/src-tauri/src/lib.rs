@@ -1,23 +1,51 @@
-use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use std::fs;
+use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 
-#[cfg(target_os = "macos")]
-fn navigate_back(window: &tauri::WebviewWindow) {
-    use objc2_web_kit::WKWebView;
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 
-    if let Err(e) = window.with_webview(|webview| unsafe {
-        let wk_webview: &WKWebView = &*webview.inner().cast();
-        if wk_webview.canGoBack() {
-            wk_webview.goBack();
+fn get_last_update_check_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|dir| dir.join("last_update_check"))
+}
+
+fn should_check_for_updates(app: &tauri::AppHandle) -> bool {
+    let Some(file_path) = get_last_update_check_file(app) else {
+        return true;
+    };
+
+    match fs::read_to_string(&file_path) {
+        Ok(content) => {
+            let last_check: u64 = content.trim().parse().unwrap_or(0);
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            now.saturating_sub(last_check) >= UPDATE_CHECK_INTERVAL.as_secs()
         }
-    }) {
-        log::warn!("Failed to navigate back: {}", e);
+        Err(_) => true,
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn navigate_back(_window: &tauri::WebviewWindow) {}
+fn save_update_check_timestamp(app: &tauri::AppHandle) {
+    let Some(file_path) = get_last_update_check_file(app) else {
+        return;
+    };
+
+    if let Some(parent) = file_path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if let Err(e) = fs::write(&file_path, now.to_string()) {
+        log::warn!("Failed to save update check timestamp: {}", e);
+    }
+}
 
 fn get_allowed_hosts() -> Vec<String> {
     match std::env::var("HACKERAI_ALLOWED_HOSTS") {
@@ -195,10 +223,37 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Handle deep links passed as CLI args (Linux/Windows)
+            log::info!("Single instance callback with args: {:?}", args);
+            for arg in args.iter().skip(1) {
+                if let Ok(url) = url::Url::parse(arg) {
+                    if url.scheme() == "hackerai" {
+                        log::info!("Processing deep link from CLI arg: {}", arg);
+                        handle_auth_deep_link(app, &url);
+                    }
+                }
+            }
+            // Focus the main window
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_focus();
+            }
+        }))
         .setup(|app| {
             #[cfg(desktop)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
+
+                // Register deep links at runtime for Linux/Windows
+                // This is required for AppImage and non-installed Windows builds
+                #[cfg(any(target_os = "linux", target_os = "windows"))]
+                {
+                    if let Err(e) = app.deep_link().register_all() {
+                        log::warn!("Failed to register deep links: {}", e);
+                    } else {
+                        log::info!("Deep links registered successfully");
+                    }
+                }
 
                 let handle = app.handle().clone();
                 app.deep_link().on_open_url(move |event| {
@@ -210,49 +265,26 @@ pub fn run() {
                     }
                 });
             }
-            let go_back_item = MenuItemBuilder::new("Go Back")
-                .id("go_back")
-                .accelerator("CmdOrCtrl+[")
-                .build(app)?;
-
-            let check_updates_item = MenuItemBuilder::new("Check for Updates...")
-                .id("check_updates")
-                .build(app)?;
-
-            let navigation_menu = SubmenuBuilder::new(app, "Navigation")
-                .item(&go_back_item)
-                .build()?;
-
-            let help_menu = SubmenuBuilder::new(app, "Help")
-                .item(&check_updates_item)
-                .build()?;
-
-            let menu = MenuBuilder::new(app)
-                .items(&[&navigation_menu, &help_menu])
-                .build()?;
-
-            app.set_menu(menu)?;
-
-            // Auto-check for updates on launch (silent mode)
+            // Check for updates on every launch
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                check_for_updates(handle, true).await;
+                log::info!("Running update check on launch");
+                save_update_check_timestamp(&handle);
+                check_for_updates(handle.clone(), true).await;
+
+                // Then check every hour if 24h has passed (for long-running sessions)
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60 * 60)).await;
+                    if should_check_for_updates(&handle) {
+                        log::info!("Running scheduled update check (24h interval)");
+                        save_update_check_timestamp(&handle);
+                        check_for_updates(handle.clone(), true).await;
+                    }
+                }
             });
 
-            log::info!("HackerAI Desktop initialized with menus");
+            log::info!("HackerAI Desktop initialized");
             Ok(())
-        })
-        .on_menu_event(|app, event| {
-            if event.id().as_ref() == "go_back" {
-                if let Some(window) = app.get_webview_window("main") {
-                    navigate_back(&window);
-                }
-            } else if event.id().as_ref() == "check_updates" {
-                let handle = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    check_for_updates(handle, false).await;
-                });
-            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
