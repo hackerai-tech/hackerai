@@ -4,6 +4,7 @@ import {
   mutation,
   query,
 } from "./_generated/server";
+import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./chats";
 import { internal } from "./_generated/api";
@@ -33,15 +34,16 @@ export const getFileDownloadUrl = query({
     }
 
     try {
-      // Query all user's files and find the one with matching storage_id
-      const userFiles = await ctx.db
+      // Direct lookup by storage_id using index
+      const file = await ctx.db
         .query("files")
-        .withIndex("by_user_id", (q) => q.eq("user_id", user.subject))
-        .collect();
+        .withIndex("by_storage_id", (q) =>
+          q.eq("storage_id", args.storageId as Id<"_storage">),
+        )
+        .first();
 
-      const file = userFiles.find((f) => f.storage_id === args.storageId);
-
-      if (!file) {
+      // Verify file exists and belongs to user
+      if (!file || file.user_id !== user.subject) {
         throw new ConvexError({
           code: "FILE_NOT_FOUND",
           message: "File not found",

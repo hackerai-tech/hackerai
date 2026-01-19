@@ -92,7 +92,8 @@ export default defineSchema({
   })
     .index("by_user_id", ["user_id"])
     .index("by_is_attached", ["is_attached"])
-    .index("by_s3_key", ["s3_key"]),
+    .index("by_s3_key", ["s3_key"])
+    .index("by_storage_id", ["storage_id"]),
 
   feedback: defineTable({
     feedback_type: v.union(v.literal("positive"), v.literal("negative")),
