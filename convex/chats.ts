@@ -473,24 +473,45 @@ export const getUserChats = query({
         .paginate(args.paginationOpts);
 
       // Enhance chats with branched_from_title
-      const enhancedChats = await Promise.all(
-        result.page.map(async (chat) => {
-          if (chat.branched_from_chat_id) {
-            const branchedFromChat = await ctx.db
-              .query("chats")
-              .withIndex("by_chat_id", (q) =>
-                q.eq("id", chat.branched_from_chat_id!),
-              )
-              .first();
+      // Step 1: Collect unique branched_from_chat_ids
+      const branchedIds = [
+        ...new Set(
+          result.page
+            .map((chat) => chat.branched_from_chat_id)
+            .filter((id): id is string => id != null)
+        ),
+      ];
 
-            return {
-              ...chat,
-              branched_from_title: branchedFromChat?.title,
-            };
-          }
-          return chat;
-        }),
+      // Step 2: Batch fetch all branched chats in parallel
+      const branchedChats = await Promise.all(
+        branchedIds.map((id) =>
+          ctx.db
+            .query("chats")
+            .withIndex("by_chat_id", (q) => q.eq("id", id))
+            .first()
+        )
       );
+
+      // Step 3: Build lookup map for O(1) access
+      const branchedChatMap = new Map(
+        branchedChats
+          .filter((chat): chat is NonNullable<typeof chat> => chat != null)
+          .map((chat) => [chat.id, chat])
+      );
+
+      // Step 4: Enhance chats using the map (no async needed)
+      const enhancedChats = result.page.map((chat) => {
+        if (chat.branched_from_chat_id) {
+          const branchedFromChat = branchedChatMap.get(
+            chat.branched_from_chat_id
+          );
+          return {
+            ...chat,
+            branched_from_title: branchedFromChat?.title,
+          };
+        }
+        return chat;
+      });
 
       return {
         ...result,
