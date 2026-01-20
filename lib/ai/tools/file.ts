@@ -161,7 +161,10 @@ Use edit to update markers in todo lists
             // Return object with raw content for UI and formatted content for model
             return {
               content: truncatedResult,
-              originalContent: processedLines.join("\n"),
+              originalContent: truncateOutput({
+                content: processedLines.join("\n"),
+                mode: "read-file",
+              }),
             };
           }
 
@@ -203,8 +206,14 @@ Use edit to update markers in todo lists
             // toModelOutput controls what the model sees (summary only)
             return {
               content: `File appended: ${path}`,
-              originalContent: existingContent,
-              modifiedContent: newContent,
+              originalContent: truncateOutput({
+                content: existingContent,
+                mode: "read-file",
+              }),
+              modifiedContent: truncateOutput({
+                content: newContent,
+                mode: "read-file",
+              }),
             };
           }
 
@@ -265,9 +274,18 @@ Use edit to update markers in todo lists
             // Return full diff data (persisted for UI)
             // toModelOutput will control what the model sees
             return {
-              content: `Multi-edit completed: ${editsApplied} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
-              originalContent,
-              modifiedContent: content,
+              content: truncateOutput({
+                content: `Multi-edit completed: ${editsApplied} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
+                mode: "read-file",
+              }),
+              originalContent: truncateOutput({
+                content: originalContent,
+                mode: "read-file",
+              }),
+              modifiedContent: truncateOutput({
+                content,
+                mode: "read-file",
+              }),
             };
           }
 
