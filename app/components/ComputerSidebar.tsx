@@ -195,14 +195,26 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   const getActionText = (): string => {
     if (isFile) {
-      const actionMap = {
-        reading: "Reading file",
-        creating: "Creating file",
-        editing: "Editing file",
-        writing: "Writing file",
+      if (sidebarContent.isExecuting) {
+        const streamingActionMap = {
+          reading: "Reading",
+          creating: "Creating",
+          editing: "Editing",
+          writing: "Writing to",
+          searching: "Searching",
+          appending: "Appending to",
+        };
+        return streamingActionMap[sidebarContent.action || "reading"];
+      }
+      const completedActionMap = {
+        reading: "Read",
+        creating: "Successfully wrote",
+        editing: "Successfully edited",
+        writing: "Successfully wrote",
         searching: "Search results",
+        appending: "Successfully appended to",
       };
-      return actionMap[sidebarContent.action || "reading"];
+      return completedActionMap[sidebarContent.action || "reading"];
     } else if (isTerminal) {
       return sidebarContent.isExecuting
         ? "Executing command"
@@ -395,9 +407,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     >
                       {isFile && (
                         <>
-                          {/* Show DiffView for editing actions with diff data */}
-                          {sidebarContent.action === "editing" &&
-                          sidebarContent.originalContent &&
+                          {/* Show DiffView for editing/appending actions with diff data */}
+                          {(sidebarContent.action === "editing" ||
+                            sidebarContent.action === "appending") &&
+                          sidebarContent.originalContent !== undefined &&
                           sidebarContent.modifiedContent ? (
                             <DiffView
                               originalContent={sidebarContent.originalContent}

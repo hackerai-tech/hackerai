@@ -1,6 +1,7 @@
 import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
+import { FileHandler } from "./tools/FileHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
 import { PythonToolHandler } from "./tools/PythonToolHandler";
@@ -69,12 +70,16 @@ export const MessagePartHandler = ({
         />
       );
 
+    // Legacy file tools
     case "tool-read_file":
     case "tool-write_file":
     case "tool-delete_file":
     case "tool-search_replace":
     case "tool-multi_edit":
       return <FileToolsHandler message={message} part={part} status={status} />;
+
+    case "tool-file":
+      return <FileHandler part={part} status={status} />;
 
     case "tool-web_search":
     case "tool-open_url":

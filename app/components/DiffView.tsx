@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState } from "react";
+import { DiffEditor } from "@monaco-editor/react";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 
 type ViewMode = "diff" | "original" | "modified";
@@ -12,112 +13,6 @@ interface DiffViewProps {
   wrap?: boolean;
 }
 
-interface DiffLine {
-  type: "unchanged" | "added" | "removed";
-  content: string;
-}
-
-/**
- * Compute a simple line-based diff between two strings using LCS algorithm
- */
-const computeDiff = (original: string, modified: string): DiffLine[] => {
-  const originalLines = original.split("\n");
-  const modifiedLines = modified.split("\n");
-  const lcs = computeLCS(originalLines, modifiedLines);
-
-  const result: DiffLine[] = [];
-  let origIdx = 0;
-  let modIdx = 0;
-  let lcsIdx = 0;
-
-  while (origIdx < originalLines.length || modIdx < modifiedLines.length) {
-    if (lcsIdx < lcs.length) {
-      // Output removed lines (in original but not in LCS at this point)
-      while (
-        origIdx < originalLines.length &&
-        originalLines[origIdx] !== lcs[lcsIdx]
-      ) {
-        result.push({ type: "removed", content: originalLines[origIdx] });
-        origIdx++;
-      }
-
-      // Output added lines (in modified but not in LCS at this point)
-      while (
-        modIdx < modifiedLines.length &&
-        modifiedLines[modIdx] !== lcs[lcsIdx]
-      ) {
-        result.push({ type: "added", content: modifiedLines[modIdx] });
-        modIdx++;
-      }
-
-      // Output unchanged line (in LCS)
-      if (origIdx < originalLines.length && modIdx < modifiedLines.length) {
-        result.push({ type: "unchanged", content: originalLines[origIdx] });
-        origIdx++;
-        modIdx++;
-        lcsIdx++;
-      }
-    } else {
-      // Output remaining removed lines
-      while (origIdx < originalLines.length) {
-        result.push({ type: "removed", content: originalLines[origIdx] });
-        origIdx++;
-      }
-
-      // Output remaining added lines
-      while (modIdx < modifiedLines.length) {
-        result.push({ type: "added", content: modifiedLines[modIdx] });
-        modIdx++;
-      }
-    }
-  }
-
-  return result;
-};
-
-/**
- * Compute Longest Common Subsequence of two arrays of strings
- */
-const computeLCS = (a: string[], b: string[]): string[] => {
-  const m = a.length;
-  const n = b.length;
-
-  // Create DP table
-  const dp: number[][] = Array(m + 1)
-    .fill(null)
-    .map(() => Array(n + 1).fill(0));
-
-  // Fill DP table
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1] + 1;
-      } else {
-        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
-      }
-    }
-  }
-
-  // Backtrack to find LCS
-  const lcs: string[] = [];
-  let i = m;
-  let j = n;
-
-  while (i > 0 && j > 0) {
-    if (a[i - 1] === b[j - 1]) {
-      lcs.unshift(a[i - 1]);
-      i--;
-      j--;
-    } else if (dp[i - 1][j] > dp[i][j - 1]) {
-      i--;
-    } else {
-      j--;
-    }
-  }
-
-  return lcs;
-};
-
 export const DiffView: React.FC<DiffViewProps> = ({
   originalContent,
   modifiedContent,
@@ -125,11 +20,6 @@ export const DiffView: React.FC<DiffViewProps> = ({
   wrap = true,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>("diff");
-
-  const diffLines = useMemo(
-    () => computeDiff(originalContent, modifiedContent),
-    [originalContent, modifiedContent],
-  );
 
   const tabs: Array<{ id: ViewMode; label: string }> = [
     { id: "diff", label: "Diff" },
@@ -148,9 +38,26 @@ export const DiffView: React.FC<DiffViewProps> = ({
     }
   };
 
+  // Map common language names to Monaco language IDs
+  const getMonacoLanguage = (lang: string): string => {
+    const languageMap: Record<string, string> = {
+      js: "javascript",
+      ts: "typescript",
+      py: "python",
+      rb: "ruby",
+      yml: "yaml",
+      md: "markdown",
+      sh: "shell",
+      bash: "shell",
+      zsh: "shell",
+      txt: "plaintext",
+      text: "plaintext",
+    };
+    return languageMap[lang.toLowerCase()] || lang.toLowerCase();
+  };
+
   return (
     <div className="flex flex-col h-full">
-      {/* Tab Buttons */}
       <div className="flex gap-1 px-3 py-2 border-b border-border/30 bg-muted/20">
         {tabs.map((tab) => (
           <button
@@ -172,10 +79,52 @@ export const DiffView: React.FC<DiffViewProps> = ({
         ))}
       </div>
 
-      {/* Content */}
-      <div className="flex-1 min-h-0 overflow-auto">
+      <div className="flex-1 min-h-0 overflow-hidden bg-background">
         {viewMode === "diff" && (
-          <DiffContent diffLines={diffLines} wrap={wrap} />
+          <>
+            <style>{`
+              .original-in-monaco-diff-editor { display: none !important; }
+              .monaco-editor,
+              .monaco-editor .margin,
+              .monaco-editor-background,
+              .monaco-editor .inputarea.ime-input {
+                background-color: transparent !important;
+              }
+              .monaco-editor .lines-content {
+                background-color: transparent !important;
+              }
+            `}</style>
+            <DiffEditor
+              original={originalContent}
+              modified={modifiedContent}
+              language={getMonacoLanguage(language)}
+              theme="vs-dark"
+              options={{
+                readOnly: true,
+                renderSideBySide: false,
+                wordWrap: wrap ? "on" : "off",
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                lineNumbers: "off",
+                glyphMargin: false,
+                folding: false,
+                lineDecorationsWidth: 0,
+                lineNumbersMinChars: 0,
+                renderOverviewRuler: false,
+                overviewRulerBorder: false,
+                hideCursorInOverviewRuler: true,
+                scrollbar: {
+                  vertical: "auto",
+                  horizontal: "auto",
+                  verticalScrollbarSize: 6,
+                  horizontalScrollbarSize: 6,
+                },
+                fontSize: 13,
+                fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+                padding: { top: 8, bottom: 8 },
+              }}
+            />
+          </>
         )}
         {viewMode === "original" && (
           <ComputerCodeBlock
@@ -195,63 +144,6 @@ export const DiffView: React.FC<DiffViewProps> = ({
             {modifiedContent}
           </ComputerCodeBlock>
         )}
-      </div>
-    </div>
-  );
-};
-
-interface DiffContentProps {
-  diffLines: DiffLine[];
-  wrap: boolean;
-}
-
-const DiffContent: React.FC<DiffContentProps> = ({ diffLines, wrap }) => {
-  if (diffLines.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        No changes detected
-      </div>
-    );
-  }
-
-  return (
-    <div className="shiki not-prose relative h-full w-full bg-transparent overflow-hidden">
-      <div className="h-full w-full overflow-auto bg-background">
-        <pre
-          className={`shiki not-prose relative bg-transparent text-sm font-[450] text-card-foreground h-full w-full px-[0.5em] py-[0.5em] rounded-none m-0 min-h-full min-w-0 ${
-            wrap
-              ? "whitespace-pre-wrap break-words word-break-break-word"
-              : "whitespace-pre overflow-x-auto"
-          }`}
-        >
-          <code className="bg-transparent">
-            {diffLines.map((line, index) => {
-              const textClass =
-                line.type === "added"
-                  ? "text-green-600 dark:text-green-400"
-                  : line.type === "removed"
-                    ? "text-red-600 dark:text-red-400"
-                    : "";
-
-              const bgClass =
-                line.type === "added"
-                  ? "bg-green-500/10 dark:bg-green-500/15"
-                  : line.type === "removed"
-                    ? "bg-red-500/10 dark:bg-red-500/15"
-                    : "";
-
-              const className =
-                textClass && bgClass ? `${textClass} ${bgClass}` : "";
-
-              return (
-                <span key={index} className={className}>
-                  {line.content || " "}
-                  {index < diffLines.length - 1 ? "\n" : ""}
-                </span>
-              );
-            })}
-          </code>
-        </pre>
       </div>
     </div>
   );
