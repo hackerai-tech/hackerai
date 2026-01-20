@@ -233,19 +233,32 @@ Use edit to update markers in todo lists
               };
             }
 
-            // Apply edits sequentially
+            // Validate all find strings exist before applying any edits (atomic behavior)
+            const missingFinds: { index: number; find: string }[] = [];
+            for (let i = 0; i < edits.length; i++) {
+              if (!originalContent.includes(edits[i].find)) {
+                missingFinds.push({ index: i + 1, find: edits[i].find });
+              }
+            }
+
+            if (missingFinds.length > 0) {
+              const details = missingFinds
+                .map(
+                  (m) =>
+                    `Edit #${m.index}: "${m.find.length > 50 ? m.find.slice(0, 50) + "..." : m.find}"`,
+                )
+                .join("\n");
+              return {
+                error: `Atomic edit failed - the following find string(s) were not found in the file:\n${details}\nNo edits were applied.`,
+              };
+            }
+
+            // Apply edits sequentially (all find strings validated above)
             let content = originalContent;
-            let editsApplied = 0;
             let totalReplacements = 0;
 
             for (const edit of edits) {
               const { find, replace, all = false } = edit;
-
-              if (!content.includes(find)) {
-                continue;
-              }
-
-              editsApplied++;
 
               if (all) {
                 const count = content.split(find).length - 1;
@@ -275,7 +288,7 @@ Use edit to update markers in todo lists
             // toModelOutput will control what the model sees
             return {
               content: truncateOutput({
-                content: `Multi-edit completed: ${editsApplied} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
+                content: `Multi-edit completed: ${edits.length} edits applied, ${totalReplacements} total replacements made\nLatest content with line numbers:\n${numberedLines}`,
                 mode: "read-file",
               }),
               originalContent: truncateOutput({
