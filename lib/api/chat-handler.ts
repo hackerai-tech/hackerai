@@ -149,6 +149,15 @@ export const createChatHandler = () => {
           subscription,
         });
 
+      // Validate that we have at least one message with content after processing
+      // This prevents "must include at least one parts field" errors from providers like Gemini
+      if (!processedMessages || processedMessages.length === 0) {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Your message could not be processed. Please include some text with your file attachments and try again.",
+        );
+      }
+
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
       // Token bucket requires estimated token count for cost calculation
       const estimatedInputTokens =
@@ -209,8 +218,12 @@ export const createChatHandler = () => {
             }
           } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
             // Paid users: token bucket (remaining percentage at 10%)
-            const sessionPercent = (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) * 100;
-            const weeklyPercent = (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) * 100;
+            const sessionPercent =
+              (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) *
+              100;
+            const weeklyPercent =
+              (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) *
+              100;
 
             if (sessionPercent <= 10) {
               writeRateLimitWarning(writer, {

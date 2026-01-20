@@ -117,6 +117,12 @@ export async function processChatMessages({
     containsPdfFiles,
   } = await processMessageFiles(messages, mode);
 
+  // Filter out messages with empty parts
+  // This prevents "must include at least one parts field" errors from providers like Gemini
+  const messagesWithContent = messagesWithUrls.filter(
+    (msg) => msg.parts && msg.parts.length > 0,
+  );
+
   // Select the appropriate model
   const selectedModel = selectModel(
     mode,
@@ -127,17 +133,17 @@ export async function processChatMessages({
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(
-    messagesWithUrls,
+    messagesWithContent,
     subscription !== "free",
   );
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(messagesWithUrls);
+    addAuthMessage(messagesWithContent);
   }
 
   return {
-    processedMessages: messagesWithUrls,
+    processedMessages: messagesWithContent,
     selectedModel,
     sandboxFiles,
   };
