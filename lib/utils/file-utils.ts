@@ -108,7 +108,9 @@ export async function uploadSingleFileToConvex(
   file: File,
   generateUploadUrl: () => Promise<UploadUrlResult>,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  saveFile: (args: any) => Promise<{ url: string; fileId: string; tokens: number }>,
+  saveFile: (
+    args: any,
+  ) => Promise<{ url: string; fileId: string; tokens: number }>,
   mode: "ask" | "agent" = "ask",
 ): Promise<{
   fileId: string;
@@ -126,9 +128,7 @@ export async function uploadSingleFileToConvex(
   });
 
   if (!result.ok) {
-    throw new Error(
-      `Failed to upload file ${file.name}: ${result.statusText}`,
-    );
+    throw new Error(`Failed to upload file ${file.name}: ${result.statusText}`);
   }
 
   const { storageId } = await result.json();

@@ -242,7 +242,10 @@ export const deductAgentUsage = async (
     // const isLongContext = actualInputTokens > LONG_CONTEXT_THRESHOLD;
 
     // Calculate additional cost
-    const estimatedInputCost = calculateTokenCost(estimatedInputTokens, "input");
+    const estimatedInputCost = calculateTokenCost(
+      estimatedInputTokens,
+      "input",
+    );
     const actualInputCost = calculateTokenCost(actualInputTokens, "input");
     const outputCost = calculateTokenCost(actualOutputTokens, "output");
     const additionalCost =

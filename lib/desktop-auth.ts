@@ -55,7 +55,10 @@ export async function createDesktopTransferToken(
   try {
     await redis.set(key, data, { ex: TRANSFER_TOKEN_TTL_SECONDS });
   } catch (err) {
-    console.error("[Desktop Auth] Failed to store transfer token in Redis:", err);
+    console.error(
+      "[Desktop Auth] Failed to store transfer token in Redis:",
+      err,
+    );
     return null;
   }
 
@@ -85,7 +88,10 @@ export async function exchangeDesktopTransferToken(
     // Use getdel for atomic get-and-delete to prevent race conditions
     rawData = await redis.getdel<TransferTokenData>(key);
   } catch (err) {
-    console.error("[Desktop Auth] Failed to retrieve transfer token from Redis:", err);
+    console.error(
+      "[Desktop Auth] Failed to retrieve transfer token from Redis:",
+      err,
+    );
     return null;
   }
 
@@ -107,7 +113,11 @@ export async function exchangeDesktopTransferToken(
     }
   }
 
-  if (!data || typeof data.sealedSession !== "string" || data.sealedSession.length === 0) {
+  if (
+    !data ||
+    typeof data.sealedSession !== "string" ||
+    data.sealedSession.length === 0
+  ) {
     console.error("[Desktop Auth] Invalid transfer token payload");
     return null;
   }
@@ -118,7 +128,9 @@ export async function exchangeDesktopTransferToken(
 export async function createOAuthState(): Promise<string | null> {
   const redis = getRedis();
   if (!redis) {
-    console.error("[Desktop Auth] Redis not configured, cannot create OAuth state");
+    console.error(
+      "[Desktop Auth] Redis not configured, cannot create OAuth state",
+    );
     return null;
   }
 
@@ -135,7 +147,9 @@ export async function createOAuthState(): Promise<string | null> {
   return state;
 }
 
-export async function verifyAndConsumeOAuthState(state: string): Promise<boolean> {
+export async function verifyAndConsumeOAuthState(
+  state: string,
+): Promise<boolean> {
   if (!TOKEN_FORMAT_REGEX.test(state)) {
     console.warn("[Desktop Auth] Invalid OAuth state format");
     return false;
@@ -143,7 +157,9 @@ export async function verifyAndConsumeOAuthState(state: string): Promise<boolean
 
   const redis = getRedis();
   if (!redis) {
-    console.error("[Desktop Auth] Redis not configured, cannot verify OAuth state");
+    console.error(
+      "[Desktop Auth] Redis not configured, cannot verify OAuth state",
+    );
     return false;
   }
 

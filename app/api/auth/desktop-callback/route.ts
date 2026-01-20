@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
 import { sealData } from "iron-session";
-import { createDesktopTransferToken, verifyAndConsumeOAuthState } from "@/lib/desktop-auth";
+import {
+  createDesktopTransferToken,
+  verifyAndConsumeOAuthState,
+} from "@/lib/desktop-auth";
 import { workos } from "@/app/api/workos";
 
 function escapeHtml(str: string): string {
@@ -24,27 +27,36 @@ export async function GET(request: NextRequest) {
   };
 
   if (error || !code) {
-    return new Response(renderErrorPage("Authentication failed. Please try again."), {
-      status: 400,
-      headers: noStoreHeaders,
-    });
+    return new Response(
+      renderErrorPage("Authentication failed. Please try again."),
+      {
+        status: 400,
+        headers: noStoreHeaders,
+      },
+    );
   }
 
   if (!state) {
     console.warn("[Desktop Auth] Missing OAuth state parameter");
-    return new Response(renderErrorPage("Invalid authentication request. Please try again."), {
-      status: 400,
-      headers: noStoreHeaders,
-    });
+    return new Response(
+      renderErrorPage("Invalid authentication request. Please try again."),
+      {
+        status: 400,
+        headers: noStoreHeaders,
+      },
+    );
   }
 
   const isValidState = await verifyAndConsumeOAuthState(state);
   if (!isValidState) {
     console.warn("[Desktop Auth] Invalid or expired OAuth state");
-    return new Response(renderErrorPage("Authentication session expired. Please try again."), {
-      status: 400,
-      headers: noStoreHeaders,
-    });
+    return new Response(
+      renderErrorPage("Authentication session expired. Please try again."),
+      {
+        status: 400,
+        headers: noStoreHeaders,
+      },
+    );
   }
 
   const clientId = process.env.WORKOS_CLIENT_ID;
@@ -52,10 +64,13 @@ export async function GET(request: NextRequest) {
 
   if (!clientId || !cookiePassword) {
     console.error("[Desktop Auth] Missing required environment variables");
-    return new Response(renderErrorPage("Server configuration error. Please try again later."), {
-      status: 500,
-      headers: noStoreHeaders,
-    });
+    return new Response(
+      renderErrorPage("Server configuration error. Please try again later."),
+      {
+        status: 500,
+        headers: noStoreHeaders,
+      },
+    );
   }
 
   try {
@@ -79,10 +94,13 @@ export async function GET(request: NextRequest) {
     const transferToken = await createDesktopTransferToken(sealedSession);
 
     if (!transferToken) {
-      return new Response(renderErrorPage("Failed to create session transfer. Please try again."), {
-        status: 500,
-        headers: noStoreHeaders,
-      });
+      return new Response(
+        renderErrorPage("Failed to create session transfer. Please try again."),
+        {
+          status: 500,
+          headers: noStoreHeaders,
+        },
+      );
     }
 
     const origin = url.origin;
@@ -93,10 +111,13 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     console.error("[Desktop Auth] Failed to authenticate:", err);
-    return new Response(renderErrorPage("Authentication failed. Please try again."), {
-      status: 500,
-      headers: noStoreHeaders,
-    });
+    return new Response(
+      renderErrorPage("Authentication failed. Please try again."),
+      {
+        status: 500,
+        headers: noStoreHeaders,
+      },
+    );
   }
 }
 

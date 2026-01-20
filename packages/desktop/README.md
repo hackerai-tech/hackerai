@@ -21,17 +21,20 @@ The desktop app wraps the HackerAI web application in a native shell, providing:
 ### Platform-specific
 
 **macOS:**
+
 ```bash
 xcode-select --install
 ```
 
 **Ubuntu/Debian:**
+
 ```bash
 sudo apt update
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
 ```
 
 **Windows:**
+
 - Install [WebView2](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) (usually pre-installed on Windows 10/11)
 - Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++"
 
@@ -76,12 +79,14 @@ Outputs to `src-tauri/target/release/bundle/`.
 ### Production build with signing
 
 Set environment variables:
+
 ```bash
 export TAURI_SIGNING_PRIVATE_KEY="your-private-key"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="your-password"
 ```
 
 Then build:
+
 ```bash
 pnpm build
 ```
@@ -104,17 +109,18 @@ The app is a thin native wrapper around the web application. Authentication and 
 
 GitHub Actions workflow (`.github/workflows/desktop-build.yml`) builds for:
 
-| Platform | Target | Output |
-|----------|--------|--------|
-| macOS | `aarch64-apple-darwin` | `.dmg`, `.app` |
-| macOS | `x86_64-apple-darwin` | `.dmg`, `.app` |
-| macOS | Universal | `.dmg` (combined) |
-| Windows | `x86_64-pc-windows-msvc` | `.msi`, `.exe` |
-| Linux | `x86_64-unknown-linux-gnu` | `.AppImage`, `.deb` |
+| Platform | Target                     | Output              |
+| -------- | -------------------------- | ------------------- |
+| macOS    | `aarch64-apple-darwin`     | `.dmg`, `.app`      |
+| macOS    | `x86_64-apple-darwin`      | `.dmg`, `.app`      |
+| macOS    | Universal                  | `.dmg` (combined)   |
+| Windows  | `x86_64-pc-windows-msvc`   | `.msi`, `.exe`      |
+| Linux    | `x86_64-unknown-linux-gnu` | `.AppImage`, `.deb` |
 
 ### Triggering builds
 
 **Via tag:**
+
 ```bash
 git tag desktop-v0.1.0
 git push origin desktop-v0.1.0
@@ -143,15 +149,18 @@ Go to Actions → "Build Desktop App" → Run workflow
 ### Auto-update signing
 
 Generate a key pair:
+
 ```bash
 pnpm tauri signer generate -w ~/.tauri/hackerai.key
 ```
 
 Set in CI:
+
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 
 Update `tauri.conf.json` with your public key:
+
 ```json
 {
   "plugins": {
@@ -171,6 +180,7 @@ Install WebView2 from Microsoft: https://developer.microsoft.com/en-us/microsoft
 ### "gtk/webkit not found" (Linux)
 
 Install development libraries:
+
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev
 ```

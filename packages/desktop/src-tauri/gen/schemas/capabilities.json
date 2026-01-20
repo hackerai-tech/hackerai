@@ -1,1 +1,28 @@
-{"default":{"identifier":"default","description":"Default capabilities for HackerAI Desktop","remote":{"urls":["http://localhost:*","https://hackerai.co/*"]},"local":true,"windows":["main"],"permissions":["core:default",{"identifier":"shell:allow-open","allow":[{"path":"http://**","scheme":"http"},{"path":"https://**","scheme":"https"}]},"os:default","process:default","updater:default","deep-link:default","opener:default",{"identifier":"opener:allow-open-path","allow":[{"path":"$DOWNLOAD/**"}]}]}}
+{
+  "default": {
+    "identifier": "default",
+    "description": "Default capabilities for HackerAI Desktop",
+    "remote": { "urls": ["http://localhost:*", "https://hackerai.co/*"] },
+    "local": true,
+    "windows": ["main"],
+    "permissions": [
+      "core:default",
+      {
+        "identifier": "shell:allow-open",
+        "allow": [
+          { "path": "http://**", "scheme": "http" },
+          { "path": "https://**", "scheme": "https" }
+        ]
+      },
+      "os:default",
+      "process:default",
+      "updater:default",
+      "deep-link:default",
+      "opener:default",
+      {
+        "identifier": "opener:allow-open-path",
+        "allow": [{ "path": "$DOWNLOAD/**" }]
+      }
+    ]
+  }
+}

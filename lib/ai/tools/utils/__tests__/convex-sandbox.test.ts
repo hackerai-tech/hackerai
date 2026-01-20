@@ -239,7 +239,11 @@ describe("ConvexSandbox Subscription Cleanup", () => {
         await Promise.resolve();
 
         const unsubscribe = mockRealtimeClient.onUpdate.mock.results[i].value;
-        unsubscribe.callback({ found: true, stdout: `result${i}`, exitCode: 0 });
+        unsubscribe.callback({
+          found: true,
+          stdout: `result${i}`,
+          exitCode: 0,
+        });
 
         await promise;
       }

@@ -8,8 +8,7 @@ declare global {
 
 function detectTauri(): boolean {
   return (
-    typeof window !== "undefined" &&
-    window.__TAURI_INTERNALS__ !== undefined
+    typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined
   );
 }
 
@@ -37,7 +36,9 @@ export async function openInBrowser(url: string): Promise<boolean> {
   }
 }
 
-export async function navigateToAuth(fallbackPath: "/login" | "/signup"): Promise<void> {
+export async function navigateToAuth(
+  fallbackPath: "/login" | "/signup",
+): Promise<void> {
   if (detectTauri()) {
     try {
       const opened = await openInBrowser(

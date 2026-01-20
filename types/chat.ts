@@ -54,7 +54,11 @@ export interface SidebarWebSearch {
   toolCallId: string;
 }
 
-export type SidebarContent = SidebarFile | SidebarTerminal | SidebarPython | SidebarWebSearch;
+export type SidebarContent =
+  | SidebarFile
+  | SidebarTerminal
+  | SidebarPython
+  | SidebarWebSearch;
 
 export const isSidebarFile = (
   content: SidebarContent,

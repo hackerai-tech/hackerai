@@ -8,14 +8,20 @@ export async function GET(request: Request) {
 
   try {
     if (!process.env.WORKOS_CLIENT_ID) {
-      console.error("[Desktop Login] Missing WORKOS_CLIENT_ID environment variable");
-      return NextResponse.redirect(new URL("/login?error=config_error", url.origin));
+      console.error(
+        "[Desktop Login] Missing WORKOS_CLIENT_ID environment variable",
+      );
+      return NextResponse.redirect(
+        new URL("/login?error=config_error", url.origin),
+      );
     }
 
     const state = await createOAuthState();
     if (!state) {
       console.error("[Desktop Login] Failed to create OAuth state");
-      return NextResponse.redirect(new URL("/login?error=state_error", url.origin));
+      return NextResponse.redirect(
+        new URL("/login?error=state_error", url.origin),
+      );
     }
 
     const authorizationUrl = workos.userManagement.getAuthorizationUrl({
@@ -28,6 +34,8 @@ export async function GET(request: Request) {
     return NextResponse.redirect(authorizationUrl);
   } catch (err) {
     console.error("[Desktop Login] Failed to generate authorization URL:", err);
-    return NextResponse.redirect(new URL("/login?error=auth_init_failed", url.origin));
+    return NextResponse.redirect(
+      new URL("/login?error=auth_init_failed", url.origin),
+    );
   }
 }

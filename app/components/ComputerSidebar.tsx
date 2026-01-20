@@ -132,7 +132,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
         closeSidebar();
       }
     }
-  }, [currentIndex, sidebarOpen, sidebarContent, toolExecutions, onNavigate, closeSidebar]);
+  }, [
+    currentIndex,
+    sidebarOpen,
+    sidebarContent,
+    toolExecutions,
+    onNavigate,
+    closeSidebar,
+  ]);
 
   if (!sidebarOpen || !sidebarContent) {
     return null;

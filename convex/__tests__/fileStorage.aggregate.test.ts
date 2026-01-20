@@ -321,9 +321,8 @@ describe("fileStorage - Aggregate Integration", () => {
         },
       };
 
-      const { purgeExpiredUnattachedFiles } = (await import(
-        "../fileStorage"
-      )) as any;
+      const { purgeExpiredUnattachedFiles } =
+        (await import("../fileStorage")) as any;
       const result = await purgeExpiredUnattachedFiles.handler(mockCtx, {
         cutoffTimeMs: cutoffTime,
       });

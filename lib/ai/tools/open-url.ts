@@ -24,10 +24,7 @@ export const createOpenUrlTool = () => {
           "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
         ),
     }),
-    execute: async (
-      { url }: { url: string },
-      { abortSignal },
-    ) => {
+    execute: async ({ url }: { url: string }, { abortSignal }) => {
       try {
         // Construct the Jina AI reader URL with proper encoding
         const jinaUrl = `https://r.jina.ai/${encodeURIComponent(url)}`;
