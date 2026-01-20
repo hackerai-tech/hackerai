@@ -16,11 +16,57 @@ const escapeForBashSingleQuote = (str: string): string => {
 };
 
 /**
+ * Convert a glob pattern to a find -path pattern
+ * Handles ** (any path), * (any name segment), ? (single char)
+ */
+const globToFindPattern = (glob: string): string => {
+  // ** matches any path segment(s), convert to *
+  // For find -path, * already matches across path separators
+  return glob.replace(/\*\*/g, "*");
+};
+
+/**
+ * Parse a glob pattern to extract the base directory for efficient searching
+ * Returns the longest path prefix that doesn't contain glob characters
+ */
+const extractBaseDir = (pattern: string): string => {
+  // Find the first glob character (*, ?, [)
+  const firstGlobIndex = pattern.search(/[*?[]/);
+  if (firstGlobIndex === -1) {
+    // No glob chars, use the directory part
+    const lastSlash = pattern.lastIndexOf("/");
+    return lastSlash > 0 ? pattern.substring(0, lastSlash) : "/";
+  }
+
+  // Get everything before the first glob char, then find the last slash
+  const beforeGlob = pattern.substring(0, firstGlobIndex);
+  const lastSlash = beforeGlob.lastIndexOf("/");
+  return lastSlash > 0 ? beforeGlob.substring(0, lastSlash) : "/";
+};
+
+/**
  * Build the glob command to find files matching the pattern
+ * Uses `fd` if available (fast, proper glob support), falls back to `find`
+ * (bash globstar requires bash 4+ which macOS doesn't have by default)
  */
 const buildGlobCommand = (scope: string): string => {
-  const escapedScope = escapeForBashSingleQuote(scope);
-  return `bash -c 'shopt -s globstar nullglob; files=(${escapedScope}); for f in "\${files[@]}"; do [[ -f "$f" ]] && echo "$f"; done | head -n ${MAX_FILES_GLOB}'`;
+  const baseDir = extractBaseDir(scope);
+  const escapedDir = escapeForBashSingleQuote(baseDir);
+  const findPattern = globToFindPattern(scope);
+  const escapedFindPattern = escapeForBashSingleQuote(findPattern);
+
+  // Check if pattern is non-recursive (no ** and only filename pattern after last /)
+  const isRecursive = scope.includes("**");
+
+  // Try fd first (fast, supports glob properly), fall back to find
+  // fd with -g (glob) and -p (full path) supports ** patterns
+  const fdCommand = `fd -H -I -t f -g '${escapeForBashSingleQuote(scope)}' '${escapedDir}' 2>/dev/null`;
+  const findCommand = isRecursive
+    ? `find '${escapedDir}' -type f -path '${escapedFindPattern}' 2>/dev/null`
+    : `find '${escapedDir}' -maxdepth 1 -type f -path '${escapedFindPattern}' 2>/dev/null`;
+
+  // Use fd if available, otherwise fall back to find
+  return `(command -v fd >/dev/null && ${fdCommand} || ${findCommand}) | head -n ${MAX_FILES_GLOB}`;
 };
 
 /**

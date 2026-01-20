@@ -8,6 +8,7 @@ import {
   SkipBack,
   SkipForward,
   Search,
+  FolderSearch,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -231,6 +232,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   const getIcon = () => {
     if (isFile) {
+      // Show search icon for file search results
+      if (sidebarContent.action === "searching") {
+        return <FolderSearch className="w-5 h-5 text-muted-foreground" />;
+      }
       return <Edit className="w-5 h-5 text-muted-foreground" />;
     } else if (isTerminal) {
       return <Terminal className="w-5 h-5 text-muted-foreground" />;
@@ -244,6 +249,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   const getToolName = (): string => {
     if (isFile) {
+      // Show "File Search" for file search results
+      if (sidebarContent.action === "searching") {
+        return "File Search";
+      }
       return "Editor";
     } else if (isTerminal) {
       return "Terminal";
@@ -351,6 +360,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
                       Search
                     </div>
+                  ) : isFile && sidebarContent.action === "searching" ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Search Results
+                    </div>
                   ) : (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       {sidebarContent.path.split("/").pop() ||
@@ -373,15 +386,19 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     }
                     filename={
                       isFile
-                        ? sidebarContent.path.split("/").pop() || "code.txt"
+                        ? sidebarContent.action === "searching"
+                          ? "search-results.txt"
+                          : sidebarContent.path.split("/").pop() || "code.txt"
                         : isPython
                           ? "python-code.py"
                           : "terminal-output.txt"
                     }
                     language={
                       isFile
-                        ? sidebarContent.language ||
-                          getLanguageFromPath(sidebarContent.path)
+                        ? sidebarContent.action === "searching"
+                          ? "text"
+                          : sidebarContent.language ||
+                            getLanguageFromPath(sidebarContent.path)
                         : isPython
                           ? "python"
                           : "ansi"
@@ -424,8 +441,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           ) : (
                             <ComputerCodeBlock
                               language={
-                                sidebarContent.language ||
-                                getLanguageFromPath(sidebarContent.path)
+                                sidebarContent.action === "searching"
+                                  ? "text"
+                                  : sidebarContent.language ||
+                                    getLanguageFromPath(sidebarContent.path)
                               }
                               wrap={isWrapped}
                               showButtons={false}

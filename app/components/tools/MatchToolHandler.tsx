@@ -99,6 +99,7 @@ export const MatchToolHandler = ({ part, status }: MatchToolHandlerProps) => {
           path: matchInput.scope,
           content: outputText || "No results",
           action: "searching",
+          toolCallId,
         });
       };
 

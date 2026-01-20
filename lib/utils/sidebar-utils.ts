@@ -355,6 +355,24 @@ export function extractAllSidebarContent(
           isExecuting: false,
         });
       }
+
+      // Match tool (glob/grep file search)
+      if (
+        part.type === "tool-match" &&
+        part.state === "output-available" &&
+        part.input?.scope
+      ) {
+        const scope = part.input.scope;
+        const output = part.output?.output || "";
+
+        contentList.push({
+          path: scope,
+          content: output || "No results",
+          action: "searching",
+          toolCallId: part.toolCallId || "",
+          isExecuting: false,
+        });
+      }
     });
   });
 
