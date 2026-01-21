@@ -77,32 +77,6 @@ interface BaseToolPart {
   output?: any;
 }
 
-/**
- * Strips originalContent and modifiedContent from file tool outputs to reduce payload size.
- * These are large and already handled by toModelOutput on the backend.
- */
-const stripOriginalContentFromToolOutput = <T extends Record<string, any>>(
-  part: T,
-): T => {
-  // Process tool-file parts with read, edit, or append action and object output
-  if (
-    part.type === "tool-file" &&
-    (part.input?.action === "read" ||
-      part.input?.action === "edit" ||
-      part.input?.action === "append") &&
-    typeof part.output === "object" &&
-    part.output !== null &&
-    ("originalContent" in part.output || "modifiedContent" in part.output)
-  ) {
-    const { originalContent, modifiedContent, ...restOutput } = part.output;
-    return {
-      ...part,
-      output: restOutput,
-    };
-  }
-  return part;
-};
-
 // Specific interface for terminal tools that have special data handling
 interface TerminalToolPart extends BaseToolPart {
   type: "tool-run_terminal_cmd";
@@ -243,12 +217,9 @@ export const normalizeMessages = (
           processedParts.push(transformedPart);
           messageChanged = true; // Part is being transformed
         } else {
-          // Strip originalContent from file edit tool outputs (large data, already handled by toModelOutput)
-          const strippedPart = stripOriginalContentFromToolOutput(cleanPart);
-          if (strippedPart !== cleanPart) {
-            messageChanged = true;
-          }
-          processedParts.push(strippedPart);
+          // Keep originalContent for sidebar UI display
+          // (toModelOutput in the tool already controls what the model sees)
+          processedParts.push(cleanPart);
         }
       } else {
         // Keep non-tool parts unchanged
