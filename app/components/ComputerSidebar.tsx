@@ -428,7 +428,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           {(sidebarContent.action === "editing" ||
                             sidebarContent.action === "appending") &&
                           sidebarContent.originalContent !== undefined &&
-                          sidebarContent.modifiedContent ? (
+                          sidebarContent.modifiedContent !== undefined ? (
                             <DiffView
                               originalContent={sidebarContent.originalContent}
                               modifiedContent={sidebarContent.modifiedContent}

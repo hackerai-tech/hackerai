@@ -55,8 +55,13 @@ const buildGlobCommand = (scope: string): string => {
   const findPattern = globToFindPattern(scope);
   const escapedFindPattern = escapeForBashSingleQuote(findPattern);
 
-  // Check if pattern is non-recursive (no ** and only filename pattern after last /)
-  const isRecursive = scope.includes("**");
+  // Check if pattern requires recursive traversal:
+  // - Contains ** (matches any depth)
+  // - Has path separators after glob characters (e.g., src/*/index.js)
+  const firstGlobIndex = scope.search(/[*?[]/);
+  const hasPathAfterGlob =
+    firstGlobIndex !== -1 && scope.slice(firstGlobIndex).includes("/");
+  const isRecursive = scope.includes("**") || hasPathAfterGlob;
 
   // Try fd first (fast, supports glob properly), fall back to find
   // fd with -g (glob) and -p (full path) supports ** patterns

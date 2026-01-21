@@ -229,15 +229,15 @@ export function extractAllSidebarContent(
           action = actionMap[fileAction] || "reading";
 
           if (fileAction === "read") {
-            // Output is a string: "Text file: ...\nLatest content with line numbers:\n1\t..."
-            const rawContent =
-              typeof part.output === "string" ? part.output : "";
-            // Skip header lines and remove line number prefixes
-            const lines = rawContent.split("\n");
-            const contentLines = lines
-              .slice(2)
-              .map((line: string) => line.replace(/^\d+\t/, ""));
-            content = contentLines.join("\n");
+            // Output is an object with originalContent (raw content without line numbers)
+            const output = part.output;
+            if (
+              typeof output === "object" &&
+              output !== null &&
+              "originalContent" in output
+            ) {
+              content = (output.originalContent as string) || "";
+            }
 
             if (fileInput.range) {
               const [start, end] = fileInput.range;
