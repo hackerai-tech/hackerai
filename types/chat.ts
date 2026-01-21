@@ -13,14 +13,24 @@ export interface SidebarFile {
   language?: string;
   range?: {
     start: number;
-    end: number;
+    end?: number;
   };
-  action?: "reading" | "creating" | "editing" | "writing" | "searching";
+  action?:
+    | "reading"
+    | "creating"
+    | "editing"
+    | "writing"
+    | "searching"
+    | "appending";
   toolCallId?: string;
+  /** Whether the file operation is currently executing */
+  isExecuting?: boolean;
   /** Original content before edit (for diff view) */
   originalContent?: string;
   /** Modified content after edit (for diff view) */
   modifiedContent?: string;
+  /** Error message if the operation failed */
+  error?: string;
 }
 
 export interface SidebarTerminal {
@@ -54,7 +64,11 @@ export interface SidebarWebSearch {
   toolCallId: string;
 }
 
-export type SidebarContent = SidebarFile | SidebarTerminal | SidebarPython | SidebarWebSearch;
+export type SidebarContent =
+  | SidebarFile
+  | SidebarTerminal
+  | SidebarPython
+  | SidebarWebSearch;
 
 export const isSidebarFile = (
   content: SidebarContent,

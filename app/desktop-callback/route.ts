@@ -21,7 +21,11 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#039;");
 }
 
-function renderErrorPage(title: string, message: string, retryUrl: string): string {
+function renderErrorPage(
+  title: string,
+  message: string,
+  retryUrl: string,
+): string {
   const safeTitle = escapeHtml(title);
   const safeMessage = escapeHtml(message);
   const safeRetryUrl = JSON.stringify(retryUrl);
@@ -110,9 +114,9 @@ export async function GET(request: Request) {
       renderErrorPage(
         "Sign In Required",
         "You need to sign in to access this page.",
-        retryUrl
+        retryUrl,
       ),
-      { status: 401, headers: noStoreHeaders }
+      { status: 401, headers: noStoreHeaders },
     );
   }
 
@@ -122,9 +126,9 @@ export async function GET(request: Request) {
       renderErrorPage(
         "Authentication Error",
         "No authentication token was provided. Please try signing in again.",
-        retryUrl
+        retryUrl,
       ),
-      { status: 400, headers: noStoreHeaders }
+      { status: 400, headers: noStoreHeaders },
     );
   }
 
@@ -136,9 +140,9 @@ export async function GET(request: Request) {
       renderErrorPage(
         "Session Expired",
         "Your authentication session has expired. Please try signing in again.",
-        retryUrl
+        retryUrl,
       ),
-      { status: 400, headers: noStoreHeaders }
+      { status: 400, headers: noStoreHeaders },
     );
   }
 

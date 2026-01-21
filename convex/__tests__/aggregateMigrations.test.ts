@@ -56,9 +56,8 @@ describe("aggregateMigrations", () => {
         },
       };
 
-      const { ensureUserAggregatesMigrated } = (await import(
-        "../aggregateMigrations"
-      )) as any;
+      const { ensureUserAggregatesMigrated } =
+        (await import("../aggregateMigrations")) as any;
 
       await expect(
         ensureUserAggregatesMigrated.handler(mockCtx, {}),

@@ -217,7 +217,8 @@ export const normalizeMessages = (
           processedParts.push(transformedPart);
           messageChanged = true; // Part is being transformed
         } else {
-          // Keep completed tools unchanged
+          // Keep originalContent for sidebar UI display
+          // (toModelOutput in the tool already controls what the model sees)
           processedParts.push(cleanPart);
         }
       } else {

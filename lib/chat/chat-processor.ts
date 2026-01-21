@@ -98,6 +98,43 @@ export function addAuthMessage(messages: UIMessage[]) {
 }
 
 /**
+ * Strips originalContent and modifiedContent from file tool outputs to reduce payload size.
+ * These are persisted for UI but shouldn't be sent to the model
+ * (toModelOutput handles what the model sees, but we also strip it here as a safeguard).
+ */
+function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !message.parts) {
+      return message;
+    }
+
+    let hasChanges = false;
+    const cleanedParts = message.parts.map((part: any) => {
+      // Process tool-file parts with read, edit, or append action and object output
+      if (
+        part.type === "tool-file" &&
+        (part.input?.action === "read" ||
+          part.input?.action === "edit" ||
+          part.input?.action === "append") &&
+        typeof part.output === "object" &&
+        part.output !== null &&
+        ("originalContent" in part.output || "modifiedContent" in part.output)
+      ) {
+        hasChanges = true;
+        const { originalContent, modifiedContent, ...restOutput } = part.output;
+        return {
+          ...part,
+          output: restOutput,
+        };
+      }
+      return part;
+    });
+
+    return hasChanges ? { ...message, parts: cleanedParts } : message;
+  });
+}
+
+/**
  * Processes chat messages with moderation, truncation, and analytics
  */
 export async function processChatMessages({
@@ -117,6 +154,15 @@ export async function processChatMessages({
     containsPdfFiles,
   } = await processMessageFiles(messages, mode);
 
+  // Filter out messages with empty parts
+  // This prevents "must include at least one parts field" errors from providers like Gemini
+  const messagesWithContent = messagesWithUrls.filter(
+    (msg) => msg.parts && msg.parts.length > 0,
+  );
+
+  // Strip originalContent from file edit outputs (large data not needed by model)
+  const cleanedMessages = stripOriginalContentFromMessages(messagesWithContent);
+
   // Select the appropriate model
   const selectedModel = selectModel(
     mode,
@@ -127,17 +173,17 @@ export async function processChatMessages({
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(
-    messagesWithUrls,
+    cleanedMessages,
     subscription !== "free",
   );
 
   // If moderation allows, add authorization message
   if (moderationResult.shouldUncensorResponse) {
-    addAuthMessage(messagesWithUrls);
+    addAuthMessage(cleanedMessages);
   }
 
   return {
-    processedMessages: messagesWithUrls,
+    processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
   };

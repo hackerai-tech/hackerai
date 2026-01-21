@@ -478,7 +478,7 @@ export const getUserChats = query({
         ...new Set(
           result.page
             .map((chat) => chat.branched_from_chat_id)
-            .filter((id): id is string => id != null)
+            .filter((id): id is string => id != null),
         ),
       ];
 
@@ -488,22 +488,22 @@ export const getUserChats = query({
           ctx.db
             .query("chats")
             .withIndex("by_chat_id", (q) => q.eq("id", id))
-            .first()
-        )
+            .first(),
+        ),
       );
 
       // Step 3: Build lookup map for O(1) access
       const branchedChatMap = new Map(
         branchedChats
           .filter((chat): chat is NonNullable<typeof chat> => chat != null)
-          .map((chat) => [chat.id, chat])
+          .map((chat) => [chat.id, chat]),
       );
 
       // Step 4: Enhance chats using the map (no async needed)
       const enhancedChats = result.page.map((chat) => {
         if (chat.branched_from_chat_id) {
           const branchedFromChat = branchedChatMap.get(
-            chat.branched_from_chat_id
+            chat.branched_from_chat_id,
           );
           return {
             ...chat,

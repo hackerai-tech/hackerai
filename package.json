@@ -52,6 +52,7 @@
     "@convex-dev/workos": "^0.0.1",
     "@e2b/code-interpreter": "2.3.3",
     "@langchain/community": "^1.1.4",
+    "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^1.5.4",
     "@posthog/ai": "^7.4.3",
     "@radix-ui/react-alert-dialog": "^1.1.15",

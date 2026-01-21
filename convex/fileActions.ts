@@ -92,14 +92,12 @@ export const checkFileUploadRateLimit = async (
 
     if (consume) {
       // Consume a token from the rate limit bucket
-      ({ success, reset, remaining, limit } = await ratelimit.limit(
-        rateLimitKey,
-      ));
+      ({ success, reset, remaining, limit } =
+        await ratelimit.limit(rateLimitKey));
     } else {
       // Peek at the current state without consuming a token
-      ({ remaining, limit, reset } = await ratelimit.getRemaining(
-        rateLimitKey,
-      ));
+      ({ remaining, limit, reset } =
+        await ratelimit.getRemaining(rateLimitKey));
       success = remaining > 0;
     }
 

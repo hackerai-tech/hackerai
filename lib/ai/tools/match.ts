@@ -16,11 +16,108 @@ const escapeForBashSingleQuote = (str: string): string => {
 };
 
 /**
+ * Convert a glob pattern to a find -path pattern
+ * Handles ** (any path), * (any name segment), ? (single char)
+ */
+const globToFindPattern = (glob: string): string => {
+  // ** matches any path segment(s), convert to *
+  // For find -path, * already matches across path separators
+  return glob.replace(/\*\*/g, "*");
+};
+
+/**
+ * Expand brace patterns like {a,b,c} into multiple patterns
+ * Example: "*.{ts,tsx}" -> ["*.ts", "*.tsx"]
+ * Example: "*{foo,bar}*" -> ["*foo*", "*bar*"]
+ * Handles nested braces recursively
+ */
+const expandBraces = (pattern: string): string[] => {
+  // Find the first brace group (non-greedy, innermost first for nested)
+  const braceMatch = pattern.match(/\{([^{}]+)\}/);
+  if (!braceMatch) {
+    return [pattern];
+  }
+
+  const [fullMatch, alternatives] = braceMatch;
+  const parts = alternatives.split(",");
+  const beforeBrace = pattern.slice(0, braceMatch.index);
+  const afterBrace = pattern.slice(braceMatch.index! + fullMatch.length);
+
+  // Expand each alternative and recursively handle remaining braces
+  const expanded: string[] = [];
+  for (const part of parts) {
+    const combined = beforeBrace + part + afterBrace;
+    expanded.push(...expandBraces(combined));
+  }
+
+  return expanded;
+};
+
+/**
+ * Parse a glob pattern to extract the base directory for efficient searching
+ * Returns the longest path prefix that doesn't contain glob characters
+ */
+const extractBaseDir = (pattern: string): string => {
+  // Find the first glob character (*, ?, [)
+  const firstGlobIndex = pattern.search(/[*?[]/);
+  if (firstGlobIndex === -1) {
+    // No glob chars, use the directory part
+    const lastSlash = pattern.lastIndexOf("/");
+    return lastSlash > 0 ? pattern.substring(0, lastSlash) : "/";
+  }
+
+  // Get everything before the first glob char, then find the last slash
+  const beforeGlob = pattern.substring(0, firstGlobIndex);
+  const lastSlash = beforeGlob.lastIndexOf("/");
+  return lastSlash > 0 ? beforeGlob.substring(0, lastSlash) : "/";
+};
+
+/**
  * Build the glob command to find files matching the pattern
+ * Uses `fd` if available (fast, proper glob support), falls back to `find`
+ * (bash globstar requires bash 4+ which macOS doesn't have by default)
  */
 const buildGlobCommand = (scope: string): string => {
-  const escapedScope = escapeForBashSingleQuote(scope);
-  return `bash -c 'shopt -s globstar nullglob; files=(${escapedScope}); for f in "\${files[@]}"; do [[ -f "$f" ]] && echo "$f"; done | head -n ${MAX_FILES_GLOB}'`;
+  const baseDir = extractBaseDir(scope);
+  const escapedDir = escapeForBashSingleQuote(baseDir);
+
+  // Check if pattern requires recursive traversal:
+  // - Contains ** (matches any depth)
+  // - Has path separators after glob characters (e.g., src/*/index.js)
+  const firstGlobIndex = scope.search(/[*?[]/);
+  const hasPathAfterGlob =
+    firstGlobIndex !== -1 && scope.slice(firstGlobIndex).includes("/");
+  const isRecursive = scope.includes("**") || hasPathAfterGlob;
+
+  // fd -g matches against RELATIVE paths from search dir, so extract relative pattern
+  // e.g., "/Users/foo/Downloads/**/*.csv" with baseDir "/Users/foo/Downloads" -> "**/*.csv"
+  const relativePattern = scope.startsWith(baseDir + "/")
+    ? scope.slice(baseDir.length + 1)
+    : scope.startsWith(baseDir)
+      ? scope.slice(baseDir.length) || "*"
+      : scope;
+  const escapedRelativePattern = escapeForBashSingleQuote(relativePattern);
+
+  // fd command with relative pattern (supports ** and brace expansion natively)
+  const fdCommand = `fd -H -I -t f -g '${escapedRelativePattern}' '${escapedDir}' 2>/dev/null`;
+
+  // For find fallback, expand braces since find -path doesn't support them
+  const expandedPatterns = expandBraces(scope);
+  const findPatterns = expandedPatterns.map((p) =>
+    escapeForBashSingleQuote(globToFindPattern(p)),
+  );
+
+  // Build find command with multiple -path conditions joined by -o
+  const depthFlag = isRecursive ? "" : "-maxdepth 1 ";
+  const pathConditions =
+    findPatterns.length === 1
+      ? `-path '${findPatterns[0]}'`
+      : `\\( ${findPatterns.map((p) => `-path '${p}'`).join(" -o ")} \\)`;
+  const findCommand = `find '${escapedDir}' ${depthFlag}-type f ${pathConditions} 2>/dev/null`;
+
+  // Try fd first, fall back to find if fd not available OR if fd returns no results
+  // (fd returns exit 0 even with no matches, so we check for output)
+  return `{ command -v fd >/dev/null && out=$(${fdCommand}) && [ -n "$out" ] && printf '%s\\n' "$out"; } || ${findCommand} | head -n ${MAX_FILES_GLOB}`;
 };
 
 /**

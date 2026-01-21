@@ -113,8 +113,7 @@ export const WebToolHandler = ({ part, status }: WebToolHandlerProps) => {
     const sidebarWebSearch: SidebarWebSearch = {
       query,
       results,
-      isSearching:
-        state === "input-available" || state === "input-streaming",
+      isSearching: state === "input-available" || state === "input-streaming",
       toolCallId,
     };
 

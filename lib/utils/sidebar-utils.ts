@@ -200,7 +200,8 @@ export function extractAllSidebarContent(
         (part.type === "tool-read_file" ||
           part.type === "tool-write_file" ||
           part.type === "tool-search_replace" ||
-          part.type === "tool-multi_edit") &&
+          part.type === "tool-multi_edit" ||
+          part.type === "tool-file") &&
         part.state === "output-available"
       ) {
         const fileInput = part.input;
@@ -213,8 +214,85 @@ export function extractAllSidebarContent(
         let action: SidebarFile["action"] = "reading";
         let content = "";
         let range = undefined;
+        let originalContent: string | undefined;
+        let modifiedContent: string | undefined;
 
-        if (part.type === "tool-read_file") {
+        if (part.type === "tool-file") {
+          // New unified file tool
+          const fileAction = fileInput.action as string;
+          const actionMap: Record<string, SidebarFile["action"]> = {
+            read: "reading",
+            write: "writing",
+            append: "appending",
+            edit: "editing",
+          };
+          action = actionMap[fileAction] || "reading";
+
+          if (fileAction === "read") {
+            // Output is an object with originalContent (raw content without line numbers)
+            const output = part.output;
+            if (
+              typeof output === "object" &&
+              output !== null &&
+              "originalContent" in output
+            ) {
+              content = (output.originalContent as string) || "";
+            }
+
+            if (fileInput.range) {
+              const [start, end] = fileInput.range;
+              range = {
+                start,
+                end: end === -1 ? undefined : end,
+              };
+            }
+          } else if (fileAction === "write") {
+            content = fileInput.text || "";
+          } else if (fileAction === "append") {
+            // Output is now an object with originalContent (modifiedContent computed from input.text)
+            const output = part.output;
+            const appendedText = fileInput.text || "";
+
+            if (
+              typeof output === "object" &&
+              output !== null &&
+              "originalContent" in output
+            ) {
+              // New format: object with originalContent, compute modifiedContent (no auto newline)
+              originalContent = output.originalContent as string;
+              const computedModified = originalContent + appendedText;
+              modifiedContent = computedModified;
+              content = computedModified;
+            } else {
+              // Fallback: no original content, just show appended text
+              originalContent = "";
+              modifiedContent = appendedText;
+              content = appendedText;
+            }
+          } else if (fileAction === "edit") {
+            // Output is now an object with originalContent and modifiedContent
+            const output = part.output;
+
+            if (
+              typeof output === "object" &&
+              output !== null &&
+              "originalContent" in output &&
+              "modifiedContent" in output
+            ) {
+              // New format: object with diff data
+              originalContent = output.originalContent as string;
+              modifiedContent = output.modifiedContent as string;
+              content = modifiedContent || "";
+            } else if (typeof output === "string") {
+              // Fallback: old string format
+              const lines = output.split("\n");
+              const contentLines = lines
+                .slice(2)
+                .map((line: string) => line.replace(/^\d+\t/, ""));
+              content = contentLines.join("\n");
+            }
+          }
+        } else if (part.type === "tool-read_file") {
           action = "reading";
           // Extract result - handle both string and object formats
           const result = part.output?.result;
@@ -258,9 +336,6 @@ export function extractAllSidebarContent(
         }
 
         // For search_replace, try to get diff data from data-diff parts (not persisted across reloads)
-        let originalContent: string | undefined;
-        let modifiedContent: string | undefined;
-
         if (part.type === "tool-search_replace" && part.toolCallId) {
           const streamedDiff = diffDataMap.get(part.toolCallId);
           if (streamedDiff) {
@@ -277,6 +352,25 @@ export function extractAllSidebarContent(
           toolCallId: part.toolCallId || "",
           originalContent,
           modifiedContent,
+          isExecuting: false,
+        });
+      }
+
+      // Match tool (glob/grep file search)
+      if (
+        part.type === "tool-match" &&
+        part.state === "output-available" &&
+        part.input?.scope
+      ) {
+        const scope = part.input.scope;
+        const output = part.output?.output || "";
+
+        contentList.push({
+          path: scope,
+          content: output || "No results",
+          action: "searching",
+          toolCallId: part.toolCallId || "",
+          isExecuting: false,
         });
       }
     });

@@ -119,7 +119,10 @@ describe("s3Actions", () => {
         "user123",
       );
 
-      expect(mockCheckFileUploadRateLimit).toHaveBeenCalledWith("user123", true);
+      expect(mockCheckFileUploadRateLimit).toHaveBeenCalledWith(
+        "user123",
+        true,
+      );
     });
 
     it("should throw error for unauthenticated user", async () => {
