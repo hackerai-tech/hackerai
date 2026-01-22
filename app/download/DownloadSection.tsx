@@ -81,13 +81,25 @@ function detectPlatform(): DetectedPlatform {
 }
 
 const serverSnapshot: DetectedPlatform | null = null;
+let clientSnapshot: DetectedPlatform | null = null;
+
+function getClientSnapshot(): DetectedPlatform {
+  if (!clientSnapshot) {
+    clientSnapshot = detectPlatform();
+  }
+  return clientSnapshot;
+}
+
+function getServerSnapshot(): DetectedPlatform | null {
+  return serverSnapshot;
+}
 
 function subscribe() {
   return () => {};
 }
 
 function useDetectedPlatform(): DetectedPlatform | null {
-  return useSyncExternalStore(subscribe, detectPlatform, () => serverSnapshot);
+  return useSyncExternalStore(subscribe, getClientSnapshot, getServerSnapshot);
 }
 
 export function DownloadSection() {
