@@ -509,10 +509,28 @@ jobs:
           find artifacts -name "*.AppImage" -exec cp {} release-files/ \;
           find artifacts -name "*.AppImage.tar.gz" -exec cp {} release-files/ \;
           find artifacts -name "*.AppImage.tar.gz.sig" -exec cp {} release-files/ \;
-          find artifacts -name "*.deb" -exec cp {} release-files/ \;
           find artifacts -name "*.nsis.zip" -exec cp {} release-files/ \;
           find artifacts -name "*.nsis.zip.sig" -exec cp {} release-files/ \;
           find artifacts -name "*.exe" -exec cp {} release-files/ \;
+
+          # Create fixed-name aliases for download page (no version in filename)
+          # Linux x64 AppImage
+          LINUX_X64_APPIMAGE=$(ls release-files/*_amd64.AppImage 2>/dev/null | head -1 || echo "")
+          if [ -n "$LINUX_X64_APPIMAGE" ] && [ -f "$LINUX_X64_APPIMAGE" ]; then
+            cp "$LINUX_X64_APPIMAGE" release-files/HackerAI-linux-x64.AppImage
+          fi
+
+          # Linux ARM64 AppImage
+          LINUX_ARM64_APPIMAGE=$(ls release-files/*_aarch64.AppImage 2>/dev/null | head -1 || echo "")
+          if [ -n "$LINUX_ARM64_APPIMAGE" ] && [ -f "$LINUX_ARM64_APPIMAGE" ]; then
+            cp "$LINUX_ARM64_APPIMAGE" release-files/HackerAI-linux-arm64.AppImage
+          fi
+
+          # Windows exe
+          WIN_EXE=$(ls release-files/*_x64-setup.exe 2>/dev/null | head -1 || echo "")
+          if [ -n "$WIN_EXE" ] && [ -f "$WIN_EXE" ]; then
+            cp "$WIN_EXE" release-files/HackerAI-windows-x64.exe
+          fi
 
           echo "Release files:"
           ls -la release-files/

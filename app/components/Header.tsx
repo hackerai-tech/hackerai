@@ -1,16 +1,19 @@
 "use client";
 
 import React from "react";
+import Link from "next/link";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { navigateToAuth } from "@/app/hooks/useTauri";
+import { Download } from "lucide-react";
 
 interface HeaderProps {
   chatTitle?: string;
+  hideDownload?: boolean;
 }
 
-const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
+const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
   const { user, loading } = useAuth();
 
   return (
@@ -34,6 +37,19 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
           {!chatTitle && <div className="flex gap-[40px]"></div>}
           {!loading && !user && (
             <div className="flex gap-2 items-center">
+              {!hideDownload && (
+                <Button
+                  asChild
+                  variant="ghost"
+                  size="default"
+                  className="rounded-[10px]"
+                >
+                  <Link href="/download">
+                    <Download className="h-4 w-4 mr-1.5" />
+                    Download
+                  </Link>
+                </Button>
+              )}
               <Button
                 data-testid="sign-in-button"
                 onClick={() => navigateToAuth("/login")}
@@ -67,6 +83,13 @@ const Header: React.FC<HeaderProps> = ({ chatTitle }) => {
         </div>
         {!loading && !user && (
           <div className="flex items-center gap-2">
+            {!hideDownload && (
+              <Button asChild variant="ghost" size="sm" className="rounded-[10px]">
+                <Link href="/download">
+                  <Download className="h-4 w-4" />
+                </Link>
+              </Button>
+            )}
             <Button
               data-testid="sign-in-button-mobile"
               onClick={() => navigateToAuth("/login")}

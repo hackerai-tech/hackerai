@@ -11,7 +11,9 @@ import {
   Settings,
   Settings2,
   CircleUserRound,
+  Download,
 } from "lucide-react";
+import Link from "next/link";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -296,6 +298,13 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           >
             <Settings className="mr-2.5 h-5 w-5 text-foreground" />
             <span>Settings</span>
+          </DropdownMenuItem>
+
+          <DropdownMenuItem asChild className="py-2.5">
+            <Link href="/download">
+              <Download className="mr-2.5 h-5 w-5 text-foreground" />
+              <span>Download App</span>
+            </Link>
           </DropdownMenuItem>
 
           <DropdownMenuSeparator />
