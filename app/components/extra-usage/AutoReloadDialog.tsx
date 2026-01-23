@@ -111,7 +111,7 @@ const AutoReloadDialogContent = ({
           </div>
         </div>
         <p className="text-sm text-muted-foreground">
-          You agree that Anthropic will charge the card you have on file in the
+          You agree that HackerAI will charge the card you have on file in the
           amount above on a recurring basis whenever your balance reaches the
           amount indicated. To cancel, turn off auto-reload.
         </p>

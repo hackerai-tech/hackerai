@@ -148,13 +148,14 @@ async function createAutoReloadPayment(
   const stripe = getStripe();
 
   try {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: amountCents,
-      currency: "usd",
+    // Create the invoice first (empty), then add item to it
+    // This avoids picking up stale invoice items from failed attempts
+    const invoice = await stripe.invoices.create({
       customer: customerId,
-      payment_method: paymentMethodId,
-      off_session: true,
-      confirm: true,
+      collection_method: "send_invoice",
+      days_until_due: 0,
+      auto_advance: false,
+      pending_invoice_items_behavior: "exclude", // Don't pick up any pending items
       metadata: {
         type: "extra_usage_auto_reload",
         userId,
@@ -162,16 +163,51 @@ async function createAutoReloadPayment(
       },
     });
 
-    if (
-      paymentIntent.status === "succeeded" ||
-      paymentIntent.status === "processing"
-    ) {
-      return { success: true, paymentIntentId: paymentIntent.id };
+    // Add the invoice item directly to this invoice
+    await stripe.invoiceItems.create({
+      customer: customerId,
+      invoice: invoice.id,
+      amount: amountCents,
+      currency: "usd",
+      description: `HackerAI Extra Usage Auto-Reload ($${amountCents / 100})`,
+    });
+
+    // Finalize the invoice
+    const finalizedInvoice = await stripe.invoices.finalizeInvoice(invoice.id);
+
+    // Check if already paid (shouldn't happen, but handle it)
+    if (finalizedInvoice.status === "paid") {
+      const paymentIntent = (
+        finalizedInvoice as unknown as {
+          payment_intent?: string | { id: string };
+        }
+      ).payment_intent;
+      return {
+        success: true,
+        paymentIntentId:
+          typeof paymentIntent === "string" ? paymentIntent : paymentIntent?.id,
+      };
+    }
+
+    // Pay the invoice with the specified payment method
+    const paidInvoice = await stripe.invoices.pay(finalizedInvoice.id, {
+      payment_method: paymentMethodId,
+    });
+
+    if (paidInvoice.status === "paid") {
+      const paymentIntent = (
+        paidInvoice as unknown as { payment_intent?: string | { id: string } }
+      ).payment_intent;
+      return {
+        success: true,
+        paymentIntentId:
+          typeof paymentIntent === "string" ? paymentIntent : paymentIntent?.id,
+      };
     }
 
     return {
       success: false,
-      error: `Payment status: ${paymentIntent.status}`,
+      error: `Invoice status: ${paidInvoice.status}`,
     };
   } catch (error) {
     const message =
@@ -464,13 +500,21 @@ export const deductWithAutoReload = action({
       | { success: boolean; chargedAmountDollars?: number; reason?: string }
       | undefined;
 
+    // Check auto-reload conditions individually for debugging
+    // Auto-reload triggers when balance drops to/below threshold, not when balance can't cover request
+    const autoReloadConditions = {
+      auto_reload_enabled: settings.autoReloadEnabled,
+      balance_at_or_below_threshold: settings.balancePoints <= thresholdPoints,
+      reload_amount_configured: reloadAmount > 0,
+    };
+
+    const allConditionsMet =
+      autoReloadConditions.auto_reload_enabled &&
+      autoReloadConditions.balance_at_or_below_threshold &&
+      autoReloadConditions.reload_amount_configured;
+
     // Check if auto-reload is needed (compare in points for precision)
-    if (
-      settings.autoReloadEnabled &&
-      settings.balancePoints < args.amountPoints &&
-      settings.balancePoints <= thresholdPoints &&
-      reloadAmount > 0
-    ) {
+    if (allConditionsMet) {
       autoReloadTriggered = true;
 
       // Get Stripe customer ID

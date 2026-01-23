@@ -50,7 +50,10 @@ const AccountTab = () => {
 
   const redirectToBillingPortal = async () => {
     try {
-      await redirectToBillingPortalAction();
+      const url = await redirectToBillingPortalAction();
+      if (url) {
+        window.location.href = url;
+      }
     } catch (error) {
       toast.error(
         error instanceof Error

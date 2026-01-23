@@ -1,6 +1,5 @@
 "use server";
 
-import { redirect } from "next/navigation";
 import { stripe } from "../../app/api/stripe";
 import { workos } from "@/app/api/workos";
 import { withAuth } from "@workos-inc/authkit-nextjs";
@@ -60,5 +59,5 @@ export default async function redirectToBillingPortal() {
   if (!billingPortalSession?.url) {
     throw new Error("Failed to create billing portal session");
   }
-  redirect(billingPortalSession.url);
+  return billingPortalSession.url;
 }
