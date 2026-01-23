@@ -217,13 +217,14 @@ export const getPaymentStatus = action({
       }
 
       const paymentInfo = await getStripePaymentMethod(stripeCustomerId);
+
       return {
         hasPaymentMethod: paymentInfo.hasPaymentMethod,
         paymentMethodLast4: paymentInfo.last4 || null,
         paymentMethodBrand: paymentInfo.brand || null,
       };
     } catch (error) {
-      console.error("Error getting payment status:", error);
+      console.error("Payment status check failed:", error);
       return {
         hasPaymentMethod: false,
         paymentMethodLast4: null,
@@ -317,7 +318,7 @@ export const createPurchaseSession = action({
 
       return { url: session.url };
     } catch (error) {
-      console.error("Error creating purchase session:", error);
+      console.error("Purchase session creation failed:", error);
       const message =
         error instanceof Stripe.errors.StripeError
           ? error.message
@@ -380,7 +381,7 @@ export const createBillingPortalSession = action({
 
       return { url: session.url };
     } catch (error) {
-      console.error("Error creating billing portal session:", error);
+      console.error("Billing portal session creation failed:", error);
       const message =
         error instanceof Stripe.errors.StripeError
           ? error.message
@@ -415,6 +416,7 @@ export const deductWithAutoReload = action({
     success: v.boolean(),
     newBalanceDollars: v.number(),
     insufficientFunds: v.boolean(),
+    monthlyCapExceeded: v.boolean(),
     autoReloadTriggered: v.boolean(),
     autoReloadResult: v.optional(
       v.object({
@@ -435,6 +437,7 @@ export const deductWithAutoReload = action({
         success: true,
         newBalanceDollars: 0,
         insufficientFunds: false,
+        monthlyCapExceeded: false,
         autoReloadTriggered: false,
       };
     }
@@ -520,6 +523,7 @@ export const deductWithAutoReload = action({
       newBalancePoints: number;
       newBalanceDollars: number;
       insufficientFunds: boolean;
+      monthlyCapExceeded: boolean;
     } = await ctx.runMutation(api.extraUsage.deductPoints, {
       serviceKey: args.serviceKey,
       userId: args.userId,
@@ -530,6 +534,7 @@ export const deductWithAutoReload = action({
       success: deductResult.success,
       newBalanceDollars: deductResult.newBalanceDollars,
       insufficientFunds: deductResult.insufficientFunds,
+      monthlyCapExceeded: deductResult.monthlyCapExceeded,
       autoReloadTriggered,
       autoReloadResult,
     };

@@ -7,7 +7,7 @@ import type {
 } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
 import { PRICING } from "@/lib/pricing/features";
-import { deductFromBalance, pointsToDollars } from "@/lib/extra-usage";
+import { deductFromBalance } from "@/lib/extra-usage";
 
 // =============================================================================
 // Configuration
@@ -185,9 +185,6 @@ export const checkAgentRateLimit = async (
             session.limiter.limit(session.key, { rate: sessionDeduct }),
           ]);
 
-          // Calculate the cost in dollars that was deducted
-          const deductedDollars = pointsToDollars(pointsNeeded);
-
           return {
             remaining: Math.min(
               sessionResult.remaining,
@@ -210,13 +207,21 @@ export const checkAgentRateLimit = async (
           };
         }
 
-        // Deduction failed - insufficient funds
+        // Deduction failed - check why
         if (deductResult.insufficientFunds) {
           const resetTime =
             sessionShortfall > 0
               ? formatTimeRemaining(new Date(sessionCheck.reset))
               : formatTimeRemaining(new Date(weeklyCheck.reset));
           const limitType = sessionShortfall > 0 ? "session" : "weekly";
+
+          // Monthly spending cap exceeded - recommend increasing it
+          if (deductResult.monthlyCapExceeded) {
+            const msg = `You've hit your monthly extra usage spending limit.\n\nYour ${limitType} limit resets in ${resetTime}. To keep going now, increase your spending limit in Settings.`;
+            throw new ChatSDKError("rate_limit:chat", msg);
+          }
+
+          // Actually out of balance
           const msg =
             subscription === "pro"
               ? `You've hit your usage limit and your extra usage balance is empty.\n\nYour ${limitType} limit resets in ${resetTime}. To keep going now, add credits in Settings or upgrade to Ultra for higher limits.`

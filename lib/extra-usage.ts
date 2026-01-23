@@ -19,6 +19,7 @@ export interface DeductBalanceResult {
   success: boolean;
   newBalanceDollars: number;
   insufficientFunds: boolean;
+  monthlyCapExceeded: boolean;
   autoReloadTriggered?: boolean;
   autoReloadResult?: {
     success: boolean;
@@ -86,6 +87,7 @@ export async function deductFromBalance(
       success: true,
       newBalanceDollars: 0,
       insufficientFunds: false,
+      monthlyCapExceeded: false,
     };
   }
 
@@ -107,6 +109,7 @@ export async function deductFromBalance(
       success: result.success,
       newBalanceDollars: result.newBalanceDollars,
       insufficientFunds: result.insufficientFunds,
+      monthlyCapExceeded: result.monthlyCapExceeded,
       autoReloadTriggered: result.autoReloadTriggered,
       autoReloadResult: result.autoReloadResult,
     };
@@ -116,6 +119,7 @@ export async function deductFromBalance(
       success: false,
       newBalanceDollars: 0,
       insufficientFunds: true,
+      monthlyCapExceeded: false,
     };
   }
 }

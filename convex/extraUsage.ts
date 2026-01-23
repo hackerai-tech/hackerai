@@ -84,6 +84,7 @@ export const deductPoints = mutation({
     newBalancePoints: v.number(),
     newBalanceDollars: v.number(),
     insufficientFunds: v.boolean(),
+    monthlyCapExceeded: v.boolean(),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -100,6 +101,7 @@ export const deductPoints = mutation({
         newBalancePoints: 0,
         newBalanceDollars: 0,
         insufficientFunds: true,
+        monthlyCapExceeded: false,
       };
     }
 
@@ -112,6 +114,7 @@ export const deductPoints = mutation({
         newBalancePoints: currentBalancePoints,
         newBalanceDollars: pointsToDollars(currentBalancePoints),
         insufficientFunds: true,
+        monthlyCapExceeded: false,
       };
     }
 
@@ -124,6 +127,21 @@ export const deductPoints = mutation({
     const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
     if (shouldResetMonthly) {
       monthlySpentPoints = 0;
+    }
+
+    // Check monthly spending cap before deducting
+    const monthlyCapPoints = settings.monthly_cap_points;
+    if (monthlyCapPoints !== undefined && monthlyCapPoints !== null) {
+      const newMonthlySpent = monthlySpentPoints + args.amountPoints;
+      if (newMonthlySpent > monthlyCapPoints) {
+        return {
+          success: false,
+          newBalancePoints: currentBalancePoints,
+          newBalanceDollars: pointsToDollars(currentBalancePoints),
+          insufficientFunds: true,
+          monthlyCapExceeded: true,
+        };
+      }
     }
 
     // Add to monthly spending
@@ -143,6 +161,7 @@ export const deductPoints = mutation({
       newBalancePoints,
       newBalanceDollars: pointsToDollars(newBalancePoints),
       insufficientFunds: false,
+      monthlyCapExceeded: false,
     };
   },
 });
