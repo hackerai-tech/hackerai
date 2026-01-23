@@ -1,6 +1,10 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { ChatSDKError } from "@/lib/errors";
-import type { SubscriptionTier, RateLimitInfo } from "@/types";
+import type {
+  SubscriptionTier,
+  RateLimitInfo,
+  ExtraUsageConfig,
+} from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
 import { checkAgentRateLimit } from "./token-bucket";
 
@@ -53,18 +57,23 @@ const getAskModeErrorMessage = (
  * @param userId - The user's unique identifier
  * @param subscription - The user's subscription tier
  * @param estimatedInputTokens - Estimated input tokens (for token bucket)
- * // @param modelName - Model name for pricing (for token bucket)
+ * @param extraUsageConfig - Optional config for extra usage charging
  * @returns Rate limit info including remaining requests/quota
  */
 export const checkAskRateLimit = async (
   userId: string,
   subscription: SubscriptionTier,
   estimatedInputTokens: number = 0,
-  // modelName = "",
+  extraUsageConfig?: ExtraUsageConfig,
 ): Promise<RateLimitInfo> => {
   // Paid users use token bucket (cost-based limiting, shared with agent mode)
   if (subscription !== "free") {
-    return checkAgentRateLimit(userId, subscription, estimatedInputTokens);
+    return checkAgentRateLimit(
+      userId,
+      subscription,
+      estimatedInputTokens,
+      extraUsageConfig,
+    );
   }
 
   // Free users use sliding window (simple request counting)

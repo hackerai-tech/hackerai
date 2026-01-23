@@ -14,9 +14,15 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import type { ChatMode, Todo, SandboxPreference } from "@/types";
+import type {
+  ChatMode,
+  Todo,
+  SandboxPreference,
+  ExtraUsageConfig,
+} from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { checkRateLimit, deductAgentUsage } from "@/lib/rate-limit";
+import { getExtraUsageBalance } from "@/lib/extra-usage";
 import { countMessagesTokens } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
@@ -158,12 +164,35 @@ export const createChatHandler = () => {
         );
       }
 
+      // Fetch user customization early (needed for memory settings)
+      const userCustomization = await getUserCustomization({ userId });
+      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
       // Token bucket requires estimated token count for cost calculation
       const estimatedInputTokens =
         mode === "agent" || subscription !== "free"
           ? countMessagesTokens(truncatedMessages, {})
           : 0;
+
+      // Build extra usage config (paid users only, works for both agent and ask modes)
+      // extra_usage_enabled is in userCustomization, balance is in extra_usage
+      let extraUsageConfig: ExtraUsageConfig | undefined;
+      if (subscription !== "free") {
+        const extraUsageEnabled =
+          userCustomization?.extra_usage_enabled ?? false;
+
+        if (extraUsageEnabled) {
+          const balanceInfo = await getExtraUsageBalance(userId);
+          if (balanceInfo && balanceInfo.balanceDollars > 0) {
+            extraUsageConfig = {
+              enabled: true,
+              hasBalance: true,
+              balanceDollars: balanceInfo.balanceDollars,
+            };
+          }
+        }
+      }
 
       const rateLimitInfo =
         freeAskRateLimitInfo ??
@@ -172,10 +201,9 @@ export const createChatHandler = () => {
           mode,
           subscription,
           estimatedInputTokens,
+          extraUsageConfig,
         ));
 
-      const userCustomization = await getUserCustomization({ userId });
-      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
       const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
 
@@ -205,6 +233,9 @@ export const createChatHandler = () => {
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
           // Send rate limit warnings based on subscription type
+          // Skip warnings if extra usage is enabled with balance (user can continue)
+          const hasExtraUsage =
+            extraUsageConfig?.enabled && extraUsageConfig?.hasBalance;
           if (subscription === "free") {
             // Free users: sliding window (remaining count)
             if (rateLimitInfo.remaining <= 5) {
@@ -216,8 +247,13 @@ export const createChatHandler = () => {
                 subscription,
               });
             }
-          } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
+          } else if (
+            rateLimitInfo.session &&
+            rateLimitInfo.weekly &&
+            !hasExtraUsage
+          ) {
             // Paid users: token bucket (remaining percentage at 10%)
+            // Don't show warning if extra usage is enabled - user can continue with balance
             const sessionPercent =
               (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) *
               100;
@@ -507,14 +543,15 @@ export const createChatHandler = () => {
 
               // Deduct additional cost (output + any input difference)
               // Input cost was already deducted upfront in checkRateLimit
-              // Both agent and paid ask modes share the same budget
-              if ((mode === "agent" || subscription !== "free") && usage) {
+              // Free users don't have token buckets, so skip for them
+              if (subscription !== "free" && usage) {
                 await deductAgentUsage(
                   userId,
                   subscription,
                   estimatedInputTokens,
                   usage.inputTokens || 0,
                   usage.outputTokens || 0,
+                  extraUsageConfig,
                 );
               }
             },

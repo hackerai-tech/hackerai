@@ -56,7 +56,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   // Token bucket warning
-  const limitType = data.bucketType === "session" ? "daily" : "weekly";
+  const limitType = data.bucketType === "session" ? "session" : "weekly";
   return data.remainingPercent === 0
     ? `You've reached your ${limitType} usage limit. It resets ${timeString}.`
     : `You have ${data.remainingPercent}% of your ${limitType} usage remaining. It resets ${timeString}.`;

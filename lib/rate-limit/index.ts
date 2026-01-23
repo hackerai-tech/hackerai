@@ -14,7 +14,12 @@
  *    - Fixed number of requests per 5-hour period
  */
 
-import type { ChatMode, SubscriptionTier, RateLimitInfo } from "@/types";
+import type {
+  ChatMode,
+  SubscriptionTier,
+  RateLimitInfo,
+  ExtraUsageConfig,
+} from "@/types";
 
 // Re-export token bucket functions (used by both agent and ask modes for paid users)
 export {
@@ -49,7 +54,7 @@ import { checkAskRateLimit } from "./sliding-window";
  * @param mode - The chat mode ("agent" or "ask")
  * @param subscription - The user's subscription tier
  * @param estimatedInputTokens - Estimated input tokens (for token bucket modes)
- * // @param modelName - Model name for pricing (for token bucket modes)
+ * @param extraUsageConfig - Optional config for extra usage charging
  * @returns Rate limit info including remaining quota
  */
 export const checkRateLimit = async (
@@ -57,12 +62,22 @@ export const checkRateLimit = async (
   mode: ChatMode,
   subscription: SubscriptionTier,
   estimatedInputTokens?: number,
-  // modelName = "",
+  extraUsageConfig?: ExtraUsageConfig,
 ): Promise<RateLimitInfo> => {
   if (mode === "agent") {
-    return checkAgentRateLimit(userId, subscription, estimatedInputTokens || 0);
+    return checkAgentRateLimit(
+      userId,
+      subscription,
+      estimatedInputTokens || 0,
+      extraUsageConfig,
+    );
   }
 
-  // Ask mode: token bucket for paid users, sliding window for free users
-  return checkAskRateLimit(userId, subscription, estimatedInputTokens || 0);
+  // Ask mode: token bucket for paid users (with extra usage), sliding window for free users
+  return checkAskRateLimit(
+    userId,
+    subscription,
+    estimatedInputTokens || 0,
+    extraUsageConfig,
+  );
 };

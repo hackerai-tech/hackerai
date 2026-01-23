@@ -135,6 +135,14 @@ export type RateLimitInfo = {
   weekly?: { remaining: number; limit: number; resetTime: Date };
 };
 
+export interface ExtraUsageConfig {
+  enabled: boolean;
+  /** Whether user has prepaid balance available */
+  hasBalance?: boolean;
+  /** Current balance in dollars (for UI display) */
+  balanceDollars?: number;
+}
+
 export interface QueuedMessage {
   id: string;
   text: string;

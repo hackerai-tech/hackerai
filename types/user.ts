@@ -7,6 +7,7 @@ export interface UserCustomization {
   readonly include_memory_entries?: boolean;
   readonly scope_exclusions?: string;
   readonly updated_at: number;
+  readonly extra_usage_enabled?: boolean;
 }
 
 export type PersonalityType = "cynic" | "robot" | "listener" | "nerd";

@@ -12,6 +12,8 @@ import type * as aggregateMigrations from "../aggregateMigrations.js";
 import type * as aggregateVersions from "../aggregateVersions.js";
 import type * as chats from "../chats.js";
 import type * as crons from "../crons.js";
+import type * as extraUsage from "../extraUsage.js";
+import type * as extraUsageActions from "../extraUsageActions.js";
 import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
@@ -39,6 +41,8 @@ declare const fullApi: ApiFromModules<{
   aggregateVersions: typeof aggregateVersions;
   chats: typeof chats;
   crons: typeof crons;
+  extraUsage: typeof extraUsage;
+  extraUsageActions: typeof extraUsageActions;
   feedback: typeof feedback;
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
