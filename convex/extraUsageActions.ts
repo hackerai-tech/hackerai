@@ -296,6 +296,9 @@ export const createPurchaseSession = action({
     }
 
     // Validate amount
+    if (!Number.isInteger(args.amountDollars)) {
+      return { url: null, error: "Amount must be a whole dollar value" };
+    }
     if (args.amountDollars < 5) {
       return { url: null, error: "Minimum amount is $5" };
     }

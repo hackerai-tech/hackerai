@@ -192,11 +192,17 @@ export const createChatHandler = () => {
 
         if (extraUsageEnabled) {
           const balanceInfo = await getExtraUsageBalance(userId);
-          if (balanceInfo && balanceInfo.balanceDollars > 0) {
+          // Set extraUsageConfig if user has balance OR auto-reload is enabled
+          // (auto-reload can add funds even when balance is $0)
+          if (
+            balanceInfo &&
+            (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled)
+          ) {
             extraUsageConfig = {
               enabled: true,
-              hasBalance: true,
+              hasBalance: balanceInfo.balanceDollars > 0,
               balanceDollars: balanceInfo.balanceDollars,
+              autoReloadEnabled: balanceInfo.autoReloadEnabled,
             };
           }
         }

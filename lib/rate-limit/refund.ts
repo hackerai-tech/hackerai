@@ -48,8 +48,6 @@ export class UsageRefundTracker {
       return;
     }
 
-    this.hasRefunded = true;
-
     try {
       await refundUsage(
         this.userId,
@@ -57,8 +55,10 @@ export class UsageRefundTracker {
         this.pointsDeducted,
         this.extraUsagePointsDeducted,
       );
+      this.hasRefunded = true;
     } catch (error) {
       console.error("Failed to refund usage:", error);
+      // Flag stays false, allowing retry on transient failures
     }
   }
 }

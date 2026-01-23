@@ -31,12 +31,10 @@ const MAX_AMOUNT = 999_999;
 
 /** Format number with commas (e.g., 1000 -> 1,000) */
 const formatWithCommas = (value: string): string => {
-  // Remove existing commas and non-numeric chars except decimal
+  // Remove existing commas
   const cleanValue = value.replace(/,/g, "");
-  const parts = cleanValue.split(".");
-  // Format the integer part with commas
-  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return parts.join(".");
+  // Format with commas (whole dollars only)
+  return cleanValue.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 };
 
 /** Remove commas for parsing */
@@ -102,7 +100,7 @@ const BuyExtraUsageDialogContent = ({
     }
   };
 
-  const parsedAmount = parseFloat(removeCommas(purchaseAmount) || "0");
+  const parsedAmount = parseInt(removeCommas(purchaseAmount) || "0", 10);
   const isValidAmount =
     !isNaN(parsedAmount) && parsedAmount >= 5 && parsedAmount <= MAX_AMOUNT;
   const showMinAmountError =
@@ -131,8 +129,8 @@ const BuyExtraUsageDialogContent = ({
             type="text"
             value={`$${formatWithCommas(purchaseAmount)}`}
             onChange={(e) => {
-              // Remove $ and commas, keep only digits and decimal
-              const val = e.target.value.replace(/[^0-9.]/g, "");
+              // Remove $ and commas, keep only digits (whole dollars only)
+              const val = e.target.value.replace(/[^0-9]/g, "");
               setPurchaseAmount(val);
             }}
             aria-label="Purchase amount"
@@ -150,11 +148,11 @@ const BuyExtraUsageDialogContent = ({
           <hr className="mb-5 border-border" />
           <div className="flex justify-between text-sm">
             <span>Extra usage</span>
-            <span>${formatWithCommas(parsedAmount.toFixed(2))}</span>
+            <span>${formatWithCommas(String(parsedAmount))}</span>
           </div>
           <div className="flex justify-between pt-2 text-sm font-medium">
             <span>Total due</span>
-            <span>${formatWithCommas(parsedAmount.toFixed(2))}</span>
+            <span>${formatWithCommas(String(parsedAmount))}</span>
           </div>
         </div>
         <div className="mt-2">
