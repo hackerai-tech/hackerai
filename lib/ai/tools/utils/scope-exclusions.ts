@@ -126,26 +126,6 @@ export const extractHostFromUrl = (url: string): string | null => {
 };
 
 /**
- * Check if a URL targets an excluded scope.
- * Returns the matched exclusion pattern if found, null otherwise.
- */
-export const checkUrlScopeExclusion = (
-  url: string,
-  exclusions: string[],
-): string | null => {
-  if (exclusions.length === 0) {
-    return null;
-  }
-
-  const host = extractHostFromUrl(url);
-  if (!host) {
-    return null;
-  }
-
-  return checkScopeExclusion(host, exclusions);
-};
-
-/**
  * Extract potential targets from a command string.
  * Looks for URLs, IPs, and hostnames in common command patterns.
  */

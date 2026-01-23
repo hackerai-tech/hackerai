@@ -83,7 +83,7 @@ export const MessagePartHandler = ({
 
     case "tool-web_search":
     case "tool-open_url":
-    case "tool-web": // Legacy support
+    case "tool-web": // Legacy tool
       return <WebToolHandler part={part} status={status} />;
 
     case "data-terminal":
@@ -91,12 +91,14 @@ export const MessagePartHandler = ({
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
       );
-
+    
+    // Legacy tool
     case "tool-http_request":
       return (
         <HttpRequestToolHandler message={message} part={part} status={status} />
       );
-
+    
+    // Legacy tool
     case "data-python":
     case "tool-python":
       return (
