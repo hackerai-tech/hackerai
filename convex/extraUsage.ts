@@ -166,6 +166,70 @@ export const deductPoints = mutation({
   },
 });
 
+/**
+ * Refund points to user balance (for failed requests).
+ * This is the reverse of deductPoints - adds points back to the balance.
+ * Does NOT affect monthly spending tracking (refunds don't reduce spent amount).
+ */
+export const refundPoints = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    amountPoints: v.number(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    newBalancePoints: v.number(),
+    newBalanceDollars: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    if (args.amountPoints <= 0) {
+      return {
+        success: true,
+        newBalancePoints: 0,
+        newBalanceDollars: 0,
+      };
+    }
+
+    // Get current settings
+    const settings = await ctx.db
+      .query("extra_usage")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .first();
+
+    if (!settings) {
+      // No settings record means no balance to refund to - create one
+      await ctx.db.insert("extra_usage", {
+        user_id: args.userId,
+        balance_points: args.amountPoints,
+        updated_at: Date.now(),
+      });
+
+      return {
+        success: true,
+        newBalancePoints: args.amountPoints,
+        newBalanceDollars: pointsToDollars(args.amountPoints),
+      };
+    }
+
+    const currentBalancePoints = settings.balance_points ?? 0;
+    const newBalancePoints = currentBalancePoints + args.amountPoints;
+
+    await ctx.db.patch(settings._id, {
+      balance_points: newBalancePoints,
+      updated_at: Date.now(),
+    });
+
+    return {
+      success: true,
+      newBalancePoints,
+      newBalanceDollars: pointsToDollars(newBalancePoints),
+    };
+  },
+});
+
 // =============================================================================
 // Queries
 // =============================================================================

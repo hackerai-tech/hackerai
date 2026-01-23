@@ -78,6 +78,61 @@ export async function getExtraUsageBalance(
  * @param userId - User ID
  * @param pointsUsed - Number of points to deduct
  */
+export interface RefundBalanceResult {
+  success: boolean;
+  newBalanceDollars: number;
+}
+
+/**
+ * Refund points to user's prepaid balance (for failed requests).
+ * This is the reverse of deductFromBalance.
+ *
+ * @param userId - User ID
+ * @param pointsToRefund - Number of points to refund
+ */
+export async function refundToBalance(
+  userId: string,
+  pointsToRefund: number,
+): Promise<RefundBalanceResult> {
+  if (pointsToRefund <= 0) {
+    return {
+      success: true,
+      newBalanceDollars: 0,
+    };
+  }
+
+  try {
+    const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+    const result = await convex.mutation(api.extraUsage.refundPoints, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      userId,
+      amountPoints: pointsToRefund,
+    });
+
+    return {
+      success: result.success,
+      newBalanceDollars: result.newBalanceDollars,
+    };
+  } catch (error) {
+    console.error("Error refunding to balance:", error);
+    return {
+      success: false,
+      newBalanceDollars: 0,
+    };
+  }
+}
+
+/**
+ * Deduct from user's prepaid balance for extra usage.
+ * Also triggers auto-reload if enabled and balance is below threshold.
+ * All logic is handled internally by the Convex action.
+ *
+ * Passes points directly to Convex to avoid precision loss from dollar conversion.
+ *
+ * @param userId - User ID
+ * @param pointsUsed - Number of points to deduct
+ */
 export async function deductFromBalance(
   userId: string,
   pointsUsed: number,

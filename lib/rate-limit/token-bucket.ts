@@ -7,7 +7,7 @@ import type {
 } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
 import { PRICING } from "@/lib/pricing/features";
-import { deductFromBalance } from "@/lib/extra-usage";
+import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
 
 // =============================================================================
 // Configuration
@@ -204,6 +204,9 @@ export const checkAgentRateLimit = async (
               limit: weeklyLimit,
               resetTime: new Date(weeklyResult.reset),
             },
+            // Track deductions for potential refund on error
+            pointsDeducted: estimatedCost,
+            extraUsagePointsDeducted: pointsNeeded,
           };
         }
 
@@ -272,6 +275,8 @@ export const checkAgentRateLimit = async (
         limit: weeklyLimit,
         resetTime: new Date(weeklyResult.reset),
       },
+      // Track deduction for potential refund on error
+      pointsDeducted: estimatedCost,
     };
   } catch (error) {
     if (error instanceof ChatSDKError) throw error;
@@ -358,5 +363,96 @@ export const deductAgentUsage = async (
     }
   } catch {
     // Silently fail for post-request deductions
+  }
+};
+
+/**
+ * Refund bucket tokens by adding capacity back to the token buckets.
+ * Uses direct Redis operations since Upstash Ratelimit doesn't have a native refund method.
+ *
+ * Upstash Ratelimit stores token bucket data as a hash with:
+ * - "tokens" - current token count
+ * - "refilledAt" - timestamp when tokens were last refilled
+ *
+ * We use HINCRBY to atomically add tokens back, capped at the bucket limit.
+ */
+const refundBucketTokens = async (
+  userId: string,
+  subscription: SubscriptionTier,
+  pointsToRefund: number,
+): Promise<void> => {
+  if (pointsToRefund <= 0) return;
+
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const { session: sessionLimit, weekly: weeklyLimit } =
+    getBudgetLimits(subscription);
+
+  // Key format matches what Ratelimit uses: {prefix}:{identifier}
+  const sessionKey = `usage:session:${userId}:${subscription}`;
+  const weeklyKey = `usage:weekly:${userId}:${subscription}`;
+
+  try {
+    // Use HINCRBY to atomically add tokens back
+    // The "tokens" field stores the current token count in Upstash Ratelimit
+    const [sessionTokens, weeklyTokens] = await Promise.all([
+      redis.hincrby(sessionKey, "tokens", pointsToRefund),
+      redis.hincrby(weeklyKey, "tokens", pointsToRefund),
+    ]);
+
+    // Cap at limits if we exceeded them (edge case)
+    // This shouldn't normally happen but prevents over-refunding
+    if (sessionTokens > sessionLimit) {
+      await redis.hset(sessionKey, { tokens: sessionLimit });
+    }
+    if (weeklyTokens > weeklyLimit) {
+      await redis.hset(weeklyKey, { tokens: weeklyLimit });
+    }
+  } catch (error) {
+    // Log but don't throw - refund is best-effort
+    console.error("Failed to refund bucket tokens:", error);
+  }
+};
+
+/**
+ * Refund usage when a request fails after credits were deducted.
+ * Refunds both token bucket credits and extra usage balance.
+ *
+ * @param userId - User ID
+ * @param subscription - User's subscription tier
+ * @param pointsDeducted - Total points deducted (estimatedCost) - refunded to buckets
+ * @param extraUsagePointsDeducted - Points deducted from extra usage balance (if any)
+ */
+export const refundUsage = async (
+  userId: string,
+  subscription: SubscriptionTier,
+  pointsDeducted: number,
+  extraUsagePointsDeducted: number,
+): Promise<void> => {
+  const refundPromises: Promise<void>[] = [];
+
+  // Refund to buckets (always refund the full amount, capped at limit)
+  if (pointsDeducted > 0) {
+    refundPromises.push(
+      refundBucketTokens(userId, subscription, pointsDeducted),
+    );
+  }
+
+  // Refund extra usage if any was deducted
+  if (extraUsagePointsDeducted > 0) {
+    refundPromises.push(
+      refundToBalance(userId, extraUsagePointsDeducted).then(() => {}),
+    );
+  }
+
+  // Run both refunds in parallel
+  if (refundPromises.length > 0) {
+    try {
+      await Promise.all(refundPromises);
+    } catch (error) {
+      // Log but don't throw - refund is best-effort
+      console.error("Failed to refund usage:", error);
+    }
   }
 };

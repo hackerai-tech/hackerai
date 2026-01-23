@@ -21,7 +21,11 @@ import type {
   ExtraUsageConfig,
 } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
-import { checkRateLimit, deductAgentUsage } from "@/lib/rate-limit";
+import {
+  checkRateLimit,
+  deductAgentUsage,
+  UsageRefundTracker,
+} from "@/lib/rate-limit";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
 import { countMessagesTokens } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
@@ -78,6 +82,9 @@ export const createChatHandler = () => {
       | ReturnType<typeof createPreemptiveTimeout>
       | undefined;
 
+    // Track usage deductions for refund on error
+    const usageRefundTracker = new UsageRefundTracker();
+
     try {
       const {
         messages,
@@ -98,6 +105,7 @@ export const createChatHandler = () => {
       } = await req.json();
 
       const { userId, subscription } = await getUserIDAndPro(req);
+      usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
 
       if (mode === "agent" && subscription === "free") {
@@ -203,6 +211,9 @@ export const createChatHandler = () => {
           estimatedInputTokens,
           extraUsageConfig,
         ));
+
+      // Track deductions for potential refund on error
+      usageRefundTracker.recordDeductions(rateLimitInfo);
 
       const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
@@ -557,6 +568,8 @@ export const createChatHandler = () => {
             },
             onError: async (error) => {
               console.error("Error:", error);
+              // Refund credits on streaming errors (idempotent - only refunds once)
+              await usageRefundTracker.refund();
             },
           });
 
@@ -709,6 +722,9 @@ export const createChatHandler = () => {
     } catch (error) {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
+
+      // Refund credits if any were deducted (idempotent - only refunds once)
+      await usageRefundTracker.refund();
 
       // Handle ChatSDKErrors (including authentication errors)
       if (error instanceof ChatSDKError) {

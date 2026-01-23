@@ -25,6 +25,7 @@ import type {
 export {
   checkAgentRateLimit,
   deductAgentUsage,
+  refundUsage,
   calculateTokenCost,
   getBudgetLimits,
   calculateBucketLimit,
@@ -37,6 +38,7 @@ export { checkAskRateLimit } from "./sliding-window";
 
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
+export { UsageRefundTracker } from "./refund";
 
 // Import for use in checkRateLimit
 import { checkAgentRateLimit } from "./token-bucket";
