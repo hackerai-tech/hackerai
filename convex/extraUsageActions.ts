@@ -301,6 +301,11 @@ export const createPurchaseSession = action({
           },
         ],
         invoice_creation: { enabled: true },
+        // Show saved payment methods in Checkout UI
+        saved_payment_method_options: {
+          allow_redisplay_filters: ["always", "limited"],
+          payment_method_save: "enabled",
+        },
         metadata: {
           type: "extra_usage_purchase",
           userId: identity.subject,

@@ -96,7 +96,7 @@ const ExtraUsageSection = () => {
     }
   };
 
-  // Purchase credits handler
+  // Purchase credits (redirects to Stripe Checkout with saved cards shown)
   const handlePurchaseCredits = async (amountDollars: number) => {
     setIsPurchasing(true);
     try {
@@ -116,12 +116,6 @@ const ExtraUsageSection = () => {
     } finally {
       setIsPurchasing(false);
     }
-  };
-
-  // Handle purchase from dialog
-  const handlePurchaseFromDialog = async (amountDollars: number) => {
-    await handlePurchaseCredits(amountDollars);
-    setShowBuyDialog(false);
   };
 
   // Save auto-reload settings from dialog
@@ -350,7 +344,7 @@ const ExtraUsageSection = () => {
       <BuyExtraUsageDialog
         open={showBuyDialog}
         onOpenChange={setShowBuyDialog}
-        onPurchase={handlePurchaseFromDialog}
+        onPurchase={handlePurchaseCredits}
         isLoading={isPurchasing}
       />
 
