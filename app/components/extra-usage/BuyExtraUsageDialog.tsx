@@ -66,23 +66,48 @@ const BuyExtraUsageDialogContent = ({
   );
   const getPaymentStatus = useAction(api.extraUsageActions.getPaymentStatus);
 
-  // Fetch payment method on mount
+  // Fetch payment method on mount and when visibility changes after clearing
   useEffect(() => {
-    getPaymentStatus({})
-      .then((result) => {
-        setPaymentMethod({
-          hasPaymentMethod: result.hasPaymentMethod,
-          last4: result.paymentMethodLast4,
-          brand: result.paymentMethodBrand,
+    let isMounted = true;
+
+    const fetchPaymentMethod = () => {
+      setLoadingPaymentMethod(true);
+      getPaymentStatus({})
+        .then((result) => {
+          if (isMounted) {
+            setPaymentMethod({
+              hasPaymentMethod: result.hasPaymentMethod,
+              last4: result.paymentMethodLast4,
+              brand: result.paymentMethodBrand,
+            });
+          }
+        })
+        .catch((err) => {
+          console.error("Failed to fetch payment method:", err);
+        })
+        .finally(() => {
+          if (isMounted) {
+            setLoadingPaymentMethod(false);
+          }
         });
-      })
-      .catch((err) => {
-        console.error("Failed to fetch payment method:", err);
-      })
-      .finally(() => {
-        setLoadingPaymentMethod(false);
-      });
-  }, [getPaymentStatus]);
+    };
+
+    // Fetch on mount
+    fetchPaymentMethod();
+
+    // Re-fetch when user returns from billing portal (tab becomes visible)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && paymentMethod === null) {
+        fetchPaymentMethod();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      isMounted = false;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [getPaymentStatus, paymentMethod]);
 
   const handleEditPaymentMethod = async () => {
     try {
@@ -132,7 +157,12 @@ const BuyExtraUsageDialogContent = ({
             value={`$${formatWithCommas(purchaseAmount)}`}
             onChange={(e) => {
               // Remove $ and commas, keep only digits and decimal
-              const val = e.target.value.replace(/[^0-9.]/g, "");
+              let val = e.target.value.replace(/[^0-9.]/g, "");
+              // Ensure only one decimal point
+              const parts = val.split(".");
+              if (parts.length > 2) {
+                val = parts[0] + "." + parts.slice(1).join("");
+              }
               setPurchaseAmount(val);
             }}
             aria-label="Purchase amount"
@@ -150,11 +180,15 @@ const BuyExtraUsageDialogContent = ({
           <hr className="mb-5 border-border" />
           <div className="flex justify-between text-sm">
             <span>Extra usage</span>
-            <span>${formatWithCommas(parsedAmount.toFixed(2))}</span>
+            <span>
+              ${formatWithCommas((isNaN(parsedAmount) ? 0 : parsedAmount).toFixed(2))}
+            </span>
           </div>
           <div className="flex justify-between pt-2 text-sm font-medium">
             <span>Total due</span>
-            <span>${formatWithCommas(parsedAmount.toFixed(2))}</span>
+            <span>
+              ${formatWithCommas((isNaN(parsedAmount) ? 0 : parsedAmount).toFixed(2))}
+            </span>
           </div>
         </div>
         <div className="mt-2">

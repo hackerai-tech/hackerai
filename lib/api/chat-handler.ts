@@ -185,6 +185,7 @@ export const createChatHandler = () => {
 
       // Build extra usage config (paid users only, works for both agent and ask modes)
       // extra_usage_enabled is in userCustomization, balance is in extra_usage
+      // Always set config when enabled to allow auto-reload to trigger even with $0 balance
       let extraUsageConfig: ExtraUsageConfig | undefined;
       if (subscription !== "free") {
         const extraUsageEnabled =
@@ -192,13 +193,12 @@ export const createChatHandler = () => {
 
         if (extraUsageEnabled) {
           const balanceInfo = await getExtraUsageBalance(userId);
-          if (balanceInfo && balanceInfo.balanceDollars > 0) {
-            extraUsageConfig = {
-              enabled: true,
-              hasBalance: true,
-              balanceDollars: balanceInfo.balanceDollars,
-            };
-          }
+          extraUsageConfig = {
+            enabled: true,
+            hasBalance: balanceInfo ? balanceInfo.balanceDollars > 0 : false,
+            balanceDollars: balanceInfo?.balanceDollars ?? 0,
+            autoReloadEnabled: balanceInfo?.autoReloadEnabled ?? false,
+          };
         }
       }
 

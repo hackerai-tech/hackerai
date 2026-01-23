@@ -80,7 +80,8 @@ export async function getExtraUsageBalance(
  */
 export interface RefundBalanceResult {
   success: boolean;
-  newBalanceDollars: number;
+  /** New balance after refund. Undefined for no-op refunds (pointsToRefund <= 0). */
+  newBalanceDollars?: number;
 }
 
 /**
@@ -95,10 +96,8 @@ export async function refundToBalance(
   pointsToRefund: number,
 ): Promise<RefundBalanceResult> {
   if (pointsToRefund <= 0) {
-    return {
-      success: true,
-      newBalanceDollars: 0,
-    };
+    // No-op refund: return success without balance (avoids misleading $0)
+    return { success: true };
   }
 
   try {
