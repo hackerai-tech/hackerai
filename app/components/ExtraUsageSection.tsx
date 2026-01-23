@@ -160,7 +160,7 @@ const ExtraUsageSection = () => {
     setIsSavingSettings(true);
     try {
       await updateExtraUsageSettings({
-        monthlyCapDollars: limitDollars ?? undefined,
+        monthlyCapDollars: limitDollars,
       });
       toast.success(
         limitDollars ? "Spending limit updated" : "Spending limit removed",
@@ -303,7 +303,7 @@ const ExtraUsageSection = () => {
             </div>
 
             {/* Current Balance Row */}
-            <div className="w-full flex flex-row gap-x-8 gap-y-3 justify-between items-center">
+            <div className="w-full flex flex-row gap-x-8 gap-y-3 justify-between items-center flex-wrap">
               <div className="flex flex-col gap-1.5 min-w-0">
                 <p className="text-sm">${balanceDollars.toFixed(2)}</p>
                 <p className="text-sm text-muted-foreground whitespace-nowrap">

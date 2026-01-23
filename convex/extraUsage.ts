@@ -277,7 +277,7 @@ export const updateExtraUsageSettings = mutation({
     autoReloadEnabled: v.optional(v.boolean()),
     autoReloadThresholdDollars: v.optional(v.number()),
     autoReloadAmountDollars: v.optional(v.number()),
-    monthlyCapDollars: v.optional(v.number()),
+    monthlyCapDollars: v.optional(v.union(v.null(), v.number())),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -308,7 +308,11 @@ export const updateExtraUsageSettings = mutation({
       updateData.auto_reload_amount_dollars = args.autoReloadAmountDollars;
     }
     if (args.monthlyCapDollars !== undefined) {
-      updateData.monthly_cap_points = dollarsToPoints(args.monthlyCapDollars);
+      // null means unlimited (clear the cap), number sets a specific cap
+      updateData.monthly_cap_points =
+        args.monthlyCapDollars === null
+          ? undefined
+          : dollarsToPoints(args.monthlyCapDollars);
     }
 
     if (settings) {
