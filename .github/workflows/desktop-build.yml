@@ -513,27 +513,61 @@ jobs:
           find artifacts -name "*.nsis.zip.sig" -exec cp {} release-files/ \;
           find artifacts -name "*.exe" -exec cp {} release-files/ \;
 
+          echo "Files in release-files before creating aliases:"
+          ls -la release-files/ | grep -E "(AppImage|exe)" || echo "No AppImage or exe files found"
+
           # Create fixed-name aliases for download page (no version in filename)
           # Linux x64 AppImage
           LINUX_X64_APPIMAGE=$(ls release-files/*_amd64.AppImage 2>/dev/null | head -1 || echo "")
+          echo "Looking for Linux x64 AppImage: pattern '*_amd64.AppImage'"
+          echo "Found: $LINUX_X64_APPIMAGE"
           if [ -n "$LINUX_X64_APPIMAGE" ] && [ -f "$LINUX_X64_APPIMAGE" ]; then
             cp "$LINUX_X64_APPIMAGE" release-files/HackerAI-linux-x64.AppImage
+            echo "Created alias: HackerAI-linux-x64.AppImage from $(basename "$LINUX_X64_APPIMAGE")"
+          else
+            echo "WARNING: Linux x64 AppImage not found for alias creation"
           fi
 
           # Linux ARM64 AppImage
           LINUX_ARM64_APPIMAGE=$(ls release-files/*_aarch64.AppImage 2>/dev/null | head -1 || echo "")
+          echo "Looking for Linux ARM64 AppImage: pattern '*_aarch64.AppImage'"
+          echo "Found: $LINUX_ARM64_APPIMAGE"
           if [ -n "$LINUX_ARM64_APPIMAGE" ] && [ -f "$LINUX_ARM64_APPIMAGE" ]; then
             cp "$LINUX_ARM64_APPIMAGE" release-files/HackerAI-linux-arm64.AppImage
+            echo "Created alias: HackerAI-linux-arm64.AppImage from $(basename "$LINUX_ARM64_APPIMAGE")"
+          else
+            echo "WARNING: Linux ARM64 AppImage not found for alias creation"
           fi
 
           # Windows exe
           WIN_EXE=$(ls release-files/*_x64-setup.exe 2>/dev/null | head -1 || echo "")
+          echo "Looking for Windows exe: pattern '*_x64-setup.exe'"
+          echo "Found: $WIN_EXE"
           if [ -n "$WIN_EXE" ] && [ -f "$WIN_EXE" ]; then
             cp "$WIN_EXE" release-files/HackerAI-windows-x64.exe
+            echo "Created alias: HackerAI-windows-x64.exe from $(basename "$WIN_EXE")"
+          else
+            echo "WARNING: Windows exe not found for alias creation"
           fi
 
           echo "Release files:"
           ls -la release-files/
+          
+          # Verify fixed-name aliases exist
+          echo "Verifying fixed-name aliases..."
+          if [ ! -f "release-files/HackerAI-linux-x64.AppImage" ]; then
+            echo "ERROR: HackerAI-linux-x64.AppImage alias not created!"
+            exit 1
+          fi
+          if [ ! -f "release-files/HackerAI-linux-arm64.AppImage" ]; then
+            echo "ERROR: HackerAI-linux-arm64.AppImage alias not created!"
+            exit 1
+          fi
+          if [ ! -f "release-files/HackerAI-windows-x64.exe" ]; then
+            echo "ERROR: HackerAI-windows-x64.exe alias not created!"
+            exit 1
+          fi
+          echo "All fixed-name aliases verified successfully!"
 
       - name: Generate latest.json for updater
         env:
@@ -620,6 +654,23 @@ jobs:
           TAG_NAME: ${{ needs.prepare.outputs.tag_name }}
         run: |
           echo "Creating release for tag: $TAG_NAME"
+          
+          # Verify fixed-name aliases exist before uploading
+          echo "Verifying fixed-name aliases before upload..."
+          if [ ! -f "release-files/HackerAI-linux-x64.AppImage" ]; then
+            echo "ERROR: HackerAI-linux-x64.AppImage not found!"
+            exit 1
+          fi
+          if [ ! -f "release-files/HackerAI-linux-arm64.AppImage" ]; then
+            echo "ERROR: HackerAI-linux-arm64.AppImage not found!"
+            exit 1
+          fi
+          if [ ! -f "release-files/HackerAI-windows-x64.exe" ]; then
+            echo "ERROR: HackerAI-windows-x64.exe not found!"
+            exit 1
+          fi
+          
+          echo "All fixed-name aliases verified. Uploading release files..."
           gh release create "$TAG_NAME" \
             --title "HackerAI Desktop $TAG_NAME" \
             --draft \
