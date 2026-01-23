@@ -167,10 +167,13 @@ export const checkAgentRateLimit = async (
     const weeklyShortfall = Math.max(0, estimatedCost - weeklyCheck.remaining);
     const pointsNeeded = Math.max(sessionShortfall, weeklyShortfall);
 
-    // If we're over limit, try extra usage (prepaid balance)
+    // If we're over limit, try extra usage (prepaid balance or auto-reload)
     if (pointsNeeded > 0) {
-      // Check if extra usage is enabled and user has balance
-      if (extraUsageConfig?.enabled && extraUsageConfig.hasBalance) {
+      // Check if extra usage is enabled and user has balance OR auto-reload enabled
+      const canUseExtraUsage =
+        extraUsageConfig?.enabled &&
+        (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled);
+      if (canUseExtraUsage) {
         // Deduct from prepaid balance
         const deductResult = await deductFromBalance(userId, pointsNeeded);
 
@@ -353,11 +356,11 @@ export const deductAgentUsage = async (
       ]);
     }
 
-    // Deduct remainder from extra usage if enabled
+    // Deduct remainder from extra usage if enabled (balance or auto-reload)
     if (
       fromExtraUsage > 0 &&
       extraUsageConfig?.enabled &&
-      extraUsageConfig.hasBalance
+      (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
     ) {
       await deductFromBalance(userId, fromExtraUsage);
     }

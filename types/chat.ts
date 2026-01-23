@@ -145,6 +145,8 @@ export interface ExtraUsageConfig {
   hasBalance?: boolean;
   /** Current balance in dollars (for UI display) */
   balanceDollars?: number;
+  /** Whether auto-reload is enabled (allows triggering reload even with $0 balance) */
+  autoReloadEnabled?: boolean;
 }
 
 export interface QueuedMessage {

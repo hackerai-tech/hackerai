@@ -179,18 +179,15 @@ export const refundPoints = mutation({
   },
   returns: v.object({
     success: v.boolean(),
-    newBalancePoints: v.number(),
-    newBalanceDollars: v.number(),
+    newBalancePoints: v.optional(v.number()),
+    newBalanceDollars: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
     if (args.amountPoints <= 0) {
-      return {
-        success: true,
-        newBalancePoints: 0,
-        newBalanceDollars: 0,
-      };
+      // No-op refund: return success without balance to avoid misleading values
+      return { success: true };
     }
 
     // Get current settings
@@ -354,6 +351,29 @@ export const updateExtraUsageSettings = mutation({
       .query("extra_usage")
       .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
       .first();
+
+    // Validate dollar amounts are positive and finite
+    if (
+      args.autoReloadThresholdDollars !== undefined &&
+      (args.autoReloadThresholdDollars < 0 ||
+        !Number.isFinite(args.autoReloadThresholdDollars))
+    ) {
+      throw new Error("Auto-reload threshold must be a positive number");
+    }
+    if (
+      args.autoReloadAmountDollars !== undefined &&
+      (args.autoReloadAmountDollars < 0 ||
+        !Number.isFinite(args.autoReloadAmountDollars))
+    ) {
+      throw new Error("Auto-reload amount must be a positive number");
+    }
+    if (
+      args.monthlyCapDollars !== undefined &&
+      args.monthlyCapDollars !== null &&
+      (args.monthlyCapDollars < 0 || !Number.isFinite(args.monthlyCapDollars))
+    ) {
+      throw new Error("Monthly cap must be a positive number");
+    }
 
     const updateData: Record<string, unknown> = {
       updated_at: Date.now(),
