@@ -53,7 +53,9 @@ const AccountTab = () => {
       await redirectToBillingPortalAction();
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to open billing portal",
+        error instanceof Error
+          ? error.message
+          : "Failed to open billing portal",
       );
     }
   };

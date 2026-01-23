@@ -179,6 +179,13 @@ const ExtraUsageSection = () => {
   const monthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
   const monthlySpentDollars = extraUsageSettings?.monthlySpentDollars ?? 0;
 
+  // Get color class based on usage percentage (matches UsageTab)
+  const getUsageColorClass = (percentage: number): string => {
+    if (percentage >= 90) return "bg-red-500";
+    if (percentage >= 70) return "bg-orange-500";
+    return "bg-blue-500";
+  };
+
   return (
     <>
       <section
@@ -250,7 +257,7 @@ const ExtraUsageSection = () => {
                   <div className="flex-1">
                     <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
                       <div
-                        className="h-full bg-blue-500 transition-all duration-500"
+                        className={`h-full transition-all duration-500 ${getUsageColorClass((monthlySpentDollars / monthlyCapDollars) * 100)}`}
                         style={{
                           width: `${Math.min(100, (monthlySpentDollars / monthlyCapDollars) * 100)}%`,
                         }}

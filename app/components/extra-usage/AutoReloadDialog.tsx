@@ -36,10 +36,10 @@ const AutoReloadDialogContent = ({
 }: ContentProps) => {
   // Initialize state directly from props - component remounts when dialog opens
   const [threshold, setThreshold] = useState(
-    currentThresholdDollars ? String(currentThresholdDollars) : "5"
+    currentThresholdDollars ? String(currentThresholdDollars) : "5",
   );
   const [amount, setAmount] = useState(
-    currentAmountDollars ? String(currentAmountDollars) : "15"
+    currentAmountDollars ? String(currentAmountDollars) : "15",
   );
 
   const handleSubmit = async () => {
@@ -111,9 +111,9 @@ const AutoReloadDialogContent = ({
           </div>
         </div>
         <p className="text-sm text-muted-foreground">
-          You agree that Anthropic will charge the card you have on file in
-          the amount above on a recurring basis whenever your balance reaches
-          the amount indicated. To cancel, turn off auto-reload.
+          You agree that Anthropic will charge the card you have on file in the
+          amount above on a recurring basis whenever your balance reaches the
+          amount indicated. To cancel, turn off auto-reload.
         </p>
       </div>
       <DialogFooter className="flex flex-col gap-2 sm:flex-row sm:justify-end">

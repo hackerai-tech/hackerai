@@ -196,8 +196,8 @@ const BuyExtraUsageDialogContent = ({
             {isLoading ? "Processing..." : "Purchase"}
           </Button>
           <p className="text-muted-foreground text-sm">
-            By clicking Purchase, you allow HackerAI to charge your card in
-            the amount above.
+            By clicking Purchase, you allow HackerAI to charge your card in the
+            amount above.
           </p>
         </div>
       </div>

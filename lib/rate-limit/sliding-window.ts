@@ -87,9 +87,9 @@ export const checkAskRateLimit = async (
     };
   }
 
-  try {
-    const requestLimit = getAskModeRequestLimit(subscription);
+  const requestLimit = getAskModeRequestLimit(subscription);
 
+  try {
     const ratelimit = new Ratelimit({
       redis,
       limiter: Ratelimit.slidingWindow(requestLimit, "5 h"),
@@ -111,10 +111,7 @@ export const checkAskRateLimit = async (
       limit: requestLimit,
     };
   } catch (error) {
-    if (error instanceof ChatSDKError) {
-      throw error;
-    }
-
+    if (error instanceof ChatSDKError) throw error;
     throw new ChatSDKError(
       "rate_limit:chat",
       `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,

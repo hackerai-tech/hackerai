@@ -18,7 +18,10 @@ type AdjustSpendingLimitDialogProps = {
   currentLimitDollars: number | null;
 };
 
-type ContentProps = Omit<AdjustSpendingLimitDialogProps, "open" | "onOpenChange">;
+type ContentProps = Omit<
+  AdjustSpendingLimitDialogProps,
+  "open" | "onOpenChange"
+>;
 
 const AdjustSpendingLimitDialogContent = ({
   onSave,
@@ -27,7 +30,7 @@ const AdjustSpendingLimitDialogContent = ({
 }: ContentProps) => {
   // Initialize state directly from props - component remounts when dialog opens
   const [inputValue, setInputValue] = useState<string>(
-    currentLimitDollars === null ? "20" : String(currentLimitDollars)
+    currentLimitDollars === null ? "20" : String(currentLimitDollars),
   );
 
   const handleSetLimit = async () => {
