@@ -91,7 +91,10 @@ export const addCredits = mutation({
       });
     }
 
-    return { newBalance: pointsToDollars(newBalancePoints), alreadyProcessed: false };
+    return {
+      newBalance: pointsToDollars(newBalancePoints),
+      alreadyProcessed: false,
+    };
   },
 });
 

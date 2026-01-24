@@ -18,6 +18,12 @@ export type RateLimitWarningData =
       remainingPercent: number;
       resetTime: Date;
       subscription: SubscriptionTier;
+    }
+  | {
+      warningType: "extra-usage-active";
+      bucketType: "session" | "weekly";
+      resetTime: Date;
+      subscription: SubscriptionTier;
     };
 
 interface RateLimitWarningProps {
@@ -55,6 +61,11 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
       : `You have ${data.remaining} ${data.remaining === 1 ? "response" : "responses"} in ${data.mode} mode remaining until it resets ${timeString}.`;
   }
 
+  if (data.warningType === "extra-usage-active") {
+    const limitType = data.bucketType === "session" ? "session" : "weekly";
+    return `You're now using extra usage credits. Your ${limitType} limit resets ${timeString}.`;
+  }
+
   // Token bucket warning
   const limitType = data.bucketType === "session" ? "session" : "weekly";
   return data.remainingPercent === 0
@@ -69,8 +80,9 @@ export const RateLimitWarning = ({
   const timeString = formatTimeUntil(data.resetTime);
   const message = getMessage(data, timeString);
   const showUpgrade =
-    data.subscription === "free" ||
-    (data.warningType === "token-bucket" && data.subscription === "pro");
+    data.warningType !== "extra-usage-active" &&
+    (data.subscription === "free" ||
+      (data.warningType === "token-bucket" && data.subscription === "pro"));
 
   return (
     <div

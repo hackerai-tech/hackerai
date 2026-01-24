@@ -250,9 +250,6 @@ export const createChatHandler = () => {
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
           // Send rate limit warnings based on subscription type
-          // Skip warnings if extra usage is enabled with balance (user can continue)
-          const hasExtraUsage =
-            extraUsageConfig?.enabled && extraUsageConfig?.hasBalance;
           if (subscription === "free") {
             // Free users: sliding window (remaining count)
             if (rateLimitInfo.remaining <= 5) {
@@ -264,38 +261,59 @@ export const createChatHandler = () => {
                 subscription,
               });
             }
-          } else if (
-            rateLimitInfo.session &&
-            rateLimitInfo.weekly &&
-            !hasExtraUsage
-          ) {
-            // Paid users: token bucket (remaining percentage at 10%)
-            // Don't show warning if extra usage is enabled - user can continue with balance
-            const sessionPercent =
-              (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) *
-              100;
-            const weeklyPercent =
-              (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) *
-              100;
+          } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
+            // Paid users with extra usage: warn when extra usage is being used
+            // Client-side localStorage handles showing only once per period
+            if (
+              rateLimitInfo.extraUsagePointsDeducted &&
+              rateLimitInfo.extraUsagePointsDeducted > 0
+            ) {
+              // Determine which bucket triggered extra usage (the one with lower remaining)
+              const bucketType =
+                rateLimitInfo.session.remaining <=
+                rateLimitInfo.weekly.remaining
+                  ? "session"
+                  : "weekly";
+              const resetTime =
+                bucketType === "session"
+                  ? rateLimitInfo.session.resetTime
+                  : rateLimitInfo.weekly.resetTime;
 
-            if (sessionPercent <= 10) {
               writeRateLimitWarning(writer, {
-                warningType: "token-bucket",
-                bucketType: "session",
-                remainingPercent: Math.round(sessionPercent),
-                resetTime: rateLimitInfo.session.resetTime.toISOString(),
+                warningType: "extra-usage-active",
+                bucketType,
+                resetTime: resetTime.toISOString(),
                 subscription,
               });
-            }
+            } else {
+              // Paid users without extra usage: token bucket (remaining percentage at 10%)
+              const sessionPercent =
+                (rateLimitInfo.session.remaining /
+                  rateLimitInfo.session.limit) *
+                100;
+              const weeklyPercent =
+                (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) *
+                100;
 
-            if (weeklyPercent <= 10) {
-              writeRateLimitWarning(writer, {
-                warningType: "token-bucket",
-                bucketType: "weekly",
-                remainingPercent: Math.round(weeklyPercent),
-                resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
-                subscription,
-              });
+              if (sessionPercent <= 10) {
+                writeRateLimitWarning(writer, {
+                  warningType: "token-bucket",
+                  bucketType: "session",
+                  remainingPercent: Math.round(sessionPercent),
+                  resetTime: rateLimitInfo.session.resetTime.toISOString(),
+                  subscription,
+                });
+              }
+
+              if (weeklyPercent <= 10) {
+                writeRateLimitWarning(writer, {
+                  warningType: "token-bucket",
+                  bucketType: "weekly",
+                  remainingPercent: Math.round(weeklyPercent),
+                  resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
+                  subscription,
+                });
+              }
             }
           }
 
