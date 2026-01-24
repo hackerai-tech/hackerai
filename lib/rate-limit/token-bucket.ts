@@ -200,7 +200,7 @@ export const checkAgentRateLimit = async (
               resetTime: new Date(weeklyResult.reset),
             },
             // Track deductions for potential refund on error
-            pointsDeducted: estimatedCost,
+            pointsDeducted: bucketDeduct,
             extraUsagePointsDeducted: pointsNeeded,
           };
         }
