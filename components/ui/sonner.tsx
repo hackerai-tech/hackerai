@@ -19,7 +19,6 @@ const Toaster = ({ ...props }: ToasterProps) => {
     }
     return {
       position: "bottom-right" as const,
-      offset: { bottom: 140, right: 50 },
     };
   };
 

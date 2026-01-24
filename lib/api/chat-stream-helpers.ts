@@ -1,0 +1,144 @@
+/**
+ * Chat Stream Helpers
+ *
+ * Utility functions extracted from chat-handler to keep it clean and focused.
+ */
+
+import type { SandboxPreference, ChatMode, SubscriptionTier } from "@/types";
+import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
+
+// Tools that interact with the sandbox environment
+const SANDBOX_ENVIRONMENT_TOOLS = [
+  "run_terminal_cmd",
+  "get_terminal_files",
+  "match",
+  "file",
+] as const;
+
+/**
+ * Determine the sandbox type for a tool call
+ */
+export function getSandboxTypeForTool(
+  toolName: string,
+  sandboxPreference?: SandboxPreference,
+): string | undefined {
+  if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
+    return undefined;
+  }
+  return sandboxPreference && sandboxPreference !== "e2b" ? "local" : "e2b";
+}
+
+/**
+ * Check if messages contain file attachments
+ */
+export function hasFileAttachments(
+  messages: Array<{ parts?: Array<{ type?: string }> }>,
+): boolean {
+  return messages.some((msg) =>
+    msg.parts?.some((part) => part.type === "file"),
+  );
+}
+
+/**
+ * Send rate limit warnings based on subscription and rate limit info
+ */
+export function sendRateLimitWarnings(
+  writer: { write: (data: any) => void },
+  options: {
+    subscription: SubscriptionTier;
+    mode: ChatMode;
+    rateLimitInfo: {
+      remaining: number;
+      resetTime: Date;
+      session?: { remaining: number; limit: number; resetTime: Date };
+      weekly?: { remaining: number; limit: number; resetTime: Date };
+      extraUsagePointsDeducted?: number;
+    };
+  },
+): void {
+  const { subscription, mode, rateLimitInfo } = options;
+
+  if (subscription === "free") {
+    // Free users: sliding window (remaining count)
+    if (rateLimitInfo.remaining <= 5) {
+      writeRateLimitWarning(writer, {
+        warningType: "sliding-window",
+        remaining: rateLimitInfo.remaining,
+        resetTime: rateLimitInfo.resetTime.toISOString(),
+        mode,
+        subscription,
+      });
+    }
+  } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
+    // Paid users with extra usage: warn when extra usage is being used
+    if (
+      rateLimitInfo.extraUsagePointsDeducted &&
+      rateLimitInfo.extraUsagePointsDeducted > 0
+    ) {
+      const bucketType =
+        rateLimitInfo.session.remaining <= rateLimitInfo.weekly.remaining
+          ? "session"
+          : "weekly";
+      const resetTime =
+        bucketType === "session"
+          ? rateLimitInfo.session.resetTime
+          : rateLimitInfo.weekly.resetTime;
+
+      writeRateLimitWarning(writer, {
+        warningType: "extra-usage-active",
+        bucketType,
+        resetTime: resetTime.toISOString(),
+        subscription,
+      });
+    } else {
+      // Paid users without extra usage: token bucket (remaining percentage at 10%)
+      const sessionPercent =
+        (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) * 100;
+      const weeklyPercent =
+        (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) * 100;
+
+      if (sessionPercent <= 10) {
+        writeRateLimitWarning(writer, {
+          warningType: "token-bucket",
+          bucketType: "session",
+          remainingPercent: Math.round(sessionPercent),
+          resetTime: rateLimitInfo.session.resetTime.toISOString(),
+          subscription,
+        });
+      }
+
+      if (weeklyPercent <= 10) {
+        writeRateLimitWarning(writer, {
+          warningType: "token-bucket",
+          bucketType: "weekly",
+          remainingPercent: Math.round(weeklyPercent),
+          resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
+          subscription,
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Build provider options for streamText
+ */
+export function buildProviderOptions(
+  isReasoningModel: boolean,
+  subscription: SubscriptionTier,
+) {
+  return {
+    xai: {
+      // Disable storing the conversation in XAI's database
+      store: false,
+    },
+    openrouter: {
+      ...(isReasoningModel
+        ? { reasoning: { enabled: true } }
+        : { reasoning: { enabled: false } }),
+      provider: {
+        ...(subscription === "free" ? { sort: "price" } : { sort: "latency" }),
+      },
+    },
+  } as const;
+}

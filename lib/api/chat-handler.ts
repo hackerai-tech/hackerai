@@ -14,12 +14,29 @@ import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import type { ChatMode, Todo, SandboxPreference } from "@/types";
+import type {
+  ChatMode,
+  Todo,
+  SandboxPreference,
+  ExtraUsageConfig,
+} from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
-import { checkRateLimit, deductAgentUsage } from "@/lib/rate-limit";
+import {
+  checkRateLimit,
+  deductAgentUsage,
+  UsageRefundTracker,
+} from "@/lib/rate-limit";
+import { getExtraUsageBalance } from "@/lib/extra-usage";
 import { countMessagesTokens } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
+import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
+import {
+  getSandboxTypeForTool,
+  hasFileAttachments,
+  sendRateLimitWarnings,
+  buildProviderOptions,
+} from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
 import {
@@ -51,7 +68,6 @@ import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
   createSummarizationCompletedPart,
-  writeRateLimitWarning,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -66,11 +82,19 @@ function getStreamContext() {
 
 export { getStreamContext };
 
-export const createChatHandler = () => {
+export const createChatHandler = (
+  endpoint: "/api/chat" | "/api/agent" = "/api/chat",
+) => {
   return async (req: NextRequest) => {
     let preemptiveTimeout:
       | ReturnType<typeof createPreemptiveTimeout>
       | undefined;
+
+    // Track usage deductions for refund on error
+    const usageRefundTracker = new UsageRefundTracker();
+
+    // Wide event logger for structured logging
+    let chatLogger: ChatLogger | undefined;
 
     try {
       const {
@@ -91,8 +115,30 @@ export const createChatHandler = () => {
         sandboxPreference?: SandboxPreference;
       } = await req.json();
 
+      // Initialize chat logger
+      chatLogger = createChatLogger({ chatId, endpoint });
+      chatLogger.setRequestDetails({
+        mode,
+        isTemporary: !!temporary,
+        isRegenerate: !!regenerate,
+      });
+
       const { userId, subscription } = await getUserIDAndPro(req);
+      usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
+
+      // Add user context to logger
+      chatLogger.setUser({
+        id: userId,
+        subscription,
+        location: userLocation
+          ? {
+              city: userLocation.city,
+              country: userLocation.country,
+              region: userLocation.region,
+            }
+          : undefined,
+      });
 
       if (mode === "agent" && subscription === "free") {
         throw new ChatSDKError(
@@ -158,12 +204,55 @@ export const createChatHandler = () => {
         );
       }
 
+      // Fetch user customization early (needed for memory settings)
+      const userCustomization = await getUserCustomization({ userId });
+      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
       // Token bucket requires estimated token count for cost calculation
       const estimatedInputTokens =
         mode === "agent" || subscription !== "free"
           ? countMessagesTokens(truncatedMessages, {})
           : 0;
+
+      // Add chat context to logger
+      chatLogger.setChat(
+        {
+          messageCount: truncatedMessages.length,
+          estimatedInputTokens,
+          hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
+          hasFileAttachments: hasFileAttachments(truncatedMessages),
+          sandboxPreference,
+          memoryEnabled,
+          isNewChat,
+        },
+        selectedModel,
+      );
+
+      // Build extra usage config (paid users only, works for both agent and ask modes)
+      // extra_usage_enabled is in userCustomization, balance is in extra_usage
+      let extraUsageConfig: ExtraUsageConfig | undefined;
+      if (subscription !== "free") {
+        const extraUsageEnabled =
+          userCustomization?.extra_usage_enabled ?? false;
+
+        if (extraUsageEnabled) {
+          const balanceInfo = await getExtraUsageBalance(userId);
+          // Set extraUsageConfig if user has balance OR auto-reload is enabled
+          // (auto-reload can add funds even when balance is $0)
+          if (
+            balanceInfo &&
+            (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled)
+          ) {
+            extraUsageConfig = {
+              enabled: true,
+              hasBalance: balanceInfo.balanceDollars > 0,
+              balanceDollars: balanceInfo.balanceDollars,
+              autoReloadEnabled: balanceInfo.autoReloadEnabled,
+            };
+          }
+        }
+      }
 
       const rateLimitInfo =
         freeAskRateLimitInfo ??
@@ -172,10 +261,25 @@ export const createChatHandler = () => {
           mode,
           subscription,
           estimatedInputTokens,
+          extraUsageConfig,
         ));
 
-      const userCustomization = await getUserCustomization({ userId });
-      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+      // Track deductions for potential refund on error
+      usageRefundTracker.recordDeductions(rateLimitInfo);
+
+      // Add rate limit and extra usage context to logger
+      chatLogger.setRateLimit(
+        {
+          pointsDeducted: rateLimitInfo.pointsDeducted,
+          extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
+          session: rateLimitInfo.session,
+          weekly: rateLimitInfo.weekly,
+          remaining: rateLimitInfo.remaining,
+          subscription,
+        },
+        extraUsageConfig,
+      );
+
       const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
 
@@ -202,49 +306,13 @@ export const createChatHandler = () => {
       // Track summarization events to add to message parts
       const summarizationParts: UIMessagePart<any, any>[] = [];
 
+      // Start stream timing
+      chatLogger.startStream();
+
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
           // Send rate limit warnings based on subscription type
-          if (subscription === "free") {
-            // Free users: sliding window (remaining count)
-            if (rateLimitInfo.remaining <= 5) {
-              writeRateLimitWarning(writer, {
-                warningType: "sliding-window",
-                remaining: rateLimitInfo.remaining,
-                resetTime: rateLimitInfo.resetTime.toISOString(),
-                mode,
-                subscription,
-              });
-            }
-          } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
-            // Paid users: token bucket (remaining percentage at 10%)
-            const sessionPercent =
-              (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) *
-              100;
-            const weeklyPercent =
-              (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) *
-              100;
-
-            if (sessionPercent <= 10) {
-              writeRateLimitWarning(writer, {
-                warningType: "token-bucket",
-                bucketType: "session",
-                remainingPercent: Math.round(sessionPercent),
-                resetTime: rateLimitInfo.session.resetTime.toISOString(),
-                subscription,
-              });
-            }
-
-            if (weeklyPercent <= 10) {
-              writeRateLimitWarning(writer, {
-                warningType: "token-bucket",
-                bucketType: "weekly",
-                remainingPercent: Math.round(weeklyPercent),
-                resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
-                subscription,
-              });
-            }
-          }
+          sendRateLimitWarnings(writer, { subscription, mode, rateLimitInfo });
 
           const {
             tools,
@@ -444,54 +512,30 @@ export const createChatHandler = () => {
               }
             },
             abortSignal: userStopSignal.signal,
-            providerOptions: {
-              xai: {
-                // Disable storing the conversation in XAI's database
-                store: false,
-              },
-              openrouter: {
-                ...(isReasoningModel
-                  ? { reasoning: { enabled: true } }
-                  : { reasoning: { enabled: false } }),
-                provider: {
-                  ...(subscription === "free"
-                    ? {
-                        sort: "price",
-                      }
-                    : { sort: "latency" }),
-                },
-              },
-            },
+            providerOptions: buildProviderOptions(
+              isReasoningModel,
+              subscription,
+            ),
             experimental_transform: smoothStream({ chunking: "word" }),
             stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
             onChunk: async (chunk) => {
-              // Track all tool calls immediately (no throttle)
-              if (chunk.chunk.type === "tool-call" && posthog) {
-                // Tools that interact with the sandbox environment
-                const sandboxEnvironmentTools = [
-                  "run_terminal_cmd",
-                  "get_terminal_files",
-                  "read_file",
-                  "write_file",
-                  "search_replace",
-                ];
-
-                // Determine sandbox type for environment-interacting tools
-                const sandboxType = sandboxEnvironmentTools.includes(
+              if (chunk.chunk.type === "tool-call") {
+                const sandboxType = getSandboxTypeForTool(
                   chunk.chunk.toolName,
-                )
-                  ? sandboxPreference && sandboxPreference !== "e2b"
-                    ? "local"
-                    : "e2b"
-                  : undefined;
+                  sandboxPreference,
+                );
 
-                posthog.capture({
-                  distinctId: userId,
-                  event: "hackerai-" + chunk.chunk.toolName,
-                  properties: {
-                    ...(sandboxType && { sandboxType }),
-                  },
-                });
+                chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
+
+                if (posthog) {
+                  posthog.capture({
+                    distinctId: userId,
+                    event: "hackerai-" + chunk.chunk.toolName,
+                    properties: {
+                      ...(sandboxType && { sandboxType }),
+                    },
+                  });
+                }
               }
             },
             onFinish: async ({ finishReason, usage, response }) => {
@@ -505,21 +549,27 @@ export const createChatHandler = () => {
               streamUsage = usage as Record<string, unknown>;
               responseModel = response?.modelId;
 
+              // Update logger with model and usage
+              chatLogger!.setStreamResponse(responseModel, streamUsage);
+
               // Deduct additional cost (output + any input difference)
               // Input cost was already deducted upfront in checkRateLimit
-              // Both agent and paid ask modes share the same budget
-              if ((mode === "agent" || subscription !== "free") && usage) {
+              // Free users don't have token buckets, so skip for them
+              if (subscription !== "free" && usage) {
                 await deductAgentUsage(
                   userId,
                   subscription,
                   estimatedInputTokens,
                   usage.inputTokens || 0,
                   usage.outputTokens || 0,
+                  extraUsageConfig,
                 );
               }
             },
             onError: async (error) => {
               console.error("Error:", error);
+              // Refund credits on streaming errors (idempotent - only refunds once)
+              await usageRefundTracker.refund();
             },
           });
 
@@ -539,6 +589,15 @@ export const createChatHandler = () => {
                 if (isAborted && !preemptiveTimeout?.isPreemptive()) {
                   streamFinishReason = undefined;
                 }
+
+                // Emit wide event
+                chatLogger!.emitSuccess({
+                  finishReason: streamFinishReason,
+                  wasAborted: isAborted,
+                  wasPreemptiveTimeout:
+                    preemptiveTimeout?.isPreemptive() ?? false,
+                  hadSummarization: hasSummarized,
+                });
 
                 // Sandbox cleanup is automatic with auto-pause
                 // The sandbox will auto-pause after inactivity timeout (7 minutes)
@@ -673,13 +732,18 @@ export const createChatHandler = () => {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
 
+      // Refund credits if any were deducted (idempotent - only refunds once)
+      await usageRefundTracker.refund();
+
       // Handle ChatSDKErrors (including authentication errors)
       if (error instanceof ChatSDKError) {
+        chatLogger?.emitChatError(error);
         return error.toResponse();
       }
 
       // Handle unexpected errors
-      console.error("Unexpected error in chat route:", error);
+      chatLogger?.emitUnexpectedError(error);
+
       const unexpectedError = new ChatSDKError(
         "offline:chat",
         error instanceof Error ? error.message : "Unknown error occurred",

@@ -246,14 +246,15 @@ export const Chat = ({
       }
       if (dataPart.type === "data-rate-limit-warning") {
         const rawData = dataPart.data as {
-          warningType: "sliding-window" | "token-bucket";
+          warningType: "sliding-window" | "token-bucket" | "extra-usage-active";
           resetTime: string;
           subscription: SubscriptionTier;
           // sliding-window fields
           remaining?: number;
           mode?: ChatMode;
-          // token-bucket fields
+          // token-bucket and extra-usage-active fields
           bucketType?: "session" | "weekly";
+          // token-bucket only
           remainingPercent?: number;
         };
 
@@ -267,6 +268,21 @@ export const Chat = ({
               mode: rawData.mode!,
               subscription: rawData.subscription,
             });
+          } else if (rawData.warningType === "extra-usage-active") {
+            // Only show extra usage warning once per reset period (localStorage tracks this)
+            const storageKey = `extraUsageWarningShownUntil_${rawData.bucketType}`;
+            const storedResetTime = localStorage.getItem(storageKey);
+
+            // Show warning only if we haven't shown it for this period
+            if (!storedResetTime || new Date(storedResetTime) < new Date()) {
+              localStorage.setItem(storageKey, rawData.resetTime);
+              setRateLimitWarning({
+                warningType: "extra-usage-active",
+                bucketType: rawData.bucketType!,
+                resetTime: new Date(rawData.resetTime),
+                subscription: rawData.subscription,
+              });
+            }
           } else {
             setRateLimitWarning({
               warningType: "token-bucket",

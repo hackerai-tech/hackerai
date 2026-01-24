@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { useAction } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { RefreshCw } from "lucide-react";
+import { ExtraUsageSection } from "@/app/components/ExtraUsageSection";
 
 // Usage limit status type
 type UsageLimitStatus = {
@@ -192,6 +193,9 @@ const UsageTab = () => {
           Unable to load usage limits.
         </p>
       )}
+
+      {/* Extra Usage Section - hidden for team users */}
+      {subscription !== "team" && <ExtraUsageSection />}
     </div>
   );
 };

@@ -111,6 +111,23 @@ export default defineSchema({
     include_memory_entries: v.optional(v.boolean()),
     scope_exclusions: v.optional(v.string()),
     guardrails_config: v.optional(v.string()),
+    extra_usage_enabled: v.optional(v.boolean()),
+  }).index("by_user_id", ["user_id"]),
+
+  // Extra usage (created when user enables extra usage)
+  // Note: Most monetary values stored in POINTS for precision (1 point = $0.0001, matching rate limiting)
+  // This avoids precision loss when deducting sub-cent amounts from balance.
+  // Exception: auto_reload_amount_dollars is stored in dollars since it's used directly for Stripe charges.
+  extra_usage: defineTable({
+    user_id: v.string(),
+    balance_points: v.number(),
+    auto_reload_enabled: v.optional(v.boolean()),
+    auto_reload_threshold_points: v.optional(v.number()),
+    auto_reload_amount_dollars: v.optional(v.number()), // Stored in dollars for Stripe
+    monthly_cap_points: v.optional(v.number()),
+    monthly_spent_points: v.optional(v.number()),
+    monthly_reset_date: v.optional(v.string()),
+    updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
   memories: defineTable({
@@ -212,4 +229,10 @@ export default defineSchema({
     version: v.number(),
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
+
+  // Webhook idempotency (prevents double-crediting on Stripe retries)
+  processed_webhooks: defineTable({
+    event_id: v.string(),
+    processed_at: v.number(),
+  }).index("by_event_id", ["event_id"]),
 });

@@ -1,10 +1,10 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import redirectToBillingPortal from "@/lib/actions/billing-portal";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
+import { toast } from "sonner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,6 +20,7 @@ import {
   teamFeatures,
 } from "@/lib/pricing/features";
 import DeleteAccountDialog from "./DeleteAccountDialog";
+import redirectToBillingPortalAction from "@/lib/actions/billing-portal";
 
 const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
@@ -46,6 +47,21 @@ const AccountTab = () => {
 
   const currentPlanFeatures =
     subscription === "team" ? teamFeatures : proFeatures;
+
+  const redirectToBillingPortal = async () => {
+    try {
+      const url = await redirectToBillingPortalAction();
+      if (url) {
+        window.location.href = url;
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to open billing portal",
+      );
+    }
+  };
 
   const handleCancelSubscription = () => {
     redirectToBillingPortal();
@@ -171,7 +187,7 @@ const AccountTab = () => {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => redirectToBillingPortal()}
+                onClick={redirectToBillingPortal}
               >
                 Manage
               </Button>

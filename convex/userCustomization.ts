@@ -15,6 +15,7 @@ export const saveUserCustomization = mutation({
     include_memory_entries: v.optional(v.boolean()),
     scope_exclusions: v.optional(v.string()),
     guardrails_config: v.optional(v.string()),
+    extra_usage_enabled: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -99,6 +100,10 @@ export const saveUserCustomization = mutation({
             : true, // Default to enabled
         scope_exclusions: args.scope_exclusions?.trim() || undefined,
         guardrails_config: args.guardrails_config?.trim() || undefined,
+        extra_usage_enabled:
+          args.extra_usage_enabled !== undefined
+            ? args.extra_usage_enabled
+            : false, // Default to disabled
         updated_at: Date.now(),
       };
 
@@ -141,10 +146,11 @@ export const getUserCustomization = query({
       include_memory_entries: v.boolean(),
       scope_exclusions: v.optional(v.string()),
       guardrails_config: v.optional(v.string()),
+      extra_usage_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       return null;
@@ -166,9 +172,10 @@ export const getUserCustomization = query({
         personality: customization.personality,
         traits: customization.traits,
         additional_info: customization.additional_info,
-        include_memory_entries: customization.include_memory_entries ?? true, // Default to enabled if not set
+        include_memory_entries: customization.include_memory_entries ?? true,
         scope_exclusions: customization.scope_exclusions,
         guardrails_config: customization.guardrails_config,
+        extra_usage_enabled: customization.extra_usage_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {
@@ -197,6 +204,7 @@ export const getUserCustomizationForBackend = query({
       include_memory_entries: v.boolean(),
       scope_exclusions: v.optional(v.string()),
       guardrails_config: v.optional(v.string()),
+      extra_usage_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -219,9 +227,10 @@ export const getUserCustomizationForBackend = query({
         personality: customization.personality,
         traits: customization.traits,
         additional_info: customization.additional_info,
-        include_memory_entries: customization.include_memory_entries ?? true, // Default to enabled if not set
+        include_memory_entries: customization.include_memory_entries ?? true,
         scope_exclusions: customization.scope_exclusions,
         guardrails_config: customization.guardrails_config,
+        extra_usage_enabled: customization.extra_usage_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {

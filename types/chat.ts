@@ -133,7 +133,21 @@ export type RateLimitInfo = {
   // Token bucket details for paid users (session = daily, weekly = weekly)
   session?: { remaining: number; limit: number; resetTime: Date };
   weekly?: { remaining: number; limit: number; resetTime: Date };
+  // Points deducted for potential refund on error (always = estimatedCost)
+  pointsDeducted?: number;
+  // Extra usage points deducted (only set when extra usage balance was used)
+  extraUsagePointsDeducted?: number;
 };
+
+export interface ExtraUsageConfig {
+  enabled: boolean;
+  /** Whether user has prepaid balance available */
+  hasBalance?: boolean;
+  /** Current balance in dollars (for UI display) */
+  balanceDollars?: number;
+  /** Whether auto-reload is enabled (can use extra usage even with $0 balance) */
+  autoReloadEnabled?: boolean;
+}
 
 export interface QueuedMessage {
   id: string;

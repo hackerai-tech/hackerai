@@ -82,6 +82,13 @@ export type RateLimitWarningData =
       remainingPercent: number;
       resetTime: string;
       subscription: SubscriptionTier;
+    }
+  | {
+      // Paid users: extra usage is now being consumed
+      warningType: "extra-usage-active";
+      bucketType: "session" | "weekly";
+      resetTime: string;
+      subscription: SubscriptionTier;
     };
 
 // Unified rate limit warning notification

@@ -1,6 +1,10 @@
 import { Ratelimit } from "@upstash/ratelimit";
 import { ChatSDKError } from "@/lib/errors";
-import type { SubscriptionTier, RateLimitInfo } from "@/types";
+import type {
+  SubscriptionTier,
+  RateLimitInfo,
+  ExtraUsageConfig,
+} from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
 import { checkAgentRateLimit } from "./token-bucket";
 
@@ -53,18 +57,23 @@ const getAskModeErrorMessage = (
  * @param userId - The user's unique identifier
  * @param subscription - The user's subscription tier
  * @param estimatedInputTokens - Estimated input tokens (for token bucket)
- * // @param modelName - Model name for pricing (for token bucket)
+ * @param extraUsageConfig - Optional config for extra usage charging
  * @returns Rate limit info including remaining requests/quota
  */
 export const checkAskRateLimit = async (
   userId: string,
   subscription: SubscriptionTier,
   estimatedInputTokens: number = 0,
-  // modelName = "",
+  extraUsageConfig?: ExtraUsageConfig,
 ): Promise<RateLimitInfo> => {
   // Paid users use token bucket (cost-based limiting, shared with agent mode)
   if (subscription !== "free") {
-    return checkAgentRateLimit(userId, subscription, estimatedInputTokens);
+    return checkAgentRateLimit(
+      userId,
+      subscription,
+      estimatedInputTokens,
+      extraUsageConfig,
+    );
   }
 
   // Free users use sliding window (simple request counting)
@@ -78,9 +87,9 @@ export const checkAskRateLimit = async (
     };
   }
 
-  try {
-    const requestLimit = getAskModeRequestLimit(subscription);
+  const requestLimit = getAskModeRequestLimit(subscription);
 
+  try {
     const ratelimit = new Ratelimit({
       redis,
       limiter: Ratelimit.slidingWindow(requestLimit, "5 h"),
@@ -102,10 +111,7 @@ export const checkAskRateLimit = async (
       limit: requestLimit,
     };
   } catch (error) {
-    if (error instanceof ChatSDKError) {
-      throw error;
-    }
-
+    if (error instanceof ChatSDKError) throw error;
     throw new ChatSDKError(
       "rate_limit:chat",
       `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
