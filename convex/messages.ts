@@ -943,6 +943,10 @@ export const branchChat = mutation({
           file_ids: msg.file_ids,
           source_message_id: msg.id,
           update_time: Date.now(),
+          model: msg.model,
+          generation_time_ms: msg.generation_time_ms,
+          finish_reason: msg.finish_reason,
+          usage: msg.usage,
         });
       }
 
