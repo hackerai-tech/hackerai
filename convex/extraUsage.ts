@@ -438,6 +438,42 @@ export const updateExtraUsageSettings = mutation({
       return null;
     }
 
+    // Validate whole dollar amounts (no cents allowed)
+    if (
+      args.autoReloadThresholdDollars !== undefined &&
+      !Number.isInteger(args.autoReloadThresholdDollars)
+    ) {
+      throw new Error("Threshold must be a whole dollar amount");
+    }
+    if (
+      args.autoReloadAmountDollars !== undefined &&
+      !Number.isInteger(args.autoReloadAmountDollars)
+    ) {
+      throw new Error("Reload amount must be a whole dollar amount");
+    }
+    // Validate minimum threshold of $5
+    if (
+      args.autoReloadThresholdDollars !== undefined &&
+      args.autoReloadThresholdDollars < 5
+    ) {
+      throw new Error("Threshold must be at least $5");
+    }
+    // Validate minimum reload amount of $15
+    if (
+      args.autoReloadAmountDollars !== undefined &&
+      args.autoReloadAmountDollars < 15
+    ) {
+      throw new Error("Reload amount must be at least $15");
+    }
+    // Validate reload amount is at least $10 more than threshold
+    if (
+      args.autoReloadAmountDollars !== undefined &&
+      args.autoReloadThresholdDollars !== undefined &&
+      args.autoReloadAmountDollars < args.autoReloadThresholdDollars + 10
+    ) {
+      throw new Error("Reload amount must be at least $10 more than threshold");
+    }
+
     const settings = await ctx.db
       .query("extra_usage")
       .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))

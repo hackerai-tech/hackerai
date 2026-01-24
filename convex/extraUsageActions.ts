@@ -545,31 +545,49 @@ export const deductWithAutoReload = action({
             reason: "no_default_payment_method",
           };
         } else {
-          // Create payment (Stripe uses cents)
-          const reloadAmountCents = Math.round(reloadAmount * 100);
-          const paymentResult = await createAutoReloadPayment(
-            stripeCustomerId,
-            paymentMethodId,
-            reloadAmountCents,
-            args.userId,
+          // Calculate how much to charge to reach target balance
+          // reloadAmount is the TARGET balance, not the amount to add
+          const currentBalanceDollars = settings.balanceDollars;
+          const targetBalanceDollars = reloadAmount;
+          const amountToCharge = Math.max(
+            0,
+            targetBalanceDollars - currentBalanceDollars,
           );
 
-          if (paymentResult.success) {
-            // Add credits (dollars -> points conversion happens in mutation)
-            await ctx.runMutation(api.extraUsage.addCredits, {
-              serviceKey: args.serviceKey,
-              userId: args.userId,
-              amountDollars: reloadAmount,
-            });
-            autoReloadResult = {
-              success: true,
-              chargedAmountDollars: reloadAmount,
-            };
-          } else {
+          // Minimum charge of $1 to avoid tiny transactions
+          const MIN_CHARGE_DOLLARS = 1;
+          if (amountToCharge < MIN_CHARGE_DOLLARS) {
             autoReloadResult = {
               success: false,
-              reason: paymentResult.error || "payment_failed",
+              reason: "amount_to_charge_below_minimum",
             };
+          } else {
+            // Create payment (Stripe uses cents)
+            const amountToChargeCents = Math.round(amountToCharge * 100);
+            const paymentResult = await createAutoReloadPayment(
+              stripeCustomerId,
+              paymentMethodId,
+              amountToChargeCents,
+              args.userId,
+            );
+
+            if (paymentResult.success) {
+              // Add credits (dollars -> points conversion happens in mutation)
+              await ctx.runMutation(api.extraUsage.addCredits, {
+                serviceKey: args.serviceKey,
+                userId: args.userId,
+                amountDollars: amountToCharge,
+              });
+              autoReloadResult = {
+                success: true,
+                chargedAmountDollars: amountToCharge,
+              };
+            } else {
+              autoReloadResult = {
+                success: false,
+                reason: paymentResult.error || "payment_failed",
+              };
+            }
           }
         }
       }
