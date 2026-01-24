@@ -3,15 +3,16 @@
  *
  * This module provides two rate limiting strategies:
  *
- * 1. Token Bucket (Agent Mode + Ask Mode for paid users):
- *    - Allows burst requests while maintaining sustainable rate
- *    - Points are consumed based on model usage costs
- *    - Bucket refills over time (per hour for session, per week for weekly)
- *    - Agent and Ask modes share the same budget pool (100% of subscription)
+ * 1. Token Bucket (Paid users - Pro, Ultra, Team):
+ *    - Used for both Agent and Ask modes
+ *    - Points consumed based on token usage costs
+ *    - Session bucket: daily budget, refills every 5 hours
+ *    - Weekly bucket: weekly budget, refills every 7 days
+ *    - Supports extra usage (prepaid balance) when limits exceeded
  *
- * 2. Sliding Window (Ask Mode for free users only):
- *    - Simple request counting within a rolling window
- *    - Fixed number of requests per 5-hour period
+ * 2. Sliding Window (Free users - Ask mode only):
+ *    - Simple request counting within a 5-hour rolling window
+ *    - Agent mode is not available for free users
  */
 
 import type {
@@ -28,8 +29,6 @@ export {
   refundUsage,
   calculateTokenCost,
   getBudgetLimits,
-  calculateBucketLimit,
-  calculateWeeklyLimit,
   getSubscriptionPrice,
 } from "./token-bucket";
 

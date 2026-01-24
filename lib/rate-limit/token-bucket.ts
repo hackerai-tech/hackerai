@@ -62,14 +62,6 @@ export const getBudgetLimits = (
   };
 };
 
-/** @deprecated Use getBudgetLimits instead */
-export const calculateBucketLimit = (subscription: SubscriptionTier): number =>
-  getBudgetLimits(subscription).session;
-
-/** @deprecated Use getBudgetLimits instead */
-export const calculateWeeklyLimit = (subscription: SubscriptionTier): number =>
-  getBudgetLimits(subscription).weekly;
-
 /** Get monthly budget (full subscription price, shared between modes) */
 export const getSubscriptionPrice = (
   subscription: SubscriptionTier,
