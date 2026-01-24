@@ -33,9 +33,6 @@ const ExtraUsageSection = () => {
   const createPurchaseSession = useAction(
     api.extraUsageActions.createPurchaseSession,
   );
-  const createBillingPortalSession = useAction(
-    api.extraUsageActions.createBillingPortalSession,
-  );
 
   // Loading states
   const [isTogglingExtraUsage, setIsTogglingExtraUsage] = useState(false);
@@ -200,26 +197,15 @@ const ExtraUsageSection = () => {
             <div className="flex flex-col gap-1.5 min-w-0">
               <p className="text-sm">
                 Turn on extra usage to keep using HackerAI if you hit a limit.{" "}
-                <button
-                  type="button"
-                  className="inline underline underline-offset-[3px] text-muted-foreground hover:text-foreground cursor-pointer"
-                  tabIndex={0}
+                <a
+                  href="https://help.hackerai.co/en/articles/13455916-extra-usage-for-paid-hackerai-plans"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline underline underline-offset-[3px] text-muted-foreground hover:text-foreground"
                   aria-label="Learn more about extra usage"
-                  onClick={async () => {
-                    const result = await createBillingPortalSession({
-                      baseUrl: window.location.origin,
-                    });
-                    if (result.url) {
-                      window.open(result.url, "_blank");
-                    } else {
-                      toast.error(
-                        result.error || "Failed to open billing portal",
-                      );
-                    }
-                  }}
                 >
                   Learn more
-                </button>
+                </a>
               </p>
             </div>
           </div>
