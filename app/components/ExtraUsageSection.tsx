@@ -368,6 +368,7 @@ const ExtraUsageSection = () => {
         onOpenChange={setShowAutoReloadDialog}
         onSave={handleSaveAutoReload}
         onTurnOff={handleTurnOffAutoReload}
+        onCancel={() => setShowAutoReloadDialog(false)}
         isLoading={isSavingSettings}
         isEnabled={autoReloadEnabled}
         currentThresholdDollars={

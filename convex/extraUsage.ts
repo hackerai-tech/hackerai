@@ -25,19 +25,38 @@ const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
 
 /**
  * Add credits to user balance (after successful Stripe payment).
- * Accepts dollars, stores in points internally, returns dollars.
+ * Idempotent via optional idempotencyKey (Stripe event ID).
  */
 export const addCredits = mutation({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
+    idempotencyKey: v.optional(v.string()), // Stripe event ID for webhook deduplication
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
+    alreadyProcessed: v.boolean(),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
+
+    // Idempotency: skip if already processed (prevents double-credit on webhook retries)
+    if (args.idempotencyKey) {
+      const existing = await ctx.db
+        .query("processed_webhooks")
+        .withIndex("by_event_id", (q) => q.eq("event_id", args.idempotencyKey!))
+        .first();
+
+      if (existing) {
+        return { newBalance: 0, alreadyProcessed: true };
+      }
+    }
+
+    // Validate amount
+    if (isNaN(args.amountDollars) || args.amountDollars <= 0) {
+      throw new Error("Invalid amount: must be a positive number");
+    }
 
     const amountPoints = dollarsToPoints(args.amountDollars);
 
@@ -64,7 +83,15 @@ export const addCredits = mutation({
       });
     }
 
-    return { newBalance: pointsToDollars(newBalancePoints) };
+    // Mark processed after success (so retries work if above fails)
+    if (args.idempotencyKey) {
+      await ctx.db.insert("processed_webhooks", {
+        event_id: args.idempotencyKey,
+        processed_at: Date.now(),
+      });
+    }
+
+    return { newBalance: pointsToDollars(newBalancePoints), alreadyProcessed: false };
   },
 });
 
@@ -181,15 +208,18 @@ export const refundPoints = mutation({
     success: v.boolean(),
     newBalancePoints: v.number(),
     newBalanceDollars: v.number(),
+    noOp: v.optional(v.boolean()),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // No-op: nothing to refund
     if (args.amountPoints <= 0) {
       return {
         success: true,
         newBalancePoints: 0,
         newBalanceDollars: 0,
+        noOp: true,
       };
     }
 

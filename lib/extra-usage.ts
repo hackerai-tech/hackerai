@@ -26,6 +26,8 @@ export interface DeductBalanceResult {
     chargedAmountDollars?: number;
     reason?: string;
   };
+  /** True if no deduction was performed (e.g., pointsUsed <= 0) */
+  noOp?: boolean;
 }
 
 /**
@@ -81,6 +83,8 @@ export async function getExtraUsageBalance(
 export interface RefundBalanceResult {
   success: boolean;
   newBalanceDollars: number;
+  /** True if no refund was performed (e.g., pointsToRefund <= 0) */
+  noOp?: boolean;
 }
 
 /**
@@ -94,10 +98,12 @@ export async function refundToBalance(
   userId: string,
   pointsToRefund: number,
 ): Promise<RefundBalanceResult> {
+  // No-op: nothing to refund, balance unchanged (actual balance not fetched to avoid extra call)
   if (pointsToRefund <= 0) {
     return {
       success: true,
       newBalanceDollars: 0,
+      noOp: true,
     };
   }
 
@@ -137,12 +143,14 @@ export async function deductFromBalance(
   userId: string,
   pointsUsed: number,
 ): Promise<DeductBalanceResult> {
+  // No-op: nothing to deduct, balance unchanged (actual balance not fetched to avoid extra call)
   if (pointsUsed <= 0) {
     return {
       success: true,
       newBalanceDollars: 0,
       insufficientFunds: false,
       monthlyCapExceeded: false,
+      noOp: true,
     };
   }
 

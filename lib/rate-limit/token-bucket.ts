@@ -178,14 +178,14 @@ export const checkAgentRateLimit = async (
         const deductResult = await deductFromBalance(userId, pointsNeeded);
 
         if (deductResult.success) {
-          // Balance deducted - deduct what we can from buckets and continue
-          // Deduct only the remaining capacity from each bucket (don't go negative)
-          const sessionDeduct = Math.min(estimatedCost, sessionCheck.remaining);
-          const weeklyDeduct = Math.min(estimatedCost, weeklyCheck.remaining);
+          // Extra usage covered the shortfall. Deduct only what subscription contributed.
+          // Subscription contribution = cost - extraUsage = min(sessionRemaining, weeklyRemaining)
+          // This keeps both buckets in sync and ensures paid extra usage doesn't drain weekly.
+          const bucketDeduct = estimatedCost - pointsNeeded;
 
           const [weeklyResult, sessionResult] = await Promise.all([
-            weekly.limiter.limit(weekly.key, { rate: weeklyDeduct }),
-            session.limiter.limit(session.key, { rate: sessionDeduct }),
+            weekly.limiter.limit(weekly.key, { rate: bucketDeduct }),
+            session.limiter.limit(session.key, { rate: bucketDeduct }),
           ]);
 
           return {

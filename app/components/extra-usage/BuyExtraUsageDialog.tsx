@@ -89,7 +89,7 @@ const BuyExtraUsageDialogContent = ({
         baseUrl: window.location.origin,
       });
       if (result.url) {
-        window.open(result.url, "_blank");
+        window.open(result.url, "_blank", "noopener,noreferrer");
         // Clear cached payment method so it refreshes when user returns
         setPaymentMethod(null);
       } else {

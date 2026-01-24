@@ -18,6 +18,7 @@ type AutoReloadDialogProps = {
   onOpenChange: (open: boolean) => void;
   onSave: (thresholdDollars: number, amountDollars: number) => Promise<void>;
   onTurnOff: () => Promise<void>;
+  onCancel: () => void;
   isLoading: boolean;
   isEnabled: boolean;
   currentThresholdDollars: number | null;
@@ -29,6 +30,7 @@ type ContentProps = Omit<AutoReloadDialogProps, "open" | "onOpenChange">;
 const AutoReloadDialogContent = ({
   onSave,
   onTurnOff,
+  onCancel,
   isLoading,
   isEnabled,
   currentThresholdDollars,
@@ -132,11 +134,7 @@ const AutoReloadDialogContent = ({
           </>
         ) : (
           <>
-            <Button
-              variant="outline"
-              onClick={handleTurnOff}
-              disabled={isLoading}
-            >
+            <Button variant="outline" onClick={onCancel} disabled={isLoading}>
               Cancel
             </Button>
             <Button onClick={handleSubmit} disabled={isLoading}>
@@ -154,6 +152,7 @@ const AutoReloadDialog = ({
   onOpenChange,
   onSave,
   onTurnOff,
+  onCancel,
   isLoading,
   isEnabled,
   currentThresholdDollars,
@@ -166,6 +165,7 @@ const AutoReloadDialog = ({
           <AutoReloadDialogContent
             onSave={onSave}
             onTurnOff={onTurnOff}
+            onCancel={onCancel}
             isLoading={isLoading}
             isEnabled={isEnabled}
             currentThresholdDollars={currentThresholdDollars}

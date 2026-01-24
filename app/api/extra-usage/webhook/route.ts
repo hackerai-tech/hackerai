@@ -75,13 +75,20 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Add credits to user's balance
+      // Add credits to user's balance (idempotent - uses Stripe event ID for deduplication)
       try {
         const result = await convex.mutation(api.extraUsage.addCredits, {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
           userId,
           amountDollars,
+          idempotencyKey: event.id, // Stripe event ID is stable across retries
         });
+
+        if (result.alreadyProcessed) {
+          console.log(
+            `[Extra Usage Webhook] Checkout session ${session.id} already processed, skipping`,
+          );
+        }
       } catch (error) {
         console.error("[Extra Usage Webhook] FAILED to add credits:", error);
         // Return 500 so Stripe retries
