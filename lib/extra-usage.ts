@@ -3,7 +3,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 
 /** Extra usage pricing multiplier */
-export const EXTRA_USAGE_MULTIPLIER = 1.5;
+export const EXTRA_USAGE_MULTIPLIER = 1.1;
 
 export interface ExtraUsageBalance {
   balanceDollars: number;
