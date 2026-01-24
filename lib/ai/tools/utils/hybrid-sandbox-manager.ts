@@ -223,7 +223,6 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     await this.closeCurrentSandbox();
-    console.log(`[${this.userID}] Using E2B cloud sandbox`);
     const result = await ensureSandboxConnection(
       {
         userID: this.userID,

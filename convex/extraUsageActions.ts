@@ -5,6 +5,7 @@ import { api } from "./_generated/api";
 import { v } from "convex/values";
 import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
+import { convexLogger } from "./lib/logger";
 
 // =============================================================================
 // SDK Initialization (lazy, cached)
@@ -355,9 +356,19 @@ export const createPurchaseSession = action({
         cancel_url: args.baseUrl,
       });
 
+      convexLogger.info("purchase_session_created", {
+        user_id: identity.subject,
+        amount_dollars: args.amountDollars,
+        session_id: session.id,
+      });
+
       return { url: session.url };
     } catch (error) {
-      console.error("Purchase session creation failed:", error);
+      convexLogger.error("purchase_session_failed", {
+        user_id: identity.subject,
+        amount_dollars: args.amountDollars,
+        error: error instanceof Error ? error.message : "Unknown error",
+      });
       const message =
         error instanceof Stripe.errors.StripeError
           ? error.message
@@ -575,6 +586,19 @@ export const deductWithAutoReload = action({
       serviceKey: args.serviceKey,
       userId: args.userId,
       amountPoints: args.amountPoints,
+    });
+
+    convexLogger.info("deduct_with_auto_reload", {
+      user_id: args.userId,
+      amount_points: args.amountPoints,
+      success: deductResult.success,
+      new_balance_dollars: deductResult.newBalanceDollars,
+      insufficient_funds: deductResult.insufficientFunds,
+      monthly_cap_exceeded: deductResult.monthlyCapExceeded,
+      auto_reload_triggered: autoReloadTriggered,
+      auto_reload_success: autoReloadResult?.success,
+      auto_reload_charged_dollars: autoReloadResult?.chargedAmountDollars,
+      auto_reload_failure_reason: autoReloadResult?.reason,
     });
 
     return {

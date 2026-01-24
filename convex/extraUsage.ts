@@ -1,6 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./chats";
+import { convexLogger } from "./lib/logger";
 
 // =============================================================================
 // Currency Conversion Helpers
@@ -91,6 +92,15 @@ export const addCredits = mutation({
       });
     }
 
+    convexLogger.info("credits_added", {
+      user_id: args.userId,
+      amount_dollars: args.amountDollars,
+      amount_points: amountPoints,
+      new_balance_points: newBalancePoints,
+      new_balance_dollars: pointsToDollars(newBalancePoints),
+      idempotency_key: args.idempotencyKey,
+    });
+
     return {
       newBalance: pointsToDollars(newBalancePoints),
       alreadyProcessed: false,
@@ -126,6 +136,12 @@ export const deductPoints = mutation({
       .first();
 
     if (!settings) {
+      convexLogger.warn("deduct_points_failed", {
+        user_id: args.userId,
+        amount_points: args.amountPoints,
+        reason: "no_settings",
+        insufficient_funds: true,
+      });
       return {
         success: false,
         newBalancePoints: 0,
@@ -139,6 +155,13 @@ export const deductPoints = mutation({
 
     // Check if user has enough balance
     if (currentBalancePoints < args.amountPoints) {
+      convexLogger.warn("deduct_points_failed", {
+        user_id: args.userId,
+        amount_points: args.amountPoints,
+        current_balance_points: currentBalancePoints,
+        reason: "insufficient_balance",
+        insufficient_funds: true,
+      });
       return {
         success: false,
         newBalancePoints: currentBalancePoints,
@@ -164,6 +187,14 @@ export const deductPoints = mutation({
     if (monthlyCapPoints !== undefined && monthlyCapPoints !== null) {
       const newMonthlySpent = monthlySpentPoints + args.amountPoints;
       if (newMonthlySpent > monthlyCapPoints) {
+        convexLogger.warn("deduct_points_failed", {
+          user_id: args.userId,
+          amount_points: args.amountPoints,
+          monthly_spent_points: monthlySpentPoints,
+          monthly_cap_points: monthlyCapPoints,
+          reason: "monthly_cap_exceeded",
+          monthly_cap_exceeded: true,
+        });
         return {
           success: false,
           newBalancePoints: currentBalancePoints,
@@ -184,6 +215,15 @@ export const deductPoints = mutation({
       monthly_spent_points: monthlySpentPoints,
       monthly_reset_date: currentMonth,
       updated_at: Date.now(),
+    });
+
+    convexLogger.info("points_deducted", {
+      user_id: args.userId,
+      amount_points: args.amountPoints,
+      previous_balance_points: currentBalancePoints,
+      new_balance_points: newBalancePoints,
+      monthly_spent_points: monthlySpentPoints,
+      monthly_cap_points: monthlyCapPoints,
     });
 
     return {
@@ -240,6 +280,14 @@ export const refundPoints = mutation({
         updated_at: Date.now(),
       });
 
+      convexLogger.info("points_refunded", {
+        user_id: args.userId,
+        amount_points: args.amountPoints,
+        previous_balance_points: 0,
+        new_balance_points: args.amountPoints,
+        created_new_record: true,
+      });
+
       return {
         success: true,
         newBalancePoints: args.amountPoints,
@@ -253,6 +301,13 @@ export const refundPoints = mutation({
     await ctx.db.patch(settings._id, {
       balance_points: newBalancePoints,
       updated_at: Date.now(),
+    });
+
+    convexLogger.info("points_refunded", {
+      user_id: args.userId,
+      amount_points: args.amountPoints,
+      previous_balance_points: currentBalancePoints,
+      new_balance_points: newBalancePoints,
     });
 
     return {
