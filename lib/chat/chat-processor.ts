@@ -154,11 +154,19 @@ export async function processChatMessages({
     containsPdfFiles,
   } = await processMessageFiles(messages, mode);
 
-  // Filter out messages with empty parts
+  // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini
-  const messagesWithContent = messagesWithUrls.filter(
-    (msg) => msg.parts && msg.parts.length > 0,
-  );
+  const messagesWithContent = messagesWithUrls.filter((msg) => {
+    if (!msg.parts || msg.parts.length === 0) return false;
+
+    // Check that at least one part has meaningful content
+    return msg.parts.some((part: any) => {
+      if (part.type === "text") return part.text?.trim().length > 0;
+      if (part.type === "file") return !!part.url || !!part.fileId;
+      // Keep other part types (tool invocations, etc.) as they have implicit content
+      return true;
+    });
+  });
 
   // Strip originalContent from file edit outputs (large data not needed by model)
   const cleanedMessages = stripOriginalContentFromMessages(messagesWithContent);
