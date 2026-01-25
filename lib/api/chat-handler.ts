@@ -36,6 +36,7 @@ import {
   hasFileAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
+  isXaiSafetyError,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -567,7 +568,10 @@ export const createChatHandler = (
               }
             },
             onError: async (error) => {
-              console.error("Error:", error);
+              // Suppress xAI safety check errors from logging (they're expected for certain content)
+              if (!isXaiSafetyError(error)) {
+                console.error("Error:", error);
+              }
               // Refund credits on streaming errors (idempotent - only refunds once)
               await usageRefundTracker.refund();
             },

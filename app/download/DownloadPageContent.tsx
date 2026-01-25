@@ -20,7 +20,12 @@ function AuthenticatedHeader() {
             HackerAI
           </span>
         </div>
-        <Button asChild variant="ghost" size="default" className="rounded-[10px]">
+        <Button
+          asChild
+          variant="ghost"
+          size="default"
+          className="rounded-[10px]"
+        >
           <Link href="/">
             <ArrowLeft className="h-4 w-4 mr-1.5" />
             Back to Chat

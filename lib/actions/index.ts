@@ -1,6 +1,7 @@
 import { generateText, Output, UIMessage, UIMessageStreamWriter } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { z } from "zod";
+import { isXaiSafetyError } from "@/lib/api/chat-stream-helpers";
 
 const truncateMiddle = (text: string, maxLength: number): string => {
   if (text.length <= maxLength) return text;
@@ -74,7 +75,10 @@ export const generateTitleFromUserMessageWithWriter = async (
     return chatTitle;
   } catch (error) {
     // Log error but don't propagate to keep main stream resilient
-    console.error("Failed to generate or write chat title:", error);
+    // Suppress xAI safety check errors (expected for certain content)
+    if (!isXaiSafetyError(error)) {
+      console.error("Failed to generate or write chat title:", error);
+    }
     return undefined;
   }
 };

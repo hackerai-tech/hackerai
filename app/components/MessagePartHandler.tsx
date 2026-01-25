@@ -91,13 +91,13 @@ export const MessagePartHandler = ({
       return (
         <TerminalToolHandler message={message} part={part} status={status} />
       );
-    
+
     // Legacy tool
     case "tool-http_request":
       return (
         <HttpRequestToolHandler message={message} part={part} status={status} />
       );
-    
+
     // Legacy tool
     case "data-python":
     case "tool-python":

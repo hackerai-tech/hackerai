@@ -84,7 +84,12 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
         {!loading && !user && (
           <div className="flex items-center gap-2">
             {!hideDownload && (
-              <Button asChild variant="ghost" size="sm" className="rounded-[10px]">
+              <Button
+                asChild
+                variant="ghost"
+                size="sm"
+                className="rounded-[10px]"
+              >
                 <Link href="/download">
                   <Download className="h-4 w-4" />
                 </Link>

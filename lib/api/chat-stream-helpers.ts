@@ -121,6 +121,38 @@ export function sendRateLimitWarnings(
 }
 
 /**
+ * Check if an error is an xAI CSAM safety check error (403 from api.x.ai with SAFETY_CHECK_TYPE_CSAM)
+ * These are false positives that should be suppressed from logging
+ */
+export function isXaiSafetyError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  // Handle both direct errors (from generateText) and wrapped errors (from streamText onError)
+  const apiError =
+    "error" in error && error.error instanceof Error
+      ? (error.error as Error & {
+          statusCode?: number;
+          url?: string;
+          responseBody?: string;
+        })
+      : (error as Error & {
+          statusCode?: number;
+          url?: string;
+          responseBody?: string;
+        });
+
+  return (
+    apiError.statusCode === 403 &&
+    typeof apiError.url === "string" &&
+    apiError.url.includes("api.x.ai") &&
+    typeof apiError.responseBody === "string" &&
+    apiError.responseBody.includes("SAFETY_CHECK_TYPE_CSAM")
+  );
+}
+
+/**
  * Build provider options for streamText
  */
 export function buildProviderOptions(
