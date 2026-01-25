@@ -27,7 +27,7 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "agent-model": "January 2025",
   "agent-vision-model": "January 2025",
   "title-generator-model": "November 2024",
-  "summarization-model": "November 2024",
+  "summarization-model": "January 2025",
 };
 
 export const getModelCutoffDate = (modelName: ModelName): string => {
