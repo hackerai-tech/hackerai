@@ -100,42 +100,81 @@ export function addAuthMessage(messages: UIMessage[]) {
 }
 
 /**
- * Fixes incomplete tool invocations that have state "call" but no result.
- * This can happen when a stream is interrupted. Without a result, convertToModelMessages
- * will throw AI_MissingToolResultsError.
+ * Fixes incomplete tool invocations and removes incomplete reasoning from message parts.
+ * This can happen when a stream is interrupted. Without proper handling:
+ * - Tool invocations without results cause AI_MissingToolResultsError
+ * - Incomplete reasoning parts may cause "must include at least one parts field" errors
  *
- * We add a placeholder error result so the conversation can continue.
+ * We add placeholder results for tools and remove incomplete reasoning (along with
+ * any step-start that immediately precedes it).
+ *
+ * This function is exported for use in db/actions.ts as well.
  */
-export function fixIncompleteToolInvocations(messages: UIMessage[]): UIMessage[] {
+export function fixIncompleteMessageParts(parts: any[]): any[] {
+  // First pass: fix incomplete tool invocations
+  const partsWithFixedTools = parts.map((part: any) => {
+    // Check for tool-invocation parts that aren't in a completed state
+    // Incomplete states include: "call", "partial-call", "input-available", etc.
+    const isToolPart =
+      part.type === "tool-invocation" ||
+      (part.type && part.type.startsWith("tool-"));
+    const isIncomplete =
+      isToolPart &&
+      part.state !== "result" &&
+      part.state !== "output-available";
+    if (isIncomplete) {
+      return {
+        ...part,
+        state: "result",
+        result: {
+          error: "Tool execution was interrupted.",
+        },
+      };
+    }
+    return part;
+  });
+
+  // Second pass: remove incomplete reasoning and the step-start before it
+  const filteredParts: any[] = [];
+  for (let i = 0; i < partsWithFixedTools.length; i++) {
+    const part = partsWithFixedTools[i];
+
+    // Check if this is an incomplete reasoning part
+    const isIncompleteReasoning =
+      part.type === "reasoning" &&
+      part.state !== "done" &&
+      part.state !== undefined;
+
+    if (isIncompleteReasoning) {
+      // Remove the step-start that immediately precedes this reasoning (if any)
+      if (
+        filteredParts.length > 0 &&
+        filteredParts[filteredParts.length - 1].type === "step-start"
+      ) {
+        filteredParts.pop();
+      }
+      // Skip adding this incomplete reasoning part
+      continue;
+    }
+
+    filteredParts.push(part);
+  }
+
+  return filteredParts;
+}
+
+/**
+ * Applies fixIncompleteMessageParts to all assistant messages in a conversation.
+ */
+function fixIncompleteToolInvocations(messages: UIMessage[]): UIMessage[] {
   return messages.map((message) => {
     if (message.role !== "assistant" || !message.parts) {
       return message;
     }
 
-    let hasChanges = false;
-    const fixedParts = message.parts.map((part: any) => {
-      // Check for tool-invocation parts that aren't in a completed state
-      // Incomplete states include: "call", "partial-call", "input-available", etc.
-      const isToolPart =
-        part.type === "tool-invocation" ||
-        (part.type && part.type.startsWith("tool-"));
-      const isIncomplete =
-        isToolPart &&
-        part.state !== "result" &&
-        part.state !== "output-available";
-      if (isIncomplete) {
-        hasChanges = true;
-        // Convert to result state with an error indicating it was interrupted
-        return {
-          ...part,
-          state: "result",
-          result: {
-            error: "Tool execution was interrupted.",
-          },
-        };
-      }
-      return part;
-    });
+    const fixedParts = fixIncompleteMessageParts(message.parts);
+    const hasChanges = fixedParts.length !== message.parts.length ||
+      fixedParts.some((part, i) => part !== message.parts[i]);
 
     return hasChanges ? { ...message, parts: fixedParts } : message;
   });
@@ -207,16 +246,21 @@ export async function processChatMessages({
     return msg.parts.some((part: any) => {
       if (part.type === "text") return part.text?.trim().length > 0;
       if (part.type === "file") return !!part.url || !!part.fileId;
-      // Keep other part types (tool invocations, etc.) as they have implicit content
+      // reasoning must have text content
+      if (part.type === "reasoning") return !!part.text?.trim();
+      // Keep other part types (tool invocations, step-start, etc.) as they have implicit content
       return true;
     });
   });
 
-  // Fix incomplete tool invocations (from interrupted streams) before sending to model
-  const messagesWithFixedTools = fixIncompleteToolInvocations(messagesWithContent);
+  // Fix incomplete tool invocations and reasoning (from interrupted streams) before sending to model
+  const messagesWithFixedTools =
+    fixIncompleteToolInvocations(messagesWithContent);
 
   // Strip originalContent from file edit outputs (large data not needed by model)
-  const cleanedMessages = stripOriginalContentFromMessages(messagesWithFixedTools);
+  const cleanedMessages = stripOriginalContentFromMessages(
+    messagesWithFixedTools,
+  );
 
   // Select the appropriate model
   const selectedModel = selectModel(

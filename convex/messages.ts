@@ -23,12 +23,14 @@ const extractTextFromParts = (parts: any[]): string => {
 };
 
 /**
- * Fix incomplete tool invocations in message parts.
+ * Fix incomplete tool invocations and remove incomplete reasoning in message parts.
  * Tool calls without a completed state get a placeholder error result.
- * This prevents AI_MissingToolResultsError when the conversation is resumed.
+ * Incomplete reasoning parts (and their preceding step-start) are removed entirely.
+ * This prevents errors when the conversation is resumed.
  */
 const fixIncompleteToolParts = (parts: any[]): any[] => {
-  return parts.map((part) => {
+  // First pass: fix incomplete tool invocations
+  const partsWithFixedTools = parts.map((part) => {
     const isToolPart =
       part.type === "tool-invocation" ||
       (part.type && part.type.startsWith("tool-"));
@@ -45,6 +47,34 @@ const fixIncompleteToolParts = (parts: any[]): any[] => {
     }
     return part;
   });
+
+  // Second pass: remove incomplete reasoning and the step-start before it
+  const filteredParts: any[] = [];
+  for (let i = 0; i < partsWithFixedTools.length; i++) {
+    const part = partsWithFixedTools[i];
+
+    // Check if this is an incomplete reasoning part
+    const isIncompleteReasoning =
+      part.type === "reasoning" &&
+      part.state !== "done" &&
+      part.state !== undefined;
+
+    if (isIncompleteReasoning) {
+      // Remove the step-start that immediately precedes this reasoning (if any)
+      if (
+        filteredParts.length > 0 &&
+        filteredParts[filteredParts.length - 1].type === "step-start"
+      ) {
+        filteredParts.pop();
+      }
+      // Skip adding this incomplete reasoning part
+      continue;
+    }
+
+    filteredParts.push(part);
+  }
+
+  return filteredParts;
 };
 
 /**
