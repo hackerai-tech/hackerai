@@ -23,6 +23,31 @@ const extractTextFromParts = (parts: any[]): string => {
 };
 
 /**
+ * Fix incomplete tool invocations in message parts.
+ * Tool calls without a completed state get a placeholder error result.
+ * This prevents AI_MissingToolResultsError when the conversation is resumed.
+ */
+const fixIncompleteToolParts = (parts: any[]): any[] => {
+  return parts.map((part) => {
+    const isToolPart =
+      part.type === "tool-invocation" ||
+      (part.type && part.type.startsWith("tool-"));
+    const isIncomplete =
+      isToolPart &&
+      part.state !== "result" &&
+      part.state !== "output-available";
+    if (isIncomplete) {
+      return {
+        ...part,
+        state: "result",
+        result: { error: "Tool execution was interrupted." },
+      };
+    }
+    return part;
+  });
+};
+
+/**
  * Helper function to check if deleted messages invalidate the chat summary
  * Clears latest_summary_id if the summary's cutoff message was deleted
  */
@@ -435,14 +460,20 @@ export const saveAssistantMessage = mutation({
         throw new Error("Chat not found");
       }
 
-      const content = extractTextFromParts(args.parts);
+      // Fix incomplete tool invocations for assistant messages (from interrupted streams)
+      const fixedParts =
+        args.role === "assistant"
+          ? fixIncompleteToolParts(args.parts)
+          : args.parts;
+
+      const content = extractTextFromParts(fixedParts);
 
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
-        parts: args.parts,
+        parts: fixedParts,
         content: content || undefined,
         update_time: Date.now(),
         model: args.model,
