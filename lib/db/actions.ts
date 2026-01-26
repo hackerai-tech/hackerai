@@ -14,6 +14,7 @@ import {
   countMessagesTokens,
   getMaxTokensForSubscription,
 } from "@/lib/token-utils";
+import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
@@ -77,8 +78,14 @@ export async function saveMessage({
   usage?: Record<string, unknown>;
 }) {
   try {
+    // Fix incomplete tool invocations for assistant messages (from interrupted streams)
+    const fixedParts =
+      message.role === "assistant"
+        ? fixIncompleteMessageParts(message.parts)
+        : message.parts;
+
     // Extract file IDs from file parts
-    const fileIds = extractFileIdsFromParts(message.parts);
+    const fileIds = extractFileIdsFromParts(fixedParts);
     const mergedFileIds = [
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
@@ -90,7 +97,7 @@ export async function saveMessage({
       chatId,
       userId,
       role: message.role,
-      parts: message.parts,
+      parts: fixedParts,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
       model,
       generationTimeMs,

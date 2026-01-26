@@ -23,6 +23,61 @@ const extractTextFromParts = (parts: any[]): string => {
 };
 
 /**
+ * Fix incomplete tool invocations and remove incomplete reasoning in message parts.
+ * Tool calls without a completed state get a placeholder error result.
+ * Incomplete reasoning parts (and their preceding step-start) are removed entirely.
+ * This prevents errors when the conversation is resumed.
+ */
+const fixIncompleteToolParts = (parts: any[]): any[] => {
+  // First pass: fix incomplete tool invocations
+  const partsWithFixedTools = parts.map((part) => {
+    const isToolPart =
+      part.type === "tool-invocation" ||
+      (part.type && part.type.startsWith("tool-"));
+    const isIncomplete =
+      isToolPart &&
+      part.state !== "result" &&
+      part.state !== "output-available";
+    if (isIncomplete) {
+      return {
+        ...part,
+        state: "result",
+        result: { error: "Tool execution was interrupted." },
+      };
+    }
+    return part;
+  });
+
+  // Second pass: remove incomplete reasoning and the step-start before it
+  const filteredParts: any[] = [];
+  for (let i = 0; i < partsWithFixedTools.length; i++) {
+    const part = partsWithFixedTools[i];
+
+    // Check if this is an incomplete reasoning part
+    const isIncompleteReasoning =
+      part.type === "reasoning" &&
+      part.state !== "done" &&
+      part.state !== undefined;
+
+    if (isIncompleteReasoning) {
+      // Remove the step-start that immediately precedes this reasoning (if any)
+      if (
+        filteredParts.length > 0 &&
+        filteredParts[filteredParts.length - 1].type === "step-start"
+      ) {
+        filteredParts.pop();
+      }
+      // Skip adding this incomplete reasoning part
+      continue;
+    }
+
+    filteredParts.push(part);
+  }
+
+  return filteredParts;
+};
+
+/**
  * Helper function to check if deleted messages invalidate the chat summary
  * Clears latest_summary_id if the summary's cutoff message was deleted
  */
@@ -435,14 +490,20 @@ export const saveAssistantMessage = mutation({
         throw new Error("Chat not found");
       }
 
-      const content = extractTextFromParts(args.parts);
+      // Fix incomplete tool invocations for assistant messages (from interrupted streams)
+      const fixedParts =
+        args.role === "assistant"
+          ? fixIncompleteToolParts(args.parts)
+          : args.parts;
+
+      const content = extractTextFromParts(fixedParts);
 
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
-        parts: args.parts,
+        parts: fixedParts,
         content: content || undefined,
         update_time: Date.now(),
         model: args.model,

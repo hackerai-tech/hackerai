@@ -283,6 +283,7 @@ export const createChatHandler = (
 
       const posthog = PostHogClient();
       const assistantMessageId = uuidv4();
+      chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
       // Start temp stream coordination for temporary chats
       if (temporary) {

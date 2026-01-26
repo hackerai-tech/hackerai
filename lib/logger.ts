@@ -17,6 +17,7 @@ export interface ChatWideEvent {
   timestamp: string;
   request_id: string;
   chat_id: string;
+  assistant_id?: string;
 
   // Service context
   service: "chat-handler";
@@ -145,6 +146,14 @@ export class WideEventBuilder {
     this.event.mode = details.mode;
     this.event.is_temporary = details.isTemporary;
     this.event.is_regenerate = details.isRegenerate;
+    return this;
+  }
+
+  /**
+   * Set assistant message ID
+   */
+  setAssistantId(assistantId: string): this {
+    this.event.assistant_id = assistantId;
     return this;
   }
 
@@ -354,6 +363,11 @@ export class WideEventBuilder {
       const outputCost =
         ((this.event.usage.output_tokens || 0) / 1_000_000) * 3.0;
       this.event.usage.total_cost = inputCost + outputCost;
+    }
+
+    // Don't include assistant_id for temporary chats
+    if (this.event.is_temporary) {
+      delete this.event.assistant_id;
     }
 
     return this.event as ChatWideEvent;
