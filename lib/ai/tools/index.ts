@@ -10,7 +10,7 @@ import { createGetTerminalFiles } from "./get-terminal-files";
 // import { createReadFile } from "./read-file";
 // import { createWriteFile } from "./write-file";
 import { createFile } from "./file";
-import { createMatch } from "./match";
+// import { createMatch } from "./match";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
@@ -93,7 +93,7 @@ export const createTools = (
     // write_file: createWriteFile(context),
     file: createFile(context),
     // search_replace: createSearchReplace(context),
-    match: createMatch(context),
+    // match: createMatch(context),
     todo_write: createTodoWrite(context),
     ...(!isTemporary &&
       memoryEnabled && { update_memory: createUpdateMemory(context) }),
