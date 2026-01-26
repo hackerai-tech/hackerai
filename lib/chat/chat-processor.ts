@@ -6,27 +6,27 @@ import type { ModelName } from "@/lib/ai/providers";
 
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
- * Agent mode: Always 20 steps (for all paid users)
+ * Agent mode: Ultra: 50 steps, all other paid users: 25 steps
  * Ask mode: Free: 5 steps, Pro/Team: 10 steps, Ultra: 15 steps
  */
 export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  // Agent mode always gets 20 steps regardless of subscription
+  // Agent mode: Ultra users get 50 steps, others get 25 steps
   if (mode === "agent" && subscription === "ultra") {
     return 50;
   } else if (mode === "agent") {
     return 25;
   }
 
-  // Ask mode steps vary by subscription tier
+  // Ask mode steps: Free: 5, Ultra: 15, Pro/Team: 10
   if (subscription === "free") {
-    return 5; // Free users limited to 5 steps
+    return 5;
   }
 
   if (subscription === "ultra") {
-    return 15; // Ultra users get 15 steps
+    return 15;
   }
 
   // Pro and Team users get 10 steps
@@ -100,6 +100,48 @@ export function addAuthMessage(messages: UIMessage[]) {
 }
 
 /**
+ * Fixes incomplete tool invocations that have state "call" but no result.
+ * This can happen when a stream is interrupted. Without a result, convertToModelMessages
+ * will throw AI_MissingToolResultsError.
+ *
+ * We add a placeholder error result so the conversation can continue.
+ */
+export function fixIncompleteToolInvocations(messages: UIMessage[]): UIMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !message.parts) {
+      return message;
+    }
+
+    let hasChanges = false;
+    const fixedParts = message.parts.map((part: any) => {
+      // Check for tool-invocation parts that aren't in a completed state
+      // Incomplete states include: "call", "partial-call", "input-available", etc.
+      const isToolPart =
+        part.type === "tool-invocation" ||
+        (part.type && part.type.startsWith("tool-"));
+      const isIncomplete =
+        isToolPart &&
+        part.state !== "result" &&
+        part.state !== "output-available";
+      if (isIncomplete) {
+        hasChanges = true;
+        // Convert to result state with an error indicating it was interrupted
+        return {
+          ...part,
+          state: "result",
+          result: {
+            error: "Tool execution was interrupted.",
+          },
+        };
+      }
+      return part;
+    });
+
+    return hasChanges ? { ...message, parts: fixedParts } : message;
+  });
+}
+
+/**
  * Strips originalContent and modifiedContent from file tool outputs to reduce payload size.
  * These are persisted for UI but shouldn't be sent to the model
  * (toModelOutput handles what the model sees, but we also strip it here as a safeguard).
@@ -170,8 +212,11 @@ export async function processChatMessages({
     });
   });
 
+  // Fix incomplete tool invocations (from interrupted streams) before sending to model
+  const messagesWithFixedTools = fixIncompleteToolInvocations(messagesWithContent);
+
   // Strip originalContent from file edit outputs (large data not needed by model)
-  const cleanedMessages = stripOriginalContentFromMessages(messagesWithContent);
+  const cleanedMessages = stripOriginalContentFromMessages(messagesWithFixedTools);
 
   // Select the appropriate model
   const selectedModel = selectModel(

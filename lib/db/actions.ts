@@ -21,6 +21,37 @@ import { v4 as uuidv4 } from "uuid";
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
 
+/**
+ * Fixes incomplete tool invocations in message parts.
+ * Tool calls without a completed state get a placeholder error result.
+ * This prevents AI_MissingToolResultsError when the conversation is resumed.
+ */
+function fixIncompleteToolParts(
+  parts: UIMessagePart<any, any>[],
+): UIMessagePart<any, any>[] {
+  return parts.map((part: any) => {
+    // Check for tool parts that aren't in a completed state
+    // Incomplete states include: "call", "partial-call", "input-available", etc.
+    const isToolPart =
+      part.type === "tool-invocation" ||
+      (part.type && part.type.startsWith("tool-"));
+    const isIncomplete =
+      isToolPart &&
+      part.state !== "result" &&
+      part.state !== "output-available";
+    if (isIncomplete) {
+      return {
+        ...part,
+        state: "result",
+        result: {
+          error: "Tool execution was interrupted.",
+        },
+      };
+    }
+    return part;
+  });
+}
+
 export async function getChatById({ id }: { id: string }) {
   try {
     const selectedChat = await convex.query(api.chats.getChatById, {
@@ -77,8 +108,14 @@ export async function saveMessage({
   usage?: Record<string, unknown>;
 }) {
   try {
+    // Fix incomplete tool invocations for assistant messages (from interrupted streams)
+    const fixedParts =
+      message.role === "assistant"
+        ? fixIncompleteToolParts(message.parts)
+        : message.parts;
+
     // Extract file IDs from file parts
-    const fileIds = extractFileIdsFromParts(message.parts);
+    const fileIds = extractFileIdsFromParts(fixedParts);
     const mergedFileIds = [
       ...fileIds,
       ...((extraFileIds || []).filter(Boolean) as string[]),
@@ -90,7 +127,7 @@ export async function saveMessage({
       chatId,
       userId,
       role: message.role,
-      parts: message.parts,
+      parts: fixedParts,
       fileIds: mergedFileIds.length > 0 ? (mergedFileIds as any) : undefined,
       model,
       generationTimeMs,
