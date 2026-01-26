@@ -14,8 +14,10 @@ export const getMaxStepsForUser = (
   subscription: SubscriptionTier,
 ): number => {
   // Agent mode always gets 20 steps regardless of subscription
-  if (mode === "agent") {
-    return 20;
+  if (mode === "agent" && subscription === "ultra") {
+    return 50;
+  } else if (mode === "agent") {
+    return 25;
   }
 
   // Ask mode steps vary by subscription tier
