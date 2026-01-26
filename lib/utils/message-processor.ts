@@ -55,7 +55,20 @@ export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
 };
 
 /**
+ * Checks if a part is a completed reasoning block with redacted text.
+ * These should be filtered out entirely as they provide no value when saved.
+ */
+const isRedactedReasoningPart = (part: Record<string, any>): boolean => {
+  return (
+    part.type === "reasoning" &&
+    part.state === "done" &&
+    part.text === "[REDACTED]"
+  );
+};
+
+/**
  * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
+ * Also filters out completed reasoning blocks with redacted text.
  * Used to clean messages before saving or for temporary chat handling.
  */
 export const stripProviderMetadata = <T extends { parts?: any[] }>(
@@ -64,7 +77,9 @@ export const stripProviderMetadata = <T extends { parts?: any[] }>(
   if (!message.parts) return message;
   return {
     ...message,
-    parts: message.parts.map(stripProviderMetadataFromPart),
+    parts: message.parts
+      .filter((part) => !isRedactedReasoningPart(part))
+      .map(stripProviderMetadataFromPart),
   };
 };
 

@@ -13,7 +13,7 @@ const baseProviders = {
   "agent-model": openrouter("google/gemini-3-flash-preview"),
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
-  "summarization-model": xai("grok-4-1-fast-non-reasoning"),
+  "summarization-model": openrouter("google/gemini-3-flash-preview"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as Record<string, any>;
 
@@ -27,7 +27,7 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "agent-model": "January 2025",
   "agent-vision-model": "January 2025",
   "title-generator-model": "November 2024",
-  "summarization-model": "November 2024",
+  "summarization-model": "January 2025",
 };
 
 export const getModelCutoffDate = (modelName: ModelName): string => {
