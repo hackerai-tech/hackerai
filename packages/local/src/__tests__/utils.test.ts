@@ -18,6 +18,7 @@ import {
   buildDockerRunCommand,
   getSandboxMode,
   parseShellDetectionOutput,
+  getDefaultShell,
 } from "../utils";
 
 describe("Output Truncation", () => {
@@ -200,5 +201,31 @@ describe("Shell Detection Parsing", () => {
   it("should handle Alpine busybox ash path", () => {
     const shell = parseShellDetectionOutput("/bin/ash");
     expect(shell).toBe("/bin/ash");
+  });
+});
+
+describe("Platform Shell Detection", () => {
+  it("should return PowerShell for Windows", () => {
+    const result = getDefaultShell("win32");
+    expect(result.shell).toBe("powershell.exe");
+    expect(result.shellFlag).toBe("-Command");
+  });
+
+  it("should return bash for Linux", () => {
+    const result = getDefaultShell("linux");
+    expect(result.shell).toBe("/bin/bash");
+    expect(result.shellFlag).toBe("-c");
+  });
+
+  it("should return bash for macOS (darwin)", () => {
+    const result = getDefaultShell("darwin");
+    expect(result.shell).toBe("/bin/bash");
+    expect(result.shellFlag).toBe("-c");
+  });
+
+  it("should return bash for unknown platforms", () => {
+    const result = getDefaultShell("freebsd");
+    expect(result.shell).toBe("/bin/bash");
+    expect(result.shellFlag).toBe("-c");
   });
 });

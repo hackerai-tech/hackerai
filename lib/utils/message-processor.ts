@@ -1,57 +1,20 @@
 import { ChatMessage } from "@/types/chat";
 
 /**
- * Checks if a metadata object contains OpenRouter data.
- */
-const hasOpenRouterMetadata = (metadata: unknown): boolean => {
-  return (
-    metadata !== null &&
-    typeof metadata === "object" &&
-    "openrouter" in metadata
-  );
-};
-
-/**
  * Strips provider-specific fields from a single message part.
- * - providerMetadata/callProviderMetadata: only strips if it contains OpenRouter data
- * - providerExecuted/providerOptions: always strips (provider-internal data)
+ * Removes providerMetadata, callProviderMetadata, providerExecuted, and providerOptions.
  */
 export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
   part: T,
 ): T => {
-  let result = part;
-
-  // Strip providerMetadata if it contains OpenRouter data
-  if (
-    "providerMetadata" in result &&
-    hasOpenRouterMetadata(result.providerMetadata)
-  ) {
-    const { providerMetadata, ...rest } = result;
-    result = rest as T;
-  }
-
-  // Strip callProviderMetadata if it contains OpenRouter data
-  if (
-    "callProviderMetadata" in result &&
-    hasOpenRouterMetadata(result.callProviderMetadata)
-  ) {
-    const { callProviderMetadata, ...rest } = result;
-    result = rest as T;
-  }
-
-  // Always strip providerExecuted
-  if ("providerExecuted" in result) {
-    const { providerExecuted, ...rest } = result;
-    result = rest as T;
-  }
-
-  // Always strip providerOptions
-  if ("providerOptions" in result) {
-    const { providerOptions, ...rest } = result;
-    result = rest as T;
-  }
-
-  return result;
+  const {
+    providerMetadata,
+    callProviderMetadata,
+    providerExecuted,
+    providerOptions,
+    ...rest
+  } = part;
+  return rest as T;
 };
 
 /**
@@ -203,12 +166,10 @@ export const normalizeMessages = (
         return;
       }
 
-      // Strip provider-specific fields from the part (contains internal data like encrypted reasoning, provider options)
+      // Strip provider-specific fields from the part
       const hasProviderFields =
-        ("providerMetadata" in part &&
-          hasOpenRouterMetadata(part.providerMetadata)) ||
-        ("callProviderMetadata" in part &&
-          hasOpenRouterMetadata(part.callProviderMetadata)) ||
+        "providerMetadata" in part ||
+        "callProviderMetadata" in part ||
         "providerExecuted" in part ||
         "providerOptions" in part;
       const cleanPart = hasProviderFields
