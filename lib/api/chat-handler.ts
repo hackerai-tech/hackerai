@@ -420,7 +420,11 @@ export const createChatHandler = (
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
-          let finalMessages = processedMessages;
+          // Fix any incomplete tool calls from previous sessions before sending to AI SDK
+          // This prevents "Tool result is missing" errors from old interrupted tool calls
+          let finalMessages = processedMessages.map((msg) =>
+            completeIncompleteToolCalls(msg, "Previous operation was interrupted")
+          );
           let hasSummarized = false;
           const isReasoningModel = mode === "agent";
 
@@ -703,12 +707,26 @@ export const createChatHandler = (
                   const newFileIds = accumulatedFiles.map((f) => f.fileId);
                   logStep("get_accumulated_files", stepStart);
 
-                  // If user aborted (not pre-emptive) and no files to add, skip message save (frontend already saved)
-                  // Pre-emptive aborts should always save to ensure data persistence before timeout
+                  // Check if any messages have incomplete tool calls that need completion
+                  const hasIncompleteToolCalls = messages.some(
+                    (msg) =>
+                      msg.role === "assistant" &&
+                      msg.parts?.some(
+                        (p: { type?: string; state?: string; toolCallId?: string }) =>
+                          p.type?.startsWith("tool-") &&
+                          p.state !== "output-available" &&
+                          p.toolCallId
+                      )
+                  );
+
+                  // If user aborted (not pre-emptive), no files to add, AND no incomplete tools,
+                  // skip message save (frontend already saved complete message)
+                  // But if there are incomplete tools, we MUST save to fix the tool results
                   if (
                     isAborted &&
                     !isPreemptiveAbort &&
-                    newFileIds.length === 0
+                    newFileIds.length === 0 &&
+                    !hasIncompleteToolCalls
                   ) {
                     return;
                   }
@@ -726,12 +744,38 @@ export const createChatHandler = (
                           }
                         : message;
 
-                    // Complete any incomplete tool calls on preemptive timeout
+                    // Complete any incomplete tool calls on ANY abort
                     // This prevents "Tool result is missing" errors on next request
-                    if (isPreemptiveAbort) {
+                    if (isAborted) {
+                      const reason = isPreemptiveAbort
+                        ? "Operation timed out due to server time limit"
+                        : "Operation was stopped by user";
+
+                      // Log incomplete tool calls for debugging
+                      const incompleteTools = processedMessage.parts?.filter(
+                        (p: { type?: string; state?: string; toolCallId?: string }) =>
+                          p.type?.startsWith("tool-") &&
+                          p.state !== "output-available" &&
+                          p.toolCallId
+                      ) || [];
+
+                      if (incompleteTools.length > 0) {
+                        axiomLogger.warn("Completing incomplete tool calls on abort", {
+                          chatId,
+                          endpoint,
+                          isPreemptiveAbort,
+                          incompleteToolCount: incompleteTools.length,
+                          incompleteTools: incompleteTools.map((t: { type?: string; toolCallId?: string; state?: string }) => ({
+                            type: t.type,
+                            toolCallId: t.toolCallId,
+                            state: t.state,
+                          })),
+                        });
+                      }
+
                       processedMessage = completeIncompleteToolCalls(
                         processedMessage,
-                        "Operation timed out due to server time limit",
+                        reason,
                       );
                     }
 

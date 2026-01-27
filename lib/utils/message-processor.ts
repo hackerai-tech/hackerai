@@ -67,17 +67,30 @@ const isRedactedReasoningPart = (part: Record<string, any>): boolean => {
 };
 
 /**
- * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
- * Also filters out completed reasoning blocks with redacted text.
+ * Strips provider-specific fields from messages before saving.
+ * - OpenRouter providerMetadata/callProviderMetadata from parts
+ * - Gemini reasoning/reasoning_details from top-level message (encrypted thinking blocks)
+ * - Completed reasoning blocks with redacted text
  * Used to clean messages before saving or for temporary chat handling.
  */
 export const stripProviderMetadata = <T extends { parts?: any[] }>(
   message: T,
 ): T => {
-  if (!message.parts) return message;
+  let result = message;
+
+  // Strip top-level reasoning fields (Gemini encrypted thinking blocks)
+  // These cause "Thought signature is not valid" errors if sent back to the API
+  const msgAny = message as Record<string, any>;
+  if ("reasoning" in msgAny || "reasoning_details" in msgAny) {
+    const { reasoning, reasoning_details, ...rest } = msgAny;
+    result = rest as T;
+  }
+
+  if (!result.parts) return result;
+
   return {
-    ...message,
-    parts: message.parts
+    ...result,
+    parts: result.parts
       .filter((part) => !isRedactedReasoningPart(part))
       .map(stripProviderMetadataFromPart),
   };

@@ -209,6 +209,7 @@ export const createPreemptiveTimeout = ({
   abortController,
   safetyBuffer = 30,
 }: PreemptiveTimeoutOptions) => {
+  // Use endpoint-specific max duration based on Vercel function limits
   const maxDuration = endpoint === "/api/chat" ? 180 : 800;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
   const startTime = Date.now();
@@ -225,6 +226,7 @@ export const createPreemptiveTimeout = ({
       endpoint,
       maxDuration,
       safetyBuffer,
+      maxStreamTimeMs: maxStreamTime,
       elapsedMs: triggerTime - startTime,
       triggerTime: new Date(triggerTime).toISOString(),
     });
