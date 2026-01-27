@@ -21,7 +21,10 @@ import {
   getSandboxMode,
   buildDockerRunCommand,
   parseShellDetectionOutput,
+  getDefaultShell,
 } from "./utils";
+
+const DEFAULT_SHELL = getDefaultShell(os.platform());
 
 // Idle timeout: auto-terminate after 1 hour without commands
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour
@@ -41,12 +44,14 @@ function runShellCommand(
   options: {
     timeout?: number;
     shell?: string;
+    shellFlag?: string;
     maxOutputSize?: number;
   } = {},
 ): Promise<ShellCommandResult> {
   const {
     timeout = 30000,
-    shell = "/bin/bash",
+    shell = DEFAULT_SHELL.shell,
+    shellFlag = DEFAULT_SHELL.shellFlag,
     maxOutputSize = MAX_OUTPUT_SIZE,
   } = options;
 
@@ -56,7 +61,7 @@ function runShellCommand(
     let killed = false;
     let timeoutId: NodeJS.Timeout | undefined;
 
-    const proc: ChildProcess = spawn(shell, ["-c", command], {
+    const proc: ChildProcess = spawn(shell, [shellFlag, command], {
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -594,7 +599,7 @@ class LocalSandboxClient {
       if (this.config.dangerous) {
         result = await runShellCommand(fullCommand, {
           timeout: timeout ?? 30000,
-          shell: "/bin/bash",
+          // Use platform-appropriate shell (powershell on Windows, bash on Unix)
         });
       } else {
         // Use single quotes to prevent host shell from interpreting $(), backticks, etc.
@@ -643,9 +648,9 @@ class LocalSandboxClient {
 
   private async spawnBackground(fullCommand: string): Promise<number> {
     if (this.config.dangerous) {
-      // Spawn directly on host in dangerous mode
-      const child = spawn("/bin/bash", ["-c", fullCommand], {
-        detached: true,
+      // Spawn directly on host in dangerous mode using platform-appropriate shell
+      const child = spawn(DEFAULT_SHELL.shell, [DEFAULT_SHELL.shellFlag, fullCommand], {
+        detached: os.platform() !== "win32", // detached doesn't work the same on Windows
         stdio: "ignore",
       });
       child.unref();
