@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
+import { WebVitals } from "@/lib/axiom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { GlobalStateProvider } from "./contexts/GlobalState";
@@ -109,6 +110,7 @@ export default function RootLayout({
 
   return (
     <html lang="en" className="dark h-full" suppressHydrationWarning>
+      <WebVitals />
       <head>
         <meta
           name="viewport"
