@@ -18,10 +18,10 @@ importers:
     dependencies:
       '@ai-sdk/gateway':
         specifier: ^3.0.24
-        version: 3.0.24(zod@4.3.6)
+        version: 3.0.25(zod@4.3.6)
       '@ai-sdk/google':
         specifier: ^3.0.14
-        version: 3.0.14(zod@4.3.6)
+        version: 3.0.15(zod@4.3.6)
       '@ai-sdk/openai':
         specifier: ^3.0.19
         version: 3.0.19(zod@4.3.6)
@@ -37,6 +37,18 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.975.0
         version: 3.975.0
+      '@axiomhq/js':
+        specifier: ^1.4.0
+        version: 1.4.0
+      '@axiomhq/logging':
+        specifier: ^0.2.0
+        version: 0.2.0(@axiomhq/js@1.4.0)
+      '@axiomhq/nextjs':
+        specifier: ^0.2.0
+        version: 0.2.0(@axiomhq/logging@0.2.0(@axiomhq/js@1.4.0))(next@16.1.4(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.0)(babel-plugin-macros@3.1.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))
+      '@axiomhq/react':
+        specifier: ^0.2.0
+        version: 0.2.0(@axiomhq/logging@0.2.0(@axiomhq/js@1.4.0))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@convex-dev/aggregate':
         specifier: ^0.2.1
         version: 0.2.1(convex@1.31.6(react@19.2.3))
@@ -376,14 +388,14 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/gateway@3.0.24':
-    resolution: {integrity: sha512-gf8AsKMZWlAQBbTYEUyj57AGmmpqXxY3iytVz4KBD2pRYsEPEHDpdLbSnYcYP06U60j6HeJTgkeaIjHxezvtEw==}
+  '@ai-sdk/gateway@3.0.25':
+    resolution: {integrity: sha512-j0AQeA7hOVqwImykQlganf/Euj3uEXf0h3G0O4qKTDpEwE+EZGIPnVimCWht5W91lAetPZSfavDyvfpuPDd2PQ==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/google@3.0.14':
-    resolution: {integrity: sha512-gmzKq1uBDFPWFhTE6PaohafNvXh5JWyzc4MOGhgZH5CIdp3DkWQjS/7h85LsxxrA2IpOr90AQcLolHLeDN3QGA==}
+  '@ai-sdk/google@3.0.15':
+    resolution: {integrity: sha512-sv12VNSBBXYRV35AUVUCzxLs0misPVcR0w6HZykBEwpmQ4oWJ/yj3OZfOh+78fwh8c4x6EIAjvQwgLgZMK+fFQ==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -641,6 +653,34 @@ packages:
   '@aws/lambda-invoke-store@0.2.2':
     resolution: {integrity: sha512-C0NBLsIqzDIae8HFw9YIrIBsbc0xTiOtt7fAukGPnqQ/+zZNaq+4jhuccltK0QuWHBnNm/a6kLIRA6GFiM10eg==}
     engines: {node: '>=18.0.0'}
+
+  '@axiomhq/js@1.4.0':
+    resolution: {integrity: sha512-wC5x1ud/QJMstrjpicATkyY8+ZVWEl4WlXMtA5EZf7hkj0+b191yv4yynLxLEfr/MveXora9m6CWdJq4DsbcAg==}
+    engines: {node: '>=20'}
+
+  '@axiomhq/logging@0.2.0':
+    resolution: {integrity: sha512-Ro3GxgBAZQvsbx6Yjor9f6yx2IC7Wvqy0FC7HGcOjdtswl0refGB+gtKs94XyxbfnIo6MbKjHhHHkZOubjE+pQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@axiomhq/js': 1.4.0
+    peerDependenciesMeta:
+      '@axiomhq/js':
+        optional: true
+
+  '@axiomhq/nextjs@0.2.0':
+    resolution: {integrity: sha512-c90TKJf+r7jbWKctBcDZqAqfA+XTwA1L2BORf8Ipa2dBFvOj9RkzetIp/d2FTrGWJ9rLHAyOpKEER7mg4nOXDQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@axiomhq/logging': 0.2.0
+      next: '>=13'
+
+  '@axiomhq/react@0.2.0':
+    resolution: {integrity: sha512-PrvX/y7UEJp/WTcKQqSk1CoZVJeo1tGVnE6ekTZ5JRlv7E9pmewlig3Saxs4g9Bd/I9jMGQvEjy61J6x/QOMSg==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@axiomhq/logging': 0.2.0
+      react: ^18 || ^19
+      react-dom: ^18 || ^19
 
   '@babel/code-frame@7.27.1':
     resolution: {integrity: sha512-cjQ7ZlQ0Mv3b47hABuTevyTuYN4i+loJKGeV9flcCgIK37cCXRh+L1bd3iBHlynerhQ7BhCkn2BPbQUL+rGqFg==}
@@ -4900,6 +4940,9 @@ packages:
     resolution: {integrity: sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==}
     engines: {node: ^12.20 || >= 14.13}
 
+  fetch-retry@6.0.0:
+    resolution: {integrity: sha512-BUFj1aMubgib37I3v4q78fYo63Po7t4HUPTpQ6/QE6yK6cIQrP+W43FYToeTEyg5m2Y7eFUtijUuAv/PDlWuag==}
+
   fflate@0.4.8:
     resolution: {integrity: sha512-FJqqoDBR00Mdj9ppamLa/Y7vxm+PRmNWA67N846RvsoYVMKB4q3y/de5PA7gUmRMYK/8CMz2GDZQmCRN1wBcWA==}
 
@@ -7325,6 +7368,11 @@ packages:
       '@types/react':
         optional: true
 
+  use-deep-compare@1.3.0:
+    resolution: {integrity: sha512-94iG+dEdEP/Sl3WWde+w9StIunlV8Dgj+vkt5wTwMoFQLaijiEZSXXy8KtcStpmEDtIptRJiNeD4ACTtVvnIKA==}
+    peerDependencies:
+      react: '>=16.8.0'
+
   use-isomorphic-layout-effect@1.2.1:
     resolution: {integrity: sha512-tpZZ+EX0gaghDAiFR37hj5MgY6ZN55kLiPkJsKxBMZ6GZdOSPJXiOzPM984oPYZ5AnehYx5WQp1+ME8I/P/pRA==}
     peerDependencies:
@@ -7491,6 +7539,9 @@ packages:
     resolution: {integrity: sha512-QW95TCTaHmsYfHDybGMwO5IJIM93I/6vTRk+daHTWFPhwh+C8Cg7j7XyKrwrj8Ib6vYXe0ocYNrmzY4xAAN6ug==}
     engines: {node: '>= 14'}
 
+  web-vitals@4.2.4:
+    resolution: {integrity: sha512-r4DIlprAGwJ7YM11VZp4R884m0Vmgr6EAKe3P+kO0PPj3Unqyvv59rczf6UiGcb9Z8QxZVcqKNwv/g0WNdWwsw==}
+
   web-vitals@5.1.0:
     resolution: {integrity: sha512-ArI3kx5jI0atlTtmV0fWU3fjpLmq/nD3Zr1iFFlJLaqa5wLBkUSzINwBPySCX/8jRyjlmy1Volw1kz1g9XE4Jg==}
 
@@ -7507,6 +7558,7 @@ packages:
   whatwg-encoding@3.1.1:
     resolution: {integrity: sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ==}
     engines: {node: '>=18'}
+    deprecated: Use @exodus/bytes instead for a more spec-conformant and faster implementation
 
   whatwg-mimetype@4.0.0:
     resolution: {integrity: sha512-QaKxh0eNIi2mE9p2vEdzfagOKHCcj1pJ56EEHGQOVxp8r9/iszLUUV7v89x9O1p/T+NlTM5W7jW6+cz4Fq1YVg==}
@@ -7660,14 +7712,14 @@ snapshots:
       '@vercel/oidc': 3.1.0
       zod: 4.3.6
 
-  '@ai-sdk/gateway@3.0.24(zod@4.3.6)':
+  '@ai-sdk/gateway@3.0.25(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.5
       '@ai-sdk/provider-utils': 4.0.10(zod@4.3.6)
       '@vercel/oidc': 3.1.0
       zod: 4.3.6
 
-  '@ai-sdk/google@3.0.14(zod@4.3.6)':
+  '@ai-sdk/google@3.0.15(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.5
       '@ai-sdk/provider-utils': 4.0.10(zod@4.3.6)
@@ -8303,6 +8355,27 @@ snapshots:
       tslib: 2.8.1
 
   '@aws/lambda-invoke-store@0.2.2': {}
+
+  '@axiomhq/js@1.4.0':
+    dependencies:
+      fetch-retry: 6.0.0
+
+  '@axiomhq/logging@0.2.0(@axiomhq/js@1.4.0)':
+    optionalDependencies:
+      '@axiomhq/js': 1.4.0
+
+  '@axiomhq/nextjs@0.2.0(@axiomhq/logging@0.2.0(@axiomhq/js@1.4.0))(next@16.1.4(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.0)(babel-plugin-macros@3.1.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))':
+    dependencies:
+      '@axiomhq/logging': 0.2.0(@axiomhq/js@1.4.0)
+      next: 16.1.4(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.0)(babel-plugin-macros@3.1.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+
+  '@axiomhq/react@0.2.0(@axiomhq/logging@0.2.0(@axiomhq/js@1.4.0))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
+    dependencies:
+      '@axiomhq/logging': 0.2.0(@axiomhq/js@1.4.0)
+      react: 19.2.3
+      react-dom: 19.2.3(react@19.2.3)
+      use-deep-compare: 1.3.0(react@19.2.3)
+      web-vitals: 4.2.4
 
   '@babel/code-frame@7.27.1':
     dependencies:
@@ -12428,6 +12501,8 @@ snapshots:
       node-domexception: 1.0.0
       web-streams-polyfill: 3.3.3
 
+  fetch-retry@6.0.0: {}
+
   fflate@0.4.8: {}
 
   file-entry-cache@8.0.0:
@@ -15511,6 +15586,11 @@ snapshots:
     optionalDependencies:
       '@types/react': 19.1.9
 
+  use-deep-compare@1.3.0(react@19.2.3):
+    dependencies:
+      dequal: 2.0.3
+      react: 19.2.3
+
   use-isomorphic-layout-effect@1.2.1(@types/react@19.1.9)(react@19.2.3):
     dependencies:
       react: 19.2.3
@@ -15667,6 +15747,8 @@ snapshots:
   web-streams-polyfill@3.3.3: {}
 
   web-streams-polyfill@4.0.0-beta.3: {}
+
+  web-vitals@4.2.4: {}
 
   web-vitals@5.1.0: {}
 

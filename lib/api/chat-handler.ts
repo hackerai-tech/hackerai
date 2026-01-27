@@ -9,7 +9,10 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
-import { stripProviderMetadata } from "@/lib/utils/message-processor";
+import {
+  stripProviderMetadata,
+  completeIncompleteToolCalls,
+} from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -72,6 +75,8 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import { logger as axiomLogger } from "@/lib/axiom/server";
+import { extractErrorDetails } from "@/lib/utils/error-utils";
 
 function getStreamContext() {
   try {
@@ -152,7 +157,7 @@ export const createChatHandler = (
       const userStopSignal = new AbortController();
       preemptiveTimeout = createPreemptiveTimeout({
         chatId,
-        mode,
+        endpoint,
         abortController: userStopSignal,
       });
 
@@ -415,7 +420,11 @@ export const createChatHandler = (
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
-          let finalMessages = processedMessages;
+          // Fix any incomplete tool calls from previous sessions before sending to AI SDK
+          // This prevents "Tool result is missing" errors from old interrupted tool calls
+          let finalMessages = processedMessages.map((msg) =>
+            completeIncompleteToolCalls(msg, "Previous operation was interrupted")
+          );
           let hasSummarized = false;
           const isReasoningModel = mode === "agent";
 
@@ -572,6 +581,18 @@ export const createChatHandler = (
               // Suppress xAI safety check errors from logging (they're expected for certain content)
               if (!isXaiSafetyError(error)) {
                 console.error("Error:", error);
+
+                // Log provider errors to Axiom with request context
+                axiomLogger.error("Provider streaming error", {
+                  chatId,
+                  endpoint,
+                  mode,
+                  model: selectedModel,
+                  userId,
+                  subscription,
+                  isTemporary: temporary,
+                  ...extractErrorDetails(error),
+                });
               }
               // Refund credits on streaming errors (idempotent - only refunds once)
               await usageRefundTracker.refund();
@@ -582,40 +603,78 @@ export const createChatHandler = (
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
+                const isPreemptiveAbort = preemptiveTimeout?.isPreemptive() ?? false;
+                const onFinishStartTime = Date.now();
+                const triggerTime = preemptiveTimeout?.getTriggerTime();
+
+                // Helper to log step timing during preemptive timeout
+                const logStep = (step: string, stepStartTime: number) => {
+                  if (isPreemptiveAbort) {
+                    const stepDuration = Date.now() - stepStartTime;
+                    const totalElapsed = Date.now() - (triggerTime || onFinishStartTime);
+                    axiomLogger.info("Preemptive timeout cleanup step", {
+                      chatId,
+                      step,
+                      stepDurationMs: stepDuration,
+                      totalElapsedSinceTriggerMs: totalElapsed,
+                      endpoint,
+                    });
+                  }
+                };
+
+                if (isPreemptiveAbort) {
+                  axiomLogger.info("Preemptive timeout onFinish started", {
+                    chatId,
+                    endpoint,
+                    timeSinceTriggerMs: triggerTime ? onFinishStartTime - triggerTime : null,
+                    messageCount: messages.length,
+                    isTemporary: temporary,
+                  });
+                }
+
                 // Clear pre-emptive timeout
+                let stepStart = Date.now();
                 preemptiveTimeout?.clear();
+                logStep("clear_timeout", stepStart);
 
                 // Stop cancellation subscriber
+                stepStart = Date.now();
                 await cancellationSubscriber.stop();
                 subscriberStopped = true;
+                logStep("stop_cancellation_subscriber", stepStart);
 
                 // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
                 // This prevents showing "going off course" message when user clicks stop
-                if (isAborted && !preemptiveTimeout?.isPreemptive()) {
+                if (isAborted && !isPreemptiveAbort) {
                   streamFinishReason = undefined;
                 }
 
                 // Emit wide event
+                stepStart = Date.now();
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
-                  wasPreemptiveTimeout:
-                    preemptiveTimeout?.isPreemptive() ?? false,
+                  wasPreemptiveTimeout: isPreemptiveAbort,
                   hadSummarization: hasSummarized,
                 });
+                logStep("emit_success_event", stepStart);
 
                 // Sandbox cleanup is automatic with auto-pause
                 // The sandbox will auto-pause after inactivity timeout (7 minutes)
                 // No manual pause needed
 
                 // Always wait for title generation to complete
+                stepStart = Date.now();
                 const generatedTitle = await titlePromise;
+                logStep("wait_title_generation", stepStart);
 
                 if (!temporary) {
+                  stepStart = Date.now();
                   const mergedTodos = getTodoManager().mergeWith(
                     baseTodos,
                     assistantMessageId,
                   );
+                  logStep("merge_todos", stepStart);
 
                   const shouldPersist = regenerate
                     ? true
@@ -627,6 +686,7 @@ export const createChatHandler = (
 
                   if (shouldPersist) {
                     // updateChat automatically clears stream state (active_stream_id and canceled_at)
+                    stepStart = Date.now();
                     await updateChat({
                       chatId,
                       title: generatedTitle,
@@ -634,28 +694,48 @@ export const createChatHandler = (
                       todos: mergedTodos,
                       defaultModelSlug: mode,
                     });
+                    logStep("update_chat", stepStart);
                   } else {
                     // If not persisting, still need to clear stream state
+                    stepStart = Date.now();
                     await prepareForNewStream({ chatId });
+                    logStep("prepare_for_new_stream", stepStart);
                   }
 
+                  stepStart = Date.now();
                   const accumulatedFiles = getFileAccumulator().getAll();
                   const newFileIds = accumulatedFiles.map((f) => f.fileId);
+                  logStep("get_accumulated_files", stepStart);
 
-                  // If user aborted (not pre-emptive) and no files to add, skip message save (frontend already saved)
-                  // Pre-emptive aborts should always save to ensure data persistence before timeout
+                  // Check if any messages have incomplete tool calls that need completion
+                  const hasIncompleteToolCalls = messages.some(
+                    (msg) =>
+                      msg.role === "assistant" &&
+                      msg.parts?.some(
+                        (p: { type?: string; state?: string; toolCallId?: string }) =>
+                          p.type?.startsWith("tool-") &&
+                          p.state !== "output-available" &&
+                          p.toolCallId
+                      )
+                  );
+
+                  // If user aborted (not pre-emptive), no files to add, AND no incomplete tools,
+                  // skip message save (frontend already saved complete message)
+                  // But if there are incomplete tools, we MUST save to fix the tool results
                   if (
                     isAborted &&
-                    !preemptiveTimeout?.isPreemptive() &&
-                    newFileIds.length === 0
+                    !isPreemptiveAbort &&
+                    newFileIds.length === 0 &&
+                    !hasIncompleteToolCalls
                   ) {
                     return;
                   }
 
                   // Save messages (either full save or just append extraFileIds)
+                  stepStart = Date.now();
                   for (const message of messages) {
                     // For assistant messages, prepend summarization parts if any
-                    const messageWithSummarization =
+                    let processedMessage =
                       message.role === "assistant" &&
                       summarizationParts.length > 0
                         ? {
@@ -664,9 +744,44 @@ export const createChatHandler = (
                           }
                         : message;
 
+                    // Complete any incomplete tool calls on ANY abort
+                    // This prevents "Tool result is missing" errors on next request
+                    if (isAborted) {
+                      const reason = isPreemptiveAbort
+                        ? "Operation timed out due to server time limit"
+                        : "Operation was stopped by user";
+
+                      // Log incomplete tool calls for debugging
+                      const incompleteTools = processedMessage.parts?.filter(
+                        (p: { type?: string; state?: string; toolCallId?: string }) =>
+                          p.type?.startsWith("tool-") &&
+                          p.state !== "output-available" &&
+                          p.toolCallId
+                      ) || [];
+
+                      if (incompleteTools.length > 0) {
+                        axiomLogger.warn("Completing incomplete tool calls on abort", {
+                          chatId,
+                          endpoint,
+                          isPreemptiveAbort,
+                          incompleteToolCount: incompleteTools.length,
+                          incompleteTools: incompleteTools.map((t: { type?: string; toolCallId?: string; state?: string }) => ({
+                            type: t.type,
+                            toolCallId: t.toolCallId,
+                            state: t.state,
+                          })),
+                        });
+                      }
+
+                      processedMessage = completeIncompleteToolCalls(
+                        processedMessage,
+                        reason,
+                      );
+                    }
+
                     // Strip providerMetadata from parts before saving
                     const messageToSave = stripProviderMetadata(
-                      messageWithSummarization,
+                      processedMessage,
                     );
 
                     // Skip saving messages with no parts or files
@@ -691,17 +806,35 @@ export const createChatHandler = (
                       usage: streamUsage,
                     });
                   }
+                  logStep("save_messages", stepStart);
 
                   // Send file metadata via stream for resumable stream clients
                   // Uses accumulated metadata directly - no DB query needed!
+                  stepStart = Date.now();
                   sendFileMetadataToStream(accumulatedFiles);
+                  logStep("send_file_metadata", stepStart);
                 } else {
                   // For temporary chats, send file metadata via stream before cleanup
+                  stepStart = Date.now();
                   const tempFiles = getFileAccumulator().getAll();
                   sendFileMetadataToStream(tempFiles);
+                  logStep("send_temp_file_metadata", stepStart);
 
                   // Ensure temp stream row is removed backend-side
+                  stepStart = Date.now();
                   await deleteTempStreamForBackend({ chatId });
+                  logStep("delete_temp_stream", stepStart);
+                }
+
+                if (isPreemptiveAbort) {
+                  const totalDuration = Date.now() - onFinishStartTime;
+                  axiomLogger.info("Preemptive timeout onFinish completed", {
+                    chatId,
+                    endpoint,
+                    totalOnFinishDurationMs: totalDuration,
+                    totalSinceTriggerMs: triggerTime ? Date.now() - triggerTime : null,
+                  });
+                  await axiomLogger.flush();
                 }
               },
               sendReasoning: true,

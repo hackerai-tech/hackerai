@@ -11,12 +11,14 @@ import { retryWithBackoff } from "./retry-with-backoff";
  *
  * @param sandbox - Sandbox instance to check
  * @param maxRetries - Maximum number of health check attempts (default: 5)
+ * @param signal - Optional abort signal to cancel health checks
  * @returns Promise that resolves when sandbox is ready
  * @throws Error if sandbox doesn't become ready after all retries
  */
 export async function waitForSandboxReady(
   sandbox: AnySandbox,
   maxRetries: number = 5,
+  signal?: AbortSignal,
 ): Promise<void> {
   await retryWithBackoff(
     async () => {
@@ -52,6 +54,7 @@ export async function waitForSandboxReady(
           console.error(`[Sandbox Health] ${message}`, error);
         }
       },
+      signal,
     },
   );
 }

@@ -172,8 +172,16 @@ If you are generating files:
         }
 
         try {
-          await waitForSandboxReady(sandbox);
+          await waitForSandboxReady(sandbox, 5, abortSignal);
         } catch (healthError) {
+          // If aborted, don't retry - propagate the abort
+          if (
+            healthError instanceof DOMException &&
+            healthError.name === "AbortError"
+          ) {
+            throw healthError;
+          }
+
           // Sandbox health check failed - force recreation by resetting the cached instance
           console.warn(
             "[Terminal Command] Sandbox health check failed, recreating sandbox",
@@ -184,7 +192,7 @@ If you are generating files:
           const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
 
           // Verify the fresh sandbox is ready
-          await waitForSandboxReady(freshSandbox);
+          await waitForSandboxReady(freshSandbox, 5, abortSignal);
 
           return executeCommand(freshSandbox);
         }
