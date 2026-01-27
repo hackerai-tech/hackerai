@@ -9,7 +9,10 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
-import { stripProviderMetadata } from "@/lib/utils/message-processor";
+import {
+  stripProviderMetadata,
+  completeIncompleteToolCalls,
+} from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -73,6 +76,7 @@ import {
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { logger as axiomLogger } from "@/lib/axiom/server";
+import { extractErrorDetails } from "@/lib/utils/error-utils";
 
 function getStreamContext() {
   try {
@@ -575,37 +579,16 @@ export const createChatHandler = (
                 console.error("Error:", error);
 
                 // Log provider errors to Axiom with request context
-                const err = error instanceof Error ? error : new Error(String(error));
-                const errorDetails: Record<string, unknown> = {
+                axiomLogger.error("Provider streaming error", {
                   chatId,
                   endpoint,
                   mode,
                   model: selectedModel,
                   userId,
                   subscription,
-                  errorName: err.name,
-                  errorMessage: err.message,
                   isTemporary: temporary,
-                };
-
-                // Extract provider-specific error details if available
-                if ("statusCode" in error) {
-                  errorDetails.statusCode = (error as { statusCode?: number }).statusCode;
-                }
-                if ("url" in error) {
-                  errorDetails.providerUrl = (error as { url?: string }).url;
-                }
-                if ("responseBody" in error) {
-                  errorDetails.responseBody = (error as { responseBody?: string }).responseBody;
-                }
-                if ("isRetryable" in error) {
-                  errorDetails.isRetryable = (error as { isRetryable?: boolean }).isRetryable;
-                }
-                if ("data" in error) {
-                  errorDetails.providerData = (error as { data?: unknown }).data;
-                }
-
-                axiomLogger.error("Provider streaming error", errorDetails);
+                  ...extractErrorDetails(error),
+                });
               }
               // Refund credits on streaming errors (idempotent - only refunds once)
               await usageRefundTracker.refund();
@@ -734,7 +717,7 @@ export const createChatHandler = (
                   stepStart = Date.now();
                   for (const message of messages) {
                     // For assistant messages, prepend summarization parts if any
-                    const messageWithSummarization =
+                    let processedMessage =
                       message.role === "assistant" &&
                       summarizationParts.length > 0
                         ? {
@@ -743,9 +726,18 @@ export const createChatHandler = (
                           }
                         : message;
 
+                    // Complete any incomplete tool calls on preemptive timeout
+                    // This prevents "Tool result is missing" errors on next request
+                    if (isPreemptiveAbort) {
+                      processedMessage = completeIncompleteToolCalls(
+                        processedMessage,
+                        "Operation timed out due to server time limit",
+                      );
+                    }
+
                     // Strip providerMetadata from parts before saving
                     const messageToSave = stripProviderMetadata(
-                      messageWithSummarization,
+                      processedMessage,
                     );
 
                     // Skip saving messages with no parts or files

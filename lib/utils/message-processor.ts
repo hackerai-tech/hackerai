@@ -284,3 +284,85 @@ const transformTerminalToolPart = (
     },
   };
 };
+
+/**
+ * Generic transformation for all non-terminal tool types
+ */
+const transformGenericToolPart = (toolPart: BaseToolPart): BaseToolPart => {
+  // Handle specific tool types with appropriate default outputs
+  switch (toolPart.type) {
+    case "tool-todo_write":
+      return {
+        ...toolPart,
+        state: "output-available",
+        output: {
+          result: "Todo operation was interrupted by user",
+          counts: { completed: 0, total: 0 },
+          currentTodos: [],
+        },
+      };
+
+    default:
+      // Generic transformation for file tools and unknown tool types
+      return {
+        ...toolPart,
+        state: "output-available",
+        output: {
+          result: "Operation was interrupted by user",
+        },
+      };
+  }
+};
+
+/**
+ * Completes any incomplete tool calls in messages with a timeout result.
+ * This prevents "Tool result is missing" errors when resuming after a preemptive timeout.
+ */
+export const completeIncompleteToolCalls = <T extends { parts?: any[]; role?: string }>(
+  message: T,
+  reason: string = "Operation timed out",
+): T => {
+  if (!message.parts || message.role !== "assistant") return message;
+
+  const updatedParts = message.parts.map((part) => {
+    // Check if this is a tool part that's not completed
+    if (
+      part.type?.startsWith("tool-") &&
+      part.state !== "output-available" &&
+      part.toolCallId
+    ) {
+      // Handle terminal commands specially
+      if (part.type === "tool-run_terminal_cmd") {
+        return {
+          ...part,
+          state: "output-available",
+          output: {
+            result: {
+              exitCode: 124, // Standard timeout exit code
+              stdout: "",
+              stderr: reason,
+              error: reason,
+            },
+          },
+        };
+      }
+
+      // Generic tool timeout result
+      return {
+        ...part,
+        state: "output-available",
+        output: {
+          result: reason,
+          error: reason,
+        },
+      };
+    }
+
+    return part;
+  });
+
+  return {
+    ...message,
+    parts: updatedParts,
+  };
+};
