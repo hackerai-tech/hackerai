@@ -1,87 +1,87 @@
 import { ChatMessage } from "@/types/chat";
 
-// /**
-//  * Checks if a metadata object contains OpenRouter data.
-//  */
-// const hasOpenRouterMetadata = (metadata: unknown): boolean => {
-//   return (
-//     metadata !== null &&
-//     typeof metadata === "object" &&
-//     "openrouter" in metadata
-//   );
-// };
+/**
+ * Checks if a metadata object contains OpenRouter data.
+ */
+const hasOpenRouterMetadata = (metadata: unknown): boolean => {
+  return (
+    metadata !== null &&
+    typeof metadata === "object" &&
+    "openrouter" in metadata
+  );
+};
 
-// /**
-//  * Strips provider-specific fields from a single message part.
-//  * - providerMetadata/callProviderMetadata: only strips if it contains OpenRouter data
-//  * - providerExecuted/providerOptions: always strips (provider-internal data)
-//  */
-// export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
-//   part: T,
-// ): T => {
-//   let result = part;
+/**
+ * Strips provider-specific fields from a single message part.
+ * - providerMetadata/callProviderMetadata: only strips if it contains OpenRouter data
+ * - providerExecuted/providerOptions: always strips (provider-internal data)
+ */
+export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
+  part: T,
+): T => {
+  let result = part;
 
-//   // Strip providerMetadata if it contains OpenRouter data
-//   if (
-//     "providerMetadata" in result &&
-//     hasOpenRouterMetadata(result.providerMetadata)
-//   ) {
-//     const { providerMetadata, ...rest } = result;
-//     result = rest as T;
-//   }
+  // Strip providerMetadata if it contains OpenRouter data
+  if (
+    "providerMetadata" in result &&
+    hasOpenRouterMetadata(result.providerMetadata)
+  ) {
+    const { providerMetadata, ...rest } = result;
+    result = rest as T;
+  }
 
-//   // Strip callProviderMetadata if it contains OpenRouter data
-//   if (
-//     "callProviderMetadata" in result &&
-//     hasOpenRouterMetadata(result.callProviderMetadata)
-//   ) {
-//     const { callProviderMetadata, ...rest } = result;
-//     result = rest as T;
-//   }
+  // Strip callProviderMetadata if it contains OpenRouter data
+  if (
+    "callProviderMetadata" in result &&
+    hasOpenRouterMetadata(result.callProviderMetadata)
+  ) {
+    const { callProviderMetadata, ...rest } = result;
+    result = rest as T;
+  }
 
-//   // Always strip providerExecuted
-//   if ("providerExecuted" in result) {
-//     const { providerExecuted, ...rest } = result;
-//     result = rest as T;
-//   }
+  // Always strip providerExecuted
+  if ("providerExecuted" in result) {
+    const { providerExecuted, ...rest } = result;
+    result = rest as T;
+  }
 
-//   // Always strip providerOptions
-//   if ("providerOptions" in result) {
-//     const { providerOptions, ...rest } = result;
-//     result = rest as T;
-//   }
+  // Always strip providerOptions
+  if ("providerOptions" in result) {
+    const { providerOptions, ...rest } = result;
+    result = rest as T;
+  }
 
-//   return result;
-// };
+  return result;
+};
 
-// /**
-//  * Checks if a part is a completed reasoning block with redacted text.
-//  * These should be filtered out entirely as they provide no value when saved.
-//  */
-// const isRedactedReasoningPart = (part: Record<string, any>): boolean => {
-//   return (
-//     part.type === "reasoning" &&
-//     part.state === "done" &&
-//     part.text === "[REDACTED]"
-//   );
-// };
+/**
+ * Checks if a part is a completed reasoning block with redacted text.
+ * These should be filtered out entirely as they provide no value when saved.
+ */
+const isRedactedReasoningPart = (part: Record<string, any>): boolean => {
+  return (
+    part.type === "reasoning" &&
+    part.state === "done" &&
+    part.text === "[REDACTED]"
+  );
+};
 
-// /**
-//  * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
-//  * Also filters out completed reasoning blocks with redacted text.
-//  * Used to clean messages before saving or for temporary chat handling.
-//  */
-// export const stripProviderMetadata = <T extends { parts?: any[] }>(
-//   message: T,
-// ): T => {
-//   if (!message.parts) return message;
-//   return {
-//     ...message,
-//     parts: message.parts
-//       .filter((part) => !isRedactedReasoningPart(part))
-//       .map(stripProviderMetadataFromPart),
-//   };
-// };
+/**
+ * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
+ * Also filters out completed reasoning blocks with redacted text.
+ * Used to clean messages before saving or for temporary chat handling.
+ */
+export const stripProviderMetadata = <T extends { parts?: any[] }>(
+  message: T,
+): T => {
+  if (!message.parts) return message;
+  return {
+    ...message,
+    parts: message.parts
+      .filter((part) => !isRedactedReasoningPart(part))
+      .map(stripProviderMetadataFromPart),
+  };
+};
 
 // Generic interface for all tool parts
 interface BaseToolPart {
@@ -199,21 +199,20 @@ export const normalizeMessages = (
         return;
       }
 
-      // // Strip provider-specific fields from the part (contains internal data like encrypted reasoning, provider options)
-      // const hasProviderFields =
-      //   ("providerMetadata" in part &&
-      //     hasOpenRouterMetadata(part.providerMetadata)) ||
-      //   ("callProviderMetadata" in part &&
-      //     hasOpenRouterMetadata(part.callProviderMetadata)) ||
-      //   "providerExecuted" in part ||
-      //   "providerOptions" in part;
-      // const cleanPart = hasProviderFields
-      //   ? stripProviderMetadataFromPart(part)
-      //   : part;
-      // if (hasProviderFields) {
-      //   messageChanged = true;
-      // }
-      const cleanPart = part;
+      // Strip provider-specific fields from the part (contains internal data like encrypted reasoning, provider options)
+      const hasProviderFields =
+        ("providerMetadata" in part &&
+          hasOpenRouterMetadata(part.providerMetadata)) ||
+        ("callProviderMetadata" in part &&
+          hasOpenRouterMetadata(part.callProviderMetadata)) ||
+        "providerExecuted" in part ||
+        "providerOptions" in part;
+      const cleanPart = hasProviderFields
+        ? stripProviderMetadataFromPart(part)
+        : part;
+      if (hasProviderFields) {
+        messageChanged = true;
+      }
 
       // Check if this is a terminal tool that needs transformation
       // Terminal tools need frontend handling to collect streaming output from data-terminal parts
