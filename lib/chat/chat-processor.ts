@@ -116,20 +116,22 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
     // Check for custom tool-xxx parts that aren't in a completed state
     const isToolPart = part.type && part.type.startsWith("tool-");
 
-    const isIncomplete =
-      isToolPart && part.state !== "output-available";
+    // Skip parts that already have errorText - they're error states, not incomplete
+    if (isToolPart && part.errorText) {
+      return part;
+    }
+
+    const isIncomplete = isToolPart && part.state !== "output-available";
 
     // Also fix tool parts that incorrectly have state: "result" (legacy format)
     // Custom tool-xxx types need state: "output-available" with output, not state: "result" with result
     const hasWrongFormat =
-      isToolPart &&
-      part.state === "result" &&
-      part.result !== undefined;
+      isToolPart && part.state === "result" && part.result !== undefined;
 
     if (isIncomplete || hasWrongFormat) {
       // Custom tool-xxx format uses state: "output-available" with output property
       // Convert result to output if it exists (legacy data migration)
-      const output = part.output ?? part.result ?? "Operation was interrupted by user";
+      const output = part.output ?? part.result;
       const { result: _result, ...restPart } = part;
       return {
         ...restPart,
@@ -179,7 +181,8 @@ function fixIncompleteToolInvocations(messages: UIMessage[]): UIMessage[] {
     }
 
     const fixedParts = fixIncompleteMessageParts(message.parts);
-    const hasChanges = fixedParts.length !== message.parts.length ||
+    const hasChanges =
+      fixedParts.length !== message.parts.length ||
       fixedParts.some((part, i) => part !== message.parts[i]);
 
     return hasChanges ? { ...message, parts: fixedParts } : message;

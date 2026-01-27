@@ -278,7 +278,8 @@ const transformTerminalToolPart = (
       result: {
         exitCode: 130, // Standard exit code for SIGINT (interrupted)
         stdout: stdout,
-        stderr: stdout.length === 0 ? "Command was stopped/aborted by user" : "",
+        stderr:
+          stdout.length === 0 ? "Command was stopped/aborted by user" : "",
       },
     },
   };

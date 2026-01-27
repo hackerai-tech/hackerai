@@ -2,7 +2,6 @@ import {
   query,
   mutation,
   internalQuery,
-  internalMutation,
 } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
@@ -20,69 +19,6 @@ const extractTextFromParts = (parts: any[]): string => {
     .map((part) => part.text || "")
     .join(" ")
     .trim();
-};
-
-/**
- * Fix incomplete tool invocations and remove incomplete reasoning in message parts.
- * Tool calls without a completed state get a placeholder error result.
- * Incomplete reasoning parts (and their preceding step-start) are removed entirely.
- * This prevents errors when the conversation is resumed.
- */
-const fixIncompleteToolParts = (parts: any[]): any[] => {
-  // First pass: fix incomplete tool invocations
-  const partsWithFixedTools = parts.map((part) => {
-    // Check for custom tool-xxx parts that aren't in a completed state
-    const isToolPart = part.type && part.type.startsWith("tool-");
-
-    const isIncomplete = isToolPart && part.state !== "output-available";
-
-    // Also fix tool parts that incorrectly have state: "result" (legacy format)
-    // Custom tool-xxx types need state: "output-available" with output, not state: "result" with result
-    const hasWrongFormat =
-      isToolPart && part.state === "result" && part.result !== undefined;
-
-    if (isIncomplete || hasWrongFormat) {
-      // Custom tool-xxx format uses state: "output-available" with output property
-      // Convert result to output if it exists (legacy data migration)
-      const output =
-        part.output ?? part.result ?? "Operation was interrupted by user";
-      const { result: _result, ...restPart } = part;
-      return {
-        ...restPart,
-        state: "output-available",
-        output,
-      };
-    }
-    return part;
-  });
-
-  // Second pass: remove incomplete reasoning and the step-start before it
-  const filteredParts: any[] = [];
-  for (let i = 0; i < partsWithFixedTools.length; i++) {
-    const part = partsWithFixedTools[i];
-
-    // Check if this is an incomplete reasoning part
-    const isIncompleteReasoning =
-      part.type === "reasoning" &&
-      part.state !== "done" &&
-      part.state !== undefined;
-
-    if (isIncompleteReasoning) {
-      // Remove the step-start that immediately precedes this reasoning (if any)
-      if (
-        filteredParts.length > 0 &&
-        filteredParts[filteredParts.length - 1].type === "step-start"
-      ) {
-        filteredParts.pop();
-      }
-      // Skip adding this incomplete reasoning part
-      continue;
-    }
-
-    filteredParts.push(part);
-  }
-
-  return filteredParts;
 };
 
 /**
@@ -498,20 +434,15 @@ export const saveAssistantMessage = mutation({
         throw new Error("Chat not found");
       }
 
-      // Fix incomplete tool invocations for assistant messages (from interrupted streams)
-      const fixedParts =
-        args.role === "assistant"
-          ? fixIncompleteToolParts(args.parts)
-          : args.parts;
-
-      const content = extractTextFromParts(fixedParts);
+      // Save parts as-is - fixing happens at read time in chat-processor.ts
+      const content = extractTextFromParts(args.parts);
 
       await ctx.db.insert("messages", {
         id: args.id,
         chat_id: args.chatId,
         user_id: user.subject,
         role: args.role,
-        parts: fixedParts,
+        parts: args.parts,
         content: content || undefined,
         update_time: Date.now(),
         model: args.model,
