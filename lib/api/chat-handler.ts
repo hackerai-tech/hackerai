@@ -9,7 +9,7 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
-import { stripProviderMetadata } from "@/lib/utils/message-processor";
+// import { stripProviderMetadata } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -664,10 +664,11 @@ export const createChatHandler = (
                           }
                         : message;
 
-                    // Strip providerMetadata from parts before saving
-                    const messageToSave = stripProviderMetadata(
-                      messageWithSummarization,
-                    );
+                    // // Strip providerMetadata from parts before saving
+                    // const messageToSave = stripProviderMetadata(
+                    //   messageWithSummarization,
+                    // );
+                    const messageToSave = messageWithSummarization;
 
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry

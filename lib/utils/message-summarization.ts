@@ -11,7 +11,6 @@ import { v4 as uuidv4 } from "uuid";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { countTokens } from "gpt-tokenizer";
 import { SubscriptionTier, ChatMode } from "@/types";
-import { stripProviderMetadataFromPart } from "@/lib/utils/message-processor";
 
 // Keep last N messages unsummarized for context
 const MESSAGES_TO_KEEP_UNSUMMARIZED = 2;
@@ -77,7 +76,13 @@ const countModelMessageTokens = (messages: ModelMessage[]): number => {
           totalTokens += countTokens(part.text || "");
         } else {
           // Strip provider fields before counting (providerMetadata, providerOptions, etc.)
-          const cleanPart = stripProviderMetadataFromPart(part);
+          const {
+            providerMetadata: _pm,
+            callProviderMetadata: _cpm,
+            providerExecuted: _pe,
+            providerOptions: _po,
+            ...cleanPart
+          } = part as Record<string, unknown>;
           totalTokens += countTokens(JSON.stringify(cleanPart));
         }
       }
