@@ -227,6 +227,27 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
   });
 }
 
+// UI-only part types that should not be sent to AI providers
+const UI_ONLY_PART_TYPES = new Set([
+  "data-summarization",
+]);
+
+/**
+ * Filters out UI-only parts from a message that AI providers don't understand.
+ */
+const filterUIOnlyParts = <T extends { parts?: any[] }>(message: T): T => {
+  if (!message.parts) return message;
+
+  const filteredParts = message.parts.filter(
+    (part: any) => !UI_ONLY_PART_TYPES.has(part.type)
+  );
+
+  // Only create new object if parts were actually filtered
+  if (filteredParts.length === message.parts.length) return message;
+
+  return { ...message, parts: filteredParts };
+};
+
 /**
  * Processes chat messages with moderation, truncation, and analytics
  */
@@ -242,13 +263,16 @@ export async function processChatMessages({
   // Strip provider metadata from incoming messages early
   const cleanMessages = messages.map(stripProviderMetadata);
 
+  // Filter out UI-only parts (data-summarization) that AI providers don't understand
+  const messagesWithoutUIOnlyParts = cleanMessages.map(filterUIOnlyParts);
+
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
   const {
     messages: messagesWithUrls,
     hasMediaFiles: containsMediaFiles,
     sandboxFiles,
     containsPdfFiles,
-  } = await processMessageFiles(cleanMessages, mode);
+  } = await processMessageFiles(messagesWithoutUIOnlyParts, mode);
 
   // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini
@@ -261,7 +285,7 @@ export async function processChatMessages({
       if (part.type === "file") return !!part.url || !!part.fileId;
       // reasoning must have text content
       if (part.type === "reasoning") return !!part.text?.trim();
-      // Keep other part types (tool invocations, step-start, etc.) as they have implicit content
+      // Keep other part types (tool invocations, etc.) as they have implicit content
       return true;
     });
   });
