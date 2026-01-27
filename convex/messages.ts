@@ -31,18 +31,26 @@ const extractTextFromParts = (parts: any[]): string => {
 const fixIncompleteToolParts = (parts: any[]): any[] => {
   // First pass: fix incomplete tool invocations
   const partsWithFixedTools = parts.map((part) => {
-    const isToolPart =
-      part.type === "tool-invocation" ||
-      (part.type && part.type.startsWith("tool-"));
-    const isIncomplete =
-      isToolPart &&
-      part.state !== "result" &&
-      part.state !== "output-available";
-    if (isIncomplete) {
+    // Check for custom tool-xxx parts that aren't in a completed state
+    const isToolPart = part.type && part.type.startsWith("tool-");
+
+    const isIncomplete = isToolPart && part.state !== "output-available";
+
+    // Also fix tool parts that incorrectly have state: "result" (legacy format)
+    // Custom tool-xxx types need state: "output-available" with output, not state: "result" with result
+    const hasWrongFormat =
+      isToolPart && part.state === "result" && part.result !== undefined;
+
+    if (isIncomplete || hasWrongFormat) {
+      // Custom tool-xxx format uses state: "output-available" with output property
+      // Convert result to output if it exists (legacy data migration)
+      const output =
+        part.output ?? part.result ?? "Operation was interrupted by user";
+      const { result: _result, ...restPart } = part;
       return {
-        ...part,
-        state: "result",
-        result: { error: "Tool execution was interrupted." },
+        ...restPart,
+        state: "output-available",
+        output,
       };
     }
     return part;
