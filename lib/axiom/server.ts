@@ -6,7 +6,7 @@ export const logger = new Logger({
   transports: [
     new AxiomJSTransport({
       axiom: axiomClient,
-      dataset: process.env.NEXT_PUBLIC_AXIOM_DATASET!,
+      dataset: process.env.AXIOM_DATASET!,
     }),
   ],
   formatters: nextJsFormatters,
