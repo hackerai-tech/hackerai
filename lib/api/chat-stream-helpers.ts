@@ -167,7 +167,7 @@ export function buildProviderOptions(
       store: false,
     },
     gateway: {
-      order: ['vertex'],
+      only: ['vertex'],
     } satisfies GatewayProviderOptions,
     google: {
       // Options are nested under 'google' for Vertex provider
