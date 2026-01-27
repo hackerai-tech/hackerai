@@ -7,6 +7,7 @@ import {
   getCancelChannel,
 } from "@/lib/utils/redis-pubsub";
 import { createClient } from "redis";
+import { logger } from "@/lib/axiom/server";
 
 // Use the same type as redis-pubsub.ts
 type RedisClient = ReturnType<typeof createClient>;
@@ -210,14 +211,24 @@ export const createPreemptiveTimeout = ({
 }: PreemptiveTimeoutOptions) => {
   const maxDuration = endpoint === "/api/chat" ? 180 : 800;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
+  const startTime = Date.now();
 
   let isPreemptive = false;
+  let triggerTime: number | null = null;
 
   const timeoutId = setTimeout(() => {
-    console.log(
-      `[Chat ${chatId}] Pre-emptive abort triggered (${safetyBuffer}s before ${maxDuration}s timeout)`,
-    );
+    triggerTime = Date.now();
     isPreemptive = true;
+
+    logger.info("Preemptive timeout triggered", {
+      chatId,
+      endpoint,
+      maxDuration,
+      safetyBuffer,
+      elapsedMs: triggerTime - startTime,
+      triggerTime: new Date(triggerTime).toISOString(),
+    });
+
     abortController.abort();
   }, maxStreamTime);
 
@@ -225,5 +236,7 @@ export const createPreemptiveTimeout = ({
     timeoutId,
     clear: () => clearTimeout(timeoutId),
     isPreemptive: () => isPreemptive,
+    getTriggerTime: () => triggerTime,
+    getStartTime: () => startTime,
   };
 };

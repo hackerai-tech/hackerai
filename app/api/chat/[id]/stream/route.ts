@@ -9,6 +9,7 @@ import {
   createCancellationSubscriber,
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
+import { logger } from "@/lib/axiom/server";
 
 export const maxDuration = 800;
 
@@ -125,11 +126,30 @@ export async function GET(
               controller.enqueue(value);
             }
           } catch (error) {
+            const isPreemptive = preemptiveTimeout.isPreemptive();
+            const triggerTime = preemptiveTimeout.getTriggerTime();
+            const cleanupStart = Date.now();
+
+            if (isPreemptive) {
+              logger.info("Stream route preemptive abort caught", {
+                chatId,
+                timeSinceTriggerMs: triggerTime ? cleanupStart - triggerTime : null,
+              });
+            }
+
             preemptiveTimeout.clear();
+
             if (
               error instanceof DOMException &&
               error.name === "AbortError"
             ) {
+              if (isPreemptive) {
+                logger.info("Stream route closing controller after abort", {
+                  chatId,
+                  cleanupDurationMs: Date.now() - cleanupStart,
+                });
+                await logger.flush();
+              }
               controller.close();
             } else {
               controller.error(error);
@@ -137,9 +157,16 @@ export async function GET(
           }
         },
         cancel() {
+          const isPreemptive = preemptiveTimeout.isPreemptive();
+          if (isPreemptive) {
+            logger.info("Stream route cancel called", { chatId });
+          }
           preemptiveTimeout.clear();
           reader.cancel();
           cancellationSubscriber.stop();
+          if (isPreemptive) {
+            logger.flush();
+          }
         },
       });
 
