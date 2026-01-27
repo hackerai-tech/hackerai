@@ -152,7 +152,7 @@ export const createChatHandler = (
       const userStopSignal = new AbortController();
       preemptiveTimeout = createPreemptiveTimeout({
         chatId,
-        mode,
+        endpoint,
         abortController: userStopSignal,
       });
 

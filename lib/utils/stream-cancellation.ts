@@ -2,7 +2,6 @@ import {
   getCancellationStatus,
   getTempCancellationStatus,
 } from "@/lib/db/actions";
-import type { ChatMode } from "@/types";
 import {
   createRedisSubscriber,
   getCancelChannel,
@@ -20,9 +19,11 @@ type PollOptions = {
   pollIntervalMs?: number;
 };
 
+type ApiEndpoint = "/api/chat" | "/api/agent" | "/api/chat/[id]/stream";
+
 type PreemptiveTimeoutOptions = {
   chatId: string;
-  mode: ChatMode;
+  endpoint: ApiEndpoint;
   abortController: AbortController;
   safetyBuffer?: number;
 };
@@ -203,11 +204,11 @@ export const createCancellationSubscriber = async ({
  */
 export const createPreemptiveTimeout = ({
   chatId,
-  mode,
+  endpoint,
   abortController,
   safetyBuffer = 10,
 }: PreemptiveTimeoutOptions) => {
-  const maxDuration = mode === "agent" ? 800 : 180;
+  const maxDuration = endpoint === "/api/chat" ? 180 : 800;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
 
   let isPreemptive = false;

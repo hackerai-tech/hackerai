@@ -5,7 +5,10 @@ import type { ChatMessage } from "@/types/chat";
 import { getStreamContext } from "@/lib/api/chat-handler";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
-import { createCancellationSubscriber } from "@/lib/utils/stream-cancellation";
+import {
+  createCancellationSubscriber,
+  createPreemptiveTimeout,
+} from "@/lib/utils/stream-cancellation";
 
 export const maxDuration = 800;
 
@@ -71,6 +74,13 @@ export async function GET(
     if (stream) {
       const abortController = new AbortController();
 
+      // Set up pre-emptive timeout before Vercel's hard 800s limit
+      const preemptiveTimeout = createPreemptiveTimeout({
+        chatId,
+        endpoint: "/api/chat/[id]/stream",
+        abortController,
+      });
+
       // Abort on client disconnect (tab close, network error, etc.)
       req.signal.addEventListener("abort", () => abortController.abort(), {
         once: true,
@@ -89,21 +99,45 @@ export async function GET(
       const abortableStream = new ReadableStream({
         async pull(controller) {
           try {
-            if (abortController.signal.aborted) {
-              controller.close();
-              return;
-            }
-            const { done, value } = await reader.read();
+            // Create a promise that rejects on abort
+            const abortPromise = new Promise<never>((_, reject) => {
+              if (abortController.signal.aborted) {
+                reject(new DOMException("Aborted", "AbortError"));
+                return;
+              }
+              abortController.signal.addEventListener(
+                "abort",
+                () => reject(new DOMException("Aborted", "AbortError")),
+                { once: true },
+              );
+            });
+
+            // Race between read and abort
+            const { done, value } = await Promise.race([
+              reader.read(),
+              abortPromise,
+            ]);
+
             if (done) {
+              preemptiveTimeout.clear();
               controller.close();
             } else {
               controller.enqueue(value);
             }
-          } catch {
-            controller.close();
+          } catch (error) {
+            preemptiveTimeout.clear();
+            if (
+              error instanceof DOMException &&
+              error.name === "AbortError"
+            ) {
+              controller.close();
+            } else {
+              controller.error(error);
+            }
           }
         },
         cancel() {
+          preemptiveTimeout.clear();
           reader.cancel();
           cancellationSubscriber.stop();
         },
