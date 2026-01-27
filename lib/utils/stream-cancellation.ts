@@ -206,7 +206,7 @@ export const createPreemptiveTimeout = ({
   chatId,
   endpoint,
   abortController,
-  safetyBuffer = 10,
+  safetyBuffer = 30,
 }: PreemptiveTimeoutOptions) => {
   const maxDuration = endpoint === "/api/chat" ? 180 : 800;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
