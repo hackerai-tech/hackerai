@@ -573,6 +573,39 @@ export const createChatHandler = (
               // Suppress xAI safety check errors from logging (they're expected for certain content)
               if (!isXaiSafetyError(error)) {
                 console.error("Error:", error);
+
+                // Log provider errors to Axiom with request context
+                const err = error instanceof Error ? error : new Error(String(error));
+                const errorDetails: Record<string, unknown> = {
+                  chatId,
+                  endpoint,
+                  mode,
+                  model: selectedModel,
+                  userId,
+                  subscription,
+                  errorName: err.name,
+                  errorMessage: err.message,
+                  isTemporary: temporary,
+                };
+
+                // Extract provider-specific error details if available
+                if ("statusCode" in error) {
+                  errorDetails.statusCode = (error as { statusCode?: number }).statusCode;
+                }
+                if ("url" in error) {
+                  errorDetails.providerUrl = (error as { url?: string }).url;
+                }
+                if ("responseBody" in error) {
+                  errorDetails.responseBody = (error as { responseBody?: string }).responseBody;
+                }
+                if ("isRetryable" in error) {
+                  errorDetails.isRetryable = (error as { isRetryable?: boolean }).isRetryable;
+                }
+                if ("data" in error) {
+                  errorDetails.providerData = (error as { data?: unknown }).data;
+                }
+
+                axiomLogger.error("Provider streaming error", errorDetails);
               }
               // Refund credits on streaming errors (idempotent - only refunds once)
               await usageRefundTracker.refund();
