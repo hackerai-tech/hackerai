@@ -3,6 +3,7 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 import type { ModelName } from "@/lib/ai/providers";
+import { stripProviderMetadata } from "@/lib/utils/message-processor";
 
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
@@ -238,13 +239,16 @@ export async function processChatMessages({
   mode: ChatMode;
   subscription: SubscriptionTier;
 }) {
+  // Strip provider metadata from incoming messages early
+  const cleanMessages = messages.map(stripProviderMetadata);
+
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
   const {
     messages: messagesWithUrls,
     hasMediaFiles: containsMediaFiles,
     sandboxFiles,
     containsPdfFiles,
-  } = await processMessageFiles(messages, mode);
+  } = await processMessageFiles(cleanMessages, mode);
 
   // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini
