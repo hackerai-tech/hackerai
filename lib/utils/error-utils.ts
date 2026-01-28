@@ -30,30 +30,40 @@ const SENSITIVE_KEYS = new Set([
 /**
  * Removes sensitive user data from provider error objects.
  * Fields containing user prompts/messages are completely removed.
+ * Uses WeakSet to guard against circular references.
  */
 const removeSensitiveData = (data: unknown): unknown => {
-  if (data === null || data === undefined) return data;
-  if (typeof data !== "object") return data;
+  const seen = new WeakSet<object>();
 
-  if (Array.isArray(data)) {
-    return data.map(removeSensitiveData);
-  }
+  const recurse = (value: unknown): unknown => {
+    if (value === null || value === undefined) return value;
+    if (typeof value !== "object") return value;
 
-  const obj = data as Record<string, unknown>;
-  const cleaned: Record<string, unknown> = {};
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
 
-  for (const [key, value] of Object.entries(obj)) {
-    if (SENSITIVE_KEYS.has(key)) {
-      continue;
+    if (Array.isArray(value)) {
+      return value.map(recurse);
     }
-    if (value && typeof value === "object") {
-      cleaned[key] = removeSensitiveData(value);
-    } else {
-      cleaned[key] = value;
-    }
-  }
 
-  return cleaned;
+    const obj = value as Record<string, unknown>;
+    const cleaned: Record<string, unknown> = {};
+
+    for (const [key, val] of Object.entries(obj)) {
+      if (SENSITIVE_KEYS.has(key)) {
+        continue;
+      }
+      if (val && typeof val === "object") {
+        cleaned[key] = recurse(val);
+      } else {
+        cleaned[key] = val;
+      }
+    }
+
+    return cleaned;
+  };
+
+  return recurse(data);
 };
 
 /**
