@@ -87,7 +87,14 @@ export const stripProviderMetadata = <T extends { parts?: any[] }>(
 interface BaseToolPart {
   type: string;
   toolCallId: string;
-  state: "input-streaming" | "input-available" | "output-available" | "result";
+  state:
+    | "input-streaming"
+    | "input-available"
+    | "approval-requested"
+    | "approval-responded"
+    | "output-available"
+    | "output-denied"
+    | "output-error";
   input?: any;
   output?: any;
   result?: any;
