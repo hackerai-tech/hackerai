@@ -161,12 +161,7 @@ export default defineSchema({
     connection_name: v.string(),
     container_id: v.optional(v.string()),
     client_version: v.string(),
-    mode: v.union(
-      v.literal("docker"),
-      v.literal("dangerous"),
-      v.literal("custom"),
-    ),
-    image_name: v.optional(v.string()),
+    mode: v.union(v.literal("docker"), v.literal("dangerous")),
     os_info: v.optional(
       v.object({
         platform: v.string(),

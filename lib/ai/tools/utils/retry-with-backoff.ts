@@ -128,7 +128,10 @@ export async function retryWithBackoff<T>(
           };
           signal.addEventListener("abort", onAbort, { once: true });
           // Clean up listener if timeout completes normally
-          setTimeout(() => signal.removeEventListener("abort", onAbort), delayMs + 1);
+          setTimeout(
+            () => signal.removeEventListener("abort", onAbort),
+            delayMs + 1,
+          );
         }
       });
     }

@@ -133,16 +133,15 @@ export async function GET(
             if (isPreemptive) {
               logger.info("Stream route preemptive abort caught", {
                 chatId,
-                timeSinceTriggerMs: triggerTime ? cleanupStart - triggerTime : null,
+                timeSinceTriggerMs: triggerTime
+                  ? cleanupStart - triggerTime
+                  : null,
               });
             }
 
             preemptiveTimeout.clear();
 
-            if (
-              error instanceof DOMException &&
-              error.name === "AbortError"
-            ) {
+            if (error instanceof DOMException && error.name === "AbortError") {
               if (isPreemptive) {
                 logger.info("Stream route closing controller after abort", {
                   chatId,

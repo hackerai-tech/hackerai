@@ -8,7 +8,6 @@
  *
  * Usage:
  *   npx @hackerai/local --token TOKEN --name "My Laptop"
- *   npx @hackerai/local --token TOKEN --name "Kali" --image kalilinux/kali-rolling
  *   npx @hackerai/local --token TOKEN --name "Work PC" --dangerous
  */
 
@@ -171,7 +170,6 @@ interface Config {
   convexUrl: string;
   token: string;
   name: string;
-  image: string;
   dangerous: boolean;
   build: boolean;
   persist: boolean;
@@ -298,9 +296,6 @@ class LocalSandboxClient {
   }
 
   private async createContainer(): Promise<string> {
-    const image = this.config.image;
-    const isDefaultImage = image === DEFAULT_IMAGE;
-
     // In persist mode, try to reuse existing container
     if (this.config.persist) {
       const containerName = this.getContainerName();
@@ -340,31 +335,28 @@ class LocalSandboxClient {
       console.log(
         chalk.red("❌ --build flag is not supported in the npx package."),
       );
-      console.log(
-        chalk.yellow("Use the pre-built image or specify a custom --image."),
-      );
       process.exit(1);
-    } else if (isDefaultImage) {
-      console.log(chalk.blue(`Pulling pre-built image: ${image}`));
-      console.log(
-        chalk.gray("(First run may take a few minutes to download the image)"),
-      );
-      console.log("");
-      try {
-        await runWithOutput("docker", ["pull", image]);
-        console.log(chalk.green("✓ Image ready"));
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(chalk.red("❌ Failed to pull image:"), message);
-        process.exit(1);
-      }
+    }
+
+    console.log(chalk.blue(`Pulling pre-built image: ${DEFAULT_IMAGE}`));
+    console.log(
+      chalk.gray("(First run may take a few minutes to download the image)"),
+    );
+    console.log("");
+    try {
+      await runWithOutput("docker", ["pull", DEFAULT_IMAGE]);
+      console.log(chalk.green("✓ Image ready"));
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(chalk.red("❌ Failed to pull image:"), message);
+      process.exit(1);
     }
 
     console.log(chalk.blue("Creating Docker container..."));
 
     // Build docker run command with capabilities for penetration testing tools
     const dockerCommand = buildDockerRunCommand({
-      image: this.config.image,
+      image: DEFAULT_IMAGE,
       containerName: this.config.persist ? this.getContainerName() : undefined,
     });
 
@@ -386,11 +378,9 @@ class LocalSandboxClient {
     };
   }
 
-  private getMode(): "docker" | "dangerous" | "custom" {
+  private getMode(): "docker" | "dangerous" {
     return getSandboxMode({
       dangerous: this.config.dangerous,
-      image: this.config.image,
-      defaultImage: DEFAULT_IMAGE,
     });
   }
 
@@ -398,9 +388,6 @@ class LocalSandboxClient {
     const mode = this.getMode();
     if (mode === "dangerous") {
       return "DANGEROUS";
-    }
-    if (mode === "custom") {
-      return `Custom (${this.config.image})`;
     }
     return "Docker";
   }
@@ -447,7 +434,6 @@ class LocalSandboxClient {
           containerId: this.containerId,
           clientVersion: "1.0.0",
           mode: this.getMode(),
-          imageName: this.config.dangerous ? undefined : this.config.image,
           osInfo: this.config.dangerous ? this.getOsInfo() : undefined,
         },
       )) as ConnectResult;
@@ -649,10 +635,14 @@ class LocalSandboxClient {
   private async spawnBackground(fullCommand: string): Promise<number> {
     if (this.config.dangerous) {
       // Spawn directly on host in dangerous mode using platform-appropriate shell
-      const child = spawn(DEFAULT_SHELL.shell, [DEFAULT_SHELL.shellFlag, fullCommand], {
-        detached: os.platform() !== "win32", // detached doesn't work the same on Windows
-        stdio: "ignore",
-      });
+      const child = spawn(
+        DEFAULT_SHELL.shell,
+        [DEFAULT_SHELL.shellFlag, fullCommand],
+        {
+          detached: os.platform() !== "win32", // detached doesn't work the same on Windows
+          stdio: "ignore",
+        },
+      );
       child.unref();
       return child.pid ?? -1;
     } else {
@@ -845,7 +835,6 @@ ${chalk.yellow("Usage:")}
 ${chalk.yellow("Options:")}
   --token TOKEN       Authentication token from Settings (required)
   --name NAME         Connection name (default: hostname)
-  --image IMAGE       Docker image to use (default: pre-built HackerAI sandbox)
   --dangerous         Run commands directly on host OS (no Docker)
   --persist           Keep container running on exit and reuse if exists
   --convex-url URL    Override Convex backend URL (for development)
@@ -854,9 +843,6 @@ ${chalk.yellow("Options:")}
 ${chalk.yellow("Examples:")}
   # Basic usage - pulls pre-built image with 30+ pentesting tools
   npx @hackerai/local --token hsb_abc123 --name "My Laptop"
-
-  # Use a custom Docker image (e.g., Kali Linux)
-  npx @hackerai/local --token hsb_abc123 --name "Kali" --image kalilinux/kali-rolling
 
   # Persistent container (faster restarts, preserves installed packages)
   npx @hackerai/local --token hsb_abc123 --name "Dev" --persist
@@ -884,7 +870,6 @@ const config: Config = {
   convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
   token: getArg("--token") || "",
   name: getArg("--name") || os.hostname(),
-  image: getArg("--image") || DEFAULT_IMAGE,
   dangerous: hasFlag("--dangerous"),
   build: hasFlag("--build"),
   persist: hasFlag("--persist"),

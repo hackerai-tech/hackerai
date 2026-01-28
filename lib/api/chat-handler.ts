@@ -424,7 +424,10 @@ export const createChatHandler = (
           // Fix any incomplete tool calls from previous sessions before sending to AI SDK
           // This prevents "Tool result is missing" errors from old interrupted tool calls
           let finalMessages = processedMessages.map((msg) =>
-            completeIncompleteToolCalls(msg, "Previous operation was interrupted")
+            completeIncompleteToolCalls(
+              msg,
+              "Previous operation was interrupted",
+            ),
           );
           let hasSummarized = false;
           const isReasoningModel = mode === "agent";
@@ -618,7 +621,8 @@ export const createChatHandler = (
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
-                const isPreemptiveAbort = preemptiveTimeout?.isPreemptive() ?? false;
+                const isPreemptiveAbort =
+                  preemptiveTimeout?.isPreemptive() ?? false;
                 const onFinishStartTime = Date.now();
                 const triggerTime = preemptiveTimeout?.getTriggerTime();
 
@@ -626,7 +630,8 @@ export const createChatHandler = (
                 const logStep = (step: string, stepStartTime: number) => {
                   if (isPreemptiveAbort) {
                     const stepDuration = Date.now() - stepStartTime;
-                    const totalElapsed = Date.now() - (triggerTime || onFinishStartTime);
+                    const totalElapsed =
+                      Date.now() - (triggerTime || onFinishStartTime);
                     axiomLogger.info("Preemptive timeout cleanup step", {
                       chatId,
                       step,
@@ -641,7 +646,9 @@ export const createChatHandler = (
                   axiomLogger.info("Preemptive timeout onFinish started", {
                     chatId,
                     endpoint,
-                    timeSinceTriggerMs: triggerTime ? onFinishStartTime - triggerTime : null,
+                    timeSinceTriggerMs: triggerTime
+                      ? onFinishStartTime - triggerTime
+                      : null,
                     messageCount: messages.length,
                     isTemporary: temporary,
                   });
@@ -727,20 +734,28 @@ export const createChatHandler = (
                     (msg) =>
                       msg.role === "assistant" &&
                       msg.parts?.some(
-                        (p: { type?: string; state?: string; toolCallId?: string }) =>
+                        (p: {
+                          type?: string;
+                          state?: string;
+                          toolCallId?: string;
+                        }) =>
                           p.type?.startsWith("tool-") &&
                           p.state !== "output-available" &&
-                          p.toolCallId
-                      )
+                          p.toolCallId,
+                      ),
                   );
 
                   // On abort, streamText.onFinish may not have fired yet, so streamUsage
                   // could be undefined. Await usage from result to ensure we capture it.
                   // This must happen BEFORE we decide whether to skip saving.
-                  let resolvedUsage: Record<string, unknown> | undefined = streamUsage;
+                  let resolvedUsage: Record<string, unknown> | undefined =
+                    streamUsage;
                   if (!resolvedUsage && isAborted) {
                     try {
-                      resolvedUsage = (await result.usage) as Record<string, unknown>;
+                      resolvedUsage = (await result.usage) as Record<
+                        string,
+                        unknown
+                      >;
                     } catch {
                       // Usage unavailable on abort - continue without it
                     }
@@ -781,25 +796,39 @@ export const createChatHandler = (
                         : "Operation was stopped by user";
 
                       // Log incomplete tool calls for debugging
-                      const incompleteTools = processedMessage.parts?.filter(
-                        (p: { type?: string; state?: string; toolCallId?: string }) =>
-                          p.type?.startsWith("tool-") &&
-                          p.state !== "output-available" &&
-                          p.toolCallId
-                      ) || [];
+                      const incompleteTools =
+                        processedMessage.parts?.filter(
+                          (p: {
+                            type?: string;
+                            state?: string;
+                            toolCallId?: string;
+                          }) =>
+                            p.type?.startsWith("tool-") &&
+                            p.state !== "output-available" &&
+                            p.toolCallId,
+                        ) || [];
 
                       if (incompleteTools.length > 0) {
-                        axiomLogger.warn("Completing incomplete tool calls on abort", {
-                          chatId,
-                          endpoint,
-                          isPreemptiveAbort,
-                          incompleteToolCount: incompleteTools.length,
-                          incompleteTools: incompleteTools.map((t: { type?: string; toolCallId?: string; state?: string }) => ({
-                            type: t.type,
-                            toolCallId: t.toolCallId,
-                            state: t.state,
-                          })),
-                        });
+                        axiomLogger.warn(
+                          "Completing incomplete tool calls on abort",
+                          {
+                            chatId,
+                            endpoint,
+                            isPreemptiveAbort,
+                            incompleteToolCount: incompleteTools.length,
+                            incompleteTools: incompleteTools.map(
+                              (t: {
+                                type?: string;
+                                toolCallId?: string;
+                                state?: string;
+                              }) => ({
+                                type: t.type,
+                                toolCallId: t.toolCallId,
+                                state: t.state,
+                              }),
+                            ),
+                          },
+                        );
                       }
 
                       processedMessage = completeIncompleteToolCalls(
@@ -809,9 +838,8 @@ export const createChatHandler = (
                     }
 
                     // Strip providerMetadata from parts before saving
-                    const messageToSave = stripProviderMetadata(
-                      processedMessage,
-                    );
+                    const messageToSave =
+                      stripProviderMetadata(processedMessage);
 
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry
@@ -863,7 +891,9 @@ export const createChatHandler = (
                     chatId,
                     endpoint,
                     totalOnFinishDurationMs: totalDuration,
-                    totalSinceTriggerMs: triggerTime ? Date.now() - triggerTime : null,
+                    totalSinceTriggerMs: triggerTime
+                      ? Date.now() - triggerTime
+                      : null,
                   });
                   await axiomLogger.flush();
                 }

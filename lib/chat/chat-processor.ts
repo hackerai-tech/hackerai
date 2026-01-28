@@ -228,9 +228,7 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
 }
 
 // UI-only part types that should not be sent to AI providers
-const UI_ONLY_PART_TYPES = new Set([
-  "data-summarization",
-]);
+const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
 
 /**
  * Filters out UI-only parts from a message that AI providers don't understand.
@@ -239,7 +237,7 @@ const filterUIOnlyParts = <T extends { parts?: any[] }>(message: T): T => {
   if (!message.parts) return message;
 
   const filteredParts = message.parts.filter(
-    (part: any) => !UI_ONLY_PART_TYPES.has(part.type)
+    (part: any) => !UI_ONLY_PART_TYPES.has(part.type),
   );
 
   // Only create new object if parts were actually filtered

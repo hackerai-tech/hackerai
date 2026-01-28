@@ -48,7 +48,9 @@ export const SharedTodoBlock = ({ todos, blockId }: SharedTodoBlockProps) => {
     if (!isExpanded && currentInProgress) {
       return {
         text: currentInProgress.content,
-        icon: <CircleArrowRight className="text-foreground" aria-hidden="true" />,
+        icon: (
+          <CircleArrowRight className="text-foreground" aria-hidden="true" />
+        ),
         showViewAll: total > 1 && done > 0,
       };
     }
