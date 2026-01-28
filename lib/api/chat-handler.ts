@@ -719,14 +719,28 @@ export const createChatHandler = (
                       )
                   );
 
-                  // If user aborted (not pre-emptive), no files to add, AND no incomplete tools,
-                  // skip message save (frontend already saved complete message)
-                  // But if there are incomplete tools, we MUST save to fix the tool results
+                  // On abort, streamText.onFinish may not have fired yet, so streamUsage
+                  // could be undefined. Await usage from result to ensure we capture it.
+                  // This must happen BEFORE we decide whether to skip saving.
+                  let resolvedUsage: Record<string, unknown> | undefined = streamUsage;
+                  if (!resolvedUsage && isAborted) {
+                    try {
+                      resolvedUsage = (await result.usage) as Record<string, unknown>;
+                    } catch {
+                      // Usage unavailable on abort - continue without it
+                    }
+                  }
+
+                  const hasUsageToRecord = Boolean(resolvedUsage);
+
+                  // If user aborted (not pre-emptive), no files to add, no incomplete tools,
+                  // AND no usage to record, skip message save (frontend already saved complete message)
                   if (
                     isAborted &&
                     !isPreemptiveAbort &&
                     newFileIds.length === 0 &&
-                    !hasIncompleteToolCalls
+                    !hasIncompleteToolCalls &&
+                    !hasUsageToRecord
                   ) {
                     return;
                   }
@@ -794,6 +808,8 @@ export const createChatHandler = (
                       continue;
                     }
 
+                    // Use resolvedUsage which was already awaited above on abort
+                    // Falls back to streamUsage for non-abort cases
                     await saveMessage({
                       chatId,
                       userId,
@@ -803,7 +819,7 @@ export const createChatHandler = (
                       model: responseModel || configuredModelId,
                       generationTimeMs: Date.now() - streamStartTime,
                       finishReason: streamFinishReason,
-                      usage: streamUsage,
+                      usage: resolvedUsage ?? streamUsage,
                     });
                   }
                   logStep("save_messages", stepStart);
