@@ -23,6 +23,7 @@ You'll need the following accounts:
 
 **Required:**
 
+- [OpenRouter](https://openrouter.ai/) - AI model provider
 - [AI GATEWAY](https://vercel.com/ai-gateway) - AI model provider 
 - [OpenAI](https://platform.openai.com/) - AI model provider
 - [XAI](https://x.ai/) - AI model provider for agent mode
