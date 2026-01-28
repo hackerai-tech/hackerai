@@ -120,7 +120,10 @@ export const saveMessage = mutation({
         .first();
 
       if (existingMessage) {
-        // If message exists and we have fileIds to add, update it
+        // Build patch for fields that need updating
+        const patch: Record<string, unknown> = {};
+
+        // Add new fileIds if provided
         if (args.fileIds && args.fileIds.length > 0) {
           const currentFileIds = existingMessage.file_ids || [];
           const newFileIds = args.fileIds.filter(
@@ -128,10 +131,7 @@ export const saveMessage = mutation({
           );
 
           if (newFileIds.length > 0) {
-            await ctx.db.patch(existingMessage._id, {
-              file_ids: [...currentFileIds, ...newFileIds],
-              update_time: Date.now(),
-            });
+            patch.file_ids = [...currentFileIds, ...newFileIds];
 
             // Mark new files as linked
             for (const fileId of newFileIds) {
@@ -149,6 +149,29 @@ export const saveMessage = mutation({
             }
           }
         }
+
+        // Update usage if provided and not already set (e.g., on abort)
+        if (args.usage && !existingMessage.usage) {
+          patch.usage = args.usage;
+        }
+
+        // Update metrics if provided and not already set
+        if (args.model && !existingMessage.model) {
+          patch.model = args.model;
+        }
+        if (args.generationTimeMs && !existingMessage.generation_time_ms) {
+          patch.generation_time_ms = args.generationTimeMs;
+        }
+        if (args.finishReason && !existingMessage.finish_reason) {
+          patch.finish_reason = args.finishReason;
+        }
+
+        // Apply patch if there are changes
+        if (Object.keys(patch).length > 0) {
+          patch.update_time = Date.now();
+          await ctx.db.patch(existingMessage._id, patch);
+        }
+
         return null;
       } else {
         const chatExists: boolean = await ctx.runQuery(

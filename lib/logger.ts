@@ -35,11 +35,6 @@ export interface ChatWideEvent {
   user: {
     id: string;
     subscription: string;
-    location?: {
-      city?: string;
-      country?: string;
-      region?: string;
-    };
   };
 
   // Business context
@@ -160,15 +155,7 @@ export class WideEventBuilder {
   /**
    * Set user context
    */
-  setUser(user: {
-    id: string;
-    subscription: string;
-    location?: {
-      city?: string;
-      country?: string;
-      region?: string;
-    };
-  }): this {
+  setUser(user: { id: string; subscription: string }): this {
     this.event.user = user;
     return this;
   }

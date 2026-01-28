@@ -4,16 +4,17 @@ import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 import { gateway } from "ai";
+import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
-  "ask-model": gateway("google/gemini-3-flash"),
+  "ask-model": openrouter("google/gemini-3-flash-preview"),
   "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
-  "ask-vision-model": gateway("google/gemini-3-flash"),
-  "ask-vision-model-for-pdfs": gateway("google/gemini-3-flash"),
+  "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
+  "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": gateway("google/gemini-3-flash"),
   "agent-vision-model": gateway("google/gemini-3-flash"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
-  "summarization-model": gateway("google/gemini-3-flash"),
+  "summarization-model": openrouter("google/gemini-3-flash-preview"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as Record<string, any>;
 
