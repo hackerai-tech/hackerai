@@ -110,7 +110,6 @@ export default function RootLayout({
 
   return (
     <html lang="en" className="dark h-full" suppressHydrationWarning>
-      <WebVitals />
       <head>
         <meta
           name="viewport"
@@ -121,6 +120,7 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased h-full`}
       >
+        <WebVitals />
         <ConvexClientProvider>{content}</ConvexClientProvider>
       </body>
     </html>
