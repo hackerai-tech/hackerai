@@ -7,7 +7,7 @@
 import type { SandboxPreference, ChatMode, SubscriptionTier } from "@/types";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
-import type { GatewayProviderOptions } from '@ai-sdk/gateway';
+import type { GatewayProviderOptions } from "@ai-sdk/gateway";
 
 // Tools that interact with the sandbox environment
 const SANDBOX_ENVIRONMENT_TOOLS = [
@@ -167,7 +167,7 @@ export function buildProviderOptions(
       store: false,
     },
     gateway: {
-      only: ['vertex'],
+      only: ["vertex"],
     } satisfies GatewayProviderOptions,
     google: {
       // Options are nested under 'google' for Vertex provider

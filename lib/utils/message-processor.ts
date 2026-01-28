@@ -269,14 +269,16 @@ const isReasoningPart = (part: Record<string, any>): boolean => {
  *
  * This is a safeguard for old messages that were saved without thought signatures.
  */
-export const stripReasoningForGemini = <T extends { parts?: any[]; role?: string }>(
+export const stripReasoningForGemini = <
+  T extends { parts?: any[]; role?: string },
+>(
   message: T,
 ): T => {
   if (!message.parts || message.role !== "assistant") return message;
 
   // Check if this message has any tool calls
   const hasToolCalls = message.parts.some(
-    (part) => part.type?.startsWith("tool-") || part.type === "tool-call"
+    (part) => part.type?.startsWith("tool-") || part.type === "tool-call",
   );
 
   // Only strip reasoning if there are tool calls (that's when thought_signature is required)
@@ -297,13 +299,17 @@ export const stripReasoningForGemini = <T extends { parts?: any[]; role?: string
  * Strips reasoning parts from all messages for Gemini models.
  * Use this before sending messages to Gemini to avoid thought_signature errors.
  */
-export const stripReasoningFromMessagesForGemini = <T extends { parts?: any[]; role?: string }>(
+export const stripReasoningFromMessagesForGemini = <
+  T extends { parts?: any[]; role?: string },
+>(
   messages: T[],
 ): T[] => {
   return messages.map(stripReasoningForGemini);
 };
 
-export const completeIncompleteToolCalls = <T extends { parts?: any[]; role?: string }>(
+export const completeIncompleteToolCalls = <
+  T extends { parts?: any[]; role?: string },
+>(
   message: T,
   reason: string = "Operation timed out",
 ): T => {
@@ -314,8 +320,7 @@ export const completeIncompleteToolCalls = <T extends { parts?: any[]; role?: st
     // Skip parts that already have a final state (output-available, output-error, result)
     if (
       part.type?.startsWith("tool-") &&
-      (part.state === "input-streaming" ||
-        part.state === "input-available") &&
+      (part.state === "input-streaming" || part.state === "input-available") &&
       part.toolCallId
     ) {
       // Handle terminal commands specially

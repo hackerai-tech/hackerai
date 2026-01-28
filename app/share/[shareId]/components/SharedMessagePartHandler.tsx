@@ -93,10 +93,7 @@ export const SharedMessagePartHandler = ({
   }
 
   // Terminal commands
-  if (
-    part.type === "data-terminal" ||
-    part.type === "tool-run_terminal_cmd"
-  ) {
+  if (part.type === "data-terminal" || part.type === "tool-run_terminal_cmd") {
     return renderTerminalTool(part, idx, openSidebar);
   }
 
@@ -163,18 +160,23 @@ export const SharedMessagePartHandler = ({
 function renderTerminalTool(
   part: MessagePart,
   idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"]
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
   const terminalInput = part.input as { command?: string };
   const terminalOutput = part.output as {
-    result?: { output?: string; stdout?: string; stderr?: string; error?: string };
+    result?: {
+      output?: string;
+      stdout?: string;
+      stderr?: string;
+      error?: string;
+    };
   };
   const command = terminalInput?.command || "";
   const result = terminalOutput?.result;
   // Match the output extraction logic from TerminalToolHandler.tsx
   const output =
     result?.output ||
-    ((result?.stdout ?? "") + (result?.stderr ?? "")) ||
+    (result?.stdout ?? "") + (result?.stderr ?? "") ||
     result?.error ||
     "";
 
@@ -218,7 +220,7 @@ function renderTerminalTool(
 function renderLegacyFileTool(
   part: MessagePart,
   idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"]
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
   const fileInput = part.input as {
     file_path?: string;
@@ -317,7 +319,7 @@ function renderLegacyFileTool(
 function renderFileTool(
   part: MessagePart,
   idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"]
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
   const fileInput = part.input as {
     action?: "read" | "write" | "append" | "edit";
@@ -423,7 +425,7 @@ function renderFileTool(
 function renderPythonTool(
   part: MessagePart,
   idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"]
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
   const pythonInput = part.input as { code?: string };
   const pythonOutput = part.output as { result?: string; output?: string };
@@ -514,7 +516,7 @@ function renderOpenUrlTool(part: MessagePart, idx: number) {
 function renderMatchTool(
   part: MessagePart,
   idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"]
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
   const matchInput = part.input as {
     action?: "glob" | "grep";
@@ -630,7 +632,11 @@ function renderTodoTool(part: MessagePart, idx: number) {
     }
 
     return (
-      <ToolBlock key={idx} icon={<ListTodo aria-hidden="true" />} action="Updated todos" />
+      <ToolBlock
+        key={idx}
+        icon={<ListTodo aria-hidden="true" />}
+        action="Updated todos"
+      />
     );
   }
   return null;
@@ -712,7 +718,10 @@ function renderSummarizationPart(part: MessagePart, idx: number) {
 
   return (
     <div key={idx} className="mb-3 flex items-center gap-2">
-      <WandSparkles className="w-4 h-4 text-muted-foreground" aria-hidden="true" />
+      <WandSparkles
+        className="w-4 h-4 text-muted-foreground"
+        aria-hidden="true"
+      />
       <span className="text-sm text-muted-foreground">{data?.message}</span>
     </div>
   );
@@ -722,7 +731,7 @@ function renderSummarizationPart(part: MessagePart, idx: number) {
 function renderHttpRequestTool(
   part: MessagePart,
   idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"]
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
   const httpInput = part.input as {
     url?: string;

@@ -55,14 +55,14 @@ export function SharedMessages({ messages, shareDate }: SharedMessagesProps) {
         // Separate file/image placeholders from other parts
         const filePlaceholders = message.parts.filter(
           (part) =>
-            (part.type === "file" || part.type === "image") && part.placeholder
+            (part.type === "file" || part.type === "image") && part.placeholder,
         );
         const otherParts = message.parts.filter(
           (part) =>
             !(
               (part.type === "file" || part.type === "image") &&
               part.placeholder
-            )
+            ),
         );
 
         return (
