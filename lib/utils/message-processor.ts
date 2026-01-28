@@ -250,34 +250,6 @@ const transformTerminalToolPart = (
   };
 };
 
-/**
- * Generic transformation for all non-terminal tool types
- */
-const transformGenericToolPart = (toolPart: BaseToolPart): BaseToolPart => {
-  // Handle specific tool types with appropriate default outputs
-  switch (toolPart.type) {
-    case "tool-todo_write":
-      return {
-        ...toolPart,
-        state: "output-available",
-        output: {
-          result: "Todo operation was interrupted by user",
-          counts: { completed: 0, total: 0 },
-          currentTodos: [],
-        },
-      };
-
-    default:
-      // Generic transformation for file tools and unknown tool types
-      return {
-        ...toolPart,
-        state: "output-available",
-        output: {
-          result: "Operation was interrupted by user",
-        },
-      };
-  }
-};
 
 /**
  * Completes any incomplete tool calls in messages with a timeout result.
@@ -290,10 +262,13 @@ export const completeIncompleteToolCalls = <T extends { parts?: any[]; role?: st
   if (!message.parts || message.role !== "assistant") return message;
 
   const updatedParts = message.parts.map((part) => {
-    // Check if this is a tool part that's not completed
+    // Check if this is a tool part that's still incomplete (streaming or waiting for execution)
+    // Skip parts that already have a final state (output-available, output-error, result, approval-requested)
     if (
       part.type?.startsWith("tool-") &&
-      part.state !== "output-available" &&
+      (part.state === "input-streaming" ||
+        part.state === "input-available" ||
+        part.state === "approval-requested") &&
       part.toolCallId
     ) {
       // Handle terminal commands specially
