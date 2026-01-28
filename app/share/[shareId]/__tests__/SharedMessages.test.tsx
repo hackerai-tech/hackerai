@@ -206,7 +206,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Wrote")).toBeInTheDocument();
+      expect(screen.getByText("Successfully wrote")).toBeInTheDocument();
       expect(screen.getByText("/path/to/new-file.js")).toBeInTheDocument();
     });
 
@@ -229,7 +229,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Edited")).toBeInTheDocument();
+      expect(screen.getByText("Successfully edited")).toBeInTheDocument();
       expect(screen.getByText("/path/to/edited.ts")).toBeInTheDocument();
     });
   });
@@ -279,7 +279,7 @@ describe("SharedMessages", () => {
       renderWithContext(
         <SharedMessages messages={messages} shareDate={mockShareDate} />,
       );
-      expect(screen.getByText("Searched")).toBeInTheDocument();
+      expect(screen.getByText("Searched web")).toBeInTheDocument();
       expect(
         screen.getByText("best practices for testing"),
       ).toBeInTheDocument();
