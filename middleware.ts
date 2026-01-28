@@ -1,7 +1,5 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
-import { logger } from "@/lib/axiom/server";
-import { transformMiddlewareRequest } from "@axiomhq/nextjs";
 
 const UNAUTHENTICATED_PATHS = new Set([
   "/",
@@ -52,12 +50,8 @@ const SESSION_HEADER = "x-workos-session";
 
 export default async function middleware(
   request: NextRequest,
-  event: NextFetchEvent,
+  _event: NextFetchEvent,
 ) {
-  // Log traffic request to Axiom
-  logger.info(...transformMiddlewareRequest(request));
-  event.waitUntil(logger.flush());
-
   const pathname = request.nextUrl.pathname;
 
   // Desktop app: redirect unauthenticated users to desktop-specific error page

@@ -19,9 +19,57 @@ export const getErrorMessage = (err: unknown): string => {
   }
 };
 
+const SENSITIVE_KEYS = new Set([
+  "requestBodyValues",
+  "prompt",
+  "messages",
+  "content",
+  "text",
+]);
+
+/**
+ * Removes sensitive user data from provider error objects.
+ * Fields containing user prompts/messages are completely removed.
+ * Uses WeakSet to guard against circular references.
+ */
+const removeSensitiveData = (data: unknown): unknown => {
+  const seen = new WeakSet<object>();
+
+  const recurse = (value: unknown): unknown => {
+    if (value === null || value === undefined) return value;
+    if (typeof value !== "object") return value;
+
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      return value.map(recurse);
+    }
+
+    const obj = value as Record<string, unknown>;
+    const cleaned: Record<string, unknown> = {};
+
+    for (const [key, val] of Object.entries(obj)) {
+      if (SENSITIVE_KEYS.has(key)) {
+        continue;
+      }
+      if (val && typeof val === "object") {
+        cleaned[key] = recurse(val);
+      } else {
+        cleaned[key] = val;
+      }
+    }
+
+    return cleaned;
+  };
+
+  return recurse(data);
+};
+
 /**
  * Extracts structured error details for logging to Axiom or other services.
  * Handles both standard Error objects and provider-specific error formats (AI SDK, etc.)
+ * Sensitive user data (prompts, messages) is removed from the output.
  */
 export const extractErrorDetails = (
   error: unknown,
@@ -47,13 +95,13 @@ export const extractErrorDetails = (
     details.providerUrl = anyError.url;
   }
   if ("responseBody" in anyError) {
-    details.responseBody = anyError.responseBody;
+    details.responseBody = removeSensitiveData(anyError.responseBody);
   }
   if ("isRetryable" in anyError) {
     details.isRetryable = anyError.isRetryable;
   }
   if ("data" in anyError) {
-    details.providerData = anyError.data;
+    details.providerData = removeSensitiveData(anyError.data);
   }
   if ("cause" in anyError && anyError.cause) {
     details.cause = getErrorMessage(anyError.cause);
