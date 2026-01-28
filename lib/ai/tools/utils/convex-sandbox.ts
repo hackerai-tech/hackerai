@@ -26,8 +26,7 @@ interface OsInfo {
 interface ConnectionInfo {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous" | "custom";
-  imageName?: string;
+  mode: "docker" | "dangerous";
   osInfo?: OsInfo;
   containerId?: string;
 }
@@ -59,7 +58,7 @@ export class ConvexSandbox extends EventEmitter {
    * Get sandbox context for AI based on mode
    */
   getSandboxContext(): string | null {
-    const { mode, osInfo, imageName } = this.connectionInfo;
+    const { mode, osInfo } = this.connectionInfo;
 
     if (mode === "dangerous" && osInfo) {
       const { platform, arch, release, hostname } = osInfo;
@@ -77,12 +76,6 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
 - Process management (can affect host system)`;
-    }
-
-    if (mode === "custom" && imageName) {
-      return `You are executing commands in a custom Docker container using image "${imageName}".
-This is a user-provided image - available tools and environment may vary.
-Commands run inside the Docker container with network access.`;
     }
 
     if (mode === "docker") {

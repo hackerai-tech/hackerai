@@ -30,8 +30,7 @@ const convexUrlFlag =
 interface LocalConnection {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous" | "custom";
-  imageName?: string;
+  mode: "docker" | "dangerous";
   containerId?: string;
   osInfo?: {
     platform: string;
@@ -269,17 +268,6 @@ const LocalSandboxTab = () => {
             onCopy={() =>
               handleCopyCommand(
                 `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
-              )
-            }
-          />
-
-          {/* Kali command */}
-          <CommandBlock
-            label="Custom Image (Kali Linux)"
-            command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`}
-            onCopy={() =>
-              handleCopyCommand(
-                `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "Kali" --image kalilinux/kali-rolling${convexUrlFlag}`,
               )
             }
           />

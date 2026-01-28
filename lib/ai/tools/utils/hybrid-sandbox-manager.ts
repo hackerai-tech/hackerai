@@ -21,8 +21,7 @@ export interface SandboxFallbackInfo {
 interface ConnectionInfo {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous" | "custom";
-  imageName?: string;
+  mode: "docker" | "dangerous";
   osInfo?: {
     platform: string;
     arch: string;
@@ -273,7 +272,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   private buildSandboxContext(connection: ConnectionInfo): string | null {
-    const { mode, osInfo, imageName } = connection;
+    const { mode, osInfo } = connection;
 
     if (mode === "dangerous" && osInfo) {
       const { platform, arch, release, hostname } = osInfo;
@@ -301,19 +300,6 @@ Security Warning:
 - Be careful with destructive commands
 
 Available tools depend on what's installed on the host system.
-</sandbox_environment>`;
-    }
-
-    if (mode === "custom" && imageName) {
-      return `<sandbox_environment>
-IMPORTANT: You are connected to a LOCAL machine running a custom Docker container.
-
-Container Environment:
-- Image: ${imageName}
-- Mode: Custom Docker container
-- Network: Host network (--network host)
-
-Note: Available tools and environment depend on the custom image. This is a user-provided image - available commands may vary from the standard HackerAI sandbox.
 </sandbox_environment>`;
     }
 

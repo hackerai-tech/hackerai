@@ -129,46 +129,26 @@ describe("Docker Run Command", () => {
 });
 
 describe("Sandbox Mode Detection", () => {
-  const defaultImage = "hackerai/sandbox:latest";
-
   it("should return 'dangerous' when dangerous flag is set", () => {
     const mode = getSandboxMode({
       dangerous: true,
-      image: defaultImage,
-      defaultImage,
     });
 
     expect(mode).toBe("dangerous");
   });
 
-  it("should return 'custom' when using non-default image", () => {
+  it("should return 'docker' when dangerous flag is not set", () => {
     const mode = getSandboxMode({
       dangerous: false,
-      image: "kalilinux/kali-rolling",
-      defaultImage,
-    });
-
-    expect(mode).toBe("custom");
-  });
-
-  it("should return 'docker' when using default image", () => {
-    const mode = getSandboxMode({
-      dangerous: false,
-      image: defaultImage,
-      defaultImage,
     });
 
     expect(mode).toBe("docker");
   });
 
-  it("should prioritize dangerous over custom image", () => {
-    const mode = getSandboxMode({
-      dangerous: true,
-      image: "kalilinux/kali-rolling",
-      defaultImage,
-    });
+  it("should return 'docker' when dangerous flag is undefined", () => {
+    const mode = getSandboxMode({});
 
-    expect(mode).toBe("dangerous");
+    expect(mode).toBe("docker");
   });
 });
 

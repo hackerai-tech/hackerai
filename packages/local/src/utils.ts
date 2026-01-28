@@ -73,14 +73,9 @@ export function buildDockerRunCommand(options: {
  */
 export function getSandboxMode(config: {
   dangerous?: boolean;
-  image: string;
-  defaultImage: string;
-}): "docker" | "dangerous" | "custom" {
+}): "docker" | "dangerous" {
   if (config.dangerous) {
     return "dangerous";
-  }
-  if (config.image !== config.defaultImage) {
-    return "custom";
   }
   return "docker";
 }
