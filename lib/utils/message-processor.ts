@@ -1,57 +1,20 @@
 import { ChatMessage } from "@/types/chat";
 
 /**
- * Checks if a metadata object contains OpenRouter data.
- */
-const hasOpenRouterMetadata = (metadata: unknown): boolean => {
-  return (
-    metadata !== null &&
-    typeof metadata === "object" &&
-    "openrouter" in metadata
-  );
-};
-
-/**
  * Strips provider-specific fields from a single message part.
- * - providerMetadata/callProviderMetadata: only strips if it contains OpenRouter data
- * - providerExecuted/providerOptions: always strips (provider-internal data)
+ * Removes providerMetadata, callProviderMetadata, providerExecuted, and providerOptions.
  */
 export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
   part: T,
 ): T => {
-  let result = part;
-
-  // Strip providerMetadata if it contains OpenRouter data
-  if (
-    "providerMetadata" in result &&
-    hasOpenRouterMetadata(result.providerMetadata)
-  ) {
-    const { providerMetadata, ...rest } = result;
-    result = rest as T;
-  }
-
-  // Strip callProviderMetadata if it contains OpenRouter data
-  if (
-    "callProviderMetadata" in result &&
-    hasOpenRouterMetadata(result.callProviderMetadata)
-  ) {
-    const { callProviderMetadata, ...rest } = result;
-    result = rest as T;
-  }
-
-  // Always strip providerExecuted
-  if ("providerExecuted" in result) {
-    const { providerExecuted, ...rest } = result;
-    result = rest as T;
-  }
-
-  // Always strip providerOptions
-  if ("providerOptions" in result) {
-    const { providerOptions, ...rest } = result;
-    result = rest as T;
-  }
-
-  return result;
+  const {
+    providerMetadata,
+    callProviderMetadata,
+    providerExecuted,
+    providerOptions,
+    ...rest
+  } = part;
+  return rest as T;
 };
 
 /**
@@ -70,6 +33,10 @@ const isRedactedReasoningPart = (part: Record<string, any>): boolean => {
  * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
  * Also filters out completed reasoning blocks with redacted text.
  * Used to clean messages before saving or for temporary chat handling.
+ *
+ * NOTE: We intentionally preserve top-level reasoning/reasoning_details fields
+ * because Gemini 3 models require thought signatures to be passed back in
+ * subsequent requests for function calling to work correctly.
  */
 export const stripProviderMetadata = <T extends { parts?: any[] }>(
   message: T,
@@ -199,12 +166,10 @@ export const normalizeMessages = (
         return;
       }
 
-      // Strip provider-specific fields from the part (contains internal data like encrypted reasoning, provider options)
+      // Strip provider-specific fields from the part
       const hasProviderFields =
-        ("providerMetadata" in part &&
-          hasOpenRouterMetadata(part.providerMetadata)) ||
-        ("callProviderMetadata" in part &&
-          hasOpenRouterMetadata(part.callProviderMetadata)) ||
+        "providerMetadata" in part ||
+        "callProviderMetadata" in part ||
         "providerExecuted" in part ||
         "providerOptions" in part;
       const cleanPart = hasProviderFields
@@ -282,5 +247,60 @@ const transformTerminalToolPart = (
           stdout.length === 0 ? "Command was stopped/aborted by user" : "",
       },
     },
+  };
+};
+
+/**
+ * Completes any incomplete tool calls in messages with a timeout result.
+ * This prevents "Tool result is missing" errors when resuming after a preemptive timeout.
+ */
+export const completeIncompleteToolCalls = <T extends { parts?: any[]; role?: string }>(
+  message: T,
+  reason: string = "Operation timed out",
+): T => {
+  if (!message.parts || message.role !== "assistant") return message;
+
+  const updatedParts = message.parts.map((part) => {
+    // Check if this is a tool part that's still incomplete (streaming or waiting for execution)
+    // Skip parts that already have a final state (output-available, output-error, result)
+    if (
+      part.type?.startsWith("tool-") &&
+      (part.state === "input-streaming" ||
+        part.state === "input-available") &&
+      part.toolCallId
+    ) {
+      // Handle terminal commands specially
+      if (part.type === "tool-run_terminal_cmd") {
+        return {
+          ...part,
+          state: "output-available",
+          output: {
+            result: {
+              exitCode: 124, // Standard timeout exit code
+              stdout: "",
+              stderr: reason,
+              error: reason,
+            },
+          },
+        };
+      }
+
+      // Generic tool timeout result
+      return {
+        ...part,
+        state: "output-available",
+        output: {
+          result: reason,
+          error: reason,
+        },
+      };
+    }
+
+    return part;
+  });
+
+  return {
+    ...message,
+    parts: updatedParts,
   };
 };

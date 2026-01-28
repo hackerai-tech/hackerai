@@ -1,3 +1,5 @@
+import { logger as axiomLogger } from "@/lib/axiom/server";
+
 /**
  * Retry configuration options
  */
@@ -12,6 +14,8 @@ export interface RetryOptions {
   isPermanentError?: (error: unknown) => boolean;
   /** Optional logger function */
   logger?: (message: string, error?: unknown) => void;
+  /** Optional abort signal to cancel retries */
+  signal?: AbortSignal;
 }
 
 /**
@@ -59,11 +63,22 @@ export async function retryWithBackoff<T>(
     jitterMs = 40,
     isPermanentError = defaultIsPermanentError,
     logger = console.warn,
+    signal,
   } = options;
 
   let lastError: unknown;
 
   for (let attempt = 0; attempt < maxRetries; attempt++) {
+    // Check if aborted before each attempt
+    if (signal?.aborted) {
+      axiomLogger.info("Retry aborted before attempt", {
+        attempt,
+        maxRetries,
+        reason: "signal_already_aborted",
+      });
+      throw new DOMException("Operation aborted", "AbortError");
+    }
+
     try {
       return await operation();
     } catch (error) {
@@ -97,8 +112,25 @@ export async function retryWithBackoff<T>(
         error instanceof Error ? error.message : error,
       );
 
-      // Wait before retrying
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      // Wait before retrying (abort-aware)
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(resolve, delayMs);
+        if (signal) {
+          const onAbort = () => {
+            clearTimeout(timeout);
+            axiomLogger.info("Retry aborted during backoff delay", {
+              attempt,
+              maxRetries,
+              delayMs,
+              reason: "signal_aborted_during_delay",
+            });
+            reject(new DOMException("Operation aborted", "AbortError"));
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          // Clean up listener if timeout completes normally
+          setTimeout(() => signal.removeEventListener("abort", onAbort), delayMs + 1);
+        }
+      });
     }
   }
 

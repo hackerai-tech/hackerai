@@ -97,3 +97,20 @@ export function parseShellDetectionOutput(output: string): string {
   const shell = output.trim().split("\n")[0];
   return shell || "/bin/sh";
 }
+
+export interface ShellConfig {
+  shell: string;
+  shellFlag: string;
+}
+
+/**
+ * Get the default shell for a given platform.
+ * On Windows, uses PowerShell; on Unix-like systems, uses bash.
+ */
+export function getDefaultShell(platform: string): ShellConfig {
+  if (platform === "win32") {
+    return { shell: "powershell.exe", shellFlag: "-Command" };
+  }
+  // Unix-like systems (Linux, macOS, etc.)
+  return { shell: "/bin/bash", shellFlag: "-c" };
+}

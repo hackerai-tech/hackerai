@@ -2,12 +2,12 @@ import {
   getCancellationStatus,
   getTempCancellationStatus,
 } from "@/lib/db/actions";
-import type { ChatMode } from "@/types";
 import {
   createRedisSubscriber,
   getCancelChannel,
 } from "@/lib/utils/redis-pubsub";
 import { createClient } from "redis";
+import { logger } from "@/lib/axiom/server";
 
 // Use the same type as redis-pubsub.ts
 type RedisClient = ReturnType<typeof createClient>;
@@ -20,9 +20,11 @@ type PollOptions = {
   pollIntervalMs?: number;
 };
 
+type ApiEndpoint = "/api/chat" | "/api/agent" | "/api/chat/[id]/stream";
+
 type PreemptiveTimeoutOptions = {
   chatId: string;
-  mode: ChatMode;
+  endpoint: ApiEndpoint;
   abortController: AbortController;
   safetyBuffer?: number;
 };
@@ -203,20 +205,32 @@ export const createCancellationSubscriber = async ({
  */
 export const createPreemptiveTimeout = ({
   chatId,
-  mode,
+  endpoint,
   abortController,
-  safetyBuffer = 10,
+  safetyBuffer = 30,
 }: PreemptiveTimeoutOptions) => {
-  const maxDuration = mode === "agent" ? 800 : 180;
+  // Use endpoint-specific max duration based on Vercel function limits
+  const maxDuration = endpoint === "/api/chat" ? 180 : 800;
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
+  const startTime = Date.now();
 
   let isPreemptive = false;
+  let triggerTime: number | null = null;
 
   const timeoutId = setTimeout(() => {
-    console.log(
-      `[Chat ${chatId}] Pre-emptive abort triggered (${safetyBuffer}s before ${maxDuration}s timeout)`,
-    );
+    triggerTime = Date.now();
     isPreemptive = true;
+
+    logger.info("Preemptive timeout triggered", {
+      chatId,
+      endpoint,
+      maxDuration,
+      safetyBuffer,
+      maxStreamTimeMs: maxStreamTime,
+      elapsedMs: triggerTime - startTime,
+      triggerTime: new Date(triggerTime).toISOString(),
+    });
+
     abortController.abort();
   }, maxStreamTime);
 
@@ -224,5 +238,7 @@ export const createPreemptiveTimeout = ({
     timeoutId,
     clear: () => clearTimeout(timeoutId),
     isPreemptive: () => isPreemptive,
+    getTriggerTime: () => triggerTime,
+    getStartTime: () => startTime,
   };
 };
