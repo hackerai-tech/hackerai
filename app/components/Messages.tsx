@@ -580,8 +580,10 @@ export const Messages = ({
             </div>
           )}
 
-          {/* Error state */}
-          {error && <MessageErrorState error={error} onRetry={onRetry} />}
+          {/* Error state - hide if it was a graceful preemptive timeout */}
+          {error && finishReason !== "timeout" && (
+            <MessageErrorState error={error} onRetry={onRetry} />
+          )}
         </div>
 
         {/* All Files Dialog */}

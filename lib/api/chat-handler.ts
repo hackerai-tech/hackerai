@@ -12,6 +12,7 @@ import {
 import {
   stripProviderMetadata,
   completeIncompleteToolCalls,
+  stripReasoningFromMessagesForGemini,
 } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
@@ -432,6 +433,17 @@ export const createChatHandler = (
           const streamStartTime = Date.now();
           const configuredModelId =
             trackedProvider.languageModel(selectedModel).modelId;
+
+          // Check if using Gemini model (requires thought_signature for reasoning + tool calls)
+          const isGeminiModel =
+            configuredModelId.includes("gemini") ||
+            configuredModelId.includes("google");
+
+          // Strip reasoning from old messages for Gemini to avoid thought_signature errors
+          // This is a safeguard for messages saved before we stored thought signatures
+          if (isGeminiModel) {
+            finalMessages = stripReasoningFromMessagesForGemini(finalMessages);
+          }
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
 
@@ -470,7 +482,10 @@ export const createChatHandler = (
                     });
 
                     // Only update state after successful save
-                    finalMessages = summarizedMessages;
+                    // Strip reasoning for Gemini to avoid thought_signature errors
+                    finalMessages = isGeminiModel
+                      ? stripReasoningFromMessagesForGemini(summarizedMessages)
+                      : summarizedMessages;
                     hasSummarized = true;
 
                     writeSummarizationCompleted(writer);
