@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { StickyNote, List, Pencil, Trash2 } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
@@ -16,7 +15,6 @@ export const NotesToolHandler = ({
   toolName,
 }: NotesToolHandlerProps) => {
   const { openSidebar } = useGlobalState();
-  const hasOpenedSidebarRef = useRef(false);
 
   const { toolCallId, state, input, output } = part;
 
@@ -168,23 +166,6 @@ export const NotesToolHandler = ({
       handleOpenSidebar();
     }
   };
-
-  // Auto-open sidebar when output becomes available for list_notes
-  useEffect(() => {
-    if (state === "output-available" && !hasOpenedSidebarRef.current) {
-      hasOpenedSidebarRef.current = true;
-      // Only auto-open for list_notes which shows more content
-      if (toolName === "list_notes") {
-        handleOpenSidebar();
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, toolName]);
-
-  // Reset ref when tool changes
-  useEffect(() => {
-    hasOpenedSidebarRef.current = false;
-  }, [toolCallId]);
 
   switch (state) {
     case "input-streaming":
