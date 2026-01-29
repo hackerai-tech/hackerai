@@ -1,12 +1,18 @@
 import ToolBlock from "@/components/ui/tool-block";
-import { StickyNote, List, Pencil, Trash2 } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarNote, SidebarNotes } from "@/types/chat";
+import {
+  getNotesIcon,
+  getNotesStreamingActionText,
+  getNotesActionText,
+  getNotesActionType,
+  type NotesToolName,
+} from "./notes-tool-utils";
 
 interface NotesToolHandlerProps {
   part: any;
   status: ChatStatus;
-  toolName: "create_note" | "list_notes" | "update_note" | "delete_note";
+  toolName: NotesToolName;
 }
 
 export const NotesToolHandler = ({
@@ -17,51 +23,6 @@ export const NotesToolHandler = ({
   const { openSidebar } = useGlobalState();
 
   const { toolCallId, state, input, output } = part;
-
-  const getIcon = () => {
-    switch (toolName) {
-      case "create_note":
-        return <StickyNote className="h-4 w-4" />;
-      case "list_notes":
-        return <List className="h-4 w-4" />;
-      case "update_note":
-        return <Pencil className="h-4 w-4" />;
-      case "delete_note":
-        return <Trash2 className="h-4 w-4" />;
-      default:
-        return <StickyNote className="h-4 w-4" />;
-    }
-  };
-
-  const getStreamingActionText = () => {
-    switch (toolName) {
-      case "create_note":
-        return "Creating note";
-      case "list_notes":
-        return "Listing notes";
-      case "update_note":
-        return "Updating note";
-      case "delete_note":
-        return "Deleting note";
-      default:
-        return "Processing note";
-    }
-  };
-
-  const getActionText = () => {
-    switch (toolName) {
-      case "create_note":
-        return "Created note";
-      case "list_notes":
-        return "Listed notes";
-      case "update_note":
-        return "Updated note";
-      case "delete_note":
-        return "Deleted note";
-      default:
-        return "Note action";
-    }
-  };
 
   const getTarget = () => {
     if (toolName === "create_note" && input?.title) {
@@ -83,24 +44,9 @@ export const NotesToolHandler = ({
     return undefined;
   };
 
-  const getActionType = (): SidebarNotes["action"] => {
-    switch (toolName) {
-      case "create_note":
-        return "create";
-      case "list_notes":
-        return "list";
-      case "update_note":
-        return "update";
-      case "delete_note":
-        return "delete";
-      default:
-        return "list";
-    }
-  };
-
   const buildSidebarContent = (): SidebarNotes => {
     const result = output || part.result;
-    const action = getActionType();
+    const action = getNotesActionType(toolName);
 
     let notes: SidebarNote[] = [];
     let totalCount = 0;
@@ -168,8 +114,8 @@ export const NotesToolHandler = ({
       return status === "streaming" ? (
         <ToolBlock
           key={toolCallId}
-          icon={getIcon()}
-          action={getStreamingActionText()}
+          icon={getNotesIcon(toolName, "h-4 w-4")}
+          action={getNotesStreamingActionText(toolName)}
           isShimmer={true}
         />
       ) : null;
@@ -178,25 +124,41 @@ export const NotesToolHandler = ({
       return status === "streaming" ? (
         <ToolBlock
           key={toolCallId}
-          icon={getIcon()}
-          action={getStreamingActionText()}
+          icon={getNotesIcon(toolName, "h-4 w-4")}
+          action={getNotesStreamingActionText(toolName)}
           target={getTarget()}
           isShimmer={true}
         />
       ) : null;
 
-    case "output-available":
+    case "output-available": {
+      const result = output || part.result;
+      const isFailure = result?.success === false;
+
+      if (isFailure) {
+        // For failures, show error message in target and don't make clickable
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={getNotesIcon(toolName, "h-4 w-4")}
+            action={getNotesActionText(toolName, true)}
+            target={result?.error}
+          />
+        );
+      }
+
       return (
         <ToolBlock
           key={toolCallId}
-          icon={getIcon()}
-          action={getActionText()}
+          icon={getNotesIcon(toolName, "h-4 w-4")}
+          action={getNotesActionText(toolName)}
           target={getTarget()}
           isClickable={true}
           onClick={handleOpenSidebar}
           onKeyDown={handleKeyDown}
         />
       );
+    }
 
     default:
       return null;

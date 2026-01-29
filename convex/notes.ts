@@ -1,5 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import { validateServiceKey } from "./chats";
 
 // Note: Keep in sync with VALID_NOTE_CATEGORIES in types/chat.ts
@@ -14,7 +15,7 @@ const VALID_CATEGORIES = [
 type NoteCategory = (typeof VALID_CATEGORIES)[number];
 
 /**
- * Generate a short unique ID for notes (5 characters)
+ * Generate a random 5-character string for note IDs
  */
 function generateNoteId(): string {
   return Math.random().toString(36).substring(2, 7);
@@ -63,28 +64,48 @@ export const createNoteForBackend = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
+    // Validate title
+    if (!args.title || !args.title.trim()) {
+      return { success: false, error: "Title cannot be empty" };
+    }
+
+    // Validate content
+    if (!args.content || !args.content.trim()) {
+      return { success: false, error: "Content cannot be empty" };
+    }
+
+    const category: NoteCategory = args.category || "general";
+    const now = Date.now();
+    const tags = args.tags || [];
+    const tokens = estimateNoteTokens(
+      args.title.trim(),
+      args.content.trim(),
+      category,
+      tags,
+    );
+
+    // Generate unique note ID with collision check
+    const maxAttempts = 5;
+    let noteId: string | null = null;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const candidateId = generateNoteId();
+      const existing = await ctx.db
+        .query("notes")
+        .withIndex("by_note_id", (q) => q.eq("note_id", candidateId))
+        .first();
+
+      if (!existing) {
+        noteId = candidateId;
+        break;
+      }
+    }
+
+    if (!noteId) {
+      return { success: false, error: "Failed to generate unique note ID" };
+    }
+
     try {
-      // Validate title
-      if (!args.title || !args.title.trim()) {
-        return { success: false, error: "Title cannot be empty" };
-      }
-
-      // Validate content
-      if (!args.content || !args.content.trim()) {
-        return { success: false, error: "Content cannot be empty" };
-      }
-
-      const category: NoteCategory = args.category || "general";
-      const noteId = generateNoteId();
-      const now = Date.now();
-      const tags = args.tags || [];
-      const tokens = estimateNoteTokens(
-        args.title.trim(),
-        args.content.trim(),
-        category,
-        tags,
-      );
-
       await ctx.db.insert("notes", {
         user_id: args.userId,
         note_id: noteId,
@@ -261,7 +282,7 @@ export const listNotesForBackend = query({
         // Get all notes for user
         notes = await ctx.db
           .query("notes")
-          .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+          .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
           .order("desc")
           .collect();
       }
@@ -525,70 +546,33 @@ export const deleteNoteForBackend = mutation({
 
 /**
  * Get paginated notes for frontend display (authenticated user)
- * Returns 25 notes per page with cursor-based pagination
+ * Uses Convex's standard pagination for efficient database-level pagination
  */
 export const getUserNotesPaginated = query({
   args: {
-    cursor: v.optional(v.string()),
-    limit: v.optional(v.number()),
+    paginationOpts: paginationOptsValidator,
   },
-  returns: v.object({
-    notes: v.array(
-      v.object({
-        note_id: v.string(),
-        title: v.string(),
-        content: v.string(),
-        category: v.string(),
-        tags: v.array(v.string()),
-        _creationTime: v.number(),
-        updated_at: v.number(),
-      }),
-    ),
-    nextCursor: v.union(v.string(), v.null()),
-    hasMore: v.boolean(),
-  }),
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new ConvexError({
-        code: "UNAUTHORIZED",
-        message: "Unauthorized: User not authenticated",
-      });
+      return {
+        page: [],
+        isDone: true,
+        continueCursor: "",
+      };
     }
 
     try {
-      const limit = args.limit ?? 25;
-
-      // Get all notes for user sorted by updated_at descending
-      const allNotes = await ctx.db
+      const result = await ctx.db
         .query("notes")
-        .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+        .withIndex("by_user_and_updated", (q) =>
+          q.eq("user_id", identity.subject),
+        )
         .order("desc")
-        .collect();
-
-      // Sort by updated_at descending (newest first)
-      allNotes.sort((a, b) => b.updated_at - a.updated_at);
-
-      // Find starting index based on cursor
-      let startIndex = 0;
-      if (args.cursor) {
-        const cursorIndex = allNotes.findIndex(
-          (note) => note.note_id === args.cursor,
-        );
-        if (cursorIndex !== -1) {
-          startIndex = cursorIndex + 1;
-        }
-      }
-
-      // Get the page of notes
-      const pageNotes = allNotes.slice(startIndex, startIndex + limit);
-      const hasMore = startIndex + limit < allNotes.length;
-      const nextCursor = hasMore
-        ? (pageNotes[pageNotes.length - 1]?.note_id ?? null)
-        : null;
+        .paginate(args.paginationOpts);
 
       return {
-        notes: pageNotes.map((note) => ({
+        page: result.page.map((note) => ({
           note_id: note.note_id,
           title: note.title,
           content: note.content,
@@ -597,12 +581,12 @@ export const getUserNotesPaginated = query({
           _creationTime: note._creationTime,
           updated_at: note.updated_at,
         })),
-        nextCursor,
-        hasMore,
+        isDone: result.isDone,
+        continueCursor: result.continueCursor,
       };
     } catch (error) {
       console.error("Failed to get paginated notes:", error);
-      return { notes: [], nextCursor: null, hasMore: false };
+      return { page: [], isDone: true, continueCursor: "" };
     }
   },
 });
@@ -655,7 +639,9 @@ export const getUserNotes = query({
       } else {
         notes = await ctx.db
           .query("notes")
-          .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+          .withIndex("by_user_and_updated", (q) =>
+            q.eq("user_id", identity.subject),
+          )
           .order("desc")
           .collect();
       }
@@ -744,7 +730,9 @@ export const deleteAllUserNotes = mutation({
     try {
       const notes = await ctx.db
         .query("notes")
-        .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
+        .withIndex("by_user_and_updated", (q) =>
+          q.eq("user_id", identity.subject),
+        )
         .collect();
 
       for (const note of notes) {

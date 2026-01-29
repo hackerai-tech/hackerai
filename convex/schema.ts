@@ -157,8 +157,8 @@ export default defineSchema({
     updated_at: v.number(),
   })
     .index("by_note_id", ["note_id"])
-    .index("by_user_id", ["user_id"])
     .index("by_user_and_category", ["user_id", "category"])
+    .index("by_user_and_updated", ["user_id", "updated_at"])
     .searchIndex("search_notes", {
       searchField: "content",
       filterFields: ["user_id", "category"],

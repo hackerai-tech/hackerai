@@ -18,11 +18,13 @@ import {
   ExternalLink,
   Globe,
   WandSparkles,
-  StickyNote,
-  List,
-  Pencil,
-  Trash2,
 } from "lucide-react";
+import {
+  getNotesIcon,
+  getNotesActionText,
+  getNotesActionType,
+  type NotesToolName,
+} from "@/app/components/tools/notes-tool-utils";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 import ToolBlock from "@/components/ui/tool-block";
 import {
@@ -824,6 +826,7 @@ function renderNotesTool(
 
   const notesOutput = part.output as {
     success?: boolean;
+    error?: string;
     note_id?: string;
     notes?: Array<{
       note_id: string;
@@ -850,11 +853,7 @@ function renderNotesTool(
     };
   };
 
-  const getToolName = ():
-    | "create_note"
-    | "list_notes"
-    | "update_note"
-    | "delete_note" => {
+  const getToolName = (): NotesToolName => {
     if (part.type === "tool-create_note") return "create_note";
     if (part.type === "tool-list_notes") return "list_notes";
     if (part.type === "tool-update_note") return "update_note";
@@ -864,43 +863,15 @@ function renderNotesTool(
 
   const toolName = getToolName();
 
-  const getIcon = () => {
-    switch (toolName) {
-      case "create_note":
-        return <StickyNote aria-hidden="true" />;
-      case "list_notes":
-        return <List aria-hidden="true" />;
-      case "update_note":
-        return <Pencil aria-hidden="true" />;
-      case "delete_note":
-        return <Trash2 aria-hidden="true" />;
-      default:
-        return <StickyNote aria-hidden="true" />;
-    }
-  };
-
-  const getActionText = () => {
-    switch (toolName) {
-      case "create_note":
-        return "Created note";
-      case "list_notes":
-        return "Listed notes";
-      case "update_note":
-        return "Updated note";
-      case "delete_note":
-        return "Deleted note";
-      default:
-        return "Note action";
-    }
-  };
-
   const getTarget = () => {
     if (toolName === "create_note" && notesInput?.title) {
       return notesInput.title;
     }
     if (toolName === "update_note") {
       // Prefer modified title, then input title, then note_id
-      return notesOutput?.modified?.title || notesInput?.title || notesInput?.note_id;
+      return (
+        notesOutput?.modified?.title || notesInput?.title || notesInput?.note_id
+      );
     }
     if (toolName === "delete_note") {
       // Prefer deleted_title from output, then note_id
@@ -909,30 +880,31 @@ function renderNotesTool(
     if (toolName === "list_notes") {
       const filters: string[] = [];
       if (notesInput?.category) filters.push(notesInput.category);
-      if (notesInput?.tags?.length) filters.push(`tagged: ${notesInput.tags.join(", ")}`);
+      if (notesInput?.tags?.length)
+        filters.push(`tagged: ${notesInput.tags.join(", ")}`);
       if (notesInput?.search) filters.push(`"${notesInput.search}"`);
       return filters.length > 0 ? filters.join(" · ") : undefined;
     }
     return undefined;
   };
 
-  const getActionType = (): "create" | "list" | "update" | "delete" => {
-    switch (toolName) {
-      case "create_note":
-        return "create";
-      case "list_notes":
-        return "list";
-      case "update_note":
-        return "update";
-      case "delete_note":
-        return "delete";
-      default:
-        return "list";
-    }
-  };
-
   if (part.state === "output-available") {
-    const action = getActionType();
+    // Check for failure state
+    const isFailure = notesOutput?.success === false;
+
+    if (isFailure) {
+      // For failures, show error message in target and don't make clickable
+      return (
+        <ToolBlock
+          key={idx}
+          icon={getNotesIcon(toolName)}
+          action={getNotesActionText(toolName, true)}
+          target={notesOutput?.error}
+        />
+      );
+    }
+
+    const action = getNotesActionType(toolName);
     let notes: Array<{
       note_id: string;
       title: string;
@@ -970,7 +942,8 @@ function renderNotesTool(
       // For update, use original/modified for before/after comparison
       original = notesOutput?.original;
       modified = notesOutput?.modified;
-      affectedTitle = modified?.title || notesInput?.title || notesInput?.note_id;
+      affectedTitle =
+        modified?.title || notesInput?.title || notesInput?.note_id;
       totalCount = 1;
     } else if (action === "delete") {
       affectedTitle = notesOutput?.deleted_title || notesInput?.note_id;
@@ -1001,8 +974,8 @@ function renderNotesTool(
     return (
       <ToolBlock
         key={idx}
-        icon={getIcon()}
-        action={getActionText()}
+        icon={getNotesIcon(toolName)}
+        action={getNotesActionText(toolName)}
         target={getTarget()}
         isClickable={true}
         onClick={handleOpenInSidebar}

@@ -51,7 +51,9 @@ export const deleteAllUserData = mutation({
             .collect(),
           ctx.db
             .query("notes")
-            .withIndex("by_user_id", (q) => q.eq("user_id", user.subject))
+            .withIndex("by_user_and_updated", (q) =>
+              q.eq("user_id", user.subject),
+            )
             .collect(),
           ctx.db
             .query("user_customization")

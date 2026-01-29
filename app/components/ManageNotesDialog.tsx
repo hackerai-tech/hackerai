@@ -1,12 +1,11 @@
 "use client";
 
-import { useRef, useCallback, useEffect, useState } from "react";
+import { useRef, useCallback } from "react";
 import { Trash2 } from "lucide-react";
-import { useQuery, useMutation } from "convex/react";
+import { usePaginatedQuery, useMutation } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import { toast } from "sonner";
-import type { SidebarNote } from "@/types";
 import {
   Dialog,
   DialogContent,
@@ -22,59 +21,36 @@ interface ManageNotesDialogProps {
 
 // Content component that manages its own state - resets naturally on mount
 const ManageNotesDialogContent = () => {
-  const [cursor, setCursor] = useState<string | undefined>(undefined);
-  const [allNotes, setAllNotes] = useState<SidebarNote[]>([]);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const notesPage = useQuery(api.notes.getUserNotesPaginated, {
-    cursor,
-    limit: 25,
-  });
+  const {
+    results: allNotes,
+    status,
+    loadMore,
+  } = usePaginatedQuery(
+    api.notes.getUserNotesPaginated,
+    {},
+    { initialNumItems: 25 },
+  );
+
   const deleteNote = useMutation(api.notes.deleteUserNote);
   const deleteAllNotes = useMutation(api.notes.deleteAllUserNotes);
-
-  // Update notes when data arrives
-  useEffect(() => {
-    if (notesPage?.notes) {
-      if (cursor === undefined) {
-        // First page - replace all
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setAllNotes(notesPage.notes as SidebarNote[]);
-      } else {
-        // Subsequent pages - append
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setAllNotes((prev) => {
-          const existingIds = new Set(prev.map((n) => n.note_id));
-          const newNotes = notesPage.notes.filter(
-            (n) => !existingIds.has(n.note_id),
-          );
-          return [...prev, ...(newNotes as SidebarNote[])];
-        });
-      }
-      // eslint-disable-next-line react-hooks/set-state-in-effect
-      setIsLoadingMore(false);
-    }
-  }, [notesPage, cursor]);
 
   // Infinite scroll handler
   const handleScroll = useCallback(() => {
     const container = scrollContainerRef.current;
-    if (!container || isLoadingMore || !notesPage?.hasMore) return;
+    if (!container || status !== "CanLoadMore") return;
 
     const { scrollTop, scrollHeight, clientHeight } = container;
     // Load more when user scrolls within 100px of the bottom
     if (scrollHeight - scrollTop - clientHeight < 100) {
-      setIsLoadingMore(true);
-      setCursor(notesPage.nextCursor ?? undefined);
+      loadMore(25);
     }
-  }, [isLoadingMore, notesPage]);
+  }, [status, loadMore]);
 
   const handleDeleteNote = async (noteId: string) => {
     try {
       await deleteNote({ noteId });
-      // Remove from local state immediately for better UX
-      setAllNotes((prev) => prev.filter((n) => n.note_id !== noteId));
     } catch (error) {
       console.error("Failed to delete note:", error);
       const errorMessage =
@@ -92,9 +68,6 @@ const ManageNotesDialogContent = () => {
   const handleDeleteAllNotes = async () => {
     try {
       await deleteAllNotes({});
-      setAllNotes([]);
-      setCursor(undefined);
-      setIsLoadingMore(false);
     } catch (error) {
       console.error("Failed to delete all notes:", error);
       const errorMessage =
@@ -109,7 +82,8 @@ const ManageNotesDialogContent = () => {
     }
   };
 
-  const isLoading = notesPage === undefined && cursor === undefined;
+  const isLoading = status === "LoadingFirstPage";
+  const isLoadingMore = status === "LoadingMore";
 
   return (
     <>

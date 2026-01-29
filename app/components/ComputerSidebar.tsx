@@ -663,7 +663,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                     <div className="text-muted-foreground text-sm whitespace-pre-wrap">
                                       {sidebarContent.modified.content}
                                     </div>
-                                    {sidebarContent.modified.tags.length > 0 && (
+                                    {sidebarContent.modified.tags.length >
+                                      0 && (
                                       <div className="flex gap-1 mt-2 flex-wrap">
                                         {sidebarContent.modified.tags.map(
                                           (tag) => (
@@ -684,8 +685,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                               // Delete action: show confirmation
                               <div className="flex items-center justify-center py-8">
                                 <div className="text-muted-foreground text-sm">
-                                  Note &quot;{sidebarContent.affectedTitle}&quot;
-                                  deleted
+                                  Note &quot;{sidebarContent.affectedTitle}
+                                  &quot; deleted
                                 </div>
                               </div>
                             ) : sidebarContent.notes.length === 0 ? (
