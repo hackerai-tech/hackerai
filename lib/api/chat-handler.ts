@@ -510,7 +510,17 @@ export const createChatHandler = (
                   Array.isArray(toolResults) &&
                   toolResults.some((r) => r?.toolName === "update_memory");
 
-                if (!wasMemoryUpdate) {
+                // Check if any note was created, updated, or deleted (need to refresh notes in system prompt)
+                const wasNoteModified =
+                  Array.isArray(toolResults) &&
+                  toolResults.some(
+                    (r) =>
+                      r?.toolName === "create_note" ||
+                      r?.toolName === "update_note" ||
+                      r?.toolName === "delete_note",
+                  );
+
+                if (!wasMemoryUpdate && !wasNoteModified) {
                   return {
                     messages,
                     ...(currentSystemPrompt && { system: currentSystemPrompt }),

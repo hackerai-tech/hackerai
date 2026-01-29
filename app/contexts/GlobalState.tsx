@@ -602,7 +602,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const updateSidebarContent = (updates: Partial<SidebarContent>) => {
     setSidebarContent((current) => {
       if (current) {
-        return { ...current, ...updates };
+        return { ...current, ...updates } as SidebarContent;
       }
       return current;
     });

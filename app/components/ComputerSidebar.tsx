@@ -9,6 +9,7 @@ import {
   SkipForward,
   Search,
   FolderSearch,
+  StickyNote,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -27,8 +28,10 @@ import {
   isSidebarTerminal,
   isSidebarPython,
   isSidebarWebSearch,
+  isSidebarNotes,
   type SidebarContent,
   type ChatStatus,
+  type NoteCategory,
 } from "@/types/chat";
 
 interface ComputerSidebarProps {
@@ -150,6 +153,22 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isTerminal = isSidebarTerminal(sidebarContent);
   const isPython = isSidebarPython(sidebarContent);
   const isWebSearch = isSidebarWebSearch(sidebarContent);
+  const isNotes = isSidebarNotes(sidebarContent);
+
+  const getCategoryColor = (category: NoteCategory) => {
+    switch (category) {
+      case "findings":
+        return "text-red-500";
+      case "methodology":
+        return "text-blue-500";
+      case "questions":
+        return "text-yellow-500";
+      case "plan":
+        return "text-green-500";
+      default:
+        return "text-muted-foreground";
+    }
+  };
 
   const getLanguageFromPath = (filePath: string): string => {
     const extension = filePath.split(".").pop()?.toLowerCase() || "";
@@ -226,6 +245,23 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
         : "Python executed";
     } else if (isWebSearch) {
       return sidebarContent.isSearching ? "Searching web" : "Search results";
+    } else if (isNotes) {
+      if (sidebarContent.isExecuting) {
+        const streamingActionMap = {
+          create: "Creating note",
+          list: "Listing notes",
+          update: "Updating note",
+          delete: "Deleting note",
+        };
+        return streamingActionMap[sidebarContent.action];
+      }
+      const completedActionMap = {
+        create: "Created note",
+        list: "Notes",
+        update: "Updated note",
+        delete: "Deleted note",
+      };
+      return completedActionMap[sidebarContent.action];
     }
     return "Unknown action";
   };
@@ -243,6 +279,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return <Code2 className="w-5 h-5 text-muted-foreground" />;
     } else if (isWebSearch) {
       return <Search className="w-5 h-5 text-muted-foreground" />;
+    } else if (isNotes) {
+      return <StickyNote className="w-5 h-5 text-muted-foreground" />;
     }
     return <Edit className="w-5 h-5 text-muted-foreground" />;
   };
@@ -260,6 +298,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return "Python";
     } else if (isWebSearch) {
       return "Search";
+    } else if (isNotes) {
+      return "Notes";
     }
     return "Tool";
   };
@@ -273,6 +313,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       return sidebarContent.code.replace(/\n/g, " ");
     } else if (isWebSearch) {
       return sidebarContent.query;
+    } else if (isNotes) {
+      if (sidebarContent.action === "list") {
+        return `${sidebarContent.totalCount} note${sidebarContent.totalCount !== 1 ? "s" : ""}`;
+      }
+      return sidebarContent.affectedTitle || "";
     }
     return "";
   };
@@ -360,29 +405,35 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
                       Search
                     </div>
+                  ) : isNotes ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Notes
+                    </div>
                   ) : isFile && sidebarContent.action === "searching" ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Search Results
                     </div>
-                  ) : (
+                  ) : isFile ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       {sidebarContent.path.split("/").pop() ||
                         sidebarContent.path}
                     </div>
-                  )}
+                  ) : null}
                 </div>
 
                 {/* Action buttons - far right */}
-                {!isWebSearch && (
+                {!isWebSearch && !isNotes && (
                   <CodeActionButtons
                     content={
                       isFile
                         ? sidebarContent.content
                         : isPython
                           ? sidebarContent.code
-                          : sidebarContent.output
-                            ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
-                            : `$ ${sidebarContent.command}`
+                          : isTerminal
+                            ? sidebarContent.output
+                              ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
+                              : `$ ${sidebarContent.command}`
+                            : ""
                     }
                     filename={
                       isFile
@@ -538,6 +589,61 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                       {result.content}
                                     </div>
                                   )}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {isNotes && (
+                        <div className="flex-1 min-h-0 h-full overflow-y-auto">
+                          <div className="flex flex-col px-4 py-3">
+                            {sidebarContent.isExecuting ? (
+                              <div className="flex items-center justify-center py-8">
+                                <div className="text-muted-foreground text-sm">
+                                  Processing...
+                                </div>
+                              </div>
+                            ) : sidebarContent.notes.length === 0 ? (
+                              <div className="flex items-center justify-center py-8">
+                                <div className="text-muted-foreground text-sm">
+                                  No notes found
+                                </div>
+                              </div>
+                            ) : (
+                              sidebarContent.notes.map((note, index) => (
+                                <div
+                                  key={note.note_id}
+                                  className={`py-3 ${index === 0 ? "pt-0" : ""} ${index < sidebarContent.notes.length - 1 ? "border-b border-border/30" : ""}`}
+                                >
+                                  <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-foreground text-sm font-medium">
+                                      {note.title}
+                                    </span>
+                                    <span
+                                      className={`text-xs flex-shrink-0 ${getCategoryColor(note.category)}`}
+                                    >
+                                      {note.category}
+                                    </span>
+                                  </div>
+                                  <div className="text-muted-foreground text-sm whitespace-pre-wrap">
+                                    {note.content}
+                                  </div>
+                                  {note.tags.length > 0 && (
+                                    <div className="flex gap-1 mt-2 flex-wrap">
+                                      {note.tags.map((tag) => (
+                                        <span
+                                          key={tag}
+                                          className="text-xs bg-muted px-1.5 py-0.5 rounded"
+                                        >
+                                          {tag}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <div className="text-xs text-muted-foreground/60 mt-1">
+                                    ID: {note.note_id}
+                                  </div>
                                 </div>
                               ))
                             )}

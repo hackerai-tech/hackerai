@@ -116,6 +116,7 @@ describe("userDeletion", () => {
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
         .mockResolvedValueOnce([]) // memories
+        .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
       mockQueryBuilder.first.mockResolvedValue(null); // user_customization
@@ -200,6 +201,7 @@ describe("userDeletion", () => {
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
         .mockResolvedValueOnce([]) // memories
+        .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
       mockQueryBuilder.first.mockResolvedValue(null);
@@ -271,6 +273,7 @@ describe("userDeletion", () => {
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
         .mockResolvedValueOnce([]) // memories
+        .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
       mockQueryBuilder.first.mockResolvedValue(null);
@@ -346,6 +349,7 @@ describe("userDeletion", () => {
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
         .mockResolvedValueOnce([]) // memories
+        .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
       mockQueryBuilder.first.mockResolvedValue(null);
@@ -422,6 +426,7 @@ describe("userDeletion", () => {
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce(mockFiles) // files
         .mockResolvedValueOnce([]) // memories
+        .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
       mockQueryBuilder.first.mockResolvedValue(null);
@@ -484,6 +489,7 @@ describe("userDeletion", () => {
         .mockResolvedValueOnce([]) // chats
         .mockResolvedValueOnce([]) // files - empty
         .mockResolvedValueOnce([]) // memories
+        .mockResolvedValueOnce([]) // notes
         .mockResolvedValueOnce([]); // messages
 
       mockQueryBuilder.first.mockResolvedValue(null);

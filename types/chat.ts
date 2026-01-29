@@ -64,11 +64,43 @@ export interface SidebarWebSearch {
   toolCallId: string;
 }
 
+export const VALID_NOTE_CATEGORIES = [
+  "general",
+  "findings",
+  "methodology",
+  "questions",
+  "plan",
+] as const;
+
+export type NoteCategory = (typeof VALID_NOTE_CATEGORIES)[number];
+
+export interface SidebarNote {
+  note_id: string;
+  title: string;
+  content: string;
+  category: NoteCategory;
+  tags: string[];
+  updated_at: number;
+}
+
+export interface SidebarNotes {
+  action: "create" | "list" | "update" | "delete";
+  notes: SidebarNote[];
+  totalCount: number;
+  isExecuting: boolean;
+  toolCallId: string;
+  /** For create/update/delete - the affected note title */
+  affectedTitle?: string;
+  /** For create - the new note ID */
+  newNoteId?: string;
+}
+
 export type SidebarContent =
   | SidebarFile
   | SidebarTerminal
   | SidebarPython
-  | SidebarWebSearch;
+  | SidebarWebSearch
+  | SidebarNotes;
 
 export const isSidebarFile = (
   content: SidebarContent,
@@ -92,6 +124,12 @@ export const isSidebarWebSearch = (
   content: SidebarContent,
 ): content is SidebarWebSearch => {
   return "results" in content && "query" in content;
+};
+
+export const isSidebarNotes = (
+  content: SidebarContent,
+): content is SidebarNotes => {
+  return "notes" in content && "action" in content;
 };
 
 export interface Todo {

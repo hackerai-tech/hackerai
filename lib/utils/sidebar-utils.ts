@@ -1,4 +1,10 @@
-import { SidebarContent, SidebarFile, WebSearchResult } from "@/types/chat";
+import {
+  SidebarContent,
+  SidebarFile,
+  SidebarNote,
+  SidebarNotes,
+  WebSearchResult,
+} from "@/types/chat";
 
 interface MessagePart {
   type: string;
@@ -371,6 +377,83 @@ export function extractAllSidebarContent(
           action: "searching",
           toolCallId: part.toolCallId || "",
           isExecuting: false,
+        });
+      }
+
+      // Notes tools
+      const notesToolTypes = [
+        "tool-create_note",
+        "tool-list_notes",
+        "tool-update_note",
+        "tool-delete_note",
+      ];
+
+      if (notesToolTypes.includes(part.type)) {
+        const toolName = part.type.replace("tool-", "") as
+          | "create_note"
+          | "list_notes"
+          | "update_note"
+          | "delete_note";
+
+        const actionMap: Record<string, SidebarNotes["action"]> = {
+          create_note: "create",
+          list_notes: "list",
+          update_note: "update",
+          delete_note: "delete",
+        };
+
+        const action = actionMap[toolName] || "list";
+        const input = part.input || {};
+        const result = part.output?.result || part.output || {};
+
+        let notes: SidebarNote[] = [];
+        let totalCount = 0;
+        let affectedTitle: string | undefined;
+        let newNoteId: string | undefined;
+
+        if (action === "list" && result?.notes) {
+          notes = result.notes;
+          totalCount = result.total_count || notes.length;
+        } else if (action === "create" && input) {
+          notes = [
+            {
+              note_id: result?.note_id || "pending",
+              title: input.title || "",
+              content: input.content || "",
+              category: input.category || "general",
+              tags: input.tags || [],
+              updated_at: Date.now(),
+            },
+          ];
+          totalCount = 1;
+          affectedTitle = input.title;
+          newNoteId = result?.note_id;
+        } else if (action === "update" && input) {
+          notes = [
+            {
+              note_id: input.note_id || "",
+              title: input.title || "(unchanged)",
+              content: input.content || "(unchanged)",
+              category: "general",
+              tags: input.tags || [],
+              updated_at: Date.now(),
+            },
+          ];
+          totalCount = 1;
+          affectedTitle = input.title || input.note_id;
+        } else if (action === "delete") {
+          affectedTitle = result?.deleted_title || input?.note_id;
+          totalCount = 0;
+        }
+
+        contentList.push({
+          action,
+          notes,
+          totalCount,
+          isExecuting: part.state !== "output-available",
+          toolCallId: part.toolCallId || "",
+          affectedTitle,
+          newNoteId,
         });
       }
     });

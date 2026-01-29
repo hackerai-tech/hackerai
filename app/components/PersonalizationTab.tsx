@@ -1,6 +1,5 @@
 "use client";
 
-import React from "react";
 import { ChevronRight } from "lucide-react";
 import { useQuery, useMutation } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -11,12 +10,14 @@ import { toast } from "sonner";
 
 interface PersonalizationTabProps {
   onCustomInstructions: () => void;
-  onManageMemories: () => void;
+  // onManageMemories: () => void;
+  onManageNotes: () => void;
 }
 
 const PersonalizationTab = ({
   onCustomInstructions,
-  onManageMemories,
+  // onManageMemories,
+  onManageNotes,
 }: PersonalizationTabProps) => {
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
@@ -46,15 +47,15 @@ const PersonalizationTab = ({
         </div>
       </div>
 
-      {/* Memory Section */}
+      {/* Notes Section (formerly Memory Section) */}
       <div>
-        <h3 className="text-lg font-medium mb-4 pb-2 border-b">Memory</h3>
+        <h3 className="text-lg font-medium mb-4 pb-2 border-b">Notes</h3>
         <div className="space-y-4">
           <div className="flex items-center justify-between py-3 border-b">
             <div>
-              <div className="font-medium">Enable memory</div>
+              <div className="font-medium">Enable notes</div>
               <div className="text-sm text-muted-foreground">
-                Let HackerAI save and use memories when responding.
+                Let HackerAI save and use notes when responding.
               </div>
             </div>
             <Switch
@@ -77,15 +78,18 @@ const PersonalizationTab = ({
                   toast.error(errorMessage);
                 }
               }}
-              aria-label="Toggle memory"
+              aria-label="Toggle notes"
             />
           </div>
 
           <div className="flex items-center justify-between py-3">
             <div>
-              <div className="font-medium">Manage memories</div>
+              <div className="font-medium">Manage notes</div>
             </div>
-            <Button variant="outline" size="sm" onClick={onManageMemories}>
+            {/* <Button variant="outline" size="sm" onClick={onManageMemories}>
+              Manage
+            </Button> */}
+            <Button variant="outline" size="sm" onClick={onManageNotes}>
               Manage
             </Button>
           </div>

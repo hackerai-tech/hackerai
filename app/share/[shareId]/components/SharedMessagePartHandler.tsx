@@ -18,6 +18,10 @@ import {
   ExternalLink,
   Globe,
   WandSparkles,
+  StickyNote,
+  List,
+  Pencil,
+  Trash2,
 } from "lucide-react";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 import ToolBlock from "@/components/ui/tool-block";
@@ -151,6 +155,16 @@ export const SharedMessagePartHandler = ({
   // HTTP request (legacy)
   if (part.type === "tool-http_request") {
     return renderHttpRequestTool(part, idx, openSidebar);
+  }
+
+  // Notes operations
+  if (
+    part.type === "tool-create_note" ||
+    part.type === "tool-list_notes" ||
+    part.type === "tool-update_note" ||
+    part.type === "tool-delete_note"
+  ) {
+    return renderNotesTool(part, idx, openSidebar);
   }
 
   return null;
@@ -778,6 +792,206 @@ function renderHttpRequestTool(
         icon={<Globe aria-hidden="true" />}
         action={getActionText()}
         target={displayCommand}
+        isClickable={true}
+        onClick={handleOpenInSidebar}
+        onKeyDown={handleKeyDown}
+      />
+    );
+  }
+  return null;
+}
+
+// Notes tool renderer
+function renderNotesTool(
+  part: MessagePart,
+  idx: number,
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
+) {
+  const notesInput = part.input as {
+    title?: string;
+    content?: string;
+    note_id?: string;
+    category?: string;
+    tags?: string[];
+    search?: string;
+  };
+  type NoteCategory =
+    | "general"
+    | "findings"
+    | "methodology"
+    | "questions"
+    | "plan";
+
+  const notesOutput = part.output as {
+    success?: boolean;
+    note_id?: string;
+    notes?: Array<{
+      note_id: string;
+      title: string;
+      content: string;
+      category: NoteCategory;
+      tags: string[];
+      _creationTime: number;
+      updated_at: number;
+    }>;
+    total_count?: number;
+    deleted_title?: string;
+  };
+
+  const getToolName = ():
+    | "create_note"
+    | "list_notes"
+    | "update_note"
+    | "delete_note" => {
+    if (part.type === "tool-create_note") return "create_note";
+    if (part.type === "tool-list_notes") return "list_notes";
+    if (part.type === "tool-update_note") return "update_note";
+    if (part.type === "tool-delete_note") return "delete_note";
+    return "create_note";
+  };
+
+  const toolName = getToolName();
+
+  const getIcon = () => {
+    switch (toolName) {
+      case "create_note":
+        return <StickyNote aria-hidden="true" />;
+      case "list_notes":
+        return <List aria-hidden="true" />;
+      case "update_note":
+        return <Pencil aria-hidden="true" />;
+      case "delete_note":
+        return <Trash2 aria-hidden="true" />;
+      default:
+        return <StickyNote aria-hidden="true" />;
+    }
+  };
+
+  const getActionText = () => {
+    switch (toolName) {
+      case "create_note":
+        return "Created note";
+      case "list_notes":
+        return "Listed notes";
+      case "update_note":
+        return "Updated note";
+      case "delete_note":
+        return "Deleted note";
+      default:
+        return "Note action";
+    }
+  };
+
+  const getTarget = () => {
+    if (toolName === "create_note" && notesInput?.title) {
+      return notesInput.title;
+    }
+    if (toolName === "update_note" && notesInput?.note_id) {
+      return notesInput.note_id;
+    }
+    if (toolName === "delete_note" && notesInput?.note_id) {
+      return notesInput.note_id;
+    }
+    if (toolName === "list_notes") {
+      if (notesInput?.category) return `category: ${notesInput.category}`;
+      if (notesInput?.search) return `search: ${notesInput.search}`;
+      return "all notes";
+    }
+    return undefined;
+  };
+
+  const getActionType = (): "create" | "list" | "update" | "delete" => {
+    switch (toolName) {
+      case "create_note":
+        return "create";
+      case "list_notes":
+        return "list";
+      case "update_note":
+        return "update";
+      case "delete_note":
+        return "delete";
+      default:
+        return "list";
+    }
+  };
+
+  if (part.state === "output-available") {
+    const action = getActionType();
+    let notes: Array<{
+      note_id: string;
+      title: string;
+      content: string;
+      category: NoteCategory;
+      tags: string[];
+      _creationTime: number;
+      updated_at: number;
+    }> = [];
+    let totalCount = 0;
+    let affectedTitle: string | undefined;
+    let newNoteId: string | undefined;
+
+    if (action === "list" && notesOutput?.notes) {
+      notes = notesOutput.notes;
+      totalCount = notesOutput.total_count || notes.length;
+    } else if (action === "create" && notesInput) {
+      notes = [
+        {
+          note_id: notesOutput?.note_id || "pending",
+          title: notesInput.title || "",
+          content: notesInput.content || "",
+          category: (notesInput.category as NoteCategory) || "general",
+          tags: notesInput.tags || [],
+          _creationTime: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+      totalCount = 1;
+      affectedTitle = notesInput.title;
+      newNoteId = notesOutput?.note_id;
+    } else if (action === "update" && notesInput) {
+      notes = [
+        {
+          note_id: notesInput.note_id || "",
+          title: notesInput.title || "(unchanged)",
+          content: notesInput.content || "(unchanged)",
+          category: "general",
+          tags: notesInput.tags || [],
+          _creationTime: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+      totalCount = 1;
+      affectedTitle = notesInput.title || notesInput.note_id;
+    } else if (action === "delete") {
+      affectedTitle = notesOutput?.deleted_title || notesInput?.note_id;
+      totalCount = 0;
+    }
+
+    const handleOpenInSidebar = () => {
+      openSidebar({
+        action,
+        notes,
+        totalCount,
+        isExecuting: false,
+        toolCallId: part.toolCallId || "",
+        affectedTitle,
+        newNoteId,
+      });
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleOpenInSidebar();
+      }
+    };
+
+    return (
+      <ToolBlock
+        key={idx}
+        icon={getIcon()}
+        action={getActionText()}
+        target={getTarget()}
         isClickable={true}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}

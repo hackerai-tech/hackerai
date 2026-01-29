@@ -8,6 +8,7 @@ import { PythonToolHandler } from "./tools/PythonToolHandler";
 import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
+import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { MatchToolHandler } from "./tools/MatchToolHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
@@ -113,6 +114,26 @@ export const MessagePartHandler = ({
 
     case "tool-update_memory":
       return <MemoryToolHandler part={part} status={status} />;
+
+    case "tool-create_note":
+      return (
+        <NotesToolHandler part={part} status={status} toolName="create_note" />
+      );
+
+    case "tool-list_notes":
+      return (
+        <NotesToolHandler part={part} status={status} toolName="list_notes" />
+      );
+
+    case "tool-update_note":
+      return (
+        <NotesToolHandler part={part} status={status} toolName="update_note" />
+      );
+
+    case "tool-delete_note":
+      return (
+        <NotesToolHandler part={part} status={status} toolName="delete_note" />
+      );
 
     case "tool-match":
       return <MatchToolHandler part={part} status={status} />;

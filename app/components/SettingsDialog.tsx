@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import { useState } from "react";
 import {
   Settings,
   X,
@@ -13,7 +13,8 @@ import {
   ChartNoAxesCombined,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
+// import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
+import { ManageNotesDialog } from "@/app/components/ManageNotesDialog";
 import { CustomizeHackerAIDialog } from "@/app/components/CustomizeHackerAIDialog";
 import { SecurityTab } from "@/app/components/SecurityTab";
 import { PersonalizationTab } from "@/app/components/PersonalizationTab";
@@ -34,7 +35,8 @@ interface SettingsDialogProps {
 const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
   const [activeTab, setActiveTab] = useState("Personalization");
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
-  const [showMemoriesDialog, setShowMemoriesDialog] = useState(false);
+  // const [showMemoriesDialog, setShowMemoriesDialog] = useState(false);
+  const [showNotesDialog, setShowNotesDialog] = useState(false);
   const isMobile = useIsMobile();
   const { subscription } = useGlobalState();
 
@@ -67,8 +69,12 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
     setShowCustomizeDialog(true);
   };
 
-  const handleManageMemories = () => {
-    setShowMemoriesDialog(true);
+  // const handleManageMemories = () => {
+  //   setShowMemoriesDialog(true);
+  // };
+
+  const handleManageNotes = () => {
+    setShowNotesDialog(true);
   };
 
   return (
@@ -157,7 +163,8 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
                 {activeTab === "Personalization" && (
                   <PersonalizationTab
                     onCustomInstructions={handleCustomInstructions}
-                    onManageMemories={handleManageMemories}
+                    // onManageMemories={handleManageMemories}
+                    onManageNotes={handleManageNotes}
                   />
                 )}
 
@@ -180,10 +187,14 @@ const SettingsDialog = ({ open, onOpenChange }: SettingsDialogProps) => {
         </DialogContent>
       </Dialog>
 
-      {/* Manage Memories Dialog */}
-      <ManageMemoriesDialog
+      {/* Manage Notes Dialog (formerly Manage Memories Dialog) */}
+      {/* <ManageMemoriesDialog
         open={showMemoriesDialog}
         onOpenChange={setShowMemoriesDialog}
+      /> */}
+      <ManageNotesDialog
+        open={showNotesDialog}
+        onOpenChange={setShowNotesDialog}
       />
 
       {/* Customize HackerAI Dialog */}

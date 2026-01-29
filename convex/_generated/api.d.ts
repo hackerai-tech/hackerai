@@ -22,6 +22,7 @@ import type * as lib_logger from "../lib/logger.js";
 import type * as localSandbox from "../localSandbox.js";
 import type * as memories from "../memories.js";
 import type * as messages from "../messages.js";
+import type * as notes from "../notes.js";
 import type * as rateLimitStatus from "../rateLimitStatus.js";
 import type * as redisPubsub from "../redisPubsub.js";
 import type * as s3Actions from "../s3Actions.js";
@@ -52,6 +53,7 @@ declare const fullApi: ApiFromModules<{
   localSandbox: typeof localSandbox;
   memories: typeof memories;
   messages: typeof messages;
+  notes: typeof notes;
   rateLimitStatus: typeof rateLimitStatus;
   redisPubsub: typeof redisPubsub;
   s3Actions: typeof s3Actions;

@@ -14,7 +14,13 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
-import { createUpdateMemory } from "./update-memory";
+// import { createUpdateMemory } from "./update-memory";
+import {
+  createCreateNote,
+  createListNotes,
+  createUpdateNote,
+  createDeleteNote,
+} from "./notes";
 import type { UIMessageStreamWriter } from "ai";
 import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
 import type { Geo } from "@vercel/functions";
@@ -95,8 +101,16 @@ export const createTools = (
     // search_replace: createSearchReplace(context),
     // match: createMatch(context),
     todo_write: createTodoWrite(context),
+    // ...(!isTemporary &&
+    //   memoryEnabled && { update_memory: createUpdateMemory(context) }),
+    // Notes tools - always available (not gated by memory preference)
     ...(!isTemporary &&
-      memoryEnabled && { update_memory: createUpdateMemory(context) }),
+      memoryEnabled && {
+        create_note: createCreateNote(context),
+        list_notes: createListNotes(context),
+        update_note: createUpdateNote(context),
+        delete_note: createDeleteNote(context),
+      }),
     ...(process.env.PERPLEXITY_API_KEY && {
       web_search: createWebSearch(context),
     }),
@@ -106,8 +120,16 @@ export const createTools = (
   const tools =
     mode === "ask"
       ? {
+          // ...(!isTemporary &&
+          //   memoryEnabled && { update_memory: allTools.update_memory }),
+          // Notes tools available in ask mode too
           ...(!isTemporary &&
-            memoryEnabled && { update_memory: allTools.update_memory }),
+            memoryEnabled && {
+              create_note: allTools.create_note,
+              list_notes: allTools.list_notes,
+              update_note: allTools.update_note,
+              delete_note: allTools.delete_note,
+            }),
           ...(process.env.PERPLEXITY_API_KEY && {
             web_search: createWebSearch(context),
           }),
