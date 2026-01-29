@@ -5,7 +5,6 @@ export interface UserCustomization {
   readonly traits?: string;
   readonly additional_info?: string;
   readonly include_memory_entries?: boolean;
-  readonly scope_exclusions?: string;
   readonly updated_at: number;
   readonly extra_usage_enabled?: boolean;
 }

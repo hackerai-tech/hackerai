@@ -241,20 +241,6 @@ one step at a time rather than trying to output everything at once.
   return "";
 };
 
-// Generate scope exclusions section
-const getScopeExclusionsSection = (scopeExclusions?: string): string => {
-  if (!scopeExclusions || scopeExclusions.trim() === "") {
-    return "";
-  }
-
-  return `<scope_restrictions>
-CRITICAL: Stay in scope. NEVER attack, scan, probe, or make requests to the following targets:
-${scopeExclusions}
-
-Before making any HTTP request or running any terminal command that interacts with external targets, verify the target is NOT in this exclusion list. If a target matches any of the above exclusions (domains, IPs, networks, or subdomains), refuse the action and inform the user that the target is out of scope.
-</scope_restrictions>`;
-};
-
 // Core system prompt with optimized structure
 export const systemPrompt = async (
   userId: string,
@@ -311,13 +297,6 @@ The current date is ${currentDateTime}.`;
   sections.push(generateUserBio(userCustomization || null));
   // sections.push(generateMemorySection(memories || null, shouldIncludeNotes));
   sections.push(generateNotesSection(notes || null, shouldIncludeNotes));
-
-  // Add scope exclusions if provided (for Agent mode)
-  if (mode === "agent" && userCustomization?.scope_exclusions) {
-    sections.push(
-      getScopeExclusionsSection(userCustomization.scope_exclusions),
-    );
-  }
 
   // Add personality instructions at the end
   if (personalityInstructions) {

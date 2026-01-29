@@ -12,10 +12,6 @@ import { retryWithBackoff } from "./utils/retry-with-backoff";
 import { waitForSandboxReady } from "./utils/sandbox-health";
 import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
 import {
-  parseScopeExclusions,
-  checkCommandScopeExclusion,
-} from "./utils/scope-exclusions";
-import {
   parseGuardrailConfig,
   getEffectiveGuardrails,
   checkCommandGuardrails,
@@ -25,15 +21,8 @@ const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const {
-    sandboxManager,
-    writer,
-    backgroundProcessTracker,
-    isE2BSandbox,
-    scopeExclusions,
-    guardrailsConfig,
-  } = context;
-  const exclusionsList = parseScopeExclusions(scopeExclusions || "");
+  const { sandboxManager, writer, backgroundProcessTracker, guardrailsConfig } =
+    context;
 
   // Parse user guardrail configuration and get effective guardrails
   const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
@@ -138,21 +127,6 @@ If you are generating files:
             output: "",
             exitCode: 1,
             error: `Command blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This command pattern has been blocked for safety. If you believe this is a false positive, the user can adjust guardrail settings.`,
-          },
-        };
-      }
-
-      // Check scope exclusions before executing the command
-      const scopeViolation = checkCommandScopeExclusion(
-        command,
-        exclusionsList,
-      );
-      if (scopeViolation) {
-        return {
-          result: {
-            output: "",
-            exitCode: 1,
-            error: `Command blocked: Target "${scopeViolation.target}" is out of scope. It matches the scope exclusion pattern: ${scopeViolation.exclusion}. This target has been excluded from testing by the user's scope configuration.`,
           },
         };
       }
