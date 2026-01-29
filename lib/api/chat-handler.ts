@@ -340,7 +340,6 @@ export const createChatHandler = (
             assistantMessageId,
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
-            userCustomization?.scope_exclusions,
             userCustomization?.guardrails_config,
           );
 

@@ -12,13 +12,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import {
-  Shield,
   Save,
-  Info,
   ShieldAlert,
   ChevronDown,
   ChevronUp,
@@ -51,9 +48,6 @@ const AgentsTab = () => {
     setSandboxPreference,
   } = useGlobalState();
 
-  const [scopeExclusions, setScopeExclusions] = useState("");
-  const [isSaving, setIsSaving] = useState(false);
-  const [hasChanges, setHasChanges] = useState(false);
   const [guardrails, setGuardrails] = useState<GuardrailConfigUI[]>(
     getDefaultGuardrailsUI(),
   );
@@ -69,13 +63,6 @@ const AgentsTab = () => {
     api.userCustomization.saveUserCustomization,
   );
 
-  // Load initial scope exclusions and guardrails from user customization
-  useEffect(() => {
-    if (userCustomization?.scope_exclusions !== undefined) {
-      setScopeExclusions(userCustomization.scope_exclusions || "");
-    }
-  }, [userCustomization?.scope_exclusions]);
-
   // Load guardrails config
   useEffect(() => {
     if (userCustomization?.guardrails_config !== undefined) {
@@ -85,12 +72,6 @@ const AgentsTab = () => {
       setGuardrails(mergedGuardrails);
     }
   }, [userCustomization?.guardrails_config]);
-
-  // Track changes for scope exclusions
-  useEffect(() => {
-    const original = userCustomization?.scope_exclusions || "";
-    setHasChanges(scopeExclusions !== original);
-  }, [scopeExclusions, userCustomization?.scope_exclusions]);
 
   // Track changes for guardrails
   useEffect(() => {
@@ -120,30 +101,6 @@ const AgentsTab = () => {
       label: "Stop & send right away",
     },
   ];
-
-  const handleSaveScopeExclusions = async () => {
-    setIsSaving(true);
-    try {
-      await saveCustomization({
-        scope_exclusions: scopeExclusions.trim() || undefined,
-      });
-      toast.success("Scope exclusions saved successfully");
-      setHasChanges(false);
-    } catch (error) {
-      console.error("Failed to save scope exclusions:", error);
-      const errorMessage =
-        error instanceof ConvexError
-          ? (error.data as { message?: string })?.message ||
-            error.message ||
-            "Failed to save scope exclusions"
-          : error instanceof Error
-            ? error.message
-            : "Failed to save scope exclusions";
-      toast.error(errorMessage);
-    } finally {
-      setIsSaving(false);
-    }
-  };
 
   const handleSaveGuardrails = async () => {
     setIsSavingGuardrails(true);
@@ -322,59 +279,6 @@ const AgentsTab = () => {
         </div>
       )}
 
-      {/* Scope Exclusions Section - Only show for Pro/Ultra/Team users */}
-      {subscription !== "free" && (
-        <div className="space-y-4 pt-2">
-          <div className="flex items-center gap-2 border-b pb-3">
-            <Shield className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-semibold">Scope Exclusions</h3>
-          </div>
-
-          <div className="space-y-3">
-            <div className="flex items-start gap-2 p-3 bg-blue-500/10 rounded-lg text-xs">
-              <Info className="h-4 w-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-              <div className="text-blue-800 dark:text-blue-200">
-                <span className="font-medium">
-                  Define targets that should never be attacked.
-                </span>{" "}
-                <span className="text-blue-700 dark:text-blue-300">
-                  Add domains, IPs, or network ranges (one per line) that
-                  HackerAI should exclude from all scans, HTTP requests, and
-                  terminal commands during Agent mode.
-                </span>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Textarea
-                placeholder={`Example:\nexample.com\n*.internal.corp\n192.168.1.0/24\n10.0.0.1\nproduction.api.company.com`}
-                value={scopeExclusions}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                  setScopeExclusions(e.target.value)
-                }
-                className="min-h-[150px] font-mono text-sm"
-                aria-label="Scope exclusions"
-              />
-              <p className="text-xs text-muted-foreground">
-                Enter one target per line. Supports domains, wildcards (*.),
-                IPs, and CIDR notation.
-              </p>
-            </div>
-
-            <div className="flex justify-end">
-              <Button
-                onClick={handleSaveScopeExclusions}
-                disabled={isSaving || !hasChanges}
-                size="sm"
-                type="button"
-              >
-                <Save className="h-4 w-4 mr-2" />
-                {isSaving ? "Saving..." : "Save Exclusions"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
