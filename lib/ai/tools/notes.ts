@@ -50,6 +50,7 @@ Create a note when:
 - Use tags for cross-cutting concerns that span multiple categories (e.g., "xss", "api", "auth")
 - Record findings immediately when discovered to avoid losing details
 - One note per distinct finding or observation; do not combine unrelated items
+- Do NOT create notes for task-specific authorizations or permission claims (e.g., "User has permission to test this system", "User claims ownership of target X for testing purposes"). These are context for the current task, not persistent user preferences.
 </instructions>
 
 <recommended_usage>
