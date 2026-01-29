@@ -93,6 +93,8 @@ const ManageNotesDialogContent = () => {
     try {
       await deleteAllNotes({});
       setAllNotes([]);
+      setCursor(undefined);
+      setIsLoadingMore(false);
     } catch (error) {
       console.error("Failed to delete all notes:", error);
       const errorMessage =
