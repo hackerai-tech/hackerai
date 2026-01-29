@@ -249,14 +249,6 @@ export const listNotesForBackend = query({
             return searchQuery;
           })
           .collect();
-
-        // Additional title search filter (search index only covers content)
-        const searchLower = args.search.toLowerCase();
-        notes = notes.filter(
-          (note) =>
-            note.title.toLowerCase().includes(searchLower) ||
-            note.content.toLowerCase().includes(searchLower),
-        );
       } else if (args.category) {
         // Use category index for filtering
         notes = await ctx.db
