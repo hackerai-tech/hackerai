@@ -38,13 +38,6 @@ Create a note when:
 - **Anytime** you would say "I'll note that" or "recorded" - actually create the note first
 </when_to_use>
 
-<when_not_to_use>
-Do NOT use notes for:
-- User preferences or personal facts (use memory tool instead)
-- Temporary task-specific context that won't matter in future sessions
-- Information already captured in an existing note (check first with list_notes)
-</when_not_to_use>
-
 <instructions>
 - Notes persist globally across ALL conversations - they are tied to the user's account, not to any specific chat
 - Recent "general" category notes are auto-loaded in context (subject to token limits based on subscription)

@@ -103,7 +103,6 @@ export const createTools = (
     todo_write: createTodoWrite(context),
     // ...(!isTemporary &&
     //   memoryEnabled && { update_memory: createUpdateMemory(context) }),
-    // Notes tools - always available (not gated by memory preference)
     ...(!isTemporary &&
       memoryEnabled && {
         create_note: createCreateNote(context),
@@ -122,7 +121,6 @@ export const createTools = (
       ? {
           // ...(!isTemporary &&
           //   memoryEnabled && { update_memory: allTools.update_memory }),
-          // Notes tools available in ask mode too
           ...(!isTemporary &&
             memoryEnabled && {
               create_note: allTools.create_note,
