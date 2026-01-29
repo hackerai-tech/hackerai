@@ -76,9 +76,11 @@ export const NotesToolHandler = ({
       return input.note_id;
     }
     if (toolName === "list_notes") {
-      if (input?.category) return `category: ${input.category}`;
-      if (input?.search) return `search: ${input.search}`;
-      return "all notes";
+      const filters: string[] = [];
+      if (input?.category) filters.push(input.category);
+      if (input?.tags?.length) filters.push(`tagged: ${input.tags.join(", ")}`);
+      if (input?.search) filters.push(`"${input.search}"`);
+      return filters.length > 0 ? filters.join(" · ") : undefined;
     }
     return undefined;
   };
