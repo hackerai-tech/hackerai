@@ -111,11 +111,7 @@ export default defineSchema({
     include_memory_entries: v.optional(v.boolean()),
     guardrails_config: v.optional(v.string()),
     extra_usage_enabled: v.optional(v.boolean()),
-    /** @deprecated Will be removed after migration clears existing data */
-    scope_exclusions: v.optional(v.string()),
-  })
-    .index("by_user_id", ["user_id"])
-    .index("by_scope_exclusions", ["scope_exclusions"]),
+  }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)
   // Note: Most monetary values stored in POINTS for precision (1 point = $0.0001, matching rate limiting)
