@@ -106,6 +106,8 @@ export const NotesToolHandler = ({
     let totalCount = 0;
     let affectedTitle: string | undefined;
     let newNoteId: string | undefined;
+    let original: SidebarNotes["original"];
+    let modified: SidebarNotes["modified"];
 
     if (action === "list" && result?.notes) {
       notes = result.notes;
@@ -125,20 +127,12 @@ export const NotesToolHandler = ({
       totalCount = 1;
       affectedTitle = input.title;
       newNoteId = result?.note_id;
-    } else if (action === "update" && input) {
-      // For update, show the updated fields
-      notes = [
-        {
-          note_id: input.note_id || "",
-          title: input.title || "(unchanged)",
-          content: input.content || "(unchanged)",
-          category: "general",
-          tags: input.tags || [],
-          updated_at: Date.now(),
-        },
-      ];
+    } else if (action === "update") {
+      // For update, use original/modified for before/after comparison
+      original = result?.original;
+      modified = result?.modified;
+      affectedTitle = modified?.title || input?.title || input?.note_id;
       totalCount = 1;
-      affectedTitle = input.title || input.note_id;
     } else if (action === "delete") {
       // For delete, show what was deleted
       affectedTitle = result?.deleted_title || input?.note_id;
@@ -153,6 +147,8 @@ export const NotesToolHandler = ({
       toolCallId: toolCallId || "",
       affectedTitle,
       newNoteId,
+      original,
+      modified,
     };
   };
 

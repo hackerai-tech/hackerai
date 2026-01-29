@@ -410,6 +410,8 @@ export function extractAllSidebarContent(
         let totalCount = 0;
         let affectedTitle: string | undefined;
         let newNoteId: string | undefined;
+        let original: SidebarNotes["original"];
+        let modified: SidebarNotes["modified"];
 
         if (action === "list" && result?.notes) {
           notes = result.notes;
@@ -428,19 +430,12 @@ export function extractAllSidebarContent(
           totalCount = 1;
           affectedTitle = input.title;
           newNoteId = result?.note_id;
-        } else if (action === "update" && input) {
-          notes = [
-            {
-              note_id: input.note_id || "",
-              title: input.title || "(unchanged)",
-              content: input.content || "(unchanged)",
-              category: "general",
-              tags: input.tags || [],
-              updated_at: Date.now(),
-            },
-          ];
+        } else if (action === "update") {
+          // For update, use original/modified for before/after comparison
+          original = result?.original;
+          modified = result?.modified;
+          affectedTitle = modified?.title || input?.title || input?.note_id;
           totalCount = 1;
-          affectedTitle = input.title || input.note_id;
         } else if (action === "delete") {
           affectedTitle = result?.deleted_title || input?.note_id;
           totalCount = 0;
@@ -454,6 +449,8 @@ export function extractAllSidebarContent(
           toolCallId: part.toolCallId || "",
           affectedTitle,
           newNoteId,
+          original,
+          modified,
         });
       }
     });

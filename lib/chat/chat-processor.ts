@@ -192,6 +192,7 @@ function fixIncompleteToolInvocations(messages: UIMessage[]): UIMessage[] {
 
 /**
  * Strips originalContent and modifiedContent from file tool outputs to reduce payload size.
+ * Also strips original and modified from update_note tool outputs.
  * These are persisted for UI but shouldn't be sent to the model
  * (toModelOutput handles what the model sees, but we also strip it here as a safeguard).
  */
@@ -220,6 +221,22 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
           output: restOutput,
         };
       }
+
+      // Process tool-update_note parts to strip original/modified diff data
+      if (
+        part.type === "tool-update_note" &&
+        typeof part.output === "object" &&
+        part.output !== null &&
+        ("original" in part.output || "modified" in part.output)
+      ) {
+        hasChanges = true;
+        const { original, modified, ...restOutput } = part.output;
+        return {
+          ...part,
+          output: restOutput,
+        };
+      }
+
       return part;
     });
 

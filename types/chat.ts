@@ -93,6 +93,20 @@ export interface SidebarNotes {
   affectedTitle?: string;
   /** For create - the new note ID */
   newNoteId?: string;
+  /** For update - original note data before update (for before/after comparison) */
+  original?: {
+    title: string;
+    content: string;
+    category: string;
+    tags: string[];
+  };
+  /** For update - modified note data after update (for before/after comparison) */
+  modified?: {
+    title: string;
+    content: string;
+    category: string;
+    tags: string[];
+  };
 }
 
 export type SidebarContent =

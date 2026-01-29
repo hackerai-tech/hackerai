@@ -14,10 +14,10 @@ const VALID_CATEGORIES = [
 type NoteCategory = (typeof VALID_CATEGORIES)[number];
 
 /**
- * Generate a short unique ID for notes (8 characters)
+ * Generate a short unique ID for notes (5 characters)
  */
 function generateNoteId(): string {
-  return Math.random().toString(36).substring(2, 10);
+  return Math.random().toString(36).substring(2, 7);
 }
 
 /**
@@ -348,6 +348,24 @@ export const updateNoteForBackend = mutation({
   returns: v.object({
     success: v.boolean(),
     error: v.optional(v.string()),
+    // Original note data before update (for before/after comparison)
+    original: v.optional(
+      v.object({
+        title: v.string(),
+        content: v.string(),
+        category: v.string(),
+        tags: v.array(v.string()),
+      }),
+    ),
+    // Modified note data after update (for before/after comparison)
+    modified: v.optional(
+      v.object({
+        title: v.string(),
+        content: v.string(),
+        category: v.string(),
+        tags: v.array(v.string()),
+      }),
+    ),
   }),
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
@@ -432,7 +450,21 @@ export const updateNoteForBackend = mutation({
 
       await ctx.db.patch(note._id, updates);
 
-      return { success: true };
+      return {
+        success: true,
+        original: {
+          title: note.title,
+          content: note.content,
+          category: note.category,
+          tags: note.tags,
+        },
+        modified: {
+          title: finalTitle,
+          content: finalContent,
+          category: note.category,
+          tags: finalTags,
+        },
+      };
     } catch (error) {
       console.error("Failed to update note:", error);
       if (error instanceof ConvexError) {

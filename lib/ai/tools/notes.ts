@@ -113,7 +113,7 @@ Use tags like "critical", "confirmed", "needs-verification" to track finding sta
         console.error("Create note tool error:", error);
         return {
           success: false,
-          error: `Error creating note: ${error instanceof Error ? error.message : String(error)}`,
+          error: `Failed to create note: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
     },
@@ -198,7 +198,7 @@ Use before creating a new note to check if a similar observation already exists
         console.error("List notes tool error:", error);
         return {
           success: false,
-          error: `Error listing notes: ${error instanceof Error ? error.message : String(error)}`,
+          error: `Failed to list notes: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
     },
@@ -278,15 +278,35 @@ Use to add technical details or evidence to a finding
 
         return {
           success: true,
-          message: `Note '${note_id}' updated successfully`,
+          message: `Note '${result.modified?.title || note_id}' updated successfully`,
+          original: result.original,
+          modified: result.modified,
         };
       } catch (error) {
         console.error("Update note tool error:", error);
         return {
           success: false,
-          error: `Error updating note: ${error instanceof Error ? error.message : String(error)}`,
+          error: `Failed to update note: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
+    },
+    // Strip original/modified from model output (kept for UI only)
+    toModelOutput({ output }) {
+      if (typeof output === "object" && output !== null) {
+        if ("error" in output) {
+          return {
+            type: "text" as const,
+            value: `Error: ${(output as { error: string }).error}`,
+          };
+        }
+        if ("message" in output) {
+          return {
+            type: "text" as const,
+            value: (output as { message: string }).message,
+          };
+        }
+      }
+      return { type: "text" as const, value: JSON.stringify(output) };
     },
   });
 };
@@ -341,7 +361,7 @@ Use to delete test or scratch notes created during experimentation
         console.error("Delete note tool error:", error);
         return {
           success: false,
-          error: `Error deleting note: ${error instanceof Error ? error.message : String(error)}`,
+          error: `Failed to delete note: ${error instanceof Error ? error.message : String(error)}`,
         };
       }
     },

@@ -836,6 +836,18 @@ function renderNotesTool(
     }>;
     total_count?: number;
     deleted_title?: string;
+    original?: {
+      title: string;
+      content: string;
+      category: string;
+      tags: string[];
+    };
+    modified?: {
+      title: string;
+      content: string;
+      category: string;
+      tags: string[];
+    };
   };
 
   const getToolName = ():
@@ -886,16 +898,20 @@ function renderNotesTool(
     if (toolName === "create_note" && notesInput?.title) {
       return notesInput.title;
     }
-    if (toolName === "update_note" && notesInput?.note_id) {
-      return notesInput.note_id;
+    if (toolName === "update_note") {
+      // Prefer modified title, then input title, then note_id
+      return notesOutput?.modified?.title || notesInput?.title || notesInput?.note_id;
     }
-    if (toolName === "delete_note" && notesInput?.note_id) {
-      return notesInput.note_id;
+    if (toolName === "delete_note") {
+      // Prefer deleted_title from output, then note_id
+      return notesOutput?.deleted_title || notesInput?.note_id;
     }
     if (toolName === "list_notes") {
-      if (notesInput?.category) return `category: ${notesInput.category}`;
-      if (notesInput?.search) return `search: ${notesInput.search}`;
-      return "all notes";
+      const filters: string[] = [];
+      if (notesInput?.category) filters.push(notesInput.category);
+      if (notesInput?.tags?.length) filters.push(`tagged: ${notesInput.tags.join(", ")}`);
+      if (notesInput?.search) filters.push(`"${notesInput.search}"`);
+      return filters.length > 0 ? filters.join(" · ") : undefined;
     }
     return undefined;
   };
@@ -929,6 +945,8 @@ function renderNotesTool(
     let totalCount = 0;
     let affectedTitle: string | undefined;
     let newNoteId: string | undefined;
+    let original: typeof notesOutput.original;
+    let modified: typeof notesOutput.modified;
 
     if (action === "list" && notesOutput?.notes) {
       notes = notesOutput.notes;
@@ -948,20 +966,12 @@ function renderNotesTool(
       totalCount = 1;
       affectedTitle = notesInput.title;
       newNoteId = notesOutput?.note_id;
-    } else if (action === "update" && notesInput) {
-      notes = [
-        {
-          note_id: notesInput.note_id || "",
-          title: notesInput.title || "(unchanged)",
-          content: notesInput.content || "(unchanged)",
-          category: "general",
-          tags: notesInput.tags || [],
-          _creationTime: Date.now(),
-          updated_at: Date.now(),
-        },
-      ];
+    } else if (action === "update") {
+      // For update, use original/modified for before/after comparison
+      original = notesOutput?.original;
+      modified = notesOutput?.modified;
+      affectedTitle = modified?.title || notesInput?.title || notesInput?.note_id;
       totalCount = 1;
-      affectedTitle = notesInput.title || notesInput.note_id;
     } else if (action === "delete") {
       affectedTitle = notesOutput?.deleted_title || notesInput?.note_id;
       totalCount = 0;
@@ -976,6 +986,8 @@ function renderNotesTool(
         toolCallId: part.toolCallId || "",
         affectedTitle,
         newNoteId,
+        original,
+        modified,
       });
     };
 

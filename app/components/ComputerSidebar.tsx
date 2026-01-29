@@ -604,6 +604,90 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                   Processing...
                                 </div>
                               </div>
+                            ) : sidebarContent.action === "update" &&
+                              sidebarContent.modified ? (
+                              // Update action: show before/after comparison
+                              <div className="space-y-4">
+                                {sidebarContent.original && (
+                                  <div>
+                                    <div className="text-xs text-muted-foreground font-medium mb-2">
+                                      Before
+                                    </div>
+                                    <div className="bg-muted/30 rounded-md p-3">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span className="text-foreground text-sm font-medium">
+                                          {sidebarContent.original.title}
+                                        </span>
+                                        <span
+                                          className={`text-xs flex-shrink-0 ${getCategoryColor(sidebarContent.original.category as NoteCategory)}`}
+                                        >
+                                          {sidebarContent.original.category}
+                                        </span>
+                                      </div>
+                                      <div className="text-muted-foreground text-sm whitespace-pre-wrap">
+                                        {sidebarContent.original.content}
+                                      </div>
+                                      {sidebarContent.original.tags.length >
+                                        0 && (
+                                        <div className="flex gap-1 mt-2 flex-wrap">
+                                          {sidebarContent.original.tags.map(
+                                            (tag) => (
+                                              <span
+                                                key={tag}
+                                                className="text-xs bg-muted px-1.5 py-0.5 rounded"
+                                              >
+                                                {tag}
+                                              </span>
+                                            ),
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                                <div>
+                                  <div className="text-xs text-muted-foreground font-medium mb-2">
+                                    After
+                                  </div>
+                                  <div className="bg-muted/30 rounded-md p-3">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="text-foreground text-sm font-medium">
+                                        {sidebarContent.modified.title}
+                                      </span>
+                                      <span
+                                        className={`text-xs flex-shrink-0 ${getCategoryColor(sidebarContent.modified.category as NoteCategory)}`}
+                                      >
+                                        {sidebarContent.modified.category}
+                                      </span>
+                                    </div>
+                                    <div className="text-muted-foreground text-sm whitespace-pre-wrap">
+                                      {sidebarContent.modified.content}
+                                    </div>
+                                    {sidebarContent.modified.tags.length > 0 && (
+                                      <div className="flex gap-1 mt-2 flex-wrap">
+                                        {sidebarContent.modified.tags.map(
+                                          (tag) => (
+                                            <span
+                                              key={tag}
+                                              className="text-xs bg-muted px-1.5 py-0.5 rounded"
+                                            >
+                                              {tag}
+                                            </span>
+                                          ),
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ) : sidebarContent.action === "delete" ? (
+                              // Delete action: show confirmation
+                              <div className="flex items-center justify-center py-8">
+                                <div className="text-muted-foreground text-sm">
+                                  Note &quot;{sidebarContent.affectedTitle}&quot;
+                                  deleted
+                                </div>
+                              </div>
                             ) : sidebarContent.notes.length === 0 ? (
                               <div className="flex items-center justify-center py-8">
                                 <div className="text-muted-foreground text-sm">
@@ -641,9 +725,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                       ))}
                                     </div>
                                   )}
-                                  <div className="text-xs text-muted-foreground/60 mt-1">
-                                    ID: {note.note_id}
-                                  </div>
                                 </div>
                               ))
                             )}
