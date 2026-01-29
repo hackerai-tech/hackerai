@@ -15,7 +15,7 @@ import {
   getMaxTokensForSubscription,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
-import type { SubscriptionTier } from "@/types";
+import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 
@@ -416,45 +416,45 @@ export async function getUserCustomization({ userId }: { userId: string }) {
   }
 }
 
-export async function getMemories({
-  userId,
-  subscription,
-}: {
-  userId: string;
-  subscription: SubscriptionTier;
-}) {
-  try {
-    const memories = await convex.query(api.memories.getMemoriesForBackend, {
-      serviceKey,
-      userId,
-      subscription,
-    });
-    return memories;
-  } catch (error) {
-    // If no memories found or error, return empty array
-    return [];
-  }
-}
+// export async function getMemories({
+//   userId,
+//   subscription,
+// }: {
+//   userId: string;
+//   subscription: SubscriptionTier;
+// }) {
+//   try {
+//     const memories = await convex.query(api.memories.getMemoriesForBackend, {
+//       serviceKey,
+//       userId,
+//       subscription,
+//     });
+//     return memories;
+//   } catch (error) {
+//     // If no memories found or error, return empty array
+//     return [];
+//   }
+// }
 
-// Generate a shorter memory ID (7 characters)
-const generateMemoryId = () => {
-  return Math.random().toString(36).substring(2, 9);
-};
+// // Generate a shorter memory ID (7 characters)
+// const generateMemoryId = () => {
+//   return Math.random().toString(36).substring(2, 9);
+// };
 
-export async function getMemoryById({ memoryId }: { memoryId: string }) {
-  try {
-    const memory = await convex.query(api.memories.getMemoryByIdForBackend, {
-      serviceKey,
-      memoryId,
-    });
-    return memory;
-  } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      error instanceof Error ? error.message : "Failed to get memory",
-    );
-  }
-}
+// export async function getMemoryById({ memoryId }: { memoryId: string }) {
+//   try {
+//     const memory = await convex.query(api.memories.getMemoryByIdForBackend, {
+//       serviceKey,
+//       memoryId,
+//     });
+//     return memory;
+//   } catch (error) {
+//     throw new ChatSDKError(
+//       "bad_request:database",
+//       error instanceof Error ? error.message : "Failed to get memory",
+//     );
+//   }
+// }
 
 export async function startStream({
   chatId,
@@ -552,81 +552,81 @@ export async function deleteTempStreamForBackend({
   }
 }
 
-export async function createMemory({
-  userId,
-  content,
-  memoryId,
-}: {
-  userId: string;
-  content: string;
-  memoryId?: string;
-}) {
-  try {
-    const finalMemoryId = memoryId || generateMemoryId();
-    const returnedId = await convex.mutation(
-      api.memories.createMemoryForBackend,
-      {
-        serviceKey,
-        userId,
-        memoryId: finalMemoryId,
-        content: content.trim(),
-      },
-    );
-    return returnedId;
-  } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      error instanceof Error ? error.message : "Failed to create memory",
-    );
-  }
-}
+// export async function createMemory({
+//   userId,
+//   content,
+//   memoryId,
+// }: {
+//   userId: string;
+//   content: string;
+//   memoryId?: string;
+// }) {
+//   try {
+//     const finalMemoryId = memoryId || generateMemoryId();
+//     const returnedId = await convex.mutation(
+//       api.memories.createMemoryForBackend,
+//       {
+//         serviceKey,
+//         userId,
+//         memoryId: finalMemoryId,
+//         content: content.trim(),
+//       },
+//     );
+//     return returnedId;
+//   } catch (error) {
+//     throw new ChatSDKError(
+//       "bad_request:database",
+//       error instanceof Error ? error.message : "Failed to create memory",
+//     );
+//   }
+// }
 
-export async function updateMemory({
-  userId,
-  memoryId,
-  content,
-}: {
-  userId: string;
-  memoryId: string;
-  content: string;
-}) {
-  try {
-    await convex.mutation(api.memories.updateMemoryForBackend, {
-      serviceKey,
-      userId,
-      memoryId,
-      content: content.trim(),
-    });
-    return;
-  } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      error instanceof Error ? error.message : "Failed to update memory",
-    );
-  }
-}
+// export async function updateMemory({
+//   userId,
+//   memoryId,
+//   content,
+// }: {
+//   userId: string;
+//   memoryId: string;
+//   content: string;
+// }) {
+//   try {
+//     await convex.mutation(api.memories.updateMemoryForBackend, {
+//       serviceKey,
+//       userId,
+//       memoryId,
+//       content: content.trim(),
+//     });
+//     return;
+//   } catch (error) {
+//     throw new ChatSDKError(
+//       "bad_request:database",
+//       error instanceof Error ? error.message : "Failed to update memory",
+//     );
+//   }
+// }
 
-export async function deleteMemory({
-  userId,
-  memoryId,
-}: {
-  userId: string;
-  memoryId: string;
-}) {
-  try {
-    await convex.mutation(api.memories.deleteMemoryForBackend, {
-      serviceKey,
-      userId,
-      memoryId,
-    });
-    return;
-  } catch (error) {
-    throw new ChatSDKError(
-      "bad_request:database",
-      error instanceof Error ? error.message : "Failed to delete memory",
-    );
-  }
-}
+// export async function deleteMemory({
+//   userId,
+//   memoryId,
+// }: {
+//   userId: string;
+//   memoryId: string;
+// }) {
+//   try {
+//     await convex.mutation(api.memories.deleteMemoryForBackend, {
+//       serviceKey,
+//       userId,
+//       memoryId,
+//     });
+//     return;
+//   } catch (error) {
+//     throw new ChatSDKError(
+//       "bad_request:database",
+//       error instanceof Error ? error.message : "Failed to delete memory",
+//     );
+//   }
+// }
 
 export async function saveChatSummary({
   chatId,
@@ -668,5 +668,141 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
   } catch (error) {
     console.error("[DB Actions] Failed to get latest summary:", error);
     return null;
+  }
+}
+
+// ============================================================================
+// Notes Actions
+// ============================================================================
+
+export async function createNote({
+  userId,
+  title,
+  content,
+  category,
+  tags,
+}: {
+  userId: string;
+  title: string;
+  content: string;
+  category?: NoteCategory;
+  tags?: string[];
+}) {
+  try {
+    const result = await convex.mutation(api.notes.createNoteForBackend, {
+      serviceKey,
+      userId,
+      title,
+      content,
+      category,
+      tags,
+    });
+    return result;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to create note",
+    );
+  }
+}
+
+export async function listNotes({
+  userId,
+  category,
+  tags,
+  search,
+}: {
+  userId: string;
+  category?: NoteCategory;
+  tags?: string[];
+  search?: string;
+}) {
+  try {
+    const result = await convex.query(api.notes.listNotesForBackend, {
+      serviceKey,
+      userId,
+      category,
+      tags,
+      search,
+    });
+    return result;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to list notes",
+    );
+  }
+}
+
+export async function updateNote({
+  userId,
+  noteId,
+  title,
+  content,
+  tags,
+}: {
+  userId: string;
+  noteId: string;
+  title?: string;
+  content?: string;
+  tags?: string[];
+}) {
+  try {
+    const result = await convex.mutation(api.notes.updateNoteForBackend, {
+      serviceKey,
+      userId,
+      noteId,
+      title,
+      content,
+      tags,
+    });
+    return result;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to update note",
+    );
+  }
+}
+
+export async function deleteNote({
+  userId,
+  noteId,
+}: {
+  userId: string;
+  noteId: string;
+}) {
+  try {
+    const result = await convex.mutation(api.notes.deleteNoteForBackend, {
+      serviceKey,
+      userId,
+      noteId,
+    });
+    return result;
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to delete note",
+    );
+  }
+}
+
+export async function getNotes({
+  userId,
+  subscription,
+}: {
+  userId: string;
+  subscription: SubscriptionTier;
+}) {
+  try {
+    const notes = await convex.query(api.notes.getNotesForBackend, {
+      serviceKey,
+      userId,
+      subscription,
+    });
+    return notes;
+  } catch (error) {
+    // If no notes found or error, return empty array
+    return [];
   }
 }

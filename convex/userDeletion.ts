@@ -14,7 +14,8 @@ import { fileCountAggregate } from "./fileAggregate";
  *    - S3 files: Batch deleted using scheduled action
  *    - Convex storage files: Deleted directly
  * 5) Memories (owned by user)
- * 6) User customization (owned by user)
+ * 6) Notes (owned by user)
+ * 7) User customization (owned by user)
  *
  * Uses parallel queries and deletions for optimal performance.
  * S3 cleanup is scheduled asynchronously and errors don't block user deletion.
@@ -30,7 +31,7 @@ export const deleteAllUserData = mutation({
 
     try {
       // Fetch all user data in parallel using indexed queries
-      const [chats, files, memories, customization, messagesByUser] =
+      const [chats, files, memories, notes, customization, messagesByUser] =
         await Promise.all([
           ctx.db
             .query("chats")
@@ -45,6 +46,12 @@ export const deleteAllUserData = mutation({
           ctx.db
             .query("memories")
             .withIndex("by_user_and_update_time", (q) =>
+              q.eq("user_id", user.subject),
+            )
+            .collect(),
+          ctx.db
+            .query("notes")
+            .withIndex("by_user_and_updated", (q) =>
               q.eq("user_id", user.subject),
             )
             .collect(),
@@ -162,7 +169,18 @@ export const deleteAllUserData = mutation({
         }),
       );
 
-      // Step 6: Delete user customization (independent of other data)
+      // Step 6: Delete notes (independent of other data)
+      await Promise.all(
+        notes.map(async (note) => {
+          try {
+            await ctx.db.delete(note._id);
+          } catch (error) {
+            console.error(`Failed to delete note ${note._id}:`, error);
+          }
+        }),
+      );
+
+      // Step 7: Delete user customization (independent of other data)
       if (customization) {
         try {
           await ctx.db.delete(customization._id);

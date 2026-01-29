@@ -19,6 +19,12 @@ import {
   Globe,
   WandSparkles,
 } from "lucide-react";
+import {
+  getNotesIcon,
+  getNotesActionText,
+  getNotesActionType,
+  type NotesToolName,
+} from "@/app/components/tools/notes-tool-utils";
 import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
 import ToolBlock from "@/components/ui/tool-block";
 import {
@@ -151,6 +157,16 @@ export const SharedMessagePartHandler = ({
   // HTTP request (legacy)
   if (part.type === "tool-http_request") {
     return renderHttpRequestTool(part, idx, openSidebar);
+  }
+
+  // Notes operations
+  if (
+    part.type === "tool-create_note" ||
+    part.type === "tool-list_notes" ||
+    part.type === "tool-update_note" ||
+    part.type === "tool-delete_note"
+  ) {
+    return renderNotesTool(part, idx, openSidebar);
   }
 
   return null;
@@ -778,6 +794,189 @@ function renderHttpRequestTool(
         icon={<Globe aria-hidden="true" />}
         action={getActionText()}
         target={displayCommand}
+        isClickable={true}
+        onClick={handleOpenInSidebar}
+        onKeyDown={handleKeyDown}
+      />
+    );
+  }
+  return null;
+}
+
+// Notes tool renderer
+function renderNotesTool(
+  part: MessagePart,
+  idx: number,
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
+) {
+  const notesInput = part.input as {
+    title?: string;
+    content?: string;
+    note_id?: string;
+    category?: string;
+    tags?: string[];
+    search?: string;
+  };
+  type NoteCategory =
+    | "general"
+    | "findings"
+    | "methodology"
+    | "questions"
+    | "plan";
+
+  const notesOutput = part.output as {
+    success?: boolean;
+    error?: string;
+    note_id?: string;
+    notes?: Array<{
+      note_id: string;
+      title: string;
+      content: string;
+      category: NoteCategory;
+      tags: string[];
+      _creationTime: number;
+      updated_at: number;
+    }>;
+    total_count?: number;
+    deleted_title?: string;
+    original?: {
+      title: string;
+      content: string;
+      category: string;
+      tags: string[];
+    };
+    modified?: {
+      title: string;
+      content: string;
+      category: string;
+      tags: string[];
+    };
+  };
+
+  const getToolName = (): NotesToolName => {
+    if (part.type === "tool-create_note") return "create_note";
+    if (part.type === "tool-list_notes") return "list_notes";
+    if (part.type === "tool-update_note") return "update_note";
+    if (part.type === "tool-delete_note") return "delete_note";
+    return "create_note";
+  };
+
+  const toolName = getToolName();
+
+  const getTarget = () => {
+    if (toolName === "create_note" && notesInput?.title) {
+      return notesInput.title;
+    }
+    if (toolName === "update_note") {
+      // Prefer modified title, then input title, then note_id
+      return (
+        notesOutput?.modified?.title || notesInput?.title || notesInput?.note_id
+      );
+    }
+    if (toolName === "delete_note") {
+      // Prefer deleted_title from output, then note_id
+      return notesOutput?.deleted_title || notesInput?.note_id;
+    }
+    if (toolName === "list_notes") {
+      const filters: string[] = [];
+      if (notesInput?.category) filters.push(notesInput.category);
+      if (notesInput?.tags?.length)
+        filters.push(`tagged: ${notesInput.tags.join(", ")}`);
+      if (notesInput?.search) filters.push(`"${notesInput.search}"`);
+      return filters.length > 0 ? filters.join(" · ") : undefined;
+    }
+    return undefined;
+  };
+
+  if (part.state === "output-available") {
+    // Check for failure state
+    const isFailure = notesOutput?.success === false;
+
+    if (isFailure) {
+      // For failures, show error message in target and don't make clickable
+      return (
+        <ToolBlock
+          key={idx}
+          icon={getNotesIcon(toolName)}
+          action={getNotesActionText(toolName, true)}
+          target={notesOutput?.error}
+        />
+      );
+    }
+
+    const action = getNotesActionType(toolName);
+    let notes: Array<{
+      note_id: string;
+      title: string;
+      content: string;
+      category: NoteCategory;
+      tags: string[];
+      _creationTime: number;
+      updated_at: number;
+    }> = [];
+    let totalCount = 0;
+    let affectedTitle: string | undefined;
+    let newNoteId: string | undefined;
+    let original: typeof notesOutput.original;
+    let modified: typeof notesOutput.modified;
+
+    if (action === "list" && notesOutput?.notes) {
+      notes = notesOutput.notes;
+      totalCount = notesOutput.total_count || notes.length;
+    } else if (action === "create" && notesInput) {
+      notes = [
+        {
+          note_id: notesOutput?.note_id || "pending",
+          title: notesInput.title || "",
+          content: notesInput.content || "",
+          category: (notesInput.category as NoteCategory) || "general",
+          tags: notesInput.tags || [],
+          _creationTime: Date.now(),
+          updated_at: Date.now(),
+        },
+      ];
+      totalCount = 1;
+      affectedTitle = notesInput.title;
+      newNoteId = notesOutput?.note_id;
+    } else if (action === "update") {
+      // For update, use original/modified for before/after comparison
+      original = notesOutput?.original;
+      modified = notesOutput?.modified;
+      affectedTitle =
+        modified?.title || notesInput?.title || notesInput?.note_id;
+      totalCount = 1;
+    } else if (action === "delete") {
+      affectedTitle = notesOutput?.deleted_title || notesInput?.note_id;
+      totalCount = 0;
+    }
+
+    const handleOpenInSidebar = () => {
+      openSidebar({
+        action,
+        notes,
+        totalCount,
+        isExecuting: false,
+        toolCallId: part.toolCallId || "",
+        affectedTitle,
+        newNoteId,
+        original,
+        modified,
+      });
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleOpenInSidebar();
+      }
+    };
+
+    return (
+      <ToolBlock
+        key={idx}
+        icon={getNotesIcon(toolName)}
+        action={getNotesActionText(toolName)}
+        target={getTarget()}
         isClickable={true}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}

@@ -140,6 +140,30 @@ export default defineSchema({
     .index("by_memory_id", ["memory_id"])
     .index("by_user_and_update_time", ["user_id", "update_time"]),
 
+  notes: defineTable({
+    user_id: v.string(),
+    note_id: v.string(),
+    title: v.string(),
+    content: v.string(),
+    category: v.union(
+      v.literal("general"),
+      v.literal("findings"),
+      v.literal("methodology"),
+      v.literal("questions"),
+      v.literal("plan"),
+    ),
+    tags: v.array(v.string()),
+    tokens: v.number(),
+    updated_at: v.number(),
+  })
+    .index("by_note_id", ["note_id"])
+    .index("by_user_and_category", ["user_id", "category"])
+    .index("by_user_and_updated", ["user_id", "updated_at"])
+    .searchIndex("search_notes", {
+      searchField: "content",
+      filterFields: ["user_id", "category"],
+    }),
+
   temp_streams: defineTable({
     chat_id: v.string(),
     user_id: v.string(),

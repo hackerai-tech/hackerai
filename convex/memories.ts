@@ -90,8 +90,8 @@ export const createMemoryForBackend = mutation({
     validateServiceKey(args.serviceKey);
 
     try {
-      // Validate content length (max 2000 characters, roughly 500 tokens)
-      const maxContentLength = 2000;
+      // Validate content length (max 8192 characters, roughly 2048 tokens)
+      const maxContentLength = 8192;
       if (args.content.length > maxContentLength) {
         throw new ConvexError({
           code: "VALIDATION_ERROR",
@@ -166,8 +166,8 @@ export const updateMemoryForBackend = mutation({
     validateServiceKey(args.serviceKey);
 
     try {
-      // Validate content length (max 2000 characters, roughly 500 tokens)
-      const maxContentLength = 2000;
+      // Validate content length (max 8192 characters, roughly 2048 tokens)
+      const maxContentLength = 8192;
       if (args.content.length > maxContentLength) {
         throw new ConvexError({
           code: "VALIDATION_ERROR",
