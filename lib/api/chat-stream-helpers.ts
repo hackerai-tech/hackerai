@@ -123,7 +123,7 @@ export function sendRateLimitWarnings(
 }
 
 /**
- * Check if an error is an xAI CSAM safety check error (403 from api.x.ai with SAFETY_CHECK_TYPE_CSAM)
+ * Check if an error is an xAI safety check error (403 from api.x.ai)
  * These are false positives that should be suppressed from logging
  */
 export function isXaiSafetyError(error: unknown): boolean {
@@ -149,8 +149,7 @@ export function isXaiSafetyError(error: unknown): boolean {
     apiError.statusCode === 403 &&
     typeof apiError.url === "string" &&
     apiError.url.includes("api.x.ai") &&
-    typeof apiError.responseBody === "string" &&
-    apiError.responseBody.includes("SAFETY_CHECK_TYPE_CSAM")
+    typeof apiError.responseBody === "string"
   );
 }
 
