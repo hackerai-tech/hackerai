@@ -27,11 +27,7 @@ export interface RequestDetails {
 export interface UserContext {
   id: string;
   subscription: string;
-  location?: {
-    city?: string;
-    country?: string;
-    region?: string;
-  };
+  region?: string;
 }
 
 export interface ChatContext {

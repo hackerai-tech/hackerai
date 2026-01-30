@@ -130,17 +130,11 @@ export const createChatHandler = (
       usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
 
-      // Add user context to logger
+      // Add user context to logger (only region, not full location for privacy)
       chatLogger.setUser({
         id: userId,
         subscription,
-        location: userLocation
-          ? {
-              city: userLocation.city,
-              country: userLocation.country,
-              region: userLocation.region,
-            }
-          : undefined,
+        region: userLocation?.region,
       });
 
       if (mode === "agent" && subscription === "free") {
