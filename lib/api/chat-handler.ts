@@ -431,9 +431,13 @@ export const createChatHandler = (
           }
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
+          let isRetryWithFallback = false;
+          const fallbackModel = "agent-fallback-model";
 
-          const result = streamText({
-            model: trackedProvider.languageModel(selectedModel),
+          // Helper to create streamText with a given model (reused for retry)
+          const createStream = async (modelName: string) =>
+            streamText({
+              model: trackedProvider.languageModel(modelName),
             system: currentSystemPrompt,
             messages: await convertToModelMessages(finalMessages),
             tools,
@@ -614,6 +618,8 @@ export const createChatHandler = (
             },
           });
 
+          const result = await createStream(selectedModel);
+
           writer.merge(
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
@@ -623,10 +629,11 @@ export const createChatHandler = (
                   .slice()
                   .reverse()
                   .find((m) => m.role === "assistant");
-                if (
+                const hasOnlyStepStart =
                   lastAssistantMessage?.parts?.length === 1 &&
-                  lastAssistantMessage.parts[0]?.type === "step-start"
-                ) {
+                  lastAssistantMessage.parts[0]?.type === "step-start";
+
+                if (hasOnlyStepStart) {
                   axiomLogger.error("Stream finished with only step-start", {
                     chatId,
                     endpoint,
@@ -636,8 +643,113 @@ export const createChatHandler = (
                     subscription,
                     isTemporary: temporary,
                     messageCount: messages.length,
-                    parts: lastAssistantMessage.parts,
+                    parts: lastAssistantMessage?.parts,
+                    isRetryWithFallback,
                   });
+
+                  // Retry with fallback model if not already retrying
+                  if (!isRetryWithFallback && !isAborted) {
+                    isRetryWithFallback = true;
+                    axiomLogger.info(
+                      "Retrying with fallback model after step-start only",
+                      {
+                        chatId,
+                        originalModel: selectedModel,
+                        fallbackModel,
+                        userId,
+                      },
+                    );
+
+                    const retryResult = await createStream(fallbackModel);
+                    const retryMessageId = generateId();
+
+                    writer.merge(
+                      retryResult.toUIMessageStream({
+                        generateMessageId: () => retryMessageId,
+                        onFinish: async ({
+                          messages: retryMessages,
+                          isAborted: retryAborted,
+                        }) => {
+                          // Cleanup for retry
+                          preemptiveTimeout?.clear();
+                          if (!subscriberStopped) {
+                            await cancellationSubscriber.stop();
+                            subscriberStopped = true;
+                          }
+
+                          chatLogger!.emitSuccess({
+                            finishReason: streamFinishReason,
+                            wasAborted: retryAborted,
+                            wasPreemptiveTimeout: false,
+                            hadSummarization: hasSummarized,
+                          });
+
+                          const generatedTitle = await titlePromise;
+
+                          if (!temporary) {
+                            const mergedTodos = getTodoManager().mergeWith(
+                              baseTodos,
+                              retryMessageId,
+                            );
+
+                            if (
+                              generatedTitle ||
+                              streamFinishReason ||
+                              mergedTodos.length > 0
+                            ) {
+                              await updateChat({
+                                chatId,
+                                title: generatedTitle,
+                                finishReason: streamFinishReason,
+                                todos: mergedTodos,
+                                defaultModelSlug: mode,
+                              });
+                            } else {
+                              await prepareForNewStream({ chatId });
+                            }
+
+                            const newFileIds = getFileAccumulator()
+                              .getAll()
+                              .map((f) => f.fileId);
+
+                            // Only save NEW assistant messages from retry (skip already-saved user messages)
+                            for (const msg of retryMessages) {
+                              if (msg.role !== "assistant") continue;
+
+                              const processed =
+                                summarizationParts.length > 0
+                                  ? {
+                                      ...msg,
+                                      parts: [
+                                        ...summarizationParts,
+                                        ...(msg.parts || []),
+                                      ],
+                                    }
+                                  : msg;
+
+                              await saveMessage({
+                                chatId,
+                                userId,
+                                message: processed,
+                                extraFileIds: newFileIds,
+                                usage: streamUsage,
+                                model: responseModel,
+                              });
+                            }
+                          }
+
+                          axiomLogger.info("Fallback model completed", {
+                            chatId,
+                            fallbackModel,
+                            messageCount: retryMessages.length,
+                          });
+                        },
+                        sendReasoning: true,
+                      }),
+                    );
+
+                    return; // Skip normal cleanup - retry handles it
+                  }
                 }
 
                 const isPreemptiveAbort =
