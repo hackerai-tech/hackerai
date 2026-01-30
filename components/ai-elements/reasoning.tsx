@@ -8,9 +8,8 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
-import { createContext, memo, useContext, useEffect, useRef } from "react";
-import type { ComponentProps } from "react";
-import { useStickToBottom } from "use-stick-to-bottom";
+import { createContext, useContext, useEffect, useMemo, useRef } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 type ReasoningContextValue = {
   isOpen: boolean;
@@ -20,7 +19,7 @@ type ReasoningContextValue = {
 
 const ReasoningContext = createContext<ReasoningContextValue | null>(null);
 
-const useReasoningContext = () => {
+export const useReasoning = () => {
   const context = useContext(ReasoningContext);
   if (!context) {
     throw new Error("Reasoning components must be used within Reasoning");
@@ -28,122 +27,124 @@ const useReasoningContext = () => {
   return context;
 };
 
-export type ReasoningProps = ComponentProps<"div"> & {
+export type ReasoningProps = ComponentProps<typeof Collapsible> & {
   isStreaming?: boolean;
-  open?: boolean;
-  defaultOpen?: boolean;
-  onOpenChange?: (open: boolean) => void;
 };
 
-export const Reasoning = memo(
-  ({
-    className,
-    isStreaming = false,
-    open,
-    defaultOpen = false,
-    onOpenChange,
-    children,
-    ...props
-  }: ReasoningProps) => {
-    const [isOpen, setIsOpen] = useControllableState({
-      prop: open,
-      defaultProp: defaultOpen,
-      onChange: onOpenChange,
-    });
+export function Reasoning({
+  className,
+  isStreaming = false,
+  open,
+  defaultOpen = false,
+  onOpenChange,
+  children,
+  ...props
+}: ReasoningProps) {
+  const [isOpen, setIsOpen] = useControllableState({
+    prop: open,
+    defaultProp: defaultOpen,
+    onChange: onOpenChange,
+  });
 
-    useEffect(() => {
-      if (isStreaming === true) {
-        setIsOpen(true);
-      } else if (isStreaming === false) {
-        setIsOpen(false);
-      }
-    }, [isStreaming, setIsOpen]);
+  useEffect(() => {
+    setIsOpen(isStreaming);
+  }, [isStreaming, setIsOpen]);
 
-    return (
-      <ReasoningContext.Provider
-        value={{ isOpen: !!isOpen, setIsOpen, isStreaming }}
+  const contextValue = useMemo(
+    () => ({ isOpen: !!isOpen, setIsOpen, isStreaming }),
+    [isOpen, setIsOpen, isStreaming],
+  );
+
+  return (
+    <ReasoningContext.Provider value={contextValue}>
+      <Collapsible
+        open={isOpen}
+        onOpenChange={setIsOpen}
+        className={cn("not-prose w-full space-y-2", className)}
+        {...props}
       >
-        <div className={cn("not-prose w-full space-y-2", className)} {...props}>
-          {children}
-        </div>
-      </ReasoningContext.Provider>
-    );
-  },
-);
+        {children}
+      </Collapsible>
+    </ReasoningContext.Provider>
+  );
+}
 
 export type ReasoningTriggerProps = ComponentProps<
   typeof CollapsibleTrigger
 > & {
-  title?: string;
+  getThinkingMessage?: (isStreaming: boolean) => ReactNode;
 };
 
-export const ReasoningTrigger = memo(
-  ({ className, title = "Reasoning", ...props }: ReasoningTriggerProps) => {
-    const { isOpen, setIsOpen, isStreaming } = useReasoningContext();
+const defaultGetThinkingMessage = (isStreaming: boolean): ReactNode =>
+  isStreaming ? "Thinking..." : "Reasoning";
 
-    return (
-      <Collapsible onOpenChange={setIsOpen} open={isOpen}>
-        <CollapsibleTrigger
-          className={cn(
-            "flex w-full items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
-            className,
-          )}
-          aria-label={title}
-          {...props}
-        >
-          <BrainIcon className="size-4" />
-          <span className="flex-1 text-left">{title}</span>
-          {isStreaming && (
-            <span className="relative flex items-center">
-              <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-foreground/50 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-foreground" />
-            </span>
-          )}
-          <ChevronDownIcon
-            className={cn(
-              "size-4 transition-transform",
-              isOpen ? "rotate-180" : "rotate-0",
-            )}
-          />
-        </CollapsibleTrigger>
-      </Collapsible>
-    );
-  },
-);
+export function ReasoningTrigger({
+  className,
+  getThinkingMessage = defaultGetThinkingMessage,
+  ...props
+}: ReasoningTriggerProps) {
+  const { isOpen, isStreaming } = useReasoning();
+
+  return (
+    <CollapsibleTrigger
+      className={cn(
+        "flex w-full items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+        className,
+      )}
+      {...props}
+    >
+      <BrainIcon className="size-4" />
+      <span className="flex-1 text-left">
+        {getThinkingMessage(isStreaming)}
+      </span>
+      {isStreaming && (
+        <span className="relative flex items-center">
+          <span className="absolute inline-flex h-2 w-2 animate-ping rounded-full bg-foreground/50 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-foreground" />
+        </span>
+      )}
+      <ChevronDownIcon
+        className={cn(
+          "size-4 transition-transform",
+          isOpen ? "rotate-180" : "rotate-0",
+        )}
+      />
+    </CollapsibleTrigger>
+  );
+}
 
 export type ReasoningContentProps = ComponentProps<typeof CollapsibleContent>;
 
-export const ReasoningContent = memo(
-  ({ className, children, ...props }: ReasoningContentProps) => {
-    const { isOpen, isStreaming } = useReasoningContext();
-    const { scrollRef, contentRef, isAtBottom } = useStickToBottom({
-      resize: "smooth",
-      initial: "instant",
-    });
+export function ReasoningContent({
+  className,
+  children,
+  ...props
+}: ReasoningContentProps) {
+  const { isStreaming } = useReasoning();
+  const contentRef = useRef<HTMLDivElement>(null);
 
-    useEffect(() => {
-      if (isStreaming && isAtBottom && scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      }
-    }, [children, isStreaming, isAtBottom, scrollRef]);
+  useEffect(() => {
+    if (isStreaming && contentRef.current) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    }
+  }, [children, isStreaming]);
 
-    return (
-      <Collapsible open={isOpen}>
-        <CollapsibleContent
-          ref={scrollRef}
-          className={cn(
-            "mt-2 space-y-3 opacity-50 max-h-60 overflow-y-auto",
-            "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
-            className,
-          )}
-          {...props}
-        >
-          <div ref={contentRef}>{children}</div>
-        </CollapsibleContent>
-      </Collapsible>
-    );
-  },
-);
+  return (
+    <CollapsibleContent
+      ref={contentRef}
+      className={cn(
+        "mt-2 space-y-3 text-muted-foreground max-h-60 overflow-y-auto",
+        "data-[state=closed]:animate-out data-[state=open]:animate-in",
+        "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0",
+        "data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </CollapsibleContent>
+  );
+}
 
 Reasoning.displayName = "Reasoning";
 ReasoningTrigger.displayName = "ReasoningTrigger";
