@@ -10,7 +10,6 @@ import {
   smoothStream,
 } from "ai";
 import {
-  stripProviderMetadata,
   completeIncompleteToolCalls,
   stripReasoningFromMessagesForGemini,
 } from "@/lib/utils/message-processor";
@@ -846,15 +845,11 @@ export const createChatHandler = (
                       );
                     }
 
-                    // Strip providerMetadata from parts before saving
-                    const messageToSave =
-                      stripProviderMetadata(processedMessage);
-
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry
                     if (
-                      (!messageToSave.parts ||
-                        messageToSave.parts.length === 0) &&
+                      (!processedMessage.parts ||
+                        processedMessage.parts.length === 0) &&
                       newFileIds.length === 0
                     ) {
                       continue;
@@ -865,7 +860,7 @@ export const createChatHandler = (
                     await saveMessage({
                       chatId,
                       userId,
-                      message: messageToSave,
+                      message: processedMessage,
                       // Only include metrics for assistant messages
                       extraFileIds: newFileIds,
                       model: responseModel || configuredModelId,
