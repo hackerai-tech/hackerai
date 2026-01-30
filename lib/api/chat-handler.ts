@@ -613,6 +613,28 @@ export const createChatHandler = (
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
+                // Check if stream finished with only step-start (indicates incomplete response)
+                const lastAssistantMessage = messages
+                  .slice()
+                  .reverse()
+                  .find((m) => m.role === "assistant");
+                if (
+                  lastAssistantMessage?.parts?.length === 1 &&
+                  lastAssistantMessage.parts[0]?.type === "step-start"
+                ) {
+                  axiomLogger.error("Stream finished with only step-start", {
+                    chatId,
+                    endpoint,
+                    mode,
+                    model: selectedModel,
+                    userId,
+                    subscription,
+                    isTemporary: temporary,
+                    messageCount: messages.length,
+                    parts: lastAssistantMessage.parts,
+                  });
+                }
+
                 const isPreemptiveAbort =
                   preemptiveTimeout?.isPreemptive() ?? false;
                 const onFinishStartTime = Date.now();
