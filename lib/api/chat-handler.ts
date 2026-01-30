@@ -9,10 +9,7 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
-import {
-  completeIncompleteToolCalls,
-  stripReasoningFromMessagesForGemini,
-} from "@/lib/utils/message-processor";
+import { stripReasoningFromMessagesForGemini } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -419,14 +416,7 @@ export const createChatHandler = (
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
-          // Fix any incomplete tool calls from previous sessions before sending to AI SDK
-          // This prevents "Tool result is missing" errors from old interrupted tool calls
-          let finalMessages = processedMessages.map((msg) =>
-            completeIncompleteToolCalls(
-              msg,
-              "Previous operation was interrupted",
-            ),
-          );
+          let finalMessages = processedMessages;
           let hasSummarized = false;
           const isReasoningModel = mode === "agent";
 
@@ -795,55 +785,6 @@ export const createChatHandler = (
                             parts: [...summarizationParts, ...message.parts],
                           }
                         : message;
-
-                    // Complete any incomplete tool calls on ANY abort
-                    // This prevents "Tool result is missing" errors on next request
-                    if (isAborted) {
-                      const reason = isPreemptiveAbort
-                        ? "Operation timed out due to server time limit"
-                        : "Operation was stopped by user";
-
-                      // Log incomplete tool calls for debugging
-                      const incompleteTools =
-                        processedMessage.parts?.filter(
-                          (p: {
-                            type?: string;
-                            state?: string;
-                            toolCallId?: string;
-                          }) =>
-                            p.type?.startsWith("tool-") &&
-                            p.state !== "output-available" &&
-                            p.toolCallId,
-                        ) || [];
-
-                      if (incompleteTools.length > 0) {
-                        axiomLogger.warn(
-                          "Completing incomplete tool calls on abort",
-                          {
-                            chatId,
-                            endpoint,
-                            isPreemptiveAbort,
-                            incompleteToolCount: incompleteTools.length,
-                            incompleteTools: incompleteTools.map(
-                              (t: {
-                                type?: string;
-                                toolCallId?: string;
-                                state?: string;
-                              }) => ({
-                                type: t.type,
-                                toolCallId: t.toolCallId,
-                                state: t.state,
-                              }),
-                            ),
-                          },
-                        );
-                      }
-
-                      processedMessage = completeIncompleteToolCalls(
-                        processedMessage,
-                        reason,
-                      );
-                    }
 
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry
