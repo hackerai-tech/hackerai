@@ -156,7 +156,8 @@ export const normalizeMessages = (
       }
     });
 
-    // Process each part, transform incomplete tools, filter out data-terminal parts, and strip providerMetadata
+    // Process each part, transform incomplete tools, filter out data-terminal parts
+    // NOTE: We intentionally keep providerMetadata - Gemini requires thought_signature for tool calls
     message.parts.forEach((part: any) => {
       const toolPart = part as BaseToolPart;
 
@@ -164,19 +165,6 @@ export const normalizeMessages = (
       if (toolPart.type === "data-terminal") {
         messageChanged = true; // Part is being removed
         return;
-      }
-
-      // Strip provider-specific fields from the part
-      const hasProviderFields =
-        "providerMetadata" in part ||
-        "callProviderMetadata" in part ||
-        "providerExecuted" in part ||
-        "providerOptions" in part;
-      const cleanPart = hasProviderFields
-        ? stripProviderMetadataFromPart(part)
-        : part;
-      if (hasProviderFields) {
-        messageChanged = true;
       }
 
       // Check if this is a terminal tool that needs transformation
@@ -190,14 +178,14 @@ export const normalizeMessages = (
       if (isTerminalTool && isIncomplete) {
         // Transform terminal tools to collect streaming output
         const transformedPart = transformTerminalToolPart(
-          cleanPart as TerminalToolPart,
+          part as TerminalToolPart,
           terminalDataMap,
         );
         processedParts.push(transformedPart);
         messageChanged = true;
       } else {
-        // Keep other parts unchanged - backend handles incomplete non-terminal tools
-        processedParts.push(cleanPart);
+        // Keep parts unchanged - backend handles incomplete non-terminal tools
+        processedParts.push(part);
       }
     });
 
