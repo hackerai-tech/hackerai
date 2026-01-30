@@ -294,13 +294,28 @@ export async function processChatMessages({
   const messagesWithContent = messagesWithUrls.filter((msg) => {
     if (!msg.parts || msg.parts.length === 0) return false;
 
-    // Check that at least one part has meaningful content
+    // For assistant messages, we need actual content (text or tool parts), not just reasoning/step-start
+    // Gemini specifically requires text or tool content, reasoning alone causes errors
+    if (msg.role === "assistant") {
+      return msg.parts.some((part: any) => {
+        // Text parts need actual text content
+        if (part.type === "text") return part.text?.trim().length > 0;
+        // Tool parts are valid content
+        if (part.type?.startsWith("tool-")) return true;
+        // File parts are valid content
+        if (part.type === "file") return !!part.url || !!part.fileId;
+        // reasoning and step-start alone are NOT sufficient for assistant messages
+        return false;
+      });
+    }
+
+    // For user messages, check that at least one part has meaningful content
     return msg.parts.some((part: any) => {
       if (part.type === "text") return part.text?.trim().length > 0;
       if (part.type === "file") return !!part.url || !!part.fileId;
       // reasoning must have text content
       if (part.type === "reasoning") return !!part.text?.trim();
-      // Keep other part types (tool invocations, etc.) as they have implicit content
+      // Keep other part types as they have implicit content
       return true;
     });
   });
