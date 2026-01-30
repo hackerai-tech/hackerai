@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from "react";
+import React, { memo, useEffect, useMemo, useCallback } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
@@ -13,11 +13,25 @@ interface TerminalToolHandlerProps {
   status: ChatStatus;
 }
 
-export const TerminalToolHandler = ({
+// Custom comparison to avoid re-renders when tool state hasn't changed
+function areTerminalPropsEqual(
+  prev: TerminalToolHandlerProps,
+  next: TerminalToolHandlerProps,
+): boolean {
+  if (prev.status !== next.status) return false;
+  if (prev.part.state !== next.part.state) return false;
+  if (prev.part.toolCallId !== next.part.toolCallId) return false;
+  if (prev.part.output !== next.part.output) return false;
+  // Compare message.parts length for streaming output updates
+  if (prev.message.parts.length !== next.message.parts.length) return false;
+  return true;
+}
+
+export const TerminalToolHandler = memo(function TerminalToolHandler({
   message,
   part,
   status,
-}: TerminalToolHandlerProps) => {
+}: TerminalToolHandlerProps) {
   const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
     useGlobalState();
   const { toolCallId, state, input, output, errorText } = part;
@@ -61,7 +75,7 @@ export const TerminalToolHandler = ({
 
   const isExecuting = state === "input-available" && status === "streaming";
 
-  const handleOpenInSidebar = () => {
+  const handleOpenInSidebar = useCallback(() => {
     if (!terminalInput?.command) return;
 
     const sidebarTerminal: SidebarTerminal = {
@@ -73,7 +87,14 @@ export const TerminalToolHandler = ({
     };
 
     openSidebar(sidebarTerminal);
-  };
+  }, [
+    terminalInput?.command,
+    terminalInput?.is_background,
+    finalOutput,
+    isExecuting,
+    toolCallId,
+    openSidebar,
+  ]);
 
   // Track if this sidebar is currently active
   const isSidebarActive =
@@ -93,12 +114,15 @@ export const TerminalToolHandler = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSidebarActive, finalOutput, isExecuting]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      handleOpenInSidebar();
-    }
-  };
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleOpenInSidebar();
+      }
+    },
+    [handleOpenInSidebar],
+  );
 
   switch (state) {
     case "input-streaming":
@@ -150,4 +174,4 @@ export const TerminalToolHandler = ({
     default:
       return null;
   }
-};
+}, areTerminalPropsEqual);
