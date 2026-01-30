@@ -53,7 +53,9 @@ export const getBudgetLimits = (
 ): { session: number; weekly: number } => {
   if (subscription === "free") return { session: 0, weekly: 0 };
 
-  const monthlyPrice = PRICING[subscription]?.monthly ?? 0;
+  // Use yearly price (lower than monthly) to leave margin for other costs
+  // (e.g., title generation, summarization, infrastructure overhead)
+  const monthlyPrice = PRICING[subscription]?.yearly ?? 0;
   const monthlyPoints = monthlyPrice * POINTS_PER_DOLLAR;
 
   return {
@@ -285,14 +287,17 @@ export const checkAgentRateLimit = async (
 /**
  * Deduct additional cost after processing (output + any input difference).
  * If extra usage was used for input (buckets at 0), also deducts output from extra usage.
+ *
+ * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation
  */
-export const deductAgentUsage = async (
+export const deductUsage = async (
   userId: string,
   subscription: SubscriptionTier,
   estimatedInputTokens: number,
   actualInputTokens: number,
   actualOutputTokens: number,
   extraUsageConfig?: ExtraUsageConfig,
+  providerCostDollars?: number,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -305,15 +310,28 @@ export const deductAgentUsage = async (
     );
     if (sessionLimit === 0) return;
 
-    // Calculate additional cost
+    // Calculate estimated input cost (already deducted upfront)
     const estimatedInputCost = calculateTokenCost(
       estimatedInputTokens,
       "input",
     );
-    const actualInputCost = calculateTokenCost(actualInputTokens, "input");
-    const outputCost = calculateTokenCost(actualOutputTokens, "output");
-    const additionalCost =
-      Math.max(0, actualInputCost - estimatedInputCost) + outputCost;
+
+    // Calculate actual cost - prefer provider cost if available
+    let additionalCost: number;
+
+    if (providerCostDollars !== undefined && providerCostDollars > 0) {
+      // Use provider's cost directly (more accurate, includes cached token discounts)
+      const actualCostPoints = Math.ceil(
+        providerCostDollars * POINTS_PER_DOLLAR,
+      );
+      additionalCost = Math.max(0, actualCostPoints - estimatedInputCost);
+    } else {
+      // Fallback to token-based calculation
+      const actualInputCost = calculateTokenCost(actualInputTokens, "input");
+      const outputCost = calculateTokenCost(actualOutputTokens, "output");
+      additionalCost =
+        Math.max(0, actualInputCost - estimatedInputCost) + outputCost;
+    }
 
     if (additionalCost <= 0) return;
 

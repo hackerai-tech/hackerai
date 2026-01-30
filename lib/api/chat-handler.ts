@@ -23,7 +23,7 @@ import type {
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   checkRateLimit,
-  deductAgentUsage,
+  deductUsage,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
@@ -577,13 +577,18 @@ export const createChatHandler = (
               // Input cost was already deducted upfront in checkRateLimit
               // Free users don't have token buckets, so skip for them
               if (subscription !== "free" && usage) {
-                await deductAgentUsage(
+                // Extract provider cost if available (more accurate than token calculation)
+                const providerCost = (usage as { raw?: { cost?: number } }).raw
+                  ?.cost;
+
+                await deductUsage(
                   userId,
                   subscription,
                   estimatedInputTokens,
                   usage.inputTokens || 0,
                   usage.outputTokens || 0,
                   extraUsageConfig,
+                  providerCost,
                 );
               }
             },

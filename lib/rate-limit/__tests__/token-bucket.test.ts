@@ -10,7 +10,7 @@ import {
 /**
  * Unit tests for token-bucket rate limiting pure functions.
  *
- * Note: The async functions (checkAgentRateLimit, deductAgentUsage, refundUsage)
+ * Note: The async functions (checkAgentRateLimit, deductUsage, refundUsage)
  * are difficult to unit test in isolation due to the singleton Redis client pattern
  * and Jest module caching. These functions are better suited for integration tests
  * that can properly initialize and control the Redis/Ratelimit dependencies.
@@ -75,36 +75,39 @@ describe("token-bucket", () => {
       expect(limits.weekly).toBe(0);
     });
 
-    it("should calculate pro tier limits correctly ($25/month)", () => {
+    it("should calculate pro tier limits correctly (using yearly price)", () => {
       const limits = getBudgetLimits("pro");
-      const monthlyPoints = PRICING.pro.monthly * POINTS_PER_DOLLAR; // 250000
+      // Uses yearly price to leave margin for other costs (title gen, summarization, etc.)
+      const yearlyPoints = PRICING.pro.yearly * POINTS_PER_DOLLAR;
 
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30)); // ~8333
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30)); // ~58333
+      expect(limits.session).toBe(Math.round(yearlyPoints / 30));
+      expect(limits.weekly).toBe(Math.round((yearlyPoints * 7) / 30));
     });
 
-    it("should calculate ultra tier limits correctly ($200/month)", () => {
+    it("should calculate ultra tier limits correctly (using yearly price)", () => {
       const limits = getBudgetLimits("ultra");
-      const monthlyPoints = PRICING.ultra.monthly * POINTS_PER_DOLLAR; // 2000000
+      const yearlyPoints = PRICING.ultra.yearly * POINTS_PER_DOLLAR;
 
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30)); // ~66667
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30)); // ~466667
+      expect(limits.session).toBe(Math.round(yearlyPoints / 30));
+      expect(limits.weekly).toBe(Math.round((yearlyPoints * 7) / 30));
     });
 
-    it("should calculate team tier limits correctly ($40/month)", () => {
+    it("should calculate team tier limits correctly (using yearly price)", () => {
       const limits = getBudgetLimits("team");
-      const monthlyPoints = PRICING.team.monthly * POINTS_PER_DOLLAR; // 400000
+      const yearlyPoints = PRICING.team.yearly * POINTS_PER_DOLLAR;
 
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30)); // ~13333
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30)); // ~93333
+      expect(limits.session).toBe(Math.round(yearlyPoints / 30));
+      expect(limits.weekly).toBe(Math.round((yearlyPoints * 7) / 30));
     });
 
     it("ultra should have ~8x more limits than pro (price ratio)", () => {
       const proLimits = getBudgetLimits("pro");
       const ultraLimits = getBudgetLimits("ultra");
 
-      expect(ultraLimits.session / proLimits.session).toBeCloseTo(8, 1);
-      expect(ultraLimits.weekly / proLimits.weekly).toBeCloseTo(8, 1);
+      // Ratio based on yearly prices
+      const expectedRatio = PRICING.ultra.yearly / PRICING.pro.yearly;
+      expect(ultraLimits.session / proLimits.session).toBeCloseTo(expectedRatio, 1);
+      expect(ultraLimits.weekly / proLimits.weekly).toBeCloseTo(expectedRatio, 1);
     });
 
     it("weekly limit should be ~7x session limit", () => {
@@ -141,11 +144,12 @@ describe("token-bucket", () => {
     });
 
     it("pro user should afford many typical conversations per session", () => {
-      const sessionBudget = getBudgetLimits("pro").session; // ~8333 points
+      const sessionBudget = getBudgetLimits("pro").session;
       const typicalCost = 25; // points per conversation
 
       const conversationsPerSession = Math.floor(sessionBudget / typicalCost);
-      expect(conversationsPerSession).toBeGreaterThan(300);
+      // With yearly pricing, budget is lower but still allows many conversations
+      expect(conversationsPerSession).toBeGreaterThan(250);
     });
 
     it("long context request should cost proportionally more", () => {

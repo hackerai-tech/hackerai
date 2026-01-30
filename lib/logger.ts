@@ -279,6 +279,9 @@ export class WideEventBuilder {
    */
   setUsage(usage: Record<string, unknown> | undefined): this {
     if (usage) {
+      // Extract provider cost if available (e.g., from OpenRouter)
+      const rawCost = (usage as { raw?: { cost?: number } }).raw?.cost;
+
       this.event.usage = {
         input_tokens: usage.inputTokens as number | undefined,
         output_tokens: usage.outputTokens as number | undefined,
@@ -290,6 +293,8 @@ export class WideEventBuilder {
         cache_write_tokens: usage.cacheCreationInputTokens as
           | number
           | undefined,
+        // Store provider cost for build() to use
+        total_cost: rawCost,
       };
     }
     return this;
@@ -343,8 +348,9 @@ export class WideEventBuilder {
       this.event.tool_call_count = this.toolCalls.length;
     }
 
-    // Calculate total cost based on usage (pricing: $0.50/M input, $3.00/M output)
-    if (this.event.usage) {
+    // Use provider cost if available, otherwise calculate from tokens
+    if (this.event.usage && this.event.usage.total_cost === undefined) {
+      // Fallback: calculate from tokens (pricing: $0.50/M input, $3.00/M output)
       const inputCost =
         ((this.event.usage.input_tokens || 0) / 1_000_000) * 0.5;
       const outputCost =
