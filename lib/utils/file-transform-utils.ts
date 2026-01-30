@@ -164,6 +164,19 @@ const applyUrlsToFileParts = async (
   }
 };
 
+/**
+ * Removes file parts that don't have a URL (failed to fetch).
+ * These would cause AI_InvalidPromptError since file parts require actual content.
+ */
+const removeFilePartsWithoutUrls = (messages: UIMessage[]) => {
+  messages.forEach((msg) => {
+    if (!msg.parts) return;
+    msg.parts = msg.parts.filter(
+      (part: any) => part?.type !== "file" || !!part.url,
+    );
+  });
+};
+
 const applyModeSpecificTransforms = async (
   messages: UIMessage[],
   mode: ChatMode,
@@ -181,6 +194,9 @@ const applyModeSpecificTransforms = async (
     }
     removeAudioFileParts(messages);
   }
+
+  // Remove any file parts that failed to get URLs to prevent AI_InvalidPromptError
+  removeFilePartsWithoutUrls(messages);
 };
 
 /**

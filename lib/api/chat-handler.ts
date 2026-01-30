@@ -23,7 +23,7 @@ import type {
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   checkRateLimit,
-  deductAgentUsage,
+  deductUsage,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
@@ -130,17 +130,11 @@ export const createChatHandler = (
       usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
 
-      // Add user context to logger
+      // Add user context to logger (only region, not full location for privacy)
       chatLogger.setUser({
         id: userId,
         subscription,
-        location: userLocation
-          ? {
-              city: userLocation.city,
-              country: userLocation.country,
-              region: userLocation.region,
-            }
-          : undefined,
+        region: userLocation?.region,
       });
 
       if (mode === "agent" && subscription === "free") {
@@ -437,9 +431,13 @@ export const createChatHandler = (
           }
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
+          let isRetryWithFallback = false;
+          const fallbackModel = "agent-fallback-model";
 
-          const result = streamText({
-            model: trackedProvider.languageModel(selectedModel),
+          // Helper to create streamText with a given model (reused for retry)
+          const createStream = async (modelName: string) =>
+            streamText({
+              model: trackedProvider.languageModel(modelName),
             system: currentSystemPrompt,
             messages: await convertToModelMessages(finalMessages),
             tools,
@@ -583,13 +581,18 @@ export const createChatHandler = (
               // Input cost was already deducted upfront in checkRateLimit
               // Free users don't have token buckets, so skip for them
               if (subscription !== "free" && usage) {
-                await deductAgentUsage(
+                // Extract provider cost if available (more accurate than token calculation)
+                const providerCost = (usage as { raw?: { cost?: number } }).raw
+                  ?.cost;
+
+                await deductUsage(
                   userId,
                   subscription,
                   estimatedInputTokens,
                   usage.inputTokens || 0,
                   usage.outputTokens || 0,
                   extraUsageConfig,
+                  providerCost,
                 );
               }
             },
@@ -615,10 +618,151 @@ export const createChatHandler = (
             },
           });
 
+          const result = await createStream(selectedModel);
+
           writer.merge(
             result.toUIMessageStream({
               generateMessageId: () => assistantMessageId,
               onFinish: async ({ messages, isAborted }) => {
+                // Check if stream finished with only step-start (indicates incomplete response)
+                const lastAssistantMessage = messages
+                  .slice()
+                  .reverse()
+                  .find((m) => m.role === "assistant");
+                const hasOnlyStepStart =
+                  lastAssistantMessage?.parts?.length === 1 &&
+                  lastAssistantMessage.parts[0]?.type === "step-start";
+
+                if (hasOnlyStepStart) {
+                  axiomLogger.error("Stream finished with only step-start", {
+                    chatId,
+                    endpoint,
+                    mode,
+                    model: selectedModel,
+                    userId,
+                    subscription,
+                    isTemporary: temporary,
+                    messageCount: messages.length,
+                    parts: lastAssistantMessage?.parts,
+                    isRetryWithFallback,
+                  });
+
+                  // Retry with fallback model if not already retrying
+                  if (!isRetryWithFallback && !isAborted) {
+                    isRetryWithFallback = true;
+                    axiomLogger.info(
+                      "Retrying with fallback model after step-start only",
+                      {
+                        chatId,
+                        originalModel: selectedModel,
+                        fallbackModel,
+                        userId,
+                      },
+                    );
+
+                    const retryResult = await createStream(fallbackModel);
+                    const retryMessageId = generateId();
+
+                    writer.merge(
+                      retryResult.toUIMessageStream({
+                        generateMessageId: () => retryMessageId,
+                        onFinish: async ({
+                          messages: retryMessages,
+                          isAborted: retryAborted,
+                        }) => {
+                          // Cleanup for retry
+                          preemptiveTimeout?.clear();
+                          if (!subscriberStopped) {
+                            await cancellationSubscriber.stop();
+                            subscriberStopped = true;
+                          }
+
+                          chatLogger!.emitSuccess({
+                            finishReason: streamFinishReason,
+                            wasAborted: retryAborted,
+                            wasPreemptiveTimeout: false,
+                            hadSummarization: hasSummarized,
+                          });
+
+                          const generatedTitle = await titlePromise;
+
+                          if (!temporary) {
+                            const mergedTodos = getTodoManager().mergeWith(
+                              baseTodos,
+                              retryMessageId,
+                            );
+
+                            if (
+                              generatedTitle ||
+                              streamFinishReason ||
+                              mergedTodos.length > 0
+                            ) {
+                              await updateChat({
+                                chatId,
+                                title: generatedTitle,
+                                finishReason: streamFinishReason,
+                                todos: mergedTodos,
+                                defaultModelSlug: mode,
+                              });
+                            } else {
+                              await prepareForNewStream({ chatId });
+                            }
+
+                            const accumulatedFiles = getFileAccumulator().getAll();
+                            const newFileIds = accumulatedFiles.map(
+                              (f) => f.fileId,
+                            );
+
+                            // Only save NEW assistant messages from retry (skip already-saved user messages)
+                            for (const msg of retryMessages) {
+                              if (msg.role !== "assistant") continue;
+
+                              const processed =
+                                summarizationParts.length > 0
+                                  ? {
+                                      ...msg,
+                                      parts: [
+                                        ...summarizationParts,
+                                        ...(msg.parts || []),
+                                      ],
+                                    }
+                                  : msg;
+
+                              await saveMessage({
+                                chatId,
+                                userId,
+                                message: processed,
+                                extraFileIds: newFileIds,
+                                usage: streamUsage,
+                                model: responseModel,
+                              });
+                            }
+
+                            // Send file metadata via stream for resumable stream clients
+                            sendFileMetadataToStream(accumulatedFiles);
+                          } else {
+                            // For temporary chats, send file metadata via stream before cleanup
+                            const tempFiles = getFileAccumulator().getAll();
+                            sendFileMetadataToStream(tempFiles);
+
+                            // Ensure temp stream row is removed backend-side
+                            await deleteTempStreamForBackend({ chatId });
+                          }
+
+                          axiomLogger.info("Fallback model completed", {
+                            chatId,
+                            fallbackModel,
+                            messageCount: retryMessages.length,
+                          });
+                        },
+                        sendReasoning: true,
+                      }),
+                    );
+
+                    return; // Skip normal cleanup - retry handles it
+                  }
+                }
+
                 const isPreemptiveAbort =
                   preemptiveTimeout?.isPreemptive() ?? false;
                 const onFinishStartTime = Date.now();

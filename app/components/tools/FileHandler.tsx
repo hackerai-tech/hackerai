@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef } from "react";
+import { memo, useMemo, useEffect, useRef, useCallback } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FileText, FilePlus, FilePen, FileOutput } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
@@ -19,7 +19,23 @@ interface FileHandlerProps {
   status: ChatStatus;
 }
 
-export const FileHandler = ({ part, status }: FileHandlerProps) => {
+// Custom comparison for file handler - only re-render when state/output changes
+function areFilePropsEqual(
+  prev: FileHandlerProps,
+  next: FileHandlerProps,
+): boolean {
+  if (prev.status !== next.status) return false;
+  if (prev.part.state !== next.part.state) return false;
+  if (prev.part.toolCallId !== next.part.toolCallId) return false;
+  if (prev.part.output !== next.part.output) return false;
+  if (prev.part.input !== next.part.input) return false;
+  return true;
+}
+
+export const FileHandler = memo(function FileHandler({
+  part,
+  status,
+}: FileHandlerProps) {
   const { openSidebar, updateSidebarContent, sidebarContent, sidebarOpen } =
     useGlobalState();
 
@@ -487,4 +503,4 @@ export const FileHandler = ({ part, status }: FileHandlerProps) => {
     default:
       return null;
   }
-};
+}, areFilePropsEqual);

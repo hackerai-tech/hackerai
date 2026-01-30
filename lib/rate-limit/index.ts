@@ -25,7 +25,7 @@ import type {
 // Re-export token bucket functions (used by both agent and ask modes for paid users)
 export {
   checkAgentRateLimit,
-  deductAgentUsage,
+  deductUsage,
   refundUsage,
   calculateTokenCost,
   getBudgetLimits,

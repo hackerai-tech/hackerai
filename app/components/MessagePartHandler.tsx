@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
 import { FileToolsHandler } from "./tools/FileToolsHandler";
@@ -23,34 +24,76 @@ interface MessagePartHandlerProps {
   isLastMessage?: boolean;
 }
 
-export const MessagePartHandler = ({
+// Memoized user text component - avoids re-renders for unchanged text
+const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
+  return <div className="whitespace-pre-wrap">{text}</div>;
+});
+
+// Custom comparison for MessagePartHandler to minimize re-renders
+function arePropsEqual(
+  prevProps: MessagePartHandlerProps,
+  nextProps: MessagePartHandlerProps,
+): boolean {
+  // Always re-render if status changes (streaming state)
+  if (prevProps.status !== nextProps.status) return false;
+
+  // Always re-render if isLastMessage changes
+  if (prevProps.isLastMessage !== nextProps.isLastMessage) return false;
+
+  // Check part reference - if same reference, no changes
+  if (prevProps.part === nextProps.part) return true;
+
+  // For tool parts, compare state and output which change during streaming
+  if (
+    prevProps.part?.type?.startsWith("tool-") ||
+    prevProps.part?.type?.startsWith("data-")
+  ) {
+    return (
+      prevProps.part.state === nextProps.part.state &&
+      prevProps.part.toolCallId === nextProps.part.toolCallId &&
+      prevProps.part.output === nextProps.part.output &&
+      prevProps.part.input === nextProps.part.input
+    );
+  }
+
+  // For text parts, compare text content
+  if (prevProps.part?.type === "text") {
+    return prevProps.part.text === nextProps.part.text;
+  }
+
+  // For reasoning, compare text
+  if (prevProps.part?.type === "reasoning") {
+    return (
+      prevProps.part.text === nextProps.part.text &&
+      prevProps.message.parts.length === nextProps.message.parts.length
+    );
+  }
+
+  // Default: shallow compare part object
+  return prevProps.part === nextProps.part;
+}
+
+export const MessagePartHandler = memo(function MessagePartHandler({
   message,
   part,
   partIndex,
   status,
   isLastMessage,
-}: MessagePartHandlerProps) => {
-  const renderTextPart = () => {
-    const partId = `${message.id}-text-${partIndex}`;
-    const isUser = message.role === "user";
-
-    // For user messages, render plain text to avoid markdown processing
-    if (isUser) {
-      return (
-        <div key={partId} className="whitespace-pre-wrap">
-          {part.text ?? ""}
-        </div>
-      );
-    }
-
-    // For assistant messages, use markdown rendering
-    return <MemoizedMarkdown key={partId} content={part.text ?? ""} />;
-  };
-
+}: MessagePartHandlerProps) {
   // Main switch for different part types
   switch (part.type) {
-    case "text":
-      return renderTextPart();
+    case "text": {
+      const isUser = message.role === "user";
+      const text = part.text ?? "";
+
+      // For user messages, use memoized plain text component
+      if (isUser) {
+        return <UserTextPart text={text} />;
+      }
+
+      // For assistant messages, use memoized markdown rendering
+      return <MemoizedMarkdown content={text} />;
+    }
 
     case "reasoning":
       return (
@@ -141,4 +184,4 @@ export const MessagePartHandler = ({
     default:
       return null;
   }
-};
+}, arePropsEqual);

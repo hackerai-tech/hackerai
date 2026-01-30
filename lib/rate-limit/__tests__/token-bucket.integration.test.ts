@@ -176,17 +176,17 @@ describe("token-bucket async functions", () => {
     });
   });
 
-  describe("deductAgentUsage", () => {
+  describe("deductUsage", () => {
     it("should deduct additional cost after processing", async () => {
-      const { deductAgentUsage } = getIsolatedModule();
+      const { deductUsage } = getIsolatedModule();
 
-      await deductAgentUsage("user-123", "pro", 1000, 1200, 500);
+      await deductUsage("user-123", "pro", 1000, 1200, 500);
 
       expect(mockLimitFn).toHaveBeenCalled();
     });
 
     it("should use extra usage when bucket depleted", async () => {
-      const { deductAgentUsage } = getIsolatedModule();
+      const { deductUsage } = getIsolatedModule();
 
       mockLimitFn.mockResolvedValue({
         success: true,
@@ -195,7 +195,7 @@ describe("token-bucket async functions", () => {
         limit: 8333,
       });
 
-      await deductAgentUsage("user-123", "pro", 1000, 1000, 1000, {
+      await deductUsage("user-123", "pro", 1000, 1000, 1000, {
         enabled: true,
         hasBalance: true,
         autoReloadEnabled: false,
@@ -205,9 +205,9 @@ describe("token-bucket async functions", () => {
     });
 
     it("should skip deduction for free tier", async () => {
-      const { deductAgentUsage } = getIsolatedModule();
+      const { deductUsage } = getIsolatedModule();
 
-      await deductAgentUsage("user-123", "free", 1000, 1000, 500);
+      await deductUsage("user-123", "free", 1000, 1000, 500);
 
       expect(mockLimitFn).not.toHaveBeenCalled();
     });
@@ -262,12 +262,12 @@ describe("token-bucket async functions", () => {
 
   describe("end-to-end scenarios", () => {
     it("typical conversation flow: check -> deduct -> complete", async () => {
-      const { checkAgentRateLimit, deductAgentUsage } = getIsolatedModule();
+      const { checkAgentRateLimit, deductUsage } = getIsolatedModule();
 
       const rateLimitInfo = await checkAgentRateLimit("user-123", "pro", 2000);
       expect(rateLimitInfo.pointsDeducted).toBeDefined();
 
-      await deductAgentUsage("user-123", "pro", 2000, 2500, 800);
+      await deductUsage("user-123", "pro", 2000, 2500, 800);
 
       expect(mockLimitFn.mock.calls.length).toBeGreaterThan(2);
     });

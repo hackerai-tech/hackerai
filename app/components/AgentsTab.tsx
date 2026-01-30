@@ -14,12 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
-import {
-  Save,
-  ShieldAlert,
-  ChevronDown,
-  ChevronUp,
-} from "lucide-react";
+import { Save, ShieldAlert, ChevronDown, ChevronUp } from "lucide-react";
 import { toast } from "sonner";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import type { QueueBehavior } from "@/types/chat";
@@ -278,7 +273,6 @@ const AgentsTab = () => {
           )}
         </div>
       )}
-
     </div>
   );
 };

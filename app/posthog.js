@@ -13,5 +13,9 @@ export default function PostHogClient() {
     flushAt: 1,
     flushInterval: 0,
   });
+
+  // Suppress PostHog errors (e.g., payload too large)
+  posthogClient.on("error", () => {});
+
   return posthogClient;
 }

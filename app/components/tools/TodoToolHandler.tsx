@@ -1,4 +1,4 @@
-import React from "react";
+import React, { memo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { TodoBlock } from "@/components/ui/todo-block";
@@ -11,11 +11,24 @@ interface TodoToolHandlerProps {
   status: ChatStatus;
 }
 
-export const TodoToolHandler = ({
+// Custom comparison for todo handler
+function areTodoPropsEqual(
+  prev: TodoToolHandlerProps,
+  next: TodoToolHandlerProps,
+): boolean {
+  if (prev.status !== next.status) return false;
+  if (prev.part.state !== next.part.state) return false;
+  if (prev.part.toolCallId !== next.part.toolCallId) return false;
+  if (prev.part.output !== next.part.output) return false;
+  if (prev.part.input !== next.part.input) return false;
+  return true;
+}
+
+export const TodoToolHandler = memo(function TodoToolHandler({
   message,
   part,
   status,
-}: TodoToolHandlerProps) => {
+}: TodoToolHandlerProps) {
   const { toolCallId, state, input, output } = part;
   const todoInput = input as TodoWriteInput;
 
@@ -66,4 +79,4 @@ export const TodoToolHandler = ({
     default:
       return null;
   }
-};
+}, areTodoPropsEqual);

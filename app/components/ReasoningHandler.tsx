@@ -1,5 +1,6 @@
 "use client";
 
+import { memo, useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import type { ChatStatus } from "@/types";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
@@ -32,26 +33,60 @@ const collectReasoningText = (
   return collected.join("");
 };
 
-export const ReasoningHandler = ({
+// Hoist regex outside component to avoid recreation
+const REDACTED_PATTERN = /^(\[REDACTED\])+$/;
+
+// Custom comparison for reasoning handler
+function areReasoningPropsEqual(
+  prev: ReasoningHandlerProps,
+  next: ReasoningHandlerProps,
+): boolean {
+  if (prev.status !== next.status) return false;
+  if (prev.isLastMessage !== next.isLastMessage) return false;
+  if (prev.partIndex !== next.partIndex) return false;
+  // Compare parts length and relevant reasoning content
+  if (prev.message.parts.length !== next.message.parts.length) return false;
+  // Compare the reasoning part text directly
+  const prevPart = prev.message.parts[prev.partIndex];
+  const nextPart = next.message.parts[next.partIndex];
+  if (prevPart?.type !== nextPart?.type) return false;
+  if (prevPart?.type === "reasoning" && nextPart?.type === "reasoning") {
+    return prevPart.text === nextPart.text;
+  }
+  return true;
+}
+
+export const ReasoningHandler = memo(function ReasoningHandler({
   message,
   partIndex,
   status,
   isLastMessage,
-}: ReasoningHandlerProps) => {
-  const parts = Array.isArray(message.parts) ? message.parts : [];
+}: ReasoningHandlerProps) {
+  // Memoize parts array reference to avoid recreation
+  const parts = useMemo(
+    () => (Array.isArray(message.parts) ? message.parts : []),
+    [message.parts],
+  );
   const currentPart = parts[partIndex];
 
+  // Memoize combined text collection - only recompute when parts or index changes
+  const combined = useMemo(() => {
+    if (currentPart?.type !== "reasoning") return "";
+    // Skip if previous part is also reasoning (avoid duplicate renders)
+    const previousPart = parts[partIndex - 1];
+    if (previousPart?.type === "reasoning") return "";
+    return collectReasoningText(parts, partIndex);
+  }, [parts, partIndex, currentPart?.type]);
+
+  // Early return for non-reasoning parts
   if (currentPart?.type !== "reasoning") return null;
 
   // Skip if previous part is also reasoning (avoid duplicate renders)
   const previousPart = parts[partIndex - 1];
   if (previousPart?.type === "reasoning") return null;
 
-  const combined = collectReasoningText(parts, partIndex);
-
   // Don't show reasoning if empty or only contains [REDACTED] (encrypted reasoning from providers like Gemini)
-  // Check for one or more [REDACTED] patterns (e.g., "[REDACTED]", "[REDACTED][REDACTED]", etc.)
-  if (!combined || /^(\[REDACTED\])+$/.test(combined.trim())) return null;
+  if (!combined || REDACTED_PATTERN.test(combined.trim())) return null;
 
   const isLastPart = partIndex === parts.length - 1;
   const autoOpen =
@@ -67,4 +102,4 @@ export const ReasoningHandler = ({
       )}
     </Reasoning>
   );
-};
+}, areReasoningPropsEqual);

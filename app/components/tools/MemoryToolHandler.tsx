@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState, useCallback, useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import {
   Popover,
@@ -14,7 +14,23 @@ interface MemoryToolHandlerProps {
   status: ChatStatus;
 }
 
-export const MemoryToolHandler = ({ part, status }: MemoryToolHandlerProps) => {
+// Custom comparison for memory handler
+function areMemoryPropsEqual(
+  prev: MemoryToolHandlerProps,
+  next: MemoryToolHandlerProps,
+): boolean {
+  if (prev.status !== next.status) return false;
+  if (prev.part.state !== next.part.state) return false;
+  if (prev.part.toolCallId !== next.part.toolCallId) return false;
+  if (prev.part.output !== next.part.output) return false;
+  if (prev.part.input !== next.part.input) return false;
+  return true;
+}
+
+export const MemoryToolHandler = memo(function MemoryToolHandler({
+  part,
+  status,
+}: MemoryToolHandlerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const { toolCallId, state, input, output } = part;
 
@@ -88,24 +104,24 @@ export const MemoryToolHandler = ({ part, status }: MemoryToolHandlerProps) => {
     );
   };
 
-  const handleClick = () => {
-    setIsOpen(!isOpen);
-  };
+  const handleClick = useCallback(() => {
+    setIsOpen((prev) => !prev);
+  }, []);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      setIsOpen(!isOpen);
+      setIsOpen((prev) => !prev);
     }
-  };
+  }, []);
 
-  const handleMouseEnter = () => {
+  const handleMouseEnter = useCallback(() => {
     setIsOpen(true);
-  };
+  }, []);
 
-  const handleMouseLeave = () => {
+  const handleMouseLeave = useCallback(() => {
     setIsOpen(false);
-  };
+  }, []);
 
   switch (state) {
     case "input-streaming":
@@ -163,4 +179,4 @@ export const MemoryToolHandler = ({ part, status }: MemoryToolHandlerProps) => {
     default:
       return null;
   }
-};
+}, areMemoryPropsEqual);

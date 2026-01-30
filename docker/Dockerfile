@@ -130,6 +130,7 @@ RUN set -eux; \
     golang \
     nodejs \
     npm \
+    tmux \
     # Forensics
     binwalk \
     foremost \
@@ -286,6 +287,7 @@ RUN set -eux; \
     which python3 && echo "✓ python3" && \
     which node && echo "✓ node" && \
     which ruby && echo "✓ ruby" && \
+    which tmux && echo "✓ tmux" && \
     python3 -c "import reportlab; print('✓ reportlab')" && \
     python3 -c "import docx; print('✓ python-docx')" && \
     python3 -c "import openpyxl; print('✓ openpyxl')" && \
