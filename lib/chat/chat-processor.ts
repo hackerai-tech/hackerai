@@ -14,11 +14,11 @@ export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  // Agent mode: Ultra users get 50 steps, others get 25 steps
+  // Agent mode: Ultra users get 40 steps, others get 25 steps
   if (mode === "agent" && subscription === "ultra") {
-    return 50;
+    return 40;
   } else if (mode === "agent") {
-    return 25;
+    return 20;
   }
 
   // Ask mode steps: Free: 5, Ultra: 15, Pro/Team: 10
