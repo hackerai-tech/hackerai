@@ -708,9 +708,10 @@ export const createChatHandler = (
                               await prepareForNewStream({ chatId });
                             }
 
-                            const newFileIds = getFileAccumulator()
-                              .getAll()
-                              .map((f) => f.fileId);
+                            const accumulatedFiles = getFileAccumulator().getAll();
+                            const newFileIds = accumulatedFiles.map(
+                              (f) => f.fileId,
+                            );
 
                             // Only save NEW assistant messages from retry (skip already-saved user messages)
                             for (const msg of retryMessages) {
@@ -736,6 +737,16 @@ export const createChatHandler = (
                                 model: responseModel,
                               });
                             }
+
+                            // Send file metadata via stream for resumable stream clients
+                            sendFileMetadataToStream(accumulatedFiles);
+                          } else {
+                            // For temporary chats, send file metadata via stream before cleanup
+                            const tempFiles = getFileAccumulator().getAll();
+                            sendFileMetadataToStream(tempFiles);
+
+                            // Ensure temp stream row is removed backend-side
+                            await deleteTempStreamForBackend({ chatId });
                           }
 
                           axiomLogger.info("Fallback model completed", {
