@@ -43,8 +43,6 @@
     "desktop:build": "cd packages/desktop && pnpm build"
   },
   "dependencies": {
-    "@ai-sdk/gateway": "^3.0.24",
-    "@ai-sdk/google": "^3.0.14",
     "@ai-sdk/openai": "^3.0.19",
     "@ai-sdk/react": "^3.0.51",
     "@ai-sdk/xai": "^3.0.34",

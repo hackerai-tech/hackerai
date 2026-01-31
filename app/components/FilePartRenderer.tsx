@@ -7,6 +7,7 @@ import React, {
   useEffect,
   useRef,
 } from "react";
+import { createPortal } from "react-dom";
 import { useConvex, useAction } from "convex/react";
 import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
@@ -491,15 +492,18 @@ const FilePartRendererComponent = ({
   return (
     <>
       {renderedFilePart}
-      {/* Image Viewer Modal */}
-      {selectedImage && (
-        <ImageViewer
-          isOpen={!!selectedImage}
-          onClose={() => setSelectedImage(null)}
-          imageSrc={selectedImage.src}
-          imageAlt={selectedImage.alt}
-        />
-      )}
+      {/* Image Viewer Modal - rendered via portal to escape contentVisibility containment */}
+      {selectedImage &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <ImageViewer
+            isOpen={!!selectedImage}
+            onClose={() => setSelectedImage(null)}
+            imageSrc={selectedImage.src}
+            imageAlt={selectedImage.alt}
+          />,
+          document.body,
+        )}
     </>
   );
 };

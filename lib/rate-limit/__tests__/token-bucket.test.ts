@@ -106,8 +106,14 @@ describe("token-bucket", () => {
 
       // Ratio based on yearly prices
       const expectedRatio = PRICING.ultra.yearly / PRICING.pro.yearly;
-      expect(ultraLimits.session / proLimits.session).toBeCloseTo(expectedRatio, 1);
-      expect(ultraLimits.weekly / proLimits.weekly).toBeCloseTo(expectedRatio, 1);
+      expect(ultraLimits.session / proLimits.session).toBeCloseTo(
+        expectedRatio,
+        1,
+      );
+      expect(ultraLimits.weekly / proLimits.weekly).toBeCloseTo(
+        expectedRatio,
+        1,
+      );
     });
 
     it("weekly limit should be ~7x session limit", () => {

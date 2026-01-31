@@ -432,191 +432,197 @@ export const createChatHandler = (
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
-          const fallbackModel = "agent-fallback-model";
+          const fallbackModel = "fallback-model";
 
           // Helper to create streamText with a given model (reused for retry)
           const createStream = async (modelName: string) =>
             streamText({
               model: trackedProvider.languageModel(modelName),
-            system: currentSystemPrompt,
-            messages: await convertToModelMessages(finalMessages),
-            tools,
-            // Refresh system prompt when memory updates occur, cache and reuse until next update
-            prepareStep: async ({ steps, messages }) => {
-              try {
-                // Run summarization check on every step (non-temporary chats only)
-                // but only summarize once
-                if (!temporary && !hasSummarized) {
-                  const {
-                    needsSummarization,
-                    summarizedMessages,
-                    cutoffMessageId,
-                    summaryText,
-                  } = await checkAndSummarizeIfNeeded(
-                    messages,
-                    finalMessages,
-                    subscription,
-                    trackedProvider.languageModel("summarization-model"),
-                    mode,
-                  );
-
-                  if (needsSummarization && cutoffMessageId && summaryText) {
-                    writeSummarizationStarted(writer);
-
-                    // Save the summary metadata to the chat document FIRST
-                    await saveChatSummary({
-                      chatId,
+              system: currentSystemPrompt,
+              messages: await convertToModelMessages(finalMessages),
+              tools,
+              // Refresh system prompt when memory updates occur, cache and reuse until next update
+              prepareStep: async ({ steps, messages }) => {
+                try {
+                  // Run summarization check on every step (non-temporary chats only)
+                  // but only summarize once
+                  if (!temporary && !hasSummarized) {
+                    const {
+                      needsSummarization,
+                      summarizedMessages,
+                      cutoffMessageId,
                       summaryText,
-                      summaryUpToMessageId: cutoffMessageId,
-                    });
+                    } = await checkAndSummarizeIfNeeded(
+                      messages,
+                      finalMessages,
+                      subscription,
+                      trackedProvider.languageModel("summarization-model"),
+                      mode,
+                    );
 
-                    // Only update state after successful save
-                    // Strip reasoning for Gemini to avoid thought_signature errors
-                    finalMessages = isGeminiModel
-                      ? stripReasoningFromMessagesForGemini(summarizedMessages)
-                      : summarizedMessages;
-                    hasSummarized = true;
+                    if (needsSummarization && cutoffMessageId && summaryText) {
+                      writeSummarizationStarted(writer);
 
-                    writeSummarizationCompleted(writer);
-                    // Push only the completed event to parts array for persistence
-                    summarizationParts.push(createSummarizationCompletedPart());
-                    // Return updated messages for this step
+                      // Save the summary metadata to the chat document FIRST
+                      await saveChatSummary({
+                        chatId,
+                        summaryText,
+                        summaryUpToMessageId: cutoffMessageId,
+                      });
+
+                      // Only update state after successful save
+                      // Strip reasoning for Gemini to avoid thought_signature errors
+                      finalMessages = isGeminiModel
+                        ? stripReasoningFromMessagesForGemini(
+                            summarizedMessages,
+                          )
+                        : summarizedMessages;
+                      hasSummarized = true;
+
+                      writeSummarizationCompleted(writer);
+                      // Push only the completed event to parts array for persistence
+                      summarizationParts.push(
+                        createSummarizationCompletedPart(),
+                      );
+                      // Return updated messages for this step
+                      return {
+                        messages: await convertToModelMessages(finalMessages),
+                      };
+                    }
+                  }
+
+                  const lastStep = Array.isArray(steps)
+                    ? steps.at(-1)
+                    : undefined;
+                  const toolResults =
+                    (lastStep && (lastStep as any).toolResults) || [];
+                  const wasMemoryUpdate =
+                    Array.isArray(toolResults) &&
+                    toolResults.some((r) => r?.toolName === "update_memory");
+
+                  // Check if any note was created, updated, or deleted (need to refresh notes in system prompt)
+                  const wasNoteModified =
+                    Array.isArray(toolResults) &&
+                    toolResults.some(
+                      (r) =>
+                        r?.toolName === "create_note" ||
+                        r?.toolName === "update_note" ||
+                        r?.toolName === "delete_note",
+                    );
+
+                  if (!wasMemoryUpdate && !wasNoteModified) {
                     return {
-                      messages: await convertToModelMessages(finalMessages),
+                      messages,
+                      ...(currentSystemPrompt && {
+                        system: currentSystemPrompt,
+                      }),
                     };
                   }
-                }
 
-                const lastStep = Array.isArray(steps)
-                  ? steps.at(-1)
-                  : undefined;
-                const toolResults =
-                  (lastStep && (lastStep as any).toolResults) || [];
-                const wasMemoryUpdate =
-                  Array.isArray(toolResults) &&
-                  toolResults.some((r) => r?.toolName === "update_memory");
-
-                // Check if any note was created, updated, or deleted (need to refresh notes in system prompt)
-                const wasNoteModified =
-                  Array.isArray(toolResults) &&
-                  toolResults.some(
-                    (r) =>
-                      r?.toolName === "create_note" ||
-                      r?.toolName === "update_note" ||
-                      r?.toolName === "delete_note",
+                  // Refresh and cache the updated system prompt
+                  currentSystemPrompt = await systemPrompt(
+                    userId,
+                    mode,
+                    subscription,
+                    selectedModel,
+                    userCustomization,
+                    temporary,
+                    chat?.finish_reason,
+                    sandboxContext,
                   );
 
-                if (!wasMemoryUpdate && !wasNoteModified) {
                   return {
                     messages,
-                    ...(currentSystemPrompt && { system: currentSystemPrompt }),
+                    system: currentSystemPrompt,
                   };
+                } catch (error) {
+                  console.error("Error in prepareStep:", error);
+                  return currentSystemPrompt
+                    ? { system: currentSystemPrompt }
+                    : {};
                 }
+              },
+              abortSignal: userStopSignal.signal,
+              providerOptions: buildProviderOptions(
+                isReasoningModel,
+                subscription,
+              ),
+              experimental_transform: smoothStream({ chunking: "word" }),
+              stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
+              onChunk: async (chunk) => {
+                if (chunk.chunk.type === "tool-call") {
+                  const sandboxType = getSandboxTypeForTool(
+                    chunk.chunk.toolName,
+                    sandboxPreference,
+                  );
 
-                // Refresh and cache the updated system prompt
-                currentSystemPrompt = await systemPrompt(
-                  userId,
-                  mode,
-                  subscription,
-                  selectedModel,
-                  userCustomization,
-                  temporary,
-                  chat?.finish_reason,
-                  sandboxContext,
-                );
+                  chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
 
-                return {
-                  messages,
-                  system: currentSystemPrompt,
-                };
-              } catch (error) {
-                console.error("Error in prepareStep:", error);
-                return currentSystemPrompt
-                  ? { system: currentSystemPrompt }
-                  : {};
-              }
-            },
-            abortSignal: userStopSignal.signal,
-            providerOptions: buildProviderOptions(
-              isReasoningModel,
-              subscription,
-            ),
-            experimental_transform: smoothStream({ chunking: "word" }),
-            stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
-            onChunk: async (chunk) => {
-              if (chunk.chunk.type === "tool-call") {
-                const sandboxType = getSandboxTypeForTool(
-                  chunk.chunk.toolName,
-                  sandboxPreference,
-                );
+                  if (posthog) {
+                    posthog.capture({
+                      distinctId: userId,
+                      event: "hackerai-" + chunk.chunk.toolName,
+                      properties: {
+                        ...(sandboxType && { sandboxType }),
+                      },
+                    });
+                  }
+                }
+              },
+              onFinish: async ({ finishReason, usage, response }) => {
+                // If preemptive timeout triggered, use "timeout" as finish reason
+                if (preemptiveTimeout?.isPreemptive()) {
+                  streamFinishReason = "timeout";
+                } else {
+                  streamFinishReason = finishReason;
+                }
+                // Capture full usage and model
+                streamUsage = usage as Record<string, unknown>;
+                responseModel = response?.modelId;
 
-                chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
+                // Update logger with model and usage
+                chatLogger!.setStreamResponse(responseModel, streamUsage);
 
-                if (posthog) {
-                  posthog.capture({
-                    distinctId: userId,
-                    event: "hackerai-" + chunk.chunk.toolName,
-                    properties: {
-                      ...(sandboxType && { sandboxType }),
-                    },
+                // Deduct additional cost (output + any input difference)
+                // Input cost was already deducted upfront in checkRateLimit
+                // Free users don't have token buckets, so skip for them
+                if (subscription !== "free" && usage) {
+                  // Extract provider cost if available (more accurate than token calculation)
+                  const providerCost = (usage as { raw?: { cost?: number } })
+                    .raw?.cost;
+
+                  await deductUsage(
+                    userId,
+                    subscription,
+                    estimatedInputTokens,
+                    usage.inputTokens || 0,
+                    usage.outputTokens || 0,
+                    extraUsageConfig,
+                    providerCost,
+                  );
+                }
+              },
+              onError: async (error) => {
+                // Suppress xAI safety check errors from logging (they're expected for certain content)
+                if (!isXaiSafetyError(error)) {
+                  console.error("Error:", error);
+
+                  // Log provider errors to Axiom with request context
+                  axiomLogger.error("Provider streaming error", {
+                    chatId,
+                    endpoint,
+                    mode,
+                    model: selectedModel,
+                    userId,
+                    subscription,
+                    isTemporary: temporary,
+                    ...extractErrorDetails(error),
                   });
                 }
-              }
-            },
-            onFinish: async ({ finishReason, usage, response }) => {
-              // If preemptive timeout triggered, use "timeout" as finish reason
-              if (preemptiveTimeout?.isPreemptive()) {
-                streamFinishReason = "timeout";
-              } else {
-                streamFinishReason = finishReason;
-              }
-              // Capture full usage and model
-              streamUsage = usage as Record<string, unknown>;
-              responseModel = response?.modelId;
-
-              // Update logger with model and usage
-              chatLogger!.setStreamResponse(responseModel, streamUsage);
-
-              // Deduct additional cost (output + any input difference)
-              // Input cost was already deducted upfront in checkRateLimit
-              // Free users don't have token buckets, so skip for them
-              if (subscription !== "free" && usage) {
-                // Extract provider cost if available (more accurate than token calculation)
-                const providerCost = (usage as { raw?: { cost?: number } }).raw
-                  ?.cost;
-
-                await deductUsage(
-                  userId,
-                  subscription,
-                  estimatedInputTokens,
-                  usage.inputTokens || 0,
-                  usage.outputTokens || 0,
-                  extraUsageConfig,
-                  providerCost,
-                );
-              }
-            },
-            onError: async (error) => {
-              // Suppress xAI safety check errors from logging (they're expected for certain content)
-              if (!isXaiSafetyError(error)) {
-                console.error("Error:", error);
-
-                // Log provider errors to Axiom with request context
-                axiomLogger.error("Provider streaming error", {
-                  chatId,
-                  endpoint,
-                  mode,
-                  model: selectedModel,
-                  userId,
-                  subscription,
-                  isTemporary: temporary,
-                  ...extractErrorDetails(error),
-                });
-              }
-              // Refund credits on streaming errors (idempotent - only refunds once)
-              await usageRefundTracker.refund();
-            },
-          });
+                // Refund credits on streaming errors (idempotent - only refunds once)
+                await usageRefundTracker.refund();
+              },
+            });
 
           const result = await createStream(selectedModel);
 
@@ -634,7 +640,7 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  axiomLogger.error("Stream finished with only step-start", {
+                  axiomLogger.error("Stream finished incomplete - triggering fallback", {
                     chatId,
                     endpoint,
                     mode,
@@ -645,20 +651,13 @@ export const createChatHandler = (
                     messageCount: messages.length,
                     parts: lastAssistantMessage?.parts,
                     isRetryWithFallback,
+                    assistantMessageId,
                   });
 
                   // Retry with fallback model if not already retrying
                   if (!isRetryWithFallback && !isAborted) {
                     isRetryWithFallback = true;
-                    axiomLogger.info(
-                      "Retrying with fallback model after step-start only",
-                      {
-                        chatId,
-                        originalModel: selectedModel,
-                        fallbackModel,
-                        userId,
-                      },
-                    );
+                    const fallbackStartTime = Date.now();
 
                     const retryResult = await createStream(fallbackModel);
                     const retryMessageId = generateId();
@@ -708,7 +707,8 @@ export const createChatHandler = (
                               await prepareForNewStream({ chatId });
                             }
 
-                            const accumulatedFiles = getFileAccumulator().getAll();
+                            const accumulatedFiles =
+                              getFileAccumulator().getAll();
                             const newFileIds = accumulatedFiles.map(
                               (f) => f.fileId,
                             );
@@ -749,10 +749,36 @@ export const createChatHandler = (
                             await deleteTempStreamForBackend({ chatId });
                           }
 
-                          axiomLogger.info("Fallback model completed", {
+                          // Verify fallback produced valid content
+                          const fallbackAssistantMessage = retryMessages
+                            .slice()
+                            .reverse()
+                            .find((m) => m.role === "assistant");
+                          const fallbackHasContent =
+                            fallbackAssistantMessage?.parts?.some(
+                              (p) =>
+                                p.type === "text" ||
+                                p.type === "tool-invocation" ||
+                                p.type === "reasoning",
+                            ) ?? false;
+                          const fallbackPartTypes =
+                            fallbackAssistantMessage?.parts?.map(
+                              (p) => p.type,
+                            ) ?? [];
+
+                          axiomLogger.info("Fallback completed", {
                             chatId,
+                            originalModel: selectedModel,
+                            originalAssistantMessageId: assistantMessageId,
                             fallbackModel,
-                            messageCount: retryMessages.length,
+                            fallbackAssistantMessageId: retryMessageId,
+                            fallbackDurationMs: Date.now() - fallbackStartTime,
+                            fallbackSuccess: fallbackHasContent,
+                            fallbackWasAborted: retryAborted,
+                            fallbackMessageCount: retryMessages.length,
+                            fallbackPartTypes,
+                            userId,
+                            subscription,
                           });
                         },
                         sendReasoning: true,
