@@ -1,10 +1,11 @@
 import { Page, BrowserContext } from "@playwright/test";
 import { TIMEOUTS } from "../constants";
+import { SubscriptionTier } from "@/types/chat";
 
 export interface TestUser {
   email: string;
   password: string;
-  tier: "free" | "pro" | "ultra";
+  tier: SubscriptionTier;
 }
 
 export const TEST_USERS: Record<"free" | "pro" | "ultra", TestUser> = {

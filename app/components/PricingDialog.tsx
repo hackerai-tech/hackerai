@@ -12,6 +12,7 @@ import { navigateToAuth } from "../hooks/useTauri";
 import {
   freeFeatures,
   proFeatures,
+  proPlusFeatures,
   ultraFeatures,
   teamFeatures,
   PRICING,
@@ -156,7 +157,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     price: number;
   } | null>(null);
 
-  // Auto-close pricing dialog for ultra/team users
+  // Auto-close pricing dialog for ultra/team users (pro-plus can still upgrade to ultra)
   React.useEffect(() => {
     if (isOpen && (subscription === "ultra" || subscription === "team")) {
       onClose();
@@ -170,8 +171,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
   const handleUpgradeClick = async (
     plan:
       | "pro-monthly-plan"
+      | "pro-plus-monthly-plan"
       | "ultra-monthly-plan"
       | "pro-yearly-plan"
+      | "pro-plus-yearly-plan"
       | "ultra-yearly-plan" = "pro-monthly-plan",
     planName: string,
     price: number,
@@ -248,6 +251,14 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
         className: "opacity-50 cursor-not-allowed",
         variant: "secondary" as const,
       };
+    } else if (user && subscription === "pro-plus") {
+      // Pro+ users can't downgrade to Pro
+      return {
+        text: "Pro",
+        disabled: true,
+        className: "opacity-50 cursor-not-allowed",
+        variant: "secondary" as const,
+      };
     } else if (user) {
       return {
         text: "Get Pro",
@@ -273,6 +284,42 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
     }
   };
 
+  // Button configurations for Pro+ plan
+  const getProPlusButtonConfig = () => {
+    if (user && !isCheckingProPlan && subscription === "pro-plus") {
+      return {
+        text: "Current Plan",
+        disabled: true,
+        className: "opacity-50 cursor-not-allowed",
+        variant: "secondary" as const,
+      };
+    } else if (user) {
+      const buttonText =
+        subscription === "pro" ? "Upgrade to Pro+" : "Get Pro+";
+      return {
+        text: buttonText,
+        disabled: upgradeLoading,
+        className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
+        variant: "default" as const,
+        onClick: () =>
+          handleUpgradeClick(
+            isYearly ? "pro-plus-yearly-plan" : "pro-plus-monthly-plan",
+            "Pro+",
+            isYearly ? PRICING["pro-plus"].yearly : PRICING["pro-plus"].monthly,
+          ),
+        loading: upgradeLoading,
+      };
+    } else {
+      return {
+        text: "Get Pro+",
+        disabled: false,
+        className: "font-semibold bg-[#615eeb] hover:bg-[#504bb8] text-white",
+        variant: "default" as const,
+        onClick: () => navigateToAuth("/login"),
+      };
+    }
+  };
+
   // Button configurations for Ultra plan
   const getUltraButtonConfig = () => {
     if (user && !isCheckingProPlan && subscription === "ultra") {
@@ -284,7 +331,10 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
       };
     } else if (user) {
       return {
-        text: subscription === "pro" ? "Upgrade to Ultra" : "Get Ultra",
+        text:
+          subscription === "pro" || subscription === "pro-plus"
+            ? "Upgrade to Ultra"
+            : "Get Ultra",
         disabled: upgradeLoading,
         className: "",
         variant: "default" as const,
@@ -309,6 +359,7 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
 
   const freeButtonConfig = getFreeButtonConfig();
   const proButtonConfig = getProButtonConfig();
+  const proPlusButtonConfig = getProPlusButtonConfig();
   const ultraButtonConfig = getUltraButtonConfig();
 
   const hasSubscription = subscription !== "free";
@@ -431,6 +482,27 @@ const PricingDialog: React.FC<PricingDialogProps> = ({ isOpen, onClose }) => {
                   isButtonDisabled={proButtonConfig.disabled}
                   isButtonLoading={proButtonConfig.loading}
                   featureHeader={PLAN_HEADERS.pro}
+                />
+
+                {/* Pro+ Plan */}
+                <PlanCard
+                  planName="Pro+"
+                  price={
+                    isYearly
+                      ? PRICING["pro-plus"].yearly
+                      : PRICING["pro-plus"].monthly
+                  }
+                  description="For power users who need more"
+                  features={proPlusFeatures}
+                  buttonText={proPlusButtonConfig.text}
+                  buttonVariant={proPlusButtonConfig.variant}
+                  buttonClassName={proPlusButtonConfig.className}
+                  onButtonClick={proPlusButtonConfig.onClick}
+                  isButtonDisabled={proPlusButtonConfig.disabled}
+                  isButtonLoading={proPlusButtonConfig.loading}
+                  customClassName="border-[#CFCEFC] bg-[#F5F5FF] dark:bg-[#282841] dark:border-[#484777]"
+                  badgeText="RECOMMENDED"
+                  featureHeader={PLAN_HEADERS["pro-plus"]}
                 />
 
                 {/* Ultra Plan */}

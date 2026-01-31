@@ -640,19 +640,22 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  axiomLogger.error("Stream finished incomplete - triggering fallback", {
-                    chatId,
-                    endpoint,
-                    mode,
-                    model: selectedModel,
-                    userId,
-                    subscription,
-                    isTemporary: temporary,
-                    messageCount: messages.length,
-                    parts: lastAssistantMessage?.parts,
-                    isRetryWithFallback,
-                    assistantMessageId,
-                  });
+                  axiomLogger.error(
+                    "Stream finished incomplete - triggering fallback",
+                    {
+                      chatId,
+                      endpoint,
+                      mode,
+                      model: selectedModel,
+                      userId,
+                      subscription,
+                      isTemporary: temporary,
+                      messageCount: messages.length,
+                      parts: lastAssistantMessage?.parts,
+                      isRetryWithFallback,
+                      assistantMessageId,
+                    },
+                  );
 
                   // Retry with fallback model if not already retrying
                   if (!isRetryWithFallback && !isAborted) {

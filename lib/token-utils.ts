@@ -4,8 +4,7 @@ import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
 export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_PRO_AND_TEAM = 60000;
-export const MAX_TOKENS_ULTRA = 120000;
+export const MAX_TOKENS_PAID = 100000;
 /**
  * Maximum total tokens allowed across all files
  */
@@ -14,10 +13,8 @@ export const MAX_TOKENS_FILE = 24000;
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
 ): number => {
-  if (subscription === "ultra") return MAX_TOKENS_ULTRA;
-  if (subscription === "pro" || subscription === "team")
-    return MAX_TOKENS_PRO_AND_TEAM;
-  return MAX_TOKENS_FREE;
+  if (subscription === "free") return MAX_TOKENS_FREE;
+  return MAX_TOKENS_PAID;
 };
 
 // Token limits for different contexts

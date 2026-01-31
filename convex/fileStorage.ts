@@ -61,31 +61,6 @@ export const getFileDownloadUrl = query({
 });
 
 /**
- * Determine file limit based on user entitlements
- * Pro: 300, Team: 500, Ultra: 1000, Free: 0
- */
-export const getFileLimit = (entitlements: Array<string>): number => {
-  if (
-    entitlements.includes("ultra-plan") ||
-    entitlements.includes("ultra-monthly-plan") ||
-    entitlements.includes("ultra-yearly-plan")
-  ) {
-    return 1000;
-  }
-  if (entitlements.includes("team-plan")) {
-    return 500;
-  }
-  if (
-    entitlements.includes("pro-plan") ||
-    entitlements.includes("pro-monthly-plan") ||
-    entitlements.includes("pro-yearly-plan")
-  ) {
-    return 300;
-  }
-  return 0; // Free users
-};
-
-/**
  * Delete file from storage by file ID
  * Handles both S3 and Convex storage files
  */

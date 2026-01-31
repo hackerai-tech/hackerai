@@ -9,14 +9,16 @@ export const useUpgrade = () => {
   const handleUpgrade = async (
     planKey?:
       | "pro-monthly-plan"
+      | "pro-plus-monthly-plan"
       | "ultra-monthly-plan"
       | "pro-yearly-plan"
+      | "pro-plus-yearly-plan"
       | "ultra-yearly-plan"
       | "team-monthly-plan"
       | "team-yearly-plan",
     e?: React.MouseEvent<HTMLButtonElement | HTMLDivElement>,
     quantity?: number,
-    currentSubscription?: "free" | "pro" | "ultra" | "team",
+    currentSubscription?: "free" | "pro" | "pro-plus" | "ultra" | "team",
   ) => {
     e?.preventDefault();
 

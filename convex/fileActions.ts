@@ -18,7 +18,6 @@ import type {
 } from "../types/file";
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./chats";
-import { getFileLimit } from "./fileStorage";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "../lib/token-utils";
 
@@ -634,8 +633,19 @@ export const saveFile = action({
       args.skipTokenValidation || args.mode === "agent";
 
     // Check if paid tier (free tier cannot upload)
-    const fileLimit = getFileLimit(entitlements);
-    if (fileLimit === 0) {
+    const hasPaidEntitlement =
+      entitlements.includes("ultra-plan") ||
+      entitlements.includes("ultra-monthly-plan") ||
+      entitlements.includes("ultra-yearly-plan") ||
+      entitlements.includes("pro-plus-plan") ||
+      entitlements.includes("pro-plus-monthly-plan") ||
+      entitlements.includes("pro-plus-yearly-plan") ||
+      entitlements.includes("team-plan") ||
+      entitlements.includes("pro-plan") ||
+      entitlements.includes("pro-monthly-plan") ||
+      entitlements.includes("pro-yearly-plan");
+
+    if (!hasPaidEntitlement) {
       throw new ConvexError({
         code: "PAID_PLAN_REQUIRED",
         message: "Paid plan required for file uploads",

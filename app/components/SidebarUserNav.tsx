@@ -243,9 +243,11 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                     ? "Ultra"
                     : subscription === "team"
                       ? "Team"
-                      : subscription === "pro"
-                        ? "Pro"
-                        : "Free"}
+                      : subscription === "pro-plus"
+                        ? "Pro+"
+                        : subscription === "pro"
+                          ? "Pro"
+                          : "Free"}
                 </div>
               </div>
             </button>
@@ -272,7 +274,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenuSeparator />
 
-          {subscription === "pro" && (
+          {(subscription === "pro" || subscription === "pro-plus") && (
             <DropdownMenuItem
               data-testid="upgrade-menu-item"
               onClick={redirectToPricing}

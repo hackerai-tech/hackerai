@@ -307,12 +307,24 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         entitlements.includes("ultra-monthly-plan") ||
         entitlements.includes("ultra-yearly-plan");
       const hasTeam = entitlements.includes("team-plan");
+      const hasProPlus =
+        entitlements.includes("pro-plus-plan") ||
+        entitlements.includes("pro-plus-monthly-plan") ||
+        entitlements.includes("pro-plus-yearly-plan");
       const hasPro =
         entitlements.includes("pro-plan") ||
         entitlements.includes("pro-monthly-plan") ||
         entitlements.includes("pro-yearly-plan");
       setSubscription(
-        hasUltra ? "ultra" : hasTeam ? "team" : hasPro ? "pro" : "free",
+        hasUltra
+          ? "ultra"
+          : hasTeam
+            ? "team"
+            : hasProPlus
+              ? "pro-plus"
+              : hasPro
+                ? "pro"
+                : "free",
       );
     }
   }, [user, entitlements]);
@@ -372,7 +384,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           const data = await response.json();
           const tier = data.subscription as SubscriptionTier | undefined;
           setSubscription(
-            tier === "ultra" || tier === "team" || tier === "pro"
+            tier === "ultra" ||
+              tier === "team" ||
+              tier === "pro-plus" ||
+              tier === "pro"
               ? tier
               : "free",
           );

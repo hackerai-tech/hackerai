@@ -5,6 +5,7 @@ import {
   extractErrorMessage,
   isRateLimitError,
 } from "@/lib/api/response";
+import type { SubscriptionTier } from "@/types";
 
 const workos = new WorkOS(process.env.WORKOS_API_KEY!, {
   clientId: process.env.WORKOS_CLIENT_ID!,
@@ -79,18 +80,24 @@ export async function GET(req: NextRequest) {
       allEntitlements.includes("ultra-monthly-plan") ||
       allEntitlements.includes("ultra-yearly-plan");
     const hasTeam = allEntitlements.includes("team-plan");
+    const hasProPlus =
+      allEntitlements.includes("pro-plus-plan") ||
+      allEntitlements.includes("pro-plus-monthly-plan") ||
+      allEntitlements.includes("pro-plus-yearly-plan");
     const hasPro =
       allEntitlements.includes("pro-plan") ||
       allEntitlements.includes("pro-monthly-plan") ||
       allEntitlements.includes("pro-yearly-plan");
 
-    const subscription: "free" | "pro" | "ultra" | "team" = hasUltra
+    const subscription: SubscriptionTier = hasUltra
       ? "ultra"
       : hasTeam
         ? "team"
-        : hasPro
-          ? "pro"
-          : "free";
+        : hasProPlus
+          ? "pro-plus"
+          : hasPro
+            ? "pro"
+            : "free";
 
     // Create response with entitlements and normalized subscription tier
     const response = json({
