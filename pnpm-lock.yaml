@@ -15,12 +15,6 @@ overrides:
 importers:
   .:
     dependencies:
-      "@ai-sdk/gateway":
-        specifier: ^3.0.24
-        version: 3.0.25(zod@4.3.6)
-      "@ai-sdk/google":
-        specifier: ^3.0.14
-        version: 3.0.15(zod@4.3.6)
       "@ai-sdk/openai":
         specifier: ^3.0.19
         version: 3.0.19(zod@4.3.6)
@@ -395,24 +389,6 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  "@ai-sdk/gateway@3.0.25":
-    resolution:
-      {
-        integrity: sha512-j0AQeA7hOVqwImykQlganf/Euj3uEXf0h3G0O4qKTDpEwE+EZGIPnVimCWht5W91lAetPZSfavDyvfpuPDd2PQ==,
-      }
-    engines: { node: ">=18" }
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  "@ai-sdk/google@3.0.15":
-    resolution:
-      {
-        integrity: sha512-sv12VNSBBXYRV35AUVUCzxLs0misPVcR0w6HZykBEwpmQ4oWJ/yj3OZfOh+78fwh8c4x6EIAjvQwgLgZMK+fFQ==,
-      }
-    engines: { node: ">=18" }
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
   "@ai-sdk/openai-compatible@2.0.18":
     resolution:
       {
@@ -426,15 +402,6 @@ packages:
     resolution:
       {
         integrity: sha512-qpMGKV6eYfW8IzErk/OppchQwVui3GPc4BEfg/sQGRzR89vf2Sa8qvSavXeZi5w/oUF56d+VtobwSH0FRooFCQ==,
-      }
-    engines: { node: ">=18" }
-    peerDependencies:
-      zod: ^3.25.76 || ^4.1.8
-
-  "@ai-sdk/provider-utils@4.0.10":
-    resolution:
-      {
-        integrity: sha512-VeDAiCH+ZK8Xs4hb9Cw7pHlujWNL52RKe8TExOkrw6Ir1AmfajBZTb9XUdKOZO08RwQElIKA8+Ltm+Gqfo8djQ==,
       }
     engines: { node: ">=18" }
     peerDependencies:
@@ -12343,19 +12310,6 @@ snapshots:
       "@vercel/oidc": 3.1.0
       zod: 4.3.6
 
-  "@ai-sdk/gateway@3.0.25(zod@4.3.6)":
-    dependencies:
-      "@ai-sdk/provider": 3.0.5
-      "@ai-sdk/provider-utils": 4.0.10(zod@4.3.6)
-      "@vercel/oidc": 3.1.0
-      zod: 4.3.6
-
-  "@ai-sdk/google@3.0.15(zod@4.3.6)":
-    dependencies:
-      "@ai-sdk/provider": 3.0.5
-      "@ai-sdk/provider-utils": 4.0.10(zod@4.3.6)
-      zod: 4.3.6
-
   "@ai-sdk/openai-compatible@2.0.18(zod@4.3.6)":
     dependencies:
       "@ai-sdk/provider": 3.0.5
@@ -12366,13 +12320,6 @@ snapshots:
     dependencies:
       "@ai-sdk/provider": 3.0.5
       "@ai-sdk/provider-utils": 4.0.9(zod@4.3.6)
-      zod: 4.3.6
-
-  "@ai-sdk/provider-utils@4.0.10(zod@4.3.6)":
-    dependencies:
-      "@ai-sdk/provider": 3.0.5
-      "@standard-schema/spec": 1.1.0
-      eventsource-parser: 3.0.6
       zod: 4.3.6
 
   "@ai-sdk/provider-utils@4.0.9(zod@4.3.6)":
@@ -17550,7 +17497,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.12.2(debug@4.4.3))
+      retry-axios: 2.6.0(axios@1.12.2)
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -19467,7 +19414,7 @@ snapshots:
 
   resumable-stream@2.2.10: {}
 
-  retry-axios@2.6.0(axios@1.12.2(debug@4.4.3)):
+  retry-axios@2.6.0(axios@1.12.2):
     dependencies:
       axios: 1.12.2(debug@4.4.3)
 

@@ -6,8 +6,6 @@
 
 import type { SandboxPreference, ChatMode, SubscriptionTier } from "@/types";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
-import { GoogleGenerativeAIProviderOptions } from "@ai-sdk/google";
-import type { GatewayProviderOptions } from "@ai-sdk/gateway";
 
 // Tools that interact with the sandbox environment
 const SANDBOX_ENVIRONMENT_TOOLS = [
@@ -165,15 +163,6 @@ export function buildProviderOptions(
       // Disable storing the conversation in XAI's database
       store: false,
     },
-    gateway: {
-      only: ["vertex"],
-    } satisfies GatewayProviderOptions,
-    google: {
-      // Options are nested under 'google' for Vertex provider
-      ...(isReasoningModel
-        ? { thinkingConfig: { includeThoughts: true } }
-        : {}),
-    } satisfies GoogleGenerativeAIProviderOptions,
     openrouter: {
       ...(isReasoningModel
         ? { reasoning: { enabled: true } }
