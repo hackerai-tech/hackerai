@@ -14,6 +14,7 @@ export const getMemoriesForBackend = query({
       v.union(
         v.literal("free"),
         v.literal("pro"),
+        v.literal("pro-plus"),
         v.literal("ultra"),
         v.literal("team"),
       ),
@@ -40,12 +41,8 @@ export const getMemoriesForBackend = query({
         .collect();
 
       // Calculate total tokens and enforce token limit based on subscription
-      const tokenLimit =
-        args.subscription === "ultra"
-          ? 20000
-          : args.subscription === "pro" || args.subscription === "team"
-            ? 10000
-            : 5000;
+      // All paid plans get the same 100k context window
+      const tokenLimit = args.subscription === "free" ? 5000 : 15000;
       let totalTokens = 0;
       const validMemories = [];
 

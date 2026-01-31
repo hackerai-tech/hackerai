@@ -1,4 +1,4 @@
-import type { ChatMode } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types";
 import { getPersonalityInstructions } from "./system-prompt/personality";
 import type { UserCustomization } from "@/types";
 import { generateUserBio } from "./system-prompt/bio";
@@ -160,7 +160,7 @@ HackerAI should tell them it doesn't know, and point them to 'https://help.hacke
 
 const getAskModeSection = (
   modelName: ModelName,
-  subscription: "free" | "pro" | "ultra" | "team",
+  subscription: SubscriptionTier,
   isTemporary?: boolean,
 ): string => {
   const knowledgeCutOffDate = getModelCutoffDate(modelName);
@@ -245,7 +245,7 @@ one step at a time rather than trying to output everything at once.
 export const systemPrompt = async (
   userId: string,
   mode: ChatMode,
-  subscription: "free" | "pro" | "ultra" | "team",
+  subscription: SubscriptionTier,
   modelName: ModelName,
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,

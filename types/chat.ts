@@ -5,7 +5,7 @@ import type { FileDetails } from "./file";
 
 export type ChatMode = "agent" | "ask";
 
-export type SubscriptionTier = "free" | "pro" | "ultra" | "team";
+export type SubscriptionTier = "free" | "pro" | "pro-plus" | "ultra" | "team";
 
 export interface SidebarFile {
   path: string;

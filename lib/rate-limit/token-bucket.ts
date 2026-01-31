@@ -222,10 +222,13 @@ export const checkAgentRateLimit = async (
           }
 
           // Actually out of balance
-          const msg =
+          const upgradeHint =
             subscription === "pro"
-              ? `You've hit your usage limit and your extra usage balance is empty.\n\nYour ${limitType} limit resets in ${resetTime}. To keep going now, add credits in Settings or upgrade to Ultra for higher limits.`
-              : `You've hit your usage limit and your extra usage balance is empty.\n\nYour ${limitType} limit resets in ${resetTime}. To keep going now, add credits in Settings.`;
+              ? " or upgrade to Pro+ or Ultra for higher limits"
+              : subscription === "pro-plus"
+                ? " or upgrade to Ultra for higher limits"
+                : "";
+          const msg = `You've hit your usage limit and your extra usage balance is empty.\n\nYour ${limitType} limit resets in ${resetTime}. To keep going now, add credits in Settings${upgradeHint}.`;
           throw new ChatSDKError("rate_limit:chat", msg);
         }
 
@@ -233,21 +236,22 @@ export const checkAgentRateLimit = async (
       }
 
       // No extra usage enabled - throw standard rate limit error
+      const upgradeHint =
+        subscription === "pro"
+          ? " or upgrade to Pro+ or Ultra for higher limits"
+          : subscription === "pro-plus"
+            ? " or upgrade to Ultra for higher limits"
+            : "";
+
       if (weeklyShortfall > 0) {
         const resetTime = formatTimeRemaining(new Date(weeklyCheck.reset));
-        const msg =
-          subscription === "pro"
-            ? `You've hit your weekly usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings or upgrade to Ultra for higher limits.`
-            : `You've hit your weekly usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings.`;
+        const msg = `You've hit your weekly usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`;
         throw new ChatSDKError("rate_limit:chat", msg);
       }
 
       if (sessionShortfall > 0) {
         const resetTime = formatTimeRemaining(new Date(sessionCheck.reset));
-        const msg =
-          subscription === "pro"
-            ? `You've hit your session usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings or upgrade to Ultra for higher limits.`
-            : `You've hit your session usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings.`;
+        const msg = `You've hit your session usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`;
         throw new ChatSDKError("rate_limit:chat", msg);
       }
     }

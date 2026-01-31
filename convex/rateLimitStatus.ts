@@ -18,6 +18,7 @@ export const getAgentRateLimitStatus = action({
     subscription: v.union(
       v.literal("free"),
       v.literal("pro"),
+      v.literal("pro-plus"),
       v.literal("team"),
       v.literal("ultra"),
     ),

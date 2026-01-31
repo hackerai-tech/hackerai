@@ -2,6 +2,7 @@ import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { NextRequest, NextResponse } from "next/server";
+import { SubscriptionTier } from "@/types/chat";
 
 export const POST = async (req: NextRequest) => {
   try {
@@ -94,7 +95,7 @@ export const POST = async (req: NextRequest) => {
     let totalDue = targetAmount * quantity;
     let additionalCredit = 0; // credit left over to be added to customer balance
     let paymentMethodInfo = "";
-    let planType: "free" | "pro" | "ultra" | "team" = "free";
+    let planType: SubscriptionTier = "free";
     let interval: "monthly" | "yearly" = "monthly";
     let currentPeriodStart: number | null = null; // unix seconds
     let currentPeriodEnd: number | null = null; // unix seconds
@@ -127,6 +128,11 @@ export const POST = async (req: NextRequest) => {
             productMetadata.plan === "team"
           )
             planType = "team";
+          else if (
+            productName.includes("pro-plus") ||
+            productMetadata.plan === "pro-plus"
+          )
+            planType = "pro-plus";
           else if (
             productName.includes("pro") ||
             productMetadata.plan === "pro"
