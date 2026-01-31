@@ -41,7 +41,6 @@ export const getMemoriesForBackend = query({
         .collect();
 
       // Calculate total tokens and enforce token limit based on subscription
-      // All paid plans get the same 100k context window
       const tokenLimit = args.subscription === "free" ? 5000 : 15000;
       let totalTokens = 0;
       const validMemories = [];
