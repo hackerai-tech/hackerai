@@ -14,16 +14,6 @@ jest.mock("../chats", () => ({
   validateServiceKey: jest.fn(),
 }));
 
-// Mock fileStorage module to avoid aggregate import issues
-jest.mock("../fileStorage", () => ({
-  getFileLimit: jest.fn((entitlements: string[]) => {
-    if (entitlements.includes("ultra-plan")) return 1000;
-    if (entitlements.includes("team-plan")) return 500;
-    if (entitlements.includes("pro-plan")) return 300;
-    return 0;
-  }),
-}));
-
 // Mock fileActions module for rate limiting
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockCheckFileUploadRateLimit = jest.fn<any>();

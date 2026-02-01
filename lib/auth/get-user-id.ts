@@ -65,6 +65,10 @@ export const getUserIDAndPro = async (
       entitlements.includes("ultra-monthly-plan") ||
       entitlements.includes("ultra-yearly-plan");
     const hasTeam = entitlements.includes("team-plan");
+    const hasProPlus =
+      entitlements.includes("pro-plus-plan") ||
+      entitlements.includes("pro-plus-monthly-plan") ||
+      entitlements.includes("pro-plus-yearly-plan");
     const hasPro =
       entitlements.includes("pro-plan") ||
       entitlements.includes("pro-monthly-plan") ||
@@ -75,6 +79,8 @@ export const getUserIDAndPro = async (
       subscription = "ultra";
     } else if (hasTeam) {
       subscription = "team";
+    } else if (hasProPlus) {
+      subscription = "pro-plus";
     } else if (hasPro) {
       subscription = "pro";
     }

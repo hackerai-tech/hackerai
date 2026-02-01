@@ -16,6 +16,7 @@ import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
 import { X, ChevronDown, Sparkle } from "lucide-react";
 import {
   proFeatures,
+  proPlusFeatures,
   ultraFeatures,
   teamFeatures,
 } from "@/lib/pricing/features";
@@ -38,15 +39,20 @@ const AccountTab = () => {
     }
   }, [subscription]);
 
-  // For individual plans (pro/ultra), user always has billing access
+  // For individual plans (pro/pro-plus/ultra), user always has billing access
   // For team plans, only admins can manage billing
   const canManageBilling =
     subscription === "pro" ||
+    subscription === "pro-plus" ||
     subscription === "ultra" ||
     (subscription === "team" && isTeamAdmin === true);
 
   const currentPlanFeatures =
-    subscription === "team" ? teamFeatures : proFeatures;
+    subscription === "team"
+      ? teamFeatures
+      : subscription === "pro-plus"
+        ? proPlusFeatures
+        : proFeatures;
 
   const redirectToBillingPortal = async () => {
     try {
@@ -82,9 +88,11 @@ const AccountTab = () => {
                 ? "HackerAI Ultra"
                 : subscription === "team"
                   ? "HackerAI Team"
-                  : subscription === "pro"
-                    ? "HackerAI Pro"
-                    : "Get HackerAI Pro"}
+                  : subscription === "pro-plus"
+                    ? "HackerAI Pro+"
+                    : subscription === "pro"
+                      ? "HackerAI Pro"
+                      : "Get HackerAI Pro"}
             </div>
           </div>
           {subscription !== "free" ? (
@@ -97,7 +105,7 @@ const AccountTab = () => {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-56">
-                  {subscription === "pro" && (
+                  {(subscription === "pro" || subscription === "pro-plus") && (
                     <>
                       <DropdownMenuItem onClick={redirectToPricing}>
                         <Sparkle className="h-4 w-4" />
@@ -134,9 +142,11 @@ const AccountTab = () => {
               ? "Thanks for subscribing to Ultra! Your plan includes everything in Pro, plus:"
               : subscription === "team"
                 ? "Thanks for subscribing to Team! Your plan includes:"
-                : subscription !== "free"
-                  ? "Thanks for subscribing to Pro! Your plan includes:"
-                  : "Get everything in Free, and more."}
+                : subscription === "pro-plus"
+                  ? "Thanks for subscribing to Pro+! Your plan includes everything in Pro, plus:"
+                  : subscription === "pro"
+                    ? "Thanks for subscribing to Pro! Your plan includes:"
+                    : "Get everything in Free, and more."}
           </span>
           <ul className="mb-2 flex flex-col gap-5">
             {(subscription === "ultra"

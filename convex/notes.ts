@@ -144,6 +144,7 @@ export const getNotesForBackend = query({
       v.union(
         v.literal("free"),
         v.literal("pro"),
+        v.literal("pro-plus"),
         v.literal("ultra"),
         v.literal("team"),
       ),
@@ -177,12 +178,9 @@ export const getNotesForBackend = query({
       notes.sort((a, b) => b.updated_at - a.updated_at);
 
       // Calculate total tokens and enforce token limit based on subscription
+      // Default to free tier (5000) when subscription is not provided
       const tokenLimit =
-        args.subscription === "ultra"
-          ? 20000
-          : args.subscription === "pro" || args.subscription === "team"
-            ? 10000
-            : 5000;
+        !args.subscription || args.subscription === "free" ? 5000 : 15000;
       let totalTokens = 0;
       const validNotes = [];
 

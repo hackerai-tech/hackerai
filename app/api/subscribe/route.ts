@@ -16,8 +16,10 @@ export const POST = async (req: NextRequest) => {
     const orgName = user.email;
     const allowedPlans = new Set([
       "pro-monthly-plan",
+      "pro-plus-monthly-plan",
       "ultra-monthly-plan",
       "pro-yearly-plan",
+      "pro-plus-yearly-plan",
       "ultra-yearly-plan",
       "team-monthly-plan",
       "team-yearly-plan",
@@ -26,8 +28,10 @@ export const POST = async (req: NextRequest) => {
       typeof requestedPlan === "string" && allowedPlans.has(requestedPlan)
         ? (requestedPlan as
             | "pro-monthly-plan"
+            | "pro-plus-monthly-plan"
             | "ultra-monthly-plan"
             | "pro-yearly-plan"
+            | "pro-plus-yearly-plan"
             | "ultra-yearly-plan"
             | "team-monthly-plan"
             | "team-yearly-plan")
