@@ -7,7 +7,7 @@ import {
   RECENCY_MAP,
   buildPerplexitySearchBody,
   formatSearchResults,
-} from "./perplexity";
+} from "./utils/perplexity";
 
 /**
  * Web search tool using Perplexity Search API
