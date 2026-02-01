@@ -7,10 +7,7 @@ import {
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
 import { createGetTerminalFiles } from "./get-terminal-files";
-// import { createReadFile } from "./read-file";
-// import { createWriteFile } from "./write-file";
 import { createFile } from "./file";
-// import { createMatch } from "./match";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
@@ -93,11 +90,7 @@ export const createTools = (
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
     get_terminal_files: createGetTerminalFiles(context),
-    // read_file: createReadFile(context),
-    // write_file: createWriteFile(context),
     file: createFile(context),
-    // search_replace: createSearchReplace(context),
-    // match: createMatch(context),
     todo_write: createTodoWrite(context),
     // ...(!isTemporary &&
     //   memoryEnabled && { update_memory: createUpdateMemory(context) }),

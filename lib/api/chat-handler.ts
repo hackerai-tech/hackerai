@@ -9,7 +9,6 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
-import { stripReasoningFromMessagesForGemini } from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -419,16 +418,6 @@ export const createChatHandler = (
           const configuredModelId =
             trackedProvider.languageModel(selectedModel).modelId;
 
-          // Check if using Gemini model (requires thought_signature for reasoning + tool calls)
-          const isGeminiModel =
-            configuredModelId.includes("gemini") ||
-            configuredModelId.includes("google");
-
-          // Strip reasoning from old messages for Gemini to avoid thought_signature errors
-          // This is a safeguard for messages saved before we stored thought signatures
-          if (isGeminiModel) {
-            finalMessages = stripReasoningFromMessagesForGemini(finalMessages);
-          }
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
@@ -470,13 +459,6 @@ export const createChatHandler = (
                         summaryUpToMessageId: cutoffMessageId,
                       });
 
-                      // Only update state after successful save
-                      // Strip reasoning for Gemini to avoid thought_signature errors
-                      finalMessages = isGeminiModel
-                        ? stripReasoningFromMessagesForGemini(
-                            summarizedMessages,
-                          )
-                        : summarizedMessages;
                       hasSummarized = true;
 
                       writeSummarizationCompleted(writer);
@@ -486,7 +468,8 @@ export const createChatHandler = (
                       );
                       // Return updated messages for this step
                       return {
-                        messages: await convertToModelMessages(finalMessages),
+                        messages:
+                          await convertToModelMessages(summarizedMessages),
                       };
                     }
                   }
@@ -738,6 +721,9 @@ export const createChatHandler = (
                                 extraFileIds: newFileIds,
                                 usage: streamUsage,
                                 model: responseModel,
+                                generationTimeMs:
+                                  Date.now() - fallbackStartTime,
+                                finishReason: streamFinishReason,
                               });
                             }
 
@@ -975,7 +961,6 @@ export const createChatHandler = (
                       chatId,
                       userId,
                       message: processedMessage,
-                      // Only include metrics for assistant messages
                       extraFileIds: newFileIds,
                       model: responseModel || configuredModelId,
                       generationTimeMs: Date.now() - streamStartTime,
