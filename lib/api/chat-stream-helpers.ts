@@ -4,6 +4,7 @@
  * Utility functions extracted from chat-handler to keep it clean and focused.
  */
 
+import type { UIMessageStreamWriter } from "ai";
 import type { SandboxPreference, ChatMode, SubscriptionTier } from "@/types";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 
@@ -43,7 +44,7 @@ export function hasFileAttachments(
  * Send rate limit warnings based on subscription and rate limit info
  */
 export function sendRateLimitWarnings(
-  writer: { write: (data: any) => void },
+  writer: UIMessageStreamWriter,
   options: {
     subscription: SubscriptionTier;
     mode: ChatMode;

@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   UIMessage,
+  UIMessageStreamWriter,
   generateText,
   convertToModelMessages,
   LanguageModel,
@@ -12,13 +13,17 @@ import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { countTokens } from "gpt-tokenizer";
 import { SubscriptionTier, ChatMode } from "@/types";
 import { stripProviderMetadataFromPart } from "@/lib/utils/message-processor";
+import {
+  writeSummarizationStarted,
+  writeSummarizationCompleted,
+} from "@/lib/utils/stream-writer-utils";
+import { saveChatSummary } from "@/lib/db/actions";
 
 // Keep last N messages unsummarized for context
 const MESSAGES_TO_KEEP_UNSUMMARIZED = 2;
 
 // Summarize at 90% of token limit to leave buffer for current response
-// This provides ~3.2k tokens (for 32k Pro plan) for assistant's response and summary
-const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.9;
+const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.01;
 
 const AGENT_SUMMARIZATION_PROMPT =
   "You are an agent performing context condensation for a security agent. Your job is to compress scan data while preserving ALL operationally critical information for continuing the security assessment.\n\n" +
@@ -90,6 +95,9 @@ const countModelMessageTokens = (messages: ModelMessage[]): number => {
 /**
  * Check and summarize messages if needed
  * This is the main entry point for the chat handler
+ * Handles the full summarization flow: check -> shimmer -> generate -> save -> complete
+ * @param writer - Stream writer for sending status updates to the client
+ * @param chatId - Chat ID for saving the summary (null for temporary chats)
  */
 export const checkAndSummarizeIfNeeded = async (
   currentModelMessages: ModelMessage[],
@@ -97,6 +105,8 @@ export const checkAndSummarizeIfNeeded = async (
   subscription: SubscriptionTier,
   languageModel: LanguageModel,
   mode: ChatMode,
+  writer: UIMessageStreamWriter,
+  chatId: string | null,
 ): Promise<{
   needsSummarization: boolean;
   summarizedMessages: UIMessage[];
@@ -147,6 +157,9 @@ export const checkAndSummarizeIfNeeded = async (
   const cutoffMessageId =
     messagesToSummarize[messagesToSummarize.length - 1].id;
 
+  // Show shimmer indicator BEFORE generating summary
+  writeSummarizationStarted(writer);
+
   // Generate summary using AI
   let summaryText: string;
   try {
@@ -185,6 +198,18 @@ export const checkAndSummarizeIfNeeded = async (
       },
     ],
   };
+
+  // Save the summary to the database (non-temporary chats only)
+  if (chatId) {
+    await saveChatSummary({
+      chatId,
+      summaryText,
+      summaryUpToMessageId: cutoffMessageId,
+    });
+  }
+
+  // Write completed status after save succeeds
+  writeSummarizationCompleted(writer);
 
   return {
     needsSummarization: true,

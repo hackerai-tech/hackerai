@@ -49,7 +49,6 @@ import {
   startStream,
   startTempStream,
   deleteTempStreamForBackend,
-  saveChatSummary,
 } from "@/lib/db/actions";
 import {
   createCancellationSubscriber,
@@ -65,8 +64,6 @@ import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
-  writeSummarizationStarted,
-  writeSummarizationCompleted,
   createSummarizationCompletedPart,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
@@ -439,29 +436,18 @@ export const createChatHandler = (
                     const {
                       needsSummarization,
                       summarizedMessages,
-                      cutoffMessageId,
-                      summaryText,
                     } = await checkAndSummarizeIfNeeded(
                       messages,
                       finalMessages,
                       subscription,
                       trackedProvider.languageModel("summarization-model"),
                       mode,
+                      writer,
+                      chatId,
                     );
 
-                    if (needsSummarization && cutoffMessageId && summaryText) {
-                      writeSummarizationStarted(writer);
-
-                      // Save the summary metadata to the chat document FIRST
-                      await saveChatSummary({
-                        chatId,
-                        summaryText,
-                        summaryUpToMessageId: cutoffMessageId,
-                      });
-
+                    if (needsSummarization) {
                       hasSummarized = true;
-
-                      writeSummarizationCompleted(writer);
                       // Push only the completed event to parts array for persistence
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
