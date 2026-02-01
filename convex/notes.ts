@@ -178,7 +178,9 @@ export const getNotesForBackend = query({
       notes.sort((a, b) => b.updated_at - a.updated_at);
 
       // Calculate total tokens and enforce token limit based on subscription
-      const tokenLimit = args.subscription === "free" ? 5000 : 15000;
+      // Default to free tier (5000) when subscription is not provided
+      const tokenLimit =
+        !args.subscription || args.subscription === "free" ? 5000 : 15000;
       let totalTokens = 0;
       const validNotes = [];
 

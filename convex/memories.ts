@@ -4,7 +4,7 @@ import { validateServiceKey } from "./chats";
 
 /**
  * Get memories for backend processing (with service key)
- * Enforces token limit based on user plan (10k for pro, 5k for free)
+ * Enforces token limit based on user plan (15k for paid tiers, 5k for free)
  */
 export const getMemoriesForBackend = query({
   args: {
@@ -41,7 +41,9 @@ export const getMemoriesForBackend = query({
         .collect();
 
       // Calculate total tokens and enforce token limit based on subscription
-      const tokenLimit = args.subscription === "free" ? 5000 : 15000;
+      // Default to free tier (5000) when subscription is not provided
+      const tokenLimit =
+        !args.subscription || args.subscription === "free" ? 5000 : 15000;
       let totalTokens = 0;
       const validMemories = [];
 
