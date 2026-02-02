@@ -153,6 +153,36 @@ export function isXaiSafetyError(error: unknown): boolean {
 }
 
 /**
+ * Check if an error is a provider API error that should trigger fallback
+ * Specifically targets Google/Gemini INVALID_ARGUMENT errors
+ */
+export function isProviderApiError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const err = error as {
+    statusCode?: number;
+    responseBody?: string;
+    data?: {
+      error?: {
+        code?: number;
+        message?: string;
+        metadata?: { raw?: string; provider_name?: string };
+      };
+    };
+  };
+
+  // Must be a 400 error
+  if (err.statusCode !== 400 && err.data?.error?.code !== 400) return false;
+
+  // Check for INVALID_ARGUMENT in response body or nested metadata
+  const responseBody = err.responseBody || "";
+  const rawMetadata = err.data?.error?.metadata?.raw || "";
+  const combined = responseBody + rawMetadata;
+
+  return combined.includes("INVALID_ARGUMENT");
+}
+
+/**
  * Build provider options for streamText
  */
 export function buildProviderOptions(

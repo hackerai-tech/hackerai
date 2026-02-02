@@ -36,6 +36,7 @@ import {
   sendRateLimitWarnings,
   buildProviderOptions,
   isXaiSafetyError,
+  isProviderApiError,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -610,7 +611,30 @@ export const createChatHandler = (
               },
             });
 
-          const result = await createStream(selectedModel);
+          let result;
+          try {
+            result = await createStream(selectedModel);
+          } catch (error) {
+            // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback
+            if (isProviderApiError(error) && !isRetryWithFallback) {
+              axiomLogger.error("Provider API error, retrying with fallback", {
+                chatId,
+                endpoint,
+                mode,
+                originalModel: selectedModel,
+                fallbackModel,
+                userId,
+                subscription,
+                isTemporary: temporary,
+                ...extractErrorDetails(error),
+              });
+
+              isRetryWithFallback = true;
+              result = await createStream(fallbackModel);
+            } else {
+              throw error;
+            }
+          }
 
           writer.merge(
             result.toUIMessageStream({
