@@ -568,6 +568,26 @@ export const deleteLastAssistantMessage = mutation({
         }
 
         await ctx.db.delete(lastAssistantMessage._id);
+
+        // Invalidate any existing summary on regenerate
+        // The new response will create a fresh summary if needed
+        const chat = await ctx.db
+          .query("chats")
+          .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+          .first();
+
+        if (chat?.latest_summary_id) {
+          const summaryIdToDelete = chat.latest_summary_id;
+          await ctx.db.patch(chat._id, {
+            latest_summary_id: undefined,
+            update_time: Date.now(),
+          });
+          try {
+            await ctx.db.delete(summaryIdToDelete);
+          } catch {
+            // Summary might already be deleted, ignore
+          }
+        }
       }
 
       // Update todos in the same transaction if provided
@@ -1130,12 +1150,26 @@ export const regenerateWithNewContent = mutation({
         await ctx.db.delete(msg._id);
       }
 
-      // Check if deleted OR edited messages invalidate the chat summary
-      // Include the edited message ID since modifying the cutoff message also invalidates
-      await checkAndInvalidateSummary(ctx, message.chat_id, [
-        message.id,
-        ...messages.map((m) => m.id),
-      ]);
+      // Always invalidate summary when editing messages
+      // The context has changed, so any existing summary may be stale
+      // The new response will create a fresh summary if needed
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
+        .first();
+
+      if (chat?.latest_summary_id) {
+        const summaryIdToDelete = chat.latest_summary_id;
+        await ctx.db.patch(chat._id, {
+          latest_summary_id: undefined,
+          update_time: Date.now(),
+        });
+        try {
+          await ctx.db.delete(summaryIdToDelete);
+        } catch {
+          // Summary might already be deleted, ignore
+        }
+      }
 
       return null;
     } catch (error) {
