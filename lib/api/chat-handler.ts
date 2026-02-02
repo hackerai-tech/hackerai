@@ -420,6 +420,31 @@ export const createChatHandler = (
           let isRetryWithFallback = false;
           const fallbackModel = "fallback-model";
 
+          // Accumulated usage across all steps for deduction
+          let accumulatedInputTokens = 0;
+          let accumulatedOutputTokens = 0;
+          let accumulatedProviderCost = 0;
+          let hasDeductedUsage = false;
+
+          // Helper to deduct accumulated usage (called from multiple exit points)
+          const deductAccumulatedUsage = async () => {
+            if (hasDeductedUsage || subscription === "free") return;
+            hasDeductedUsage = true;
+            if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
+              await deductUsage(
+                userId,
+                subscription,
+                estimatedInputTokens,
+                accumulatedInputTokens,
+                accumulatedOutputTokens,
+                extraUsageConfig,
+                accumulatedProviderCost > 0
+                  ? accumulatedProviderCost
+                  : undefined,
+              );
+            }
+          };
+
           // Helper to create streamText with a given model (reused for retry)
           const createStream = async (modelName: string) =>
             streamText({
@@ -536,6 +561,18 @@ export const createChatHandler = (
                   }
                 }
               },
+              onStepFinish: async ({ usage }) => {
+                // Accumulate usage from each step (deduction happens in UI stream's onFinish)
+                if (usage) {
+                  accumulatedInputTokens += usage.inputTokens || 0;
+                  accumulatedOutputTokens += usage.outputTokens || 0;
+                  const stepCost = (usage as { raw?: { cost?: number } }).raw
+                    ?.cost;
+                  if (stepCost) {
+                    accumulatedProviderCost += stepCost;
+                  }
+                }
+              },
               onFinish: async ({ finishReason, usage, response }) => {
                 // If preemptive timeout triggered, use "timeout" as finish reason
                 if (preemptiveTimeout?.isPreemptive()) {
@@ -549,25 +586,6 @@ export const createChatHandler = (
 
                 // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);
-
-                // Deduct additional cost (output + any input difference)
-                // Input cost was already deducted upfront in checkRateLimit
-                // Free users don't have token buckets, so skip for them
-                if (subscription !== "free" && usage) {
-                  // Extract provider cost if available (more accurate than token calculation)
-                  const providerCost = (usage as { raw?: { cost?: number } })
-                    .raw?.cost;
-
-                  await deductUsage(
-                    userId,
-                    subscription,
-                    estimatedInputTokens,
-                    usage.inputTokens || 0,
-                    usage.outputTokens || 0,
-                    extraUsageConfig,
-                    providerCost,
-                  );
-                }
               },
               onError: async (error) => {
                 // Suppress xAI safety check errors from logging (they're expected for certain content)
@@ -753,6 +771,9 @@ export const createChatHandler = (
                             userId,
                             subscription,
                           });
+
+                          // Deduct accumulated usage (includes both original + retry streams)
+                          await deductAccumulatedUsage();
                         },
                         sendReasoning: true,
                       }),
@@ -913,6 +934,7 @@ export const createChatHandler = (
                     !hasIncompleteToolCalls &&
                     !hasUsageToRecord
                   ) {
+                    await deductAccumulatedUsage();
                     return;
                   }
 
@@ -984,6 +1006,9 @@ export const createChatHandler = (
                   });
                   await axiomLogger.flush();
                 }
+
+                // Deduct accumulated usage if not already done
+                await deductAccumulatedUsage();
               },
               sendReasoning: true,
             }),
