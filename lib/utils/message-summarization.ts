@@ -23,7 +23,7 @@ import { saveChatSummary } from "@/lib/db/actions";
 const MESSAGES_TO_KEEP_UNSUMMARIZED = 2;
 
 // Summarize at 90% of token limit to leave buffer for current response
-const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.01;
+const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.9;
 
 const AGENT_SUMMARIZATION_PROMPT =
   "You are an agent performing context condensation for a security agent. Your job is to compress scan data while preserving ALL operationally critical information for continuing the security assessment.\n\n" +
