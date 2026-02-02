@@ -303,6 +303,7 @@ export const createChatHandler = (
 
       // Start stream timing
       chatLogger.startStream();
+      preemptiveTimeout?.setPhase("streaming");
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
@@ -808,6 +809,7 @@ export const createChatHandler = (
                   }
                 }
 
+                preemptiveTimeout?.setPhase("onFinish_started");
                 const isPreemptiveAbort =
                   preemptiveTimeout?.isPreemptive() ?? false;
                 const onFinishStartTime = Date.now();
@@ -847,6 +849,7 @@ export const createChatHandler = (
                 logStep("clear_timeout", stepStart);
 
                 // Stop cancellation subscriber
+                preemptiveTimeout?.setPhase("onFinish_stopSubscriber");
                 stepStart = Date.now();
                 await cancellationSubscriber.stop();
                 subscriberStopped = true;
@@ -873,6 +876,7 @@ export const createChatHandler = (
                 // No manual pause needed
 
                 // Always wait for title generation to complete
+                preemptiveTimeout?.setPhase("onFinish_waiting_title");
                 stepStart = Date.now();
                 const generatedTitle = await titlePromise;
                 logStep("wait_title_generation", stepStart);
@@ -895,6 +899,7 @@ export const createChatHandler = (
 
                   if (shouldPersist) {
                     // updateChat automatically clears stream state (active_stream_id and canceled_at)
+                    preemptiveTimeout?.setPhase("onFinish_updateChat");
                     stepStart = Date.now();
                     await updateChat({
                       chatId,
@@ -938,6 +943,7 @@ export const createChatHandler = (
                   let resolvedUsage: Record<string, unknown> | undefined =
                     streamUsage;
                   if (!resolvedUsage && isAborted) {
+                    preemptiveTimeout?.setPhase("onFinish_awaitUsage");
                     try {
                       resolvedUsage = (await result.usage) as Record<
                         string,
@@ -964,6 +970,7 @@ export const createChatHandler = (
                   }
 
                   // Save messages (either full save or just append extraFileIds)
+                  preemptiveTimeout?.setPhase("onFinish_saveMessages");
                   stepStart = Date.now();
                   for (const message of messages) {
                     // For assistant messages, prepend summarization parts if any

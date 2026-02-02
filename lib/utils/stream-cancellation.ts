@@ -216,10 +216,32 @@ export const createPreemptiveTimeout = ({
 
   let isPreemptive = false;
   let triggerTime: number | null = null;
+  let currentPhase = "initializing";
+
+  // Diagnostic timeout: fires 10s before Vercel hard timeout to log what's blocking
+  const diagnosticTime = (maxDuration - 10) * 1000;
+  const diagnosticTimeoutId = setTimeout(() => {
+    const now = Date.now();
+    logger.warn("Diagnostic: 10s before Vercel timeout", {
+      chatId,
+      endpoint,
+      maxDuration,
+      elapsedMs: now - startTime,
+      currentPhase,
+      preemptiveTriggered: isPreemptive,
+      preemptiveTriggerTime: triggerTime
+        ? new Date(triggerTime).toISOString()
+        : null,
+      timeSincePreemptiveMs: triggerTime ? now - triggerTime : null,
+    });
+    // Flush immediately to ensure this log is captured before Vercel kills the process
+    logger.flush();
+  }, diagnosticTime);
 
   const timeoutId = setTimeout(() => {
     triggerTime = Date.now();
     isPreemptive = true;
+    currentPhase = "preemptive_triggered";
 
     logger.info("Preemptive timeout triggered", {
       chatId,
@@ -230,15 +252,23 @@ export const createPreemptiveTimeout = ({
       elapsedMs: triggerTime - startTime,
       triggerTime: new Date(triggerTime).toISOString(),
     });
+    // Flush immediately to ensure this log is captured
+    logger.flush();
 
     abortController.abort();
   }, maxStreamTime);
 
   return {
     timeoutId,
-    clear: () => clearTimeout(timeoutId),
+    clear: () => {
+      clearTimeout(timeoutId);
+      clearTimeout(diagnosticTimeoutId);
+    },
     isPreemptive: () => isPreemptive,
     getTriggerTime: () => triggerTime,
     getStartTime: () => startTime,
+    setPhase: (phase: string) => {
+      currentPhase = phase;
+    },
   };
 };
