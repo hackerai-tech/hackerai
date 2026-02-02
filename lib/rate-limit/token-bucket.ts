@@ -53,9 +53,7 @@ export const getBudgetLimits = (
 ): { session: number; weekly: number } => {
   if (subscription === "free") return { session: 0, weekly: 0 };
 
-  // Use yearly price (lower than monthly) to leave margin for other costs
-  // (e.g., title generation, summarization, infrastructure overhead)
-  const monthlyPrice = PRICING[subscription]?.yearly ?? 0;
+  const monthlyPrice = PRICING[subscription]?.monthly ?? 0;
   const monthlyPoints = monthlyPrice * POINTS_PER_DOLLAR;
 
   return {
