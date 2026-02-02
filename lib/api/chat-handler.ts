@@ -429,8 +429,8 @@ export const createChatHandler = (
           // Helper to deduct accumulated usage (called from multiple exit points)
           const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
-            hasDeductedUsage = true;
             if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
+              hasDeductedUsage = true;
               await deductUsage(
                 userId,
                 subscription,
