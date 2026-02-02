@@ -433,18 +433,16 @@ export const createChatHandler = (
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
-                    const {
-                      needsSummarization,
-                      summarizedMessages,
-                    } = await checkAndSummarizeIfNeeded(
-                      messages,
-                      finalMessages,
-                      subscription,
-                      trackedProvider.languageModel("summarization-model"),
-                      mode,
-                      writer,
-                      chatId,
-                    );
+                    const { needsSummarization, summarizedMessages } =
+                      await checkAndSummarizeIfNeeded(
+                        messages,
+                        finalMessages,
+                        subscription,
+                        trackedProvider.languageModel("summarization-model"),
+                        mode,
+                        writer,
+                        chatId,
+                      );
 
                     if (needsSummarization) {
                       hasSummarized = true;

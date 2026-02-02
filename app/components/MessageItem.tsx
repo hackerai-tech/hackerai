@@ -62,7 +62,8 @@ function areMessageItemPropsEqual(
   if (prev.lastAssistantMessageIndex !== next.lastAssistantMessageIndex)
     return false;
   if (prev.finishReason !== next.finishReason) return false;
-  if (prev.showingLoadingIndicator !== next.showingLoadingIndicator) return false;
+  if (prev.showingLoadingIndicator !== next.showingLoadingIndicator)
+    return false;
 
   // Compare message by reference first, then by parts length for streaming
   if (prev.message !== next.message) {
@@ -367,7 +368,6 @@ export const MessageItem = memo(function MessageItem({
             )}
           </div>
         )}
-
 
         {/* Finish reason notice under last assistant message */}
         {isLastAssistantMessage && status !== "streaming" && (

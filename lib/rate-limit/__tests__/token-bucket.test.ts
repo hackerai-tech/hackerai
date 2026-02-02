@@ -10,7 +10,7 @@ import {
 /**
  * Unit tests for token-bucket rate limiting pure functions.
  *
- * Note: The async functions (checkAgentRateLimit, deductUsage, refundUsage)
+ * Note: The async functions (checkTokenBucketLimit, deductUsage, refundUsage)
  * are difficult to unit test in isolation due to the singleton Redis client pattern
  * and Jest module caching. These functions are better suited for integration tests
  * that can properly initialize and control the Redis/Ratelimit dependencies.

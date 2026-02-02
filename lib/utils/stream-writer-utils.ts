@@ -15,7 +15,9 @@ export const writeUploadStartStatus = (writer: UIMessageStreamWriter): void => {
   });
 };
 
-export const writeUploadCompleteStatus = (writer: UIMessageStreamWriter): void => {
+export const writeUploadCompleteStatus = (
+  writer: UIMessageStreamWriter,
+): void => {
   writer.write({
     type: "data-upload-status",
     data: {
@@ -27,7 +29,9 @@ export const writeUploadCompleteStatus = (writer: UIMessageStreamWriter): void =
 };
 
 // Summarization notifications
-export const writeSummarizationStarted = (writer: UIMessageStreamWriter): void => {
+export const writeSummarizationStarted = (
+  writer: UIMessageStreamWriter,
+): void => {
   writer.write({
     type: "data-summarization",
     id: "summarization-status",
@@ -39,7 +43,9 @@ export const writeSummarizationStarted = (writer: UIMessageStreamWriter): void =
   });
 };
 
-export const writeSummarizationCompleted = (writer: UIMessageStreamWriter): void => {
+export const writeSummarizationCompleted = (
+  writer: UIMessageStreamWriter,
+): void => {
   writer.write({
     type: "data-summarization",
     id: "summarization-status",

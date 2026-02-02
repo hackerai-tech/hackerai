@@ -110,10 +110,11 @@ const createRateLimiters = (
 };
 
 /**
- * Check rate limit and deduct estimated input cost upfront.
+ * Check rate limit using token bucket and deduct estimated input cost upfront.
+ * Used for all paid users (Pro, Pro+, Ultra, Team) in both agent and ask modes.
  * Supports extra usage charging when limit is exceeded.
  */
-export const checkAgentRateLimit = async (
+export const checkTokenBucketLimit = async (
   userId: string,
   subscription: SubscriptionTier,
   estimatedInputTokens: number = 0,
@@ -122,11 +123,10 @@ export const checkAgentRateLimit = async (
   const redis = createRedisClient();
 
   if (!redis) {
-    return {
-      remaining: 999999,
-      resetTime: new Date(Date.now() + 5 * 60 * 60 * 1000),
-      limit: 999999,
-    };
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      "Rate limiting service is temporarily unavailable. Please try again in a few moments.",
+    );
   }
 
   try {
@@ -378,8 +378,8 @@ export const deductUsage = async (
     ) {
       await deductFromBalance(userId, fromExtraUsage);
     }
-  } catch {
-    // Silently fail for post-request deductions
+  } catch (error) {
+    console.error("Failed to deduct usage:", error);
   }
 };
 
