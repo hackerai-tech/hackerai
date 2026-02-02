@@ -12,7 +12,7 @@
  *
  * 2. Sliding Window (Free users - Ask mode only):
  *    - Simple request counting within a 5-hour rolling window
- *    - Agent mode is blocked for free users elsewhere in the codebase
+ *    - Agent mode is blocked for free users in checkRateLimit()
  */
 
 import { ChatSDKError } from "@/lib/errors";
@@ -65,7 +65,7 @@ export const checkRateLimit = async (
   estimatedInputTokens?: number,
   extraUsageConfig?: ExtraUsageConfig,
 ): Promise<RateLimitInfo> => {
-  // Free users: sliding window (agent mode is blocked elsewhere)
+  // Free users: sliding window
   if (subscription === "free") {
     // Block agent mode for free users
     if (mode === "agent") {

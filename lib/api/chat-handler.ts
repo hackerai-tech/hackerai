@@ -566,6 +566,7 @@ export const createChatHandler = (
                 if (usage) {
                   accumulatedInputTokens += usage.inputTokens || 0;
                   accumulatedOutputTokens += usage.outputTokens || 0;
+                  // Provider cost when available; deductUsage falls back to token-based calculation
                   const stepCost = (usage as { raw?: { cost?: number } }).raw
                     ?.cost;
                   if (stepCost) {

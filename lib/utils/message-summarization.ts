@@ -201,14 +201,19 @@ export const checkAndSummarizeIfNeeded = async (
 
   // Save the summary to the database (non-temporary chats only)
   if (chatId) {
-    await saveChatSummary({
-      chatId,
-      summaryText,
-      summaryUpToMessageId: cutoffMessageId,
-    });
+    try {
+      await saveChatSummary({
+        chatId,
+        summaryText,
+        summaryUpToMessageId: cutoffMessageId,
+      });
+    } catch (error) {
+      console.error("[Summarization] Failed to save summary:", error);
+      // Continue anyway - the summary was generated successfully
+    }
   }
 
-  // Write completed status after save succeeds
+  // Always write completed status to clear UI shimmer
   writeSummarizationCompleted(writer);
 
   return {
