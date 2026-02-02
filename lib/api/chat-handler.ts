@@ -67,7 +67,10 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
-import { checkAndSummarizeIfNeeded } from "@/lib/messages/summarization";
+import {
+  checkAndSummarizeIfNeeded,
+  MESSAGES_TO_KEEP_UNSUMMARIZED,
+} from "@/lib/messages/summarization";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -505,10 +508,43 @@ export const createChatHandler = (
                         summaryUpToMessageId: cutoffMessageId,
                       });
 
+                      // Inject current todo state so the LLM doesn't lose
+                      // track of the plan after old messages are replaced
+                      const currentTodos = getTodoManager().getAllTodos();
+                      let messagesWithTodos = summarizedMessages;
+                      if (currentTodos.length > 0) {
+                        const todoStatusLines = currentTodos.map(
+                          (t) => `- [${t.status}] ${t.content}`,
+                        );
+                        const todoMessage: UIMessage = {
+                          id: uuidv4(),
+                          role: "user",
+                          parts: [
+                            {
+                              type: "text",
+                              text: `<current_todos>\n${todoStatusLines.join("\n")}\n</current_todos>`,
+                            },
+                          ],
+                        };
+                        // Insert before the last kept messages
+                        const summaryPortion = messagesWithTodos.slice(
+                          0,
+                          -MESSAGES_TO_KEEP_UNSUMMARIZED,
+                        );
+                        const keptMessages = messagesWithTodos.slice(
+                          -MESSAGES_TO_KEEP_UNSUMMARIZED,
+                        );
+                        messagesWithTodos = [
+                          ...summaryPortion,
+                          todoMessage,
+                          ...keptMessages,
+                        ];
+                      }
+
                       // Only update state after successful save
                       finalMessages = isGeminiModel
-                        ? stripReasoningFromMessagesForGemini(summarizedMessages)
-                        : summarizedMessages;
+                        ? stripReasoningFromMessagesForGemini(messagesWithTodos)
+                        : messagesWithTodos;
                       hasSummarized = true;
 
                       writeSummarizationCompleted(writer);

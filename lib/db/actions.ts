@@ -336,9 +336,37 @@ export async function getMessagesByChatId({
               }),
             );
 
-            // Return summary messages + messages after cutoff
+            // Inject current todo state so the LLM retains plan
+            // awareness after old messages are replaced by summaries
+            const chatTodos = Array.isArray(chat?.todos)
+              ? (chat.todos as Array<{
+                  content: string;
+                  status: string;
+                }>)
+              : [];
+            const todoMessages: UIMessage[] =
+              chatTodos.length > 0
+                ? [
+                    {
+                      id: uuidv4(),
+                      role: "user" as const,
+                      parts: [
+                        {
+                          type: "text" as const,
+                          text: `<current_todos>\n${chatTodos.map((t) => `- [${t.status}] ${t.content}`).join("\n")}\n</current_todos>`,
+                        },
+                      ],
+                    },
+                  ]
+                : [];
+
+            // Return summary messages + todo state + messages after cutoff
             return {
-              truncatedMessages: [...summaryMessages, ...messagesAfterCutoff],
+              truncatedMessages: [
+                ...summaryMessages,
+                ...todoMessages,
+                ...messagesAfterCutoff,
+              ],
               chat,
               isNewChat,
               fileTokens: fileTokensFromLoop,
