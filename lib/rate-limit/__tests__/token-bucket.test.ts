@@ -10,7 +10,7 @@ import {
 /**
  * Unit tests for token-bucket rate limiting pure functions.
  *
- * Note: The async functions (checkAgentRateLimit, deductUsage, refundUsage)
+ * Note: The async functions (checkTokenBucketLimit, deductUsage, refundUsage)
  * are difficult to unit test in isolation due to the singleton Redis client pattern
  * and Jest module caching. These functions are better suited for integration tests
  * that can properly initialize and control the Redis/Ratelimit dependencies.
@@ -75,37 +75,36 @@ describe("token-bucket", () => {
       expect(limits.weekly).toBe(0);
     });
 
-    it("should calculate pro tier limits correctly (using yearly price)", () => {
+    it("should calculate pro tier limits correctly (using monthly price)", () => {
       const limits = getBudgetLimits("pro");
-      // Uses yearly price to leave margin for other costs (title gen, summarization, etc.)
-      const yearlyPoints = PRICING.pro.yearly * POINTS_PER_DOLLAR;
+      const monthlyPoints = PRICING.pro.monthly * POINTS_PER_DOLLAR;
 
-      expect(limits.session).toBe(Math.round(yearlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((yearlyPoints * 7) / 30));
+      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
+      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
     });
 
-    it("should calculate ultra tier limits correctly (using yearly price)", () => {
+    it("should calculate ultra tier limits correctly (using monthly price)", () => {
       const limits = getBudgetLimits("ultra");
-      const yearlyPoints = PRICING.ultra.yearly * POINTS_PER_DOLLAR;
+      const monthlyPoints = PRICING.ultra.monthly * POINTS_PER_DOLLAR;
 
-      expect(limits.session).toBe(Math.round(yearlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((yearlyPoints * 7) / 30));
+      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
+      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
     });
 
-    it("should calculate team tier limits correctly (using yearly price)", () => {
+    it("should calculate team tier limits correctly (using monthly price)", () => {
       const limits = getBudgetLimits("team");
-      const yearlyPoints = PRICING.team.yearly * POINTS_PER_DOLLAR;
+      const monthlyPoints = PRICING.team.monthly * POINTS_PER_DOLLAR;
 
-      expect(limits.session).toBe(Math.round(yearlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((yearlyPoints * 7) / 30));
+      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
+      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
     });
 
     it("ultra should have ~8x more limits than pro (price ratio)", () => {
       const proLimits = getBudgetLimits("pro");
       const ultraLimits = getBudgetLimits("ultra");
 
-      // Ratio based on yearly prices
-      const expectedRatio = PRICING.ultra.yearly / PRICING.pro.yearly;
+      // Ratio based on monthly prices
+      const expectedRatio = PRICING.ultra.monthly / PRICING.pro.monthly;
       expect(ultraLimits.session / proLimits.session).toBeCloseTo(
         expectedRatio,
         1,

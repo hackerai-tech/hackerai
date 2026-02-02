@@ -1,14 +1,10 @@
 import "server-only";
 
-import { UIMessagePart } from "ai";
+import { UIMessagePart, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
-type StreamWriter = {
-  write: (data: any) => void;
-};
-
 // Upload status notifications
-export const writeUploadStartStatus = (writer: StreamWriter): void => {
+export const writeUploadStartStatus = (writer: UIMessageStreamWriter): void => {
   writer.write({
     type: "data-upload-status",
     data: {
@@ -19,7 +15,9 @@ export const writeUploadStartStatus = (writer: StreamWriter): void => {
   });
 };
 
-export const writeUploadCompleteStatus = (writer: StreamWriter): void => {
+export const writeUploadCompleteStatus = (
+  writer: UIMessageStreamWriter,
+): void => {
   writer.write({
     type: "data-upload-status",
     data: {
@@ -31,7 +29,9 @@ export const writeUploadCompleteStatus = (writer: StreamWriter): void => {
 };
 
 // Summarization notifications
-export const writeSummarizationStarted = (writer: StreamWriter): void => {
+export const writeSummarizationStarted = (
+  writer: UIMessageStreamWriter,
+): void => {
   writer.write({
     type: "data-summarization",
     id: "summarization-status",
@@ -39,10 +39,13 @@ export const writeSummarizationStarted = (writer: StreamWriter): void => {
       status: "started",
       message: "Summarizing chat context",
     },
+    transient: true, // Don't persist started state - only show during processing
   });
 };
 
-export const writeSummarizationCompleted = (writer: StreamWriter): void => {
+export const writeSummarizationCompleted = (
+  writer: UIMessageStreamWriter,
+): void => {
   writer.write({
     type: "data-summarization",
     id: "summarization-status",
@@ -93,7 +96,7 @@ export type RateLimitWarningData =
 
 // Unified rate limit warning notification
 export const writeRateLimitWarning = (
-  writer: StreamWriter,
+  writer: UIMessageStreamWriter,
   data: RateLimitWarningData,
 ): void => {
   writer.write({

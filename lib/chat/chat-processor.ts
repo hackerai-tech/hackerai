@@ -7,18 +7,16 @@ import { stripProviderMetadata } from "@/lib/utils/message-processor";
 
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
- * Agent mode: Ultra: 50 steps, all other paid users: 25 steps
- * Ask mode: Free: 5 steps, Pro/Team: 10 steps, Ultra: 15 steps
+ * Agent mode: Paid: 35 steps
+ * Ask mode: Free: 5 steps, Paid: 15 steps
  */
 export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  // Agent mode: Ultra users get 40 steps, others get 25 steps
-  if (mode === "agent" && subscription === "ultra") {
-    return 40;
-  } else if (mode === "agent") {
-    return 20;
+  // Agent mode
+  if (mode === "agent") {
+    return 35;
   }
 
   // Ask mode steps: Free: 5, Ultra: 15, Pro/Team: 10
@@ -26,12 +24,7 @@ export const getMaxStepsForUser = (
     return 5;
   }
 
-  if (subscription === "ultra") {
-    return 15;
-  }
-
-  // Pro and Team users get 10 steps
-  return 10;
+  return 15;
 };
 
 /**

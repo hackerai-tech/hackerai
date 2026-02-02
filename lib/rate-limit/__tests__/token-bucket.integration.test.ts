@@ -82,24 +82,22 @@ describe("token-bucket async functions", () => {
     return isolatedModule!;
   };
 
-  describe("checkAgentRateLimit", () => {
-    it("should throw error for free tier users", async () => {
-      const { checkAgentRateLimit } = getIsolatedModule();
+  describe("checkTokenBucketLimit", () => {
+    it("should throw error for free tier users (safety check)", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
 
       try {
-        await checkAgentRateLimit("user-123", "free", 1000);
+        await checkTokenBucketLimit("user-123", "free", 1000);
         expect.fail("Should have thrown");
       } catch (error: any) {
-        expect(error.cause).toContain(
-          "Agent mode is not available on the free tier",
-        );
+        expect(error.cause).toContain("not available on the free tier");
       }
     });
 
     it("should return rate limit info for paid users", async () => {
-      const { checkAgentRateLimit } = getIsolatedModule();
+      const { checkTokenBucketLimit } = getIsolatedModule();
 
-      const result = await checkAgentRateLimit("user-123", "pro", 1000);
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000);
 
       expect(result).toHaveProperty("remaining");
       expect(result).toHaveProperty("resetTime");
@@ -109,7 +107,7 @@ describe("token-bucket async functions", () => {
     });
 
     it("should throw rate limit error when limits exceeded", async () => {
-      const { checkAgentRateLimit } = getIsolatedModule();
+      const { checkTokenBucketLimit } = getIsolatedModule();
 
       mockLimitFn.mockResolvedValue({
         success: true,
@@ -119,7 +117,7 @@ describe("token-bucket async functions", () => {
       });
 
       try {
-        await checkAgentRateLimit("user-123", "pro", 1000);
+        await checkTokenBucketLimit("user-123", "pro", 1000);
         expect.fail("Should have thrown");
       } catch (error: any) {
         expect(error.cause).toContain("usage limit");
@@ -127,7 +125,7 @@ describe("token-bucket async functions", () => {
     });
 
     it("should use extra usage when limits exceeded and balance available", async () => {
-      const { checkAgentRateLimit } = getIsolatedModule();
+      const { checkTokenBucketLimit } = getIsolatedModule();
 
       mockLimitFn.mockResolvedValue({
         success: true,
@@ -136,7 +134,7 @@ describe("token-bucket async functions", () => {
         limit: 8333,
       });
 
-      const result = await checkAgentRateLimit("user-123", "pro", 1000, {
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000, {
         enabled: true,
         hasBalance: true,
         autoReloadEnabled: false,
@@ -147,7 +145,7 @@ describe("token-bucket async functions", () => {
     });
 
     it("should throw insufficient funds error when extra usage fails", async () => {
-      const { checkAgentRateLimit } = getIsolatedModule();
+      const { checkTokenBucketLimit } = getIsolatedModule();
 
       mockLimitFn.mockResolvedValue({
         success: true,
@@ -164,7 +162,7 @@ describe("token-bucket async functions", () => {
       });
 
       try {
-        await checkAgentRateLimit("user-123", "pro", 1000, {
+        await checkTokenBucketLimit("user-123", "pro", 1000, {
           enabled: true,
           hasBalance: true,
           autoReloadEnabled: false,
@@ -262,9 +260,13 @@ describe("token-bucket async functions", () => {
 
   describe("end-to-end scenarios", () => {
     it("typical conversation flow: check -> deduct -> complete", async () => {
-      const { checkAgentRateLimit, deductUsage } = getIsolatedModule();
+      const { checkTokenBucketLimit, deductUsage } = getIsolatedModule();
 
-      const rateLimitInfo = await checkAgentRateLimit("user-123", "pro", 2000);
+      const rateLimitInfo = await checkTokenBucketLimit(
+        "user-123",
+        "pro",
+        2000,
+      );
       expect(rateLimitInfo.pointsDeducted).toBeDefined();
 
       await deductUsage("user-123", "pro", 2000, 2500, 800);
@@ -273,9 +275,13 @@ describe("token-bucket async functions", () => {
     });
 
     it("failed request flow: check -> error -> refund", async () => {
-      const { checkAgentRateLimit, refundUsage } = getIsolatedModule();
+      const { checkTokenBucketLimit, refundUsage } = getIsolatedModule();
 
-      const rateLimitInfo = await checkAgentRateLimit("user-123", "pro", 2000);
+      const rateLimitInfo = await checkTokenBucketLimit(
+        "user-123",
+        "pro",
+        2000,
+      );
       const deducted = rateLimitInfo.pointsDeducted ?? 0;
 
       await refundUsage("user-123", "pro", deducted, 0);

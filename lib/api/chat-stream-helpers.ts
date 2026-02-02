@@ -4,6 +4,7 @@
  * Utility functions extracted from chat-handler to keep it clean and focused.
  */
 
+import type { UIMessageStreamWriter } from "ai";
 import type { SandboxPreference, ChatMode, SubscriptionTier } from "@/types";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 
@@ -43,7 +44,7 @@ export function hasFileAttachments(
  * Send rate limit warnings based on subscription and rate limit info
  */
 export function sendRateLimitWarnings(
-  writer: { write: (data: any) => void },
+  writer: UIMessageStreamWriter,
   options: {
     subscription: SubscriptionTier;
     mode: ChatMode;
@@ -149,6 +150,36 @@ export function isXaiSafetyError(error: unknown): boolean {
     apiError.url.includes("api.x.ai") &&
     typeof apiError.responseBody === "string"
   );
+}
+
+/**
+ * Check if an error is a provider API error that should trigger fallback
+ * Specifically targets Google/Gemini INVALID_ARGUMENT errors
+ */
+export function isProviderApiError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+
+  const err = error as {
+    statusCode?: number;
+    responseBody?: string;
+    data?: {
+      error?: {
+        code?: number;
+        message?: string;
+        metadata?: { raw?: string; provider_name?: string };
+      };
+    };
+  };
+
+  // Must be a 400 error
+  if (err.statusCode !== 400 && err.data?.error?.code !== 400) return false;
+
+  // Check for INVALID_ARGUMENT in response body or nested metadata
+  const responseBody = err.responseBody || "";
+  const rawMetadata = err.data?.error?.metadata?.raw || "";
+  const combined = responseBody + rawMetadata;
+
+  return combined.includes("INVALID_ARGUMENT");
 }
 
 /**

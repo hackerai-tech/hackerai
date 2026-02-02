@@ -3,8 +3,8 @@
  * Extracted for testability.
  */
 
-// Align with LLM context limits: ~2048 tokens ≈ 6000 chars
-export const MAX_OUTPUT_SIZE = 6000;
+// Align with LLM context limits (~4096 tokens ≈ 12288 chars)
+export const MAX_OUTPUT_SIZE = 12288;
 
 // Truncation marker for 25% head + 75% tail strategy
 export const TRUNCATION_MARKER =

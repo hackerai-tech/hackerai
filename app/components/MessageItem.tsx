@@ -6,7 +6,6 @@ import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
-import DotsSpinner from "@/components/ui/dots-spinner";
 import { FileSearch } from "lucide-react";
 import {
   extractMessageText,
@@ -32,6 +31,7 @@ interface MessageItemProps {
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
   branchBoundaryIndex: number | undefined;
+  showingLoadingIndicator?: boolean;
   // Callbacks
   onMouseEnter: (messageId: string) => void;
   onMouseLeave: () => void;
@@ -62,6 +62,8 @@ function areMessageItemPropsEqual(
   if (prev.lastAssistantMessageIndex !== next.lastAssistantMessageIndex)
     return false;
   if (prev.finishReason !== next.finishReason) return false;
+  if (prev.showingLoadingIndicator !== next.showingLoadingIndicator)
+    return false;
 
   // Compare message by reference first, then by parts length for streaming
   if (prev.message !== next.message) {
@@ -105,6 +107,7 @@ export const MessageItem = memo(function MessageItem({
   onFeedbackCancel,
   onShowAllFiles,
   getCachedUrl,
+  showingLoadingIndicator,
 }: MessageItemProps) {
   const isUser = message.role === "user";
   const isLastAssistantMessage =
@@ -133,9 +136,7 @@ export const MessageItem = memo(function MessageItem({
   }, [message.parts]);
 
   const hasFileContent = fileParts.length > 0;
-
-  const shouldShowLoader =
-    isLastAssistantMessage && status === "streaming" && !messageHasTextContent;
+  const hasAnyContent = messageHasTextContent || hasFileContent;
 
   // Memoize file details
   const effectiveFileDetails = useMemo(() => {
@@ -199,6 +200,12 @@ export const MessageItem = memo(function MessageItem({
         } as EditableFile;
       });
   }, [fileParts, getCachedUrl]);
+
+  // Skip rendering empty assistant message when loading indicator is shown
+  // (the loading indicator is shown separately in Messages.tsx)
+  if (isLastAssistantMessage && !hasAnyContent && showingLoadingIndicator) {
+    return null;
+  }
 
   return (
     <Fragment>
@@ -359,18 +366,6 @@ export const MessageItem = memo(function MessageItem({
                 />
               ))
             )}
-          </div>
-        )}
-
-        {/* Loading state */}
-        {shouldShowLoader && (
-          <div className="mt-1 flex justify-start">
-            <div
-              data-testid="streaming"
-              className="bg-muted text-muted-foreground rounded-lg px-3 py-2 flex items-center space-x-2"
-            >
-              <DotsSpinner size="sm" variant="primary" />
-            </div>
           </div>
         )}
 

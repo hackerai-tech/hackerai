@@ -47,6 +47,10 @@ export const Chat = ({
     message: string;
     isUploading: boolean;
   } | null>(null);
+  const [summarizationStatus, setSummarizationStatus] = useState<{
+    status: "started" | "completed";
+    message: string;
+  } | null>(null);
   const [rateLimitWarning, setRateLimitWarning] =
     useState<RateLimitWarningData | null>(null);
 
@@ -243,6 +247,16 @@ export const Chat = ({
           isUploading: boolean;
         };
         setUploadStatus(uploadData.isUploading ? uploadData : null);
+      }
+      if (dataPart.type === "data-summarization") {
+        const summaryData = dataPart.data as {
+          status: "started" | "completed";
+          message: string;
+        };
+        // Show shimmer while started, clear when completed
+        setSummarizationStatus(
+          summaryData.status === "started" ? summaryData : null,
+        );
       }
       if (dataPart.type === "data-rate-limit-warning") {
         const rawData = dataPart.data as {
@@ -728,6 +742,7 @@ export const Chat = ({
                     tempChatFileDetails={tempChatFileDetails}
                     finishReason={chatData?.finish_reason}
                     uploadStatus={uploadStatus}
+                    summarizationStatus={summarizationStatus}
                     mode={chatMode ?? (chatData as any)?.default_model_slug}
                     chatTitle={chatTitle}
                     branchedFromChatId={branchedFromChatId}

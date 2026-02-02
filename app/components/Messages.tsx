@@ -19,6 +19,9 @@ import { findLastAssistantMessageIndex } from "@/lib/utils/message-utils";
 import type { ChatStatus, ChatMessage } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { toast } from "sonner";
+import { WandSparkles } from "lucide-react";
+import DotsSpinner from "@/components/ui/dots-spinner";
+import { hasTextContent } from "@/lib/utils/message-utils";
 
 interface MessagesProps {
   messages: ChatMessage[];
@@ -46,6 +49,10 @@ interface MessagesProps {
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
   uploadStatus?: { message: string; isUploading: boolean } | null;
+  summarizationStatus?: {
+    status: "started" | "completed";
+    message: string;
+  } | null;
   mode?: "ask" | "agent";
   chatTitle?: string | null;
   branchedFromChatId?: string;
@@ -70,6 +77,7 @@ export const Messages = ({
   tempChatFileDetails,
   finishReason,
   uploadStatus,
+  summarizationStatus,
   mode,
   chatTitle,
   branchedFromChatId,
@@ -82,6 +90,27 @@ export const Messages = ({
   const lastAssistantMessageIndex = useMemo(() => {
     return findLastAssistantMessageIndex(messages);
   }, [messages]);
+
+  // Check if we should show loading dots (streaming with no content yet)
+  const shouldShowLoadingDots = useMemo(() => {
+    if (status !== "streaming") return false;
+    if (summarizationStatus?.status === "started") return false;
+    if (uploadStatus?.isUploading) return false;
+
+    // Check if last assistant message has text content
+    const lastAssistantMsg =
+      lastAssistantMessageIndex !== undefined
+        ? messages[lastAssistantMessageIndex]
+        : undefined;
+    if (!lastAssistantMsg) return true; // No message yet, show dots
+    return !hasTextContent(lastAssistantMsg.parts);
+  }, [
+    status,
+    summarizationStatus,
+    uploadStatus,
+    lastAssistantMessageIndex,
+    messages,
+  ]);
 
   // Compute the branch boundary: last message that originated from another chat
   const branchBoundaryIndex = useMemo(() => {
@@ -271,15 +300,35 @@ export const Messages = ({
               onFeedbackCancel={handleFeedbackCancel}
               onShowAllFiles={handleShowAllFiles}
               getCachedUrl={getCachedUrl}
+              showingLoadingIndicator={
+                summarizationStatus?.status === "started" ||
+                uploadStatus?.isUploading ||
+                shouldShowLoadingDots
+              }
             />
           ))}
 
-          {/* Upload status - shown where assistant response will appear */}
-          {uploadStatus?.isUploading && (
+          {/* Processing status - rendered as assistant message position */}
+          {(summarizationStatus?.status === "started" ||
+            uploadStatus?.isUploading ||
+            shouldShowLoadingDots) && (
             <div className="flex flex-col items-start">
-              <Shimmer className="text-sm">
-                {`${uploadStatus.message}...`}
-              </Shimmer>
+              {summarizationStatus?.status === "started" && (
+                <div className="flex items-center gap-2">
+                  <WandSparkles className="w-4 h-4 text-muted-foreground" />
+                  <Shimmer className="text-sm">
+                    {`${summarizationStatus.message}...`}
+                  </Shimmer>
+                </div>
+              )}
+              {uploadStatus?.isUploading && (
+                <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
+              )}
+              {shouldShowLoadingDots && (
+                <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 inline-flex items-center">
+                  <DotsSpinner size="sm" variant="primary" />
+                </div>
+              )}
             </div>
           )}
 
