@@ -318,21 +318,27 @@ export async function getMessagesByChatId({
                 ? truncatedFromLoop.slice(cutoffIndex + 1)
                 : truncatedFromLoop;
 
-            // Create summary message
-            const summaryMessage: UIMessage = {
-              id: uuidv4(),
-              role: "user",
-              parts: [
-                {
-                  type: "text",
-                  text: `<context_summary>\n${latestSummary.summary_text}\n</context_summary>`,
-                },
-              ],
-            };
+            // Parse summary chunks (backward-compatible with legacy plain strings)
+            const summaryChunks = parseSummaryText(
+              latestSummary.summary_text,
+            );
 
-            // Return summary + messages after cutoff
+            const summaryMessages: UIMessage[] = summaryChunks.map(
+              (chunk) => ({
+                id: uuidv4(),
+                role: "user" as const,
+                parts: [
+                  {
+                    type: "text" as const,
+                    text: `<context_summary>\n${chunk}\n</context_summary>`,
+                  },
+                ],
+              }),
+            );
+
+            // Return summary messages + messages after cutoff
             return {
-              truncatedMessages: [summaryMessage, ...messagesAfterCutoff],
+              truncatedMessages: [...summaryMessages, ...messagesAfterCutoff],
               chat,
               isNewChat,
               fileTokens: fileTokensFromLoop,
@@ -639,20 +645,39 @@ export async function deleteTempStreamForBackend({
 //   }
 // }
 
+function parseSummaryText(summaryText: string): string[] {
+  try {
+    const parsed = JSON.parse(summaryText);
+    if (parsed?.version === 2 && Array.isArray(parsed.chunks)) {
+      return parsed.chunks as string[];
+    }
+  } catch {
+    // legacy plain string
+  }
+  return [summaryText];
+}
+
 export async function saveChatSummary({
   chatId,
-  summaryText,
+  summaryTexts,
   summaryUpToMessageId,
 }: {
   chatId: string;
-  summaryText: string;
+  summaryTexts: string[];
   summaryUpToMessageId: string;
 }) {
   try {
+    const existing = await getLatestSummary({ chatId });
+    const existingChunks = existing
+      ? parseSummaryText(existing.summary_text)
+      : [];
+    const allChunks = [...existingChunks, ...summaryTexts];
+    const serialized = JSON.stringify({ version: 2, chunks: allChunks });
+
     await convex.mutation(api.chats.saveLatestSummary, {
       serviceKey,
       chatId,
-      summaryText,
+      summaryText: serialized,
       summaryUpToMessageId,
     });
 

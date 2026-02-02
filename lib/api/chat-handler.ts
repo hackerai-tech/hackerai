@@ -9,6 +9,11 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
+import {
+  stripProviderMetadata,
+  completeIncompleteToolCalls,
+  stripReasoningFromMessagesForGemini,
+} from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -50,6 +55,7 @@ import {
   startStream,
   startTempStream,
   deleteTempStreamForBackend,
+  saveChatSummary,
 } from "@/lib/db/actions";
 import {
   createCancellationSubscriber,
@@ -65,6 +71,8 @@ import { checkAndSummarizeIfNeeded } from "@/lib/messages/summarization";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
+  writeSummarizationStarted,
+  writeSummarizationCompleted,
   createSummarizationCompletedPart,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
@@ -423,6 +431,14 @@ export const createChatHandler = (
           const configuredModelId =
             trackedProvider.languageModel(selectedModel).modelId;
 
+          const isGeminiModel =
+            configuredModelId.includes("gemini") ||
+            configuredModelId.includes("google");
+
+          if (isGeminiModel) {
+            finalMessages = stripReasoningFromMessagesForGemini(finalMessages);
+          }
+
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
@@ -466,19 +482,36 @@ export const createChatHandler = (
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
-                    const { needsSummarization, summarizedMessages } =
-                      await checkAndSummarizeIfNeeded(
-                        finalMessages,
-                        subscription,
-                        trackedProvider.languageModel("summarization-model"),
-                        mode,
-                        writer,
-                        chatId,
-                        fileTokens,
-                      );
+                    const {
+                      needsSummarization,
+                      summarizedMessages,
+                      cutoffMessageId,
+                      summaryTexts,
+                    } = await checkAndSummarizeIfNeeded(
+                      messages,
+                      finalMessages,
+                      subscription,
+                      trackedProvider.languageModel("summarization-model"),
+                      mode,
+                    );
 
-                    if (needsSummarization) {
+                    if (needsSummarization && cutoffMessageId && summaryTexts) {
+                      writeSummarizationStarted(writer);
+
+                      // Save the summary metadata to the chat document FIRST
+                      await saveChatSummary({
+                        chatId,
+                        summaryTexts,
+                        summaryUpToMessageId: cutoffMessageId,
+                      });
+
+                      // Only update state after successful save
+                      finalMessages = isGeminiModel
+                        ? stripReasoningFromMessagesForGemini(summarizedMessages)
+                        : summarizedMessages;
                       hasSummarized = true;
+
+                      writeSummarizationCompleted(writer);
                       // Push only the completed event to parts array for persistence
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
@@ -486,7 +519,7 @@ export const createChatHandler = (
                       // Return updated messages for this step
                       return {
                         messages:
-                          await convertToModelMessages(summarizedMessages),
+                          await convertToModelMessages(finalMessages),
                       };
                     }
                   }

@@ -14,9 +14,30 @@ import type { SummarizationResult } from "./types";
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
   SUMMARIZATION_THRESHOLD_PERCENTAGE,
+  SUMMARIZATION_CHUNK_SIZE,
 } from "./constants";
 import { getSummarizationPrompt } from "./prompts";
 import { countModelMessageTokens } from "./token-counter";
+
+export const isContextSummaryMessage = (msg: UIMessage): boolean =>
+  msg.parts?.some(
+    (p) => p.type === "text" && p.text?.includes("<context_summary>"),
+  ) ?? false;
+
+const chunkArray = <T>(arr: T[], size: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+};
+
+const noOpResult = (uiMessages: UIMessage[]): SummarizationResult => ({
+  needsSummarization: false,
+  summarizedMessages: uiMessages,
+  cutoffMessageId: null,
+  summaryTexts: null,
+});
 
 export const checkAndSummarizeIfNeeded = async (
   currentModelMessages: ModelMessage[],
@@ -26,12 +47,7 @@ export const checkAndSummarizeIfNeeded = async (
   mode: ChatMode,
 ): Promise<SummarizationResult> => {
   if (uiMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED) {
-    return {
-      needsSummarization: false,
-      summarizedMessages: uiMessages,
-      cutoffMessageId: null,
-      summaryText: null,
-    };
+    return noOpResult(uiMessages);
   }
 
   const totalTokens = countModelMessageTokens(currentModelMessages);
@@ -39,72 +55,78 @@ export const checkAndSummarizeIfNeeded = async (
   const threshold = Math.floor(maxTokens * SUMMARIZATION_THRESHOLD_PERCENTAGE);
 
   if (totalTokens <= threshold) {
-    return {
-      needsSummarization: false,
-      summarizedMessages: uiMessages,
-      cutoffMessageId: null,
-      summaryText: null,
-    };
+    return noOpResult(uiMessages);
   }
 
   const lastMessages = uiMessages.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED);
-  const messagesToSummarize = uiMessages.slice(
+  const candidateMessages = uiMessages.slice(
     0,
     -MESSAGES_TO_KEEP_UNSUMMARIZED,
   );
 
-  if (messagesToSummarize.length === 0) {
-    return {
-      needsSummarization: false,
-      summarizedMessages: uiMessages,
-      cutoffMessageId: null,
-      summaryText: null,
-    };
+  if (candidateMessages.length === 0) {
+    return noOpResult(uiMessages);
   }
 
-  const cutoffMessageId =
-    messagesToSummarize[messagesToSummarize.length - 1].id;
+  const existingSummaries = candidateMessages.filter(isContextSummaryMessage);
+  const rawMessages = candidateMessages.filter(
+    (msg) => !isContextSummaryMessage(msg),
+  );
 
-  let summaryText: string;
-  try {
-    const result = await generateText({
-      model: languageModel,
-      system: getSummarizationPrompt(mode),
-      providerOptions: {
-        xai: {
-          store: false,
-        },
-      },
-      messages: [
-        ...(await convertToModelMessages(messagesToSummarize)),
-        {
-          role: "user",
-          content:
-            "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point.",
-        },
-      ],
-    });
-    summaryText = result.text;
-  } catch (error) {
-    console.error("[Summarization] Failed to generate summary:", error);
-    summaryText = `[Summary of ${messagesToSummarize.length} messages in conversation]`;
+  if (rawMessages.length === 0) {
+    return noOpResult(uiMessages);
   }
 
-  const summaryMessage: UIMessage = {
+  const cutoffMessageId = rawMessages[rawMessages.length - 1].id;
+  const chunks = chunkArray(rawMessages, SUMMARIZATION_CHUNK_SIZE);
+
+  const summaryTexts = await Promise.all(
+    chunks.map(async (chunk) => {
+      try {
+        const result = await generateText({
+          model: languageModel,
+          system: getSummarizationPrompt(mode),
+          providerOptions: {
+            xai: {
+              store: false,
+            },
+          },
+          messages: [
+            ...(await convertToModelMessages(chunk)),
+            {
+              role: "user",
+              content:
+                "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point.",
+            },
+          ],
+        });
+        return result.text;
+      } catch (error) {
+        console.error("[Summarization] Failed to generate summary:", error);
+        return `[Summary of ${chunk.length} messages in conversation]`;
+      }
+    }),
+  );
+
+  const newSummaryMessages: UIMessage[] = summaryTexts.map((text) => ({
     id: uuidv4(),
     role: "user",
     parts: [
       {
         type: "text",
-        text: `<context_summary>\n${summaryText}\n</context_summary>`,
+        text: `<context_summary>\n${text}\n</context_summary>`,
       },
     ],
-  };
+  }));
 
   return {
     needsSummarization: true,
-    summarizedMessages: [summaryMessage, ...lastMessages],
+    summarizedMessages: [
+      ...existingSummaries,
+      ...newSummaryMessages,
+      ...lastMessages,
+    ],
     cutoffMessageId,
-    summaryText,
+    summaryTexts,
   };
 };

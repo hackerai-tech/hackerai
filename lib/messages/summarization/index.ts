@@ -1,8 +1,12 @@
-export { checkAndSummarizeIfNeeded } from "./summarize";
+export {
+  checkAndSummarizeIfNeeded,
+  isContextSummaryMessage,
+} from "./summarize";
 export type { SummarizationResult } from "./types";
 export {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
   SUMMARIZATION_THRESHOLD_PERCENTAGE,
+  SUMMARIZATION_CHUNK_SIZE,
 } from "./constants";
 export {
   AGENT_SUMMARIZATION_PROMPT,
