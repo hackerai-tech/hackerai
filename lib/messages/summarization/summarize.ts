@@ -10,13 +10,17 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import type { SubscriptionTier, ChatMode } from "@/types";
-import type { SummarizationResult } from "./types";
+import type { SummarizationResult, SummaryChunk } from "./types";
 import {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
   SUMMARIZATION_THRESHOLD_PERCENTAGE,
   SUMMARIZATION_CHUNK_SIZE,
 } from "./constants";
-import { getSummarizationPrompt } from "./prompts";
+import {
+  getSummarizationPrompt,
+  buildPriorContextMessage,
+  CHUNK_SUMMARIZATION_INSTRUCTION,
+} from "./prompts";
 import { countModelMessageTokens } from "./token-counter";
 
 export const isContextSummaryMessage = (msg: UIMessage): boolean =>
@@ -36,7 +40,7 @@ const noOpResult = (uiMessages: UIMessage[]): SummarizationResult => ({
   needsSummarization: false,
   summarizedMessages: uiMessages,
   cutoffMessageId: null,
-  summaryTexts: null,
+  summaryChunks: null,
 });
 
 export const checkAndSummarizeIfNeeded = async (
@@ -80,8 +84,29 @@ export const checkAndSummarizeIfNeeded = async (
   const cutoffMessageId = rawMessages[rawMessages.length - 1].id;
   const chunks = chunkArray(rawMessages, SUMMARIZATION_CHUNK_SIZE);
 
-  const summaryTexts = await Promise.all(
+  // Extract text from existing summaries to provide as prior context
+  const priorSummaryTexts = existingSummaries
+    .map((msg) => {
+      const textPart = msg.parts?.find(
+        (p) => p.type === "text" && p.text?.includes("<context_summary>"),
+      );
+      return textPart?.type === "text" ? (textPart.text ?? "") : "";
+    })
+    .filter(Boolean);
+
+  const priorContextMessage =
+    priorSummaryTexts.length > 0
+      ? [
+          {
+            role: "user" as const,
+            content: buildPriorContextMessage(priorSummaryTexts),
+          },
+        ]
+      : [];
+
+  const summaryChunks: SummaryChunk[] = await Promise.all(
     chunks.map(async (chunk) => {
+      const lastMessageId = chunk[chunk.length - 1].id;
       try {
         const result = await generateText({
           model: languageModel,
@@ -92,29 +117,32 @@ export const checkAndSummarizeIfNeeded = async (
             },
           },
           messages: [
+            ...priorContextMessage,
             ...(await convertToModelMessages(chunk)),
             {
               role: "user",
-              content:
-                "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point.",
+              content: CHUNK_SUMMARIZATION_INSTRUCTION,
             },
           ],
         });
-        return result.text;
+        return { text: result.text, lastMessageId };
       } catch (error) {
         console.error("[Summarization] Failed to generate summary:", error);
-        return `[Summary of ${chunk.length} messages in conversation]`;
+        return {
+          text: `[Summary of ${chunk.length} messages in conversation]`,
+          lastMessageId,
+        };
       }
     }),
   );
 
-  const newSummaryMessages: UIMessage[] = summaryTexts.map((text) => ({
+  const newSummaryMessages: UIMessage[] = summaryChunks.map((chunk) => ({
     id: uuidv4(),
     role: "user",
     parts: [
       {
         type: "text",
-        text: `<context_summary>\n${text}\n</context_summary>`,
+        text: `<context_summary>\n${chunk.text}\n</context_summary>`,
       },
     ],
   }));
@@ -127,6 +155,6 @@ export const checkAndSummarizeIfNeeded = async (
       ...lastMessages,
     ],
     cutoffMessageId,
-    summaryTexts,
+    summaryChunks,
   };
 };

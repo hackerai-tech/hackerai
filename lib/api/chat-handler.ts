@@ -489,7 +489,7 @@ export const createChatHandler = (
                       needsSummarization,
                       summarizedMessages,
                       cutoffMessageId,
-                      summaryTexts,
+                      summaryChunks,
                     } = await checkAndSummarizeIfNeeded(
                       messages,
                       finalMessages,
@@ -498,13 +498,13 @@ export const createChatHandler = (
                       mode,
                     );
 
-                    if (needsSummarization && cutoffMessageId && summaryTexts) {
+                    if (needsSummarization && cutoffMessageId && summaryChunks) {
                       writeSummarizationStarted(writer);
 
                       // Save the summary metadata to the chat document FIRST
                       await saveChatSummary({
                         chatId,
-                        summaryTexts,
+                        summaryChunks,
                         summaryUpToMessageId: cutoffMessageId,
                       });
 

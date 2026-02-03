@@ -35,3 +35,11 @@ export const ASK_SUMMARIZATION_PROMPT =
 
 export const getSummarizationPrompt = (mode: ChatMode): string =>
   mode === "agent" ? AGENT_SUMMARIZATION_PROMPT : ASK_SUMMARIZATION_PROMPT;
+
+export const buildPriorContextMessage = (
+  priorSummaryTexts: string[],
+): string =>
+  `Previously summarized context for reference (do NOT re-summarize this, focus only on the new messages):\n${priorSummaryTexts.join("\n---\n")}\n`;
+
+export const CHUNK_SUMMARIZATION_INSTRUCTION =
+  "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point. Focus only on the new messages, not the previously summarized context.";

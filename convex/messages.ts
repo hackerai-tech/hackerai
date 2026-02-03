@@ -26,10 +26,10 @@ const checkAndInvalidateSummary = async (
   chatId: string,
   deletedMessageIds: (string | undefined)[],
 ) => {
-  const validDeletedIds = deletedMessageIds.filter(
-    (id): id is string => id !== undefined,
+  const validDeletedIds = new Set(
+    deletedMessageIds.filter((id): id is string => id !== undefined),
   );
-  if (validDeletedIds.length === 0) return;
+  if (validDeletedIds.size === 0) return;
 
   try {
     const chat = await ctx.db
@@ -39,20 +39,60 @@ const checkAndInvalidateSummary = async (
 
     if (!chat || !chat.latest_summary_id) return;
 
-    // Get the summary to check its cutoff message
     const summary = await ctx.db.get(chat.latest_summary_id);
     if (!summary) return;
 
-    // If the summary's cutoff message was deleted, invalidate the summary
-    if (validDeletedIds.includes(summary.summary_up_to_message_id)) {
-      // Clear the summary reference from chat
+    // Parse the stored summary to get individual chunks
+    let chunks: Array<{ text: string; lastMessageId: string }> = [];
+    try {
+      const parsed = JSON.parse(summary.summary_text);
+      if (parsed?.version === 2 && Array.isArray(parsed.chunks)) {
+        chunks = parsed.chunks;
+      }
+    } catch {
+      // Legacy plain string — treat as single chunk with the global cutoff
+      chunks = [
+        {
+          text: summary.summary_text,
+          lastMessageId: summary.summary_up_to_message_id,
+        },
+      ];
+    }
+
+    // Keep chunks whose lastMessageId was NOT deleted
+    // Once a chunk is invalidated, all subsequent chunks are too
+    const validChunks: typeof chunks = [];
+    for (const chunk of chunks) {
+      if (validDeletedIds.has(chunk.lastMessageId)) break;
+      validChunks.push(chunk);
+    }
+
+    if (validChunks.length === chunks.length) {
+      // No chunks affected — nothing to do
+      return;
+    }
+
+    if (validChunks.length === 0) {
+      // All chunks invalidated — delete summary entirely
       await ctx.db.patch(chat._id, {
         latest_summary_id: undefined,
         update_time: Date.now(),
       });
-
-      // Delete the summary document
       await ctx.db.delete(chat.latest_summary_id);
+    } else {
+      // Partial rollback — keep valid chunks
+      const newSummaryText = JSON.stringify({
+        version: 2,
+        chunks: validChunks,
+      });
+      const newCutoff = validChunks[validChunks.length - 1].lastMessageId;
+      await ctx.db.patch(summary._id, {
+        summary_text: newSummaryText,
+        summary_up_to_message_id: newCutoff,
+      });
+      await ctx.db.patch(chat._id, {
+        update_time: Date.now(),
+      });
     }
   } catch (error) {
     console.error("[Messages] Failed to check/invalidate summary:", error);

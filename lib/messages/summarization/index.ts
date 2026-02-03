@@ -2,7 +2,7 @@ export {
   checkAndSummarizeIfNeeded,
   isContextSummaryMessage,
 } from "./summarize";
-export type { SummarizationResult } from "./types";
+export type { SummarizationResult, SummaryChunk } from "./types";
 export {
   MESSAGES_TO_KEEP_UNSUMMARIZED,
   SUMMARIZATION_THRESHOLD_PERCENTAGE,

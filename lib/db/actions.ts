@@ -302,8 +302,6 @@ export async function getMessagesByChatId({
           // Use all fetched messages chronologically as existing
           existingMessages = [...fetchedDesc].reverse();
         } else {
-          // Apply summary if it exists (regardless of current mode)
-          // Note: Summaries are only created in agent mode but provide value in any mode
           if (latestSummary) {
             const summaryUpToId = latestSummary.summary_up_to_message_id;
 
@@ -319,7 +317,7 @@ export async function getMessagesByChatId({
                 : truncatedFromLoop;
 
             // Parse summary chunks (backward-compatible with legacy plain strings)
-            const summaryChunks = parseSummaryText(
+            const summaryChunks = parseSummaryChunks(
               latestSummary.summary_text,
             );
 
@@ -330,7 +328,7 @@ export async function getMessagesByChatId({
                 parts: [
                   {
                     type: "text" as const,
-                    text: `<context_summary>\n${chunk}\n</context_summary>`,
+                    text: `<context_summary>\n${chunk.text}\n</context_summary>`,
                   },
                 ],
               }),
@@ -673,33 +671,38 @@ export async function deleteTempStreamForBackend({
 //   }
 // }
 
-function parseSummaryText(summaryText: string): string[] {
+type StoredSummaryChunk = {
+  text: string;
+  lastMessageId: string;
+};
+
+function parseSummaryChunks(summaryText: string): StoredSummaryChunk[] {
   try {
     const parsed = JSON.parse(summaryText);
     if (parsed?.version === 2 && Array.isArray(parsed.chunks)) {
-      return parsed.chunks as string[];
+      return parsed.chunks as StoredSummaryChunk[];
     }
   } catch {
     // legacy plain string
   }
-  return [summaryText];
+  return [{ text: summaryText, lastMessageId: "" }];
 }
 
 export async function saveChatSummary({
   chatId,
-  summaryTexts,
+  summaryChunks,
   summaryUpToMessageId,
 }: {
   chatId: string;
-  summaryTexts: string[];
+  summaryChunks: Array<{ text: string; lastMessageId: string }>;
   summaryUpToMessageId: string;
 }) {
   try {
     const existing = await getLatestSummary({ chatId });
     const existingChunks = existing
-      ? parseSummaryText(existing.summary_text)
+      ? parseSummaryChunks(existing.summary_text)
       : [];
-    const allChunks = [...existingChunks, ...summaryTexts];
+    const allChunks = [...existingChunks, ...summaryChunks];
     const serialized = JSON.stringify({ version: 2, chunks: allChunks });
 
     await convex.mutation(api.chats.saveLatestSummary, {
