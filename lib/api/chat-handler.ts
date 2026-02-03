@@ -683,8 +683,8 @@ export const createChatHandler = (
                           messages: retryMessages,
                           isAborted: retryAborted,
                         }) => {
-                          // Cleanup for retry
-                          preemptiveTimeout?.clear();
+                          // Cleanup for retry (keep diagnostic timeout alive)
+                          preemptiveTimeout?.clearPreemptiveOnly();
                           if (!subscriberStopped) {
                             await cancellationSubscriber.stop();
                             subscriberStopped = true;
@@ -800,6 +800,9 @@ export const createChatHandler = (
 
                           // Deduct accumulated usage (includes both original + retry streams)
                           await deductAccumulatedUsage();
+
+                          // Clear diagnostic timeout now that retry onFinish is done
+                          preemptiveTimeout?.clear();
                         },
                         sendReasoning: true,
                       }),
