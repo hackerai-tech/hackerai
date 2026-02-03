@@ -450,7 +450,7 @@ export const createChatHandler = (
               );
             }
           };
-          console.log("finalMessages", JSON.stringify(finalMessages, null, 2));
+
           // Helper to create streamText with a given model (reused for retry)
           const createStream = async (modelName: string) =>
             streamText({
