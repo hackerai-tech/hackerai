@@ -91,6 +91,16 @@ export const Messages = ({
     return findLastAssistantMessageIndex(messages);
   }, [messages]);
 
+  // Check if last assistant message has any content (text or files)
+  const lastAssistantHasContent = useMemo(() => {
+    if (lastAssistantMessageIndex === undefined) return false;
+    const lastAssistantMsg = messages[lastAssistantMessageIndex];
+    if (!lastAssistantMsg) return false;
+    const hasText = hasTextContent(lastAssistantMsg.parts);
+    const hasFiles = lastAssistantMsg.parts.some((part) => part.type === "file");
+    return hasText || hasFiles;
+  }, [lastAssistantMessageIndex, messages]);
+
   // Check if we should show loading dots (streaming with no content yet)
   const shouldShowLoadingDots = useMemo(() => {
     if (status !== "streaming") return false;
@@ -111,6 +121,13 @@ export const Messages = ({
     lastAssistantMessageIndex,
     messages,
   ]);
+
+  // Determine if summarization status should be shown as a separate element vs inline
+  // Upload status and loading dots ALWAYS show separately (they only appear when no content yet)
+  // Summarization status shows separately only when last assistant has no content
+  const showSummarizationSeparately = useMemo(() => {
+    return summarizationStatus?.status === "started" && !lastAssistantHasContent;
+  }, [summarizationStatus, lastAssistantHasContent]);
 
   // Compute the branch boundary: last message that originated from another chat
   const branchBoundaryIndex = useMemo(() => {
@@ -305,19 +322,20 @@ export const Messages = ({
                 uploadStatus?.isUploading ||
                 shouldShowLoadingDots
               }
+              summarizationStatus={summarizationStatus}
             />
           ))}
 
-          {/* Processing status - rendered as assistant message position */}
-          {(summarizationStatus?.status === "started" ||
+          {/* Processing status - upload/loading dots always separate, summarization only when no content */}
+          {(showSummarizationSeparately ||
             uploadStatus?.isUploading ||
             shouldShowLoadingDots) && (
             <div className="flex flex-col items-start">
-              {summarizationStatus?.status === "started" && (
+              {showSummarizationSeparately && (
                 <div className="flex items-center gap-2">
                   <WandSparkles className="w-4 h-4 text-muted-foreground" />
                   <Shimmer className="text-sm">
-                    {`${summarizationStatus.message}...`}
+                    {`${summarizationStatus?.message}...`}
                   </Shimmer>
                 </div>
               )}

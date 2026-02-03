@@ -28,6 +28,7 @@ interface UseChatHandlersProps {
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
+  onStopCallback?: () => void;
 }
 
 export const useChatHandlers = ({
@@ -42,6 +43,7 @@ export const useChatHandlers = ({
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
+  onStopCallback,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -282,6 +284,9 @@ export const useChatHandlers = ({
 
     // Set manual stop flag to prevent auto-processing of queue
     hasManuallyStoppedRef.current = true;
+
+    // Clear any active status indicators immediately
+    onStopCallback?.();
 
     try {
       await stopActiveStream();

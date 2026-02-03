@@ -369,6 +369,7 @@ export const Chat = ({
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       setUploadStatus(null);
+      setSummarizationStatus(null);
       // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
@@ -382,6 +383,7 @@ export const Chat = ({
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       setUploadStatus(null);
+      setSummarizationStatus(null);
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
@@ -406,6 +408,7 @@ export const Chat = ({
       setTodos([]);
       setAwaitingServerChat(false);
       setUploadStatus(null);
+      setSummarizationStatus(null);
     };
     setChatReset(reset);
     return () => setChatReset(null);
@@ -626,6 +629,10 @@ export const Chat = ({
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
+    onStopCallback: () => {
+      setUploadStatus(null);
+      setSummarizationStatus(null);
+    },
   });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });

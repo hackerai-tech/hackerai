@@ -6,7 +6,8 @@ import { MessageEditor, EditableFile } from "./MessageEditor";
 import { FeedbackInput } from "./FeedbackInput";
 import { BranchIndicator } from "./BranchIndicator";
 import { FinishReasonNotice } from "./FinishReasonNotice";
-import { FileSearch } from "lucide-react";
+import { Shimmer } from "@/components/ai-elements/shimmer";
+import { FileSearch, WandSparkles } from "lucide-react";
 import {
   extractMessageText,
   hasTextContent,
@@ -32,6 +33,11 @@ interface MessageItemProps {
   branchedFromChatTitle?: string;
   branchBoundaryIndex: number | undefined;
   showingLoadingIndicator?: boolean;
+  // Inline status for mid-conversation summarization (when message already has content)
+  summarizationStatus?: {
+    status: "started" | "completed";
+    message: string;
+  } | null;
   // Callbacks
   onMouseEnter: (messageId: string) => void;
   onMouseLeave: () => void;
@@ -63,6 +69,8 @@ function areMessageItemPropsEqual(
     return false;
   if (prev.finishReason !== next.finishReason) return false;
   if (prev.showingLoadingIndicator !== next.showingLoadingIndicator)
+    return false;
+  if (prev.summarizationStatus?.status !== next.summarizationStatus?.status)
     return false;
 
   // Compare message by reference first, then by parts length for streaming
@@ -108,6 +116,7 @@ export const MessageItem = memo(function MessageItem({
   onShowAllFiles,
   getCachedUrl,
   showingLoadingIndicator,
+  summarizationStatus,
 }: MessageItemProps) {
   const isUser = message.role === "user";
   const isLastAssistantMessage =
@@ -368,6 +377,18 @@ export const MessageItem = memo(function MessageItem({
             )}
           </div>
         )}
+
+        {/* Inline summarization status - only shown when last assistant message has content */}
+        {isLastAssistantMessage &&
+          hasAnyContent &&
+          summarizationStatus?.status === "started" && (
+            <div className="flex items-center gap-2 mt-2">
+              <WandSparkles className="w-4 h-4 text-muted-foreground" />
+              <Shimmer className="text-sm">
+                {`${summarizationStatus.message}...`}
+              </Shimmer>
+            </div>
+          )}
 
         {/* Finish reason notice under last assistant message */}
         {isLastAssistantMessage && status !== "streaming" && (
