@@ -72,18 +72,25 @@ export const extractAllFileIdsFromMessages = (
 /**
  * Truncates messages to fit within subscription token limits, including file tokens
  * @param skipFileTokens - Skip file token counting (for agent mode where files go to sandbox)
+ * @returns Object with truncated messages and the computed fileTokens map
  */
 export const truncateMessagesWithFileTokens = async (
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
   skipFileTokens: boolean = false,
-): Promise<UIMessage[]> => {
+): Promise<{
+  messages: UIMessage[];
+  fileTokens: Record<Id<"files">, number>;
+}> => {
   const maxTokens = getMaxTokensForSubscription(subscription);
   const fileTokens = skipFileTokens
     ? {}
     : await getFileTokensByIds(extractAllFileIdsFromMessages(messages));
 
-  return truncateMessagesToTokenLimit(messages, fileTokens, maxTokens);
+  return {
+    messages: truncateMessagesToTokenLimit(messages, fileTokens, maxTokens),
+    fileTokens,
+  };
 };
 
 /**

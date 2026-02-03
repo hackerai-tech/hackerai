@@ -149,7 +149,12 @@ export const createChatHandler = (
         abortController: userStopSignal,
       });
 
-      const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
+      const {
+        truncatedMessages,
+        chat,
+        isNewChat,
+        fileTokens,
+      } = await getMessagesByChatId({
         chatId,
         userId,
         subscription,
@@ -445,7 +450,7 @@ export const createChatHandler = (
               );
             }
           };
-
+          console.log("finalMessages", JSON.stringify(finalMessages, null, 2));
           // Helper to create streamText with a given model (reused for retry)
           const createStream = async (modelName: string) =>
             streamText({
@@ -461,13 +466,13 @@ export const createChatHandler = (
                   if (!temporary && !hasSummarized) {
                     const { needsSummarization, summarizedMessages } =
                       await checkAndSummarizeIfNeeded(
-                        messages,
                         finalMessages,
                         subscription,
                         trackedProvider.languageModel("summarization-model"),
                         mode,
                         writer,
                         chatId,
+                        fileTokens,
                       );
 
                     if (needsSummarization) {
