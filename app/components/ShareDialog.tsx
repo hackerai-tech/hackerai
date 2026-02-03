@@ -104,7 +104,7 @@ export const ShareDialog = ({
     const encodedTitle = encodeURIComponent(chatTitle);
 
     const urls = {
-      x: `https://twitter.com/intent/tweet?url=${encodedUrl}&text=${encodedTitle}`,
+      x: `https://x.com/intent/tweet?url=${encodedUrl}&text=${encodedTitle}`,
       linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${encodedUrl}`,
       reddit: `https://reddit.com/submit?url=${encodedUrl}&title=${encodedTitle}`,
     };
