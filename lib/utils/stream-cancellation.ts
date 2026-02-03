@@ -264,6 +264,9 @@ export const createPreemptiveTimeout = ({
       clearTimeout(timeoutId);
       clearTimeout(diagnosticTimeoutId);
     },
+    clearPreemptiveOnly: () => {
+      clearTimeout(timeoutId);
+    },
     isPreemptive: () => isPreemptive,
     getTriggerTime: () => triggerTime,
     getStartTime: () => startTime,

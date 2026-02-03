@@ -843,9 +843,10 @@ export const createChatHandler = (
                   });
                 }
 
-                // Clear pre-emptive timeout
+                // Clear only the preemptive timeout (keep diagnostic timeout alive
+                // so it can still fire if onFinish blocks near Vercel's hard limit)
                 let stepStart = Date.now();
-                preemptiveTimeout?.clear();
+                preemptiveTimeout?.clearPreemptiveOnly();
                 logStep("clear_timeout", stepStart);
 
                 // Stop cancellation subscriber
@@ -1025,6 +1026,9 @@ export const createChatHandler = (
                   await deleteTempStreamForBackend({ chatId });
                   logStep("delete_temp_stream", stepStart);
                 }
+
+                // Clear diagnostic timeout now that onFinish is done
+                preemptiveTimeout?.clear();
 
                 if (isPreemptiveAbort) {
                   const totalDuration = Date.now() - onFinishStartTime;
