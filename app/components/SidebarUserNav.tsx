@@ -130,7 +130,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
   const handleXCom = () => {
     const newWindow = window.open(
-      "https://x.com/pentestgpt",
+      "https://x.com/hackerai_",
       "_blank",
       "noopener,noreferrer",
     );

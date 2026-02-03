@@ -28,6 +28,7 @@ interface UseChatHandlersProps {
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
+  onStopCallback?: () => void;
 }
 
 export const useChatHandlers = ({
@@ -42,6 +43,7 @@ export const useChatHandlers = ({
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
+  onStopCallback,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -283,6 +285,9 @@ export const useChatHandlers = ({
     // Set manual stop flag to prevent auto-processing of queue
     hasManuallyStoppedRef.current = true;
 
+    // Clear any active status indicators immediately
+    onStopCallback?.();
+
     try {
       await stopActiveStream();
     } catch (error) {
@@ -310,15 +315,12 @@ export const useChatHandlers = ({
       : todos;
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
-    // Check if the last assistant message has actual content
-    // If it's empty or has no parts, it was never saved (error occurred)
-    // In this case, we shouldn't delete anything from the database
-    const hasContent = lastAssistant?.parts && lastAssistant.parts.length > 0;
-
     if (!temporaryChatsEnabled) {
-      // Only delete if the last assistant message has content
-      // This prevents deleting previous valid messages when an error occurred
-      if (hasContent) {
+      // Always delete the last assistant message when regenerating
+      // This prevents accumulation of empty messages when user aborts quickly multiple times
+      // The deleteLastAssistantMessage mutation queries DB for the last assistant message,
+      // so it will only delete if one exists
+      if (lastAssistant) {
         await deleteLastAssistantMessage({
           chatId,
           todos: cleanedTodos,

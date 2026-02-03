@@ -209,6 +209,125 @@ describe("token-bucket async functions", () => {
 
       expect(mockLimitFn).not.toHaveBeenCalled();
     });
+
+    it("should refund when provider cost is less than estimated (over-estimation)", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+
+      // Estimate: 10000 input tokens = 50 points
+      const estimatedInputTokens = 10000;
+      const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
+
+      // Actual provider cost: $0.002 = 20 points (less than 50)
+      const providerCostDollars = 0.002;
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        5000, // actual input (ignored when provider cost provided)
+        500, // actual output (ignored when provider cost provided)
+        undefined,
+        providerCostDollars,
+      );
+
+      // Should refund the difference (50 - 20 = 30 points)
+      const expectedRefund = estimatedCost - Math.ceil(providerCostDollars * 10000);
+      expect(mockHincrbyFn).toHaveBeenCalledWith(
+        expect.stringContaining("usage:session"),
+        "tokens",
+        expectedRefund,
+      );
+      expect(mockHincrbyFn).toHaveBeenCalledWith(
+        expect.stringContaining("usage:weekly"),
+        "tokens",
+        expectedRefund,
+      );
+      // Should NOT call limiter to deduct more
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("should refund when token-based actual cost is less than estimated", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+
+      // Estimate: 10000 input tokens = 50 points (pre-deducted)
+      const estimatedInputTokens = 10000;
+      const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
+
+      // Actual: 2000 input + 500 output = 10 + 15 = 25 points
+      const actualInputTokens = 2000;
+      const actualOutputTokens = 500;
+      const actualCost =
+        calculateTokenCost(actualInputTokens, "input") +
+        calculateTokenCost(actualOutputTokens, "output");
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        actualInputTokens,
+        actualOutputTokens,
+        undefined,
+        undefined, // no provider cost, use token calculation
+      );
+
+      // Should refund the difference (50 - 25 = 25 points)
+      const expectedRefund = estimatedCost - actualCost;
+      expect(mockHincrbyFn).toHaveBeenCalledWith(
+        expect.stringContaining("usage:session"),
+        "tokens",
+        expectedRefund,
+      );
+    });
+
+    it("should not refund or charge when actual cost equals estimated", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+
+      // Estimate: 1000 input tokens = 5 points
+      const estimatedInputTokens = 1000;
+      const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
+
+      // Actual provider cost exactly matches: $0.0005 = 5 points
+      const providerCostDollars = estimatedCost / 10000;
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        1000,
+        0,
+        undefined,
+        providerCostDollars,
+      );
+
+      // Should neither refund nor charge additional
+      expect(mockHincrbyFn).not.toHaveBeenCalled();
+      expect(mockLimitFn).not.toHaveBeenCalled();
+    });
+
+    it("should charge additional when actual cost exceeds estimated", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+
+      // Estimate: 1000 input tokens = 5 points (pre-deducted)
+      const estimatedInputTokens = 1000;
+
+      // Actual provider cost: $0.005 = 50 points (much more than 5)
+      const providerCostDollars = 0.005;
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInputTokens,
+        5000,
+        1000,
+        undefined,
+        providerCostDollars,
+      );
+
+      // Should NOT refund
+      expect(mockHincrbyFn).not.toHaveBeenCalled();
+      // Should charge additional via limiter
+      expect(mockLimitFn).toHaveBeenCalled();
+    });
   });
 
   describe("refundUsage", () => {

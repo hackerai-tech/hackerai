@@ -6,18 +6,19 @@ import {
   generateText,
   convertToModelMessages,
   LanguageModel,
-  ModelMessage,
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
-import { countTokens } from "gpt-tokenizer";
+import {
+  getMaxTokensForSubscription,
+  countMessagesTokens,
+} from "@/lib/token-utils";
 import { SubscriptionTier, ChatMode } from "@/types";
-import { stripProviderMetadataFromPart } from "@/lib/utils/message-processor";
 import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
 } from "@/lib/utils/stream-writer-utils";
 import { saveChatSummary } from "@/lib/db/actions";
+import type { Id } from "@/convex/_generated/dataModel";
 
 // Keep last N messages unsummarized for context
 const MESSAGES_TO_KEEP_UNSUMMARIZED = 2;
@@ -62,37 +63,6 @@ const getSummarizationPrompt = (mode: ChatMode): string =>
   mode === "agent" ? AGENT_SUMMARIZATION_PROMPT : ASK_SUMMARIZATION_PROMPT;
 
 /**
- * Count tokens for ModelMessage array.
- * Excludes reasoning blocks and strips provider-specific fields before counting.
- */
-const countModelMessageTokens = (messages: ModelMessage[]): number => {
-  let totalTokens = 0;
-
-  for (const message of messages) {
-    if (typeof message.content === "string") {
-      totalTokens += countTokens(message.content);
-    } else if (Array.isArray(message.content)) {
-      for (const part of message.content) {
-        // Skip reasoning parts
-        if (part.type === "reasoning") {
-          continue;
-        }
-
-        if (part.type === "text") {
-          totalTokens += countTokens(part.text || "");
-        } else {
-          // Strip provider fields before counting (providerMetadata, providerOptions, etc.)
-          const cleanPart = stripProviderMetadataFromPart(part);
-          totalTokens += countTokens(JSON.stringify(cleanPart));
-        }
-      }
-    }
-  }
-
-  return totalTokens;
-};
-
-/**
  * Check and summarize messages if needed
  * This is the main entry point for the chat handler
  * Handles the full summarization flow: check -> shimmer -> generate -> save -> complete
@@ -100,13 +70,13 @@ const countModelMessageTokens = (messages: ModelMessage[]): number => {
  * @param chatId - Chat ID for saving the summary (null for temporary chats)
  */
 export const checkAndSummarizeIfNeeded = async (
-  currentModelMessages: ModelMessage[],
   uiMessages: UIMessage[],
   subscription: SubscriptionTier,
   languageModel: LanguageModel,
   mode: ChatMode,
   writer: UIMessageStreamWriter,
   chatId: string | null,
+  fileTokens: Record<Id<"files">, number> = {},
 ): Promise<{
   needsSummarization: boolean;
   summarizedMessages: UIMessage[];
@@ -123,8 +93,8 @@ export const checkAndSummarizeIfNeeded = async (
     };
   }
 
-  // Count tokens and check against threshold
-  const totalTokens = countModelMessageTokens(currentModelMessages);
+  // Count tokens using UIMessages with proper file token handling
+  const totalTokens = countMessagesTokens(uiMessages, fileTokens);
   const maxTokens = getMaxTokensForSubscription(subscription);
   const threshold = Math.floor(maxTokens * SUMMARIZATION_THRESHOLD_PERCENTAGE);
 
