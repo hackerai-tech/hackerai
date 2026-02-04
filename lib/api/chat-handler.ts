@@ -838,6 +838,7 @@ export const createChatHandler = (
                       totalElapsedSinceTriggerMs: totalElapsed,
                       endpoint,
                     });
+                    axiomLogger.flush();
                   }
                 };
 
@@ -951,17 +952,23 @@ export const createChatHandler = (
                   // On abort, streamText.onFinish may not have fired yet, so streamUsage
                   // could be undefined. Await usage from result to ensure we capture it.
                   // This must happen BEFORE we decide whether to skip saving.
+                  stepStart = Date.now();
                   let resolvedUsage: Record<string, unknown> | undefined =
                     streamUsage;
                   if (!resolvedUsage && isAborted) {
                     preemptiveTimeout?.setPhase("onFinish_awaitUsage");
                     try {
-                      resolvedUsage = (await result.usage) as Record<
-                        string,
-                        unknown
-                      >;
+                      resolvedUsage = await Promise.race([
+                        result.usage as unknown as Promise<Record<string, unknown>>,
+                        // Timeout after 5 seconds
+                        new Promise<Record<string, unknown> | undefined>((_, reject) =>
+                          setTimeout(() => reject(new Error("Timed out waiting for usage")), 5000)
+                        ),
+                      ]);
+                      logStep("resolved_usage", stepStart);
                     } catch {
                       // Usage unavailable on abort - continue without it
+                      logStep("usage_unavailable_on_abort", stepStart);
                     }
                   }
 
