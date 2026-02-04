@@ -35,13 +35,6 @@ export type RateLimitResult = {
   reset: number;
 };
 
-/** Storage usage returned by internal query */
-type StorageUsage = {
-  usedBytes: number;
-  maxBytes: number;
-  availableBytes: number;
-} | null;
-
 /**
  * Check file upload rate limit using sliding window algorithm.
  * Allows 80 file uploads per 5 hours for paid tiers.
@@ -841,83 +834,6 @@ export const saveFile = action({
       url: fileUrl,
       fileId,
       tokens: tokenSize,
-    };
-  },
-});
-
-/**
- * Generate upload URL for file storage with authentication and rate limiting.
- * This action replaces the mutation to enable Redis-based rate limiting.
- * Returns the upload URL and rate limit info (remaining uploads).
- */
-export const generateUploadUrlAction = action({
-  args: {
-    serviceKey: v.optional(v.string()),
-    userId: v.optional(v.string()),
-  },
-  returns: v.object({
-    uploadUrl: v.string(),
-    rateLimit: v.optional(
-      v.object({
-        remaining: v.number(),
-        limit: v.number(),
-        reset: v.number(),
-      }),
-    ),
-  }),
-  handler: async (ctx, args) => {
-    let actingUserId: string;
-
-    // Service key flow (backend)
-    if (args.serviceKey) {
-      validateServiceKey(args.serviceKey);
-      if (!args.userId) {
-        throw new ConvexError({
-          code: "MISSING_USER_ID",
-          message: "userId is required when using serviceKey",
-        });
-      }
-      actingUserId = args.userId;
-    } else {
-      // User-authenticated flow
-      const user = await ctx.auth.getUserIdentity();
-      if (!user) {
-        throw new ConvexError({
-          code: "UNAUTHORIZED",
-          message: "Unauthorized: User not authenticated",
-        });
-      }
-      actingUserId = user.subject;
-    }
-
-    // Check storage limit before allowing upload
-    const storageUsage: StorageUsage = await ctx.runQuery(
-      internal.fileStorage.getUserStorageUsage,
-      { userId: actingUserId },
-    );
-    if (storageUsage && storageUsage.availableBytes <= 0) {
-      const usedGB = (storageUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
-      throw new ConvexError({
-        code: "STORAGE_LIMIT_EXCEEDED",
-        message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB. Please delete some files to upload new ones.`,
-      });
-    }
-
-    // Check rate limit and consume a token
-    // This prevents abuse by spamming URL generation
-    const rateLimitResult = await checkFileUploadRateLimit(actingUserId, true);
-
-    const uploadUrl = await ctx.storage.generateUploadUrl();
-
-    return {
-      uploadUrl,
-      rateLimit: rateLimitResult
-        ? {
-            remaining: rateLimitResult.remaining,
-            limit: rateLimitResult.limit,
-            reset: rateLimitResult.reset,
-          }
-        : undefined,
     };
   },
 });

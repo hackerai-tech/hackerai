@@ -9,7 +9,6 @@ import { isE2BSandbox } from "./sandbox-types";
 import { generateS3UploadUrl } from "@/convex/s3Utils";
 
 const DEFAULT_MEDIA_TYPE = "application/octet-stream";
-const USE_S3_STORAGE = process.env.NEXT_PUBLIC_USE_S3_STORAGE === "true";
 
 export type UploadedFileInfo = {
   url: string;
@@ -73,12 +72,6 @@ export async function uploadSandboxFileToConvex(args: {
   // For ConvexSandbox, always upload directly from sandbox to S3
   // This avoids data corruption and size limits when piping through Convex commands
   if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
-    if (!USE_S3_STORAGE) {
-      throw new Error(
-        "S3 storage is required for local sandbox file uploads. Set NEXT_PUBLIC_USE_S3_STORAGE=true",
-      );
-    }
-
     const { uploadUrl, s3Key } = await generateS3UploadUrl(
       name,
       mediaType,
@@ -144,198 +137,44 @@ export async function uploadSandboxFileToConvex(args: {
     throw new Error("Unsupported sandbox type for file upload");
   }
 
-  if (USE_S3_STORAGE) {
-    // S3 upload path
-    const { uploadUrl, s3Key } = await generateS3UploadUrl(
+  // S3 upload path
+  const { uploadUrl, s3Key } = await generateS3UploadUrl(
+    name,
+    mediaType,
+    userId,
+  );
+
+  const uploadRes = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: { "Content-Type": mediaType },
+    body: blob,
+  });
+
+  if (!uploadRes.ok) {
+    throw new Error(
+      `S3 upload failed for ${fullPath}: ${uploadRes.status} ${uploadRes.statusText}`,
+    );
+  }
+
+  try {
+    const saved = await convex.action(api.fileActions.saveFile, {
+      s3Key,
       name,
       mediaType,
+      size: blob.size,
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       userId,
-    );
-
-    const uploadRes = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": mediaType },
-      body: blob,
+      skipTokenValidation: args.skipTokenValidation,
     });
 
-    if (!uploadRes.ok) {
-      throw new Error(
-        `S3 upload failed for ${fullPath}: ${uploadRes.status} ${uploadRes.statusText}`,
-      );
-    }
-
-    try {
-      const saved = await convex.action(api.fileActions.saveFile, {
-        s3Key,
-        name,
-        mediaType,
-        size: blob.size,
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-        skipTokenValidation: args.skipTokenValidation,
-      });
-
-      return {
-        ...saved,
-        name,
-        mediaType,
-        s3Key,
-      } as UploadedFileInfo;
-    } catch (error) {
-      // Re-throw with properly extracted error message
-      throw new Error(extractErrorMessage(error));
-    }
-  } else {
-    // Convex upload path (existing)
-    const { uploadUrl: postUrl } = await convex.action(
-      api.fileActions.generateUploadUrlAction,
-      {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-      },
-    );
-
-    const uploadRes = await fetch(postUrl, {
-      method: "POST",
-      headers: { "Content-Type": mediaType },
-      body: blob,
-    });
-
-    if (!uploadRes.ok) {
-      throw new Error(
-        `Upload failed for ${fullPath}: ${uploadRes.status} ${uploadRes.statusText}`,
-      );
-    }
-
-    const { storageId } = (await uploadRes.json()) as { storageId: string };
-
-    try {
-      const saved = await convex.action(api.fileActions.saveFile, {
-        storageId: storageId as Id<"_storage">,
-        name,
-        mediaType,
-        size: blob.size,
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-        skipTokenValidation: args.skipTokenValidation,
-      });
-
-      return {
-        ...saved,
-        name,
-        mediaType,
-        storageId: storageId as Id<"_storage">,
-      } as UploadedFileInfo;
-    } catch (error) {
-      // Re-throw with properly extracted error message
-      throw new Error(extractErrorMessage(error));
-    }
-  }
-}
-
-/**
- * Upload base64-encoded binary data directly to storage without saving to sandbox
- */
-export async function uploadBase64ToConvex(args: {
-  base64Data: string;
-  userId: string;
-  fileName: string;
-  mediaType: string;
-  skipTokenValidation?: boolean;
-}): Promise<UploadedFileInfo> {
-  if (!process.env.NEXT_PUBLIC_CONVEX_URL) {
-    throw new Error("NEXT_PUBLIC_CONVEX_URL is required for file uploads");
-  }
-
-  if (!process.env.CONVEX_SERVICE_ROLE_KEY) {
-    throw new Error(
-      "CONVEX_SERVICE_ROLE_KEY is required for file uploads. " +
-        "This is a server-only secret and must never be exposed to the client.",
-    );
-  }
-
-  const { base64Data, userId, fileName, mediaType } = args;
-  const convex = getConvexClient();
-
-  // Convert base64 to blob
-  const binaryString = Buffer.from(base64Data, "base64");
-  const blob = new Blob([binaryString], { type: mediaType });
-
-  if (USE_S3_STORAGE) {
-    // S3 upload path
-    const { uploadUrl, s3Key } = await generateS3UploadUrl(
-      fileName,
+    return {
+      ...saved,
+      name,
       mediaType,
-      userId,
-    );
-
-    const uploadRes = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": mediaType },
-      body: blob,
-    });
-
-    if (!uploadRes.ok) {
-      throw new Error(
-        `S3 upload failed for ${fileName}: ${uploadRes.status} ${uploadRes.statusText}`,
-      );
-    }
-
-    try {
-      const saved = await convex.action(api.fileActions.saveFile, {
-        s3Key,
-        name: fileName,
-        mediaType,
-        size: blob.size,
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-        skipTokenValidation: args.skipTokenValidation,
-      });
-
-      return saved as UploadedFileInfo;
-    } catch (error) {
-      // Re-throw with properly extracted error message
-      throw new Error(extractErrorMessage(error));
-    }
-  } else {
-    // Convex upload path (existing)
-    const { uploadUrl: postUrl } = await convex.action(
-      api.fileActions.generateUploadUrlAction,
-      {
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-      },
-    );
-
-    const uploadRes = await fetch(postUrl, {
-      method: "POST",
-      headers: { "Content-Type": mediaType },
-      body: blob,
-    });
-
-    if (!uploadRes.ok) {
-      throw new Error(
-        `Upload failed for ${fileName}: ${uploadRes.status} ${uploadRes.statusText}`,
-      );
-    }
-
-    const { storageId } = (await uploadRes.json()) as { storageId: string };
-
-    try {
-      const saved = await convex.action(api.fileActions.saveFile, {
-        storageId: storageId as Id<"_storage">,
-        name: fileName,
-        mediaType,
-        size: blob.size,
-        serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-        userId,
-        skipTokenValidation: args.skipTokenValidation,
-      });
-
-      return saved as UploadedFileInfo;
-    } catch (error) {
-      // Re-throw with properly extracted error message
-      throw new Error(extractErrorMessage(error));
-    }
+      s3Key,
+    } as UploadedFileInfo;
+  } catch (error) {
+    // Re-throw with properly extracted error message
+    throw new Error(extractErrorMessage(error));
   }
 }
