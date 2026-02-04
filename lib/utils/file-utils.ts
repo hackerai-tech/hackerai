@@ -102,48 +102,6 @@ export async function validateImageFile(
 }
 
 /**
- * Upload a single file to Convex storage
- */
-export async function uploadSingleFileToConvex(
-  file: File,
-  generateUploadUrl: () => Promise<UploadUrlResult>,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  saveFile: (
-    args: any,
-  ) => Promise<{ url: string; fileId: string; tokens: number }>,
-  mode: "ask" | "agent" = "ask",
-): Promise<{
-  fileId: string;
-  url: string;
-  tokens: number;
-  rateLimit?: RateLimitInfo;
-}> {
-  const { uploadUrl, rateLimit } = await generateUploadUrl();
-  const contentType = file.type || "application/octet-stream";
-
-  const result = await fetch(uploadUrl, {
-    method: "POST",
-    headers: { "Content-Type": contentType },
-    body: file,
-  });
-
-  if (!result.ok) {
-    throw new Error(`Failed to upload file ${file.name}: ${result.statusText}`);
-  }
-
-  const { storageId } = await result.json();
-  const { url, fileId, tokens } = await saveFile({
-    storageId,
-    name: file.name,
-    mediaType: contentType,
-    size: file.size,
-    mode,
-  });
-
-  return { fileId, url, tokens, rateLimit };
-}
-
-/**
  * Create file message part from uploaded file state
  */
 export function createFileMessagePartFromUploadedFile(

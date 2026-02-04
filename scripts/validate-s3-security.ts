@@ -83,17 +83,10 @@ function validateEnvironmentVariables(): ValidationResult {
     };
   }
 
-  const featureFlag = process.env.NEXT_PUBLIC_USE_S3_STORAGE;
-  const warning =
-    featureFlag !== "true"
-      ? 'Feature flag NEXT_PUBLIC_USE_S3_STORAGE is not set to "true". S3 storage is currently disabled.'
-      : undefined;
-
   return {
     name: "Environment Variables",
     passed: true,
     message: `All required environment variables are set: ${present.join(", ")}`,
-    warning,
   };
 }
 

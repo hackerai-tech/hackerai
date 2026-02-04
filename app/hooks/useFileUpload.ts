@@ -5,7 +5,6 @@ import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import {
   MAX_FILES_LIMIT,
-  uploadSingleFileToConvex,
   validateFile,
   validateImageFile,
   createFileMessagePartFromUploadedFile,
@@ -16,8 +15,6 @@ import { MAX_TOKENS_FILE } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
-
-const USE_S3_STORAGE = process.env.NEXT_PUBLIC_USE_S3_STORAGE === "true";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
@@ -41,9 +38,6 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
   // Track last shown rate limit warning to avoid spamming (show once per minute max)
   const lastRateLimitWarningRef = useRef<number>(0);
 
-  const generateUploadUrlAction = useAction(
-    api.fileActions.generateUploadUrlAction,
-  );
   const deleteFile = useMutation(api.fileStorage.deleteFile);
   const saveFile = useAction(api.fileActions.saveFile);
   const generateS3UploadUrlAction = useAction(
@@ -76,12 +70,6 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
       `You have ${rateLimit.remaining} file uploads remaining. Resets in ${timeString}.`,
     );
   }, []);
-
-  // Wrap Convex action to return object with uploadUrl and rateLimit
-  const generateUploadUrlFn = useCallback(
-    () => generateUploadUrlAction({}),
-    [generateUploadUrlAction],
-  );
 
   // Helper function to check and validate files before processing
   const validateAndFilterFiles = useCallback(
@@ -282,78 +270,6 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
     ],
   );
 
-  // Upload file to Convex storage
-  const uploadFileToConvex = useCallback(
-    async (file: File, uploadIndex: number) => {
-      try {
-        const { fileId, url, tokens, rateLimit } =
-          await uploadSingleFileToConvex(
-            file,
-            generateUploadUrlFn,
-            saveFile,
-            mode,
-          );
-
-        // Show warning if approaching rate limit
-        if (rateLimit) {
-          showRateLimitWarning(rateLimit);
-        }
-
-        // Only check token limit for "ask" mode
-        // In "agent" mode, files are accessed in sandbox, no token limit applies
-        if (mode === "ask") {
-          const currentTotal = getTotalTokens();
-          const newTotal = currentTotal + tokens;
-
-          if (newTotal > MAX_TOKENS_FILE) {
-            // Exceeds limit - delete file from storage and remove from upload list
-            deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
-            removeUploadedFile(uploadIndex);
-
-            toast.error(
-              `${file.name} exceeds token limit (${newTotal.toLocaleString()}/${MAX_TOKENS_FILE.toLocaleString()} tokens). Tip: Switch to Agent mode to upload larger files.`,
-            );
-            return;
-          }
-        }
-
-        // Set success state with tokens
-        updateUploadedFile(uploadIndex, {
-          tokens,
-          uploading: false,
-          uploaded: true,
-          fileId,
-          url,
-        });
-      } catch (error) {
-        console.error("Failed to upload file:", error);
-
-        const errorMessage =
-          error instanceof Error ? error.message : "Upload failed";
-
-        // Update the upload state to error
-        updateUploadedFile(uploadIndex, {
-          uploading: false,
-          uploaded: false,
-          error: errorMessage,
-        });
-
-        // Backend already wraps error with file name
-        toast.error(errorMessage);
-      }
-    },
-    [
-      generateUploadUrlFn,
-      saveFile,
-      getTotalTokens,
-      deleteFile,
-      removeUploadedFile,
-      updateUploadedFile,
-      showRateLimitWarning,
-      mode,
-    ],
-  );
-
   // Helper function to start file uploads
   const startFileUploads = useCallback(
     (files: File[]) => {
@@ -368,15 +284,10 @@ export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
         });
 
         // Start upload in background with correct index
-        // Use S3 or Convex based on feature flag
-        if (USE_S3_STORAGE) {
-          uploadFileToS3(file, startingIndex + index);
-        } else {
-          uploadFileToConvex(file, startingIndex + index);
-        }
+        uploadFileToS3(file, startingIndex + index);
       });
     },
-    [uploadedFiles.length, addUploadedFile, uploadFileToS3, uploadFileToConvex],
+    [uploadedFiles.length, addUploadedFile, uploadFileToS3],
   );
 
   // Unified file processing function
