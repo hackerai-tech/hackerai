@@ -231,7 +231,8 @@ describe("token-bucket async functions", () => {
       );
 
       // Should refund the difference (50 - 20 = 30 points)
-      const expectedRefund = estimatedCost - Math.ceil(providerCostDollars * 10000);
+      const expectedRefund =
+        estimatedCost - Math.ceil(providerCostDollars * 10000);
       expect(mockHincrbyFn).toHaveBeenCalledWith(
         expect.stringContaining("usage:session"),
         "tokens",
