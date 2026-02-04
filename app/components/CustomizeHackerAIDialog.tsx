@@ -162,10 +162,10 @@ export const CustomizeHackerAIDialog = ({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="space-y-8">
+        <div className="flex-1 overflow-y-auto pb-3">
+          <div className="space-y-5 pb-3">
             {/* Nickname */}
-            <div className="space-y-3">
+            <div className="flex flex-col gap-2 px-1">
               <Label htmlFor="nickname">What should HackerAI call you?</Label>
               <TextareaAutosize
                 id="nickname"
@@ -183,7 +183,7 @@ export const CustomizeHackerAIDialog = ({
             </div>
 
             {/* Occupation */}
-            <div className="space-y-3">
+            <div className="flex flex-col gap-2 px-1">
               <Label htmlFor="occupation">What do you do?</Label>
               <TextareaAutosize
                 id="occupation"
@@ -201,7 +201,7 @@ export const CustomizeHackerAIDialog = ({
             </div>
 
             {/* Personality */}
-            <div className="space-y-3">
+            <div className="flex flex-col gap-2 px-1">
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <Label className="sm:flex-shrink-0">
                   What personality should HackerAI have?
@@ -239,7 +239,7 @@ export const CustomizeHackerAIDialog = ({
             </div>
 
             {/* Traits */}
-            <div className="space-y-4">
+            <div className="flex flex-col gap-2 px-1">
               <Label>What traits should HackerAI have?</Label>
 
               <TextareaAutosize
@@ -257,7 +257,7 @@ export const CustomizeHackerAIDialog = ({
               )}
 
               {/* Predefined traits */}
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 mt-2">
                 {predefinedTraits.map((trait) => (
                   <button
                     key={trait}
@@ -273,7 +273,7 @@ export const CustomizeHackerAIDialog = ({
             </div>
 
             {/* Additional Info */}
-            <div className="space-y-3">
+            <div className="flex flex-col gap-3 px-1">
               <Label htmlFor="additional-info">
                 Anything else HackerAI should know about you?
               </Label>
