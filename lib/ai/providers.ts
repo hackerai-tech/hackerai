@@ -1,5 +1,6 @@
 import { customProvider } from "ai";
 import { xai } from "@ai-sdk/xai";
+// import { gateway } from "ai";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";

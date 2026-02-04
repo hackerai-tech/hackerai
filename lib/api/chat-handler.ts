@@ -149,7 +149,12 @@ export const createChatHandler = (
         abortController: userStopSignal,
       });
 
-      const { truncatedMessages, chat, isNewChat } = await getMessagesByChatId({
+      const {
+        truncatedMessages,
+        chat,
+        isNewChat,
+        fileTokens,
+      } = await getMessagesByChatId({
         chatId,
         userId,
         subscription,
@@ -204,9 +209,11 @@ export const createChatHandler = (
 
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
       // Token bucket requires estimated token count for cost calculation
+      // Note: File tokens are not included because counts are inaccurate (especially PDFs)
+      // and deductUsage reconciles with actual provider cost anyway
       const estimatedInputTokens =
         mode === "agent" || subscription !== "free"
-          ? countMessagesTokens(truncatedMessages, {})
+          ? countMessagesTokens(truncatedMessages)
           : 0;
 
       // Add chat context to logger
@@ -461,13 +468,13 @@ export const createChatHandler = (
                   if (!temporary && !hasSummarized) {
                     const { needsSummarization, summarizedMessages } =
                       await checkAndSummarizeIfNeeded(
-                        messages,
                         finalMessages,
                         subscription,
                         trackedProvider.languageModel("summarization-model"),
                         mode,
                         writer,
                         chatId,
+                        fileTokens,
                       );
 
                     if (needsSummarization) {

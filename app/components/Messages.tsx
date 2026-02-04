@@ -97,7 +97,9 @@ export const Messages = ({
     const lastAssistantMsg = messages[lastAssistantMessageIndex];
     if (!lastAssistantMsg) return false;
     const hasText = hasTextContent(lastAssistantMsg.parts);
-    const hasFiles = lastAssistantMsg.parts.some((part) => part.type === "file");
+    const hasFiles = lastAssistantMsg.parts.some(
+      (part) => part.type === "file",
+    );
     return hasText || hasFiles;
   }, [lastAssistantMessageIndex, messages]);
 
@@ -126,7 +128,9 @@ export const Messages = ({
   // Upload status and loading dots ALWAYS show separately (they only appear when no content yet)
   // Summarization status shows separately only when last assistant has no content
   const showSummarizationSeparately = useMemo(() => {
-    return summarizationStatus?.status === "started" && !lastAssistantHasContent;
+    return (
+      summarizationStatus?.status === "started" && !lastAssistantHasContent
+    );
   }, [summarizationStatus, lastAssistantHasContent]);
 
   // Compute the branch boundary: last message that originated from another chat

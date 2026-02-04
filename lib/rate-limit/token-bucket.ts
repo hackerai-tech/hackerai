@@ -289,6 +289,7 @@ export const checkTokenBucketLimit = async (
 /**
  * Deduct additional cost after processing (output + any input difference).
  * If extra usage was used for input (buckets at 0), also deducts output from extra usage.
+ * If we over-estimated input cost, refunds the difference back to buckets.
  *
  * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation
  */
@@ -319,23 +320,33 @@ export const deductUsage = async (
     );
 
     // Calculate actual cost - prefer provider cost if available
-    let additionalCost: number;
+    let actualCostPoints: number;
 
     if (providerCostDollars !== undefined && providerCostDollars > 0) {
       // Use provider's cost directly (more accurate, includes cached token discounts)
-      const actualCostPoints = Math.ceil(
-        providerCostDollars * POINTS_PER_DOLLAR,
-      );
-      additionalCost = Math.max(0, actualCostPoints - estimatedInputCost);
+      actualCostPoints = Math.ceil(providerCostDollars * POINTS_PER_DOLLAR);
     } else {
       // Fallback to token-based calculation
       const actualInputCost = calculateTokenCost(actualInputTokens, "input");
       const outputCost = calculateTokenCost(actualOutputTokens, "output");
-      additionalCost =
-        Math.max(0, actualInputCost - estimatedInputCost) + outputCost;
+      actualCostPoints = actualInputCost + outputCost;
     }
 
-    if (additionalCost <= 0) return;
+    // Calculate the difference between what we pre-deducted and actual cost
+    const costDifference = actualCostPoints - estimatedInputCost;
+
+    // If we over-estimated (pre-deducted more than actual), refund the difference
+    if (costDifference < 0) {
+      const refundAmount = Math.abs(costDifference);
+      await refundBucketTokens(userId, subscription, refundAmount);
+      return;
+    }
+
+    // If actual cost equals estimate, nothing more to do
+    if (costDifference === 0) return;
+
+    // Otherwise, we need to charge the additional cost
+    const additionalCost = costDifference;
 
     // Check current bucket state to see if we need extra usage
     const [sessionCheck, weeklyCheck] = await Promise.all([

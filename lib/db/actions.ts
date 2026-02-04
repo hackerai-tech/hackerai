@@ -247,6 +247,7 @@ export async function getMessagesByChatId({
         let pagesFetched = 0;
         let fetchedDesc: UIMessage[] = [];
         let truncatedFromLoop: UIMessage[] | null = null;
+        let fileTokensFromLoop: Record<Id<"files">, number> = {};
 
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
@@ -270,24 +271,26 @@ export async function getMessagesByChatId({
               ? existingChrono
               : [...existingChrono, ...newMessages];
 
-          const trial = await truncateMessagesWithFileTokens(
+          const trialResult = await truncateMessagesWithFileTokens(
             candidate,
             subscription,
             mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
           );
 
-          const hitBudget = trial.length < candidate.length;
+          const hitBudget = trialResult.messages.length < candidate.length;
           const reachedLimit = isDone || pagesFetched >= MAX_PAGES;
 
           if (hitBudget || reachedLimit) {
-            truncatedFromLoop = trial;
+            truncatedFromLoop = trialResult.messages;
+            fileTokensFromLoop = trialResult.fileTokens;
             break;
           }
 
           cursor = nextCursor || null;
           if (!cursor) {
             // No more pages
-            truncatedFromLoop = trial;
+            truncatedFromLoop = trialResult.messages;
+            fileTokensFromLoop = trialResult.fileTokens;
             break;
           }
         }
@@ -332,11 +335,17 @@ export async function getMessagesByChatId({
               truncatedMessages: [summaryMessage, ...messagesAfterCutoff],
               chat,
               isNewChat,
+              fileTokens: fileTokensFromLoop,
             };
           }
 
           // No summary injection (ask mode or no summary), return as normal
-          return { truncatedMessages: truncatedFromLoop, chat, isNewChat };
+          return {
+            truncatedMessages: truncatedFromLoop,
+            chat,
+            isNewChat,
+            fileTokens: fileTokensFromLoop,
+          };
         }
       } catch (error) {
         // If error fetching, use empty array
@@ -357,11 +366,13 @@ export async function getMessagesByChatId({
     allMessages = [...existingMessages, ...newMessages];
   }
 
-  const truncatedMessages = await truncateMessagesWithFileTokens(
+  const truncateResult = await truncateMessagesWithFileTokens(
     allMessages,
     subscription,
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
   );
+  const truncatedMessages = truncateResult.messages;
+  const fileTokens = truncateResult.fileTokens;
 
   if (!truncatedMessages || truncatedMessages.length === 0) {
     // Structured diagnostic log (no user content)
@@ -397,7 +408,7 @@ export async function getMessagesByChatId({
     );
   }
 
-  return { truncatedMessages, chat, isNewChat };
+  return { truncatedMessages, chat, isNewChat, fileTokens };
 }
 
 export async function getUserCustomization({ userId }: { userId: string }) {
