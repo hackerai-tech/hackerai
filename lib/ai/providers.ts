@@ -1,21 +1,19 @@
 import { customProvider } from "ai";
-import { xai } from "@ai-sdk/xai";
-import { gateway } from "ai";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
-  "ask-model": gateway("google/gemini-3-flash"),
-  "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
-  "ask-vision-model": gateway("google/gemini-3-flash"),
-  "ask-vision-model-for-pdfs": gateway("google/gemini-3-flash"),
+  "ask-model": openrouter("google/gemini-3-flash"),
+  "ask-model-free": openrouter("x-ai/grok-4-1-fast-non-reasoning"),
+  "ask-vision-model": openrouter("google/gemini-3-flash"),
+  "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash"),
   "agent-model": openrouter("google/gemini-3-flash-preview"),
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
-  "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
-  "summarization-model": gateway("google/gemini-3-flash"),
+  "title-generator-model": openrouter("x-ai/grok-4-1-fast-non-reasoning"),
+  "summarization-model": openrouter("google/gemini-3-flash"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as Record<string, any>;
 
