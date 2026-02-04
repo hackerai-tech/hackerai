@@ -6,11 +6,11 @@ import type { SubscriptionTier } from "@/types";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
-  "ask-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
+  "ask-model": openrouter("deepseek/deepseek-v3.2"),
+  "ask-model-free": openrouter("deepseek/deepseek-v3.2"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
-  "agent-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-model": openrouter("moonshotai/kimi-k2.5"),
   "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
