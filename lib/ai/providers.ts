@@ -11,11 +11,11 @@ const baseProviders = {
   "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
   "ask-vision-model": gateway("google/gemini-3-flash"),
   "ask-vision-model-for-pdfs": gateway("google/gemini-3-flash"),
-  "agent-model": gateway("google/gemini-3-flash"),
-  "agent-vision-model": gateway("google/gemini-3-flash"),
+  "agent-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
-  "summarization-model": gateway("google/gemini-3-flash-preview"),
+  "summarization-model": gateway("google/gemini-3-flash"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as Record<string, any>;
 
