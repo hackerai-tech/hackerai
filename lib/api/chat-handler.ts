@@ -149,20 +149,16 @@ export const createChatHandler = (
         abortController: userStopSignal,
       });
 
-      const {
-        truncatedMessages,
-        chat,
-        isNewChat,
-        fileTokens,
-      } = await getMessagesByChatId({
-        chatId,
-        userId,
-        subscription,
-        newMessages: messages,
-        regenerate,
-        isTemporary: temporary,
-        mode,
-      });
+      const { truncatedMessages, chat, isNewChat, fileTokens } =
+        await getMessagesByChatId({
+          chatId,
+          userId,
+          subscription,
+          newMessages: messages,
+          regenerate,
+          isTemporary: temporary,
+          mode,
+        });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
         (chat?.todos as unknown as Todo[]) || [],

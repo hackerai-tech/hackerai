@@ -2,6 +2,7 @@
   "name": "hackerai",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.20.0",
   "scripts": {
     "dev": "concurrently \"next dev --turbopack\" \"npx convex dev\"",
     "dev:next": "next dev --turbopack",
