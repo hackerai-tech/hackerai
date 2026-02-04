@@ -1,21 +1,21 @@
 import { customProvider } from "ai";
 import { xai } from "@ai-sdk/xai";
-// import { gateway } from "ai";
+import { gateway } from "ai";
 import { withTracing } from "@posthog/ai";
 import PostHogClient from "@/app/posthog";
 import type { SubscriptionTier } from "@/types";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
-  "ask-model": openrouter("deepseek/deepseek-v3.2"),
-  "ask-model-free": openrouter("deepseek/deepseek-v3.2"),
-  "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
-  "agent-model": openrouter("moonshotai/kimi-k2.5"),
-  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
+  "ask-model": gateway("google/gemini-3-flash"),
+  "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
+  "ask-vision-model": gateway("google/gemini-3-flash"),
+  "ask-vision-model-for-pdfs": gateway("google/gemini-3-flash"),
+  "agent-model": gateway("google/gemini-3-flash"),
+  "agent-vision-model": gateway("google/gemini-3-flash"),
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
-  "summarization-model": openrouter("google/gemini-3-flash-preview"),
+  "summarization-model": gateway("google/gemini-3-flash-preview"),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 } as Record<string, any>;
 
