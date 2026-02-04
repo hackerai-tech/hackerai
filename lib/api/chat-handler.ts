@@ -9,11 +9,6 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
-import {
-  stripProviderMetadata,
-  completeIncompleteToolCalls,
-  stripReasoningFromMessagesForGemini,
-} from "@/lib/utils/message-processor";
 import { systemPrompt } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -434,14 +429,6 @@ export const createChatHandler = (
           const configuredModelId =
             trackedProvider.languageModel(selectedModel).modelId;
 
-          const isGeminiModel =
-            configuredModelId.includes("gemini") ||
-            configuredModelId.includes("google");
-
-          if (isGeminiModel) {
-            finalMessages = stripReasoningFromMessagesForGemini(finalMessages);
-          }
-
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
@@ -542,9 +529,7 @@ export const createChatHandler = (
                       }
 
                       // Only update state after successful save
-                      finalMessages = isGeminiModel
-                        ? stripReasoningFromMessagesForGemini(messagesWithTodos)
-                        : messagesWithTodos;
+                      finalMessages = messagesWithTodos;
                       hasSummarized = true;
 
                       writeSummarizationCompleted(writer);
