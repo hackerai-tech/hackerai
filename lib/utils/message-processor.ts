@@ -1,3 +1,4 @@
+import type { UIToolInvocation } from "ai";
 import { ChatMessage } from "@/types/chat";
 
 /**
@@ -87,17 +88,10 @@ export const stripProviderMetadata = <T extends { parts?: any[] }>(
 interface BaseToolPart {
   type: string;
   toolCallId: string;
-  state:
-    | "input-streaming"
-    | "input-available"
-    | "approval-requested"
-    | "approval-responded"
-    | "output-available"
-    | "output-denied"
-    | "output-error";
+  state: UIToolInvocation<any>["state"];
   input?: any;
   output?: any;
-  result?: any;
+  result?: any; // legacy
 }
 
 // Specific interface for terminal tools that have special data handling
