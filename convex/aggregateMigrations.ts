@@ -1,5 +1,5 @@
 import { v, ConvexError } from "convex/values";
-import { mutation, MutationCtx } from "./_generated/server";
+import { internalMutation, mutation, MutationCtx } from "./_generated/server";
 import { fileCountAggregate } from "./fileAggregate";
 import { CURRENT_AGGREGATE_VERSION } from "./aggregateVersions";
 
@@ -118,5 +118,77 @@ export const ensureUserAggregatesMigrated = mutation({
 
     const result = await runMigration(ctx, user.subject);
     return { migrated: result.migrated };
+  },
+});
+
+/**
+ * Internal mutation to backfill aggregates for unmigrated users.
+ *
+ * This is an admin function that can be called from the Convex dashboard
+ * or via `npx convex run aggregateMigrations:backfillAllUsers`.
+ *
+ * Scans files with Convex storage (storage_id defined) since those are
+ * older files from before S3 migration. Users with only S3 files don't
+ * need backfill as their aggregates are already correct.
+ *
+ * The runMigration function is idempotent - it skips users already at
+ * the current version.
+ */
+export const backfillAllUsers = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  returns: v.object({
+    processed: v.number(),
+    migrated: v.number(),
+    nextCursor: v.union(v.string(), v.null()),
+    done: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = args.batchSize ?? 100;
+
+    // Query files with Convex storage (older files that need migration)
+    // Uses by_storage_id index - undefined values are indexed separately
+    const paginatedFiles = await ctx.db
+      .query("files")
+      .withIndex("by_storage_id")
+      .order("asc")
+      .paginate({
+        numItems: batchSize * 10,
+        cursor: args.cursor ? (JSON.parse(args.cursor) as never) : null,
+      });
+
+    // Filter to only files with storage_id (Convex storage)
+    // and collect unique user IDs
+    const userIdsInBatch = new Set<string>();
+    for (const file of paginatedFiles.page) {
+      if (file.storage_id !== undefined) {
+        userIdsInBatch.add(file.user_id);
+      }
+    }
+
+    let processed = 0;
+    let migrated = 0;
+
+    // Run migration for each unique user (skips if already migrated)
+    for (const userId of userIdsInBatch) {
+      const result = await runMigration(ctx, userId);
+      processed++;
+      if (result.migrated) {
+        migrated++;
+      }
+    }
+
+    const nextCursor = paginatedFiles.isDone
+      ? null
+      : JSON.stringify(paginatedFiles.continueCursor);
+
+    return {
+      processed,
+      migrated,
+      nextCursor,
+      done: paginatedFiles.isDone,
+    };
   },
 });
