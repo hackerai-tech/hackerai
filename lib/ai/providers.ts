@@ -10,12 +10,12 @@ const baseProviders = {
   "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
-  "agent-model": openrouter("google/gemini-3-flash-preview"),
-  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-model": openrouter("moonshotai/kimi-k2.5"),
+  "agent-vision-model": openrouter("moonshotai/kimi-k2.5"),
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": openrouter("google/gemini-3-flash-preview"),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+   
 } as Record<string, any>;
 
 export type ModelName = keyof typeof baseProviders;
