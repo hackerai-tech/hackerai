@@ -8,7 +8,6 @@
  * @module
  */
 
-import type * as aggregateMigrations from "../aggregateMigrations.js";
 import type * as aggregateVersions from "../aggregateVersions.js";
 import type * as chats from "../chats.js";
 import type * as crons from "../crons.js";
@@ -39,7 +38,6 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  aggregateMigrations: typeof aggregateMigrations;
   aggregateVersions: typeof aggregateVersions;
   chats: typeof chats;
   crons: typeof crons;

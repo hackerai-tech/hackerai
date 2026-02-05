@@ -38,42 +38,6 @@ export const runLocalSandboxCleanup = internalAction({
   },
 });
 
-export const runAggregateBackfill = internalAction({
-  args: {},
-  returns: v.null(),
-  handler: async (ctx) => {
-    let cursor: string | null = null;
-    let totalProcessed = 0;
-    let totalMigrated = 0;
-
-    // Process all users in batches
-    for (let i = 0; i < 100; i++) {
-      const result: {
-        processed: number;
-        migrated: number;
-        nextCursor: string | null;
-        done: boolean;
-      } = await ctx.runMutation(internal.aggregateMigrations.backfillAllUsers, {
-        cursor: cursor ?? undefined,
-        batchSize: 100,
-      });
-
-      totalProcessed += result.processed;
-      totalMigrated += result.migrated;
-
-      if (result.done) break;
-      cursor = result.nextCursor;
-    }
-
-    if (totalMigrated > 0) {
-      console.log(
-        `Aggregate backfill: migrated ${totalMigrated}/${totalProcessed} users`,
-      );
-    }
-    return null;
-  },
-});
-
 const crons = cronJobs();
 
 crons.interval(
@@ -87,13 +51,6 @@ crons.interval(
   "cleanup local sandbox stale connections and old commands",
   { minutes: 5 },
   internal.crons.runLocalSandboxCleanup,
-  {},
-);
-
-crons.interval(
-  "backfill user aggregates for unmigrated users",
-  { hours: 24 },
-  internal.crons.runAggregateBackfill,
   {},
 );
 
