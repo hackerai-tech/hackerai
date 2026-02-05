@@ -5,6 +5,7 @@ import type { Id } from "../_generated/dataModel";
 // Mock dependencies first
 jest.mock("../_generated/server", () => ({
   mutation: jest.fn((config: any) => config),
+  internalMutation: jest.fn((config: any) => config),
   MutationCtx: {},
 }));
 jest.mock("convex/values", () => ({
@@ -13,6 +14,9 @@ jest.mock("convex/values", () => ({
     number: jest.fn(() => "number"),
     boolean: jest.fn(() => "boolean"),
     object: jest.fn(() => "object"),
+    optional: jest.fn((inner) => ({ optional: true, inner })),
+    union: jest.fn((...args) => ({ union: args })),
+    null: jest.fn(() => "null"),
   },
   ConvexError: class ConvexError extends Error {
     data: unknown;

@@ -53,10 +53,10 @@ export const runAggregateBackfill = internalAction({
         migrated: number;
         nextCursor: string | null;
         done: boolean;
-      } = await ctx.runMutation(
-        internal.aggregateMigrations.backfillAllUsers,
-        { cursor: cursor ?? undefined, batchSize: 100 },
-      );
+      } = await ctx.runMutation(internal.aggregateMigrations.backfillAllUsers, {
+        cursor: cursor ?? undefined,
+        batchSize: 100,
+      });
 
       totalProcessed += result.processed;
       totalMigrated += result.migrated;
