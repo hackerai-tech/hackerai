@@ -390,12 +390,7 @@ export const createChatHandler = (
                 )
               : Promise.resolve(undefined);
 
-          const trackedProvider = createTrackedProvider(
-            userId,
-            chatId,
-            subscription,
-            posthog,
-          );
+          const trackedProvider = createTrackedProvider();
 
           let currentSystemPrompt = await systemPrompt(
             userId,
