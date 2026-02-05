@@ -15,6 +15,7 @@ const baseProviders = {
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": openrouter("google/gemini-3-flash-preview"),
+  "summarization-model-free": xai("grok-4-1-fast-non-reasoning"),
 } as Record<string, any>;
 
 export type ModelName = keyof typeof baseProviders;
@@ -29,6 +30,7 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "fallback-model": "April 2024",
   "title-generator-model": "November 2024",
   "summarization-model": "January 2025",
+  "summarization-model-free": "November 2024",
 };
 
 export const getModelCutoffDate = (modelName: ModelName): string => {
