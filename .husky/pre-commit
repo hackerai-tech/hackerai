@@ -1,1 +1,1 @@
-pnpm format:check --log-level warn && pnpm lint && pnpm typecheck && pnpm test
+pnpm lint-staged && pnpm typecheck && pnpm test

@@ -184,6 +184,48 @@ function fixIncompleteToolInvocations(messages: UIMessage[]): UIMessage[] {
 }
 
 /**
+ * Removes duplicate tool parts from messages.
+ *
+ * When a model calls an unavailable tool, both a custom `tool-{toolName}` part
+ * AND a `dynamic-tool` part may be created with the same `toolCallId`.
+ * This causes "tool call id is duplicated" errors from providers like Moonshot AI.
+ *
+ * This function removes `dynamic-tool` parts when there's already a matching
+ * custom `tool-xxx` part with the same toolCallId.
+ */
+function removeDuplicateToolParts(messages: UIMessage[]): UIMessage[] {
+  return messages.map((message) => {
+    if (message.role !== "assistant" || !message.parts) {
+      return message;
+    }
+
+    // Collect toolCallIds from custom tool-xxx parts (excluding dynamic-tool)
+    const customToolIds = new Set(
+      message.parts
+        .filter(
+          (p: any) =>
+            p.type?.startsWith("tool-") &&
+            p.type !== "dynamic-tool" &&
+            p.toolCallId,
+        )
+        .map((p: any) => p.toolCallId),
+    );
+
+    // Filter out dynamic-tool parts that duplicate custom tool-xxx parts
+    const filteredParts = message.parts.filter((p: any) => {
+      if (p.type === "dynamic-tool" && customToolIds.has(p.toolCallId)) {
+        return false; // Skip this duplicate
+      }
+      return true;
+    });
+
+    return filteredParts.length !== message.parts.length
+      ? { ...message, parts: filteredParts }
+      : message;
+  });
+}
+
+/**
  * Strips originalContent and modifiedContent from file tool outputs to reduce payload size.
  * Also strips original and modified from update_note tool outputs.
  * These are persisted for UI but shouldn't be sent to the model
@@ -317,9 +359,15 @@ export async function processChatMessages({
   const messagesWithFixedTools =
     fixIncompleteToolInvocations(messagesWithContent);
 
+  // Remove duplicate tool parts (dynamic-tool duplicates of tool-xxx parts)
+  // This prevents "tool call id is duplicated" errors from providers
+  const messagesWithoutDuplicates = removeDuplicateToolParts(
+    messagesWithFixedTools,
+  );
+
   // Strip originalContent from file edit outputs (large data not needed by model)
   const cleanedMessages = stripOriginalContentFromMessages(
-    messagesWithFixedTools,
+    messagesWithoutDuplicates,
   );
 
   // Select the appropriate model

@@ -390,12 +390,7 @@ export const createChatHandler = (
                 )
               : Promise.resolve(undefined);
 
-          const trackedProvider = createTrackedProvider(
-            userId,
-            chatId,
-            subscription,
-            posthog,
-          );
+          const trackedProvider = createTrackedProvider();
 
           let currentSystemPrompt = await systemPrompt(
             userId,
@@ -462,11 +457,15 @@ export const createChatHandler = (
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
+                    const summarizationModelName =
+                      subscription === "free"
+                        ? "summarization-model-free"
+                        : "summarization-model";
                     const { needsSummarization, summarizedMessages } =
                       await checkAndSummarizeIfNeeded(
                         finalMessages,
                         subscription,
-                        trackedProvider.languageModel("summarization-model"),
+                        trackedProvider.languageModel(summarizationModelName),
                         mode,
                         writer,
                         chatId,

@@ -1,9 +1,9 @@
 import { customProvider } from "ai";
 import { xai } from "@ai-sdk/xai";
-import { withTracing } from "@posthog/ai";
-import PostHogClient from "@/app/posthog";
-import type { SubscriptionTier } from "@/types";
 import { openrouter } from "@openrouter/ai-sdk-provider";
+// import { withTracing } from "@posthog/ai";
+// import PostHogClient from "@/app/posthog";
+// import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
@@ -15,7 +15,7 @@ const baseProviders = {
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
   "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
   "summarization-model": openrouter("google/gemini-3-flash-preview"),
-   
+  "summarization-model-free": xai("grok-4-1-fast-non-reasoning"),
 } as Record<string, any>;
 
 export type ModelName = keyof typeof baseProviders;
@@ -30,6 +30,7 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "fallback-model": "April 2024",
   "title-generator-model": "November 2024",
   "summarization-model": "January 2025",
+  "summarization-model-free": "November 2024",
 };
 
 export const getModelCutoffDate = (modelName: ModelName): string => {
@@ -40,32 +41,34 @@ export const myProvider = customProvider({
   languageModels: baseProviders,
 });
 
-export const createTrackedProvider = (
-  userId?: string,
-  conversationId?: string,
-  subscription?: SubscriptionTier,
-  phClient?: ReturnType<typeof PostHogClient> | null,
-) => {
-  // Only use tracing for non-free users
-  if (!phClient || subscription === "free") {
+export const createTrackedProvider = () =>
+  // userId?: string,
+  // conversationId?: string,
+  // subscription?: SubscriptionTier,
+  // phClient?: ReturnType<typeof PostHogClient> | null,
+  {
+    // PostHog provider tracking disabled
+    // if (!phClient || subscription === "free") {
+    //   return myProvider;
+    // }
+    //
+    // const trackedModels: Record<string, any> = {};
+    //
+    // Object.entries(baseProviders).forEach(([modelName, model]) => {
+    //   trackedModels[modelName] = withTracing(model, phClient, {
+    //     ...(userId && { posthogDistinctId: userId }),
+    //     posthogProperties: {
+    //       modelType: modelName,
+    //       ...(conversationId && { conversationId }),
+    //       subscriptionTier: subscription,
+    //     },
+    //     posthogPrivacyMode: true,
+    //   });
+    // });
+    //
+    // return customProvider({
+    //   languageModels: trackedModels,
+    // });
+
     return myProvider;
-  }
-
-  const trackedModels: Record<string, any> = {};
-
-  Object.entries(baseProviders).forEach(([modelName, model]) => {
-    trackedModels[modelName] = withTracing(model, phClient, {
-      ...(userId && { posthogDistinctId: userId }),
-      posthogProperties: {
-        modelType: modelName,
-        ...(conversationId && { conversationId }),
-        subscriptionTier: subscription,
-      },
-      posthogPrivacyMode: true,
-    });
-  });
-
-  return customProvider({
-    languageModels: trackedModels,
-  });
-};
+  };
