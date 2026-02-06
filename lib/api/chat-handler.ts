@@ -471,6 +471,7 @@ export const createChatHandler = (
                         writer,
                         chatId,
                         fileTokens,
+                        getTodoManager().getAllTodos(),
                       );
 
                     if (needsSummarization) {

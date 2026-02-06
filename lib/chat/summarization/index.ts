@@ -1,7 +1,7 @@
 import "server-only";
 
 import { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
-import { SubscriptionTier, ChatMode } from "@/types";
+import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
@@ -29,6 +29,7 @@ export const checkAndSummarizeIfNeeded = async (
   writer: UIMessageStreamWriter,
   chatId: string | null,
   fileTokens: Record<Id<"files">, number> = {},
+  todos: Todo[] = [],
 ): Promise<SummarizationResult> => {
   if (uiMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED) {
     return NO_SUMMARIZATION(uiMessages);
@@ -50,7 +51,7 @@ export const checkAndSummarizeIfNeeded = async (
     languageModel,
     mode,
   );
-  const summaryMessage = buildSummaryMessage(summaryText);
+  const summaryMessage = buildSummaryMessage(summaryText, todos);
 
   await persistSummary(chatId, summaryText, cutoffMessageId);
 
