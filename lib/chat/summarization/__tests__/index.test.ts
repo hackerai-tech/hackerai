@@ -301,6 +301,67 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
   });
 
+  it("should abort summarization and skip persist/completion when signal is aborted", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+
+    const abortController = new AbortController();
+    const abortError = new DOMException(
+      "The operation was aborted",
+      "AbortError",
+    );
+    mockGenerateText.mockImplementation(async () => {
+      abortController.abort();
+      throw abortError;
+    });
+
+    await expect(
+      checkAndSummarizeIfNeeded(
+        fourMessages,
+        "free",
+        mockLanguageModel,
+        "ask",
+        mockWriter,
+        "chat-123",
+        {},
+        [],
+        abortController.signal,
+      ),
+    ).rejects.toThrow(abortError);
+
+    expect(mockWriteSummarizationStarted).toHaveBeenCalled();
+    expect(mockSaveChatSummary).not.toHaveBeenCalled();
+    expect(mockWriteSummarizationCompleted).not.toHaveBeenCalled();
+  });
+
+  it("should pass abortSignal to generateText", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+    mockGenerateText.mockResolvedValue({ text: "Summary" });
+
+    const abortController = new AbortController();
+
+    await checkAndSummarizeIfNeeded(
+      fourMessages,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+      {},
+      [],
+      abortController.signal,
+    );
+
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        abortSignal: abortController.signal,
+      }),
+    );
+  });
+
   it("should not include todo block in summary when todos are empty", async () => {
     const { checkAndSummarizeIfNeeded } = getIsolatedModule();
 

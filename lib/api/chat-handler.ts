@@ -471,6 +471,7 @@ export const createChatHandler = (
                         chatId,
                         fileTokens,
                         getTodoManager().getAllTodos(),
+                        userStopSignal.signal,
                       );
 
                     if (needsSummarization) {

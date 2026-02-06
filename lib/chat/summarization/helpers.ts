@@ -63,11 +63,13 @@ export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
   mode: ChatMode,
+  abortSignal?: AbortSignal,
 ): Promise<string> => {
   try {
     const result = await generateText({
       model: languageModel,
       system: getSummarizationPrompt(mode),
+      abortSignal,
       providerOptions: {
         xai: { store: false },
       },
@@ -82,6 +84,9 @@ export const generateSummaryText = async (
     });
     return result.text;
   } catch (error) {
+    if (abortSignal?.aborted) {
+      throw error;
+    }
     console.error("[Summarization] Failed to generate summary:", error);
     return `[Summary of ${messagesToSummarize.length} messages in conversation]`;
   }
