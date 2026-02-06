@@ -137,6 +137,7 @@ export const getChatById = query({
       share_id: v.optional(v.string()),
       share_date: v.optional(v.number()),
       update_time: v.number(),
+      pinned_at: v.optional(v.number()),
     }),
     v.null(),
   ),
