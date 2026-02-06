@@ -177,12 +177,15 @@ If you are generating files:
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
-          const createTerminalWriter = (output: string) => {
-            writer.write({
-              type: "data-terminal",
+          const createTerminalWriter = async (output: string) => {
+            const part = {
+              type: "data-terminal" as const,
               id: `${terminalSessionId}-${++outputCounter}`,
               data: { terminal: output, toolCallId },
-            });
+            };
+            // Only use writer: it already appends to the metadata stream. Calling appendMetadataStream
+            // as well was causing every line to be sent twice and duplicated in the UI.
+            writer.write(part);
           };
 
           return new Promise((resolve, reject) => {
@@ -276,7 +279,7 @@ If you are generating files:
                     processId = await findProcessPid(sandboxInstance, command);
                   }
 
-                  createTerminalWriter(
+                  await createTerminalWriter(
                     TIMEOUT_MESSAGE(
                       effectiveStreamTimeout,
                       processId ?? undefined,
@@ -404,7 +407,7 @@ If you are generating files:
                   // Track background processes with their output files
                   if (is_background && processId) {
                     const backgroundOutput = `Background process started with PID: ${processId}\n`;
-                    createTerminalWriter(backgroundOutput);
+                    await createTerminalWriter(backgroundOutput);
 
                     const outputFiles =
                       BackgroundProcessTracker.extractOutputFiles(command);

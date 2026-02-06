@@ -188,7 +188,7 @@ export async function updateChat({
     status: "pending" | "in_progress" | "completed" | "cancelled";
     sourceMessageId?: string;
   }>;
-  defaultModelSlug?: "ask" | "agent";
+  defaultModelSlug?: "ask" | "agent" | "agent-long";
 }) {
   try {
     return await convex.mutation(api.chats.updateChat, {
@@ -219,7 +219,7 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
-  mode?: "ask" | "agent";
+  mode?: "ask" | "agent" | "agent-long";
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -274,7 +274,7 @@ export async function getMessagesByChatId({
           const trialResult = await truncateMessagesWithFileTokens(
             candidate,
             subscription,
-            mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
+            mode === "agent" || mode === "agent-long", // Skip file tokens for agent modes (files go to sandbox)
           );
 
           const hitBudget = trialResult.messages.length < candidate.length;
@@ -369,7 +369,7 @@ export async function getMessagesByChatId({
   const truncateResult = await truncateMessagesWithFileTokens(
     allMessages,
     subscription,
-    mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
+    mode === "agent" || mode === "agent-long", // Skip file tokens for agent modes (files go to sandbox)
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -498,6 +498,22 @@ export async function prepareForNewStream({ chatId }: { chatId: string }) {
       "bad_request:database",
       "Failed to prepare for new stream",
     );
+  }
+}
+
+export async function clearActiveTriggerRunIdFromBackend({
+  chatId,
+}: {
+  chatId: string;
+}) {
+  try {
+    await convex.mutation(api.chats.clearActiveTriggerRunIdFromBackend, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
+    // Non-fatal: log and continue (client may have already cleared)
+    console.error("Failed to clear active_trigger_run_id:", error);
   }
 }
 

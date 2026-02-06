@@ -1,7 +1,9 @@
-import type { Sandbox } from "@e2b/code-interpreter";
 import type { AnySandbox } from "@/types";
+import { createRetryLogger } from "@/lib/axiom/worker";
 import { isE2BSandbox } from "./sandbox-types";
 import { retryWithBackoff } from "./retry-with-backoff";
+
+const sandboxHealthLogger = createRetryLogger("sandbox-health");
 
 /**
  * Wait for sandbox to become available and ready to execute commands.
@@ -49,9 +51,9 @@ export async function waitForSandboxReady(
       jitterMs: 100,
       isPermanentError: () => false, // Retry all errors - sandbox might be starting
       logger: (message, error) => {
-        // Only log final failure (when it gives up)
+        // Only log final failure (when it gives up) - sends to Axiom when configured
         if (message.includes("failed after")) {
-          console.error(`[Sandbox Health] ${message}`, error);
+          sandboxHealthLogger(message, error);
         }
       },
       signal,

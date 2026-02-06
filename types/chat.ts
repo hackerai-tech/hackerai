@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails } from "./file";
 
-export type ChatMode = "agent" | "ask";
+export type ChatMode = "agent" | "agent-long" | "ask";
 
 export type SubscriptionTier = "free" | "pro" | "pro-plus" | "ultra" | "team";
 

@@ -19,6 +19,7 @@ import {
   Square,
   MessageSquare,
   Infinity,
+  Timer,
   ChevronDown,
 } from "lucide-react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -49,6 +50,7 @@ import {
   type RateLimitWarningData,
 } from "./RateLimitWarning";
 import { SandboxSelector } from "./SandboxSelector";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -115,9 +117,13 @@ export const ChatInput = ({
   // - For existing chats or chats with messages: use chatId for chat-specific drafts
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
 
-  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent mode selected
+  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent/agent-long selected
   useEffect(() => {
-    if (!isCheckingProPlan && subscription === "free" && chatMode === "agent") {
+    if (
+      !isCheckingProPlan &&
+      subscription === "free" &&
+      isAgentMode(chatMode)
+    ) {
       setChatMode("ask");
     }
   }, [subscription, isCheckingProPlan, chatMode, setChatMode]);
@@ -125,6 +131,14 @@ export const ChatInput = ({
   const handleAgentModeClick = () => {
     if (subscription !== "free") {
       setChatMode("agent");
+    } else {
+      setAgentUpgradeDialogOpen(true);
+    }
+  };
+
+  const handleAgentLongModeClick = () => {
+    if (subscription !== "free") {
+      setChatMode("agent-long");
     } else {
       setAgentUpgradeDialogOpen(true);
     }
@@ -145,7 +159,7 @@ export const ChatInput = ({
     // - there's text input or files attached
     const canSubmit =
       (status === "ready" ||
-        (status === "streaming" && chatMode === "agent")) &&
+        (status === "streaming" && isAgentMode(chatMode))) &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 
@@ -324,13 +338,20 @@ export const ChatInput = ({
                     className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 shrink-0 ${
                       chatMode === "agent"
                         ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20"
-                        : "bg-muted hover:bg-muted/50"
+                        : chatMode === "agent-long"
+                          ? "bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:bg-amber-400/20"
+                          : "bg-muted hover:bg-muted/50"
                     }`}
                   >
                     {chatMode === "agent" ? (
                       <>
                         <Infinity className="w-3 h-3 mr-1" />
                         Agent
+                      </>
+                    ) : chatMode === "agent-long" ? (
+                      <>
+                        <Timer className="w-3 h-3 mr-1" />
+                        Agent-Long
                       </>
                     ) : (
                       <>
@@ -391,11 +412,45 @@ export const ChatInput = ({
                       </div>
                     </DropdownMenuItem>
                   )}
+                  {subscription !== "free" || isCheckingProPlan ? (
+                    <DropdownMenuItem
+                      onClick={handleAgentLongModeClick}
+                      className="cursor-pointer"
+                      data-testid="mode-agent-long"
+                    >
+                      <Timer className="w-4 h-4 mr-2" />
+                      <div className="flex flex-col">
+                        <span className="font-medium">Agent-Long</span>
+                        <span className="text-xs text-muted-foreground">
+                          Long-running agent tasks
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem
+                      onClick={handleAgentLongModeClick}
+                      className="cursor-pointer"
+                      data-testid="mode-agent-long"
+                    >
+                      <Timer className="w-4 h-4 mr-2" />
+                      <div className="flex flex-col flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Agent-Long</span>
+                          <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
+                            PRO
+                          </span>
+                        </div>
+                        <span className="text-xs text-muted-foreground">
+                          Long-running agent tasks
+                        </span>
+                      </div>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
 
               {/* Sandbox selector - editable for new chats, read-only for existing */}
-              {chatMode === "agent" && (
+              {isAgentMode(chatMode) && (
                 <SandboxSelector
                   value={sandboxPreference}
                   onChange={setSandboxPreference}
@@ -418,7 +473,9 @@ export const ChatInput = ({
                       className={`rounded-full p-0 w-8 h-8 min-w-0 ${
                         chatMode === "agent"
                           ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
-                          : "bg-muted hover:bg-muted/70 text-foreground"
+                          : chatMode === "agent-long"
+                            ? "bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:bg-amber-400/10 dark:hover:bg-amber-400/20 dark:text-amber-400 focus-visible:ring-amber-500"
+                            : "bg-muted hover:bg-muted/70 text-foreground"
                       }`}
                       aria-label="Stop generation"
                     >

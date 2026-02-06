@@ -35,13 +35,26 @@ export async function setupMocks(
       });
     });
 
+    // Agent mode: Vercel streaming (same shape as /api/chat)
     await page.route("**/api/agent", async (route: Route) => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          result: "Mocked agent response",
-          success: true,
+          message: "This is a mocked Agent response for testing",
+          done: true,
+        }),
+      });
+    });
+
+    // Agent-Long mode: Trigger.dev (returns runId + token)
+    await page.route("**/api/agent-long", async (route: Route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          runId: "mock-run-id",
+          publicAccessToken: "mock-public-access-token",
         }),
       });
     });

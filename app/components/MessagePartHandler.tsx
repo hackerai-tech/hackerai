@@ -22,6 +22,8 @@ interface MessagePartHandlerProps {
   partIndex: number;
   status: ChatStatus;
   isLastMessage?: boolean;
+  /** Pre-computed terminal output by toolCallId (from message level) to avoid per-handler filtering */
+  terminalOutputByToolCallId?: Map<string, string>;
 }
 
 // Memoized user text component - avoids re-renders for unchanged text
@@ -42,6 +44,13 @@ function arePropsEqual(
 
   // Check part reference - if same reference, no changes
   if (prevProps.part === nextProps.part) return true;
+
+  // Pre-computed terminal map reference change should re-render
+  if (
+    prevProps.terminalOutputByToolCallId !==
+    nextProps.terminalOutputByToolCallId
+  )
+    return false;
 
   // For tool parts, compare state and output which change during streaming
   if (
@@ -79,6 +88,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   partIndex,
   status,
   isLastMessage,
+  terminalOutputByToolCallId,
 }: MessagePartHandlerProps) {
   // Main switch for different part types
   switch (part.type) {
@@ -131,10 +141,21 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <WebToolHandler part={part} status={status} />;
 
     case "data-terminal":
-    case "tool-run_terminal_cmd":
+    case "tool-run_terminal_cmd": {
+      const effectiveToolCallId =
+        (part as any).data?.toolCallId ?? part.toolCallId;
+      const precomputedStreamingOutput = effectiveToolCallId
+        ? terminalOutputByToolCallId?.get(effectiveToolCallId)
+        : undefined;
       return (
-        <TerminalToolHandler message={message} part={part} status={status} />
+        <TerminalToolHandler
+          message={message}
+          part={part}
+          status={status}
+          precomputedStreamingOutput={precomputedStreamingOutput}
+        />
       );
+    }
 
     // Legacy tool
     case "tool-http_request":

@@ -1,5 +1,6 @@
 import { getModerationResult } from "@/lib/moderation";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 import type { ModelName } from "@/lib/ai/providers";
@@ -14,8 +15,8 @@ export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  // Agent mode
-  if (mode === "agent") {
+  // Agent / Agent-Long mode
+  if (isAgentMode(mode)) {
     return 35;
   }
 
@@ -48,7 +49,7 @@ export function selectModel(
   if (containsMediaFiles && mode === "ask") {
     return "ask-vision-model";
   }
-  if (containsMediaFiles && mode === "agent") {
+  if (containsMediaFiles && isAgentMode(mode)) {
     return "agent-vision-model";
   }
 

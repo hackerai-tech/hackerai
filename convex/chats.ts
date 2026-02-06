@@ -27,7 +27,7 @@ export const getChatByIdFromClient = query({
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
       default_model_slug: v.optional(
-        v.union(v.literal("ask"), v.literal("agent")),
+        v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
       ),
       todos: v.optional(
         v.array(
@@ -51,6 +51,7 @@ export const getChatByIdFromClient = query({
       share_date: v.optional(v.number()),
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
+      active_trigger_run_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -115,7 +116,7 @@ export const getChatById = query({
       active_stream_id: v.optional(v.string()),
       canceled_at: v.optional(v.number()),
       default_model_slug: v.optional(
-        v.union(v.literal("ask"), v.literal("agent")),
+        v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
       ),
       todos: v.optional(
         v.array(
@@ -138,6 +139,7 @@ export const getChatById = query({
       share_date: v.optional(v.number()),
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
+      active_trigger_run_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -200,7 +202,9 @@ export const updateChat = mutation({
     chatId: v.string(),
     title: v.optional(v.string()),
     finishReason: v.optional(v.string()),
-    defaultModelSlug: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
+    defaultModelSlug: v.optional(
+      v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
+    ),
     todos: v.optional(
       v.array(
         v.object({
@@ -240,7 +244,7 @@ export const updateChat = mutation({
       const updateData: {
         title?: string;
         finish_reason?: string;
-        default_model_slug?: "ask" | "agent";
+        default_model_slug?: "ask" | "agent" | "agent-long";
         todos?: Array<{
           id: string;
           content: string;
@@ -313,6 +317,130 @@ export const startStream = mutation({
       canceled_at: undefined,
       update_time: Date.now(),
     });
+
+    return null;
+  },
+});
+
+/**
+ * Set active Trigger.dev run ID for a chat (client). Used when starting an agent-long run
+ * so the client can reconnect after reload by fetching a token for this run.
+ */
+export const setActiveTriggerRunId = mutation({
+  args: {
+    chatId: v.string(),
+    runId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+
+    if (chat.user_id !== identity.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+
+    await ctx.db.patch(chat._id, {
+      active_trigger_run_id: args.runId,
+      update_time: Date.now(),
+    });
+
+    return null;
+  },
+});
+
+/**
+ * Clear active Trigger.dev run ID for a chat (client). Call when run completes, fails,
+ * is canceled, or when user cancels.
+ */
+export const clearActiveTriggerRunId = mutation({
+  args: {
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      return null;
+    }
+
+    if (chat.user_id !== identity.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+
+    if (chat.active_trigger_run_id !== undefined) {
+      await ctx.db.patch(chat._id, {
+        active_trigger_run_id: undefined,
+        update_time: Date.now(),
+      });
+    }
+
+    return null;
+  },
+});
+
+/**
+ * Clear active Trigger.dev run ID for a chat (backend only). Used by the agent-stream task at completion.
+ */
+export const clearActiveTriggerRunIdFromBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      return null;
+    }
+
+    if (chat.active_trigger_run_id !== undefined) {
+      await ctx.db.patch(chat._id, {
+        active_trigger_run_id: undefined,
+        update_time: Date.now(),
+      });
+    }
 
     return null;
   },

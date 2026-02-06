@@ -171,7 +171,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
-    return saved === "ask" || saved === "agent" ? saved : "ask";
+    return saved === "ask" || saved === "agent" || saved === "agent-long"
+      ? saved
+      : "ask";
   });
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);

@@ -42,18 +42,18 @@ export const writeDraftStore = (store: ConversationDraftStore): void => {
   }
 };
 
-export const readChatMode = (): "ask" | "agent" | null => {
+export const readChatMode = (): "ask" | "agent" | "agent-long" | null => {
   if (!isBrowser()) return null;
   try {
     const raw = window.localStorage.getItem(CHAT_MODE_STORAGE_KEY);
-    if (raw === "ask" || raw === "agent") return raw;
+    if (raw === "ask" || raw === "agent" || raw === "agent-long") return raw;
     return null;
   } catch {
     return null;
   }
 };
 
-export const writeChatMode = (mode: "ask" | "agent"): void => {
+export const writeChatMode = (mode: "ask" | "agent" | "agent-long"): void => {
   if (!isBrowser()) return;
   try {
     window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);

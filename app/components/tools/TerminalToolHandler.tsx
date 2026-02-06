@@ -11,6 +11,8 @@ interface TerminalToolHandlerProps {
   message: UIMessage;
   part: any;
   status: ChatStatus;
+  /** Pre-computed streaming output for this toolCallId (avoids filtering message.parts in every instance) */
+  precomputedStreamingOutput?: string;
 }
 
 // Custom comparison to avoid re-renders when tool state hasn't changed
@@ -24,6 +26,8 @@ function areTerminalPropsEqual(
   if (prev.part.output !== next.part.output) return false;
   // Compare message.parts length for streaming output updates
   if (prev.message.parts.length !== next.message.parts.length) return false;
+  if (prev.precomputedStreamingOutput !== next.precomputedStreamingOutput)
+    return false;
   return true;
 }
 
@@ -31,6 +35,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   message,
   part,
   status,
+  precomputedStreamingOutput,
 }: TerminalToolHandlerProps) {
   const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
     useGlobalState();
@@ -43,17 +48,20 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     result: CommandResult & { output?: string };
   };
 
-  // Memoize streaming output computation
+  // Memoize streaming output: use pre-computed value when passed, else derive from message.parts
+  const effectiveToolCallId = (part as any).data?.toolCallId ?? toolCallId;
   const streamingOutput = useMemo(() => {
+    if (precomputedStreamingOutput !== undefined)
+      return precomputedStreamingOutput;
     const terminalDataParts = message.parts.filter(
       (p) =>
         p.type === "data-terminal" &&
-        (p as any).data?.toolCallId === toolCallId,
+        (p as any).data?.toolCallId === effectiveToolCallId,
     );
     return terminalDataParts
       .map((p) => (p as any).data?.terminal || "")
       .join("");
-  }, [message.parts, toolCallId]);
+  }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
 
   // Memoize final output computation
   const finalOutput = useMemo(() => {

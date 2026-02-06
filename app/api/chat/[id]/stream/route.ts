@@ -9,7 +9,7 @@ import {
   createCancellationSubscriber,
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
-import { logger } from "@/lib/axiom/server";
+import { nextJsAxiomLogger } from "@/lib/axiom/server";
 
 export const maxDuration = 800;
 
@@ -131,7 +131,7 @@ export async function GET(
             const cleanupStart = Date.now();
 
             if (isPreemptive) {
-              logger.info("Stream route preemptive abort caught", {
+              nextJsAxiomLogger.info("Stream route preemptive abort caught", {
                 chatId,
                 timeSinceTriggerMs: triggerTime
                   ? cleanupStart - triggerTime
@@ -143,11 +143,14 @@ export async function GET(
 
             if (error instanceof DOMException && error.name === "AbortError") {
               if (isPreemptive) {
-                logger.info("Stream route closing controller after abort", {
-                  chatId,
-                  cleanupDurationMs: Date.now() - cleanupStart,
-                });
-                await logger.flush();
+                nextJsAxiomLogger.info(
+                  "Stream route closing controller after abort",
+                  {
+                    chatId,
+                    cleanupDurationMs: Date.now() - cleanupStart,
+                  },
+                );
+                await nextJsAxiomLogger.flush();
               }
               controller.close();
             } else {
@@ -158,13 +161,13 @@ export async function GET(
         cancel() {
           const isPreemptive = preemptiveTimeout.isPreemptive();
           if (isPreemptive) {
-            logger.info("Stream route cancel called", { chatId });
+            nextJsAxiomLogger.info("Stream route cancel called", { chatId });
           }
           preemptiveTimeout.clear();
           reader.cancel();
           cancellationSubscriber.stop();
           if (isPreemptive) {
-            logger.flush();
+            nextJsAxiomLogger.flush();
           }
         },
       });
