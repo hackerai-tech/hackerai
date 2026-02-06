@@ -2,7 +2,15 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { RefObject, useRef, useEffect, useState } from "react";
+import { readUIMessageStream } from "ai";
+import { RefObject, useRef, useEffect, useState, useCallback } from "react";
+import { useRealtimeStream, useRealtimeRun } from "@trigger.dev/react-hooks";
+import { runs } from "@trigger.dev/sdk/v3";
+import {
+  aiStream,
+  metadataStream,
+  type MetadataEvent,
+} from "@/src/trigger/streams";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
@@ -25,6 +33,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -66,6 +75,7 @@ export const Chat = ({
     setTodos,
     replaceAssistantTodos,
     currentChatId,
+    setCurrentChatId,
     temporaryChatsEnabled,
     setChatReset,
     hasUserDismissedRateLimitWarning,
@@ -99,6 +109,25 @@ export const Chat = ({
   const [tempChatFileDetails, setTempChatFileDetails] = useState<
     Map<string, FileDetails[]>
   >(new Map());
+
+  // Skip paginatedMessages sync after Trigger completion until Convex has caught up
+  const skipPaginatedSyncUntilRef = useRef<number>(0);
+  // Track the last assistant message ID from trigger to verify Convex sync
+  const lastTriggerAssistantIdRef = useRef<string | null>(null);
+
+  // Trigger.dev agent streaming (agent mode, non-temporary only)
+  const [triggerRun, setTriggerRun] = useState<{
+    runId: string;
+    publicAccessToken: string;
+  } | null>(null);
+  const [triggerBaseAndUserMessages, setTriggerBaseAndUserMessages] = useState<
+    ChatMessage[]
+  >([]);
+  const [triggerAssistantMessage, setTriggerAssistantMessage] =
+    useState<ChatMessage | null>(null);
+  const [triggerStatus, setTriggerStatus] = useState<
+    "streaming" | "ready" | "error"
+  >("ready");
 
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   // Use global state ref so streaming callback reads latest value
@@ -184,7 +213,7 @@ export const Chat = ({
         // Dynamically route to correct API based on current mode
         const url =
           input === "/api/chat" && chatModeRef.current === "agent"
-            ? "/api/agent"
+            ? "/api/agent-stream"
             : input;
         return fetchWithErrorHandlers(url, init);
       },
@@ -390,6 +419,211 @@ export const Chat = ({
     },
   });
 
+  // Trigger.dev realtime streams (agent mode, non-temporary)
+  const { parts: aiParts = [] } = useRealtimeStream(
+    aiStream,
+    triggerRun?.runId ?? "",
+    {
+      accessToken: triggerRun?.publicAccessToken ?? "",
+      enabled: !!triggerRun,
+      throttleInMs: 16,
+      timeoutInSeconds: 600,
+    },
+  );
+  useRealtimeStream(metadataStream, triggerRun?.runId ?? "", {
+    accessToken: triggerRun?.publicAccessToken ?? "",
+    enabled: !!triggerRun,
+    onData: (event: MetadataEvent) => {
+      setDataStream((ds) => (ds ? [...ds, event] : []));
+      if (event.type === "data-title")
+        setChatTitle((event.data as { chatTitle: string }).chatTitle);
+      if (event.type === "data-upload-status") {
+        const d = event.data as { message: string; isUploading: boolean };
+        setUploadStatus(d.isUploading ? d : null);
+      }
+      if (event.type === "data-summarization") {
+        const d = event.data as {
+          status: "started" | "completed";
+          message: string;
+        };
+        setSummarizationStatus(d.status === "started" ? d : null);
+      }
+      if (event.type === "data-rate-limit-warning") {
+        const rawData = event.data as Record<string, unknown>;
+        if (
+          !hasUserDismissedWarningRef.current &&
+          rawData &&
+          typeof rawData.resetTime === "string"
+        )
+          setRateLimitWarning({
+            ...rawData,
+            resetTime: new Date(rawData.resetTime),
+          } as RateLimitWarningData);
+      }
+      if (event.type === "data-file-metadata") {
+        const d = event.data as {
+          messageId: string;
+          fileDetails: FileDetails[];
+        };
+        setTempChatFileDetails((prev) => {
+          const next = new Map(prev);
+          next.set(d.messageId, d.fileDetails);
+          return next;
+        });
+      }
+      if (event.type === "data-sandbox-fallback") {
+        const d = event.data as {
+          actualSandbox?: string;
+          actualSandboxName?: string;
+        };
+        if (d?.actualSandbox) setSandboxPreference(d.actualSandbox);
+        toast.info(
+          d?.actualSandboxName
+            ? `Using ${d.actualSandboxName}.`
+            : "Sandbox switched.",
+          { duration: 5000 },
+        );
+      }
+    },
+  });
+  const { run: triggerRunStatus } = useRealtimeRun(
+    triggerRun?.runId ?? undefined,
+    {
+      accessToken: triggerRun?.publicAccessToken ?? "",
+      enabled: !!triggerRun,
+    },
+  );
+
+  // Derive triggerStatus from run and sync triggerAssistantMessage from aiParts
+  useEffect(() => {
+    if (!triggerRun) return;
+    const status =
+      triggerRunStatus?.status === "EXECUTING"
+        ? "streaming"
+        : triggerRunStatus?.status === "COMPLETED"
+          ? "ready"
+          : triggerRunStatus?.status === "FAILED" ||
+              triggerRunStatus?.status === "CANCELED"
+            ? "error"
+            : "streaming";
+    setTriggerStatus(status);
+  }, [triggerRun, triggerRunStatus?.status]);
+
+  // Convert aiParts to assistant message for display (update on each chunk for progressive streaming)
+  // Use generation counter instead of AbortController to avoid cancelling the stream mid-read
+  // (cancellation triggers "Cannot close an errored readable stream" in AI SDK)
+  // Throttle updates to reduce scroll fighting during rapid streaming
+  const aiPartsGenerationRef = useRef(0);
+  useEffect(() => {
+    if (!triggerRun || aiParts.length === 0) {
+      if (!triggerRun) setTriggerAssistantMessage(null);
+      return;
+    }
+
+    const generation = ++aiPartsGenerationRef.current;
+
+    type Chunk = import("ai").UIMessageChunk;
+    const stream = new ReadableStream<Chunk>({
+      start(controller) {
+        try {
+          (aiParts as Chunk[]).forEach((chunk: Chunk) =>
+            controller.enqueue(chunk),
+          );
+          controller.close();
+        } catch (err) {
+          controller.error(err);
+        }
+      },
+    });
+
+    const throttleMs = 100;
+    let pending: ChatMessage | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const flushPending = () => {
+      if (pending !== null && generation === aiPartsGenerationRef.current) {
+        setTriggerAssistantMessage(pending);
+        pending = null;
+      }
+      timeoutId = null;
+    };
+
+    void (async () => {
+      try {
+        for await (const msg of readUIMessageStream({ stream })) {
+          if (generation !== aiPartsGenerationRef.current) return;
+
+          pending = msg as ChatMessage;
+          if (timeoutId === null) {
+            timeoutId = setTimeout(flushPending, throttleMs);
+          }
+        }
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        if (pending !== null && generation === aiPartsGenerationRef.current) {
+          setTriggerAssistantMessage(pending);
+          pending = null;
+        }
+      } catch {
+        if (generation === aiPartsGenerationRef.current) {
+          setTriggerAssistantMessage(null);
+        }
+      }
+    })();
+
+    return () => {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+    };
+  }, [triggerRun, aiParts]);
+
+  // When trigger run completes, sync messages and clear trigger state
+  useEffect(() => {
+    if (!triggerRun || triggerStatus !== "ready") return;
+
+    // Set skip timer FIRST (before any state updates) to prevent Convex sync race condition
+    skipPaginatedSyncUntilRef.current = Date.now() + 3000;
+
+    const fullMessages = [
+      ...triggerBaseAndUserMessages,
+      ...(triggerAssistantMessage ? [triggerAssistantMessage] : []),
+    ];
+    setMessages(fullMessages);
+
+    // Track the assistant message ID so Convex sync can verify it before overwriting
+    const assistantMsg = triggerAssistantMessage;
+    if (assistantMsg) {
+      lastTriggerAssistantIdRef.current = assistantMsg.id;
+    }
+
+    setTriggerRun(null);
+    setTriggerBaseAndUserMessages([]);
+    setTriggerAssistantMessage(null);
+    setTriggerStatus("ready");
+    setIsAutoResuming(false);
+    setAwaitingServerChat(false);
+    setUploadStatus(null);
+    setSummarizationStatus(null);
+
+    if (!isExistingChatRef.current) {
+      setIsExistingChat(true);
+      removeDraft("new");
+      setCurrentChatId(chatId);
+      // Use replaceState to update URL without unmounting - keeps messages in state.
+      // Reload will load /c/[chatId] and fetch from Convex.
+      window.history.replaceState({}, "", `/c/${chatId}`);
+    }
+  }, [
+    triggerRun,
+    triggerStatus,
+    triggerBaseAndUserMessages,
+    triggerAssistantMessage,
+    setMessages,
+    setCurrentChatId,
+    chatId,
+  ]);
+
   // Auto-resume controlled by prop; default to true when a specific chat id is present, false on "/"
   useAutoResume({
     autoResume,
@@ -409,6 +643,11 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
+      setTriggerRun(null);
+      setTriggerBaseAndUserMessages([]);
+      setTriggerAssistantMessage(null);
+      setTriggerStatus("ready");
+      lastTriggerAssistantIdRef.current = null;
     };
     setChatReset(reset);
     return () => setChatReset(null);
@@ -482,10 +721,23 @@ export const Chat = ({
   // Reset the one-time initializer when chat changes
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
+    lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
   }, [chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
+    // Skip sync while streaming (messages come from streaming state, not Convex)
+    if (triggerRun) {
+      return;
+    }
+    // Also skip if useChat is streaming (for temporary chats or fallback path)
+    if (status === "streaming") {
+      return;
+    }
+
+    if (Date.now() < skipPaginatedSyncUntilRef.current) {
+      return;
+    }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
       return;
     }
@@ -496,10 +748,34 @@ export const Chat = ({
     );
 
     // Simple sync: always use server messages for existing chats
+    // BUT: If we just completed a Trigger.dev run, verify the assistant message exists in Convex
+    // before overwriting (prevents race condition where Convex hasn't propagated the new message yet)
     if (isExistingChat) {
-      setMessages(uiMessages);
+      const lastTriggerId = lastTriggerAssistantIdRef.current;
+      if (lastTriggerId) {
+        // Check if Convex has the assistant message from the trigger run
+        const hasAssistantMessage = uiMessages.some(
+          (msg) => msg.id === lastTriggerId,
+        );
+        if (hasAssistantMessage) {
+          // Convex has caught up, safe to sync
+          setMessages(uiMessages);
+          lastTriggerAssistantIdRef.current = null; // Clear the ref
+        }
+        // If Convex doesn't have it yet, skip this sync and wait for next update
+      } else {
+        // No pending trigger completion, safe to sync normally
+        setMessages(uiMessages);
+      }
     }
-  }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
+  }, [
+    paginatedMessages.results,
+    setMessages,
+    isExistingChat,
+    chatId,
+    triggerRun,
+    status,
+  ]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -521,60 +797,7 @@ export const Chat = ({
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Automatic queue processing - send next queued message when ready
-  useEffect(() => {
-    if (
-      status === "ready" &&
-      messageQueue.length > 0 &&
-      !isProcessingQueue &&
-      !isSendingNowRef.current && // Don't auto-process if "Send Now" is active
-      !hasManuallyStoppedRef.current && // Don't auto-process if user manually stopped
-      chatMode === "agent" &&
-      queueBehavior === "queue" // Only auto-process in queue mode
-    ) {
-      setIsProcessingQueue(true);
-      const nextMessage = dequeueNext();
-
-      if (nextMessage) {
-        // Send the message with files if available
-        sendMessage(
-          {
-            text: nextMessage.text,
-            files: nextMessage.files
-              ? nextMessage.files.map((f) => ({
-                  type: "file" as const,
-                  filename: f.file.name,
-                  mediaType: f.file.type,
-                  url: f.url,
-                  fileId: f.fileId,
-                }))
-              : undefined,
-          },
-          {
-            body: {
-              mode: chatMode,
-              todos: todosRef.current,
-              temporary: temporaryChatsEnabledRef.current,
-              sandboxPreference: sandboxPreferenceRef.current,
-            },
-          },
-        );
-      }
-
-      // Reset processing flag after brief delay
-      setTimeout(() => setIsProcessingQueue(false), 100);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- todosRef and sandboxPreferenceRef are stable refs, .current is read at runtime
-  }, [
-    status,
-    messageQueue.length,
-    isProcessingQueue,
-    chatMode,
-    dequeueNext,
-    sendMessage,
-    temporaryChatsEnabledRef,
-    queueBehavior,
-  ]);
+  const displayStatusForQueue = triggerRun ? triggerStatus : status;
 
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useRef(messageQueue);
@@ -606,6 +829,201 @@ export const Chat = ({
     handleDrop,
   });
 
+  // Trigger.dev submit (agent mode, non-temporary): POST /api/agent, then stream via useRealtimeStream
+  const triggerSubmit = useCallback(
+    async (
+      messagePayload: {
+        text?: string;
+        files?: Array<{
+          type: "file";
+          filename: string;
+          mediaType: string;
+          url: string;
+          fileId: Id<"files">;
+        }>;
+      },
+      options?: { body?: Record<string, unknown> },
+    ) => {
+      const parts: ChatMessage["parts"] = [];
+      if (messagePayload.text)
+        parts.push({ type: "text", text: messagePayload.text });
+      (messagePayload.files ?? []).forEach((f) => {
+        parts.push({
+          type: "file",
+          mediaType: f.mediaType,
+          filename: f.filename,
+          url: f.url,
+          ...(f.fileId && { fileId: f.fileId }),
+        } as ChatMessage["parts"][0]);
+      });
+      const newUserMessage: ChatMessage = {
+        id: uuidv4(),
+        role: "user",
+        parts,
+      };
+      const fullMessages: ChatMessage[] = [...messages, newUserMessage];
+      const stripUrls = (msgs: ChatMessage[]) =>
+        msgs.map((msg) => {
+          if (!msg.parts?.length) return msg;
+          const strippedParts = msg.parts.map((part) => {
+            if (part.type === "file" && "url" in part) {
+              const { url: _u, ...rest } = part;
+              return rest;
+            }
+            return part;
+          });
+          return { ...msg, parts: strippedParts };
+        });
+      try {
+        const res = await fetchWithErrorHandlers("/api/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chatId,
+            messages: stripUrls(fullMessages),
+            mode: "agent",
+            todos: options?.body?.todos ?? todos,
+            temporary: false,
+            sandboxPreference:
+              options?.body?.sandboxPreference ?? sandboxPreference,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err?.message ?? "Failed to start agent");
+          return;
+        }
+        const { runId, publicAccessToken } = await res.json();
+        // Clear any pending skip timer from previous streams before starting new one
+        skipPaginatedSyncUntilRef.current = 0;
+        setTriggerRun({ runId, publicAccessToken });
+        setTriggerBaseAndUserMessages(fullMessages as ChatMessage[]);
+        setTriggerAssistantMessage(null);
+        setTriggerStatus("streaming");
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Failed to start agent");
+      }
+    },
+    [messages, chatId, todos, sandboxPreference],
+  );
+
+  /** Trigger a new run for regenerate (agent mode, non-temporary). Backend fetches messages from DB. */
+  const triggerRegenerate = useCallback(
+    async (opts?: {
+      body?: { todos?: Todo[]; sandboxPreference?: string };
+    }) => {
+      const cleanedTodos = opts?.body?.todos ?? todos;
+      const pref = opts?.body?.sandboxPreference ?? sandboxPreference;
+      try {
+        const res = await fetchWithErrorHandlers("/api/agent", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            chatId,
+            messages: [],
+            mode: "agent",
+            todos: cleanedTodos,
+            regenerate: true,
+            temporary: false,
+            sandboxPreference: pref,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast.error(err?.message ?? "Failed to regenerate");
+          return;
+        }
+        const { runId, publicAccessToken } = await res.json();
+        // Clear any pending skip timer from previous streams before starting new one
+        skipPaginatedSyncUntilRef.current = 0;
+        setTriggerRun({ runId, publicAccessToken });
+        setTriggerBaseAndUserMessages(messages.slice(0, -1) as ChatMessage[]);
+        setTriggerAssistantMessage(null);
+        setTriggerStatus("streaming");
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Failed to regenerate");
+      }
+    },
+    [messages, chatId, todos, sandboxPreference],
+  );
+
+  const wrappedSendMessage = useCallback(
+    (payload: unknown, opts?: { body?: Record<string, unknown> }) => {
+      if (
+        chatMode === "agent" &&
+        !temporaryChatsEnabled &&
+        triggerRun === null
+      ) {
+        triggerSubmit(payload as Parameters<typeof triggerSubmit>[0], opts);
+        return;
+      }
+      sendMessage(payload as Parameters<typeof sendMessage>[0], opts);
+    },
+    [chatMode, temporaryChatsEnabled, triggerRun, triggerSubmit, sendMessage],
+  );
+
+  const wrappedRegenerate = useCallback(
+    (opts?: { body?: Record<string, unknown> }) => {
+      if (chatMode === "agent" && !temporaryChatsEnabled) {
+        triggerRegenerate(opts);
+        return;
+      }
+      regenerate(opts);
+    },
+    [chatMode, temporaryChatsEnabled, triggerRegenerate, regenerate],
+  );
+
+  // Automatic queue processing - send next queued message when ready (uses wrappedSendMessage to route to Trigger.dev when agent + non-temporary)
+  useEffect(() => {
+    if (
+      displayStatusForQueue === "ready" &&
+      messageQueue.length > 0 &&
+      !isProcessingQueue &&
+      !isSendingNowRef.current &&
+      !hasManuallyStoppedRef.current &&
+      chatMode === "agent" &&
+      queueBehavior === "queue"
+    ) {
+      setIsProcessingQueue(true);
+      const nextMessage = dequeueNext();
+
+      if (nextMessage) {
+        wrappedSendMessage(
+          {
+            text: nextMessage.text,
+            files: nextMessage.files
+              ? nextMessage.files.map((f) => ({
+                  type: "file" as const,
+                  filename: f.file.name,
+                  mediaType: f.file.type,
+                  url: f.url,
+                  fileId: f.fileId,
+                }))
+              : undefined,
+          },
+          {
+            body: {
+              mode: chatMode,
+              todos: todosRef.current,
+              temporary: temporaryChatsEnabledRef.current,
+              sandboxPreference: sandboxPreferenceRef.current,
+            },
+          },
+        );
+      }
+
+      setTimeout(() => setIsProcessingQueue(false), 100);
+    }
+  }, [
+    displayStatusForQueue,
+    messageQueue.length,
+    isProcessingQueue,
+    chatMode,
+    dequeueNext,
+    wrappedSendMessage,
+    queueBehavior,
+  ]);
+
   // Chat handlers
   const {
     handleSubmit,
@@ -616,17 +1034,32 @@ export const Chat = ({
     handleSendNow,
   } = useChatHandlers({
     chatId,
-    messages,
-    sendMessage,
-    stop,
-    regenerate,
+    messages: triggerRun
+      ? [
+          ...triggerBaseAndUserMessages,
+          ...(triggerAssistantMessage ? [triggerAssistantMessage] : []),
+        ]
+      : messages,
+    sendMessage: wrappedSendMessage,
+    stop: useCallback(() => {
+      if (triggerRun) {
+        runs.cancel(triggerRun.runId).catch(() => {});
+        setTriggerRun(null);
+        setTriggerBaseAndUserMessages([]);
+        setTriggerAssistantMessage(null);
+        setTriggerStatus("ready");
+      } else {
+        stop();
+      }
+    }, [triggerRun, stop]),
+    regenerate: wrappedRegenerate,
     setMessages,
     isExistingChat,
     activateChatLocally: () => {
       setIsExistingChat(true);
       setAwaitingServerChat(true);
     },
-    status,
+    status: triggerRun ? triggerStatus : status,
     isSendingNowRef,
     hasManuallyStoppedRef,
     onStopCallback: () => {
@@ -657,7 +1090,14 @@ export const Chat = ({
     }
   };
 
-  const hasMessages = messages.length > 0;
+  const displayMessages = triggerRun
+    ? [
+        ...triggerBaseAndUserMessages,
+        ...(triggerAssistantMessage ? [triggerAssistantMessage] : []),
+      ]
+    : messages;
+  const displayStatus = triggerRun ? triggerStatus : status;
+  const hasMessages = displayMessages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
   // UI-level temporary chat flag
@@ -734,13 +1174,13 @@ export const Chat = ({
                   <Messages
                     scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                     contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                    messages={messages}
+                    messages={displayMessages}
                     setMessages={setMessages}
                     onRegenerate={handleRegenerate}
                     onRetry={handleRetry}
                     onEditMessage={handleEditMessage}
                     onBranchMessage={handleBranchMessage}
-                    status={status}
+                    status={displayStatus}
                     error={error || null}
                     paginationStatus={paginatedMessages.status}
                     loadMore={paginatedMessages.loadMore}
@@ -791,7 +1231,7 @@ export const Chat = ({
                               onSubmit={handleSubmit}
                               onStop={handleStop}
                               onSendNow={handleSendNow}
-                              status={status}
+                              status={displayStatus}
                               isCentered={true}
                               hasMessages={hasMessages}
                               isAtBottom={isAtBottom}
@@ -824,7 +1264,7 @@ export const Chat = ({
                       onSubmit={handleSubmit}
                       onStop={handleStop}
                       onSendNow={handleSendNow}
-                      status={status}
+                      status={displayStatus}
                       hasMessages={hasMessages}
                       isAtBottom={isAtBottom}
                       onScrollToBottom={handleScrollToBottom}
@@ -847,7 +1287,10 @@ export const Chat = ({
                 }`}
               >
                 {sidebarOpen && (
-                  <ComputerSidebar messages={messages} status={status} />
+                  <ComputerSidebar
+                    messages={displayMessages}
+                    status={displayStatus}
+                  />
                 )}
               </div>
             )}
@@ -864,7 +1307,10 @@ export const Chat = ({
         {isMobile && sidebarOpen && (
           <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
             <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar messages={messages} status={status} />
+              <ComputerSidebar
+                messages={displayMessages}
+                status={displayStatus}
+              />
             </div>
           </div>
         )}

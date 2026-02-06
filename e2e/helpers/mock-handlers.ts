@@ -40,8 +40,8 @@ export async function setupMocks(
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          result: "Mocked agent response",
-          success: true,
+          runId: "mock-run-id",
+          publicAccessToken: "mock-public-access-token",
         }),
       });
     });

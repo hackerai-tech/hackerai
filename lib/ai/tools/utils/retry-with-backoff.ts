@@ -1,4 +1,7 @@
-import { logger as axiomLogger } from "@/lib/axiom/server";
+import { createRetryLogger } from "@/lib/axiom/worker";
+
+/** Logger used for retry/abort events; safe in Trigger.dev (no @axiomhq/nextjs). */
+const retryLogger = createRetryLogger("retry-with-backoff");
 
 /**
  * Retry configuration options
@@ -62,7 +65,7 @@ export async function retryWithBackoff<T>(
     baseDelayMs = 400,
     jitterMs = 40,
     isPermanentError = defaultIsPermanentError,
-    logger = console.warn,
+    logger = retryLogger,
     signal,
   } = options;
 
@@ -71,11 +74,9 @@ export async function retryWithBackoff<T>(
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     // Check if aborted before each attempt
     if (signal?.aborted) {
-      axiomLogger.info("Retry aborted before attempt", {
-        attempt,
-        maxRetries,
-        reason: "signal_already_aborted",
-      });
+      retryLogger(
+        `Retry aborted before attempt ${attempt + 1}/${maxRetries} (reason: signal_already_aborted)`,
+      );
       throw new DOMException("Operation aborted", "AbortError");
     }
 
@@ -118,12 +119,9 @@ export async function retryWithBackoff<T>(
         if (signal) {
           const onAbort = () => {
             clearTimeout(timeout);
-            axiomLogger.info("Retry aborted during backoff delay", {
-              attempt,
-              maxRetries,
-              delayMs,
-              reason: "signal_aborted_during_delay",
-            });
+            retryLogger(
+              `Retry aborted during backoff delay (attempt ${attempt + 1}/${maxRetries}, delayMs: ${delayMs}, reason: signal_aborted_during_delay)`,
+            );
             reject(new DOMException("Operation aborted", "AbortError"));
           };
           signal.addEventListener("abort", onAbort, { once: true });
