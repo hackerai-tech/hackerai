@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { usePaginatedQuery } from "convex/react";
+import { usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -30,3 +30,6 @@ export const useChats = (shouldFetch: boolean = true) => {
 
   return paginatedChats;
 };
+
+export const usePinChat = () => useMutation(api.chats.pinChat);
+export const useUnpinChat = () => useMutation(api.chats.unpinChat);

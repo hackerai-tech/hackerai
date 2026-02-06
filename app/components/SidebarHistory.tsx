@@ -67,7 +67,10 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   if (!chats || chats.length === 0) {
     // Empty state
     return (
-      <div className="flex flex-col items-center justify-center h-full p-6 text-center">
+      <div
+        className="flex flex-col items-center justify-center h-full p-6 text-center"
+        data-testid="sidebar-chat-empty"
+      >
         <MessageSquare className="w-12 h-12 text-sidebar-accent-foreground mb-4" />
         <h3 className="text-lg font-medium text-sidebar-foreground mb-2">
           No chats yet
@@ -81,7 +84,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
 
   // Chat list with buttons (same for mobile and desktop)
   return (
-    <div className="p-2 space-y-1">
+    <div className="p-2 space-y-1" data-testid="sidebar-chat-list">
       {chats.map((chat: any) => (
         <ChatItem
           key={chat._id}
@@ -91,6 +94,7 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
           branchedFromTitle={chat.branched_from_title}
           shareId={chat.share_id}
           shareDate={chat.share_date}
+          isPinned={chat.pinned_at != null}
         />
       ))}
 

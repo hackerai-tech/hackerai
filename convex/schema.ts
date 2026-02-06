@@ -33,9 +33,11 @@ export default defineSchema({
     // Sharing fields
     share_id: v.optional(v.string()),
     share_date: v.optional(v.number()),
+    pinned_at: v.optional(v.number()),
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
+    .index("by_user_and_pinned", ["user_id", "pinned_at"])
     .index("by_share_id", ["share_id"])
     .searchIndex("search_title", {
       searchField: "title",
