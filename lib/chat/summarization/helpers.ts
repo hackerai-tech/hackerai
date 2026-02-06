@@ -10,7 +10,7 @@ import {
   countMessagesTokens,
 } from "@/lib/token-utils";
 import { saveChatSummary } from "@/lib/db/actions";
-import { SubscriptionTier, ChatMode } from "@/types";
+import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
 import {
@@ -87,16 +87,25 @@ export const generateSummaryText = async (
   }
 };
 
-export const buildSummaryMessage = (summaryText: string): UIMessage => ({
-  id: uuidv4(),
-  role: "user",
-  parts: [
-    {
-      type: "text",
-      text: `<context_summary>\n${summaryText}\n</context_summary>`,
-    },
-  ],
-});
+export const buildSummaryMessage = (
+  summaryText: string,
+  todos: Todo[] = [],
+): UIMessage => {
+  let text = `<context_summary>\n${summaryText}\n</context_summary>`;
+
+  if (todos.length > 0) {
+    const todoLines = todos
+      .map((todo) => `- [${todo.status}] ${todo.content}`)
+      .join("\n");
+    text += `\n<current_todos>\n${todoLines}\n</current_todos>`;
+  }
+
+  return {
+    id: uuidv4(),
+    role: "user",
+    parts: [{ type: "text", text }],
+  };
+};
 
 export const persistSummary = async (
   chatId: string | null,

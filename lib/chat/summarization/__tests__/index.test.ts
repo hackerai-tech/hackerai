@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
+import type { Todo } from "@/types";
 
 describe("checkAndSummarizeIfNeeded", () => {
-   
   const mockGenerateText = jest.fn<() => Promise<any>>();
-   
+
   const mockConvertToModelMessages = jest.fn<() => Promise<any[]>>();
   const mockCountMessagesTokens = jest.fn<() => number>();
   const mockGetMaxTokensForSubscription = jest.fn<() => number>();
@@ -54,7 +54,6 @@ describe("checkAndSummarizeIfNeeded", () => {
         saveChatSummary: mockSaveChatSummary,
       }));
 
-       
       isolatedModule = require("../index");
     });
 
@@ -252,5 +251,79 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Summary");
     expect(mockWriteSummarizationCompleted).toHaveBeenCalled();
+  });
+
+  it("should include todo list in summary message when todos exist", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+    mockGenerateText.mockResolvedValue({ text: "Test summary content" });
+
+    const todos: Todo[] = [
+      { id: "1", content: "Run nmap scan on target", status: "in_progress" },
+      { id: "2", content: "Test for SQL injection", status: "pending" },
+      { id: "3", content: "Enumerate subdomains", status: "completed" },
+    ];
+
+    const result = await checkAndSummarizeIfNeeded(
+      fourMessages,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+      {},
+      todos,
+    );
+
+    expect(result.needsSummarization).toBe(true);
+
+    const summaryMessageText = result.summarizedMessages[0].parts[0];
+    expect(summaryMessageText).toEqual({
+      type: "text",
+      text: expect.stringContaining("<context_summary>"),
+    });
+    expect(summaryMessageText).toEqual({
+      type: "text",
+      text: expect.stringContaining("<current_todos>"),
+    });
+    expect(summaryMessageText).toEqual({
+      type: "text",
+      text: expect.stringContaining("[in_progress] Run nmap scan on target"),
+    });
+    expect(summaryMessageText).toEqual({
+      type: "text",
+      text: expect.stringContaining("[pending] Test for SQL injection"),
+    });
+    expect(summaryMessageText).toEqual({
+      type: "text",
+      text: expect.stringContaining("[completed] Enumerate subdomains"),
+    });
+  });
+
+  it("should not include todo block in summary when todos are empty", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+    mockGenerateText.mockResolvedValue({ text: "Test summary content" });
+
+    const result = await checkAndSummarizeIfNeeded(
+      fourMessages,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+      {},
+      [],
+    );
+
+    expect(result.needsSummarization).toBe(true);
+
+    const summaryMessageText = (
+      result.summarizedMessages[0].parts[0] as { type: string; text: string }
+    ).text;
+    expect(summaryMessageText).toContain("<context_summary>");
+    expect(summaryMessageText).not.toContain("<current_todos>");
   });
 });
