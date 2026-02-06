@@ -591,12 +591,12 @@ export const pinChat = mutation({
 
     const pinnedChats = await ctx.db
       .query("chats")
-      .withIndex("by_user_and_pinned", (q) => q.eq("user_id", identity.subject))
-      .order("desc")
-      .take(20);
+      .withIndex("by_user_and_pinned", (q) =>
+        q.eq("user_id", identity.subject).gt("pinned_at", 0),
+      )
+      .take(MAX_PINNED_CHATS);
 
-    const pinnedCount = pinnedChats.filter((c) => c.pinned_at != null).length;
-    if (pinnedCount >= MAX_PINNED_CHATS) {
+    if (pinnedChats.length >= MAX_PINNED_CHATS) {
       throw new ConvexError({
         code: "MAX_PINNED_REACHED",
         message: `You can pin at most ${MAX_PINNED_CHATS} chats`,
