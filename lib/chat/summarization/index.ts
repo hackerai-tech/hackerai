@@ -30,6 +30,7 @@ export const checkAndSummarizeIfNeeded = async (
   chatId: string | null,
   fileTokens: Record<Id<"files">, number> = {},
   todos: Todo[] = [],
+  abortSignal?: AbortSignal,
 ): Promise<SummarizationResult> => {
   if (uiMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED) {
     return NO_SUMMARIZATION(uiMessages);
@@ -50,6 +51,7 @@ export const checkAndSummarizeIfNeeded = async (
     messagesToSummarize,
     languageModel,
     mode,
+    abortSignal,
   );
   const summaryMessage = buildSummaryMessage(summaryText, todos);
 
