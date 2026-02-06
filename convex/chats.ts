@@ -3,6 +3,7 @@ import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
+import { MAX_PINNED_CHATS } from "./constants";
 
 export function validateServiceKey(serviceKey: string): void {
   if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
@@ -49,6 +50,7 @@ export const getChatByIdFromClient = query({
       share_id: v.optional(v.string()),
       share_date: v.optional(v.number()),
       update_time: v.number(),
+      pinned_at: v.optional(v.number()),
     }),
     v.null(),
   ),
@@ -447,7 +449,7 @@ export const getCancellationStatus = query({
 });
 
 /**
- * Get user's latest chats with pagination
+ * Get user's latest chats with pagination. Pinned chats (max 3) appear first in pin order.
  */
 export const getUserChats = query({
   args: {
@@ -464,25 +466,45 @@ export const getUserChats = query({
     }
 
     try {
+      // Step 1: Fetch pinned chats only, ordered by pinned_at asc (first pinned = first in list)
+      const pinnedChats = await ctx.db
+        .query("chats")
+        .withIndex("by_user_and_pinned", (q) =>
+          q.eq("user_id", identity.subject).gt("pinned_at", 0),
+        )
+        .order("asc")
+        .take(MAX_PINNED_CHATS);
+
+      const pinnedIds = pinnedChats.map((c) => c.id);
+
+      // Step 2: Fetch one page (no over-fetch: slicing would lose items permanently
+      // because the cursor advances past all fetched items)
       const result = await ctx.db
         .query("chats")
         .withIndex("by_user_and_updated", (q) =>
           q.eq("user_id", identity.subject),
         )
-        .order("desc") // Most recent first
+        .order("desc")
         .paginate(args.paginationOpts);
 
-      // Enhance chats with branched_from_title
-      // Step 1: Collect unique branched_from_chat_ids
+      const unpinnedPage = result.page.filter((c) => !pinnedIds.includes(c.id));
+      const isFirstPage =
+        args.paginationOpts.cursor == null || args.paginationOpts.cursor === "";
+      const combinedPage = isFirstPage
+        ? [...pinnedChats, ...unpinnedPage]
+        : unpinnedPage;
+
+      // Step 3: Enhance all chats (pinned + unpinned) with branched_from_title
+      // Step 3a: Collect unique branched_from_chat_ids
       const branchedIds = [
         ...new Set(
-          result.page
+          combinedPage
             .map((chat) => chat.branched_from_chat_id)
             .filter((id): id is string => id != null),
         ),
       ];
 
-      // Step 2: Batch fetch all branched chats in parallel
+      // Step 3b: Batch fetch all branched chats in parallel
       const branchedChats = await Promise.all(
         branchedIds.map((id) =>
           ctx.db
@@ -492,15 +514,15 @@ export const getUserChats = query({
         ),
       );
 
-      // Step 3: Build lookup map for O(1) access
+      // Step 3c: Build lookup map for O(1) access
       const branchedChatMap = new Map(
         branchedChats
           .filter((chat): chat is NonNullable<typeof chat> => chat != null)
           .map((chat) => [chat.id, chat]),
       );
 
-      // Step 4: Enhance chats using the map (no async needed)
-      const enhancedChats = result.page.map((chat) => {
+      // Step 4: Enhance chats using the map
+      const enhancedChats = combinedPage.map((chat) => {
         if (chat.branched_from_chat_id) {
           const branchedFromChat = branchedChatMap.get(
             chat.branched_from_chat_id,
@@ -525,6 +547,106 @@ export const getUserChats = query({
         continueCursor: "",
       };
     }
+  },
+});
+
+/**
+ * Pin a chat. Pinned chats appear at the top of the list. Max 3 pinned chats per user.
+ */
+export const pinChat = mutation({
+  args: {
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+    if (chat.user_id !== identity.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+    if (chat.pinned_at != null) {
+      return null; // Already pinned
+    }
+
+    const pinnedChats = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_pinned", (q) => q.eq("user_id", identity.subject))
+      .order("desc")
+      .take(20);
+
+    const pinnedCount = pinnedChats.filter((c) => c.pinned_at != null).length;
+    if (pinnedCount >= MAX_PINNED_CHATS) {
+      throw new ConvexError({
+        code: "MAX_PINNED_REACHED",
+        message: `You can pin at most ${MAX_PINNED_CHATS} chats`,
+      });
+    }
+
+    await ctx.db.patch(chat._id, { pinned_at: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * Unpin a chat. It will appear at the top of the unpinned list (update_time is set to now).
+ */
+export const unpinChat = mutation({
+  args: {
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+    if (chat.user_id !== identity.subject) {
+      throw new ConvexError({
+        code: "ACCESS_DENIED",
+        message: "Unauthorized: Chat does not belong to user",
+      });
+    }
+
+    await ctx.db.patch(chat._id, {
+      pinned_at: undefined,
+      update_time: Date.now(),
+    });
+    return null;
   },
 });
 

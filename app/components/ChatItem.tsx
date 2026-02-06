@@ -28,11 +28,20 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Ellipsis, Trash2, Edit2, Split, Share } from "lucide-react";
+import {
+  Ellipsis,
+  Trash2,
+  Edit2,
+  Split,
+  Share,
+  Pin,
+  PinOff,
+} from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { ShareDialog } from "./ShareDialog";
+import { usePinChat, useUnpinChat } from "../hooks/useChats";
 
 interface ChatItemProps {
   id: string;
@@ -41,6 +50,7 @@ interface ChatItemProps {
   branchedFromTitle?: string;
   shareId?: string;
   shareDate?: number;
+  isPinned?: boolean;
 }
 
 const ChatItem: React.FC<ChatItemProps> = ({
@@ -50,6 +60,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   branchedFromTitle,
   shareId,
   shareDate,
+  isPinned = false,
 }) => {
   const router = useRouter();
   const [isHovered, setIsHovered] = useState(false);
@@ -71,6 +82,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
   const renameChat = useMutation(api.chats.renameChat);
+  const pinChat = usePinChat();
+  const unpinChat = useUnpinChat();
 
   // Check if this chat is currently active based on URL
   const isCurrentlyActive = window.location.pathname === `/c/${id}`;
@@ -174,6 +187,37 @@ const ChatItem: React.FC<ChatItemProps> = ({
     }, 50);
   };
 
+  const handlePin = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropdownOpen(false);
+    try {
+      await pinChat({ chatId: id });
+    } catch (error) {
+      if (error instanceof ConvexError) {
+        const data = error.data as { code?: string; message?: string };
+        if (data.code === "MAX_PINNED_REACHED") {
+          toast.error(data.message ?? "You can pin at most 3 chats");
+          return;
+        }
+      }
+      console.error("Failed to pin chat:", error);
+      toast.error("Failed to pin chat");
+    }
+  };
+
+  const handleUnpin = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDropdownOpen(false);
+    try {
+      await unpinChat({ chatId: id });
+    } catch (error) {
+      console.error("Failed to unpin chat:", error);
+      toast.error("Failed to unpin chat");
+    }
+  };
+
   const handleSaveRename = async () => {
     const trimmedTitle = editTitle.trim();
 
@@ -255,6 +299,12 @@ const ChatItem: React.FC<ChatItemProps> = ({
         dir="auto"
       >
         <span className="flex items-center gap-1.5">
+          {isPinned && (
+            <Pin
+              className="size-3 flex-shrink-0 text-muted-foreground"
+              data-testid="chat-item-pin-icon"
+            />
+          )}
           {isBranched && branchedFromTitle && (
             <TooltipProvider delayDuration={300}>
               <Tooltip>
@@ -304,6 +354,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
               <Edit2 className="mr-2 h-4 w-4" />
               Rename
             </DropdownMenuItem>
+            {isPinned ? (
+              <DropdownMenuItem onClick={handleUnpin}>
+                <PinOff className="mr-2 h-4 w-4" />
+                Unpin
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem onClick={handlePin}>
+                <Pin className="mr-2 h-4 w-4" />
+                Pin
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onClick={handleShare}>
               <Share className="mr-2 h-4 w-4" />
               Share
