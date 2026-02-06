@@ -13,10 +13,7 @@ describe("checkAndSummarizeIfNeeded", () => {
   const mockSaveChatSummary = jest.fn<() => Promise<void>>();
   const mockUuid = jest.fn<() => string>();
 
-  const mockWriter = {
-    write: jest.fn(),
-  } as unknown as UIMessageStreamWriter;
-
+  const mockWriter = {} as UIMessageStreamWriter;
   const mockLanguageModel = {} as LanguageModel;
 
   beforeEach(() => {
@@ -73,14 +70,22 @@ describe("checkAndSummarizeIfNeeded", () => {
     parts: [{ type: "text", text: `Message ${id}` }],
   });
 
-  it("should skip summarization when message count is insufficient", async () => {
-    const { checkAndSummarizeIfNeeded, MESSAGES_TO_KEEP_UNSUMMARIZED } =
-      getIsolatedModule();
+  const fourMessages: UIMessage[] = [
+    createMessage("msg-1", "user"),
+    createMessage("msg-2", "assistant"),
+    createMessage("msg-3", "user"),
+    createMessage("msg-4", "assistant"),
+  ];
 
-    const messages: UIMessage[] = Array.from(
-      { length: MESSAGES_TO_KEEP_UNSUMMARIZED },
-      (_, i) => createMessage(`msg-${i}`, i % 2 === 0 ? "user" : "assistant"),
-    );
+  const setupAboveThreshold = () => {
+    mockCountMessagesTokens.mockReturnValue(9500);
+    mockGetMaxTokensForSubscription.mockReturnValue(10000);
+  };
+
+  it("should skip summarization when message count is insufficient", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    const messages = [createMessage("msg-1", "user")];
 
     const result = await checkAndSummarizeIfNeeded(
       messages,
@@ -100,18 +105,11 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should skip summarization when tokens are below threshold", async () => {
     const { checkAndSummarizeIfNeeded } = getIsolatedModule();
 
-    const messages: UIMessage[] = [
-      createMessage("msg-1", "user"),
-      createMessage("msg-2", "assistant"),
-      createMessage("msg-3", "user"),
-      createMessage("msg-4", "assistant"),
-    ];
-
     mockCountMessagesTokens.mockReturnValue(1000);
     mockGetMaxTokensForSubscription.mockReturnValue(10000);
 
     const result = await checkAndSummarizeIfNeeded(
-      messages,
+      fourMessages,
       "free",
       mockLanguageModel,
       "ask",
@@ -120,26 +118,17 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(false);
-    expect(result.summarizedMessages).toBe(messages);
+    expect(result.summarizedMessages).toBe(fourMessages);
   });
 
   it("should summarize and return correct structure when threshold exceeded", async () => {
-    const { checkAndSummarizeIfNeeded, MESSAGES_TO_KEEP_UNSUMMARIZED } =
-      getIsolatedModule();
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
 
-    const messages: UIMessage[] = [
-      createMessage("msg-1", "user"),
-      createMessage("msg-2", "assistant"),
-      createMessage("msg-3", "user"),
-      createMessage("msg-4", "assistant"),
-    ];
-
-    mockCountMessagesTokens.mockReturnValue(9500);
-    mockGetMaxTokensForSubscription.mockReturnValue(10000);
+    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
     const result = await checkAndSummarizeIfNeeded(
-      messages,
+      fourMessages,
       "free",
       mockLanguageModel,
       "ask",
@@ -151,38 +140,46 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.summaryText).toBe("Test summary content");
     expect(result.cutoffMessageId).toBe("msg-2");
 
-    // Summary message + last N unsummarized messages
-    expect(result.summarizedMessages.length).toBe(
-      MESSAGES_TO_KEEP_UNSUMMARIZED + 1,
-    );
-
-    // First message should be summary wrapped in XML tags
+    // summary message + last 2 kept messages
+    expect(result.summarizedMessages).toHaveLength(3);
     expect(result.summarizedMessages[0].parts[0]).toEqual({
       type: "text",
       text: "<context_summary>\nTest summary content\n</context_summary>",
     });
-
-    // Last messages should be preserved
-    const lastMessages = messages.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED);
-    expect(result.summarizedMessages.slice(1)).toEqual(lastMessages);
+    expect(result.summarizedMessages.slice(1)).toEqual(fourMessages.slice(-2));
   });
 
-  it("should persist summary to database when chatId is provided", async () => {
+  it("should use agent prompt when mode is agent", async () => {
     const { checkAndSummarizeIfNeeded } = getIsolatedModule();
 
-    const messages: UIMessage[] = [
-      createMessage("msg-1", "user"),
-      createMessage("msg-2", "assistant"),
-      createMessage("msg-3", "user"),
-      createMessage("msg-4", "assistant"),
-    ];
+    setupAboveThreshold();
+    mockGenerateText.mockResolvedValue({ text: "Agent summary" });
 
-    mockCountMessagesTokens.mockReturnValue(9500);
-    mockGetMaxTokensForSubscription.mockReturnValue(10000);
+    const result = await checkAndSummarizeIfNeeded(
+      fourMessages,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      null,
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system: expect.stringContaining("security agent"),
+      }),
+    );
+  });
+
+  it("should persist summary when chatId is provided", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
     await checkAndSummarizeIfNeeded(
-      messages,
+      fourMessages,
       "free",
       mockLanguageModel,
       "ask",
@@ -200,19 +197,11 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should skip database persistence for temporary chats", async () => {
     const { checkAndSummarizeIfNeeded } = getIsolatedModule();
 
-    const messages: UIMessage[] = [
-      createMessage("msg-1", "user"),
-      createMessage("msg-2", "assistant"),
-      createMessage("msg-3", "user"),
-      createMessage("msg-4", "assistant"),
-    ];
-
-    mockCountMessagesTokens.mockReturnValue(9500);
-    mockGetMaxTokensForSubscription.mockReturnValue(10000);
+    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
     await checkAndSummarizeIfNeeded(
-      messages,
+      fourMessages,
       "free",
       mockLanguageModel,
       "ask",
@@ -223,22 +212,14 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
-  it("should use fallback summary and complete gracefully when AI fails", async () => {
+  it("should use fallback summary and complete UI flow when AI fails", async () => {
     const { checkAndSummarizeIfNeeded } = getIsolatedModule();
 
-    const messages: UIMessage[] = [
-      createMessage("msg-1", "user"),
-      createMessage("msg-2", "assistant"),
-      createMessage("msg-3", "user"),
-      createMessage("msg-4", "assistant"),
-    ];
-
-    mockCountMessagesTokens.mockReturnValue(9500);
-    mockGetMaxTokensForSubscription.mockReturnValue(10000);
+    setupAboveThreshold();
     mockGenerateText.mockRejectedValue(new Error("API error"));
 
     const result = await checkAndSummarizeIfNeeded(
-      messages,
+      fourMessages,
       "free",
       mockLanguageModel,
       "ask",
@@ -255,20 +236,12 @@ describe("checkAndSummarizeIfNeeded", () => {
   it("should complete UI flow even when database save fails", async () => {
     const { checkAndSummarizeIfNeeded } = getIsolatedModule();
 
-    const messages: UIMessage[] = [
-      createMessage("msg-1", "user"),
-      createMessage("msg-2", "assistant"),
-      createMessage("msg-3", "user"),
-      createMessage("msg-4", "assistant"),
-    ];
-
-    mockCountMessagesTokens.mockReturnValue(9500);
-    mockGetMaxTokensForSubscription.mockReturnValue(10000);
+    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Summary" });
     mockSaveChatSummary.mockRejectedValue(new Error("DB error"));
 
     const result = await checkAndSummarizeIfNeeded(
-      messages,
+      fourMessages,
       "free",
       mockLanguageModel,
       "ask",
