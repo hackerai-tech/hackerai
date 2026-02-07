@@ -62,7 +62,7 @@ export function extractAllSidebarContent(
     });
 
     message.parts.forEach((part) => {
-      // Terminal
+      // Terminal (legacy run_terminal_cmd)
       if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
         const command = part.input.command;
 
@@ -100,6 +100,35 @@ export function extractAllSidebarContent(
             part.state === "input-available" || part.state === "running",
           isBackground: part.input.is_background,
           toolCallId: part.toolCallId || "",
+        });
+      }
+
+      // Shell tool (new interactive PTY-based shell)
+      if (part.type === "tool-shell" && part.input) {
+        const command = part.input.command || part.input.brief || "";
+
+        // Skip if no command/brief available yet (input still streaming)
+        if (!command) return;
+
+        // Get streaming output from data-terminal parts
+        const streamingOutput =
+          terminalDataMap.get(part.toolCallId || "") || "";
+
+        // Shell tool returns { output: string } directly (not nested in result)
+        const directOutput =
+          typeof part.output?.output === "string" ? part.output.output : "";
+
+        const finalOutput = directOutput || streamingOutput || "";
+
+        contentList.push({
+          command,
+          output: finalOutput,
+          isExecuting:
+            part.state === "input-available" || part.state === "running",
+          isBackground: false,
+          toolCallId: part.toolCallId || "",
+          shellAction: part.input.action,
+          pid: part.input.pid ?? part.output?.pid,
         });
       }
 

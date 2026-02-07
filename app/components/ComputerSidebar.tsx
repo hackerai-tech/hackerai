@@ -1,15 +1,11 @@
 import React from "react";
 import {
   Minimize2,
-  Edit,
   Terminal,
   Code2,
   Play,
   SkipBack,
   SkipForward,
-  Search,
-  FolderSearch,
-  StickyNote,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -33,6 +29,14 @@ import {
   type ChatStatus,
   type NoteCategory,
 } from "@/types/chat";
+import {
+  getCategoryColor,
+  getLanguageFromPath,
+  getActionText,
+  getSidebarIcon,
+  getToolName,
+  getDisplayTarget,
+} from "./computer-sidebar-utils";
 
 interface ComputerSidebarProps {
   sidebarOpen: boolean;
@@ -155,172 +159,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
 
-  const getCategoryColor = (category: NoteCategory) => {
-    switch (category) {
-      case "findings":
-        return "text-red-500";
-      case "methodology":
-        return "text-blue-500";
-      case "questions":
-        return "text-yellow-500";
-      case "plan":
-        return "text-green-500";
-      default:
-        return "text-muted-foreground";
-    }
-  };
-
-  const getLanguageFromPath = (filePath: string): string => {
-    const extension = filePath.split(".").pop()?.toLowerCase() || "";
-    const languageMap: Record<string, string> = {
-      js: "javascript",
-      jsx: "javascript",
-      ts: "typescript",
-      tsx: "typescript",
-      py: "python",
-      rb: "ruby",
-      go: "go",
-      rs: "rust",
-      java: "java",
-      c: "c",
-      cpp: "cpp",
-      h: "c",
-      hpp: "cpp",
-      css: "css",
-      scss: "scss",
-      sass: "sass",
-      html: "html",
-      xml: "xml",
-      json: "json",
-      yaml: "yaml",
-      yml: "yaml",
-      md: "markdown",
-      sh: "bash",
-      bash: "bash",
-      zsh: "bash",
-      fish: "bash",
-      sql: "sql",
-      php: "php",
-      swift: "swift",
-      kt: "kotlin",
-      scala: "scala",
-      clj: "clojure",
-      hs: "haskell",
-      elm: "elm",
-      vue: "vue",
-      svelte: "svelte",
-    };
-    return languageMap[extension] || "text";
-  };
-
-  const getActionText = (): string => {
-    if (isFile) {
-      if (sidebarContent.isExecuting) {
-        const streamingActionMap = {
-          reading: "Reading",
-          creating: "Creating",
-          editing: "Editing",
-          writing: "Writing to",
-          searching: "Searching",
-          appending: "Appending to",
-        };
-        return streamingActionMap[sidebarContent.action || "reading"];
-      }
-      const completedActionMap = {
-        reading: "Read",
-        creating: "Successfully wrote",
-        editing: "Successfully edited",
-        writing: "Successfully wrote",
-        searching: "Search results",
-        appending: "Successfully appended to",
-      };
-      return completedActionMap[sidebarContent.action || "reading"];
-    } else if (isTerminal) {
-      return sidebarContent.isExecuting
-        ? "Executing command"
-        : "Command executed";
-    } else if (isPython) {
-      return sidebarContent.isExecuting
-        ? "Executing Python"
-        : "Python executed";
-    } else if (isWebSearch) {
-      return sidebarContent.isSearching ? "Searching web" : "Search results";
-    } else if (isNotes) {
-      if (sidebarContent.isExecuting) {
-        const streamingActionMap = {
-          create: "Creating note",
-          list: "Listing notes",
-          update: "Updating note",
-          delete: "Deleting note",
-        };
-        return streamingActionMap[sidebarContent.action];
-      }
-      const completedActionMap = {
-        create: "Created note",
-        list: "Notes",
-        update: "Updated note",
-        delete: "Deleted note",
-      };
-      return completedActionMap[sidebarContent.action];
-    }
-    return "Unknown action";
-  };
-
-  const getIcon = () => {
-    if (isFile) {
-      // Show search icon for file search results
-      if (sidebarContent.action === "searching") {
-        return <FolderSearch className="w-5 h-5 text-muted-foreground" />;
-      }
-      return <Edit className="w-5 h-5 text-muted-foreground" />;
-    } else if (isTerminal) {
-      return <Terminal className="w-5 h-5 text-muted-foreground" />;
-    } else if (isPython) {
-      return <Code2 className="w-5 h-5 text-muted-foreground" />;
-    } else if (isWebSearch) {
-      return <Search className="w-5 h-5 text-muted-foreground" />;
-    } else if (isNotes) {
-      return <StickyNote className="w-5 h-5 text-muted-foreground" />;
-    }
-    return <Edit className="w-5 h-5 text-muted-foreground" />;
-  };
-
-  const getToolName = (): string => {
-    if (isFile) {
-      // Show "File Search" for file search results
-      if (sidebarContent.action === "searching") {
-        return "File Search";
-      }
-      return "Editor";
-    } else if (isTerminal) {
-      return "Terminal";
-    } else if (isPython) {
-      return "Python";
-    } else if (isWebSearch) {
-      return "Search";
-    } else if (isNotes) {
-      return "Notes";
-    }
-    return "Tool";
-  };
-
-  const getDisplayTarget = (): string => {
-    if (isFile) {
-      return sidebarContent.path.split("/").pop() || sidebarContent.path;
-    } else if (isTerminal) {
-      return sidebarContent.command;
-    } else if (isPython) {
-      return sidebarContent.code.replace(/\n/g, " ");
-    } else if (isWebSearch) {
-      return sidebarContent.query;
-    } else if (isNotes) {
-      if (sidebarContent.action === "list") {
-        return `${sidebarContent.totalCount} note${sidebarContent.totalCount !== 1 ? "s" : ""}`;
-      }
-      return sidebarContent.affectedTitle || "";
-    }
-    return "";
-  };
+  const actionText = getActionText(sidebarContent);
+  const icon = getSidebarIcon(sidebarContent);
+  const toolName = getToolName(sidebarContent);
+  const displayTarget = getDisplayTarget(sidebarContent);
 
   const handleClose = () => {
     closeSidebar();
@@ -366,20 +208,20 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             {/* Action Status */}
             <div className="flex items-center gap-2 mt-2">
               <div className="w-[40px] h-[40px] bg-muted/50 rounded-lg flex items-center justify-center flex-shrink-0">
-                {getIcon()}
+                {icon}
               </div>
               <div className="flex-1 flex flex-col gap-1 min-w-0">
                 <div className="text-[12px] text-muted-foreground">
                   HackerAI is using{" "}
-                  <span className="text-foreground">{getToolName()}</span>
+                  <span className="text-foreground">{toolName}</span>
                 </div>
                 <div
-                  title={`${getActionText()} ${getDisplayTarget()}`}
+                  title={`${actionText} ${displayTarget}`}
                   className="max-w-[100%] w-[max-content] truncate text-[13px] rounded-full inline-flex items-center px-[10px] py-[3px] border border-border bg-muted/30 text-foreground"
                 >
-                  {getActionText()}
+                  {actionText}
                   <span className="flex-1 min-w-0 px-1 ml-1 text-[12px] font-mono max-w-full text-ellipsis overflow-hidden whitespace-nowrap text-muted-foreground">
-                    <code>{getDisplayTarget()}</code>
+                    <code>{displayTarget}</code>
                   </span>
                 </div>
               </div>

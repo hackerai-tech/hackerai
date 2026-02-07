@@ -40,6 +40,7 @@ export interface SidebarTerminal {
   isBackground?: boolean;
   pid?: number | null;
   toolCallId: string;
+  shellAction?: string;
 }
 
 export interface SidebarPython {
