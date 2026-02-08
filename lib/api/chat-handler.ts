@@ -548,7 +548,6 @@ export const createChatHandler = (
                   const sandboxType = sandboxManager.getSandboxType(
                     chunk.chunk.toolName,
                   );
-                  console.log("sandboxType", sandboxType);
 
                   chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
 
