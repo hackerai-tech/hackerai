@@ -126,7 +126,7 @@ export class LocalPtySessionManager {
         "command -v yum >/dev/null 2>&1 && yum install -y -q tmux || " +
         "command -v dnf >/dev/null 2>&1 && dnf install -y -q tmux || " +
         "command -v brew >/dev/null 2>&1 && brew install tmux || " +
-        "echo TMUX_INSTALL_FAILED" +
+        "(echo TMUX_INSTALL_FAILED; echo 'tmux installation failed — no supported package manager found (apt-get, apk, yum, dnf, brew). Install tmux manually.' >&2; exit 1)" +
         ")",
       {
         timeoutMs: 120_000,
