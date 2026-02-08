@@ -14,9 +14,18 @@ export type AnySandbox = Sandbox | ConvexSandbox;
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
 
+export type SandboxType = "e2b" | "local" | "local-sandbox";
+
+export interface SandboxInfo {
+  type: SandboxType;
+  name?: string;
+}
+
 export interface SandboxManager {
   getSandbox(): Promise<{ sandbox: AnySandbox }>;
   setSandbox(sandbox: AnySandbox): void;
+  getSandboxType(toolName: string): SandboxType | undefined;
+  getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this
   consumeFallbackInfo?(): SandboxFallbackInfo | null;
 }
