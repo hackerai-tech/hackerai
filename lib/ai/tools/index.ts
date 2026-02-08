@@ -36,6 +36,7 @@ export const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
+  chatId: string,
   writer: UIMessageStreamWriter,
   mode: ChatMode = "agent",
   userLocation: Geo,
@@ -73,12 +74,19 @@ export const createTools = (
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
 
+  // DefaultSandboxManager always uses E2B; HybridSandboxManager uses E2B only
+  // when sandboxPreference is explicitly "e2b".
+  const isE2BSandboxPreference =
+    !sandboxPreference || sandboxPreference === "e2b";
+
   const context: ToolContext = {
     sandboxManager,
     writer,
     userLocation,
     todoManager,
     userID,
+    chatId,
+    isE2BSandboxPreference,
     assistantMessageId,
     fileAccumulator,
     backgroundProcessTracker,

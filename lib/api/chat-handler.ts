@@ -320,6 +320,7 @@ export const createChatHandler = (
             sandboxManager,
           } = createTools(
             userId,
+            chatId,
             writer,
             mode,
             userLocation,

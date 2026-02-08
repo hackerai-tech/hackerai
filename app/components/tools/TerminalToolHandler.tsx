@@ -80,11 +80,14 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     ? (input as { action?: string })?.action
     : undefined;
   const shellPid = (input as { pid?: number })?.pid ?? terminalOutput?.pid;
+  const shellSession =
+    (input as { session?: string })?.session ?? terminalOutput?.session;
   const getActionLabel = (isActive: boolean) =>
     getShellActionLabel({
       isShellTool,
       action: shellAction,
       pid: shellPid,
+      session: shellSession,
       isActive,
     });
 
@@ -99,6 +102,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       toolCallId: toolCallId,
       shellAction,
       pid: shellPid,
+      session: shellSession,
+      input: (input as { input?: string })?.input,
     };
 
     openSidebar(sidebarTerminal);
@@ -110,6 +115,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     toolCallId,
     shellAction,
     shellPid,
+    shellSession,
     openSidebar,
   ]);
 

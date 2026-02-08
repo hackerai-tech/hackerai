@@ -16,6 +16,7 @@ import {
   type SidebarContent,
   type NoteCategory,
 } from "@/types/chat";
+import { getShellActionLabel, formatSendInput } from "./tools/shell-tool-utils";
 
 // ---------------------------------------------------------------------------
 // Generic helpers
@@ -109,25 +110,13 @@ export function getActionText(content: SidebarContent): string {
   }
 
   if (isSidebarTerminal(content)) {
-    const action = content.shellAction;
-    const pidSuffix = content.pid ? ` [PID: ${content.pid}]` : "";
-    if (action === "wait") {
-      return (
-        (content.isExecuting ? "Waiting for process" : "Waited for process") +
-        pidSuffix
-      );
-    } else if (action === "send") {
-      return (content.isExecuting ? "Sending input" : "Sent input") + pidSuffix;
-    } else if (action === "kill") {
-      return (
-        (content.isExecuting ? "Killing process" : "Killed process") + pidSuffix
-      );
-    } else if (action === "view") {
-      return (
-        (content.isExecuting ? "Viewing output" : "Viewed output") + pidSuffix
-      );
-    }
-    return content.isExecuting ? "Executing command" : "Command executed";
+    return getShellActionLabel({
+      isShellTool: !!content.shellAction,
+      action: content.shellAction,
+      pid: content.pid ?? undefined,
+      session: content.session ?? undefined,
+      isActive: content.isExecuting,
+    });
   }
 
   if (isSidebarPython(content)) {
@@ -191,7 +180,12 @@ export function getDisplayTarget(content: SidebarContent): string {
   if (isSidebarFile(content)) {
     return content.path.split("/").pop() || content.path;
   }
-  if (isSidebarTerminal(content)) return content.command;
+  if (isSidebarTerminal(content)) {
+    if (content.shellAction === "send" && content.input) {
+      return formatSendInput(content.input);
+    }
+    return content.command;
+  }
   if (isSidebarPython(content)) return content.code.replace(/\n/g, " ");
   if (isSidebarWebSearch(content)) return content.query;
   if (isSidebarNotes(content)) {

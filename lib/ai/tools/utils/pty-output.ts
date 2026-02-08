@@ -85,5 +85,5 @@ export const stripSentinelNoise = (text: string): string => {
   let cleaned = text.replace(SENTINEL_LINE_RE, "");
   // Collapse multiple blank lines left by the removal
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
-  return cleaned.trim();
+  return cleaned;
 };

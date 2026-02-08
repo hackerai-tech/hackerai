@@ -41,6 +41,9 @@ export interface ToolContext {
   userLocation: Geo;
   todoManager: TodoManager;
   userID: string;
+  chatId: string;
+  /** Whether the sandbox is E2B (true) or local (false). Drives tool schema differences. */
+  isE2BSandboxPreference: boolean;
   assistantMessageId?: string;
   fileAccumulator: FileAccumulator;
   backgroundProcessTracker: BackgroundProcessTracker;

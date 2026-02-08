@@ -497,7 +497,7 @@ export class PtySessionManager {
     const cleaned = stripTerminalEscapes(stripSentinelNoise(rawOutput));
 
     return {
-      output: cleaned || "[No new output]",
+      output: cleaned.trim() || "[No new output]",
       exists: true,
     };
   }

@@ -15,7 +15,9 @@ export interface ShellToolInput {
   command?: string;
   action?: string;
   brief?: string;
+  input?: string;
   pid?: number;
+  session?: string;
 }
 
 export interface ShellToolOutput {
@@ -28,6 +30,7 @@ export interface ShellToolOutput {
   output?: string;
   exitCode?: number | null;
   pid?: number;
+  session?: string;
   error?: boolean | string;
 }
 
@@ -43,16 +46,22 @@ const LABELS: Record<ShellAction, [active: string, done: string]> = {
   kill: ["Killing", "Killed"],
 };
 
-/** Actions whose action label should include PID. */
-const PID_LABEL_ACTIONS = new Set<ShellAction>(["view", "wait", "kill"]);
+/** Actions whose action label should include session/PID info. */
+const SESSION_LABEL_ACTIONS = new Set<ShellAction>([
+  "view",
+  "wait",
+  "send",
+  "kill",
+]);
 
 export function getShellActionLabel(opts: {
   isShellTool: boolean;
   action?: string;
   pid?: number;
+  session?: string;
   isActive?: boolean;
 }): string {
-  const { isShellTool, action, pid, isActive = false } = opts;
+  const { isShellTool, action, pid, session, isActive = false } = opts;
 
   if (!isShellTool) return isActive ? "Executing" : "Executed";
 
@@ -61,8 +70,9 @@ export function getShellActionLabel(opts: {
 
   const [active, done] = entry;
   const label = isActive ? active : done;
-  if (action && PID_LABEL_ACTIONS.has(action as ShellAction) && pid) {
-    return `${label} [PID: ${pid}]`;
+  if (action && SESSION_LABEL_ACTIONS.has(action as ShellAction)) {
+    if (pid) return `${label} [PID: ${pid}]`;
+    if (session) return `${label} [${session}]`;
   }
   return label;
 }
@@ -78,12 +88,52 @@ export function getShellDisplayCommand(
 }
 
 // ---------------------------------------------------------------------------
+// Display input — format raw send input for display
+// ---------------------------------------------------------------------------
+
+import { RAW_TO_KEY_NAME } from "@/lib/ai/tools/utils/pty-keys";
+
+/**
+ * Format raw `send` input for UI display.
+ * - ANSI escape sequences → tmux key name (e.g. "Up", "F1")
+ * - Raw control characters → tmux key name (e.g. "C-d", "C-c")
+ * - Plain text ending with `\n` → text without the trailing newline
+ * - Already-readable tmux names like "C-c" pass through unchanged
+ */
+export function formatSendInput(raw: string): string {
+  const stripped = raw.replace(/\n$/, "");
+
+  // Exact match on known key / escape sequence
+  if (RAW_TO_KEY_NAME[stripped]) {
+    return RAW_TO_KEY_NAME[stripped];
+  }
+
+  // Multiple non-printable characters → map each
+  if (stripped.length > 0 && /^[\x00-\x1f\x7f]+$/.test(stripped)) {
+    const names = [...stripped]
+      .map(
+        (ch) =>
+          RAW_TO_KEY_NAME[ch] ??
+          `0x${ch.charCodeAt(0).toString(16).padStart(2, "0")}`,
+      )
+      .join(" ");
+    return names;
+  }
+
+  // Regular text — strip trailing newline for display
+  return stripped || raw;
+}
+
+// ---------------------------------------------------------------------------
 // Display target — always shows the full command/brief
 // ---------------------------------------------------------------------------
 
 export function getShellDisplayTarget(
   input: ShellToolInput | undefined,
 ): string {
+  if (input?.action === "send" && input.input) {
+    return formatSendInput(input.input);
+  }
   return getShellDisplayCommand(input);
 }
 
