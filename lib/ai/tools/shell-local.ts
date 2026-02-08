@@ -256,8 +256,9 @@ export function createLocalHandlers(deps: {
       localSessionManager.releaseSession(session);
     }
 
+    const waitOutput = output !== "[No new output]" ? output : "";
     const combinedOutput =
-      [pendingOutput, output].filter(Boolean).join("\n").trim() ||
+      [pendingOutput, waitOutput].filter(Boolean).join("\n").trim() ||
       "[No new output]";
 
     return {

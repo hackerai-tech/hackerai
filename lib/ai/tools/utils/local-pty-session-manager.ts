@@ -12,8 +12,9 @@
  *  - `exec` sends the command + sentinel, then polls `capture-pane` until the
  *    sentinel appears or timeout. The polling runs as a single `commands.run()`
  *    call on the local machine (zero intermediate Convex round-trips).
- *  - `wait` polls from Node.js (separate `commands.run()` calls at 5-second
- *    intervals) to stream output deltas to the frontend incrementally.
+ *  - `wait` (sentinel case) runs a single `commands.run()` with the same
+ *    tight poll loop as `exec`, blocking until the sentinel appears.
+ *    (no-sentinel case) does a single `capture-pane` and returns immediately.
  *  - `send` uses `tmux send-keys` for special keys and base64 `paste-buffer`
  *    for raw text.
  *  - `kill` uses `tmux kill-session`.
@@ -30,9 +31,6 @@ import { TMUX_SPECIAL_KEYS } from "./pty-keys";
 
 /** Timeout for internal tmux management commands (not user commands). */
 const TMUX_CMD_TIMEOUT_MS = 10_000;
-
-/** Interval between polls for the wait action (Node.js-level polling). */
-const POLL_INTERVAL_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -216,6 +214,16 @@ export class LocalPtySessionManager {
     // Let initial shell prompt settle, then clear history so we start clean
     await new Promise((resolve) => setTimeout(resolve, 1000));
     await this.tmuxRun(sandbox, `tmux clear-history -t ${tmuxName}`);
+
+    // Disable history expansion to prevent `!` inside double-quoted strings
+    // from triggering zsh's bang-hist (causes `dquote>` / corrupted output).
+    // `set +H` works in both bash and zsh.
+    await this.tmuxRun(
+      sandbox,
+      `tmux send-keys -t ${tmuxName} 'set +H 2>/dev/null || true' Enter`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
     // Also send a clear to reset the visible pane (removes any lingering prompt)
     await this.tmuxRun(sandbox, `tmux send-keys -t ${tmuxName} C-l`);
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -399,14 +407,18 @@ export class LocalPtySessionManager {
   /**
    * Wait for additional output from an already-running session.
    *
-   * Delegates to the shared `pollSession()` loop. If a pending sentinel
-   * exists (from a timed-out exec), resolves early when the command finishes.
+   * **Sentinel case** (timed-out exec): runs a single `commands.run()` with
+   * the same tight 0.3 s poll loop as `execInSession`, blocking until the
+   * sentinel appears or the timeout expires.
+   *
+   * **No-sentinel case**: does a single `capture-pane` and returns whatever
+   * new output exists immediately (no polling).
    */
   async waitForSession(
     sandbox: ConvexSandbox,
     sessionId: string,
     timeoutSeconds: number,
-    abortSignal?: AbortSignal,
+    _abortSignal?: AbortSignal,
   ): Promise<{ output: string; timedOut: boolean }> {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -414,16 +426,90 @@ export class LocalPtySessionManager {
     }
 
     const sentinel = this.pendingSentinels.get(sessionId) || null;
+    const sn = session.tmuxSessionName;
 
-    const result = await this.pollSession(
-      sandbox,
-      sessionId,
-      sentinel,
-      timeoutSeconds,
-      abortSignal,
-    );
+    // ------------------------------------------------------------------
+    // Sentinel case — block until command finishes (single commands.run)
+    // ------------------------------------------------------------------
+    if (sentinel) {
+      const maxIterations = Math.ceil(timeoutSeconds / 0.3);
+      const uid = randomUUID().replace(/-/g, "");
+      const timeoutMarker = `__WAIT_TIMEOUT_${uid}__`;
 
-    return { output: result.output, timedOut: result.timedOut };
+      const waitScript = [
+        `i=0`,
+        `while [ "$i" -lt ${maxIterations} ]; do ` +
+          `sleep 0.3; ` +
+          `if tmux capture-pane -t ${sn} -p -S - 2>/dev/null | grep -q '${sentinel}[0-9]'; then ` +
+          `tmux capture-pane -t ${sn} -e -p -S -; ` +
+          `exit 0; ` +
+          `fi; ` +
+          `i=$((i + 1)); ` +
+          `done`,
+        `echo '${timeoutMarker}'`,
+        `tmux capture-pane -t ${sn} -e -p -S -`,
+      ].join(" && ");
+
+      try {
+        const result = await sandbox.commands.run(waitScript, {
+          timeoutMs: (timeoutSeconds + 10) * 1000,
+          displayName: `waiting for session "${sessionId}"`,
+        });
+
+        const rawOutput = result.stdout;
+        const timedOut = rawOutput.includes(timeoutMarker);
+
+        const captureRaw = timedOut
+          ? rawOutput.split(timeoutMarker).pop() || ""
+          : rawOutput;
+        const captured = this.normalizePaneCapture(captureRaw);
+
+        const baselineLength = session.lastCapturedOutput.length;
+        const newContent =
+          captured.length > baselineLength
+            ? captured.slice(baselineLength)
+            : "";
+
+        // Stream delta to frontend
+        const streamCb = this.streamCallbacks.get(sessionId);
+        if (streamCb) {
+          const cleanedForStream = stripSentinelNoise(newContent);
+          if (cleanedForStream.trim()) streamCb(cleanedForStream);
+        }
+
+        session.lastCapturedOutput = captured;
+        if (!timedOut) this.pendingSentinels.delete(sessionId);
+
+        const cleaned = stripSentinelNoise(newContent);
+        return { output: cleaned.trim() || "[No new output]", timedOut };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return { output: `[Shell wait error: ${message}]`, timedOut: false };
+      }
+    }
+
+    // ------------------------------------------------------------------
+    // No sentinel — single capture, return immediately
+    // ------------------------------------------------------------------
+    const captured = await this.capturePaneOutput(sandbox, sn);
+    if (!captured) {
+      return { output: "[No new output]", timedOut: false };
+    }
+
+    const baselineLength = session.lastCapturedOutput.length;
+    const newContent =
+      captured.length > baselineLength ? captured.slice(baselineLength) : "";
+
+    const streamCb = this.streamCallbacks.get(sessionId);
+    if (streamCb) {
+      const cleaned = stripSentinelNoise(newContent);
+      if (cleaned.trim()) streamCb(cleaned);
+    }
+
+    session.lastCapturedOutput = captured;
+
+    const cleaned = stripSentinelNoise(newContent);
+    return { output: cleaned.trim() || "[No new output]", timedOut: false };
   }
 
   // =========================================================================
@@ -467,12 +553,17 @@ export class LocalPtySessionManager {
       return { success: true };
     }
 
-    // Raw text -- send via base64 paste-buffer to avoid escaping issues
+    // Raw text -- send via base64 paste-buffer to avoid escaping issues.
+    // Automatically press Enter afterwards unless the input already ends
+    // with a newline (prevents consecutive sends from concatenating on the
+    // same line).
     const base64Input = Buffer.from(input).toString("base64");
+    const needsEnter = !input.endsWith("\n");
     await this.tmuxRun(
       sandbox,
       `printf '%s' '${base64Input}' | base64 -d | tmux load-buffer -b hai_input - && ` +
-        `tmux paste-buffer -t ${sn} -b hai_input -d`,
+        `tmux paste-buffer -t ${sn} -b hai_input -d` +
+        (needsEnter ? ` && tmux send-keys -t ${sn} Enter` : ""),
       { displayName },
     );
 
@@ -545,103 +636,6 @@ export class LocalPtySessionManager {
   // =========================================================================
   // Private helpers
   // =========================================================================
-
-  /**
-   * Poll a tmux session for output changes. Used by `waitForSession`.
-   *
-   * Polls `capturePaneOutput()` every POLL_INTERVAL_MS, computes deltas from
-   * the session baseline, streams them to the frontend, and checks for
-   * sentinel-based completion when a pending sentinel exists.
-   */
-  private async pollSession(
-    sandbox: ConvexSandbox,
-    sessionId: string,
-    sentinel: string | null,
-    timeoutSeconds: number,
-    abortSignal?: AbortSignal,
-  ): Promise<{ output: string; exitCode: number | null; timedOut: boolean }> {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      return {
-        output: "[Error: session not found]",
-        exitCode: null,
-        timedOut: false,
-      };
-    }
-
-    const sentinelWithDigit = sentinel ? new RegExp(`${sentinel}\\d`) : null;
-    const sentinelRegex = sentinel
-      ? new RegExp(`${sentinel}(\\d+)`, "m")
-      : null;
-
-    const timeoutMs = timeoutSeconds * 1000;
-    const startTime = Date.now();
-    const baselineLength = session.lastCapturedOutput.length;
-    let lastStreamedLength = 0;
-    let latestCapture = session.lastCapturedOutput;
-    let firstPoll = true;
-
-    while (Date.now() - startTime < timeoutMs) {
-      if (abortSignal?.aborted) break;
-
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-
-      const captured = await this.capturePaneOutput(
-        sandbox,
-        session.tmuxSessionName,
-        firstPoll ? `poll (session: ${sessionId})` : undefined,
-      );
-      firstPoll = false;
-      if (!captured) continue;
-
-      latestCapture = captured;
-
-      // Stream delta to frontend
-      const newContent =
-        captured.length > baselineLength ? captured.slice(baselineLength) : "";
-      const streamCb = this.streamCallbacks.get(sessionId);
-      if (streamCb && newContent.length > lastStreamedLength) {
-        const delta = stripSentinelNoise(newContent.slice(lastStreamedLength));
-        if (delta.trim()) streamCb(delta);
-        lastStreamedLength = newContent.length;
-      }
-
-      // Check for sentinel completion
-      if (sentinelWithDigit && sentinelWithDigit.test(captured)) {
-        this.pendingSentinels.delete(sessionId);
-        session.lastCapturedOutput = captured;
-
-        const match = sentinelRegex ? captured.match(sentinelRegex) : null;
-        const exitCode = match ? parseInt(match[1], 10) : null;
-
-        const output = stripSentinelNoise(newContent);
-        return {
-          output: output.trim() || "[No new output]",
-          exitCode,
-          timedOut: false,
-        };
-      }
-    }
-
-    // Timed out (or aborted)
-    if (sentinel) {
-      this.pendingSentinels.set(sessionId, sentinel);
-    }
-
-    session.lastCapturedOutput = latestCapture;
-
-    const finalNew =
-      latestCapture.length > baselineLength
-        ? latestCapture.slice(baselineLength)
-        : "";
-    const cleaned = stripSentinelNoise(finalNew);
-
-    return {
-      output: cleaned.trim() || "[No new output]",
-      exitCode: null,
-      timedOut: true,
-    };
-  }
 
   /** Run a tmux management command with a short timeout. */
   private async tmuxRun(
