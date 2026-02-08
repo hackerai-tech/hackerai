@@ -341,11 +341,12 @@ export class PtySessionManager {
         resolve({ output: cleaned, exitCode, timedOut });
       };
 
-      // Abort handler
-      const abortHandler = () => finish(false);
+      // Abort handler — treat like timeout so the session stays busy
+      // and the sentinel is preserved (the command is still running).
+      const abortHandler = () => finish(true);
       if (abortSignal) {
         if (abortSignal.aborted) {
-          finish(false);
+          finish(true);
           return;
         }
         abortSignal.addEventListener("abort", abortHandler, { once: true });
@@ -420,10 +421,12 @@ export class PtySessionManager {
         });
       };
 
-      const abortHandler = () => finish(false);
+      // Abort handler — treat like timeout so the session stays busy
+      // and the pending sentinel is preserved (the command is still running).
+      const abortHandler = () => finish(true);
       if (abortSignal) {
         if (abortSignal.aborted) {
-          finish(false);
+          finish(true);
           return;
         }
         abortSignal.addEventListener("abort", abortHandler, { once: true });
