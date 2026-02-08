@@ -1,4 +1,3 @@
-import type { Sandbox } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import {
   stripTerminalEscapes,
@@ -6,6 +5,51 @@ import {
   stripSentinelNoise,
 } from "./pty-output";
 import { translateInput } from "./pty-keys";
+
+/**
+ * Minimal interface for a sandbox with PTY support.
+ * Both E2B Sandbox and ConvexSandbox implement this.
+ */
+export interface SandboxWithPty {
+  pty: {
+    create: (opts: {
+      cols: number;
+      rows: number;
+      onData: (data: Uint8Array) => void;
+      timeoutMs?: number;
+      envs?: Record<string, string>;
+      cwd?: string;
+      user?: string;
+    }) => Promise<{
+      pid: number;
+      disconnect: () => Promise<void>;
+      kill: () => Promise<boolean>;
+      wait: () => Promise<{ exitCode: number }>;
+    }>;
+    sendInput: (pid: number, data: Uint8Array) => Promise<void>;
+    kill: (pid: number) => Promise<boolean>;
+    connect: (
+      pid: number,
+      opts: { onData: (data: Uint8Array) => void },
+    ) => Promise<{
+      pid: number;
+      disconnect: () => Promise<void>;
+      wait: () => Promise<{ exitCode: number }>;
+    }>;
+  };
+  commands: {
+    run: (
+      command: string,
+      opts?: { timeoutMs?: number },
+    ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  };
+  /**
+   * Optional: Returns true if the sandbox is running in dangerous mode on Windows.
+   * When true, the sentinel command uses PowerShell syntax instead of bash.
+   * Only ConvexSandbox implements this; E2B Sandbox always returns false/undefined.
+   */
+  isWindowsDangerousMode?: () => boolean;
+}
 
 interface PtySession {
   outputBuffer: string;
@@ -15,9 +59,12 @@ interface PtySession {
 /**
  * Manages persistent PTY sessions scoped to a single chat context.
  *
- * Sessions are keyed by their E2B PTY process ID (pid). The `exec` action
+ * Sessions are keyed by their PTY process ID (pid). The `exec` action
  * creates a new PTY and returns the pid; all subsequent actions reference
- * that pid directly, matching E2B's native API.
+ * that pid directly.
+ *
+ * Works with both E2B Sandbox and ConvexSandbox (local) through the
+ * SandboxWithPty interface — both implement the same pty.* API surface.
  *
  * Completion detection:
  * `execInSession` appends a sentinel marker (`echo __DONE_<uuid>__$?`) after
@@ -57,7 +104,7 @@ export class PtySessionManager {
   // Session lifecycle
   // ---------------------------------------------------------------------------
 
-  async createSession(sandbox: Sandbox): Promise<number> {
+  async createSession(sandbox: SandboxWithPty): Promise<number> {
     if (!this.motdSuppressed) {
       try {
         await sandbox.commands.run(
@@ -133,7 +180,7 @@ export class PtySessionManager {
    * sequential commands) or creates a new one. This ensures parallel execs
    * each get their own isolated PTY so output never bleeds between tool calls.
    */
-  async acquireSession(sandbox: Sandbox): Promise<number> {
+  async acquireSession(sandbox: SandboxWithPty): Promise<number> {
     // Try to reuse an idle session
     while (this.idleSessions.length > 0) {
       const pid = this.idleSessions.pop()!;
@@ -164,7 +211,10 @@ export class PtySessionManager {
    * Reconnect to an existing PTY process that is still running in the sandbox
    * but is no longer tracked locally (e.g., after a new HTTP request).
    */
-  async reconnectSession(sandbox: Sandbox, pid: number): Promise<boolean> {
+  async reconnectSession(
+    sandbox: SandboxWithPty,
+    pid: number,
+  ): Promise<boolean> {
     if (this.sessions.has(pid)) return true;
 
     const session: PtySession = { outputBuffer: "", lastReadIndex: 0 };
@@ -214,7 +264,7 @@ export class PtySessionManager {
    * Resolves as soon as the sentinel is found, or on timeout/abort.
    */
   async execInSession(
-    sandbox: Sandbox,
+    sandbox: SandboxWithPty,
     pid: number,
     command: string,
     timeoutSeconds: number,
@@ -235,8 +285,13 @@ export class PtySessionManager {
     // Register sentinel so the onData handler filters it from the live stream
     this.activeSentinels.set(pid, sentinel);
 
-    // Send command followed by sentinel echo
-    const fullCommand = `${command} ; echo ${sentinel}$?\n`;
+    // Build platform-appropriate sentinel command:
+    // - Bash/zsh: `command ; echo __DONE_uuid__$?`
+    // - PowerShell (Windows dangerous mode): `command ; Write-Host "${sentinel}$LASTEXITCODE"`
+    const isWindowsPS = sandbox.isWindowsDangerousMode?.() ?? false;
+    const fullCommand = isWindowsPS
+      ? `${command} ; Write-Host "${sentinel}$LASTEXITCODE"\n`
+      : `${command} ; echo ${sentinel}$?\n`;
     await sandbox.pty.sendInput(pid, new TextEncoder().encode(fullCommand));
 
     const timeoutMs = timeoutSeconds * 1000;
@@ -389,19 +444,26 @@ export class PtySessionManager {
   }
 
   async sendToSession(
-    sandbox: Sandbox,
+    sandbox: SandboxWithPty,
     pid: number,
     input: string,
   ): Promise<{ success: boolean; error?: string }> {
     const session = this.sessions.get(pid);
     if (!session) return { success: false, error: "Session not found" };
 
-    await sandbox.pty.sendInput(pid, translateInput(input));
+    try {
+      await sandbox.pty.sendInput(pid, translateInput(input));
+    } catch (e) {
+      return {
+        success: false,
+        error: e instanceof Error ? e.message : "sendInput failed",
+      };
+    }
     return { success: true };
   }
 
   async killSession(
-    sandbox: Sandbox,
+    sandbox: SandboxWithPty,
     pid: number,
   ): Promise<{ killed: boolean }> {
     const session = this.sessions.get(pid);
