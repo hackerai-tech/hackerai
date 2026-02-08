@@ -62,6 +62,15 @@ export class TmuxNotAvailableError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Strip anything that isn't alphanumeric, hyphen, or underscore. */
+function sanitizeForShell(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+// ---------------------------------------------------------------------------
 // LocalPtySessionManager
 // ---------------------------------------------------------------------------
 
@@ -180,7 +189,8 @@ export class LocalPtySessionManager {
     }
 
     // Deterministic tmux name scoped by chatId + sessionId.
-    const tmuxName = `hai_${this.chatId}_${sessionId}`;
+    // Sanitize to prevent shell injection via crafted session names.
+    const tmuxName = `hai_${sanitizeForShell(this.chatId)}_${sanitizeForShell(sessionId)}`;
 
     // Kill any stale session with the same name (e.g. leftover from a previous run)
     await this.tmuxRun(
@@ -440,10 +450,16 @@ export class LocalPtySessionManager {
       return { success: true };
     }
 
-    // Check for M- (Alt) or C-S- (Ctrl+Shift) prefixes
+    // Check for M- (Alt) or C-S- (Ctrl+Shift) prefixes.
+    // Validate the character is alphanumeric to prevent shell metacharacter injection
+    // (e.g. "M-;" would let `;` terminate the shell command).
     if (
-      (input.startsWith("M-") && input.length === 3) ||
-      (input.startsWith("C-S-") && input.length === 5)
+      (input.startsWith("M-") &&
+        input.length === 3 &&
+        /^[a-zA-Z0-9]$/.test(input[2])) ||
+      (input.startsWith("C-S-") &&
+        input.length === 5 &&
+        /^[a-zA-Z0-9]$/.test(input[4]))
     ) {
       await this.tmuxRun(sandbox, `tmux send-keys -t ${sn} ${input}`, {
         displayName,

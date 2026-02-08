@@ -392,10 +392,15 @@ export class PtySessionManager {
     return new Promise<{ output: string; timedOut: boolean }>((resolve) => {
       let resolved = false;
 
-      const cleanup = () => {
+      const cleanup = (timedOut: boolean) => {
         this.dataCallbacks.delete(pid);
         if (sentinel) {
-          this.pendingSentinels.delete(pid);
+          if (timedOut) {
+            // Preserve sentinel so a subsequent wait can still detect completion
+            this.pendingSentinels.set(pid, sentinel);
+          } else {
+            this.pendingSentinels.delete(pid);
+          }
           this.activeSentinels.delete(pid);
         }
         if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -405,7 +410,7 @@ export class PtySessionManager {
       const finish = (timedOut: boolean) => {
         if (resolved) return;
         resolved = true;
-        cleanup();
+        cleanup(timedOut);
 
         const rawOutput = session.outputBuffer.slice(startIndex);
         session.lastReadIndex = session.outputBuffer.length;

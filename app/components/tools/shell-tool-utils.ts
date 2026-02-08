@@ -109,6 +109,7 @@ export function formatSendInput(raw: string): string {
   }
 
   // Multiple non-printable characters → map each
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — detecting raw control chars
   if (stripped.length > 0 && /^[\x00-\x1f\x7f]+$/.test(stripped)) {
     const names = [...stripped]
       .map(
