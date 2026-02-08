@@ -11,9 +11,9 @@
  *  - Each session is a detached tmux session on the local machine.
  *  - `exec` sends the command + sentinel, then polls `capture-pane` until the
  *    sentinel appears or timeout. The polling runs as a single `commands.run()`
- *    call on the local machine (no per-poll Convex round-trips).
- *  - `wait` polls from Node.js (separate `commands.run()` calls) since it needs
- *    to stream deltas to the frontend between polls.
+ *    call on the local machine (zero intermediate Convex round-trips).
+ *  - `wait` polls from Node.js (separate `commands.run()` calls at 5-second
+ *    intervals) to stream output deltas to the frontend incrementally.
  *  - `send` uses `tmux send-keys` for special keys and base64 `paste-buffer`
  *    for raw text.
  *  - `kill` uses `tmux kill-session`.
@@ -31,8 +31,8 @@ import { TMUX_SPECIAL_KEYS } from "./pty-keys";
 /** Timeout for internal tmux management commands (not user commands). */
 const TMUX_CMD_TIMEOUT_MS = 10_000;
 
-/** Interval between polls when using Node.js-level polling (wait action). */
-const POLL_INTERVAL_MS = 500;
+/** Interval between polls for the wait action (Node.js-level polling). */
+const POLL_INTERVAL_MS = 5_000;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -267,7 +267,8 @@ export class LocalPtySessionManager {
    *
    * Sends the command + sentinel as a single `commands.run()` that includes
    * an inline polling loop. This way the polling runs locally on the user's
-   * machine (zero extra Convex round-trips).
+   * machine (zero extra Convex round-trips). Output arrives all at once
+   * when done and is streamed to the frontend via `cleanOutput`.
    */
   async execInSession(
     sandbox: ConvexSandbox,
@@ -335,7 +336,7 @@ export class LocalPtySessionManager {
       const rawOutput = result.stdout;
       const timedOut = rawOutput.includes(timeoutMarker);
 
-      // Stream the output to the frontend
+      // Stream cleaned output to the frontend (strips markers and prompts)
       const streamCb = this.streamCallbacks.get(sessionId);
       if (streamCb) {
         const cleanedForStream = this.cleanOutput(
@@ -388,8 +389,7 @@ export class LocalPtySessionManager {
   /**
    * Wait for additional output from an already-running session.
    *
-   * Uses Node.js-level polling (separate `commands.run` per poll) so we can
-   * stream output deltas to the frontend between polls. If a pending sentinel
+   * Delegates to the shared `pollSession()` loop. If a pending sentinel
    * exists (from a timed-out exec), resolves early when the command finishes.
    */
   async waitForSession(
@@ -403,59 +403,17 @@ export class LocalPtySessionManager {
       return { output: "[Error: session not found]", timedOut: false };
     }
 
-    const sentinel = this.pendingSentinels.get(sessionId);
-    const sentinelWithDigit = sentinel ? new RegExp(`${sentinel}\\d`) : null;
+    const sentinel = this.pendingSentinels.get(sessionId) || null;
 
-    const timeoutMs = timeoutSeconds * 1000;
-    const startTime = Date.now();
-    const baselineLength = session.lastCapturedOutput.length;
-    let lastStreamedLength = 0;
-    let latestCapture = session.lastCapturedOutput;
-    let firstPoll = true;
+    const result = await this.pollSession(
+      sandbox,
+      sessionId,
+      sentinel,
+      timeoutSeconds,
+      abortSignal,
+    );
 
-    while (Date.now() - startTime < timeoutMs) {
-      if (abortSignal?.aborted) break;
-
-      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-
-      const captured = await this.capturePaneOutput(
-        sandbox,
-        session.tmuxSessionName,
-        firstPoll ? `wait (session: ${sessionId})` : undefined,
-      );
-      firstPoll = false;
-      if (!captured) continue;
-
-      latestCapture = captured;
-
-      // Stream delta to frontend
-      const newContent =
-        captured.length > baselineLength ? captured.slice(baselineLength) : "";
-      const streamCb = this.streamCallbacks.get(sessionId);
-      if (streamCb && newContent.length > lastStreamedLength) {
-        const delta = stripSentinelNoise(newContent.slice(lastStreamedLength));
-        if (delta.trim()) streamCb(delta);
-        lastStreamedLength = newContent.length;
-      }
-
-      // Check for sentinel
-      if (sentinelWithDigit && sentinelWithDigit.test(captured)) {
-        this.pendingSentinels.delete(sessionId);
-        const output = stripSentinelNoise(newContent);
-        session.lastCapturedOutput = captured;
-        return { output: output.trim() || "[No new output]", timedOut: false };
-      }
-    }
-
-    // Timed out
-    const finalNew =
-      latestCapture.length > baselineLength
-        ? latestCapture.slice(baselineLength)
-        : "";
-    const cleaned = stripSentinelNoise(finalNew);
-    session.lastCapturedOutput = latestCapture;
-
-    return { output: cleaned.trim() || "[No new output]", timedOut: true };
+    return { output: result.output, timedOut: result.timedOut };
   }
 
   // =========================================================================
@@ -571,6 +529,103 @@ export class LocalPtySessionManager {
   // =========================================================================
   // Private helpers
   // =========================================================================
+
+  /**
+   * Poll a tmux session for output changes. Used by `waitForSession`.
+   *
+   * Polls `capturePaneOutput()` every POLL_INTERVAL_MS, computes deltas from
+   * the session baseline, streams them to the frontend, and checks for
+   * sentinel-based completion when a pending sentinel exists.
+   */
+  private async pollSession(
+    sandbox: ConvexSandbox,
+    sessionId: string,
+    sentinel: string | null,
+    timeoutSeconds: number,
+    abortSignal?: AbortSignal,
+  ): Promise<{ output: string; exitCode: number | null; timedOut: boolean }> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return {
+        output: "[Error: session not found]",
+        exitCode: null,
+        timedOut: false,
+      };
+    }
+
+    const sentinelWithDigit = sentinel ? new RegExp(`${sentinel}\\d`) : null;
+    const sentinelRegex = sentinel
+      ? new RegExp(`${sentinel}(\\d+)`, "m")
+      : null;
+
+    const timeoutMs = timeoutSeconds * 1000;
+    const startTime = Date.now();
+    const baselineLength = session.lastCapturedOutput.length;
+    let lastStreamedLength = 0;
+    let latestCapture = session.lastCapturedOutput;
+    let firstPoll = true;
+
+    while (Date.now() - startTime < timeoutMs) {
+      if (abortSignal?.aborted) break;
+
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+
+      const captured = await this.capturePaneOutput(
+        sandbox,
+        session.tmuxSessionName,
+        firstPoll ? `poll (session: ${sessionId})` : undefined,
+      );
+      firstPoll = false;
+      if (!captured) continue;
+
+      latestCapture = captured;
+
+      // Stream delta to frontend
+      const newContent =
+        captured.length > baselineLength ? captured.slice(baselineLength) : "";
+      const streamCb = this.streamCallbacks.get(sessionId);
+      if (streamCb && newContent.length > lastStreamedLength) {
+        const delta = stripSentinelNoise(newContent.slice(lastStreamedLength));
+        if (delta.trim()) streamCb(delta);
+        lastStreamedLength = newContent.length;
+      }
+
+      // Check for sentinel completion
+      if (sentinelWithDigit && sentinelWithDigit.test(captured)) {
+        this.pendingSentinels.delete(sessionId);
+        session.lastCapturedOutput = captured;
+
+        const match = sentinelRegex ? captured.match(sentinelRegex) : null;
+        const exitCode = match ? parseInt(match[1], 10) : null;
+
+        const output = stripSentinelNoise(newContent);
+        return {
+          output: output.trim() || "[No new output]",
+          exitCode,
+          timedOut: false,
+        };
+      }
+    }
+
+    // Timed out (or aborted)
+    if (sentinel) {
+      this.pendingSentinels.set(sessionId, sentinel);
+    }
+
+    session.lastCapturedOutput = latestCapture;
+
+    const finalNew =
+      latestCapture.length > baselineLength
+        ? latestCapture.slice(baselineLength)
+        : "";
+    const cleaned = stripSentinelNoise(finalNew);
+
+    return {
+      output: cleaned.trim() || "[No new output]",
+      exitCode: null,
+      timedOut: true,
+    };
+  }
 
   /** Run a tmux management command with a short timeout. */
   private async tmuxRun(
