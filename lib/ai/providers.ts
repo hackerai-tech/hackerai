@@ -1,5 +1,5 @@
 import { customProvider } from "ai";
-import { xai } from "@ai-sdk/xai";
+// import { xai } from "@ai-sdk/xai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
@@ -7,15 +7,15 @@ import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
+  "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
   "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
   "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
   "agent-model": openrouter("moonshotai/kimi-k2.5"),
   "agent-vision-model": openrouter("moonshotai/kimi-k2.5"),
   "fallback-model": openrouter("moonshotai/kimi-k2.5"),
-  "title-generator-model": xai("grok-4-1-fast-non-reasoning"),
+  "title-generator-model": openrouter("x-ai/grok-4.1-fast"),
   "summarization-model": openrouter("google/gemini-3-flash-preview"),
-  "summarization-model-free": xai("grok-4-1-fast-non-reasoning"),
+  "summarization-model-free": openrouter("x-ai/grok-4.1-fast"),
 } as Record<string, any>;
 
 export type ModelName = keyof typeof baseProviders;
