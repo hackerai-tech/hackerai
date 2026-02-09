@@ -297,6 +297,9 @@ export function createLocalHandlers(deps: {
       };
     }
 
+    // No guardrails check here: `send` delivers keystrokes to an already-
+    // running process (e.g. answering a prompt, Ctrl-C).  The command that
+    // spawned the process was already validated by `exec`.
     const result = await localSessionManager.sendToSession(
       sandbox,
       session,

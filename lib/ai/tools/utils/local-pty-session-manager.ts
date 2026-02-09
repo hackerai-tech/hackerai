@@ -278,12 +278,16 @@ export class LocalPtySessionManager {
       if (this.sessions.has(sessionId)) {
         const session = this.sessions.get(sessionId)!;
         // Clear scrollback so previous command output doesn't bleed through
-        await this.tmuxRun(
-          sandbox,
-          `tmux clear-history -t ${session.tmuxSessionName}`,
-        ).catch(() => {
-          /* session may have died — skip and try next */
-        });
+        try {
+          await this.tmuxRun(
+            sandbox,
+            `tmux clear-history -t ${session.tmuxSessionName}`,
+          );
+        } catch {
+          // Session may have died — clean up and try the next one
+          this.sessions.delete(sessionId);
+          continue;
+        }
         session.lastCapturedOutput = "";
         this.busySessions.add(sessionId);
         return sessionId;
