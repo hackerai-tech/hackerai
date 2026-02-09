@@ -279,6 +279,55 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
   });
 }
 
+/**
+ * Limits the number of file parts across all messages to stay within provider limits.
+ * Fireworks limits conversations to 30 images. Keeps the most recent files
+ * by removing the oldest ones first.
+ */
+const MAX_FILES_PER_CONVERSATION = 30;
+
+export function limitFileParts(messages: UIMessage[]): UIMessage[] {
+  const filePositions: Array<{ messageIndex: number; partIndex: number }> = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg.parts) continue;
+    (msg.parts as any[]).forEach((part, j) => {
+      if (part.type === "file") {
+        filePositions.push({ messageIndex: i, partIndex: j });
+      }
+    });
+  }
+
+  if (filePositions.length <= MAX_FILES_PER_CONVERSATION) {
+    return messages;
+  }
+
+  const removedCount = filePositions.length - MAX_FILES_PER_CONVERSATION;
+  console.log(
+    `[limitFileParts] Removing ${removedCount} oldest file parts (${filePositions.length} total, limit ${MAX_FILES_PER_CONVERSATION})`,
+  );
+
+  // Remove the oldest files, keep the last MAX_FILES_PER_CONVERSATION
+  const toRemove = new Set(
+    filePositions
+      .slice(0, filePositions.length - MAX_FILES_PER_CONVERSATION)
+      .map(({ messageIndex, partIndex }) => `${messageIndex}:${partIndex}`),
+  );
+
+  return messages.map((msg, msgIdx) => {
+    if (!msg.parts) return msg;
+
+    const filteredParts = msg.parts.filter(
+      (_, partIdx) => !toRemove.has(`${msgIdx}:${partIdx}`),
+    );
+
+    return filteredParts.length !== msg.parts.length
+      ? { ...msg, parts: filteredParts }
+      : msg;
+  });
+}
+
 // UI-only part types that should not be sent to AI providers
 const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
 
@@ -316,13 +365,17 @@ export async function processChatMessages({
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
   const messagesWithoutUIOnlyParts = cleanMessages.map(filterUIOnlyParts);
 
+  // Limit file parts before fetching URLs to avoid unnecessary S3 requests
+  // Fireworks limits conversations to 30 images
+  const messagesWithLimitedFiles = limitFileParts(messagesWithoutUIOnlyParts);
+
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
   const {
     messages: messagesWithUrls,
     hasMediaFiles: containsMediaFiles,
     sandboxFiles,
     containsPdfFiles,
-  } = await processMessageFiles(messagesWithoutUIOnlyParts, mode);
+  } = await processMessageFiles(messagesWithLimitedFiles, mode);
 
   // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini
