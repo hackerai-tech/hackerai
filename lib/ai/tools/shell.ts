@@ -57,7 +57,7 @@ export const createShell = (context: ToolContext) => {
 
 <instructions>
 - Prioritize using \`file\` tool instead of this tool for file content operations to avoid escaping errors
-- \`exec\` runs the command and returns output along with ${isE2BSandboxPreference ? "a `pid`" : "a `session` identifier"} — save this for subsequent \`wait\`, \`send\`, and \`kill\` actions
+- \`exec\` runs the command and returns output along with ${isE2BSandboxPreference ? "a `pid`" : "a `session`"} identifier — save this for subsequent \`wait\`, \`send\`, and \`kill\` actions
 - The default working directory for newly created shell sessions is /home/user
 - Working directory will be reset to /home/user in every new shell session; Use \`cd\` command to change directories as needed
 - MUST avoid commands that require confirmation; use flags like \`-y\` or \`-f\` for automatic execution
@@ -149,8 +149,10 @@ If you are generating files:
         : {
             session: z
               .string()
-              .default("default")
-              .describe("The unique identifier of the target shell session"),
+              .optional()
+              .describe(
+                "The session identifier returned by `exec`. Required for `wait`, `send`, and `kill` actions.",
+              ),
           }),
       timeout: z
         .number()
@@ -205,7 +207,7 @@ If you are generating files:
             action,
             command,
             input,
-            session ?? "default",
+            session,
             effectiveTimeout,
             toolCallId,
             abortSignal,
@@ -233,7 +235,7 @@ If you are generating files:
                 action,
                 command,
                 input,
-                session ?? "default",
+                session,
                 effectiveTimeout,
                 toolCallId,
                 abortSignal,

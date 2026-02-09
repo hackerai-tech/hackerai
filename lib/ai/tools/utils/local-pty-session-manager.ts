@@ -73,7 +73,7 @@ function sanitizeForShell(value: string): string {
 // ---------------------------------------------------------------------------
 
 export class LocalPtySessionManager {
-  /** Sessions keyed by user-facing session name (e.g. "default", "server"). */
+  /** Sessions keyed by auto-generated session ID (e.g. "s0", "s1"). */
   private sessions: Map<string, LocalPtySession> = new Map();
   private streamCallbacks: Map<string, (data: string) => void> = new Map();
   /** Sentinel from an exec that timed out -- `wait` uses this for early completion. */
@@ -81,6 +81,10 @@ export class LocalPtySessionManager {
 
   /** Sessions currently executing a command -- not available for reuse. */
   private busySessions: Set<string> = new Set();
+  /** Pool of idle sessions available for reuse (LIFO for locality). */
+  private idleSessions: string[] = [];
+  /** Auto-incrementing counter for generating unique session IDs. */
+  private nextSessionId = 0;
 
   /** Unique ID for this manager instance, used to scope tmux sessions per chat. */
   private readonly chatId: string;
@@ -206,9 +210,28 @@ export class LocalPtySessionManager {
     );
 
     if (result.exitCode !== 0) {
-      throw new Error(
-        `Failed to create tmux session: ${result.stderr || result.stdout}`,
-      );
+      const errMsg = result.stderr || result.stdout;
+
+      // Safety net: if the session already exists (e.g. race condition we
+      // didn't fully prevent), verify it's alive and reuse it instead of
+      // throwing a cryptic error.
+      if (errMsg.includes("duplicate session")) {
+        const check = await this.tmuxRun(
+          sandbox,
+          `tmux has-session -t ${tmuxName} 2>/dev/null && echo ALIVE`,
+        ).catch(() => ({ stdout: "", stderr: "", exitCode: 1 }));
+
+        if (check.stdout.includes("ALIVE")) {
+          // Session exists and is alive -- reuse it
+          this.sessions.set(sessionId, {
+            tmuxSessionName: tmuxName,
+            lastCapturedOutput: "",
+          });
+          return;
+        }
+      }
+
+      throw new Error(`Failed to create tmux session: ${errMsg}`);
     }
 
     // Let initial shell prompt settle, then clear history so we start clean
@@ -240,39 +263,50 @@ export class LocalPtySessionManager {
   }
 
   /**
-   * Acquire a PTY session for an exec call. If a session with the given ID
-   * already exists and is idle, reuse it (preserving working directory).
-   * Otherwise create a new one.
+   * Acquire a PTY session for an exec call.
+   *
+   * Returns an idle session when available (preserving working directory for
+   * sequential commands) or creates a new one. Each concurrent exec gets its
+   * own session — no name collisions possible.
+   *
+   * Mirrors E2B's `PtySessionManager.acquireSession` pattern.
    */
-  async acquireSession(
-    sandbox: ConvexSandbox,
-    sessionId: string,
-  ): Promise<void> {
-    // Reuse existing idle session
-    if (this.sessions.has(sessionId) && !this.busySessions.has(sessionId)) {
-      const session = this.sessions.get(sessionId)!;
-      // Clear scrollback so previous command output doesn't bleed through
-      await this.tmuxRun(
-        sandbox,
-        `tmux clear-history -t ${session.tmuxSessionName}`,
-      ).catch(() => {
-        /* session may have died */
-      });
-      session.lastCapturedOutput = "";
-      this.busySessions.add(sessionId);
-      return;
+  async acquireSession(sandbox: ConvexSandbox): Promise<string> {
+    // Try to reuse an idle session (LIFO for working-directory locality)
+    while (this.idleSessions.length > 0) {
+      const sessionId = this.idleSessions.pop()!;
+      if (this.sessions.has(sessionId)) {
+        const session = this.sessions.get(sessionId)!;
+        // Clear scrollback so previous command output doesn't bleed through
+        await this.tmuxRun(
+          sandbox,
+          `tmux clear-history -t ${session.tmuxSessionName}`,
+        ).catch(() => {
+          /* session may have died — skip and try next */
+        });
+        session.lastCapturedOutput = "";
+        this.busySessions.add(sessionId);
+        return sessionId;
+      }
     }
 
-    // No existing idle session -- create a new one
+    // No idle sessions available — create a fresh one
+    const sessionId = `s${this.nextSessionId++}`;
     await this.createSession(sandbox, sessionId);
     this.busySessions.add(sessionId);
+    return sessionId;
   }
 
   /**
    * Return a session to the idle pool after a command completes.
+   * Should NOT be called for timed-out execs (the session stays busy
+   * until `wait` or `kill` finishes).
    */
   releaseSession(sessionId: string): void {
     this.busySessions.delete(sessionId);
+    if (this.sessions.has(sessionId)) {
+      this.idleSessions.push(sessionId);
+    }
   }
 
   // =========================================================================
@@ -595,6 +629,9 @@ export class LocalPtySessionManager {
     this.streamCallbacks.delete(sessionId);
     this.pendingSentinels.delete(sessionId);
     this.busySessions.delete(sessionId);
+    // Remove from idle pool if present
+    const idleIdx = this.idleSessions.indexOf(sessionId);
+    if (idleIdx !== -1) this.idleSessions.splice(idleIdx, 1);
 
     return { killed: true };
   }
