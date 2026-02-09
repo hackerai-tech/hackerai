@@ -8,18 +8,18 @@
  * sequences** (colors, cursor, etc.) for Shiki ANSI rendering in the UI.
  */
 
-// Pre-compiled regexes — avoids re-creation on every call.
-// Each pattern requires the ESC (\x1b) prefix so we never accidentally match
-// literal text that happens to contain `]3008;` or `[?2004`.
+// Line-level regexes — match entire lines containing known PTY noise markers.
+// Uses multiline flag so ^/$ match line boundaries. Removes the whole line
+// including its trailing newline, avoiding any need to parse OSC terminators.
 
-/** VS Code shell-integration: \x1b]633;…BEL or \x1b]633;…ST */
-const OSC_633_RE = /\x1b\]633;[^\x07\x1b]*(?:\x07|\x1b\\)\r?\n?/g;
+/** VS Code shell-integration: any line containing ]633; */
+const OSC_633_RE = /^.*\]633;.*$\r?\n?/gm;
 
-/** E2B sandbox metadata: \x1b]3008;…key=value;…\ (backslash-terminated) */
-const OSC_3008_RE = /\x1b\]3008;[^\\\n]*\\\r?\n?/g;
+/** E2B sandbox metadata: any line containing ]3008; */
+const OSC_3008_RE = /^.*\]3008;.*$\r?\n?/gm;
 
-/** Bracketed paste mode on/off: \x1b[?2004h / \x1b[?2004l */
-const BRACKETED_PASTE_RE = /\x1b\[\?2004[hl]\r?\n?/g;
+/** Bracketed paste mode: any line containing [?2004h or [?2004l */
+const BRACKETED_PASTE_RE = /^.*\[\?2004[hl].*$\r?\n?/gm;
 
 /** Orphaned leading \r?\n left after the above removals. */
 const LEADING_CRLF_RE = /^(\r?\n)+/;
