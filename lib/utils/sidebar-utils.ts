@@ -168,13 +168,17 @@ export function extractAllSidebarContent(
         });
       }
 
-      // Web Search
-      if (part.type === "tool-web_search") {
+      // Web Search - only extract when output is available
+      // This ensures results are ready when auto-following, consistent with file operations
+      if (
+        part.type === "tool-web_search" &&
+        part.state === "output-available"
+      ) {
         const queries = part.input?.queries || [];
         const query = Array.isArray(queries) ? queries.join(", ") : queries;
 
         let results: WebSearchResult[] = [];
-        if (part.state === "output-available" && part.output) {
+        if (part.output) {
           // Handle both formats: output as array directly, or output.result as array
           const rawResults = Array.isArray(part.output)
             ? part.output
@@ -193,9 +197,7 @@ export function extractAllSidebarContent(
         contentList.push({
           query,
           results,
-          isSearching:
-            part.state === "input-available" ||
-            part.state === "input-streaming",
+          isSearching: false,
           toolCallId: part.toolCallId || "",
         });
       }

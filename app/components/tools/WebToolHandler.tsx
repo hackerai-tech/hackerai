@@ -171,9 +171,6 @@ export const WebToolHandler = memo(function WebToolHandler({
           action={getAction()}
           target={target}
           isShimmer={true}
-          isClickable={canOpenSidebar}
-          onClick={canOpenSidebar ? handleOpenInSidebar : undefined}
-          onKeyDown={canOpenSidebar ? handleKeyDown : undefined}
         />
       ) : null;
 
