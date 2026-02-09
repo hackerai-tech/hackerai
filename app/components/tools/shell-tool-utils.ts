@@ -101,6 +101,11 @@ import { RAW_TO_KEY_NAME } from "@/lib/ai/tools/utils/pty-keys";
  * - Already-readable tmux names like "C-c" pass through unchanged
  */
 export function formatSendInput(raw: string): string {
+  // Bare newline → display as "Enter"
+  if (raw === "\n" || raw === "\r\n" || raw === "\r") {
+    return "Enter";
+  }
+
   const stripped = raw.replace(/\n$/, "");
 
   // Exact match on known key / escape sequence
