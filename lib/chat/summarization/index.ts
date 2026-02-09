@@ -16,6 +16,8 @@ import {
   generateSummaryText,
   buildSummaryMessage,
   persistSummary,
+  isSummaryMessage,
+  extractSummaryText,
 } from "./helpers";
 import type { SummarizationResult } from "./helpers";
 
@@ -32,15 +34,29 @@ export const checkAndSummarizeIfNeeded = async (
   todos: Todo[] = [],
   abortSignal?: AbortSignal,
 ): Promise<SummarizationResult> => {
-  if (uiMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED) {
+  // Detect and separate synthetic summary message from real messages
+  let realMessages: UIMessage[];
+  let existingSummaryText: string | null = null;
+
+  if (uiMessages.length > 0 && isSummaryMessage(uiMessages[0])) {
+    realMessages = uiMessages.slice(1);
+    existingSummaryText = extractSummaryText(uiMessages[0]);
+  } else {
+    realMessages = uiMessages;
+  }
+
+  // Guard: need enough real messages to split
+  if (realMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED) {
     return NO_SUMMARIZATION(uiMessages);
   }
 
+  // Check token threshold on full messages (including summary) to determine need
   if (!isAboveTokenThreshold(uiMessages, subscription, fileTokens)) {
     return NO_SUMMARIZATION(uiMessages);
   }
 
-  const { messagesToSummarize, lastMessages } = splitMessages(uiMessages);
+  // Split only real messages so cutoff always references a DB message
+  const { messagesToSummarize, lastMessages } = splitMessages(realMessages);
 
   const cutoffMessageId =
     messagesToSummarize[messagesToSummarize.length - 1].id;
@@ -52,6 +68,7 @@ export const checkAndSummarizeIfNeeded = async (
     languageModel,
     mode,
     abortSignal,
+    existingSummaryText ?? undefined,
   );
   const summaryMessage = buildSummaryMessage(summaryText, todos);
 

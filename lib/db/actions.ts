@@ -13,6 +13,7 @@ import {
 import {
   countMessagesTokens,
   getMaxTokensForSubscription,
+  truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import type { SubscriptionTier, NoteCategory } from "@/types";
@@ -330,9 +331,28 @@ export async function getMessagesByChatId({
               ],
             };
 
-            // Return summary + messages after cutoff
+            // Re-truncate real messages to leave room for the summary message
+            const maxTokens = getMaxTokensForSubscription(subscription);
+            const summaryTokens = countMessagesTokens(
+              [summaryMessage],
+              fileTokensFromLoop,
+            );
+            const budgetForMessages = maxTokens - summaryTokens;
+            const truncatedAfterCutoff =
+              budgetForMessages > 0
+                ? truncateMessagesToTokenLimit(
+                    messagesAfterCutoff,
+                    fileTokensFromLoop,
+                    budgetForMessages,
+                  )
+                : [];
+            const truncatedWithSummary: UIMessage[] = [
+              summaryMessage,
+              ...truncatedAfterCutoff,
+            ];
+
             return {
-              truncatedMessages: [summaryMessage, ...messagesAfterCutoff],
+              truncatedMessages: truncatedWithSummary,
               chat,
               isNewChat,
               fileTokens: fileTokensFromLoop,

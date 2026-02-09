@@ -387,4 +387,232 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(summaryMessageText).toContain("<context_summary>");
     expect(summaryMessageText).not.toContain("<current_todos>");
   });
+
+  it("should use real message ID as cutoff when input starts with summary message", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+    mockGenerateText.mockResolvedValue({ text: "Updated summary" });
+
+    const summaryMsg: UIMessage = {
+      id: "synthetic-uuid-not-in-db",
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "<context_summary>\nOld summary text\n</context_summary>",
+        },
+      ],
+    };
+
+    const realMessages = [
+      createMessage("real-1", "user"),
+      createMessage("real-2", "assistant"),
+      createMessage("real-3", "user"),
+      createMessage("real-4", "assistant"),
+    ];
+
+    const result = await checkAndSummarizeIfNeeded(
+      [summaryMsg, ...realMessages],
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      "chat-123",
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    // Cutoff must be a real message ID, NOT the synthetic summary's ID
+    expect(result.cutoffMessageId).toBe("real-2");
+    expect(result.cutoffMessageId).not.toBe("synthetic-uuid-not-in-db");
+  });
+
+  it("should skip re-summarization when only summary + 2 real messages", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+
+    const summaryMsg: UIMessage = {
+      id: "synthetic-uuid",
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "<context_summary>\nSome summary\n</context_summary>",
+        },
+      ],
+    };
+
+    const realMessages = [
+      createMessage("real-1", "user"),
+      createMessage("real-2", "assistant"),
+    ];
+
+    const input = [summaryMsg, ...realMessages];
+    const result = await checkAndSummarizeIfNeeded(
+      input,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+
+    // Only 2 real messages = not enough to split (MESSAGES_TO_KEEP_UNSUMMARIZED = 2)
+    expect(result.needsSummarization).toBe(false);
+    expect(result.summarizedMessages).toBe(input);
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it("should pass existing summary text for incremental summarization", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+    mockGenerateText.mockResolvedValue({ text: "Merged summary" });
+
+    const summaryMsg: UIMessage = {
+      id: "synthetic-uuid",
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "<context_summary>\nPrevious summary content\n</context_summary>",
+        },
+      ],
+    };
+
+    const realMessages = [
+      createMessage("real-1", "user"),
+      createMessage("real-2", "assistant"),
+      createMessage("real-3", "user"),
+      createMessage("real-4", "assistant"),
+    ];
+
+    await checkAndSummarizeIfNeeded(
+      [summaryMsg, ...realMessages],
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      "chat-123",
+    );
+
+    // Verify generateText was called with system prompt containing previous_summary
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system: expect.stringContaining("<previous_summary>"),
+      }),
+    );
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system: expect.stringContaining("Previous summary content"),
+      }),
+    );
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system: expect.stringContaining("INCREMENTAL summarization"),
+      }),
+    );
+  });
+
+  it("should handle normal first-time summarization unchanged", async () => {
+    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+
+    setupAboveThreshold();
+    mockGenerateText.mockResolvedValue({ text: "First summary" });
+
+    const result = await checkAndSummarizeIfNeeded(
+      fourMessages,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    expect(result.cutoffMessageId).toBe("msg-2");
+    // System prompt should NOT contain previous_summary
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system: expect.not.stringContaining("<previous_summary>"),
+      }),
+    );
+  });
+});
+
+describe("isSummaryMessage and extractSummaryText", () => {
+  let helpers: typeof import("../helpers");
+
+  beforeEach(() => {
+    jest.resetModules();
+    jest.isolateModules(() => {
+      jest.doMock("ai", () => ({
+        generateText: jest.fn(),
+        convertToModelMessages: jest.fn(),
+      }));
+      jest.doMock("uuid", () => ({ v4: jest.fn() }));
+      jest.doMock("@/lib/token-utils", () => ({
+        countMessagesTokens: jest.fn(),
+        getMaxTokensForSubscription: jest.fn(),
+      }));
+      jest.doMock("@/lib/db/actions", () => ({
+        saveChatSummary: jest.fn(),
+      }));
+      helpers = require("../helpers");
+    });
+  });
+
+  it("should detect summary messages correctly", () => {
+    const summaryMsg: UIMessage = {
+      id: "test",
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "<context_summary>\nSome summary\n</context_summary>",
+        },
+      ],
+    };
+
+    const normalMsg: UIMessage = {
+      id: "test2",
+      role: "user",
+      parts: [{ type: "text", text: "Hello world" }],
+    };
+
+    const emptyMsg: UIMessage = {
+      id: "test3",
+      role: "user",
+      parts: [],
+    };
+
+    expect(helpers.isSummaryMessage(summaryMsg)).toBe(true);
+    expect(helpers.isSummaryMessage(normalMsg)).toBe(false);
+    expect(helpers.isSummaryMessage(emptyMsg)).toBe(false);
+  });
+
+  it("should extract summary text from summary messages", () => {
+    const summaryMsg: UIMessage = {
+      id: "test",
+      role: "user",
+      parts: [
+        {
+          type: "text",
+          text: "<context_summary>\nExtracted content here\n</context_summary>",
+        },
+      ],
+    };
+
+    const normalMsg: UIMessage = {
+      id: "test2",
+      role: "user",
+      parts: [{ type: "text", text: "Not a summary" }],
+    };
+
+    expect(helpers.extractSummaryText(summaryMsg)).toBe(
+      "Extracted content here",
+    );
+    expect(helpers.extractSummaryText(normalMsg)).toBeNull();
+  });
 });

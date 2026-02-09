@@ -54,7 +54,11 @@ const checkAndInvalidateSummary = async (
         latest_summary_id: undefined,
         update_time: Date.now(),
       });
-      await ctx.db.delete(chat.latest_summary_id);
+      try {
+        await ctx.db.delete(chat.latest_summary_id);
+      } catch {
+        // Summary might already be deleted, ignore
+      }
       return;
     }
 

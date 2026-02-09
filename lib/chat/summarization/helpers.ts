@@ -59,16 +59,40 @@ export const splitMessages = (
   lastMessages: uiMessages.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED),
 });
 
+export const isSummaryMessage = (message: UIMessage): boolean => {
+  if (message.parts.length === 0) return false;
+  const firstPart = message.parts[0];
+  if (firstPart.type !== "text") return false;
+  return (firstPart as { type: "text"; text: string }).text.startsWith(
+    "<context_summary>",
+  );
+};
+
+export const extractSummaryText = (message: UIMessage): string | null => {
+  if (!isSummaryMessage(message)) return null;
+  const text = (message.parts[0] as { type: "text"; text: string }).text;
+  const match = text.match(
+    /<context_summary>\n?([\s\S]*?)\n?<\/context_summary>/,
+  );
+  return match ? match[1] : null;
+};
+
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
   mode: ChatMode,
   abortSignal?: AbortSignal,
+  existingSummaryText?: string,
 ): Promise<string> => {
   try {
+    const basePrompt = getSummarizationPrompt(mode);
+    const system = existingSummaryText
+      ? `${basePrompt}\n\nIMPORTANT: You are performing an INCREMENTAL summarization. A previous summary of earlier conversation exists below. Your job is to produce a single, unified summary that merges the previous summary with the NEW messages provided. Do NOT summarize the summary — instead, integrate new information into a comprehensive updated summary.\n\n<previous_summary>\n${existingSummaryText}\n</previous_summary>`
+      : basePrompt;
+
     const result = await generateText({
       model: languageModel,
-      system: getSummarizationPrompt(mode),
+      system,
       abortSignal,
       providerOptions: {
         xai: { store: false },
