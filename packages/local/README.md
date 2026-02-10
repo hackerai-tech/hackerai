@@ -26,12 +26,6 @@ npx @hackerai/local@latest --token hsb_abc123 --name "My Laptop"
 This pulls the pre-built HackerAI sandbox image (~3GB) - an AI Agent Penetration Testing Environment based on Kali Linux with comprehensive automated tools including:
 nmap, masscan, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, httpx, smbclient, impacket, and many more.
 
-### Custom Docker Image
-
-```bash
-npx @hackerai/local@latest --token hsb_abc123 --name "Kali" --image kalilinux/kali-rolling
-```
-
 ### Dangerous Mode (No Docker)
 
 ```bash
@@ -46,7 +40,6 @@ npx @hackerai/local@latest --token hsb_abc123 --name "Work PC" --dangerous
 | ------------------ | ------------------------------------------------------ |
 | `--token TOKEN`    | Authentication token from HackerAI Settings (required) |
 | `--name NAME`      | Connection name shown in HackerAI (default: hostname)  |
-| `--image IMAGE`    | Docker image to use (default: hackerai/sandbox)        |
 | `--dangerous`      | Run commands directly on host OS without Docker        |
 | `--convex-url URL` | Override backend URL (for development)                 |
 | `--help, -h`       | Show help message                                      |
