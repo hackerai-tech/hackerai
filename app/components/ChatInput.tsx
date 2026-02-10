@@ -394,13 +394,11 @@ export const ChatInput = ({
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Sandbox selector - editable for new chats, read-only for existing */}
+              {/* Sandbox selector - always editable (users can switch machines anytime) */}
               {chatMode === "agent" && (
                 <SandboxSelector
                   value={sandboxPreference}
                   onChange={setSandboxPreference}
-                  disabled={status === "streaming"}
-                  readOnly={!isNewChat}
                 />
               )}
             </div>

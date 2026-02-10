@@ -15,11 +15,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
@@ -29,7 +24,6 @@ interface SandboxSelectorProps {
   onChange?: (value: string) => void;
   disabled?: boolean;
   size?: "sm" | "md";
-  readOnly?: boolean;
 }
 
 interface LocalConnection {
@@ -57,7 +51,6 @@ export function SandboxSelector({
   onChange,
   disabled = false,
   size = "sm",
-  readOnly = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
 
@@ -120,36 +113,14 @@ export function SandboxSelector({
           }
         />
       )}
-      {!readOnly && (
-        <ChevronDown
-          className={
-            size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
-          }
-        />
-      )}
+      <ChevronDown
+        className={
+          size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
+        }
+      />
     </>
   );
 
-  // Read-only mode: display with tooltip
-  if (readOnly) {
-    return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div
-            className={`flex items-center cursor-default text-muted-foreground ${buttonClassName}`}
-            aria-label="Sandbox environment for this chat"
-          >
-            {buttonContent}
-          </div>
-        </TooltipTrigger>
-        <TooltipContent>
-          <p>Sandbox environment for this chat</p>
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  // Editable mode: popover selector
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
