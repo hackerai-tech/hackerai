@@ -49,7 +49,7 @@ export const createShell = (context: ToolContext) => {
     description: `Interact with persistent shell sessions in the sandbox environment.
 
 <supported_actions>
-- \`exec\`: Execute command in a shell session
+${!isE2BSandboxPreference ? "- \\`view\\`: View the content of a shell session\n" : ""}- \`exec\`: Execute command in a shell session
 - \`wait\`: Wait for the running process in a shell session to return
 - \`send\`: Send input to the active process (stdin) in a shell session
 - \`kill\`: Terminate the running process in a shell session
@@ -57,7 +57,7 @@ export const createShell = (context: ToolContext) => {
 
 <instructions>
 - Prioritize using \`file\` tool instead of this tool for file content operations to avoid escaping errors
-- \`exec\` runs the command and returns output along with ${isE2BSandboxPreference ? "a `pid`" : "a `session`"} identifier — save this for subsequent \`wait\`, \`send\`, and \`kill\` actions
+${!isE2BSandboxPreference ? "- When using \\`view\\` action, ensure command has completed execution before using its output\n" : ""}- \`exec\` runs the command and returns output along with ${isE2BSandboxPreference ? "a `pid`" : "a `session`"} identifier — save this for subsequent \`wait\`, \`send\`, and \`kill\` actions
 - The default working directory for newly created shell sessions is /home/user
 - Working directory will be reset to /home/user in every new shell session; Use \`cd\` command to change directories as needed
 - MUST avoid commands that require confirmation; use flags like \`-y\` or \`-f\` for automatic execution
@@ -79,7 +79,7 @@ export const createShell = (context: ToolContext) => {
 </instructions>
 
 <recommended_usage>
-- Use \`exec\` to install packages or dependencies
+${!isE2BSandboxPreference ? "- Use \\`view\\` to check shell session history and latest status\n" : ""}- Use \`exec\` to install packages or dependencies
 - Use \`exec\` to copy, move, or delete files
 - Use \`exec\` to run scripts and tools
 - Use \`wait\` to wait for the completion of long-running commands
@@ -117,8 +117,11 @@ If you are generating files:
     - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])`,
     inputSchema: z.object({
       action: z
-        // TODO: re-add "view" once terminal output persistence is implemented
-        .enum([/* "view", */ "exec", "wait", "send", "kill"])
+        .enum(
+          isE2BSandboxPreference
+            ? ["exec", "wait", "send", "kill"]
+            : ["view", "exec", "wait", "send", "kill"],
+        )
         .describe("The action to perform"),
       brief: z
         .string()
@@ -172,7 +175,7 @@ If you are generating files:
         session,
         timeout,
       }: {
-        action: /* "view" | */ "exec" | "wait" | "send" | "kill";
+        action: "exec" | "view" | "wait" | "send" | "kill";
         command?: string;
         input?: string;
         pid?: number;

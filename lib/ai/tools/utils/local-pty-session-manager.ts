@@ -263,6 +263,43 @@ export class LocalPtySessionManager {
   }
 
   /**
+   * Build the deterministic tmux session name for a given session ID.
+   * Works whether or not the session is tracked in the in-memory Map.
+   */
+  private tmuxNameFor(sessionId: string): string {
+    return `hai_${sanitizeForShell(this.chatId)}_${sanitizeForShell(sessionId)}`;
+  }
+
+  /**
+   * Return the in-memory session entry, or lazily create a minimal one so
+   * that methods like `viewFullSession` / `sendToSession` can operate on
+   * tmux sessions that outlived the current process (e.g. across HTTP calls).
+   *
+   * The actual tmux session may or may not exist — callers handle tmux errors.
+   */
+  private getOrRegisterSession(sessionId: string): LocalPtySession {
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
+
+    const entry: LocalPtySession = {
+      tmuxSessionName: this.tmuxNameFor(sessionId),
+      lastCapturedOutput: "",
+    };
+    this.sessions.set(sessionId, entry);
+
+    // Keep nextSessionId ahead to avoid collisions on future acquireSession
+    const match = sessionId.match(/^s(\d+)$/);
+    if (match) {
+      const num = parseInt(match[1], 10) + 1;
+      if (num > this.nextSessionId) {
+        this.nextSessionId = num;
+      }
+    }
+
+    return entry;
+  }
+
+  /**
    * Acquire a PTY session for an exec call.
    *
    * Returns an idle session when available (preserving working directory for
@@ -458,10 +495,7 @@ export class LocalPtySessionManager {
     timeoutSeconds: number,
     _abortSignal?: AbortSignal,
   ): Promise<{ output: string; timedOut: boolean }> {
-    const session = this.sessions.get(sessionId);
-    if (!session) {
-      return { output: "[Error: session not found]", timedOut: false };
-    }
+    const session = this.getOrRegisterSession(sessionId);
 
     const sentinel = this.pendingSentinels.get(sessionId) || null;
     const sn = session.tmuxSessionName;
@@ -559,9 +593,7 @@ export class LocalPtySessionManager {
     sessionId: string,
     input: string,
   ): Promise<{ success: boolean; error?: string }> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return { success: false, error: "Session not found" };
-
+    const session = this.getOrRegisterSession(sessionId);
     const sn = session.tmuxSessionName;
 
     const displayName = `send-keys: ${input.length > 60 ? input.slice(0, 60) + "..." : input}`;
@@ -616,15 +648,12 @@ export class LocalPtySessionManager {
     sandbox: ConvexSandbox,
     sessionId: string,
   ): Promise<{ killed: boolean }> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return { killed: false };
+    const tmuxName = this.tmuxNameFor(sessionId);
 
     try {
-      await this.tmuxRun(
-        sandbox,
-        `tmux kill-session -t ${session.tmuxSessionName}`,
-        { displayName: `kill session "${sessionId}"` },
-      );
+      await this.tmuxRun(sandbox, `tmux kill-session -t ${tmuxName}`, {
+        displayName: `kill session "${sessionId}"`,
+      });
     } catch {
       /* session may already be dead */
     }
@@ -653,8 +682,7 @@ export class LocalPtySessionManager {
     sandbox: ConvexSandbox,
     sessionId: string,
   ): Promise<{ output: string; exists: boolean }> {
-    const session = this.sessions.get(sessionId);
-    if (!session) return { output: "", exists: false };
+    const session = this.getOrRegisterSession(sessionId);
 
     const captured = await this.capturePaneOutput(
       sandbox,
@@ -670,6 +698,36 @@ export class LocalPtySessionManager {
     const cleaned = stripSentinelNoise(newContent);
     return {
       output: cleaned.trim() || "[No new output]",
+      exists: true,
+    };
+  }
+
+  // =========================================================================
+  // viewFullSession -- full scrollback capture for the `view` action
+  // =========================================================================
+
+  /**
+   * Capture the full tmux scrollback for a session.
+   * Unlike `viewSessionAsync` (which returns only the delta since last read),
+   * this returns the entire pane content — suitable for the `view` action
+   * where the AI needs to re-read the terminal.
+   */
+  async viewFullSession(
+    sandbox: ConvexSandbox,
+    sessionId: string,
+  ): Promise<{ output: string; exists: boolean }> {
+    const session = this.getOrRegisterSession(sessionId);
+
+    const captured = await this.capturePaneOutput(
+      sandbox,
+      session.tmuxSessionName,
+    );
+    // capturePaneOutput returns "" on tmux error (session doesn't exist)
+    if (!captured) return { output: "", exists: false };
+
+    const cleaned = stripSentinelNoise(captured);
+    return {
+      output: cleaned.trim() || "[Empty terminal]",
       exists: true,
     };
   }
