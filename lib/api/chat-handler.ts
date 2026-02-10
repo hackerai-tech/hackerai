@@ -31,7 +31,6 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
 import {
-  getSandboxTypeForTool,
   hasFileAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
@@ -321,6 +320,7 @@ export const createChatHandler = (
             sandboxManager,
           } = createTools(
             userId,
+            chatId,
             writer,
             mode,
             userLocation,
@@ -546,9 +546,8 @@ export const createChatHandler = (
               stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
               onChunk: async (chunk) => {
                 if (chunk.chunk.type === "tool-call") {
-                  const sandboxType = getSandboxTypeForTool(
+                  const sandboxType = sandboxManager.getSandboxType(
                     chunk.chunk.toolName,
-                    sandboxPreference,
                   );
 
                   chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
@@ -691,6 +690,9 @@ export const createChatHandler = (
                             subscriberStopped = true;
                           }
 
+                          chatLogger!.setSandbox(
+                            sandboxManager.getSandboxInfo(),
+                          );
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
@@ -862,6 +864,7 @@ export const createChatHandler = (
 
                 // Emit wide event
                 stepStart = Date.now();
+                chatLogger!.setSandbox(sandboxManager.getSandboxInfo());
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,

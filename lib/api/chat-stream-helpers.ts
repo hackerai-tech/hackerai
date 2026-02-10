@@ -5,29 +5,8 @@
  */
 
 import type { UIMessageStreamWriter } from "ai";
-import type { SandboxPreference, ChatMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SubscriptionTier } from "@/types";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
-
-// Tools that interact with the sandbox environment
-const SANDBOX_ENVIRONMENT_TOOLS = [
-  "run_terminal_cmd",
-  "get_terminal_files",
-  "match",
-  "file",
-] as const;
-
-/**
- * Determine the sandbox type for a tool call
- */
-export function getSandboxTypeForTool(
-  toolName: string,
-  sandboxPreference?: SandboxPreference,
-): string | undefined {
-  if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
-    return undefined;
-  }
-  return sandboxPreference && sandboxPreference !== "e2b" ? "local" : "e2b";
-}
 
 /**
  * Check if messages contain file attachments

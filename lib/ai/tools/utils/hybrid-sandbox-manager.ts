@@ -1,12 +1,13 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxManager } from "@/types";
+import type { SandboxManager, SandboxType } from "@/types";
 import { ConvexSandbox } from "./convex-sandbox";
 import { ensureSandboxConnection } from "./sandbox";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { PREINSTALLED_PENTESTING_TOOLS } from "@/lib/system-prompt";
+import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 
-type SandboxType = Sandbox | ConvexSandbox;
+type SandboxInstance = Sandbox | ConvexSandbox;
 
 export type SandboxPreference = "e2b" | string; // "e2b" or connectionId
 
@@ -44,16 +45,18 @@ interface ConnectionInfo {
  * - Dangerous mode (no Docker) with OS context for AI
  */
 export class HybridSandboxManager implements SandboxManager {
-  private sandbox: SandboxType | null = null;
+  private sandbox: SandboxInstance | null = null;
   private isLocal = false;
   private currentConnectionId: string | null = null;
+  private currentConnectionMode: "docker" | "dangerous" | null = null;
+  private currentConnectionName: string | null = null;
   private convex: ConvexHttpClient;
   private convexUrl: string;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
 
   constructor(
     private userID: string,
-    private setSandboxCallback: (sandbox: SandboxType) => void,
+    private setSandboxCallback: (sandbox: SandboxInstance) => void,
     private sandboxPreference: SandboxPreference = "e2b",
     private serviceKey: string,
     initialSandbox?: Sandbox | null,
@@ -113,6 +116,29 @@ export class HybridSandboxManager implements SandboxManager {
     return info;
   }
 
+  getSandboxInfo(): { type: SandboxType; name?: string } | null {
+    if (this.sandboxPreference === "e2b") {
+      return { type: "e2b" };
+    }
+    const type: SandboxType =
+      this.currentConnectionMode === "docker" ? "local-sandbox" : "local";
+    return { type, name: this.currentConnectionName ?? undefined };
+  }
+
+  getSandboxType(toolName: string): SandboxType | undefined {
+    if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
+      return undefined;
+    }
+    if (this.sandboxPreference === "e2b") {
+      return "e2b";
+    }
+    // Local sandbox — use cached mode to distinguish docker vs dangerous
+    if (this.currentConnectionMode === "docker") {
+      return "local-sandbox";
+    }
+    return "local";
+  }
+
   /**
    * List available connections for this user
    */
@@ -132,7 +158,7 @@ export class HybridSandboxManager implements SandboxManager {
     }
   }
 
-  async getSandbox(): Promise<{ sandbox: SandboxType }> {
+  async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
     // If preference is E2B, always use E2B
     if (this.sandboxPreference === "e2b") {
       return this.getE2BSandbox();
@@ -153,9 +179,6 @@ export class HybridSandboxManager implements SandboxManager {
         !this.sandbox
       ) {
         await this.closeCurrentSandbox();
-        console.log(
-          `[${this.userID}] Using local sandbox: ${preferredConnection.name} (${preferredConnection.mode})`,
-        );
         this.sandbox = new ConvexSandbox(
           this.userID,
           this.convexUrl,
@@ -164,6 +187,8 @@ export class HybridSandboxManager implements SandboxManager {
         );
         this.isLocal = true;
         this.currentConnectionId = preferredConnection.connectionId;
+        this.currentConnectionMode = preferredConnection.mode;
+        this.currentConnectionName = preferredConnection.name;
         this.setSandboxCallback(this.sandbox);
       }
 
@@ -174,9 +199,6 @@ export class HybridSandboxManager implements SandboxManager {
     if (connections.length > 0) {
       const firstAvailable = connections[0];
       await this.closeCurrentSandbox();
-      console.log(
-        `[${this.userID}] Preferred connection unavailable, using: ${firstAvailable.name}`,
-      );
       this.sandbox = new ConvexSandbox(
         this.userID,
         this.convexUrl,
@@ -185,6 +207,8 @@ export class HybridSandboxManager implements SandboxManager {
       );
       this.isLocal = true;
       this.currentConnectionId = firstAvailable.connectionId;
+      this.currentConnectionMode = firstAvailable.mode;
+      this.currentConnectionName = firstAvailable.name;
       this.setSandboxCallback(this.sandbox);
 
       // Record fallback info for notification
@@ -200,10 +224,6 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     // Fall back to E2B if no local connections available
-    console.log(
-      `[${this.userID}] No local connections available, falling back to E2B`,
-    );
-
     // Record fallback info for notification
     this.pendingFallbackInfo = {
       occurred: true,
@@ -238,12 +258,14 @@ export class HybridSandboxManager implements SandboxManager {
     this.sandbox = result.sandbox;
     this.isLocal = false;
     this.currentConnectionId = null;
+    this.currentConnectionMode = null;
+    this.currentConnectionName = null;
     this.setSandboxCallback(result.sandbox);
 
     return { sandbox: result.sandbox };
   }
 
-  setSandbox(sandbox: SandboxType): void {
+  setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
     this.isLocal = sandbox instanceof ConvexSandbox;
     this.setSandboxCallback(sandbox);
@@ -267,6 +289,10 @@ export class HybridSandboxManager implements SandboxManager {
     if (!connection) {
       return null;
     }
+
+    // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
+    this.currentConnectionMode = connection.mode;
+    this.currentConnectionName = connection.name;
 
     return this.buildSandboxContext(connection);
   }

@@ -131,6 +131,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <WebToolHandler part={part} status={status} />;
 
     case "data-terminal":
+    case "tool-shell":
     case "tool-run_terminal_cmd":
       return (
         <TerminalToolHandler message={message} part={part} status={status} />

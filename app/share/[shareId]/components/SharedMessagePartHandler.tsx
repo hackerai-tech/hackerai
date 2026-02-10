@@ -35,6 +35,14 @@ import {
 import { useSharedChatContext } from "../SharedChatContext";
 import { SharedTodoBlock } from "./SharedTodoBlock";
 import type { Todo } from "@/types";
+import {
+  getShellActionLabel,
+  getShellDisplayCommand,
+  getShellDisplayTarget,
+  getShellOutput,
+  type ShellToolInput,
+  type ShellToolOutput,
+} from "@/app/components/tools/shell-tool-utils";
 
 interface MessagePart {
   type: string;
@@ -99,7 +107,11 @@ export const SharedMessagePartHandler = ({
   }
 
   // Terminal commands
-  if (part.type === "data-terminal" || part.type === "tool-run_terminal_cmd") {
+  if (
+    part.type === "data-terminal" ||
+    part.type === "tool-shell" ||
+    part.type === "tool-run_terminal_cmd"
+  ) {
     return renderTerminalTool(part, idx, openSidebar);
   }
 
@@ -178,23 +190,11 @@ function renderTerminalTool(
   idx: number,
   openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
 ) {
-  const terminalInput = part.input as { command?: string };
-  const terminalOutput = part.output as {
-    result?: {
-      output?: string;
-      stdout?: string;
-      stderr?: string;
-      error?: string;
-    };
-  };
-  const command = terminalInput?.command || "";
-  const result = terminalOutput?.result;
-  // Match the output extraction logic from TerminalToolHandler.tsx
-  const output =
-    result?.output ||
-    (result?.stdout ?? "") + (result?.stderr ?? "") ||
-    result?.error ||
-    "";
+  const terminalInput = part.input as ShellToolInput;
+  const terminalOutput = part.output as ShellToolOutput;
+  const command = getShellDisplayCommand(terminalInput);
+  const target = getShellDisplayTarget(terminalInput);
+  const output = getShellOutput(terminalOutput);
 
   if (
     part.state === "input-available" ||
@@ -217,12 +217,19 @@ function renderTerminalTool(
       }
     };
 
+    const isShellTool = part.type === "tool-shell";
+    const actionLabel = getShellActionLabel({
+      isShellTool,
+      action: terminalInput?.action,
+      pid: terminalInput?.pid ?? terminalOutput?.pid,
+    });
+
     return (
       <ToolBlock
         key={idx}
         icon={<Terminal aria-hidden="true" />}
-        action="Executed"
-        target={command}
+        action={actionLabel}
+        target={target}
         isClickable={true}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}

@@ -27,6 +27,12 @@ const convexUrlFlag =
     ? ` --convex-url ${process.env.NEXT_PUBLIC_CONVEX_URL}`
     : "";
 
+// Use local path in dev (next dev), npx in production/preview
+const runCommand =
+  process.env.NODE_ENV === "development"
+    ? "node packages/local/dist/index.js"
+    : "npx @hackerai/local@latest";
+
 interface LocalConnection {
   connectionId: string;
   name: string;
@@ -264,10 +270,10 @@ const LocalSandboxTab = () => {
           {/* Docker command */}
           <CommandBlock
             label="Basic (Docker)"
-            command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
+            command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
             onCopy={() =>
               handleCopyCommand(
-                `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
+                `${runCommand} --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
               )
             }
           />
@@ -276,10 +282,10 @@ const LocalSandboxTab = () => {
           <CommandBlock
             label="Dangerous Mode (No Docker)"
             warning
-            command={`npx @hackerai/local@latest --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
+            command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
             onCopy={() =>
               handleCopyCommand(
-                `npx @hackerai/local@latest --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
+                `${runCommand} --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
               )
             }
           />

@@ -90,6 +90,12 @@ export interface ChatWideEvent {
     total_cost?: number;
   };
 
+  // Sandbox execution
+  sandbox?: {
+    type: "e2b" | "local" | "local-sandbox";
+    name?: string;
+  };
+
   // Tool execution
   tool_call_count?: number;
 
@@ -244,6 +250,14 @@ export class WideEventBuilder {
    */
   startStream(): this {
     this.streamStartTime = Date.now();
+    return this;
+  }
+
+  /**
+   * Set sandbox execution info
+   */
+  setSandbox(info: ChatWideEvent["sandbox"]): this {
+    this.event.sandbox = info;
     return this;
   }
 

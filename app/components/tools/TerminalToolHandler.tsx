@@ -1,11 +1,17 @@
 import React, { memo, useEffect, useMemo, useCallback } from "react";
 import { UIMessage } from "@ai-sdk/react";
-import { CommandResult } from "@e2b/code-interpreter";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
 import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
+import {
+  getShellActionLabel,
+  getShellDisplayCommand,
+  getShellDisplayTarget,
+  getShellOutput,
+  type ShellToolOutput,
+} from "./shell-tool-utils";
 
 interface TerminalToolHandlerProps {
   message: UIMessage;
@@ -35,13 +41,13 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
     useGlobalState();
   const { toolCallId, state, input, output, errorText } = part;
-  const terminalInput = input as {
-    command: string;
-    is_background: boolean;
-  };
-  const terminalOutput = output as {
-    result: CommandResult & { output?: string };
-  };
+
+  // Support both legacy run_terminal_cmd and new shell tool input shapes
+  const isShellTool = part.type === "tool-shell" || input?.action !== undefined;
+  const terminalInput = isShellTool
+    ? { command: getShellDisplayCommand(input), is_background: false }
+    : (input as { command: string; is_background: boolean });
+  const terminalOutput = output as ShellToolOutput;
 
   // Memoize streaming output computation
   const streamingOutput = useMemo(() => {
@@ -56,43 +62,60 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   }, [message.parts, toolCallId]);
 
   // Memoize final output computation
-  const finalOutput = useMemo(() => {
-    // Prefer new combined output format, fall back to legacy stdout+stderr for old messages
-    const newFormatOutput = terminalOutput?.result?.output ?? "";
-    const stdout = terminalOutput?.result?.stdout ?? "";
-    const stderr = terminalOutput?.result?.stderr ?? "";
-    const legacyOutput = stdout + stderr;
-
-    return (
-      newFormatOutput ||
-      legacyOutput ||
-      streamingOutput ||
-      (terminalOutput?.result?.error ?? "") ||
-      errorText ||
-      ""
-    );
-  }, [terminalOutput, streamingOutput, errorText]);
+  const finalOutput = useMemo(
+    () => getShellOutput(terminalOutput, { streamingOutput, errorText }),
+    [terminalOutput, streamingOutput, errorText],
+  );
 
   const isExecuting = state === "input-available" && status === "streaming";
 
+  const displayCommand = isShellTool
+    ? getShellDisplayCommand(input)
+    : terminalInput?.command || "";
+  const displayTarget = isShellTool
+    ? getShellDisplayTarget(input)
+    : displayCommand;
+
+  const shellAction = isShellTool
+    ? (input as { action?: string })?.action
+    : undefined;
+  const shellPid = (input as { pid?: number })?.pid ?? terminalOutput?.pid;
+  const shellSession =
+    (input as { session?: string })?.session ?? terminalOutput?.session;
+  const getActionLabel = (isActive: boolean) =>
+    getShellActionLabel({
+      isShellTool,
+      action: shellAction,
+      pid: shellPid,
+      session: shellSession,
+      isActive,
+    });
+
   const handleOpenInSidebar = useCallback(() => {
-    if (!terminalInput?.command) return;
+    if (!displayCommand) return;
 
     const sidebarTerminal: SidebarTerminal = {
-      command: terminalInput.command,
+      command: displayCommand,
       output: finalOutput,
       isExecuting,
       isBackground: terminalInput.is_background,
       toolCallId: toolCallId,
+      shellAction,
+      pid: shellPid,
+      session: shellSession,
+      input: (input as { input?: string })?.input,
     };
 
     openSidebar(sidebarTerminal);
   }, [
-    terminalInput?.command,
+    displayCommand,
     terminalInput?.is_background,
     finalOutput,
     isExecuting,
     toolCallId,
+    shellAction,
+    shellPid,
+    shellSession,
     openSidebar,
   ]);
 
@@ -108,11 +131,12 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     if (!isSidebarActive) return;
 
     updateSidebarContent({
+      command: displayCommand,
       output: finalOutput,
       isExecuting,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSidebarActive, finalOutput, isExecuting]);
+  }, [isSidebarActive, displayCommand, finalOutput, isExecuting]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -125,22 +149,37 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   );
 
   switch (state) {
-    case "input-streaming":
-      return status === "streaming" ? (
+    case "input-streaming": {
+      if (status !== "streaming") return null;
+      // For non-exec shell actions (wait, send, kill), use the action-specific
+      // label instead of "Generating command" which only applies to exec
+      if (isShellTool && shellAction && shellAction !== "exec") {
+        return (
+          <ToolBlock
+            key={toolCallId}
+            icon={<Terminal />}
+            action={getActionLabel(true)}
+            target={displayTarget || undefined}
+            isShimmer={true}
+          />
+        );
+      }
+      return (
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
           action="Generating command"
           isShimmer={true}
         />
-      ) : null;
+      );
+    }
     case "input-available":
       return (
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action={status === "streaming" ? "Executing" : "Executed"}
-          target={terminalInput?.command || ""}
+          action={getActionLabel(status === "streaming")}
+          target={displayTarget}
           isShimmer={status === "streaming"}
           isClickable={true}
           onClick={handleOpenInSidebar}
@@ -152,8 +191,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action="Executed"
-          target={terminalInput?.command || ""}
+          action={getActionLabel(false)}
+          target={displayTarget}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
@@ -164,8 +203,8 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
         <ToolBlock
           key={toolCallId}
           icon={<Terminal />}
-          action="Executed"
-          target={terminalInput?.command || ""}
+          action={getActionLabel(false)}
+          target={displayTarget}
           isClickable={true}
           onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}

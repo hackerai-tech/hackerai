@@ -6,6 +6,7 @@ import {
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
+import { createShell } from "./shell";
 import { createGetTerminalFiles } from "./get-terminal-files";
 import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
@@ -35,6 +36,7 @@ export const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
 // Factory function to create tools with context
 export const createTools = (
   userID: string,
+  chatId: string,
   writer: UIMessageStreamWriter,
   mode: ChatMode = "agent",
   userLocation: Geo,
@@ -72,12 +74,19 @@ export const createTools = (
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
 
+  // DefaultSandboxManager always uses E2B; HybridSandboxManager uses E2B only
+  // when sandboxPreference is explicitly "e2b".
+  const isE2BSandboxPreference =
+    !sandboxPreference || sandboxPreference === "e2b";
+
   const context: ToolContext = {
     sandboxManager,
     writer,
     userLocation,
     todoManager,
     userID,
+    chatId,
+    isE2BSandboxPreference,
     assistantMessageId,
     fileAccumulator,
     backgroundProcessTracker,
@@ -88,7 +97,8 @@ export const createTools = (
 
   // Create all available tools
   const allTools = {
-    run_terminal_cmd: createRunTerminalCmd(context),
+    shell: createShell(context),
+    // run_terminal_cmd: createRunTerminalCmd(context),
     get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),
     todo_write: createTodoWrite(context),

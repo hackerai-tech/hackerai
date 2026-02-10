@@ -63,19 +63,29 @@ interface BaseToolPart {
 
 // Specific interface for terminal tools that have special data handling
 interface TerminalToolPart extends BaseToolPart {
-  type: "tool-run_terminal_cmd";
+  type: "tool-run_terminal_cmd" | "tool-shell";
   input?: {
-    command: string;
-    explanation: string;
-    is_background: boolean;
+    command?: string;
+    explanation?: string;
+    is_background?: boolean;
+    // Shell tool fields
+    action?: string;
+    brief?: string;
+    pid?: number;
+    input?: string;
+    timeout?: number;
   };
   output?: {
-    result: {
-      exitCode: number;
+    result?: {
+      exitCode?: number;
       stdout?: string;
       stderr?: string;
       error?: string;
     };
+    output?: string;
+    exitCode?: number | null;
+    pid?: number;
+    error?: boolean | string;
   };
 }
 
@@ -171,7 +181,9 @@ export const normalizeMessages = (
       // Check if this is a terminal tool that needs transformation
       // Terminal tools need frontend handling to collect streaming output from data-terminal parts
       // Other incomplete tools are handled by backend (chat-processor.ts)
-      const isTerminalTool = toolPart.type === "tool-run_terminal_cmd";
+      const isTerminalTool =
+        toolPart.type === "tool-run_terminal_cmd" ||
+        toolPart.type === "tool-shell";
       const isIncomplete =
         toolPart.state === "input-available" ||
         toolPart.state === "input-streaming";
@@ -222,6 +234,21 @@ const transformTerminalToolPart = (
   terminalDataMap: Map<string, string>,
 ): BaseToolPart => {
   const stdout = terminalDataMap.get(terminalPart.toolCallId) || "";
+
+  // Shell tool returns { output: string } directly, not nested in result
+  if (terminalPart.type === "tool-shell") {
+    return {
+      type: "tool-shell",
+      toolCallId: terminalPart.toolCallId,
+      state: "output-available",
+      input: terminalPart.input,
+      output: {
+        output:
+          stdout ||
+          (stdout.length === 0 ? "Command was stopped/aborted by user" : ""),
+      },
+    };
+  }
 
   return {
     type: "tool-run_terminal_cmd",

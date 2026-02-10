@@ -8,6 +8,7 @@
 import {
   createWideEventBuilder,
   logger,
+  type ChatWideEvent,
   type WideEventBuilder,
 } from "@/lib/logger";
 import type { ChatMode, ExtraUsageConfig } from "@/types";
@@ -114,6 +115,15 @@ export function createChatLogger(config: ChatLoggerConfig) {
      */
     startStream() {
       builder.startStream();
+    },
+
+    /**
+     * Set sandbox execution info
+     */
+    setSandbox(info: ChatWideEvent["sandbox"] | null) {
+      if (info) {
+        builder.setSandbox(info);
+      }
     },
 
     /**
