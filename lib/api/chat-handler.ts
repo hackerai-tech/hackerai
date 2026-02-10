@@ -421,7 +421,8 @@ export const createChatHandler = (
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
-          const fallbackModel = "fallback-model";
+          const fallbackModel =
+            mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
 
           // Accumulated usage across all steps for deduction
           let accumulatedInputTokens = 0;
