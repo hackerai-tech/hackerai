@@ -32,6 +32,7 @@ import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
 import {
   hasFileAttachments,
+  countFileAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
   isXaiSafetyError,
@@ -212,12 +213,15 @@ export const createChatHandler = (
           : 0;
 
       // Add chat context to logger
+      const fileCounts = countFileAttachments(truncatedMessages);
       chatLogger.setChat(
         {
           messageCount: truncatedMessages.length,
           estimatedInputTokens,
           hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
           hasFileAttachments: hasFileAttachments(truncatedMessages),
+          fileCount: fileCounts.totalFiles,
+          fileImageCount: fileCounts.imageCount,
           sandboxPreference,
           memoryEnabled,
           isNewChat,
@@ -457,15 +461,11 @@ export const createChatHandler = (
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
-                    const summarizationModelName =
-                      subscription === "free"
-                        ? "summarization-model-free"
-                        : "summarization-model";
                     const { needsSummarization, summarizedMessages } =
                       await checkAndSummarizeIfNeeded(
                         finalMessages,
                         subscription,
-                        trackedProvider.languageModel(summarizationModelName),
+                        trackedProvider.languageModel(modelName),
                         mode,
                         writer,
                         chatId,
