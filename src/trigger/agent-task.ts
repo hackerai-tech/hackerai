@@ -282,12 +282,11 @@ export const agentStreamTask = task({
         prepareStep: async ({ steps, messages }) => {
           try {
             if (!temporary && !hasSummarized) {
-              const summarizationModelName = "summarization-model";
               const { needsSummarization, summarizedMessages } =
                 await checkAndSummarizeIfNeeded(
                   finalMessages,
                   subscription,
-                  trackedProvider.languageModel(summarizationModelName),
+                  trackedProvider.languageModel(modelName),
                   mode,
                   metadataWriter,
                   chatId,
@@ -399,7 +398,7 @@ export const agentStreamTask = task({
           selectedModel,
           userId,
         });
-        result = await createStream("fallback-model");
+        result = await createStream("fallback-agent-model");
       } else {
         throw error;
       }
