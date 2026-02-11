@@ -101,10 +101,8 @@ export const stripCommandEcho = (output: string, command: string): string => {
  * Subsequent `view` / `wait` calls should not expose these internals.
  */
 const SENTINEL_LINE_RE = /^.*__DONE_[a-f0-9]+__\d*.*$/gm;
-const START_MARKER_LINE_RE = /^.*__START_[a-f0-9]+__.*$/gm;
 export const stripSentinelNoise = (text: string): string => {
   let cleaned = text.replace(SENTINEL_LINE_RE, "");
-  cleaned = cleaned.replace(START_MARKER_LINE_RE, "");
   // Collapse multiple blank lines left by the removal
   cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
   return cleaned;

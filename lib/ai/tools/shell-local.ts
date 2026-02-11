@@ -69,8 +69,6 @@ export function createLocalHandlers(deps: {
           toolCallId,
           abortSignal,
         );
-      case "view":
-        return handleLocalView(sandbox, session);
       case "wait":
         return handleLocalWait(
           sandbox,
@@ -193,39 +191,6 @@ export function createLocalHandlers(deps: {
   }
 
   // ===========================================================================
-  // view — full scrollback capture via tmux capture-pane
-  // ===========================================================================
-
-  async function handleLocalView(
-    sandbox: ConvexSandbox,
-    session: string | undefined,
-  ) {
-    if (!session) {
-      return {
-        output:
-          "Error: `session` is required for `view` action. Run `exec` first to create a session.",
-        error: true,
-      };
-    }
-
-    const result = await localSessionManager.viewFullSession(sandbox, session);
-    if (!result.exists) {
-      return {
-        output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
-      };
-    }
-
-    return {
-      output: truncateContent(
-        result.output,
-        undefined,
-        TOOL_DEFAULT_MAX_TOKENS,
-      ),
-      session,
-    };
-  }
-
-  // ===========================================================================
   // wait
   // ===========================================================================
 
@@ -243,6 +208,12 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
+    if (!localSessionManager.hasSession(session)) {
+      return {
+        output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
+      };
+    }
+
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
     const streamToFrontend = (text: string) => {
@@ -320,6 +291,12 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
+    if (!localSessionManager.hasSession(session)) {
+      return {
+        output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
+      };
+    }
+
     // No guardrails check here: `send` delivers keystrokes to an already-
     // running process (e.g. answering a prompt, Ctrl-C).  The command that
     // spawned the process was already validated by `exec`.
