@@ -16,7 +16,6 @@ import { generateTitleFromUserMessage } from "@/lib/actions";
 import {
   sendRateLimitWarnings,
   buildProviderOptions,
-  getSandboxTypeForTool,
   isXaiSafetyError,
   isProviderApiError,
 } from "@/lib/api/chat-stream-helpers";
@@ -145,6 +144,7 @@ export const agentStreamTask = task({
       ensureSandbox,
     } = createTools(
       userId,
+      chatId,
       metadataWriter,
       mode,
       userLocation ?? {
@@ -351,9 +351,8 @@ export const agentStreamTask = task({
         stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
         onChunk: async (chunk) => {
           if (chunk.chunk.type === "tool-call") {
-            const sandboxType = getSandboxTypeForTool(
+            const sandboxType = sandboxManager.getSandboxType(
               chunk.chunk.toolName,
-              sandboxPreference,
             );
             logger.debug("Tool call", {
               toolName: chunk.chunk.toolName,
