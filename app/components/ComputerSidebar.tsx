@@ -234,10 +234,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 {/* Title - far left */}
                 <div className="flex items-center gap-2">
                   {isTerminal ? (
-                    <Terminal
-                      size={14}
-                      className="text-muted-foreground flex-shrink-0"
-                    />
+                    sidebarContent.session || sidebarContent.pid ? (
+                      <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                        {sidebarContent.session ?? `PID ${sidebarContent.pid}`}
+                      </div>
+                    ) : (
+                      <Terminal
+                        size={14}
+                        className="text-muted-foreground flex-shrink-0"
+                      />
+                    )
                   ) : isPython ? (
                     <Code2
                       size={14}
