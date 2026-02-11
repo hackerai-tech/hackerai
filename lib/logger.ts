@@ -43,6 +43,8 @@ export interface ChatWideEvent {
     estimated_input_tokens: number;
     has_sandbox_files: boolean;
     has_file_attachments: boolean;
+    file_count?: number;
+    file_image_count?: number;
     sandbox_preference?: string;
     memory_enabled: boolean;
   };
@@ -88,6 +90,12 @@ export interface ChatWideEvent {
     cache_read_tokens?: number;
     cache_write_tokens?: number;
     total_cost?: number;
+  };
+
+  // Sandbox execution
+  sandbox?: {
+    type: "e2b" | "local" | "local-sandbox";
+    name?: string;
   };
 
   // Tool execution
@@ -168,6 +176,8 @@ export class WideEventBuilder {
     estimatedInputTokens: number;
     hasSandboxFiles: boolean;
     hasFileAttachments: boolean;
+    fileCount?: number;
+    fileImageCount?: number;
     sandboxPreference?: string;
     memoryEnabled: boolean;
     isNewChat: boolean;
@@ -177,6 +187,8 @@ export class WideEventBuilder {
       estimated_input_tokens: chat.estimatedInputTokens,
       has_sandbox_files: chat.hasSandboxFiles,
       has_file_attachments: chat.hasFileAttachments,
+      file_count: chat.fileCount,
+      file_image_count: chat.fileImageCount,
       sandbox_preference: chat.sandboxPreference,
       memory_enabled: chat.memoryEnabled,
     };
@@ -244,6 +256,14 @@ export class WideEventBuilder {
    */
   startStream(): this {
     this.streamStartTime = Date.now();
+    return this;
+  }
+
+  /**
+   * Set sandbox execution info
+   */
+  setSandbox(info: ChatWideEvent["sandbox"]): this {
+    this.event.sandbox = info;
     return this;
   }
 

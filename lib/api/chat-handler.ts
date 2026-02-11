@@ -31,8 +31,8 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
 import {
-  getSandboxTypeForTool,
   hasFileAttachments,
+  countFileAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
   isXaiSafetyError,
@@ -222,12 +222,15 @@ export const createChatHandler = (
           : 0;
 
       // Add chat context to logger
+      const fileCounts = countFileAttachments(truncatedMessages);
       chatLogger.setChat(
         {
           messageCount: truncatedMessages.length,
           estimatedInputTokens,
           hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
           hasFileAttachments: hasFileAttachments(truncatedMessages),
+          fileCount: fileCounts.totalFiles,
+          fileImageCount: fileCounts.imageCount,
           sandboxPreference,
           memoryEnabled,
           isNewChat,
@@ -330,6 +333,7 @@ export const createChatHandler = (
             sandboxManager,
           } = createTools(
             userId,
+            chatId,
             writer,
             mode,
             userLocation,
@@ -426,7 +430,8 @@ export const createChatHandler = (
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
-          const fallbackModel = "fallback-model";
+          const fallbackModel =
+            mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
 
           // Accumulated usage across all steps for deduction
           let accumulatedInputTokens = 0;
@@ -466,15 +471,11 @@ export const createChatHandler = (
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
-                    const summarizationModelName =
-                      subscription === "free"
-                        ? "summarization-model-free"
-                        : "summarization-model";
                     const { needsSummarization, summarizedMessages } =
                       await checkAndSummarizeIfNeeded(
                         finalMessages,
                         subscription,
-                        trackedProvider.languageModel(summarizationModelName),
+                        trackedProvider.languageModel(modelName),
                         mode,
                         writer,
                         chatId,
@@ -555,9 +556,8 @@ export const createChatHandler = (
               stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
               onChunk: async (chunk) => {
                 if (chunk.chunk.type === "tool-call") {
-                  const sandboxType = getSandboxTypeForTool(
+                  const sandboxType = sandboxManager.getSandboxType(
                     chunk.chunk.toolName,
-                    sandboxPreference,
                   );
 
                   chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
@@ -703,6 +703,9 @@ export const createChatHandler = (
                             subscriberStopped = true;
                           }
 
+                          chatLogger!.setSandbox(
+                            sandboxManager.getSandboxInfo(),
+                          );
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
@@ -877,6 +880,7 @@ export const createChatHandler = (
 
                 // Emit wide event
                 stepStart = Date.now();
+                chatLogger!.setSandbox(sandboxManager.getSandboxInfo());
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
@@ -967,14 +971,16 @@ export const createChatHandler = (
 
                   const hasUsageToRecord = Boolean(resolvedUsage);
 
-                  // If user aborted (not pre-emptive), no files to add, no incomplete tools,
-                  // AND no usage to record, skip message save (frontend already saved complete message)
+                  // If user aborted (not pre-emptive), skip message save when:
+                  // 1. skipSave signal received via Redis (edit/regenerate/retry — message will be discarded)
+                  // 2. No files, tools, or usage to record (frontend already saved the message)
                   if (
                     isAborted &&
                     !isPreemptiveAbort &&
-                    newFileIds.length === 0 &&
-                    !hasIncompleteToolCalls &&
-                    !hasUsageToRecord
+                    (cancellationSubscriber.shouldSkipSave() ||
+                      (newFileIds.length === 0 &&
+                        !hasIncompleteToolCalls &&
+                        !hasUsageToRecord))
                   ) {
                     await deductAccumulatedUsage();
                     return;
@@ -1005,6 +1011,9 @@ export const createChatHandler = (
 
                     // Use resolvedUsage which was already awaited above on abort
                     // Falls back to streamUsage for non-abort cases
+                    // On user-initiated abort, use updateOnly as safety net:
+                    // only patch existing messages (add files/usage), don't create new ones.
+                    // This prevents orphan messages when Redis skipSave signal was missed.
                     await saveMessage({
                       chatId,
                       userId,
@@ -1014,6 +1023,8 @@ export const createChatHandler = (
                       generationTimeMs: Date.now() - streamStartTime,
                       finishReason: streamFinishReason,
                       usage: resolvedUsage ?? streamUsage,
+                      updateOnly:
+                        isAborted && !isPreemptiveAbort ? true : undefined,
                     });
                   }
                   logStep("save_messages", stepStart);

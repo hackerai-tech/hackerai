@@ -425,7 +425,6 @@ class LocalSandboxClient {
     console.log(chalk.blue("Connecting to HackerAI..."));
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const result = (await (this.convex as any).mutation(
         api.localSandbox.connect,
         {
@@ -477,7 +476,7 @@ class LocalSandboxClient {
     if (!this.connectionId || !this.userId || !this.session) return;
 
     // Use Convex subscription for real-time command updates
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
     this.commandSubscription = (this.convex as any).onUpdate(
       api.localSandbox.getPendingCommands,
       {
@@ -528,7 +527,6 @@ class LocalSandboxClient {
     }
 
     try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (this.convex as any).mutation(
         api.localSandbox.markCommandExecuting,
         {
@@ -563,7 +561,6 @@ class LocalSandboxClient {
         const pid = await this.spawnBackground(fullCommand);
         const duration = Date.now() - startTime;
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         await (this.convex as any).mutation(api.localSandbox.submitResult, {
           commandId: command_id,
           token: this.config.token,
@@ -601,7 +598,6 @@ class LocalSandboxClient {
 
       const duration = Date.now() - startTime;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (this.convex as any).mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         token: this.config.token,
@@ -612,13 +608,31 @@ class LocalSandboxClient {
       });
 
       if (shouldShow) {
-        console.log(chalk.green(`✓ Completed in ${duration}ms`));
+        if (result.exitCode === 0) {
+          console.log(
+            chalk.green(`✓ ${displayText} ${chalk.gray(`(${duration}ms)`)}`),
+          );
+        } else {
+          console.log(
+            chalk.red(
+              `✗ ${displayText} ${chalk.gray(`(exit ${result.exitCode}, ${duration}ms)`)}`,
+            ),
+          );
+          if (result.stderr.trim()) {
+            // Indent each line of stderr for readability
+            const indented = result.stderr
+              .trim()
+              .split("\n")
+              .map((l) => `  ${l}`)
+              .join("\n");
+            console.log(chalk.red(indented));
+          }
+        }
       }
     } catch (error: unknown) {
       const duration = Date.now() - startTime;
       const message = error instanceof Error ? error.message : String(error);
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await (this.convex as any).mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         token: this.config.token,
@@ -628,7 +642,11 @@ class LocalSandboxClient {
         duration,
       });
 
-      console.log(chalk.red(`✗ Command failed: ${message}`));
+      console.log(
+        chalk.red(
+          `✗ ${displayText} ${chalk.gray(`(${duration}ms)`)}: ${message}`,
+        ),
+      );
     }
   }
 
@@ -687,7 +705,6 @@ class LocalSandboxClient {
         }
 
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const result = (await (this.convex as any).mutation(
             api.localSandbox.heartbeat,
             {
@@ -764,7 +781,6 @@ class LocalSandboxClient {
     try {
       if (this.connectionId) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           await (this.convex as any).mutation(api.localSandbox.disconnect, {
             token: this.config.token,
             connectionId: this.connectionId,

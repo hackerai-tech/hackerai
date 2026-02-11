@@ -1,6 +1,7 @@
 import type { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxManager } from "@/types";
+import type { SandboxInfo, SandboxManager, SandboxType } from "@/types";
 import { ensureSandboxConnection } from "./sandbox";
+import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: Sandbox | null = null;
@@ -11,6 +12,17 @@ export class DefaultSandboxManager implements SandboxManager {
     initialSandbox?: Sandbox | null,
   ) {
     this.sandbox = initialSandbox || null;
+  }
+
+  getSandboxInfo(): SandboxInfo | null {
+    return { type: "e2b" };
+  }
+
+  getSandboxType(toolName: string): SandboxType | undefined {
+    if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
+      return undefined;
+    }
+    return "e2b";
   }
 
   async getSandbox(): Promise<{

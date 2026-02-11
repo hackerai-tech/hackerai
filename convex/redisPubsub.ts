@@ -13,6 +13,7 @@ import { createClient } from "redis";
 export const publishCancellation = internalAction({
   args: {
     chatId: v.string(),
+    skipSave: v.optional(v.boolean()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -30,7 +31,13 @@ export const publishCancellation = internalAction({
       await client.connect();
 
       const channel = `stream:cancel:${args.chatId}`;
-      await client.publish(channel, JSON.stringify({ canceled: true }));
+      await client.publish(
+        channel,
+        JSON.stringify({
+          canceled: true,
+          ...(args.skipSave && { skipSave: true }),
+        }),
+      );
 
       return true;
     } catch (error) {

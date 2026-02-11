@@ -8,6 +8,7 @@
 import {
   createWideEventBuilder,
   logger,
+  type ChatWideEvent,
   type WideEventBuilder,
 } from "@/lib/logger";
 import type { ChatMode, ExtraUsageConfig } from "@/types";
@@ -35,6 +36,8 @@ export interface ChatContext {
   estimatedInputTokens: number;
   hasSandboxFiles: boolean;
   hasFileAttachments: boolean;
+  fileCount?: number;
+  fileImageCount?: number;
   sandboxPreference?: string;
   memoryEnabled: boolean;
   isNewChat: boolean;
@@ -114,6 +117,15 @@ export function createChatLogger(config: ChatLoggerConfig) {
      */
     startStream() {
       builder.startStream();
+    },
+
+    /**
+     * Set sandbox execution info
+     */
+    setSandbox(info: ChatWideEvent["sandbox"] | null) {
+      if (info) {
+        builder.setSandbox(info);
+      }
     },
 
     /**

@@ -454,8 +454,6 @@ export const ChatInput = ({
                 <SandboxSelector
                   value={sandboxPreference}
                   onChange={setSandboxPreference}
-                  disabled={status === "streaming"}
-                  readOnly={!isNewChat}
                 />
               )}
             </div>

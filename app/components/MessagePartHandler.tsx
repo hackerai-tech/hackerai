@@ -141,6 +141,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return <WebToolHandler part={part} status={status} />;
 
     case "data-terminal":
+    case "tool-shell":
     case "tool-run_terminal_cmd": {
       const effectiveToolCallId =
         (part as any).data?.toolCallId ?? part.toolCallId;
