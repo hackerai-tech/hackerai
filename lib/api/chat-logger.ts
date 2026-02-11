@@ -36,6 +36,8 @@ export interface ChatContext {
   estimatedInputTokens: number;
   hasSandboxFiles: boolean;
   hasFileAttachments: boolean;
+  fileCount?: number;
+  fileImageCount?: number;
   sandboxPreference?: string;
   memoryEnabled: boolean;
   isNewChat: boolean;

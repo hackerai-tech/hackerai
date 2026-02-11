@@ -89,7 +89,9 @@ export const useChatHandlers = ({
    * Returns the normalized messages array.
    * Should be called before any message management operation during streaming.
    */
-  const stopActiveStream = async (): Promise<ChatMessage[]> => {
+  const stopActiveStream = async (options?: {
+    skipSave?: boolean;
+  }): Promise<ChatMessage[]> => {
     // Stop the stream immediately (client-side abort)
     stop();
 
@@ -109,7 +111,7 @@ export const useChatHandlers = ({
       // Run cancel and save in parallel - they're independent operations
       const lastMessage = normalizedMessages[normalizedMessages.length - 1];
       const savePromise =
-        lastMessage?.role === "assistant"
+        !options?.skipSave && lastMessage?.role === "assistant"
           ? saveAssistantMessage({
               id: lastMessage.id,
               chatId,
@@ -121,7 +123,10 @@ export const useChatHandlers = ({
           : Promise.resolve();
 
       await Promise.all([
-        cancelStreamMutation({ chatId }).catch((error) => {
+        cancelStreamMutation({
+          chatId,
+          skipSave: options?.skipSave || undefined,
+        }).catch((error) => {
           console.error("Failed to cancel stream:", error);
         }),
         savePromise,
@@ -300,7 +305,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (status === "streaming") {
-      await stopActiveStream();
+      await stopActiveStream({ skipSave: true });
     }
 
     // Remove only todos from the last assistant message being regenerated.
@@ -359,7 +364,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (status === "streaming") {
-      await stopActiveStream();
+      await stopActiveStream({ skipSave: true });
     }
 
     const cleanedTodos = removeTodosBySourceMessages(
@@ -415,7 +420,7 @@ export const useChatHandlers = ({
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (status === "streaming") {
-      await stopActiveStream();
+      await stopActiveStream({ skipSave: true });
     }
 
     // Find the edited message index to identify subsequent messages

@@ -20,6 +20,29 @@ export function hasFileAttachments(
 }
 
 /**
+ * Count total file attachments and how many are images
+ */
+export function countFileAttachments(
+  messages: Array<{ parts?: Array<{ type?: string; mediaType?: string }> }>,
+): { totalFiles: number; imageCount: number } {
+  let totalFiles = 0;
+  let imageCount = 0;
+
+  for (const msg of messages) {
+    if (!msg.parts) continue;
+    for (const part of msg.parts) {
+      if (part.type !== "file") continue;
+      totalFiles++;
+      if ((part.mediaType ?? "").startsWith("image/")) {
+        imageCount++;
+      }
+    }
+  }
+
+  return { totalFiles, imageCount };
+}
+
+/**
  * Send rate limit warnings based on subscription and rate limit info
  */
 export function sendRateLimitWarnings(

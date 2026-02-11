@@ -8,9 +8,19 @@
  * sequences** (colors, cursor, etc.) for Shiki ANSI rendering in the UI.
  */
 
-// Line-level regexes — match entire lines containing known PTY noise markers.
+// ---------------------------------------------------------------------------
+// Sequence-level regex — strips properly-terminated OSC sequences without
+// destroying real output text that may follow on the same line.
+// OSC = ESC ] ... terminated by BEL (\x07), ST (\x1b\\), or C1 ST (\x9c).
+// ---------------------------------------------------------------------------
+const OSC_COMPLETE_RE = /\x1b\][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)/g;
+
+// ---------------------------------------------------------------------------
+// Line-level regexes — fallback for unterminated / split-across-chunks OSC
+// sequences where the terminator never arrived in this buffer.
 // Uses multiline flag so ^/$ match line boundaries. Removes the whole line
-// including its trailing newline, avoiding any need to parse OSC terminators.
+// including its trailing newline.
+// ---------------------------------------------------------------------------
 
 /** VS Code shell-integration: any line containing ]633; */
 const OSC_633_RE = /^.*\]633;.*$\r?\n?/gm;
@@ -30,12 +40,22 @@ const LEADING_CRLF_RE = /^(\r?\n)+/;
  * Only targets sequences that are PTY infrastructure noise (shell-integration,
  * sandbox metadata, bracketed paste). All ANSI SGR color/style, cursor, and
  * erase sequences pass through untouched.
+ *
+ * Two-pass approach:
+ * 1. Strip complete (properly terminated) OSC sequences at the sequence level.
+ *    This prevents the line-level fallback from accidentally nuking real output
+ *    that follows an OSC marker on the same line in the accumulated buffer.
+ * 2. Strip entire lines that still contain unterminated OSC markers (split
+ *    across PTY data chunks, missing their terminator).
  */
 export const stripTerminalEscapes = (output: string): string => {
   // Fast path: nothing to strip if there is no ESC byte.
   if (output.indexOf("\x1b") === -1) return output;
 
   let result = output;
+  // Pass 1: strip complete OSC sequences (sequence-level, preserves surrounding text)
+  result = result.replace(OSC_COMPLETE_RE, "");
+  // Pass 2: strip lines with remaining unterminated OSC markers
   result = result.replace(OSC_633_RE, "");
   result = result.replace(OSC_3008_RE, "");
   result = result.replace(BRACKETED_PASTE_RE, "");

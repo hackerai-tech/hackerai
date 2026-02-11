@@ -108,6 +108,7 @@ export const saveMessage = mutation({
     generationTimeMs: v.optional(v.number()),
     finishReason: v.optional(v.string()),
     usage: v.optional(v.any()),
+    updateOnly: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -174,6 +175,12 @@ export const saveMessage = mutation({
 
         return null;
       } else {
+        // updateOnly: only patch existing messages, don't create new ones.
+        // Safety net for aborted streams when Redis skipSave signal was missed.
+        if (args.updateOnly) {
+          return null;
+        }
+
         const chatExists: boolean = await ctx.runQuery(
           internal.messages.verifyChatOwnership,
           {

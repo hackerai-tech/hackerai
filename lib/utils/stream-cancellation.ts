@@ -32,6 +32,7 @@ type PreemptiveTimeoutOptions = {
 type CancellationSubscriberResult = {
   stop: () => Promise<void>;
   isUsingPubSub: boolean;
+  shouldSkipSave: () => boolean;
 };
 
 /**
@@ -102,6 +103,7 @@ export const createCancellationPoller = ({
       abortController.signal.removeEventListener("abort", onAbort);
     },
     isUsingPubSub: false,
+    shouldSkipSave: () => false,
   };
 };
 
@@ -147,6 +149,9 @@ export const createCancellationSubscriber = async ({
     subscriber = await createRedisSubscriber();
 
     if (subscriber) {
+      // Track skipSave flag from cancellation message
+      let skipSave = false;
+
       // Named handler so we can remove it on manual stop
       const handleAbort = () => {
         stopped = true;
@@ -163,6 +168,7 @@ export const createCancellationSubscriber = async ({
           const data = JSON.parse(message);
           if (data.canceled) {
             stopped = true;
+            if (data.skipSave) skipSave = true;
             abortController.abort();
             // handleAbort will be called by the abort event listener
           }
@@ -182,6 +188,7 @@ export const createCancellationSubscriber = async ({
           cleanupSubscriber();
         },
         isUsingPubSub: true,
+        shouldSkipSave: () => skipSave,
       };
     }
   } catch (error) {

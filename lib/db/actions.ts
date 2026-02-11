@@ -63,6 +63,7 @@ export async function saveMessage({
   generationTimeMs,
   finishReason,
   usage,
+  updateOnly,
 }: {
   chatId: string;
   userId: string;
@@ -76,6 +77,7 @@ export async function saveMessage({
   generationTimeMs?: number;
   finishReason?: string;
   usage?: Record<string, unknown>;
+  updateOnly?: boolean;
 }) {
   try {
     // Fix incomplete tool invocations for assistant messages (from interrupted streams)
@@ -103,6 +105,7 @@ export async function saveMessage({
       generationTimeMs,
       finishReason,
       usage,
+      updateOnly,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");
