@@ -361,6 +361,7 @@ export const prepareForNewStream = mutation({
 export const cancelStreamFromClient = mutation({
   args: {
     chatId: v.string(),
+    skipSave: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -407,6 +408,7 @@ export const cancelStreamFromClient = mutation({
     // This runs async and doesn't block the mutation response
     await ctx.scheduler.runAfter(0, internal.redisPubsub.publishCancellation, {
       chatId: args.chatId,
+      skipSave: args.skipSave,
     });
 
     return null;

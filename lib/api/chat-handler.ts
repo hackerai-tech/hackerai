@@ -956,14 +956,16 @@ export const createChatHandler = (
 
                   const hasUsageToRecord = Boolean(resolvedUsage);
 
-                  // If user aborted (not pre-emptive), no files to add, no incomplete tools,
-                  // AND no usage to record, skip message save (frontend already saved complete message)
+                  // If user aborted (not pre-emptive), skip message save when:
+                  // 1. skipSave signal received via Redis (edit/regenerate/retry — message will be discarded)
+                  // 2. No files, tools, or usage to record (frontend already saved the message)
                   if (
                     isAborted &&
                     !isPreemptiveAbort &&
-                    newFileIds.length === 0 &&
-                    !hasIncompleteToolCalls &&
-                    !hasUsageToRecord
+                    (cancellationSubscriber.shouldSkipSave() ||
+                      (newFileIds.length === 0 &&
+                        !hasIncompleteToolCalls &&
+                        !hasUsageToRecord))
                   ) {
                     await deductAccumulatedUsage();
                     return;
@@ -994,6 +996,9 @@ export const createChatHandler = (
 
                     // Use resolvedUsage which was already awaited above on abort
                     // Falls back to streamUsage for non-abort cases
+                    // On user-initiated abort, use updateOnly as safety net:
+                    // only patch existing messages (add files/usage), don't create new ones.
+                    // This prevents orphan messages when Redis skipSave signal was missed.
                     await saveMessage({
                       chatId,
                       userId,
@@ -1003,6 +1008,8 @@ export const createChatHandler = (
                       generationTimeMs: Date.now() - streamStartTime,
                       finishReason: streamFinishReason,
                       usage: resolvedUsage ?? streamUsage,
+                      updateOnly:
+                        isAborted && !isPreemptiveAbort ? true : undefined,
                     });
                   }
                   logStep("save_messages", stepStart);
