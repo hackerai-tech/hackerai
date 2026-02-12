@@ -1,4 +1,4 @@
-import { tasks, auth } from "@trigger.dev/sdk/v3";
+import { tasks } from "@trigger.dev/sdk/v3";
 import type { agentStreamTask } from "@/src/trigger/agent-task";
 import { prepareAgentPayload } from "@/lib/api/prepare-agent-payload";
 import { ChatSDKError } from "@/lib/errors";
@@ -14,6 +14,9 @@ export async function POST(req: NextRequest) {
     const handle = await tasks.trigger<typeof agentStreamTask>(
       "agent-stream",
       payload,
+      {
+        publicTokenOptions: { expirationTime: "1hr" },
+      } as Parameters<typeof tasks.trigger>[2],
     );
 
     const posthog = PostHogClient();
@@ -29,16 +32,9 @@ export async function POST(req: NextRequest) {
       await posthog.flush();
     }
 
-    const publicAccessToken = await auth.createPublicToken({
-      scopes: {
-        read: { runs: [handle.id] },
-      },
-      expirationTime: "1hr",
-    });
-
     return Response.json({
       runId: handle.id,
-      publicAccessToken,
+      publicAccessToken: handle.publicAccessToken,
     });
   } catch (error) {
     if (error instanceof ChatSDKError) {

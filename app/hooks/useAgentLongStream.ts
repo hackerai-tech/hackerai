@@ -24,6 +24,7 @@ import type { ChatMessage, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails } from "@/types/file";
 import type { RateLimitWarningData } from "@/app/components/RateLimitWarning";
+import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import type { SandboxPreference } from "@/types/chat";
 
 export interface UseAgentLongStreamOptions {
@@ -315,15 +316,10 @@ export function useAgentLongStream(
       }
       if (event.type === "data-rate-limit-warning") {
         const rawData = event.data as Record<string, unknown>;
-        if (
-          !hasUserDismissedWarningRef.current &&
-          rawData &&
-          typeof rawData.resetTime === "string"
-        )
-          setRateLimitWarning({
-            ...rawData,
-            resetTime: new Date(rawData.resetTime),
-          } as RateLimitWarningData);
+        const parsed = parseRateLimitWarning(rawData, {
+          hasUserDismissed: hasUserDismissedWarningRef.current,
+        });
+        if (parsed) setRateLimitWarning(parsed);
       }
       if (event.type === "data-file-metadata") {
         const d = event.data as {

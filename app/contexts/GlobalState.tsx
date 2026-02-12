@@ -17,6 +17,7 @@ import type {
   QueueBehavior,
   SandboxPreference,
 } from "@/types/chat";
+import { isChatMode } from "@/types/chat";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -171,9 +172,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
-    return saved === "ask" || saved === "agent" || saved === "agent-long"
-      ? saved
-      : "ask";
+    return isChatMode(saved) ? saved : "ask";
   });
   const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);

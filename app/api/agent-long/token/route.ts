@@ -6,9 +6,9 @@ import type { NextRequest } from "next/server";
 
 /**
  * GET /api/agent-long/token?runId=...&chatId=...
- * Verifies the user owns the chat and the run is (or was) the active run for that chat,
+ * Verifies the user owns the chat and the run is the active run for that chat,
  * then returns a Trigger.dev public access token for that run so the client can reconnect after reload.
- * Accepts when active_trigger_run_id === runId OR when it is already cleared (e.g. client cleared it on cancel).
+ * Only accepts when active_trigger_run_id === runId; rejects when there is no active run (null).
  */
 export async function GET(req: NextRequest) {
   try {
@@ -33,9 +33,13 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    const runStillActive = chat.active_trigger_run_id === runId;
-    const runAlreadyCleared = chat.active_trigger_run_id == null;
-    if (!runStillActive && !runAlreadyCleared) {
+    if (chat.active_trigger_run_id == null) {
+      return Response.json(
+        { message: "No active run for this chat" },
+        { status: 403 },
+      );
+    }
+    if (chat.active_trigger_run_id !== runId) {
       return Response.json(
         { message: "Run does not belong to this chat" },
         { status: 403 },

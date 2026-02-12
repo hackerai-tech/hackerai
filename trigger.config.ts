@@ -4,7 +4,7 @@ import { defineConfig } from "@trigger.dev/sdk/v3";
 config({ path: ".env.local" });
 
 export default defineConfig({
-  project: process.env.TRIGGER_PROJECT!,
+  project: process.env.TRIGGER_PROJECT! ?? "proj_umgzqxmfrucveonxqdmt",
   runtime: "node",
   logLevel: "log",
   // The max compute seconds a task is allowed to run. If the task run exceeds this duration, it will be stopped.

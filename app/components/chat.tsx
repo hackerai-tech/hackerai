@@ -30,7 +30,7 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
+import type { Todo, ChatMessage, ChatMode } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -40,6 +40,7 @@ import { useAutoResume } from "../hooks/useAutoResume";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
+import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { useAgentLongStream } from "../hooks/useAgentLongStream";
 
 export const Chat = ({
@@ -276,54 +277,11 @@ export const Chat = ({
         );
       }
       if (dataPart.type === "data-rate-limit-warning") {
-        const rawData = dataPart.data as {
-          warningType: "sliding-window" | "token-bucket" | "extra-usage-active";
-          resetTime: string;
-          subscription: SubscriptionTier;
-          // sliding-window fields
-          remaining?: number;
-          mode?: ChatMode;
-          // token-bucket and extra-usage-active fields
-          bucketType?: "session" | "weekly";
-          // token-bucket only
-          remainingPercent?: number;
-        };
-
-        // Only show or update warning if user hasn't dismissed it
-        if (!hasUserDismissedWarningRef.current) {
-          if (rawData.warningType === "sliding-window") {
-            setRateLimitWarning({
-              warningType: "sliding-window",
-              remaining: rawData.remaining!,
-              resetTime: new Date(rawData.resetTime),
-              mode: rawData.mode!,
-              subscription: rawData.subscription,
-            });
-          } else if (rawData.warningType === "extra-usage-active") {
-            // Only show extra usage warning once per reset period (localStorage tracks this)
-            const storageKey = `extraUsageWarningShownUntil_${rawData.bucketType}`;
-            const storedResetTime = localStorage.getItem(storageKey);
-
-            // Show warning only if we haven't shown it for this period
-            if (!storedResetTime || new Date(storedResetTime) < new Date()) {
-              localStorage.setItem(storageKey, rawData.resetTime);
-              setRateLimitWarning({
-                warningType: "extra-usage-active",
-                bucketType: rawData.bucketType!,
-                resetTime: new Date(rawData.resetTime),
-                subscription: rawData.subscription,
-              });
-            }
-          } else {
-            setRateLimitWarning({
-              warningType: "token-bucket",
-              bucketType: rawData.bucketType!,
-              remainingPercent: rawData.remainingPercent!,
-              resetTime: new Date(rawData.resetTime),
-              subscription: rawData.subscription,
-            });
-          }
-        }
+        const rawData = dataPart.data as Record<string, unknown>;
+        const parsed = parseRateLimitWarning(rawData, {
+          hasUserDismissed: hasUserDismissedWarningRef.current,
+        });
+        if (parsed) setRateLimitWarning(parsed);
       }
       if (dataPart.type === "data-file-metadata") {
         const fileData = dataPart.data as {

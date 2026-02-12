@@ -5,7 +5,28 @@ import type { FileDetails } from "./file";
 
 export type ChatMode = "agent" | "agent-long" | "ask";
 
+export const CHAT_MODES: readonly ChatMode[] = ["agent", "agent-long", "ask"];
+
+export function isChatMode(value: string | null): value is ChatMode {
+  return value !== null && (CHAT_MODES as readonly string[]).includes(value);
+}
+
 export type SubscriptionTier = "free" | "pro" | "pro-plus" | "ultra" | "team";
+
+export const SUBSCRIPTION_TIERS: readonly SubscriptionTier[] = [
+  "free",
+  "pro",
+  "pro-plus",
+  "ultra",
+  "team",
+];
+
+export function isSubscriptionTier(value: unknown): value is SubscriptionTier {
+  return (
+    typeof value === "string" &&
+    (SUBSCRIPTION_TIERS as readonly string[]).includes(value)
+  );
+}
 
 export interface SidebarFile {
   path: string;

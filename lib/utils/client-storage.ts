@@ -1,3 +1,5 @@
+import { isChatMode, type ChatMode } from "@/types/chat";
+
 export type ConversationDraft = {
   id: string;
   content: string;
@@ -42,18 +44,17 @@ export const writeDraftStore = (store: ConversationDraftStore): void => {
   }
 };
 
-export const readChatMode = (): "ask" | "agent" | "agent-long" | null => {
+export const readChatMode = (): ChatMode | null => {
   if (!isBrowser()) return null;
   try {
     const raw = window.localStorage.getItem(CHAT_MODE_STORAGE_KEY);
-    if (raw === "ask" || raw === "agent" || raw === "agent-long") return raw;
-    return null;
+    return isChatMode(raw) ? raw : null;
   } catch {
     return null;
   }
 };
 
-export const writeChatMode = (mode: "ask" | "agent" | "agent-long"): void => {
+export const writeChatMode = (mode: ChatMode): void => {
   if (!isBrowser()) return;
   try {
     window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);

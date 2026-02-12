@@ -264,10 +264,12 @@ export function accumulateChunksToMessage(
         parts.push({ type: "step-start" });
         break;
       case "finish-step":
-        Object.keys(activeTextParts).forEach((k) => delete activeTextParts[k]);
-        Object.keys(activeReasoningParts).forEach(
-          (k) => delete activeReasoningParts[k],
-        );
+        for (const k of Object.keys(activeTextParts)) {
+          delete activeTextParts[k];
+        }
+        for (const k of Object.keys(activeReasoningParts)) {
+          delete activeReasoningParts[k];
+        }
         break;
 
       case "finish":

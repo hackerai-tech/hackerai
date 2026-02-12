@@ -83,7 +83,12 @@ function createMetadataWriter(): UIMessageStreamWriter {
     write(part: { type: string; data?: unknown }) {
       if (!part.type.startsWith("data-")) return;
       const event = { type: part.type, data: part.data } as MetadataEvent;
-      appendMetadata(event);
+      appendMetadata(event).catch((err) =>
+        logger.warn("Failed to append metadata event", {
+          type: part.type,
+          err,
+        }),
+      );
     },
     merge: () => {
       // No-op: we pipe LLM stream separately to aiStream
@@ -260,7 +265,6 @@ export const agentStreamTask = task({
     const deductAccumulatedUsage = async () => {
       if (hasDeductedUsage || subscription === "free") return;
       if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
-        hasDeductedUsage = true;
         await deductUsage(
           userId,
           subscription,
@@ -270,6 +274,7 @@ export const agentStreamTask = task({
           extraUsageConfig ?? undefined,
           accumulatedProviderCost > 0 ? accumulatedProviderCost : undefined,
         );
+        hasDeductedUsage = true;
       }
     };
 
