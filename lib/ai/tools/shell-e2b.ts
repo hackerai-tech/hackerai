@@ -9,6 +9,7 @@ import {
 import { checkCommandGuardrails } from "./utils/guardrails";
 import type { GuardrailConfig } from "./utils/guardrails";
 import type { PtySessionManager } from "./utils/pty-session-manager";
+import { createTruncatingStreamCallback } from "./utils/stream-truncate";
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -87,13 +88,13 @@ export function createE2BHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = (text: string) => {
+    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
-    };
+    });
 
     sessionManager.setStreamCallback(sessionPid, streamToFrontend);
 
@@ -197,13 +198,13 @@ export function createE2BHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = (text: string) => {
+    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
-    };
+    });
 
     // Flush any output that accumulated before this wait call
     const pending = sessionManager.viewSession(pid);
@@ -297,11 +298,16 @@ export function createE2BHandlers(deps: {
       output !== "[No new output]" &&
       output !== "[Input sent successfully]"
     ) {
-      writer.write({
-        type: "data-terminal",
-        id: `terminal-${randomUUID()}-1`,
-        data: { terminal: output, toolCallId },
-      });
+      const streamToFrontend = createTruncatingStreamCallback(
+        (text: string) => {
+          writer.write({
+            type: "data-terminal",
+            id: `terminal-${randomUUID()}-1`,
+            data: { terminal: text, toolCallId },
+          });
+        },
+      );
+      streamToFrontend(output);
     }
 
     return {
