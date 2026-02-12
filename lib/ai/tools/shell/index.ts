@@ -60,6 +60,7 @@ export const createShell = (context: ToolContext) => {
 <instructions>
 - Prioritize using \`file\` tool instead of this tool for file content operations to avoid escaping errors
 - \`exec\` runs the command and returns output along with a \`session\` identifier — save this for subsequent \`wait\`, \`send\`, and \`kill\` actions
+- When running multiple \`exec\` calls in parallel, pass different \`session\` names (e.g. "server", "worker", "build") to isolate each command; if a name is already in use, a suffix is added automatically (e.g. server_1)
 - The default working directory for newly created shell sessions is /home/user
 - Working directory will be reset to /home/user in every new shell session; Use \`cd\` command to change directories as needed
 - MUST avoid commands that require confirmation; use flags like \`-y\` or \`-f\` for automatic execution
@@ -141,9 +142,7 @@ If you are generating files:
       session: z
         .string()
         .optional()
-        .describe(
-          "The session identifier returned by `exec`. Required for `wait`, `send`, and `kill` actions.",
-        ),
+        .describe("The unique identifier of the target shell session"),
       timeout: z
         .number()
         .int()

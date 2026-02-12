@@ -128,7 +128,7 @@ export function extractAllSidebarContent(
           isBackground: false,
           toolCallId: part.toolCallId || "",
           shellAction: part.input.action,
-          pid: part.input.pid ?? part.output?.pid,
+          session: part.input.session ?? part.output?.session ?? null,
         });
       }
 

@@ -38,8 +38,6 @@ export interface SidebarTerminal {
   output: string;
   isExecuting: boolean;
   isBackground?: boolean;
-  /** E2B process ID (only for E2B sandboxes). */
-  pid?: number | null;
   /** Local session identifier (only for local sandboxes). */
   session?: string | null;
   toolCallId: string;

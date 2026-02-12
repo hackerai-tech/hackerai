@@ -113,7 +113,6 @@ export function getActionText(content: SidebarContent): string {
     return getShellActionLabel({
       isShellTool: !!content.shellAction,
       action: content.shellAction,
-      pid: content.pid ?? undefined,
       session: content.session ?? undefined,
       isActive: content.isExecuting,
     });

@@ -98,6 +98,7 @@ export function createE2BHandlers(deps: {
         return handleExec(
           tmuxSandbox,
           command,
+          session,
           timeout,
           toolCallId,
           abortSignal,
@@ -126,6 +127,7 @@ export function createE2BHandlers(deps: {
   async function handleExec(
     sandbox: TmuxSandbox,
     command: string | undefined,
+    preferredSession: string | undefined,
     timeout: number,
     toolCallId: string,
     abortSignal?: AbortSignal,
@@ -151,7 +153,10 @@ export function createE2BHandlers(deps: {
     // Acquire a dedicated tmux session (reuses idle ones, auto-suffixes if busy)
     let sessionId: string;
     try {
-      sessionId = await sessionManager.acquireSession(sandbox);
+      sessionId = await sessionManager.acquireSession(
+        sandbox,
+        preferredSession,
+      );
     } catch (error) {
       if (error instanceof TmuxNotAvailableError) {
         tmuxUnavailable = true;

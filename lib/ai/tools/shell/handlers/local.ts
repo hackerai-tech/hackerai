@@ -61,6 +61,7 @@ export function createLocalHandlers(deps: {
         return handleLocalExec(
           sandbox,
           command,
+          session,
           timeout,
           toolCallId,
           abortSignal,
@@ -89,6 +90,7 @@ export function createLocalHandlers(deps: {
   async function handleLocalExec(
     sandbox: TmuxSandbox,
     command: string | undefined,
+    preferredSession: string | undefined,
     timeout: number,
     toolCallId: string,
     abortSignal?: AbortSignal,
@@ -114,7 +116,10 @@ export function createLocalHandlers(deps: {
     // Acquire a dedicated tmux session (reuses idle ones, auto-suffixes if busy)
     let sessionId: string;
     try {
-      sessionId = await localSessionManager.acquireSession(sandbox);
+      sessionId = await localSessionManager.acquireSession(
+        sandbox,
+        preferredSession,
+      );
     } catch (error) {
       // tmux not available -- fall back to basic commands.run (exec only)
       if (error instanceof TmuxNotAvailableError) {

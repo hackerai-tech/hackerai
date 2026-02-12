@@ -16,7 +16,6 @@ export interface ShellToolInput {
   action?: string;
   brief?: string;
   input?: string;
-  pid?: number;
   session?: string;
 }
 
@@ -29,7 +28,6 @@ export interface ShellToolOutput {
   };
   output?: string;
   exitCode?: number | null;
-  pid?: number;
   session?: string;
   error?: boolean | string;
 }
@@ -46,7 +44,7 @@ const LABELS: Record<ShellAction, [active: string, done: string]> = {
   kill: ["Killing", "Killed"],
 };
 
-/** Actions whose action label should include session/PID info. */
+/** Actions whose action label should include session info. */
 const SESSION_LABEL_ACTIONS = new Set<ShellAction>([
   "view",
   "wait",
@@ -57,11 +55,10 @@ const SESSION_LABEL_ACTIONS = new Set<ShellAction>([
 export function getShellActionLabel(opts: {
   isShellTool: boolean;
   action?: string;
-  pid?: number;
   session?: string;
   isActive?: boolean;
 }): string {
-  const { isShellTool, action, pid, session, isActive = false } = opts;
+  const { isShellTool, action, session, isActive = false } = opts;
 
   if (!isShellTool) return isActive ? "Executing" : "Executed";
 
@@ -70,9 +67,8 @@ export function getShellActionLabel(opts: {
 
   const [active, done] = entry;
   const label = isActive ? active : done;
-  if (action && SESSION_LABEL_ACTIONS.has(action as ShellAction)) {
-    if (pid) return `${label} [PID: ${pid}]`;
-    if (session) return `${label} [${session}]`;
+  if (action && SESSION_LABEL_ACTIONS.has(action as ShellAction) && session) {
+    return `${label} [${session}]`;
   }
   return label;
 }

@@ -262,26 +262,77 @@ export class LocalPtySessionManager {
   /**
    * Acquire a PTY session for an exec call.
    *
-   * Returns an idle session when available (preserving working directory for
-   * sequential commands) or creates a new one. Each concurrent exec gets its
-   * own session — no name collisions possible.
+   * When preferredSessionId is provided:
+   * - If that session exists and is idle, reuse it.
+   * - If it exists and is busy, create a new one with a numeric suffix (e.g. server_1).
+   * - If it does not exist, create it with that name.
+   *
+   * When preferredSessionId is omitted:
+   * - Reuse an idle session from the pool (LIFO), or create a new auto-named one (s0, s1, ...).
    *
    * Mirrors E2B's `PtySessionManager.acquireSession` pattern.
    */
-  async acquireSession(sandbox: TmuxSandbox): Promise<string> {
-    // Try to reuse an idle session (LIFO for working-directory locality)
+  async acquireSession(
+    sandbox: TmuxSandbox,
+    preferredSessionId?: string,
+  ): Promise<string> {
+    const sanitizedPreferred = preferredSessionId
+      ? sanitizeForShell(preferredSessionId).slice(0, 32) || undefined
+      : undefined;
+
+    if (sanitizedPreferred) {
+      // Agent requested a specific session name — try to use or create it
+      if (this.sessions.has(sanitizedPreferred)) {
+        const session = this.sessions.get(sanitizedPreferred)!;
+        if (!this.busySessions.has(sanitizedPreferred)) {
+          // Idle — reuse it
+          this.idleSessions = this.idleSessions.filter(
+            (s) => s !== sanitizedPreferred,
+          );
+          try {
+            await this.tmuxRun(
+              sandbox,
+              `tmux clear-history -t ${session.tmuxSessionName}`,
+            );
+          } catch {
+            this.sessions.delete(sanitizedPreferred);
+            // Session died — create fresh with same name
+            await this.createSession(sandbox, sanitizedPreferred);
+            this.busySessions.add(sanitizedPreferred);
+            return sanitizedPreferred;
+          }
+          session.lastCapturedOutput = "";
+          this.busySessions.add(sanitizedPreferred);
+          return sanitizedPreferred;
+        }
+        // Busy — create new with suffix: preferred_1, preferred_2, ...
+        let suffix = 1;
+        let candidateId = `${sanitizedPreferred}_${suffix}`;
+        while (this.sessions.has(candidateId)) {
+          suffix++;
+          candidateId = `${sanitizedPreferred}_${suffix}`;
+        }
+        await this.createSession(sandbox, candidateId);
+        this.busySessions.add(candidateId);
+        return candidateId;
+      }
+      // Session does not exist — create with preferred name
+      await this.createSession(sandbox, sanitizedPreferred);
+      this.busySessions.add(sanitizedPreferred);
+      return sanitizedPreferred;
+    }
+
+    // No preferred name — use idle pool or auto-generate
     while (this.idleSessions.length > 0) {
       const sessionId = this.idleSessions.pop()!;
       if (this.sessions.has(sessionId)) {
         const session = this.sessions.get(sessionId)!;
-        // Clear scrollback so previous command output doesn't bleed through
         try {
           await this.tmuxRun(
             sandbox,
             `tmux clear-history -t ${session.tmuxSessionName}`,
           );
         } catch {
-          // Session may have died — clean up and try the next one
           this.sessions.delete(sessionId);
           continue;
         }
@@ -291,7 +342,6 @@ export class LocalPtySessionManager {
       }
     }
 
-    // No idle sessions available — create a fresh one
     const sessionId = `s${this.nextSessionId++}`;
     await this.createSession(sandbox, sessionId);
     this.busySessions.add(sessionId);
