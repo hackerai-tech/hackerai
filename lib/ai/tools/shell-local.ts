@@ -17,6 +17,7 @@ import {
   TmuxNotAvailableError,
 } from "./utils/local-pty-session-manager";
 import type { ConvexSandbox } from "./utils/convex-sandbox";
+import { createTruncatingStreamCallback } from "./utils/stream-truncate";
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -146,13 +147,13 @@ export function createLocalHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = (text: string) => {
+    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
-    };
+    });
 
     localSessionManager.setStreamCallback(sessionId, streamToFrontend);
 
@@ -216,13 +217,13 @@ export function createLocalHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = (text: string) => {
+    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
-    };
+    });
 
     // Flush any output that accumulated before this wait call
     const pending = await localSessionManager.viewSessionAsync(
@@ -322,11 +323,16 @@ export function createLocalHandlers(deps: {
       output !== "[No new output]" &&
       output !== "[Input sent successfully]"
     ) {
-      writer.write({
-        type: "data-terminal",
-        id: `terminal-${randomUUID()}-1`,
-        data: { terminal: output, toolCallId },
-      });
+      const streamToFrontend = createTruncatingStreamCallback(
+        (text: string) => {
+          writer.write({
+            type: "data-terminal",
+            id: `terminal-${randomUUID()}-1`,
+            data: { terminal: text, toolCallId },
+          });
+        },
+      );
+      streamToFrontend(output);
     }
 
     return {
@@ -400,13 +406,13 @@ export function createLocalHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = (text: string) => {
+    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
-    };
+    });
 
     const handler = createTerminalHandler(streamToFrontend, {
       timeoutSeconds: timeout,
