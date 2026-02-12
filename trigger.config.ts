@@ -1,4 +1,7 @@
+import { config } from "dotenv";
 import { defineConfig } from "@trigger.dev/sdk/v3";
+
+config({ path: ".env.local" });
 
 export default defineConfig({
   project: process.env.TRIGGER_PROJECT!,
