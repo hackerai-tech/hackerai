@@ -1,69 +1,20 @@
 /**
- * Manages persistent PTY sessions for local (ConvexSandbox) environments
- * using tmux as the cross-platform PTY backend.
+ * Manages persistent PTY sessions using tmux as the cross-platform PTY backend.
  *
- * tmux provides consistent behavior across macOS, Linux, and Windows (via
- * Docker/WSL). Commands are sent via base64 encoding to avoid shell escaping
- * issues. Sentinel-based completion detection matches the E2B PtySessionManager
- * pattern.
- *
- * Architecture:
- *  - Each session is a detached tmux session on the local machine.
- *  - `exec` sends the command + sentinel, then polls `capture-pane` until the
- *    sentinel appears or timeout. The polling runs as a single `commands.run()`
- *    call on the local machine (zero intermediate Convex round-trips).
- *  - `wait` (sentinel case) runs a single `commands.run()` with the same
- *    tight poll loop as `exec`, blocking until the sentinel appears.
- *    (no-sentinel case) does a single `capture-pane` and returns immediately.
- *  - `send` uses `tmux send-keys` for special keys and base64 `paste-buffer`
- *    for raw text.
- *  - `kill` uses `tmux kill-session`.
+ * Works with any sandbox that implements `TmuxSandbox` — both local
+ * (TmuxSandbox) and cloud (E2B Sandbox) environments. tmux provides
+ * consistent behavior across macOS, Linux, and Windows (via Docker/WSL).
  */
 
 import { randomUUID } from "crypto";
-import type { ConvexSandbox } from "./convex-sandbox";
-import { stripSentinelNoise } from "./pty-output";
-import { TMUX_SPECIAL_KEYS } from "./pty-keys";
+import { stripSentinelNoise } from "../utils/pty-output";
+import { TMUX_SPECIAL_KEYS } from "../utils/pty-keys";
+import { cleanOutput, normalizePaneCapture } from "./output";
+import type { LocalPtySession, TmuxSandbox } from "./types";
+import { TmuxNotAvailableError } from "./types";
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-/** Timeout for internal tmux management commands (not user commands). */
 const TMUX_CMD_TIMEOUT_MS = 10_000;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface LocalPtySession {
-  tmuxSessionName: string;
-  /** Full captured output from the last capture-pane call. */
-  lastCapturedOutput: string;
-}
-
-// ---------------------------------------------------------------------------
-// Error class for tmux availability
-// ---------------------------------------------------------------------------
-
-export class TmuxNotAvailableError extends Error {
-  constructor(
-    message = "tmux is not installed and could not be auto-installed. " +
-      "Install it manually to enable full terminal features (wait, send, kill):\n" +
-      "  macOS:   brew install tmux\n" +
-      "  Linux:   sudo apt-get install tmux  (or: dnf, apk, yum)\n" +
-      "  Windows: available via WSL or Docker (tmux is not native to Windows)",
-  ) {
-    super(message);
-    this.name = "TmuxNotAvailableError";
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Strip anything that isn't alphanumeric, hyphen, or underscore. */
 function sanitizeForShell(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "");
 }
@@ -117,7 +68,7 @@ export class LocalPtySessionManager {
    * install it using the first available package manager. Throws
    * `TmuxNotAvailableError` if tmux cannot be made available.
    */
-  async ensureTmux(sandbox: ConvexSandbox): Promise<void> {
+  async ensureTmux(sandbox: TmuxSandbox): Promise<void> {
     if (this.tmuxVerified) return;
 
     // Quick check
@@ -168,10 +119,7 @@ export class LocalPtySessionManager {
    * Create a new tmux session for the given session ID.
    * The tmux session name is scoped by chatId to avoid collisions across chats.
    */
-  async createSession(
-    sandbox: ConvexSandbox,
-    sessionId: string,
-  ): Promise<void> {
+  async createSession(sandbox: TmuxSandbox, sessionId: string): Promise<void> {
     await this.ensureTmux(sandbox);
 
     // Suppress MOTD on first session creation (matches E2B PtySessionManager)
@@ -202,7 +150,7 @@ export class LocalPtySessionManager {
       /* ignore -- session likely doesn't exist */
     });
 
-    // Create a detached tmux session with a generous scrollback
+    // Create a detached tmux session with a generous scrollback.
     const result = await this.tmuxRun(
       sandbox,
       `tmux new-session -d -s ${tmuxName} -x 200 -y 50 \\; ` +
@@ -271,7 +219,7 @@ export class LocalPtySessionManager {
    *
    * Mirrors E2B's `PtySessionManager.acquireSession` pattern.
    */
-  async acquireSession(sandbox: ConvexSandbox): Promise<string> {
+  async acquireSession(sandbox: TmuxSandbox): Promise<string> {
     // Try to reuse an idle session (LIFO for working-directory locality)
     while (this.idleSessions.length > 0) {
       const sessionId = this.idleSessions.pop()!;
@@ -318,16 +266,15 @@ export class LocalPtySessionManager {
   // =========================================================================
 
   /**
-   * Execute a command in a tmux session with sentinel-based completion
-   * detection.
+   * Execute a command within a tmux session.
    *
-   * Sends the command + sentinel as a single `commands.run()` that includes
-   * an inline polling loop. This way the polling runs locally on the user's
-   * machine (zero extra Convex round-trips). Output arrives all at once
-   * when done and is streamed to the frontend via `cleanOutput`.
+   * Two modes:
+   * 1. **Streaming mode** (E2B with `supportsStreaming`): Outputs periodic
+   *    snapshots that are streamed via `onStdout` for real-time updates.
+   * 2. **Batch mode** (local): Single poll loop that outputs once at the end.
    */
   async execInSession(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     sessionId: string,
     command: string,
     timeoutSeconds: number,
@@ -345,30 +292,206 @@ export class LocalPtySessionManager {
     const uid = randomUUID().replace(/-/g, "");
     const startMarker = `__START_${uid}__`;
     const sentinel = `__DONE_${uid}__`;
-    const fullCommand = `echo ${startMarker} ; ${command} ; echo ${sentinel}$?`;
+    // Use newlines instead of `;` to separate the markers from the user command.
+    const fullCommand = `echo ${startMarker}\n${command}\necho ${sentinel}$?`;
     const base64Cmd = Buffer.from(fullCommand).toString("base64");
     const maxIterations = Math.ceil(timeoutSeconds / 0.3);
     const timeoutMarker = `__TMUX_TIMEOUT__`;
     const sn = session.tmuxSessionName;
 
-    // Build the full exec-and-poll script as a single shell command.
-    // Steps:
-    //   1. Decode base64 command -> load into tmux paste buffer -> paste into session
-    //   2. Send Enter to execute
-    //   3. Poll `capture-pane` until sentinel appears or iteration limit
-    //   4. Output the final captured pane content
-    //
-    // IMPORTANT: The grep pattern uses `${sentinel}[0-9]` (regex, NOT -F)
-    // to require a digit after the sentinel. This prevents matching the
-    // echoed command line where the sentinel is followed by literal `$?`
-    // instead of an actual exit code digit. This mirrors the E2B
-    // PtySessionManager's `sentinelWithDigit` regex.
+    // Use streaming mode for sandboxes that support it (E2B)
+    if (sandbox.supportsStreaming) {
+      return this.execInSessionStreaming(
+        sandbox,
+        session,
+        sessionId,
+        command,
+        base64Cmd,
+        sn,
+        startMarker,
+        sentinel,
+        timeoutMarker,
+        maxIterations,
+        timeoutSeconds,
+      );
+    }
+
+    // Batch mode for local: single poll loop, output at the end
+    return this.execInSessionBatch(
+      sandbox,
+      session,
+      sessionId,
+      command,
+      base64Cmd,
+      sn,
+      startMarker,
+      sentinel,
+      timeoutMarker,
+      maxIterations,
+      timeoutSeconds,
+    );
+  }
+
+  /**
+   * Streaming exec: outputs periodic snapshots for real-time updates.
+   * Used by E2B where `onStdout` callbacks provide real-time streaming.
+   */
+  private async execInSessionStreaming(
+    sandbox: TmuxSandbox,
+    session: LocalPtySession,
+    sessionId: string,
+    command: string,
+    base64Cmd: string,
+    sn: string,
+    startMarker: string,
+    sentinel: string,
+    timeoutMarker: string,
+    maxIterations: number,
+    timeoutSeconds: number,
+  ): Promise<{ output: string; exitCode: number | null; timedOut: boolean }> {
+    // Markers for parsing streaming snapshots
+    const snapStart = `__SNAP_S_${randomUUID().replace(/-/g, "")}__`;
+    const snapEnd = `__SNAP_E_${randomUUID().replace(/-/g, "")}__`;
+
+    // Streaming script: outputs periodic snapshots wrapped in markers
     const execScript = [
-      // Paste the command into the tmux session via base64 (avoids escaping)
+      // Paste the command into the tmux session via base64
       `printf '%s' '${base64Cmd}' | base64 -d | tmux load-buffer -b hai_cmd -`,
       `tmux paste-buffer -t ${sn} -b hai_cmd -d`,
       `tmux send-keys -t ${sn} Enter`,
-      // Poll loop (runs locally, no Convex round-trips)
+      // Poll loop: detect completion via sentinel
+      `i=0`,
+      `while [ "$i" -lt ${maxIterations} ]; do ` +
+        `sleep 0.5; ` +
+        `echo '${snapStart}'; ` +
+        `tmux capture-pane -t ${sn} -e -p -S -; ` +
+        `echo '${snapEnd}'; ` +
+        `if tmux capture-pane -t ${sn} -p -S - 2>/dev/null | grep -q '${sentinel}[0-9]'; then ` +
+        `exit 0; ` +
+        `fi; ` +
+        `i=$((i + 1)); ` +
+        `done`,
+      // Timeout — final snapshot
+      `echo '${timeoutMarker}'`,
+      `echo '${snapStart}'`,
+      `tmux capture-pane -t ${sn} -e -p -S -`,
+      `echo '${snapEnd}'`,
+    ].join(" && ");
+
+    // Track state for streaming delta computation
+    let lastStreamedContent = "";
+    let latestSnapshot = "";
+    const streamCb = this.streamCallbacks.get(sessionId);
+    let pendingBuffer = "";
+
+    // onStdout handler: parse snapshots and stream deltas
+    const onStdout = (data: string) => {
+      pendingBuffer += data;
+
+      // Extract complete snapshots from the buffer
+      while (true) {
+        const startIdx = pendingBuffer.indexOf(snapStart);
+        const endIdx = pendingBuffer.indexOf(snapEnd);
+
+        if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+          break;
+        }
+
+        // Extract snapshot content
+        const snapshotContent = pendingBuffer.slice(
+          startIdx + snapStart.length,
+          endIdx,
+        );
+        latestSnapshot = normalizePaneCapture(snapshotContent);
+
+        // Compute and stream delta
+        if (streamCb) {
+          const cleaned = cleanOutput(
+            latestSnapshot,
+            startMarker,
+            sentinel,
+            command,
+          );
+          if (cleaned.length > lastStreamedContent.length) {
+            const delta = cleaned.slice(lastStreamedContent.length);
+            if (delta.trim()) {
+              streamCb(delta);
+            }
+            lastStreamedContent = cleaned;
+          }
+        }
+
+        // Remove processed snapshot from buffer
+        pendingBuffer = pendingBuffer.slice(endIdx + snapEnd.length);
+      }
+    };
+
+    try {
+      const result = await sandbox.commands.run(execScript, {
+        timeoutMs: (timeoutSeconds + 10) * 1000,
+        onStdout,
+        displayName: command,
+      });
+
+      const rawOutput = result.stdout;
+      const timedOut = rawOutput.includes(timeoutMarker);
+
+      // Use the latest snapshot for final processing
+      const finalCapture = latestSnapshot || normalizePaneCapture(rawOutput);
+      session.lastCapturedOutput = finalCapture;
+
+      if (timedOut) {
+        this.pendingSentinels.set(sessionId, sentinel);
+        const cleaned = cleanOutput(
+          finalCapture,
+          startMarker,
+          sentinel,
+          command,
+        );
+        return { output: cleaned, exitCode: null, timedOut: true };
+      }
+
+      // Extract exit code from sentinel
+      const sentinelRegex = new RegExp(`${sentinel}(\\d+)`, "m");
+      const match = finalCapture.match(sentinelRegex);
+      const exitCode = match ? parseInt(match[1], 10) : null;
+
+      const cleaned = cleanOutput(finalCapture, startMarker, sentinel, command);
+      return { output: cleaned, exitCode, timedOut: false };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return {
+        output: `[Shell execution error: ${message}]`,
+        exitCode: null,
+        timedOut: false,
+      };
+    }
+  }
+
+  /**
+   * Batch exec: single poll loop, output at the end.
+   * Used by local sandboxes where streaming isn't needed/supported.
+   */
+  private async execInSessionBatch(
+    sandbox: TmuxSandbox,
+    session: LocalPtySession,
+    sessionId: string,
+    command: string,
+    base64Cmd: string,
+    sn: string,
+    startMarker: string,
+    sentinel: string,
+    timeoutMarker: string,
+    maxIterations: number,
+    timeoutSeconds: number,
+  ): Promise<{ output: string; exitCode: number | null; timedOut: boolean }> {
+    // Build the full exec-and-poll script as a single shell command.
+    const execScript = [
+      // Paste the command into the tmux session via base64
+      `printf '%s' '${base64Cmd}' | base64 -d | tmux load-buffer -b hai_cmd -`,
+      `tmux paste-buffer -t ${sn} -b hai_cmd -d`,
+      `tmux send-keys -t ${sn} Enter`,
+      // Poll loop: detect completion via sentinel
       `i=0`,
       `while [ "$i" -lt ${maxIterations} ]; do ` +
         `sleep 0.3; ` +
@@ -378,27 +501,28 @@ export class LocalPtySessionManager {
         `fi; ` +
         `i=$((i + 1)); ` +
         `done`,
-      // Timeout -- output marker + whatever we have
+      // Timeout — output marker + whatever we have
       `echo '${timeoutMarker}'`,
       `tmux capture-pane -t ${sn} -e -p -S -`,
     ].join(" && ");
 
     try {
       const result = await sandbox.commands.run(execScript, {
-        timeoutMs: (timeoutSeconds + 10) * 1000, // buffer above the poll timeout
+        timeoutMs: (timeoutSeconds + 10) * 1000,
         displayName: command,
       });
 
       const rawOutput = result.stdout;
       const timedOut = rawOutput.includes(timeoutMarker);
 
-      // Stream cleaned output to the frontend (strips markers and prompts)
+      // Stream cleaned output to the frontend
       const streamCb = this.streamCallbacks.get(sessionId);
       if (streamCb) {
-        const cleanedForStream = this.cleanOutput(
+        const cleanedForStream = cleanOutput(
           rawOutput,
           startMarker,
           sentinel,
+          command,
         );
         if (cleanedForStream.trim()) {
           streamCb(cleanedForStream);
@@ -407,13 +531,14 @@ export class LocalPtySessionManager {
 
       if (timedOut) {
         this.pendingSentinels.set(sessionId, sentinel);
-
-        // Extract whatever output we have (after the timeout marker)
         const afterMarker = rawOutput.split(timeoutMarker).pop() || "";
-        const cleaned = this.cleanOutput(afterMarker, startMarker, sentinel);
-
-        // Normalize to match capturePaneOutput format for consistent delta calculations
-        session.lastCapturedOutput = this.normalizePaneCapture(afterMarker);
+        const cleaned = cleanOutput(
+          afterMarker,
+          startMarker,
+          sentinel,
+          command,
+        );
+        session.lastCapturedOutput = normalizePaneCapture(afterMarker);
         return { output: cleaned, exitCode: null, timedOut: true };
       }
 
@@ -422,13 +547,11 @@ export class LocalPtySessionManager {
       const match = rawOutput.match(sentinelRegex);
       const exitCode = match ? parseInt(match[1], 10) : null;
 
-      const cleaned = this.cleanOutput(rawOutput, startMarker, sentinel);
-      // Normalize to match capturePaneOutput format for consistent delta calculations
-      session.lastCapturedOutput = this.normalizePaneCapture(rawOutput);
+      const cleaned = cleanOutput(rawOutput, startMarker, sentinel, command);
+      session.lastCapturedOutput = normalizePaneCapture(rawOutput);
 
       return { output: cleaned, exitCode, timedOut: false };
     } catch (error) {
-      // If the commands.run itself fails (network, timeout, etc.)
       const message = error instanceof Error ? error.message : String(error);
       return {
         output: `[Shell execution error: ${message}]`,
@@ -445,15 +568,13 @@ export class LocalPtySessionManager {
   /**
    * Wait for additional output from an already-running session.
    *
-   * **Sentinel case** (timed-out exec): runs a single `commands.run()` with
-   * the same tight 0.3 s poll loop as `execInSession`, blocking until the
-   * sentinel appears or the timeout expires.
-   *
-   * **No-sentinel case**: does a single `capture-pane` and returns whatever
-   * new output exists immediately (no polling).
+   * Two modes (streaming vs batch) similar to execInSession.
+   * Two cases within each mode:
+   * - **Sentinel case**: Poll for sentinel from a timed-out exec
+   * - **No-sentinel case**: Poll for shell idle detection
    */
   async waitForSession(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     sessionId: string,
     timeoutSeconds: number,
     _abortSignal?: AbortSignal,
@@ -466,9 +587,171 @@ export class LocalPtySessionManager {
     const sentinel = this.pendingSentinels.get(sessionId) || null;
     const sn = session.tmuxSessionName;
 
-    // ------------------------------------------------------------------
-    // Sentinel case — block until command finishes (single commands.run)
-    // ------------------------------------------------------------------
+    // Use streaming mode for E2B
+    if (sandbox.supportsStreaming) {
+      return this.waitForSessionStreaming(
+        sandbox,
+        session,
+        sessionId,
+        sn,
+        sentinel,
+        timeoutSeconds,
+      );
+    }
+
+    // Batch mode for local
+    return this.waitForSessionBatch(
+      sandbox,
+      session,
+      sessionId,
+      sn,
+      sentinel,
+      timeoutSeconds,
+    );
+  }
+
+  /**
+   * Streaming wait: outputs periodic snapshots for real-time updates.
+   */
+  private async waitForSessionStreaming(
+    sandbox: TmuxSandbox,
+    session: LocalPtySession,
+    sessionId: string,
+    sn: string,
+    sentinel: string | null,
+    timeoutSeconds: number,
+  ): Promise<{ output: string; timedOut: boolean }> {
+    const uid = randomUUID().replace(/-/g, "");
+    const snapStart = `__SNAP_S_${uid}__`;
+    const snapEnd = `__SNAP_E_${uid}__`;
+    const timeoutMarker = `__WAIT_TIMEOUT_${uid}__`;
+    const completionMarker = `__WAIT_COMPLETE_${uid}__`;
+
+    const pollIntervalSec = 0.5;
+    const maxIter = Math.ceil(timeoutSeconds / pollIntervalSec);
+    const shellNames = "bash|zsh|sh|fish|dash|ksh|csh|tcsh";
+
+    let waitScript: string;
+    if (sentinel) {
+      waitScript = [
+        `i=0`,
+        `while [ "$i" -lt ${maxIter} ]; do ` +
+          `sleep ${pollIntervalSec}; ` +
+          `echo '${snapStart}'; ` +
+          `tmux capture-pane -t ${sn} -e -p -S -; ` +
+          `echo '${snapEnd}'; ` +
+          `if tmux capture-pane -t ${sn} -p -S - 2>/dev/null | grep -q '${sentinel}[0-9]'; then ` +
+          `echo '${completionMarker}'; ` +
+          `exit 0; ` +
+          `fi; ` +
+          `i=$((i + 1)); ` +
+          `done`,
+        `echo '${timeoutMarker}'`,
+      ].join(" && ");
+    } else {
+      waitScript = [
+        `sleep 0.3`,
+        `i=0`,
+        `while [ "$i" -lt ${maxIter} ]; do ` +
+          `sleep ${pollIntervalSec}; ` +
+          `echo '${snapStart}'; ` +
+          `tmux capture-pane -t ${sn} -e -p -S -; ` +
+          `echo '${snapEnd}'; ` +
+          `PCMD=$(tmux display-message -t ${sn} -p "#{pane_current_command}" 2>/dev/null); ` +
+          `if echo "$PCMD" | grep -qE "^(${shellNames})$"; then ` +
+          `echo '${completionMarker}'; ` +
+          `exit 0; ` +
+          `fi; ` +
+          `i=$((i + 1)); ` +
+          `done`,
+        `echo '${timeoutMarker}'`,
+      ].join(" && ");
+    }
+
+    // Track state for streaming
+    let lastStreamedLength = 0;
+    let latestSnapshot = "";
+    const streamCb = this.streamCallbacks.get(sessionId);
+    let pendingBuffer = "";
+    const baselineLength = session.lastCapturedOutput.length;
+
+    const onStdout = (data: string) => {
+      pendingBuffer += data;
+
+      // Extract complete snapshots
+      while (true) {
+        const startIdx = pendingBuffer.indexOf(snapStart);
+        const endIdx = pendingBuffer.indexOf(snapEnd);
+
+        if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) {
+          break;
+        }
+
+        const snapshotContent = pendingBuffer.slice(
+          startIdx + snapStart.length,
+          endIdx,
+        );
+        latestSnapshot = normalizePaneCapture(snapshotContent);
+
+        // Compute delta from baseline and stream
+        if (streamCb) {
+          const newContent =
+            latestSnapshot.length > baselineLength
+              ? latestSnapshot.slice(baselineLength)
+              : "";
+          const cleaned = stripSentinelNoise(newContent);
+          if (cleaned.length > lastStreamedLength) {
+            const delta = cleaned.slice(lastStreamedLength);
+            if (delta.trim()) {
+              streamCb(delta);
+            }
+            lastStreamedLength = cleaned.length;
+          }
+        }
+
+        pendingBuffer = pendingBuffer.slice(endIdx + snapEnd.length);
+      }
+    };
+
+    try {
+      const result = await sandbox.commands.run(waitScript, {
+        timeoutMs: (timeoutSeconds + 10) * 1000,
+        onStdout,
+      });
+
+      const rawOutput = result.stdout;
+      const timedOut = rawOutput.includes(timeoutMarker);
+
+      // Use latest snapshot for final result
+      const captured = latestSnapshot || session.lastCapturedOutput;
+      const newContent =
+        captured.length > baselineLength ? captured.slice(baselineLength) : "";
+
+      session.lastCapturedOutput = captured;
+      if (sentinel && !timedOut) {
+        this.pendingSentinels.delete(sessionId);
+      }
+
+      const cleaned = stripSentinelNoise(newContent);
+      return { output: cleaned.trim() || "[No new output]", timedOut };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { output: `[Shell wait error: ${message}]`, timedOut: false };
+    }
+  }
+
+  /**
+   * Batch wait: single script, output at the end.
+   */
+  private async waitForSessionBatch(
+    sandbox: TmuxSandbox,
+    session: LocalPtySession,
+    sessionId: string,
+    sn: string,
+    sentinel: string | null,
+    timeoutSeconds: number,
+  ): Promise<{ output: string; timedOut: boolean }> {
+    // Sentinel case — poll until sentinel appears (from timed-out exec)
     if (sentinel) {
       const maxIterations = Math.ceil(timeoutSeconds / 0.3);
       const uid = randomUUID().replace(/-/g, "");
@@ -491,7 +774,6 @@ export class LocalPtySessionManager {
       try {
         const result = await sandbox.commands.run(waitScript, {
           timeoutMs: (timeoutSeconds + 10) * 1000,
-          displayName: `waiting for session "${sessionId}"`,
         });
 
         const rawOutput = result.stdout;
@@ -500,7 +782,7 @@ export class LocalPtySessionManager {
         const captureRaw = timedOut
           ? rawOutput.split(timeoutMarker).pop() || ""
           : rawOutput;
-        const captured = this.normalizePaneCapture(captureRaw);
+        const captured = normalizePaneCapture(captureRaw);
 
         const baselineLength = session.lastCapturedOutput.length;
         const newContent =
@@ -508,7 +790,6 @@ export class LocalPtySessionManager {
             ? captured.slice(baselineLength)
             : "";
 
-        // Stream delta to frontend
         const streamCb = this.streamCallbacks.get(sessionId);
         if (streamCb) {
           const cleanedForStream = stripSentinelNoise(newContent);
@@ -526,28 +807,66 @@ export class LocalPtySessionManager {
       }
     }
 
-    // ------------------------------------------------------------------
-    // No sentinel — single capture, return immediately
-    // ------------------------------------------------------------------
-    const captured = await this.capturePaneOutput(sandbox, sn);
-    if (!captured) {
-      return { output: "[No new output]", timedOut: false };
-    }
+    // No sentinel — poll for shell idle
+    const pollIntervalSec = 0.5;
+    const maxIter = Math.ceil(timeoutSeconds / pollIntervalSec);
+    const waitUid = randomUUID().replace(/-/g, "");
+    const completionMarker = `__WAIT_COMPLETE_${waitUid}__`;
+    const waitTimeoutMarker = `__WAIT_TIMEOUT_${waitUid}__`;
+    const shellNames = "bash|zsh|sh|fish|dash|ksh|csh|tcsh";
 
-    const baselineLength = session.lastCapturedOutput.length;
-    const newContent =
-      captured.length > baselineLength ? captured.slice(baselineLength) : "";
+    const waitScript = [
+      `sleep 0.3`,
+      `i=0`,
+      `while [ "$i" -lt ${maxIter} ]; do ` +
+        `sleep ${pollIntervalSec}; ` +
+        `PCMD=$(tmux display-message -t ${sn} -p "#{pane_current_command}" 2>/dev/null); ` +
+        `if echo "$PCMD" | grep -qE "^(${shellNames})$"; then ` +
+        `echo "${completionMarker}"; ` +
+        `tmux capture-pane -t ${sn} -e -p -S -; ` +
+        `exit 0; ` +
+        `fi; ` +
+        `i=$((i + 1)); ` +
+        `done`,
+      `echo '${waitTimeoutMarker}'`,
+      `tmux capture-pane -t ${sn} -e -p -S -`,
+    ].join(" && ");
 
-    const streamCb = this.streamCallbacks.get(sessionId);
-    if (streamCb) {
+    try {
+      const result = await sandbox.commands.run(waitScript, {
+        timeoutMs: (timeoutSeconds + 10) * 1000,
+      });
+
+      const rawOutput = result.stdout;
+      const completed = rawOutput.includes(completionMarker);
+      const timedOut = rawOutput.includes(waitTimeoutMarker);
+
+      const captureRaw = completed
+        ? rawOutput.split(completionMarker).pop() || ""
+        : timedOut
+          ? rawOutput.split(waitTimeoutMarker).pop() || ""
+          : rawOutput;
+      const captured = normalizePaneCapture(captureRaw);
+
+      const baselineLength = session.lastCapturedOutput.length;
+      const newContent =
+        captured.length > baselineLength ? captured.slice(baselineLength) : "";
+
+      // Stream delta to frontend
+      const streamCb = this.streamCallbacks.get(sessionId);
+      if (streamCb) {
+        const cleanedForStream = stripSentinelNoise(newContent);
+        if (cleanedForStream.trim()) streamCb(cleanedForStream);
+      }
+
+      session.lastCapturedOutput = captured;
+
       const cleaned = stripSentinelNoise(newContent);
-      if (cleaned.trim()) streamCb(cleaned);
+      return { output: cleaned.trim() || "[No new output]", timedOut };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { output: `[Shell wait error: ${message}]`, timedOut: false };
     }
-
-    session.lastCapturedOutput = captured;
-
-    const cleaned = stripSentinelNoise(newContent);
-    return { output: cleaned.trim() || "[No new output]", timedOut: false };
   }
 
   // =========================================================================
@@ -555,7 +874,7 @@ export class LocalPtySessionManager {
   // =========================================================================
 
   async sendToSession(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     sessionId: string,
     input: string,
   ): Promise<{ success: boolean; error?: string }> {
@@ -613,7 +932,7 @@ export class LocalPtySessionManager {
   // =========================================================================
 
   async killSession(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     sessionId: string,
   ): Promise<{ killed: boolean }> {
     const session = this.sessions.get(sessionId);
@@ -650,7 +969,7 @@ export class LocalPtySessionManager {
    * `wait` call.
    */
   async viewSessionAsync(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     sessionId: string,
   ): Promise<{ output: string; exists: boolean }> {
     const session = this.sessions.get(sessionId);
@@ -680,7 +999,7 @@ export class LocalPtySessionManager {
 
   /** Run a tmux management command with a short timeout. */
   private async tmuxRun(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     cmd: string,
     opts?: { timeout?: number; displayName?: string },
   ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
@@ -690,22 +1009,9 @@ export class LocalPtySessionManager {
     });
   }
 
-  /**
-   * Normalize raw tmux capture-pane output to match the format returned by
-   * `capturePaneOutput`. This ensures delta calculations (slice by length)
-   * are consistent between exec-stored snapshots and later live captures.
-   */
-  private normalizePaneCapture(raw: string): string {
-    return raw
-      .split("\n")
-      .map((line) => line.trimEnd())
-      .join("\n")
-      .trimEnd();
-  }
-
   /** Capture the full scrollback of a tmux pane. */
   private async capturePaneOutput(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     sessionName: string,
     displayName?: string,
   ): Promise<string> {
@@ -722,58 +1028,5 @@ export class LocalPtySessionManager {
       .map((line) => line.trimEnd())
       .join("\n")
       .trimEnd();
-  }
-
-  /**
-   * Clean raw captured output for the AI model:
-   *  - Remove sentinel lines
-   *  - Remove the echoed command
-   *  - Strip terminal escape sequences
-   *  - Remove shell prompts (bash, zsh, kali multi-line, etc.)
-   */
-  private cleanOutput(
-    content: string,
-    startMarker: string,
-    sentinel: string,
-  ): string {
-    const lines = content.split("\n");
-
-    // Find the LAST start-marker line and the LAST sentinel line.
-    // We want the last occurrence because the first match is typically the
-    // echoed command (e.g. "echo __START_xxx__ ; cmd ; echo __DONE_xxx__$?")
-    // while the last match is the actual marker output on its own line.
-    let startIdx = -1;
-    let endIdx = -1;
-    const sentinelWithDigitRegex = new RegExp(`${sentinel}\\d`);
-
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].includes(startMarker)) {
-        startIdx = i;
-      }
-      if (lines[i].match(sentinelWithDigitRegex)) {
-        endIdx = i;
-      }
-    }
-
-    let extracted: string;
-
-    if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
-      // Happy path: extract content between start marker and sentinel (exclusive)
-      extracted = lines.slice(startIdx + 1, endIdx).join("\n");
-    } else if (startIdx !== -1) {
-      // Start marker found but no sentinel yet (timeout case) — take everything after the start marker
-      extracted = lines.slice(startIdx + 1).join("\n");
-    } else if (endIdx !== -1) {
-      // No start marker found but sentinel exists — take everything before the sentinel
-      extracted = lines.slice(0, endIdx).join("\n");
-    } else {
-      // Neither marker found — return content as-is (shouldn't normally happen)
-      extracted = content;
-    }
-
-    // Collapse multiple blank lines
-    const cleaned = extracted.replace(/\n{3,}/g, "\n\n");
-
-    return cleaned.trim();
   }
 }

@@ -2,17 +2,15 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Sandbox } from "@e2b/code-interpreter";
 import type { ToolContext } from "@/types";
-import { waitForSandboxReady } from "./utils/sandbox-health";
-import { isE2BSandbox } from "./utils/sandbox-types";
+import { waitForSandboxReady } from "../utils/sandbox-health";
+import { isE2BSandbox } from "../utils/sandbox-types";
 import {
   parseGuardrailConfig,
   getEffectiveGuardrails,
-} from "./utils/guardrails";
-import { PtySessionManager } from "./utils/pty-session-manager";
-import { LocalPtySessionManager } from "./utils/local-pty-session-manager";
-import type { ConvexSandbox } from "./utils/convex-sandbox";
-import { createE2BHandlers } from "./shell-e2b";
-import { createLocalHandlers } from "./shell-local";
+} from "../utils/guardrails";
+import { LocalPtySessionManager, type TmuxSandbox } from "./session";
+import { createE2BHandlers } from "./handlers/e2b";
+import { createLocalHandlers } from "./handlers/local";
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
@@ -28,11 +26,15 @@ export const createShell = (context: ToolContext) => {
 
   const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
   const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
-  const sessionManager = new PtySessionManager();
+
+  // Both E2B and local paths use tmux-based session management for consistent
+  // behavior (reliable wait/send/kill, pane_current_command idle detection).
+  // Separate instances avoid session name collisions between sandbox types.
+  const e2bSessionManager = new LocalPtySessionManager(chatId);
   const localSessionManager = new LocalPtySessionManager(chatId);
 
   const e2bHandlers = createE2BHandlers({
-    sessionManager,
+    sessionManager: e2bSessionManager,
     writer,
     effectiveGuardrails,
   });
@@ -57,7 +59,7 @@ export const createShell = (context: ToolContext) => {
 
 <instructions>
 - Prioritize using \`file\` tool instead of this tool for file content operations to avoid escaping errors
-- \`exec\` runs the command and returns output along with ${isE2BSandboxPreference ? "a `pid`" : "a `session`"} identifier — save this for subsequent \`wait\`, \`send\`, and \`kill\` actions
+- \`exec\` runs the command and returns output along with a \`session\` identifier — save this for subsequent \`wait\`, \`send\`, and \`kill\` actions
 - The default working directory for newly created shell sessions is /home/user
 - Working directory will be reset to /home/user in every new shell session; Use \`cd\` command to change directories as needed
 - MUST avoid commands that require confirmation; use flags like \`-y\` or \`-f\` for automatic execution
@@ -135,25 +137,13 @@ If you are generating files:
         .describe(
           "Input text to send to the interactive session. End with a newline character (\\n) to simulate pressing Enter if needed. Required for `send` action.",
         ),
-      // E2B sandboxes use numeric PIDs, local sandboxes use string session names
-      ...(isE2BSandboxPreference
-        ? {
-            pid: z
-              .number()
-              .int()
-              .optional()
-              .describe(
-                "The process ID of the target shell session. Returned by `exec`. Required for `wait`, `send`, and `kill` actions.",
-              ),
-          }
-        : {
-            session: z
-              .string()
-              .optional()
-              .describe(
-                "The session identifier returned by `exec`. Required for `wait`, `send`, and `kill` actions.",
-              ),
-          }),
+      // Both E2B and local sandboxes use tmux-based string session identifiers
+      session: z
+        .string()
+        .optional()
+        .describe(
+          "The session identifier returned by `exec`. Required for `wait`, `send`, and `kill` actions.",
+        ),
       timeout: z
         .number()
         .int()
@@ -168,14 +158,12 @@ If you are generating files:
         action,
         command,
         input,
-        pid,
         session,
         timeout,
       }: {
         action: /* "view" | */ "exec" | "wait" | "send" | "kill";
         command?: string;
         input?: string;
-        pid?: number;
         session?: string;
         timeout?: number;
       },
@@ -203,7 +191,7 @@ If you are generating files:
         // Non-E2B sandboxes: use tmux-based local PTY sessions
         if (!isE2BSandbox(sandbox)) {
           return localHandlers.dispatch(
-            sandbox as ConvexSandbox,
+            sandbox as TmuxSandbox,
             action,
             command,
             input,
@@ -216,7 +204,7 @@ If you are generating files:
 
         const e2b = sandbox as Sandbox;
 
-        // Health-check the sandbox before first PTY creation
+        // Health-check the E2B sandbox before first use
         if (action === "exec" && !healthChecked) {
           healthChecked = true;
           try {
@@ -231,7 +219,7 @@ If you are generating files:
 
             if (!isE2BSandbox(fresh)) {
               return localHandlers.dispatch(
-                fresh as ConvexSandbox,
+                fresh as TmuxSandbox,
                 action,
                 command,
                 input,
@@ -247,7 +235,7 @@ If you are generating files:
               action,
               command,
               input,
-              pid,
+              session,
               effectiveTimeout,
               toolCallId,
               abortSignal,
@@ -255,12 +243,14 @@ If you are generating files:
           }
         }
 
+        // E2B sandboxes: also use tmux (installed automatically) for consistent
+        // wait/send/kill behavior with pane_current_command idle detection.
         return e2bHandlers.dispatch(
           e2b,
           action,
           command,
           input,
-          pid,
+          session,
           effectiveTimeout,
           toolCallId,
           abortSignal,

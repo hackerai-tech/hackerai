@@ -364,6 +364,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           }
                           variant="sidebar"
                           wrap={isWrapped}
+                          hideCommandInOutput={!!sidebarContent.shellAction}
                         />
                       )}
                       {isPython && (

@@ -91,7 +91,7 @@ export function getShellDisplayCommand(
 // Display input — format raw send input for display
 // ---------------------------------------------------------------------------
 
-import { RAW_TO_KEY_NAME } from "@/lib/ai/tools/utils/pty-keys";
+import { RAW_TO_KEY_NAME } from "@/lib/ai/tools/shell/utils/pty-keys";
 
 /**
  * Format raw `send` input for UI display.

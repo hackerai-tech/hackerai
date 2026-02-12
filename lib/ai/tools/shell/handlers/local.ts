@@ -1,22 +1,17 @@
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { UIMessageStreamWriter } from "ai";
-import type { AnySandbox } from "@/types";
 import {
   truncateContent,
   TOOL_DEFAULT_MAX_TOKENS,
   TIMEOUT_MESSAGE,
 } from "@/lib/token-utils";
-import { checkCommandGuardrails } from "./utils/guardrails";
-import type { GuardrailConfig } from "./utils/guardrails";
-import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
+import { checkCommandGuardrails } from "../../utils/guardrails";
+import type { GuardrailConfig } from "../../utils/guardrails";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
-import { retryWithBackoff } from "./utils/retry-with-backoff";
-import {
-  LocalPtySessionManager,
-  TmuxNotAvailableError,
-} from "./utils/local-pty-session-manager";
-import type { ConvexSandbox } from "./utils/convex-sandbox";
+import { retryWithBackoff } from "../../utils/retry-with-backoff";
+import { LocalPtySessionManager, TmuxNotAvailableError } from "../session";
+import type { TmuxSandbox } from "../session";
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -35,11 +30,11 @@ export function createLocalHandlers(deps: {
   return { dispatch };
 
   // ===========================================================================
-  // Action dispatcher (tmux-based PTY for ConvexSandbox)
+  // Action dispatcher (tmux-based PTY for TmuxSandbox)
   // ===========================================================================
 
   function dispatch(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     action: string,
     command: string | undefined,
     input: string | undefined,
@@ -91,7 +86,7 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalExec(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     command: string | undefined,
     timeout: number,
     toolCallId: string,
@@ -195,7 +190,7 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalWait(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     session: string | undefined,
     timeout: number,
     toolCallId: string,
@@ -273,7 +268,7 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalSend(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     session: string | undefined,
     input: string | undefined,
     toolCallId: string,
@@ -340,7 +335,7 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalKill(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     session: string | undefined,
   ) {
     if (!session) {
@@ -357,11 +352,11 @@ export function createLocalHandlers(deps: {
   }
 
   // ===========================================================================
-  // ConvexSandbox fallback (basic commands.run — used when tmux unavailable)
+  // TmuxSandbox fallback (basic commands.run — used when tmux unavailable)
   // ===========================================================================
 
   async function handleConvexFallback(
-    sandbox: AnySandbox,
+    sandbox: TmuxSandbox,
     action: string,
     command: string | undefined,
     timeout: number,
@@ -411,10 +406,11 @@ export function createLocalHandlers(deps: {
     const handler = createTerminalHandler(streamToFrontend, {
       timeoutSeconds: timeout,
     });
-    const opts = buildSandboxCommandOptions(sandbox, {
+    const opts = {
+      timeoutMs: 10 * 60 * 1000, // 10 minutes max execution time
       onStdout: handler.stdout,
       onStderr: handler.stderr,
-    });
+    };
 
     try {
       const result = await retryWithBackoff(
