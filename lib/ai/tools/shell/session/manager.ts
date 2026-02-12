@@ -394,12 +394,13 @@ export class LocalPtySessionManager {
     // Use newlines instead of `;` to separate the markers from the user command.
     const fullCommand = `echo ${startMarker}\n${command}\necho ${sentinel}$?`;
     const base64Cmd = Buffer.from(fullCommand).toString("base64");
-    const maxIterations = Math.ceil(timeoutSeconds / 0.3);
     const timeoutMarker = `__TMUX_TIMEOUT__`;
     const sn = session.tmuxSessionName;
 
     // Use streaming mode for sandboxes that support it (E2B)
     if (sandbox.supportsStreaming) {
+      // Streaming uses 0.5s sleep intervals
+      const maxIterations = Math.ceil(timeoutSeconds / 0.5);
       return this.execInSessionStreaming(
         sandbox,
         session,
@@ -416,6 +417,8 @@ export class LocalPtySessionManager {
     }
 
     // Batch mode for local: single poll loop, output at the end
+    // Batch uses 0.3s sleep intervals
+    const maxIterations = Math.ceil(timeoutSeconds / 0.3);
     return this.execInSessionBatch(
       sandbox,
       session,
