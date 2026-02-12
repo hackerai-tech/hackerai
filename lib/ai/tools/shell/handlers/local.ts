@@ -286,9 +286,10 @@ export function createLocalHandlers(deps: {
     input: string | undefined,
     toolCallId: string,
   ) {
-    if (!input) {
+    if (!input?.trim()) {
       return {
-        output: "Error: `input` parameter is required for `send` action.",
+        output:
+          "Error: `input` parameter is required for `send` action (cannot be empty or whitespace-only).",
         error: true,
       };
     }
@@ -324,10 +325,14 @@ export function createLocalHandlers(deps: {
       sandbox,
       session,
     );
-    const output = viewResult.output || "[Input sent successfully]";
+    const rawOutput = viewResult.output || "[Input sent successfully]";
+    const output =
+      rawOutput === "[No new output]"
+        ? "Input sent. No new output since last read."
+        : rawOutput;
 
     if (
-      output !== "[No new output]" &&
+      output !== "Input sent. No new output since last read." &&
       output !== "[Input sent successfully]"
     ) {
       const truncatedOutput = truncateContent(
@@ -364,7 +369,9 @@ export function createLocalHandlers(deps: {
     }
     const { killed } = await localSessionManager.killSession(sandbox, session);
     if (!killed) {
-      return { output: `No shell session found with name "${session}".` };
+      return {
+        output: `Session "${session}" already terminated or not found.`,
+      };
     }
     return { output: `Shell session "${session}" terminated.` };
   }
