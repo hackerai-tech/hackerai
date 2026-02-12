@@ -4,8 +4,10 @@ import type { UIMessageStreamWriter } from "ai";
 import {
   truncateContent,
   TOOL_DEFAULT_MAX_TOKENS,
+  STREAM_MAX_TOKENS,
   TIMEOUT_MESSAGE,
 } from "@/lib/token-utils";
+import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { checkCommandGuardrails } from "../../utils/guardrails";
 import type { GuardrailConfig } from "../../utils/guardrails";
 import { LocalPtySessionManager, TmuxNotAvailableError } from "../session";
@@ -173,7 +175,10 @@ export function createE2BHandlers(deps: {
       });
     };
 
-    sessionManager.setStreamCallback(sessionId, streamToFrontend);
+    const streamHandler = createTerminalHandler(streamToFrontend, {
+      maxTokens: STREAM_MAX_TOKENS,
+    });
+    sessionManager.setStreamCallback(sessionId, streamHandler.stdout);
 
     let timedOut = false;
     try {
@@ -243,6 +248,10 @@ export function createE2BHandlers(deps: {
       });
     };
 
+    const streamHandler = createTerminalHandler(streamToFrontend, {
+      maxTokens: STREAM_MAX_TOKENS,
+    });
+
     // Flush any output that accumulated before this wait call
     const pending = await sessionManager.viewSessionAsync(sandbox, session);
     const pendingOutput =
@@ -250,10 +259,10 @@ export function createE2BHandlers(deps: {
         ? pending.output
         : "";
     if (pendingOutput) {
-      streamToFrontend(pendingOutput);
+      streamHandler.stdout(pendingOutput);
     }
 
-    sessionManager.setStreamCallback(session, streamToFrontend);
+    sessionManager.setStreamCallback(session, streamHandler.stdout);
 
     const { output, timedOut } = await sessionManager.waitForSession(
       sandbox,
@@ -328,10 +337,15 @@ export function createE2BHandlers(deps: {
       output !== "[No new output]" &&
       output !== "[Input sent successfully]"
     ) {
+      const truncatedOutput = truncateContent(
+        output,
+        undefined,
+        STREAM_MAX_TOKENS,
+      );
       writer.write({
         type: "data-terminal",
         id: `terminal-${randomUUID()}-1`,
-        data: { terminal: output, toolCallId },
+        data: { terminal: truncatedOutput, toolCallId },
       });
     }
 
