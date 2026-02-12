@@ -54,20 +54,22 @@ export const ensureSandboxConnection = async (
         },
       },
     });
-    const existingSandbox = (await paginator.nextItems())[0];
+    const items = await paginator.nextItems();
+    const existingSandbox = items[0];
 
     // Step 2: Always check version and auto-kill old sandboxes
     if (
       existingSandbox &&
       existingSandbox.metadata?.sandboxVersion !== SANDBOX_VERSION
     ) {
-      console.log(
-        `[${userID}] Sandbox version mismatch (expected ${SANDBOX_VERSION}), deleting old sandbox`,
-      );
       try {
         await Sandbox.kill(existingSandbox.sandboxId);
       } catch (killError) {
-        console.warn(`[${userID}] Failed to kill old sandbox:`, killError);
+        console.warn(
+          `[${userID}] [sandbox] Failed to kill old sandbox:`,
+          killError instanceof Error ? killError.message : String(killError),
+          killError instanceof Error ? killError.stack : undefined,
+        );
       }
       // Skip to creating new sandbox
     } else if (existingSandbox?.sandboxId) {
@@ -110,25 +112,40 @@ export const ensureSandboxConnection = async (
     // Step 5: Create new sandbox (fallback for all failure cases)
     // Use betaCreate with autoPause - sandbox will automatically pause after timeout
     // This eliminates the need for manual pause operations and their failure modes
-    const sandbox = await Sandbox.betaCreate(SANDBOX_TEMPLATE, {
-      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
-      autoPause: true, // Auto-pause after inactivity timeout
-      // Enable secure mode to generate pre-signed URLs for file downloads
-      // This allows unauthorized environments (like browsers) to securely access
-      // sandbox files through signed URLs with optional expiration times
-      secure: true,
-      metadata: {
-        userID,
-        template: SANDBOX_TEMPLATE,
-        secure: "true",
-        sandboxVersion: SANDBOX_VERSION,
-      },
-    });
+    try {
+      const sandbox = await Sandbox.betaCreate(SANDBOX_TEMPLATE, {
+        timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+        autoPause: true, // Auto-pause after inactivity timeout
+        // Enable secure mode to generate pre-signed URLs for file downloads
+        // This allows unauthorized environments (like browsers) to securely access
+        // sandbox files through signed URLs with optional expiration times
+        secure: true,
+        metadata: {
+          userID,
+          template: SANDBOX_TEMPLATE,
+          secure: "true",
+          sandboxVersion: SANDBOX_VERSION,
+        },
+      });
 
-    setSandbox(sandbox);
-    return { sandbox };
+      setSandbox(sandbox);
+      return { sandbox };
+    } catch (createError) {
+      console.error(
+        `[${userID}] [sandbox] betaCreate failed:`,
+        createError instanceof Error
+          ? createError.message
+          : String(createError),
+        createError instanceof Error ? createError.stack : undefined,
+      );
+      throw createError;
+    }
   } catch (error) {
-    console.error("Error creating persistent sandbox:", error);
+    console.error(
+      `[sandbox] Error in ensureSandboxConnection:`,
+      error instanceof Error ? error.message : String(error),
+      error instanceof Error ? error.stack : undefined,
+    );
     throw new Error(
       `Failed creating persistent sandbox: ${error instanceof Error ? error.message : "Unknown error"}`,
     );

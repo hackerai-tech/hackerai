@@ -39,7 +39,11 @@ export async function POST(req: NextRequest) {
       try {
         await Sandbox.kill(sandbox.sandboxId);
       } catch (error) {
-        console.error(`Failed to kill sandbox ${sandbox.sandboxId}:`, error);
+        console.error(
+          `[delete-sandboxes] Failed to kill sandbox ${sandbox.sandboxId}:`,
+          error instanceof Error ? error.message : String(error),
+          error instanceof Error ? error.stack : undefined,
+        );
         throw error;
       }
     }
@@ -49,7 +53,10 @@ export async function POST(req: NextRequest) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error("Error deleting sandboxes:", error);
+    console.error(
+      "[delete-sandboxes] Error:",
+      error instanceof Error ? error.message : String(error),
+    );
     return new Response(
       JSON.stringify({ error: "Failed to delete sandboxes" }),
       {

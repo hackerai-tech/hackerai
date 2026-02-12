@@ -71,13 +71,41 @@ export class LocalPtySessionManager {
   async ensureTmux(sandbox: TmuxSandbox): Promise<void> {
     if (this.tmuxVerified) return;
 
-    // Quick check
-    const check = await this.tmuxRun(sandbox, "command -v tmux", {
-      displayName: "Checking for tmux",
-    });
-    if (check.exitCode === 0 && check.stdout.trim()) {
-      this.tmuxVerified = true;
-      return;
+    // Quick check — try multiple methods (PATH may be minimal in some sandboxes)
+    // 1. command -v (POSIX) 2. /usr/bin/tmux (common apt path) 3. which
+    // On sandbox wake from pause, first command can return empty stdout; retry once.
+    const runCheck = async () => {
+      const r = await this.tmuxRun(
+        sandbox,
+        "command -v tmux 2>/dev/null || test -x /usr/bin/tmux && echo /usr/bin/tmux || which tmux 2>/dev/null || true",
+        { displayName: "Checking for tmux" },
+      );
+      return r.stdout.trim().split("\n")[0] || "";
+    };
+
+    let tmuxPath = await runCheck();
+    if (!tmuxPath) {
+      // Empty stdout often happens when sandbox is waking from pause — try direct path first
+      const directCheck = await this.tmuxRun(sandbox, "/usr/bin/tmux -V 2>&1", {
+        displayName: "",
+      });
+      if (directCheck.exitCode === 0) {
+        this.tmuxVerified = true;
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      tmuxPath = await runCheck();
+    }
+
+    if (tmuxPath) {
+      // Verify tmux actually runs (catches broken installs)
+      const verCheck = await this.tmuxRun(sandbox, `${tmuxPath} -V 2>&1`, {
+        displayName: "",
+      });
+      if (verCheck.exitCode === 0) {
+        this.tmuxVerified = true;
+        return;
+      }
     }
 
     // Attempt installation via the first available package manager
@@ -97,17 +125,37 @@ export class LocalPtySessionManager {
     );
 
     if (installResult.stdout.includes("TMUX_INSTALL_FAILED")) {
+      console.error(
+        "[tmux] Install failed: no supported package manager",
+        installResult.stderr,
+      );
       throw new TmuxNotAvailableError();
     }
 
-    // Verify
-    const verify = await this.tmuxRun(sandbox, "command -v tmux", {
-      displayName: "Verifying tmux installation",
+    // Verify (same multi-method check as above)
+    const verify = await this.tmuxRun(
+      sandbox,
+      "command -v tmux 2>/dev/null || test -x /usr/bin/tmux && echo /usr/bin/tmux || which tmux 2>/dev/null || true",
+      {
+        displayName: "Verifying tmux installation",
+      },
+    );
+    const verifyPath = verify.stdout.trim();
+    if (!verifyPath) {
+      console.error("[tmux] Verify failed after install", {
+        exitCode: verify.exitCode,
+        stderr: verify.stderr,
+      });
+      throw new TmuxNotAvailableError();
+    }
+
+    const verCheck = await this.tmuxRun(sandbox, `${verifyPath} -V 2>&1`, {
+      displayName: "",
     });
-    if (verify.exitCode !== 0 || !verify.stdout.trim()) {
+    if (verCheck.exitCode !== 0) {
+      console.error("[tmux] tmux -V failed after install", verCheck.exitCode);
       throw new TmuxNotAvailableError();
     }
-
     this.tmuxVerified = true;
   }
 
@@ -179,6 +227,7 @@ export class LocalPtySessionManager {
         }
       }
 
+      console.error("[tmux] new-session failed", { tmuxName, err: errMsg });
       throw new Error(`Failed to create tmux session: ${errMsg}`);
     }
 

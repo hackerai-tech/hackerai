@@ -256,7 +256,9 @@ If you are generating files:
           abortSignal,
         );
       } catch (error) {
-        console.error("[Shell] Error:", error);
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          console.error("[Shell] Error:", error);
+        }
         return {
           output:
             error instanceof Error ? error.message : "Unknown error occurred",
