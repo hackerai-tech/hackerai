@@ -2,18 +2,18 @@
 
 import React from "react";
 import { Authenticated, Unauthenticated } from "convex/react";
-import { ChatInput } from "./components/ChatInput";
-import Header from "./components/Header";
-import Footer from "./components/Footer";
-import { Chat } from "./components/chat";
-import PricingDialog from "./components/PricingDialog";
-import TeamPricingDialog from "./components/TeamPricingDialog";
-import { TeamWelcomeDialog } from "./components/TeamDialogs";
-import MigratePentestgptDialog from "./components/MigratePentestgptDialog";
-import { usePricingDialog } from "./hooks/usePricingDialog";
-import { useGlobalState } from "./contexts/GlobalState";
-import { usePentestgptMigration } from "./hooks/usePentestgptMigration";
-import { navigateToAuth } from "./hooks/useTauri";
+import { ChatInput } from "@/app/components/ChatInput";
+import Header from "@/app/components/Header";
+import Footer from "@/app/components/Footer";
+import { ChatContent } from "@/app/components/chat";
+import PricingDialog from "@/app/components/PricingDialog";
+import TeamPricingDialog from "@/app/components/TeamPricingDialog";
+import { TeamWelcomeDialog } from "@/app/components/TeamDialogs";
+import MigratePentestgptDialog from "@/app/components/MigratePentestgptDialog";
+import { usePricingDialog } from "@/app/hooks/usePricingDialog";
+import { useGlobalState } from "@/app/contexts/GlobalState";
+import { usePentestgptMigration } from "@/app/hooks/usePentestgptMigration";
+import { navigateToAuth } from "@/app/hooks/useTauri";
 
 // Simple unauthenticated content that redirects to login on message send
 const UnauthenticatedContent = () => {
@@ -70,7 +70,7 @@ const UnauthenticatedContent = () => {
 
 // Authenticated content that shows chat (UUID generated internally)
 const AuthenticatedContent = () => {
-  return <Chat autoResume={false} />;
+  return <ChatContent autoResume={false} />;
 };
 
 // Main page component with Convex authentication
