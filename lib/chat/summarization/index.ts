@@ -63,23 +63,32 @@ export const checkAndSummarizeIfNeeded = async (
 
   writeSummarizationStarted(writer);
 
-  const summaryText = await generateSummaryText(
-    messagesToSummarize,
-    languageModel,
-    mode,
-    abortSignal,
-    existingSummaryText ?? undefined,
-  );
-  const summaryMessage = buildSummaryMessage(summaryText, todos);
+  try {
+    const summaryText = await generateSummaryText(
+      messagesToSummarize,
+      languageModel,
+      mode,
+      abortSignal,
+      existingSummaryText ?? undefined,
+    );
+    const summaryMessage = buildSummaryMessage(summaryText, todos);
 
-  await persistSummary(chatId, summaryText, cutoffMessageId);
+    await persistSummary(chatId, summaryText, cutoffMessageId);
 
-  writeSummarizationCompleted(writer);
+    writeSummarizationCompleted(writer);
 
-  return {
-    needsSummarization: true,
-    summarizedMessages: [summaryMessage, ...lastMessages],
-    cutoffMessageId,
-    summaryText,
-  };
+    return {
+      needsSummarization: true,
+      summarizedMessages: [summaryMessage, ...lastMessages],
+      cutoffMessageId,
+      summaryText,
+    };
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      throw error;
+    }
+    console.error("[Summarization] Failed:", error);
+    writeSummarizationCompleted(writer);
+    return NO_SUMMARIZATION(uiMessages);
+  }
 };

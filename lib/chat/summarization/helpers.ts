@@ -84,36 +84,28 @@ export const generateSummaryText = async (
   abortSignal?: AbortSignal,
   existingSummaryText?: string,
 ): Promise<string> => {
-  try {
-    const basePrompt = getSummarizationPrompt(mode);
-    const system = existingSummaryText
-      ? `${basePrompt}\n\nIMPORTANT: You are performing an INCREMENTAL summarization. A previous summary of earlier conversation exists below. Your job is to produce a single, unified summary that merges the previous summary with the NEW messages provided. Do NOT summarize the summary — instead, integrate new information into a comprehensive updated summary.\n\n<previous_summary>\n${existingSummaryText}\n</previous_summary>`
-      : basePrompt;
+  const basePrompt = getSummarizationPrompt(mode);
+  const system = existingSummaryText
+    ? `${basePrompt}\n\nIMPORTANT: You are performing an INCREMENTAL summarization. A previous summary of earlier conversation exists below. Your job is to produce a single, unified summary that merges the previous summary with the NEW messages provided. Do NOT summarize the summary — instead, integrate new information into a comprehensive updated summary.\n\n<previous_summary>\n${existingSummaryText}\n</previous_summary>`
+    : basePrompt;
 
-    const result = await generateText({
-      model: languageModel,
-      system,
-      abortSignal,
-      providerOptions: {
-        xai: { store: false },
+  const result = await generateText({
+    model: languageModel,
+    system,
+    abortSignal,
+    providerOptions: {
+      xai: { store: false },
+    },
+    messages: [
+      ...(await convertToModelMessages(messagesToSummarize)),
+      {
+        role: "user",
+        content:
+          "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point.",
       },
-      messages: [
-        ...(await convertToModelMessages(messagesToSummarize)),
-        {
-          role: "user",
-          content:
-            "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point.",
-        },
-      ],
-    });
-    return result.text;
-  } catch (error) {
-    if (abortSignal?.aborted) {
-      throw error;
-    }
-    console.error("[Summarization] Failed to generate summary:", error);
-    return `[Summary of ${messagesToSummarize.length} messages in conversation]`;
-  }
+    ],
+  });
+  return result.text;
 };
 
 export const buildSummaryMessage = (
