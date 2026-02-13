@@ -65,7 +65,6 @@ export const Chat = ({
     mergeTodos,
     setTodos,
     replaceAssistantTodos,
-    currentChatId,
     temporaryChatsEnabled,
     setChatReset,
     hasUserDismissedRateLimitWarning,
@@ -113,27 +112,13 @@ export const Chat = ({
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
 
-  // Unified reset: respond to route and global new-chat trigger
+  // Sync local chat state from URL (single source of truth)
   useEffect(() => {
-    // If global state indicates a new chat, prefer that over any stale route id
-    if (currentChatId === null) {
-      if (routeChatId) {
-        return;
-      }
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      setChatTitle(null);
-      // Messages will be cleared below after useChat is ready
-      return;
-    }
-
-    // If a chat id is present in the route, treat as existing chat
     if (routeChatId) {
       setChatId(routeChatId);
       setIsExistingChat(true);
-      return;
     }
-  }, [routeChatId, currentChatId, setChatTitle]);
+  }, [routeChatId]);
 
   // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(

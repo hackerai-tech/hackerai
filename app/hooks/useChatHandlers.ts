@@ -55,7 +55,6 @@ export const useChatHandlers = ({
     clearUploadedFiles,
     todos,
     setTodos,
-    setCurrentChatId,
     isUploadingFiles,
     subscription,
     temporaryChatsEnabled,
@@ -229,7 +228,6 @@ export const useChatHandlers = ({
       }
       if (!isExistingChat && !temporaryChatsEnabledRef.current) {
         setChatTitle(null);
-        setCurrentChatId(chatId);
         window.history.replaceState({}, "", `/c/${chatId}`);
         activateChatLocally();
       }
