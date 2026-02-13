@@ -56,8 +56,8 @@ const checkAndInvalidateSummary = async (
       });
       try {
         await ctx.db.delete(chat.latest_summary_id);
-      } catch {
-        // Summary might already be deleted, ignore
+      } catch (error) {
+        console.error("[Messages] Failed to delete orphaned summary:", error);
       }
       return;
     }
@@ -73,8 +73,8 @@ const checkAndInvalidateSummary = async (
       });
       try {
         await ctx.db.delete(chat.latest_summary_id);
-      } catch {
-        // Summary might already be deleted, ignore
+      } catch (error) {
+        console.error("[Messages] Failed to delete stale summary:", error);
       }
     }
   } catch (error) {
