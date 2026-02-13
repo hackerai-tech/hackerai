@@ -237,7 +237,11 @@ export function createE2BHandlers(deps: {
         error: true,
       };
     }
-    if (!sessionManager.hasSession(session)) {
+    const attached = await sessionManager.ensureSessionAttached(
+      sandbox,
+      session,
+    );
+    if (!attached) {
       return {
         output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
       };
@@ -322,7 +326,11 @@ export function createE2BHandlers(deps: {
         error: true,
       };
     }
-    if (!sessionManager.hasSession(session)) {
+    const attached = await sessionManager.ensureSessionAttached(
+      sandbox,
+      session,
+    );
+    if (!attached) {
       return {
         output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
       };
@@ -376,6 +384,7 @@ export function createE2BHandlers(deps: {
         error: true,
       };
     }
+    await sessionManager.ensureSessionAttached(sandbox, session);
     const { killed } = await sessionManager.killSession(sandbox, session);
     if (!killed) {
       return {

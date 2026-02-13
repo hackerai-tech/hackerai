@@ -260,6 +260,71 @@ export class LocalPtySessionManager {
   }
 
   /**
+   * Try to attach to an existing tmux session created in a previous request.
+   * Session managers are recreated per request, but tmux sessions persist in the
+   * sandbox. This reconnects our in-memory map to existing tmux sessions.
+   *
+   * @returns true if the session is now in our map (was present or we attached)
+   */
+  async ensureSessionAttached(
+    sandbox: TmuxSandbox,
+    sessionId: string,
+  ): Promise<boolean> {
+    if (this.sessions.has(sessionId)) return true;
+
+    const sanitized = sanitizeForShell(sessionId).slice(0, 32);
+    if (!sanitized) return false;
+
+    const tmuxName = `hai_${sanitizeForShell(this.chatId)}_${sanitized}`;
+    const check = await this.tmuxRun(
+      sandbox,
+      `tmux has-session -t ${tmuxName} 2>/dev/null && echo ALIVE`,
+    ).catch(() => ({ stdout: "", stderr: "", exitCode: 1 }));
+
+    if (!check.stdout.includes("ALIVE")) return false;
+
+    // Restore persisted sentinel + baseline from tmux env (survives manager recreation)
+    const envResult = await this.tmuxRun(
+      sandbox,
+      `tmux show-environment -t ${tmuxName} HAI_SENTINEL 2>/dev/null || true; ` +
+        `tmux show-environment -t ${tmuxName} HAI_BASELINE 2>/dev/null || true`,
+    ).catch(() => ({ stdout: "", stderr: "", exitCode: 1 }));
+    const sentinelMatch = envResult.stdout.match(/HAI_SENTINEL=(.*)/);
+    const baselineMatch = envResult.stdout.match(/HAI_BASELINE=(\d+)/);
+
+    console.log(
+      `[Shell attach] session=${sessionId} envRaw=${JSON.stringify(envResult.stdout.trim())} sentinel=${sentinelMatch ? "found" : "none"} baseline=${baselineMatch?.[1] ?? "none"}`,
+    );
+
+    if (sentinelMatch) {
+      this.pendingSentinels.set(sessionId, sentinelMatch[1]);
+      this.busySessions.add(sessionId);
+    }
+
+    const captured = await this.capturePaneOutput(
+      sandbox,
+      tmuxName,
+      `attach session "${sessionId}"`,
+    );
+
+    // Use stored baseline length so output accumulated since the timeout
+    // isn't silently consumed as "already seen"
+    const storedBaseline = baselineMatch
+      ? parseInt(baselineMatch[1], 10)
+      : null;
+    const baseline =
+      storedBaseline !== null && captured
+        ? captured.slice(0, Math.min(storedBaseline, captured.length))
+        : captured || "";
+
+    this.sessions.set(sessionId, {
+      tmuxSessionName: tmuxName,
+      lastCapturedOutput: baseline,
+    });
+    return true;
+  }
+
+  /**
    * Acquire a PTY session for an exec call.
    *
    * When preferredSessionId is provided:
@@ -544,6 +609,11 @@ export class LocalPtySessionManager {
 
       if (timedOut) {
         this.pendingSentinels.set(sessionId, sentinel);
+        // Persist to tmux env so a new manager on the next request can restore it
+        await this.tmuxRun(
+          sandbox,
+          `tmux set-environment -t ${sn} HAI_SENTINEL '${sentinel}' && tmux set-environment -t ${sn} HAI_BASELINE '${session.lastCapturedOutput.length}'`,
+        ).catch(() => {});
         const cleaned = cleanOutput(
           finalCapture,
           startMarker,
@@ -641,6 +711,11 @@ export class LocalPtySessionManager {
           command,
         );
         session.lastCapturedOutput = normalizePaneCapture(afterMarker);
+        // Persist to tmux env so a new manager on the next request can restore it
+        await this.tmuxRun(
+          sandbox,
+          `tmux set-environment -t ${sn} HAI_SENTINEL '${sentinel}' && tmux set-environment -t ${sn} HAI_BASELINE '${session.lastCapturedOutput.length}'`,
+        ).catch(() => {});
         return { output: cleaned, exitCode: null, timedOut: true };
       }
 
@@ -688,6 +763,10 @@ export class LocalPtySessionManager {
 
     const sentinel = this.pendingSentinels.get(sessionId) || null;
     const sn = session.tmuxSessionName;
+
+    console.log(
+      `[Shell wait] session=${sessionId} tmux=${sn} sentinel=${sentinel ? "yes" : "no"} baseline=${session.lastCapturedOutput.length} streaming=${!!sandbox.supportsStreaming}`,
+    );
 
     // Use streaming mode for E2B
     if (sandbox.supportsStreaming) {
@@ -761,8 +840,11 @@ export class LocalPtySessionManager {
           `echo '${snapEnd}'; ` +
           `PCMD=$(tmux display-message -t ${sn} -p "#{pane_current_command}" 2>/dev/null); ` +
           `if echo "$PCMD" | grep -qE "^(${shellNames})$"; then ` +
+          `PANE_PID=$(tmux display-message -t ${sn} -p "#{pane_pid}" 2>/dev/null); ` +
+          `if ! pgrep -P "$PANE_PID" >/dev/null 2>&1; then ` +
           `echo '${completionMarker}'; ` +
           `exit 0; ` +
+          `fi; ` +
           `fi; ` +
           `i=$((i + 1)); ` +
           `done`,
@@ -819,6 +901,7 @@ export class LocalPtySessionManager {
       const result = await sandbox.commands.run(waitScript, {
         timeoutMs: (timeoutSeconds + 10) * 1000,
         onStdout,
+        displayName: `wait (session: ${sessionId})`,
       });
 
       const rawOutput = result.stdout;
@@ -832,12 +915,20 @@ export class LocalPtySessionManager {
       session.lastCapturedOutput = captured;
       if (sentinel && !timedOut) {
         this.pendingSentinels.delete(sessionId);
+        await this.tmuxRun(
+          sandbox,
+          `tmux set-environment -t ${sn} -u HAI_SENTINEL 2>/dev/null; tmux set-environment -t ${sn} -u HAI_BASELINE 2>/dev/null`,
+        ).catch(() => {});
       }
 
       const cleaned = stripSentinelNoise(newContent);
       return { output: cleaned.trim() || "[No new output]", timedOut };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const stderr = (error as any)?.stderr || "";
+      console.error(
+        `[Shell wait streaming] error session=${sessionId} tmux=${sn} sentinel=${sentinel ? "yes" : "no"} msg=${message}${stderr ? ` stderr=${stderr}` : ""}`,
+      );
       return { output: `[Shell wait error: ${message}]`, timedOut: false };
     }
   }
@@ -876,6 +967,7 @@ export class LocalPtySessionManager {
       try {
         const result = await sandbox.commands.run(waitScript, {
           timeoutMs: (timeoutSeconds + 10) * 1000,
+          displayName: `wait (session: ${sessionId})`,
         });
 
         const rawOutput = result.stdout;
@@ -899,12 +991,22 @@ export class LocalPtySessionManager {
         }
 
         session.lastCapturedOutput = captured;
-        if (!timedOut) this.pendingSentinels.delete(sessionId);
+        if (!timedOut) {
+          this.pendingSentinels.delete(sessionId);
+          await this.tmuxRun(
+            sandbox,
+            `tmux set-environment -t ${sn} -u HAI_SENTINEL 2>/dev/null; tmux set-environment -t ${sn} -u HAI_BASELINE 2>/dev/null`,
+          ).catch(() => {});
+        }
 
         const cleaned = stripSentinelNoise(newContent);
         return { output: cleaned.trim() || "[No new output]", timedOut };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const stderr = (error as any)?.stderr || "";
+        console.error(
+          `[Shell wait batch-sentinel] error session=${sessionId} tmux=${sn} msg=${message}${stderr ? ` stderr=${stderr}` : ""}`,
+        );
         return { output: `[Shell wait error: ${message}]`, timedOut: false };
       }
     }
@@ -924,9 +1026,12 @@ export class LocalPtySessionManager {
         `sleep ${pollIntervalSec}; ` +
         `PCMD=$(tmux display-message -t ${sn} -p "#{pane_current_command}" 2>/dev/null); ` +
         `if echo "$PCMD" | grep -qE "^(${shellNames})$"; then ` +
+        `PANE_PID=$(tmux display-message -t ${sn} -p "#{pane_pid}" 2>/dev/null); ` +
+        `if ! pgrep -P "$PANE_PID" >/dev/null 2>&1; then ` +
         `echo "${completionMarker}"; ` +
         `tmux capture-pane -t ${sn} -e -p -S -; ` +
         `exit 0; ` +
+        `fi; ` +
         `fi; ` +
         `i=$((i + 1)); ` +
         `done`,
@@ -937,6 +1042,7 @@ export class LocalPtySessionManager {
     try {
       const result = await sandbox.commands.run(waitScript, {
         timeoutMs: (timeoutSeconds + 10) * 1000,
+        displayName: `wait (session: ${sessionId})`,
       });
 
       const rawOutput = result.stdout;
@@ -967,6 +1073,10 @@ export class LocalPtySessionManager {
       return { output: cleaned.trim() || "[No new output]", timedOut };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const stderr = (error as any)?.stderr || "";
+      console.error(
+        `[Shell wait batch-idle] error session=${sessionId} tmux=${sn} msg=${message}${stderr ? ` stderr=${stderr}` : ""}`,
+      );
       return { output: `[Shell wait error: ${message}]`, timedOut: false };
     }
   }
@@ -1041,6 +1151,11 @@ export class LocalPtySessionManager {
     if (!session) return { killed: false };
 
     try {
+      // Clear persisted exec state before killing
+      await this.tmuxRun(
+        sandbox,
+        `tmux set-environment -t ${session.tmuxSessionName} -u HAI_SENTINEL 2>/dev/null; tmux set-environment -t ${session.tmuxSessionName} -u HAI_BASELINE 2>/dev/null`,
+      ).catch(() => {});
       await this.tmuxRun(
         sandbox,
         `tmux kill-session -t ${session.tmuxSessionName}`,

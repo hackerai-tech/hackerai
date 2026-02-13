@@ -141,7 +141,6 @@ If you are generating files:
       // Both E2B and local sandboxes use tmux-based string session identifiers
       session: z
         .string()
-        .optional()
         .describe("The unique identifier of the target shell session"),
       timeout: z
         .number()
@@ -163,7 +162,7 @@ If you are generating files:
         action: /* "view" | */ "exec" | "wait" | "send" | "kill";
         command?: string;
         input?: string;
-        session?: string;
+        session: string;
         timeout?: number;
       },
       { toolCallId, abortSignal },

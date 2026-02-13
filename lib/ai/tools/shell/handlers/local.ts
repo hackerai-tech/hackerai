@@ -212,7 +212,11 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
-    if (!localSessionManager.hasSession(session)) {
+    const attached = await localSessionManager.ensureSessionAttached(
+      sandbox,
+      session,
+    );
+    if (!attached) {
       return {
         output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
       };
@@ -300,7 +304,11 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
-    if (!localSessionManager.hasSession(session)) {
+    const attached = await localSessionManager.ensureSessionAttached(
+      sandbox,
+      session,
+    );
+    if (!attached) {
       return {
         output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
       };
@@ -367,6 +375,7 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
+    await localSessionManager.ensureSessionAttached(sandbox, session);
     const { killed } = await localSessionManager.killSession(sandbox, session);
     if (!killed) {
       return {
