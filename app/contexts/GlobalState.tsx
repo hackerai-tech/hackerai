@@ -64,10 +64,6 @@ interface GlobalStateType {
   chatTitle: string | null;
   setChatTitle: (title: string | null) => void;
 
-  // User chats state
-  chats: Doc<"chats">[];
-  setChats: (chats: Doc<"chats">[]) => void;
-
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -191,7 +187,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     },
     [],
   );
-  const [chats, setChats] = useState<Doc<"chats">[]>([]);
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
@@ -649,8 +644,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatMode,
     chatTitle,
     setChatTitle,
-    chats,
-    setChats,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
