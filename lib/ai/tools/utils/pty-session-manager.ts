@@ -288,10 +288,21 @@ export class PtySessionManager {
     // Build platform-appropriate sentinel command:
     // - Bash/zsh: `command ; echo __DONE_uuid__$?`
     // - PowerShell (Windows dangerous mode): `command ; Write-Host "${sentinel}$LASTEXITCODE"`
+    // - Background commands (ending with &): use newline instead of semicolon to avoid syntax errors
     const isWindowsPS = sandbox.isWindowsDangerousMode?.() ?? false;
-    const fullCommand = isWindowsPS
-      ? `${command} ; Write-Host "${sentinel}$LASTEXITCODE"\n`
-      : `${command} ; echo ${sentinel}$?\n`;
+    const isBackgroundCommand = command.trim().endsWith("&");
+
+    let fullCommand: string;
+    if (isWindowsPS) {
+      fullCommand = isBackgroundCommand
+        ? `${command}\nWrite-Host "${sentinel}$LASTEXITCODE"\n`
+        : `${command} ; Write-Host "${sentinel}$LASTEXITCODE"\n`;
+    } else {
+      fullCommand = isBackgroundCommand
+        ? `${command}\necho ${sentinel}$?\n`
+        : `${command} ; echo ${sentinel}$?\n`;
+    }
+
     await sandbox.pty.sendInput(pid, new TextEncoder().encode(fullCommand));
 
     const timeoutMs = timeoutSeconds * 1000;
