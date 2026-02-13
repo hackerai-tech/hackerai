@@ -56,8 +56,6 @@ export const ChatContent = ({
 
   const router = useRouter();
   const {
-    chatTitle,
-    setChatTitle,
     chatMode,
     setChatMode,
     sidebarOpen,
@@ -126,6 +124,9 @@ export const ChatContent = ({
     api.chats.getChatByIdFromClient,
     shouldFetchMessages ? { id: chatId } : "skip",
   );
+
+  // Derive title from Convex (single source of truth)
+  const chatTitle = chatData?.title ?? null;
 
   // Convert paginated Convex messages to UI format for useChat
   // Messages come from server in descending order (newest first from pagination)
@@ -218,8 +219,6 @@ export const ChatContent = ({
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
-      if (dataPart.type === "data-title")
-        setChatTitle((dataPart.data as { chatTitle: string }).chatTitle);
       if (dataPart.type === "data-upload-status") {
         const uploadData = dataPart.data as {
           message: string;
@@ -383,7 +382,6 @@ export const ChatContent = ({
       setMessages([]);
       setIsExistingChat(false);
       setChatId(uuidv4());
-      setChatTitle(null);
       setTodos([]);
       setAwaitingServerChat(false);
       setUploadStatus(null);
@@ -391,7 +389,7 @@ export const ChatContent = ({
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setChatTitle, setTodos]);
+  }, [setChatReset, setMessages, setTodos]);
 
   // Sync local chat state from URL (single source of truth). When routeChatId is
   // undefined (user on "/"), treat as new chat so we don't keep previous chat id/messages.
@@ -402,10 +400,9 @@ export const ChatContent = ({
     } else {
       setChatId(uuidv4());
       setIsExistingChat(false);
-      setChatTitle(null);
       setMessages([]);
     }
-  }, [routeChatId, setChatTitle, setMessages]);
+  }, [routeChatId, setMessages]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
@@ -418,11 +415,6 @@ export const ChatContent = ({
     // Ignore when no data or data is stale (doesn't match current chatId)
     if (!chatData || dataId !== chatId) {
       return;
-    }
-
-    if (chatData.title) {
-      // Always update title from server data to ensure consistency
-      setChatTitle(chatData.title);
     }
 
     // Load todos from the chat data if they exist.
@@ -463,14 +455,7 @@ export const ChatContent = ({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    chatData,
-    setChatTitle,
-    setTodos,
-    shouldFetchMessages,
-    isExistingChat,
-    chatId,
-  ]);
+  }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
 
   // Reset the one-time initializer when chat changes
   useEffect(() => {
