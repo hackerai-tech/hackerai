@@ -68,10 +68,6 @@ interface GlobalStateType {
   chats: Doc<"chats">[];
   setChats: (chats: Doc<"chats">[]) => void;
 
-  // Chat switching state
-  isSwitchingChats: boolean;
-  setIsSwitchingChats: (switching: boolean) => void;
-
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -169,7 +165,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return saved === "ask" || saved === "agent" ? saved : "ask";
   });
   const [chatTitle, setChatTitle] = useState<string | null>(null);
-  const [isSwitchingChats, setIsSwitchingChats] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -550,7 +545,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
-    setIsSwitchingChats(true);
     // Don't clear input here - let ChatInput restore draft automatically
     // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
@@ -657,8 +651,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatTitle,
     chats,
     setChats,
-    isSwitchingChats,
-    setIsSwitchingChats,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,

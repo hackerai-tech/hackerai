@@ -724,7 +724,6 @@ export const ChatContent = ({
                 error={error || null}
                 paginationStatus={paginatedMessages.status}
                 loadMore={paginatedMessages.loadMore}
-                isSwitchingChats={false}
                 isTemporaryChat={isTempChat}
                 tempChatFileDetails={tempChatFileDetails}
                 finishReason={chatData?.finish_reason}
