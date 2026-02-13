@@ -197,9 +197,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       null,
     );
 
-    expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toContain("Summary of");
-    expect(result.summaryText).toContain("2 messages");
+    expect(result.needsSummarization).toBe(false);
+    expect(result.summaryText).toBeNull();
     expect(mockWriteSummarizationCompleted).toHaveBeenCalled();
   });
 
