@@ -221,7 +221,7 @@ function renderTerminalTool(
     const actionLabel = getShellActionLabel({
       isShellTool,
       action: terminalInput?.action,
-      pid: terminalInput?.pid ?? terminalOutput?.pid,
+      session: terminalInput?.session ?? terminalOutput?.session,
     });
 
     return (

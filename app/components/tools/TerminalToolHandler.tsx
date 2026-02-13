@@ -79,14 +79,12 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const shellAction = isShellTool
     ? (input as { action?: string })?.action
     : undefined;
-  const shellPid = (input as { pid?: number })?.pid ?? terminalOutput?.pid;
   const shellSession =
     (input as { session?: string })?.session ?? terminalOutput?.session;
   const getActionLabel = (isActive: boolean) =>
     getShellActionLabel({
       isShellTool,
       action: shellAction,
-      pid: shellPid,
       session: shellSession,
       isActive,
     });
@@ -101,7 +99,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       isBackground: terminalInput.is_background,
       toolCallId: toolCallId,
       shellAction,
-      pid: shellPid,
       session: shellSession,
       input: (input as { input?: string })?.input,
     };
@@ -114,7 +111,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     isExecuting,
     toolCallId,
     shellAction,
-    shellPid,
     shellSession,
     openSidebar,
   ]);
@@ -134,9 +130,10 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       command: displayCommand,
       output: finalOutput,
       isExecuting,
+      session: shellSession ?? undefined,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSidebarActive, displayCommand, finalOutput, isExecuting]);
+  }, [isSidebarActive, displayCommand, finalOutput, isExecuting, shellSession]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

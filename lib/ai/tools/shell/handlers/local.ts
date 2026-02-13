@@ -1,23 +1,18 @@
 import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { UIMessageStreamWriter } from "ai";
-import type { AnySandbox } from "@/types";
 import {
   truncateContent,
   TOOL_DEFAULT_MAX_TOKENS,
+  STREAM_MAX_TOKENS,
   TIMEOUT_MESSAGE,
 } from "@/lib/token-utils";
-import { checkCommandGuardrails } from "./utils/guardrails";
-import type { GuardrailConfig } from "./utils/guardrails";
-import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
+import { checkCommandGuardrails } from "../../utils/guardrails";
+import type { GuardrailConfig } from "../../utils/guardrails";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
-import { retryWithBackoff } from "./utils/retry-with-backoff";
-import {
-  LocalPtySessionManager,
-  TmuxNotAvailableError,
-} from "./utils/local-pty-session-manager";
-import type { ConvexSandbox } from "./utils/convex-sandbox";
-import { createTruncatingStreamCallback } from "./utils/stream-truncate";
+import { retryWithBackoff } from "../../utils/retry-with-backoff";
+import { LocalPtySessionManager, TmuxNotAvailableError } from "../session";
+import type { TmuxSandbox } from "../session";
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -36,11 +31,11 @@ export function createLocalHandlers(deps: {
   return { dispatch };
 
   // ===========================================================================
-  // Action dispatcher (tmux-based PTY for ConvexSandbox)
+  // Action dispatcher (tmux-based PTY for TmuxSandbox)
   // ===========================================================================
 
   function dispatch(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     action: string,
     command: string | undefined,
     input: string | undefined,
@@ -66,6 +61,7 @@ export function createLocalHandlers(deps: {
         return handleLocalExec(
           sandbox,
           command,
+          session,
           timeout,
           toolCallId,
           abortSignal,
@@ -92,8 +88,9 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalExec(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     command: string | undefined,
+    preferredSession: string | undefined,
     timeout: number,
     toolCallId: string,
     abortSignal?: AbortSignal,
@@ -119,7 +116,10 @@ export function createLocalHandlers(deps: {
     // Acquire a dedicated tmux session (reuses idle ones, auto-suffixes if busy)
     let sessionId: string;
     try {
-      sessionId = await localSessionManager.acquireSession(sandbox);
+      sessionId = await localSessionManager.acquireSession(
+        sandbox,
+        preferredSession,
+      );
     } catch (error) {
       // tmux not available -- fall back to basic commands.run (exec only)
       if (error instanceof TmuxNotAvailableError) {
@@ -147,15 +147,18 @@ export function createLocalHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
+    const streamToFrontend = (text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
-    });
+    };
 
-    localSessionManager.setStreamCallback(sessionId, streamToFrontend);
+    const streamHandler = createTerminalHandler(streamToFrontend, {
+      maxTokens: STREAM_MAX_TOKENS,
+    });
+    localSessionManager.setStreamCallback(sessionId, streamHandler.stdout);
 
     let timedOut = false;
     try {
@@ -196,7 +199,7 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalWait(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     session: string | undefined,
     timeout: number,
     toolCallId: string,
@@ -209,7 +212,11 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
-    if (!localSessionManager.hasSession(session)) {
+    const attached = await localSessionManager.ensureSessionAttached(
+      sandbox,
+      session,
+    );
+    if (!attached) {
       return {
         output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
       };
@@ -217,12 +224,16 @@ export function createLocalHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
+    const streamToFrontend = (text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
+    };
+
+    const streamHandler = createTerminalHandler(streamToFrontend, {
+      maxTokens: STREAM_MAX_TOKENS,
     });
 
     // Flush any output that accumulated before this wait call
@@ -235,10 +246,10 @@ export function createLocalHandlers(deps: {
         ? pending.output
         : "";
     if (pendingOutput) {
-      streamToFrontend(pendingOutput);
+      streamHandler.stdout(pendingOutput);
     }
 
-    localSessionManager.setStreamCallback(session, streamToFrontend);
+    localSessionManager.setStreamCallback(session, streamHandler.stdout);
 
     const { output, timedOut } = await localSessionManager.waitForSession(
       sandbox,
@@ -274,14 +285,15 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalSend(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     session: string | undefined,
     input: string | undefined,
     toolCallId: string,
   ) {
-    if (!input) {
+    if (!input?.trim()) {
       return {
-        output: "Error: `input` parameter is required for `send` action.",
+        output:
+          "Error: `input` parameter is required for `send` action (cannot be empty or whitespace-only).",
         error: true,
       };
     }
@@ -292,7 +304,11 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
-    if (!localSessionManager.hasSession(session)) {
+    const attached = await localSessionManager.ensureSessionAttached(
+      sandbox,
+      session,
+    );
+    if (!attached) {
       return {
         output: `No shell session found with name "${session}". Use \`exec\` action to create one.`,
       };
@@ -317,22 +333,26 @@ export function createLocalHandlers(deps: {
       sandbox,
       session,
     );
-    const output = viewResult.output || "[Input sent successfully]";
+    const rawOutput = viewResult.output || "[Input sent successfully]";
+    const output =
+      rawOutput === "[No new output]"
+        ? "Input sent. No new output since last read."
+        : rawOutput;
 
     if (
-      output !== "[No new output]" &&
+      output !== "Input sent. No new output since last read." &&
       output !== "[Input sent successfully]"
     ) {
-      const streamToFrontend = createTruncatingStreamCallback(
-        (text: string) => {
-          writer.write({
-            type: "data-terminal",
-            id: `terminal-${randomUUID()}-1`,
-            data: { terminal: text, toolCallId },
-          });
-        },
+      const truncatedOutput = truncateContent(
+        output,
+        undefined,
+        STREAM_MAX_TOKENS,
       );
-      streamToFrontend(output);
+      writer.write({
+        type: "data-terminal",
+        id: `terminal-${randomUUID()}-1`,
+        data: { terminal: truncatedOutput, toolCallId },
+      });
     }
 
     return {
@@ -346,7 +366,7 @@ export function createLocalHandlers(deps: {
   // ===========================================================================
 
   async function handleLocalKill(
-    sandbox: ConvexSandbox,
+    sandbox: TmuxSandbox,
     session: string | undefined,
   ) {
     if (!session) {
@@ -355,19 +375,22 @@ export function createLocalHandlers(deps: {
         error: true,
       };
     }
+    await localSessionManager.ensureSessionAttached(sandbox, session);
     const { killed } = await localSessionManager.killSession(sandbox, session);
     if (!killed) {
-      return { output: `No shell session found with name "${session}".` };
+      return {
+        output: `Session "${session}" already terminated or not found.`,
+      };
     }
     return { output: `Shell session "${session}" terminated.` };
   }
 
   // ===========================================================================
-  // ConvexSandbox fallback (basic commands.run — used when tmux unavailable)
+  // TmuxSandbox fallback (basic commands.run — used when tmux unavailable)
   // ===========================================================================
 
   async function handleConvexFallback(
-    sandbox: AnySandbox,
+    sandbox: TmuxSandbox,
     action: string,
     command: string | undefined,
     timeout: number,
@@ -406,21 +429,22 @@ export function createLocalHandlers(deps: {
 
     const termId = `terminal-${randomUUID()}`;
     let counter = 0;
-    const streamToFrontend = createTruncatingStreamCallback((text: string) => {
+    const streamToFrontend = (text: string) => {
       writer.write({
         type: "data-terminal",
         id: `${termId}-${++counter}`,
         data: { terminal: text, toolCallId },
       });
-    });
+    };
 
     const handler = createTerminalHandler(streamToFrontend, {
       timeoutSeconds: timeout,
     });
-    const opts = buildSandboxCommandOptions(sandbox, {
+    const opts = {
+      timeoutMs: 10 * 60 * 1000, // 10 minutes max execution time
       onStdout: handler.stdout,
       onStderr: handler.stderr,
-    });
+    };
 
     try {
       const result = await retryWithBackoff(

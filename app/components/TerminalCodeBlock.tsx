@@ -13,6 +13,8 @@ interface TerminalCodeBlockProps {
   isBackground?: boolean;
   variant?: "default" | "sidebar";
   wrap?: boolean;
+  /** When true, hides the "$ command" prefix in sidebar output (e.g. shell tool shows command in action badge). */
+  hideCommandInOutput?: boolean;
 }
 
 interface AnsiCodeBlockProps {
@@ -200,6 +202,7 @@ export const TerminalCodeBlock = ({
   isBackground = false,
   variant = "default",
   wrap = false,
+  hideCommandInOutput = false,
 }: TerminalCodeBlockProps) => {
   const [isWrapped, setIsWrapped] = useState(wrap);
 
@@ -211,6 +214,10 @@ export const TerminalCodeBlock = ({
   // Combine command and output for full terminal session
   const terminalContent = output ? `$ ${command}\n${output}` : `$ ${command}`;
   const displayContent = output || "";
+  // When hideCommandInOutput is set (e.g. shell tool), show output only since command is in action badge
+  const sidebarContent = hideCommandInOutput
+    ? output || `$ ${command}`
+    : terminalContent;
 
   // For non-sidebar variant, keep the original terminal look
   if (variant !== "sidebar") {
@@ -269,7 +276,7 @@ export const TerminalCodeBlock = ({
           </div>
         ) : (
           <AnsiCodeBlock
-            code={terminalContent}
+            code={sidebarContent}
             isWrapped={isWrapped}
             isStreaming={status === "streaming" || isExecuting}
             theme="houston"
