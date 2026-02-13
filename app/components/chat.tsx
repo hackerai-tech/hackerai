@@ -113,14 +113,6 @@ export const ChatContent = ({
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
 
-  // Sync local chat state from URL (single source of truth)
-  useEffect(() => {
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    }
-  }, [routeChatId]);
-
   // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
@@ -399,6 +391,20 @@ export const ChatContent = ({
     setChatReset(reset);
     return () => setChatReset(null);
   }, [setChatReset, setMessages, setChatTitle, setTodos]);
+
+  // Sync local chat state from URL (single source of truth). When routeChatId is
+  // undefined (user on "/"), treat as new chat so we don't keep previous chat id/messages.
+  useEffect(() => {
+    if (routeChatId) {
+      setChatId(routeChatId);
+      setIsExistingChat(true);
+    } else {
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      setChatTitle(null);
+      setMessages([]);
+    }
+  }, [routeChatId, setChatTitle, setMessages]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
