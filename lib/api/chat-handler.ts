@@ -61,7 +61,7 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
-import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
+import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -471,6 +471,8 @@ export const createChatHandler = (
                         writer,
                         chatId,
                         fileTokens,
+                        getTodoManager().getAllTodos(),
+                        userStopSignal.signal,
                       );
 
                     if (needsSummarization) {
