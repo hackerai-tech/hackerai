@@ -1,6 +1,8 @@
+import { ChatMode } from "@/types/chat";
+
 interface FinishReasonNoticeProps {
   finishReason?: string;
-  mode?: "ask" | "agent";
+  mode?: ChatMode;
 }
 
 export const FinishReasonNotice = ({

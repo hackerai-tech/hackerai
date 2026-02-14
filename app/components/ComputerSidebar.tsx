@@ -7,7 +7,7 @@ import {
   SkipBack,
   SkipForward,
 } from "lucide-react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 import { TerminalCodeBlock } from "./TerminalCodeBlock";
@@ -75,6 +75,17 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     sidebarContent,
     onNavigate,
   });
+
+  // When showing a terminal, use live data from toolExecutions so streaming output updates in real time
+  const resolvedTerminal = useMemo(() => {
+    if (!sidebarContent || !isSidebarTerminal(sidebarContent)) return null;
+    const live = toolExecutions.find(
+      (item) =>
+        isSidebarTerminal(item) &&
+        item.toolCallId === sidebarContent.toolCallId,
+    );
+    return (live ?? sidebarContent) as typeof sidebarContent;
+  }, [sidebarContent, toolExecutions]);
 
   // Initialize tool count ref on mount
   useEffect(() => {
@@ -277,10 +288,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                         ? sidebarContent.content
                         : isPython
                           ? sidebarContent.code
-                          : isTerminal
-                            ? sidebarContent.output
-                              ? `$ ${sidebarContent.command}\n${sidebarContent.output}`
-                              : `$ ${sidebarContent.command}`
+                          : isTerminal && resolvedTerminal
+                            ? resolvedTerminal.output
+                              ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
+                              : `$ ${resolvedTerminal.command}`
                             : ""
                     }
                     filename={
@@ -353,14 +364,14 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           )}
                         </>
                       )}
-                      {isTerminal && (
+                      {isTerminal && resolvedTerminal && (
                         <TerminalCodeBlock
-                          command={sidebarContent.command}
-                          output={sidebarContent.output}
-                          isExecuting={sidebarContent.isExecuting}
-                          isBackground={sidebarContent.isBackground}
+                          command={resolvedTerminal.command}
+                          output={resolvedTerminal.output}
+                          isExecuting={resolvedTerminal.isExecuting}
+                          isBackground={resolvedTerminal.isBackground}
                           status={
-                            sidebarContent.isExecuting ? "streaming" : "ready"
+                            resolvedTerminal.isExecuting ? "streaming" : "ready"
                           }
                           variant="sidebar"
                           wrap={isWrapped}

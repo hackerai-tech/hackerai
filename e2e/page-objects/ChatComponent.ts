@@ -40,11 +40,15 @@ export class ChatComponent {
   }
 
   private get askModeOption(): Locator {
-    return this.page.getByRole("menuitem").filter({ hasText: "Ask" });
+    return this.page.getByTestId("mode-ask");
   }
 
   private get agentModeOption(): Locator {
-    return this.page.getByRole("menuitem").filter({ hasText: "Agent" });
+    return this.page.getByTestId("mode-agent");
+  }
+
+  private get agentLongModeOption(): Locator {
+    return this.page.getByTestId("mode-agent-long");
   }
 
   private get upgradeDialog(): Locator {
@@ -132,6 +136,11 @@ export class ChatComponent {
   async switchToAgentMode(): Promise<void> {
     await this.modeDropdown.click();
     await this.agentModeOption.click();
+  }
+
+  async switchToAgentLongMode(): Promise<void> {
+    await this.modeDropdown.click();
+    await this.agentLongModeOption.click();
   }
 
   async switchToAskMode(): Promise<void> {
@@ -287,10 +296,12 @@ export class ChatComponent {
 
   async getCurrentMode(): Promise<string> {
     const modeText = await this.modeDropdown.innerText();
-    return modeText.includes("Agent") ? "agent" : "ask";
+    if (modeText.includes("Agent-Long")) return "agent-long";
+    if (modeText.includes("Agent")) return "agent";
+    return "ask";
   }
 
-  async expectMode(mode: "ask" | "agent"): Promise<void> {
+  async expectMode(mode: "ask" | "agent" | "agent-long"): Promise<void> {
     const currentMode = await this.getCurrentMode();
     expect(currentMode).toBe(mode);
   }

@@ -20,7 +20,13 @@ import {
   createDeleteNote,
 } from "./notes";
 import type { UIMessageStreamWriter } from "ai";
-import type { ChatMode, ToolContext, Todo, AnySandbox } from "@/types";
+import type {
+  ChatMode,
+  ToolContext,
+  Todo,
+  AnySandbox,
+  AppendMetadataStreamFn,
+} from "@/types";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
@@ -47,6 +53,7 @@ export const createTools = (
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
   guardrailsConfig?: string,
+  appendMetadataStream?: AppendMetadataStreamFn,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -93,6 +100,7 @@ export const createTools = (
     mode,
     isE2BSandbox,
     guardrailsConfig,
+    appendMetadataStream,
   };
 
   // Create all available tools
