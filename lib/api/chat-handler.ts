@@ -41,6 +41,9 @@ import {
   buildProviderOptions,
   isXaiSafetyError,
   isProviderApiError,
+  computeContextUsage,
+  writeContextUsage,
+  contextUsageEnabled,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -428,36 +431,29 @@ export const createChatHandler = (
             sandboxContext,
           );
 
-          // Compute and stream actual context usage breakdown
-          const ctxSystemTokens = countTokens(currentSystemPrompt);
-          const summaryMsg = truncatedMessages.find((m) =>
-            m.parts?.some(
-              (p: any) =>
-                p.type === "text" &&
-                typeof p.text === "string" &&
-                p.text.includes("<context_summary>"),
-            ),
-          );
-          const ctxSummaryTokens = summaryMsg
-            ? countMessagesTokens([summaryMsg], fileTokens)
+          // Compute and stream actual context usage breakdown (when enabled)
+          const ctxSystemTokens = contextUsageEnabled
+            ? countTokens(currentSystemPrompt)
             : 0;
-          const nonSummaryMessages = summaryMsg
-            ? truncatedMessages.filter((m) => m !== summaryMsg)
-            : truncatedMessages;
-          const ctxMessagesTokens = countMessagesTokens(
-            nonSummaryMessages,
-            fileTokens,
-          );
-          const ctxMaxTokens = getMaxTokensForSubscription(subscription);
-          writer.write({
-            type: "data-context-usage",
-            data: {
-              systemTokens: ctxSystemTokens,
-              summaryTokens: ctxSummaryTokens,
-              messagesTokens: ctxMessagesTokens,
-              maxTokens: ctxMaxTokens,
-            },
-          });
+          const ctxMaxTokens = contextUsageEnabled
+            ? getMaxTokensForSubscription(subscription)
+            : 0;
+          let ctxUsage = contextUsageEnabled
+            ? computeContextUsage(
+                truncatedMessages,
+                fileTokens,
+                ctxSystemTokens,
+                ctxMaxTokens,
+              )
+            : {
+                systemTokens: 0,
+                summaryTokens: 0,
+                messagesTokens: 0,
+                maxTokens: 0,
+              };
+          if (contextUsageEnabled) {
+            writeContextUsage(writer, ctxUsage);
+          }
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
@@ -534,6 +530,18 @@ export const createChatHandler = (
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
                       );
+
+                      // Recompute context usage after summarization
+                      if (contextUsageEnabled) {
+                        ctxUsage = computeContextUsage(
+                          summarizedMessages,
+                          fileTokens,
+                          ctxSystemTokens,
+                          ctxMaxTokens,
+                        );
+                        writeContextUsage(writer, ctxUsage);
+                      }
+
                       // Return updated messages for this step
                       return {
                         messages:
@@ -1111,15 +1119,13 @@ export const createChatHandler = (
                 }
 
                 // Send updated context usage with output tokens included
-                writer.write({
-                  type: "data-context-usage",
-                  data: {
-                    systemTokens: ctxSystemTokens,
-                    summaryTokens: ctxSummaryTokens,
-                    messagesTokens: ctxMessagesTokens + accumulatedOutputTokens,
-                    maxTokens: ctxMaxTokens,
-                  },
-                });
+                if (contextUsageEnabled) {
+                  writeContextUsage(writer, {
+                    ...ctxUsage,
+                    messagesTokens:
+                      ctxUsage.messagesTokens + accumulatedOutputTokens,
+                  });
+                }
 
                 // Deduct accumulated usage if not already done
                 await deductAccumulatedUsage();
