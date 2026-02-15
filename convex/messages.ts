@@ -24,12 +24,9 @@ const extractTextFromParts = (parts: any[]): string => {
 const checkAndInvalidateSummary = async (
   ctx: any,
   chatId: string,
-  deletedMessageIds: (string | undefined)[],
+  deletedMessages: { id: string; creationTime: number }[],
 ) => {
-  const validDeletedIds = deletedMessageIds.filter(
-    (id): id is string => id !== undefined,
-  );
-  if (validDeletedIds.length === 0) return;
+  if (deletedMessages.length === 0) return;
 
   try {
     const chat = await ctx.db
@@ -39,20 +36,46 @@ const checkAndInvalidateSummary = async (
 
     if (!chat || !chat.latest_summary_id) return;
 
-    // Get the summary to check its cutoff message
     const summary = await ctx.db.get(chat.latest_summary_id);
     if (!summary) return;
 
-    // If the summary's cutoff message was deleted, invalidate the summary
-    if (validDeletedIds.includes(summary.summary_up_to_message_id)) {
-      // Clear the summary reference from chat
+    // The cutoff message could be any role (user or assistant) depending on
+    // where the split landed. Compare by creation time: if any deleted/edited
+    // message was created at or before the cutoff, the summary content is stale.
+    const cutoffMessage = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q: any) =>
+        q.eq("id", summary.summary_up_to_message_id),
+      )
+      .first();
+
+    if (!cutoffMessage) {
       await ctx.db.patch(chat._id, {
         latest_summary_id: undefined,
         update_time: Date.now(),
       });
+      try {
+        await ctx.db.delete(chat.latest_summary_id);
+      } catch (error) {
+        console.error("[Messages] Failed to delete orphaned summary:", error);
+      }
+      return;
+    }
 
-      // Delete the summary document
-      await ctx.db.delete(chat.latest_summary_id);
+    const shouldInvalidate = deletedMessages.some(
+      (msg) => msg.creationTime <= cutoffMessage._creationTime,
+    );
+
+    if (shouldInvalidate) {
+      await ctx.db.patch(chat._id, {
+        latest_summary_id: undefined,
+        update_time: Date.now(),
+      });
+      try {
+        await ctx.db.delete(chat.latest_summary_id);
+      } catch (error) {
+        console.error("[Messages] Failed to delete stale summary:", error);
+      }
     }
   } catch (error) {
     console.error("[Messages] Failed to check/invalidate summary:", error);
@@ -546,6 +569,14 @@ export const deleteLastAssistantMessage = mutation({
           }
         }
 
+        // Check summary invalidation before deleting the message
+        await checkAndInvalidateSummary(ctx, args.chatId, [
+          {
+            id: lastAssistantMessage.id,
+            creationTime: lastAssistantMessage._creationTime,
+          },
+        ]);
+
         if (
           lastAssistantMessage.file_ids &&
           lastAssistantMessage.file_ids.length > 0
@@ -575,26 +606,6 @@ export const deleteLastAssistantMessage = mutation({
         }
 
         await ctx.db.delete(lastAssistantMessage._id);
-
-        // Invalidate any existing summary on regenerate
-        // The new response will create a fresh summary if needed
-        const chat = await ctx.db
-          .query("chats")
-          .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
-          .first();
-
-        if (chat?.latest_summary_id) {
-          const summaryIdToDelete = chat.latest_summary_id;
-          await ctx.db.patch(chat._id, {
-            latest_summary_id: undefined,
-            update_time: Date.now(),
-          });
-          try {
-            await ctx.db.delete(summaryIdToDelete);
-          } catch {
-            // Summary might already be deleted, ignore
-          }
-        }
       }
 
       // Update todos in the same transaction if provided
@@ -1128,6 +1139,12 @@ export const regenerateWithNewContent = mutation({
         )
         .collect();
 
+      // Check summary invalidation before deleting messages
+      await checkAndInvalidateSummary(ctx, message.chat_id, [
+        { id: message.id, creationTime: message._creationTime },
+        ...messages.map((m) => ({ id: m.id, creationTime: m._creationTime })),
+      ]);
+
       for (const msg of messages) {
         if (msg.file_ids && msg.file_ids.length > 0) {
           for (const fileId of msg.file_ids) {
@@ -1155,27 +1172,6 @@ export const regenerateWithNewContent = mutation({
         }
 
         await ctx.db.delete(msg._id);
-      }
-
-      // Always invalidate summary when editing messages
-      // The context has changed, so any existing summary may be stale
-      // The new response will create a fresh summary if needed
-      const chat = await ctx.db
-        .query("chats")
-        .withIndex("by_chat_id", (q) => q.eq("id", message.chat_id))
-        .first();
-
-      if (chat?.latest_summary_id) {
-        const summaryIdToDelete = chat.latest_summary_id;
-        await ctx.db.patch(chat._id, {
-          latest_summary_id: undefined,
-          update_time: Date.now(),
-        });
-        try {
-          await ctx.db.delete(summaryIdToDelete);
-        } catch {
-          // Summary might already be deleted, ignore
-        }
       }
 
       return null;
