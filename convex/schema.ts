@@ -49,6 +49,14 @@ export default defineSchema({
     chat_id: v.string(),
     summary_text: v.string(),
     summary_up_to_message_id: v.string(),
+    previous_summaries: v.optional(
+      v.array(
+        v.object({
+          summary_text: v.string(),
+          summary_up_to_message_id: v.string(),
+        }),
+      ),
+    ),
   }).index("by_chat_id", ["chat_id"]),
 
   messages: defineTable({

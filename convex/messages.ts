@@ -21,6 +21,36 @@ const extractTextFromParts = (parts: any[]): string => {
  * Helper function to check if deleted messages invalidate the chat summary
  * Clears latest_summary_id if the summary's cutoff message was deleted
  */
+const tryFallbackSummary = async (
+  ctx: any,
+  summaryId: Id<"chat_summaries">,
+  previousSummaries: {
+    summary_text: string;
+    summary_up_to_message_id: string;
+  }[],
+  earliestDeletedTime: number,
+): Promise<boolean> => {
+  for (let i = 0; i < previousSummaries.length; i++) {
+    const candidate = previousSummaries[i];
+    const cutoffMsg = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q: any) =>
+        q.eq("id", candidate.summary_up_to_message_id),
+      )
+      .first();
+
+    if (cutoffMsg && cutoffMsg._creationTime < earliestDeletedTime) {
+      await ctx.db.patch(summaryId, {
+        summary_text: candidate.summary_text,
+        summary_up_to_message_id: candidate.summary_up_to_message_id,
+        previous_summaries: previousSummaries.slice(i + 1),
+      });
+      return true;
+    }
+  }
+  return false;
+};
+
 const checkAndInvalidateSummary = async (
   ctx: any,
   chatId: string,
@@ -39,9 +69,15 @@ const checkAndInvalidateSummary = async (
     const summary = await ctx.db.get(chat.latest_summary_id);
     if (!summary) return;
 
-    // The cutoff message could be any role (user or assistant) depending on
-    // where the split landed. Compare by creation time: if any deleted/edited
-    // message was created at or before the cutoff, the summary content is stale.
+    const previousSummaries: {
+      summary_text: string;
+      summary_up_to_message_id: string;
+    }[] = summary.previous_summaries ?? [];
+
+    const earliestDeletedTime = Math.min(
+      ...deletedMessages.map((m) => m.creationTime),
+    );
+
     const cutoffMessage = await ctx.db
       .query("messages")
       .withIndex("by_message_id", (q: any) =>
@@ -50,6 +86,14 @@ const checkAndInvalidateSummary = async (
       .first();
 
     if (!cutoffMessage) {
+      const found = await tryFallbackSummary(
+        ctx,
+        chat.latest_summary_id,
+        previousSummaries,
+        earliestDeletedTime,
+      );
+      if (found) return;
+
       await ctx.db.patch(chat._id, {
         latest_summary_id: undefined,
         update_time: Date.now(),
@@ -67,6 +111,14 @@ const checkAndInvalidateSummary = async (
     );
 
     if (shouldInvalidate) {
+      const found = await tryFallbackSummary(
+        ctx,
+        chat.latest_summary_id,
+        previousSummaries,
+        earliestDeletedTime,
+      );
+      if (found) return;
+
       await ctx.db.patch(chat._id, {
         latest_summary_id: undefined,
         update_time: Date.now(),
@@ -79,7 +131,6 @@ const checkAndInvalidateSummary = async (
     }
   } catch (error) {
     console.error("[Messages] Failed to check/invalidate summary:", error);
-    // Don't throw - summary invalidation is best-effort
   }
 };
 

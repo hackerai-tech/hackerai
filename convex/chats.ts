@@ -3,7 +3,7 @@ import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
-import { MAX_PINNED_CHATS } from "./constants";
+import { MAX_PINNED_CHATS, MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
 
 /**
@@ -928,25 +928,38 @@ export const saveLatestSummary = mutation({
         });
       }
 
-      // Delete old summary if it exists
+      let previousSummaries: {
+        summary_text: string;
+        summary_up_to_message_id: string;
+      }[] = [];
+
       if (chat.latest_summary_id) {
         try {
-          const summaryIdToDelete = chat.latest_summary_id;
+          const oldSummary = await ctx.db.get(chat.latest_summary_id);
+          if (oldSummary) {
+            previousSummaries = [
+              {
+                summary_text: oldSummary.summary_text,
+                summary_up_to_message_id: oldSummary.summary_up_to_message_id,
+              },
+              ...(oldSummary.previous_summaries ?? []),
+            ].slice(0, MAX_PREVIOUS_SUMMARIES);
+          }
           await ctx.db.patch(chat._id, {
             latest_summary_id: undefined,
             update_time: Date.now(),
           });
-          await ctx.db.delete(summaryIdToDelete);
+          await ctx.db.delete(chat.latest_summary_id);
         } catch (error) {
           // Continue anyway - old summary cleanup is not critical
         }
       }
 
-      // Insert new summary record
       const summaryId = await ctx.db.insert("chat_summaries", {
         chat_id: args.chatId,
         summary_text: args.summaryText,
         summary_up_to_message_id: args.summaryUpToMessageId,
+        previous_summaries: previousSummaries,
       });
 
       // Update chat to reference the latest summary (fast ID lookup)
