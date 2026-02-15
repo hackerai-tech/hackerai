@@ -15,7 +15,7 @@ function isString(v: unknown): v is string {
   return typeof v === "string";
 }
 function isNumber(v: unknown): v is number {
-  return typeof v === "number";
+  return typeof v === "number" && Number.isFinite(v);
 }
 
 export interface ParseRateLimitWarningOptions {

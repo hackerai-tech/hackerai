@@ -109,6 +109,25 @@ function serializeRateLimitInfo(
 export async function prepareAgentPayload(
   req: NextRequest,
 ): Promise<AgentTaskPayload> {
+  let parsedBody: {
+    messages: UIMessage[];
+    mode: ChatMode;
+    chatId: string;
+    todos?: Todo[];
+    regenerate?: boolean;
+    temporary?: boolean;
+    sandboxPreference?: SandboxPreference;
+  };
+
+  try {
+    parsedBody = await req.json();
+  } catch {
+    throw new ChatSDKError(
+      "bad_request:api",
+      "Invalid or malformed request body",
+    );
+  }
+
   const {
     messages,
     mode,
@@ -117,15 +136,7 @@ export async function prepareAgentPayload(
     regenerate,
     temporary,
     sandboxPreference,
-  }: {
-    messages: UIMessage[];
-    mode: ChatMode;
-    chatId: string;
-    todos?: Todo[];
-    regenerate?: boolean;
-    temporary?: boolean;
-    sandboxPreference?: SandboxPreference;
-  } = await req.json();
+  } = parsedBody;
 
   if (mode !== "agent-long") {
     throw new ChatSDKError(
@@ -191,6 +202,8 @@ export async function prepareAgentPayload(
 
   const userCustomization = await getUserCustomization({ userId });
   const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+  // Note: File tokens are not included because counts are inaccurate (especially PDFs)
+  // and deductUsage reconciles with actual provider cost anyway
   const estimatedInputTokens = countMessagesTokens(truncatedMessages);
 
   // Paid users only (free already rejected above)

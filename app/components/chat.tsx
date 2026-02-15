@@ -636,7 +636,7 @@ export const Chat = ({
       }
       sendMessage(payload as Parameters<typeof sendMessage>[0], opts);
     },
-    [chatMode, agentLong, sendMessage],
+    [chatMode, agentLong.submit, sendMessage],
   );
 
   const wrappedRegenerate = useCallback(
@@ -647,7 +647,7 @@ export const Chat = ({
       }
       regenerate(opts);
     },
-    [chatMode, agentLong, regenerate],
+    [chatMode, agentLong.regenerate, regenerate],
   );
 
   // Automatic queue processing - send next queued message when ready (wrappedSendMessage routes agent-long to hook)
