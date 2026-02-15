@@ -5,18 +5,12 @@ import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "../constants";
 import { MAX_TOKENS_FREE } from "@/lib/token-utils";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
-const mockWriteSummarizationStarted = jest.fn<() => void>();
-const mockWriteSummarizationCompleted = jest.fn<() => void>();
 const mockSaveChatSummary = jest.fn<() => Promise<void>>();
 
 jest.doMock("server-only", () => ({}));
 jest.doMock("ai", () => ({
   ...jest.requireActual("ai"),
   generateText: mockGenerateText,
-}));
-jest.doMock("@/lib/utils/stream-writer-utils", () => ({
-  writeSummarizationStarted: mockWriteSummarizationStarted,
-  writeSummarizationCompleted: mockWriteSummarizationCompleted,
 }));
 jest.doMock("@/lib/db/actions", () => ({
   saveChatSummary: mockSaveChatSummary,
@@ -63,13 +57,18 @@ const fourMessagesAboveThreshold: UIMessage[] = [
   createMessageWithTokens("msg-4", "assistant", TOKENS_PER_ABOVE_MSG),
 ];
 
-const mockWriter = {} as UIMessageStreamWriter;
+const createMockWriter = (): UIMessageStreamWriter =>
+  ({ write: jest.fn() }) as unknown as UIMessageStreamWriter;
+
 const mockLanguageModel = {} as LanguageModel;
 
 describe("checkAndSummarizeIfNeeded", () => {
+  let mockWriter: UIMessageStreamWriter;
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockSaveChatSummary.mockResolvedValue(undefined);
+    mockWriter = createMockWriter();
   });
 
   it("should skip summarization when message count is insufficient", async () => {
@@ -185,7 +184,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
-  it("should use fallback summary and complete UI flow when AI fails", async () => {
+  it("should write summarization completed even when AI fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("API error"));
 
     const result = await checkAndSummarizeIfNeeded(
@@ -199,10 +198,17 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(false);
     expect(result.summaryText).toBeNull();
-    expect(mockWriteSummarizationCompleted).toHaveBeenCalled();
+
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const completedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(completedWrite).toBeDefined();
   });
 
-  it("should complete UI flow even when database save fails", async () => {
+  it("should write summarization completed even when database save fails", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
     mockSaveChatSummary.mockRejectedValue(new Error("DB error"));
 
@@ -217,7 +223,14 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Summary");
-    expect(mockWriteSummarizationCompleted).toHaveBeenCalled();
+
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const completedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(completedWrite).toBeDefined();
   });
 
   it("should include todo list in summary message when todos exist", async () => {
@@ -265,7 +278,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
   });
 
-  it("should abort summarization and skip persist/completion when signal is aborted", async () => {
+  it("should abort summarization and not write completed when signal is aborted", async () => {
     const abortController = new AbortController();
     const abortError = new DOMException(
       "The operation was aborted",
@@ -290,9 +303,20 @@ describe("checkAndSummarizeIfNeeded", () => {
       ),
     ).rejects.toThrow(abortError);
 
-    expect(mockWriteSummarizationStarted).toHaveBeenCalled();
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const startedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "started",
+    );
+    const completedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(startedWrite).toBeDefined();
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
-    expect(mockWriteSummarizationCompleted).not.toHaveBeenCalled();
+    expect(completedWrite).toBeUndefined();
   });
 
   it("should pass abortSignal to generateText", async () => {
