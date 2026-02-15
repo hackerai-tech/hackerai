@@ -1,10 +1,12 @@
 import { config } from "dotenv";
 import { defineConfig } from "@trigger.dev/sdk/v3";
 
-config({ path: ".env.local" });
+if (process.env.NODE_ENV !== "production") {
+  config({ path: ".env.local" });
+}
 
 export default defineConfig({
-  project: process.env.TRIGGER_PROJECT! ?? "proj_umgzqxmfrucveonxqdmt",
+  project: process.env.TRIGGER_PROJECT!,
   runtime: "node",
   logLevel: "log",
   // The max compute seconds a task is allowed to run. If the task run exceeds this duration, it will be stopped.
