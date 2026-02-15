@@ -1,4 +1,3 @@
- 
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
 
@@ -485,6 +484,61 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
       summary_up_to_message_id: "msg-prev-1",
       previous_summaries: [],
     });
+  });
+
+  it("should invalidate only the latest summary when message falls between previous and current cutoff", async () => {
+    const assistantMsg = makeAssistantMessage({ _creationTime: 3000 });
+    const chatDoc = makeChatDoc();
+    const summaryDoc = makeSummaryDoc({
+      summary_text: "second summary",
+      summary_up_to_message_id: "msg-10",
+      previous_summaries: [
+        {
+          summary_text: "first summary",
+          summary_up_to_message_id: "msg-5",
+        },
+      ],
+    });
+
+    const cutoffMsg = {
+      _id: "cutoff-doc-10",
+      id: "msg-10",
+      _creationTime: 5000,
+    };
+    const prevCutoffMsg = {
+      _id: "cutoff-doc-5",
+      id: "msg-5",
+      _creationTime: 2000,
+    };
+
+    setupDbQueryChain({
+      assistantMessage: assistantMsg,
+      chatDoc,
+      cutoffMessage: cutoffMsg,
+      fallbackCutoffMessages: [prevCutoffMsg],
+    });
+    mockCtx.db.get.mockResolvedValue(summaryDoc);
+
+    const { deleteLastAssistantMessage } = await import("../messages");
+
+    await deleteLastAssistantMessage.handler(mockCtx, { chatId: CHAT_ID });
+
+    expect(mockCtx.db.patch).toHaveBeenCalledWith(SUMMARY_DOC_ID, {
+      summary_text: "first summary",
+      summary_up_to_message_id: "msg-5",
+      previous_summaries: [],
+    });
+
+    const deleteCalls = mockCtx.db.delete.mock.calls.filter(
+      (call: any[]) => call[0] === SUMMARY_DOC_ID,
+    );
+    expect(deleteCalls).toHaveLength(0);
+
+    const clearSummaryCalls = mockCtx.db.patch.mock.calls.filter(
+      (call: any[]) =>
+        call[0] === CHAT_DOC_ID && call[1].latest_summary_id === undefined,
+    );
+    expect(clearSummaryCalls).toHaveLength(0);
   });
 
   it("should fully delete summary when no valid fallback exists", async () => {
