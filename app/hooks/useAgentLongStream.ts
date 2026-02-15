@@ -130,7 +130,7 @@ export function useAgentLongStream(
   const skipPaginatedSyncUntilRef = useRef<number>(0);
   const lastTriggerAssistantIdRef = useRef<string | null>(null);
   const aiPartsGenerationRef = useRef(0);
-  const hasReconnectedRef = useRef(false);
+  const reconnectedForRef = useRef<string | null>(null);
   const serverMessagesRef = useRef(serverMessages);
   serverMessagesRef.current = serverMessages;
   const messagesRef = useRef(messages);
@@ -152,11 +152,9 @@ export function useAgentLongStream(
     api.chats.clearActiveTriggerRunId,
   );
 
-  // Reconnect on load: when chat has active_trigger_run_id, fetch token and set triggerRun.
-  // Use serverMessages (Convex) for base when available so refresh shows history; otherwise fall back to useChat messages.
-  // When already reconnected and serverMessages arrive late, backfill triggerBaseAndUserMessages.
+  // Backfill: when already reconnected but Convex messages arrived after we set triggerRun,
+  // populate triggerBaseAndUserMessages so the UI shows chat history during streaming.
   useEffect(() => {
-    // Backfill: already reconnected but Convex messages arrived after we set triggerRun
     if (
       triggerRun !== null &&
       reconnectRunId &&
@@ -164,19 +162,31 @@ export function useAgentLongStream(
       triggerBaseAndUserMessages.length === 0
     ) {
       setTriggerBaseAndUserMessages(serverMessages);
-      return;
     }
+  }, [
+    triggerRun,
+    reconnectRunId,
+    serverMessages,
+    triggerBaseAndUserMessages.length,
+  ]);
 
+  // Reconnect on load: when chat has active_trigger_run_id, fetch token and set triggerRun.
+  // Uses refs for messages/serverMessages so this effect only re-runs when the
+  // reconnect-relevant deps change (enabled, chatId, reconnectRunId, triggerRun),
+  // not on every message update — which previously caused the cleanup to cancel
+  // in-flight fetches before they could complete, silently killing reconnection.
+  useEffect(() => {
+    const reconnectKey = `${chatId}:${reconnectRunId}`;
     if (
       !enabled ||
       !chatId ||
       !reconnectRunId ||
       triggerRun !== null ||
-      hasReconnectedRef.current
+      reconnectedForRef.current === reconnectKey
     ) {
       return;
     }
-    hasReconnectedRef.current = true;
+    reconnectedForRef.current = reconnectKey;
     let cancelled = false;
     (async () => {
       try {
@@ -187,6 +197,10 @@ export function useAgentLongStream(
           if (!res.ok && !cancelled) {
             const err = await res.json().catch(() => ({}));
             toast.error(err?.message ?? "Failed to reconnect to run");
+          }
+          // Allow retry on non-cancelled failure
+          if (!cancelled) {
+            reconnectedForRef.current = null;
           }
           return;
         }
@@ -202,6 +216,7 @@ export function useAgentLongStream(
         setTriggerStatus("streaming");
       } catch (e) {
         if (!cancelled) {
+          reconnectedForRef.current = null;
           toast.error(
             e instanceof Error ? e.message : "Failed to reconnect to run",
           );
@@ -211,18 +226,17 @@ export function useAgentLongStream(
     return () => {
       cancelled = true;
     };
-  }, [
-    enabled,
-    chatId,
-    reconnectRunId,
-    triggerRun,
-    messages,
-    serverMessages,
-    triggerBaseAndUserMessages.length,
-  ]);
+  }, [enabled, chatId, reconnectRunId, triggerRun]);
 
+  // Reset reconnect guard when navigating to a different chat/run
+  // so the new chat can reconnect. Using the composite key means the
+  // reset only takes effect when chatId or reconnectRunId actually change,
+  // NOT on initial mount (which was causing the duplicate fetch).
   useEffect(() => {
-    hasReconnectedRef.current = false;
+    const key = `${chatId}:${reconnectRunId}`;
+    if (reconnectedForRef.current && reconnectedForRef.current !== key) {
+      reconnectedForRef.current = null;
+    }
   }, [chatId, reconnectRunId]);
 
   const { parts: aiParts = [] } = useRealtimeStream(
@@ -514,7 +528,7 @@ export function useAgentLongStream(
       setCurrentChatId(chatId);
       onRunComplete?.({ chatId });
     }
-    hasReconnectedRef.current = false;
+    reconnectedForRef.current = null;
   }, [
     triggerRun,
     triggerStatus,
