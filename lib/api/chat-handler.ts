@@ -44,6 +44,7 @@ import {
   computeContextUsage,
   writeContextUsage,
   contextUsageEnabled,
+  runSummarizationStep,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -68,7 +69,6 @@ import { createTrackedProvider } from "@/lib/ai/providers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
-import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -493,42 +493,36 @@ export const createChatHandler = (
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
-                    const { needsSummarization, summarizedMessages } =
-                      await checkAndSummarizeIfNeeded(
-                        finalMessages,
-                        subscription,
-                        trackedProvider.languageModel(modelName),
-                        mode,
-                        writer,
-                        chatId,
-                        fileTokens,
-                        getTodoManager().getAllTodos(),
-                        userStopSignal.signal,
-                        systemPromptTokens,
-                      );
+                    const result = await runSummarizationStep({
+                      messages: finalMessages,
+                      subscription,
+                      languageModel: trackedProvider.languageModel(modelName),
+                      mode,
+                      writer,
+                      chatId,
+                      fileTokens,
+                      todos: getTodoManager().getAllTodos(),
+                      abortSignal: userStopSignal.signal,
+                      systemPromptTokens,
+                      ctxSystemTokens,
+                      ctxMaxTokens,
+                    });
 
-                    if (needsSummarization) {
+                    if (
+                      result.needsSummarization &&
+                      result.summarizedMessages
+                    ) {
                       hasSummarized = true;
-                      // Push only the completed event to parts array for persistence
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
                       );
-
-                      // Recompute context usage after summarization
-                      if (contextUsageEnabled) {
-                        ctxUsage = computeContextUsage(
-                          summarizedMessages,
-                          fileTokens,
-                          ctxSystemTokens,
-                          ctxMaxTokens,
-                        );
-                        writeContextUsage(writer, ctxUsage);
+                      if (result.contextUsage) {
+                        ctxUsage = result.contextUsage;
                       }
-
-                      // Return updated messages for this step
                       return {
-                        messages:
-                          await convertToModelMessages(summarizedMessages),
+                        messages: await convertToModelMessages(
+                          result.summarizedMessages,
+                        ),
                       };
                     }
                   }
