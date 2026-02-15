@@ -24,7 +24,7 @@ import {
   writeUploadCompleteStatus,
   createSummarizationCompletedPart,
 } from "@/lib/utils/stream-writer-utils";
-import { checkAndSummarizeIfNeeded } from "@/lib/utils/message-summarization";
+import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
