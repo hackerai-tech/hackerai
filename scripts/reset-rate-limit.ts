@@ -183,12 +183,20 @@ Note: This script automatically looks up user IDs from WorkOS
   }
 
   // Parse user argument
-  const user = args[0] as TestUserTier;
+  const arg = args[0];
+
+  // Check if it's an email address (arbitrary user)
+  if (arg.includes("@")) {
+    await resetRateLimitForUser(arg as TestUserTier, arg);
+    return;
+  }
+
+  const user = arg as TestUserTier;
 
   // Validate user
   if (!TEST_USERS[user]) {
     console.error(
-      `❌ Error: Invalid user "${user}". Must be: free | pro | ultra`,
+      `❌ Error: Invalid user "${user}". Must be: free | pro | ultra | an email address`,
     );
     console.log("\n💡 Tip: Use --help to see available options");
     process.exit(1);
