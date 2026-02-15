@@ -4,9 +4,12 @@
  * Utility functions extracted from chat-handler to keep it clean and focused.
  */
 
-import type { UIMessageStreamWriter } from "ai";
+import type { UIMessage, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
+import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
+import type { Id } from "@/convex/_generated/dataModel";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
+import { countMessagesTokens } from "@/lib/token-utils";
 
 /**
  * Check if messages contain file attachments
@@ -187,6 +190,47 @@ export function isProviderApiError(error: unknown): boolean {
 /**
  * Build provider options for streamText
  */
+/**
+ * Compute context usage breakdown from messages, separating summary from regular messages.
+ */
+export function computeContextUsage(
+  messages: UIMessage[],
+  fileTokens: Record<Id<"files">, number>,
+  systemTokens: number,
+  maxTokens: number,
+): ContextUsageData {
+  const summaryMsg = messages.find((m) =>
+    m.parts?.some(
+      (p: { type?: string; text?: string }) =>
+        p.type === "text" &&
+        typeof p.text === "string" &&
+        p.text.includes("<context_summary>"),
+    ),
+  );
+  const summaryTokens = summaryMsg
+    ? countMessagesTokens([summaryMsg], fileTokens)
+    : 0;
+  const nonSummaryMessages = summaryMsg
+    ? messages.filter((m) => m !== summaryMsg)
+    : messages;
+  const messagesTokens = countMessagesTokens(nonSummaryMessages, fileTokens);
+
+  return { systemTokens, summaryTokens, messagesTokens, maxTokens };
+}
+
+export const contextUsageEnabled =
+  process.env.NEXT_PUBLIC_ENABLE_CONTEXT_USAGE === "true";
+
+/**
+ * Write a context usage data stream part to the client.
+ */
+export function writeContextUsage(
+  writer: UIMessageStreamWriter,
+  usage: ContextUsageData,
+): void {
+  writer.write({ type: "data-context-usage", data: usage });
+}
+
 export function buildProviderOptions(
   isReasoningModel: boolean,
   subscription: SubscriptionTier,
