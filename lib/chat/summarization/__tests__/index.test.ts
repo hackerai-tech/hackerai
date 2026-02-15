@@ -40,7 +40,7 @@ const createMessageWithTokens = (
 ): UIMessage => ({
   id,
   role,
-  parts: [{ type: "text", text: "a ".repeat(targetTokens) }],
+  parts: [{ type: "text", text: `[${id}] ${"a ".repeat(targetTokens)}` }],
 });
 
 const createMessage = (id: string, role: "user" | "assistant"): UIMessage => ({
@@ -455,6 +455,171 @@ describe("checkAndSummarizeIfNeeded", () => {
         system: expect.stringContaining("INCREMENTAL summarization"),
       }),
     );
+  });
+
+  it("should produce 2 summaries when threshold is triggered twice", async () => {
+    mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
+    mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
+
+    const result1 = await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+
+    expect(result1.needsSummarization).toBe(true);
+    expect(result1.cutoffMessageId).toBe("msg-2");
+
+    const newMessages = [
+      createMessageWithTokens("msg-5", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-6", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-7", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-8", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const secondInput = [...result1.summarizedMessages, ...newMessages];
+
+    const result2 = await checkAndSummarizeIfNeeded(
+      secondInput,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+
+    expect(result2.needsSummarization).toBe(true);
+    expect(mockSaveChatSummary).toHaveBeenCalledTimes(2);
+    expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ summaryUpToMessageId: "msg-2" }),
+    );
+    expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        summaryUpToMessageId: expect.not.stringMatching(/^msg-2$/),
+      }),
+    );
+
+    const secondCallArgs = mockGenerateText.mock.calls[1][0];
+    expect(secondCallArgs.system).toContain("<previous_summary>");
+    expect(secondCallArgs.system).toContain("First summary");
+
+    // Verify only messages between cutoffs are sent (not the summary message)
+    const secondCallMessages = secondCallArgs.messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; text: string }>;
+    }>;
+    const hasContextSummary = secondCallMessages.some((m) => {
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : m.content.map((p) => p.text).join("");
+      return text.includes("<context_summary>");
+    });
+    expect(hasContextSummary).toBe(false);
+
+    // 4 real messages (msg-3..msg-6) converted + 1 summarization prompt
+    const firstCallMessages = mockGenerateText.mock.calls[0][0].messages;
+    expect(firstCallMessages).toHaveLength(3); // 2 msgs + 1 prompt
+    expect(secondCallMessages).toHaveLength(5); // 4 msgs + 1 prompt
+
+    expect(result2.summarizedMessages).toHaveLength(3);
+    expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
+    expect(extractSummaryText(result2.summarizedMessages[0])).toBe(
+      "Second summary",
+    );
+  });
+
+  it("should pass every message up to the last cutoff through generateText at least once", async () => {
+    mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
+    mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
+    mockGenerateText.mockResolvedValueOnce({ text: "Third summary" });
+
+    // Round 1: msg-1..msg-4
+    const round1Messages = [
+      createMessageWithTokens("msg-1", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-2", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-3", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-4", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const result1 = await checkAndSummarizeIfNeeded(
+      round1Messages,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+    expect(result1.cutoffMessageId).toBe("msg-2");
+
+    // Round 2: result1 + msg-5..msg-8
+    const round2Input = [
+      ...result1.summarizedMessages,
+      createMessageWithTokens("msg-5", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-6", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-7", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-8", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const result2 = await checkAndSummarizeIfNeeded(
+      round2Input,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+    expect(result2.cutoffMessageId).toBe("msg-6");
+
+    // Round 3: result2 + msg-9..msg-12
+    const round3Input = [
+      ...result2.summarizedMessages,
+      createMessageWithTokens("msg-9", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-10", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-11", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-12", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const result3 = await checkAndSummarizeIfNeeded(
+      round3Input,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+    expect(result3.cutoffMessageId).toBe("msg-10");
+
+    // Collect all message IDs passed to generateText across all 3 calls
+    const summarizedIds = new Set<string>();
+    for (const call of mockGenerateText.mock.calls) {
+      const messages = call[0].messages as Array<{
+        role: string;
+        content: string | Array<{ type: string; text: string }>;
+      }>;
+      for (const msg of messages) {
+        const text =
+          typeof msg.content === "string"
+            ? msg.content
+            : msg.content.map((p) => p.text).join("");
+        const match = text.match(/\[msg-(\d+)\]/g);
+        if (match) match.forEach((m) => summarizedIds.add(m.slice(1, -1)));
+      }
+    }
+
+    // Every message up to the last cutoff (msg-10) must have been summarized
+    for (let i = 1; i <= 10; i++) {
+      expect(summarizedIds).toContain(`msg-${i}`);
+    }
+
+    // Messages after the last cutoff should NOT have been summarized
+    expect(summarizedIds).not.toContain("msg-11");
+    expect(summarizedIds).not.toContain("msg-12");
   });
 
   it("should handle normal first-time summarization unchanged", async () => {
