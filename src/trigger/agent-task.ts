@@ -45,6 +45,7 @@ import type { UIMessageStreamWriter } from "ai";
 import type { Id } from "@/convex/_generated/dataModel";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import PostHogClient from "@/app/posthog";
 
 function deserializeRateLimitInfo(info: SerializableRateLimitInfo): {
   remaining: number;
@@ -126,6 +127,7 @@ export const agentStreamTask = task({
     } = payload;
 
     const rateLimitInfo = deserializeRateLimitInfo(serializedRateLimitInfo);
+    const posthog = PostHogClient();
     const metadataWriter = createMetadataWriter();
 
     sendRateLimitWarnings(metadataWriter, {
@@ -358,10 +360,17 @@ export const agentStreamTask = task({
             const sandboxType = sandboxManager.getSandboxType(
               chunk.chunk.toolName,
             );
-            logger.debug("Tool call", {
-              toolName: chunk.chunk.toolName,
-              sandboxType,
-            });
+
+            if (posthog) {
+              posthog.capture({
+                distinctId: userId,
+                event: "hackerai-" + chunk.chunk.toolName,
+                properties: {
+                  mode,
+                  ...(sandboxType && { sandboxType }),
+                },
+              });
+            }
           }
         },
         onStepFinish: async ({ usage }) => {

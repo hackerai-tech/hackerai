@@ -569,6 +569,7 @@ export const createChatHandler = (
                       distinctId: userId,
                       event: "hackerai-" + chunk.chunk.toolName,
                       properties: {
+                        mode,
                         ...(sandboxType && { sandboxType }),
                       },
                     });
