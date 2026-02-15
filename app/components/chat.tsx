@@ -434,7 +434,7 @@ export const Chat = ({
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setChatTitle, setTodos, agentLong]);
+  }, [setChatReset, setMessages, setChatTitle, setTodos, agentLong.reset]);
 
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {

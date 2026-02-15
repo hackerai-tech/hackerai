@@ -295,7 +295,7 @@ export const agentStreamTask = task({
                   mode,
                   metadataWriter,
                   chatId,
-                  {}, // fileTokens: payload has total count only; per-file record not serialized
+                  fileTokens,
                 );
               if (needsSummarization) {
                 hasSummarized = true;

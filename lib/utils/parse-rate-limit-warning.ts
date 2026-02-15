@@ -51,6 +51,9 @@ export function parseRateLimitWarning(
     return null;
   }
   const resetTime = new Date(resetTimeRaw);
+  if (isNaN(resetTime.getTime())) {
+    return null;
+  }
 
   if (!isSubscriptionTier(rawData.subscription)) {
     return null;

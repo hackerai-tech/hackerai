@@ -67,7 +67,7 @@ export type AgentTaskPayload = {
   selectedModel: string;
   rateLimitInfo: SerializableRateLimitInfo;
   sandboxFiles?: SandboxFile[];
-  fileTokens: number;
+  fileTokens: Record<string, number>;
   chatFinishReason?: string;
 };
 
@@ -213,10 +213,8 @@ export async function prepareAgentPayload(
     }
   }
 
-  const fileTokens =
-    typeof fileTokensMap === "number"
-      ? fileTokensMap
-      : Object.values(fileTokensMap).reduce((a, b) => a + b, 0);
+  const fileTokens: Record<string, number> =
+    typeof fileTokensMap === "number" ? {} : fileTokensMap;
 
   const rateLimitInfo = await checkRateLimit(
     userId,
