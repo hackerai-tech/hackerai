@@ -44,7 +44,6 @@ interface MessagesProps {
     | "LoadingMore"
     | "Exhausted";
   loadMore?: (numItems: number) => void;
-  isSwitchingChats?: boolean;
   isTemporaryChat?: boolean;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
@@ -72,7 +71,6 @@ export const Messages = ({
   contentRef,
   paginationStatus,
   loadMore,
-  isSwitchingChats,
   isTemporaryChat,
   tempChatFileDetails,
   finishReason,
@@ -249,18 +247,13 @@ export const Messages = ({
       return;
     }
 
-    // Don't trigger pagination while switching chats
-    if (isSwitchingChats) {
-      return;
-    }
-
     const { scrollTop } = scrollRef.current;
 
     // Check if we're near the top (within 100px)
     if (scrollTop < 100) {
       loadMore(28); // Load 28 more messages
     }
-  }, [scrollRef, loadMore, paginationStatus, isSwitchingChats]);
+  }, [scrollRef, loadMore, paginationStatus]);
 
   // Add scroll event listener
   useEffect(() => {

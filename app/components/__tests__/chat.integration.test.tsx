@@ -191,15 +191,14 @@ describe("Chat Component Integration", () => {
     });
 
     it("should render with provided chatId", () => {
-      const { container } = render(
+      render(
         <TestWrapper>
           <Chat chatId="test-chat-123" autoResume={false} />
         </TestWrapper>,
       );
 
-      expect(
-        container.querySelector(".h-full.bg-background"),
-      ).toBeInTheDocument();
+      // ChatContent renders; root no longer has .h-full.bg-background
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
   });
 
@@ -219,15 +218,13 @@ describe("Chat Component Integration", () => {
         resumeStream: mockResumeStream,
       });
 
-      const { container } = render(
+      render(
         <TestWrapper>
           <Chat autoResume={false} />
         </TestWrapper>,
       );
 
-      expect(
-        container.querySelector(".h-full.bg-background"),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
   });
 
@@ -244,15 +241,13 @@ describe("Chat Component Integration", () => {
         resumeStream: mockResumeStream,
       });
 
-      const { container } = render(
+      render(
         <TestWrapper>
           <Chat autoResume={false} />
         </TestWrapper>,
       );
 
-      expect(
-        container.querySelector(".h-full.bg-background"),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId("chat-input")).toBeInTheDocument();
     });
   });
 
@@ -281,19 +276,19 @@ describe("Chat Component Integration", () => {
   });
 
   describe("Sidebar Behavior", () => {
-    it("should render sidebar on desktop", () => {
+    it("does not render sidebar (sidebar is in ChatLayout)", () => {
       const { useIsMobile } = require("@/hooks/use-mobile");
       (useIsMobile as jest.Mock).mockReturnValue(false);
 
-      const { container } = render(
+      render(
         <TestWrapper>
           <Chat autoResume={false} />
         </TestWrapper>,
       );
 
-      expect(
-        container.querySelector('[data-slot="sidebar-wrapper"]'),
-      ).toBeInTheDocument();
+      // ChatContent does not include the sidebar; it lives in (chat) layout's ChatLayout
+      expect(screen.queryByTestId("main-sidebar")).not.toBeInTheDocument();
+      expect(screen.getByText("HackerAI")).toBeInTheDocument();
     });
 
     it("should not render desktop sidebar on mobile", () => {

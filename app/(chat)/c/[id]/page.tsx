@@ -1,11 +1,11 @@
 "use client";
 
-import { Chat } from "../../components/chat";
+import { ChatContent } from "@/app/components/chat";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import Loading from "@/components/ui/loading";
-import PricingDialog from "../../components/PricingDialog";
-import { usePricingDialog } from "../../hooks/usePricingDialog";
-import { useGlobalState } from "../../contexts/GlobalState";
+import PricingDialog from "@/app/components/PricingDialog";
+import { usePricingDialog } from "@/app/hooks/usePricingDialog";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 import { use } from "react";
 
 export default function Page(props: { params: Promise<{ id: string }> }) {
@@ -25,7 +25,7 @@ export default function Page(props: { params: Promise<{ id: string }> }) {
       </AuthLoading>
 
       <Authenticated>
-        <Chat chatId={chatId} autoResume={true} />
+        <ChatContent chatId={chatId} autoResume={true} />
       </Authenticated>
 
       <Unauthenticated>

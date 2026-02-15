@@ -11,9 +11,7 @@ import { ChatInput } from "./ChatInput";
 import type { RateLimitWarningData } from "./RateLimitWarning";
 import { ComputerSidebar } from "./ComputerSidebar";
 import ChatHeader from "./ChatHeader";
-import MainSidebar from "./Sidebar";
 import Footer from "./Footer";
-import { SidebarProvider } from "@/components/ui/sidebar";
 import { useMessageScroll } from "../hooks/useMessageScroll";
 import { useChatHandlers } from "../hooks/useChatHandlers";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -33,8 +31,10 @@ import { useAutoResume } from "../hooks/useAutoResume";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
+import { useRouter } from "next/navigation";
+import Loading from "@/components/ui/loading";
 
-export const Chat = ({
+export const ChatContent = ({
   chatId: routeChatId,
   autoResume,
 }: {
@@ -54,9 +54,8 @@ export const Chat = ({
   const [rateLimitWarning, setRateLimitWarning] =
     useState<RateLimitWarningData | null>(null);
 
+  const router = useRouter();
   const {
-    chatTitle,
-    setChatTitle,
     chatMode,
     setChatMode,
     sidebarOpen,
@@ -65,7 +64,6 @@ export const Chat = ({
     mergeTodos,
     setTodos,
     replaceAssistantTodos,
-    currentChatId,
     temporaryChatsEnabled,
     setChatReset,
     hasUserDismissedRateLimitWarning,
@@ -77,6 +75,7 @@ export const Chat = ({
     todos,
     sandboxPreference,
     setSandboxPreference,
+    initializeChat,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -113,28 +112,6 @@ export const Chat = ({
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
 
-  // Unified reset: respond to route and global new-chat trigger
-  useEffect(() => {
-    // If global state indicates a new chat, prefer that over any stale route id
-    if (currentChatId === null) {
-      if (routeChatId) {
-        return;
-      }
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      setChatTitle(null);
-      // Messages will be cleared below after useChat is ready
-      return;
-    }
-
-    // If a chat id is present in the route, treat as existing chat
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-      return;
-    }
-  }, [routeChatId, currentChatId, setChatTitle]);
-
   // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
@@ -147,6 +124,9 @@ export const Chat = ({
     api.chats.getChatByIdFromClient,
     shouldFetchMessages ? { id: chatId } : "skip",
   );
+
+  // Derive title from Convex (single source of truth)
+  const chatTitle = chatData?.title ?? null;
 
   // Convert paginated Convex messages to UI format for useChat
   // Messages come from server in descending order (newest first from pagination)
@@ -239,8 +219,6 @@ export const Chat = ({
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
-      if (dataPart.type === "data-title")
-        setChatTitle((dataPart.data as { chatTitle: string }).chatTitle);
       if (dataPart.type === "data-upload-status") {
         const uploadData = dataPart.data as {
           message: string;
@@ -404,7 +382,6 @@ export const Chat = ({
       setMessages([]);
       setIsExistingChat(false);
       setChatId(uuidv4());
-      setChatTitle(null);
       setTodos([]);
       setAwaitingServerChat(false);
       setUploadStatus(null);
@@ -412,7 +389,20 @@ export const Chat = ({
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setChatTitle, setTodos]);
+  }, [setChatReset, setMessages, setTodos]);
+
+  // Sync local chat state from URL (single source of truth). When routeChatId is
+  // undefined (user on "/"), treat as new chat so we don't keep previous chat id/messages.
+  useEffect(() => {
+    if (routeChatId) {
+      setChatId(routeChatId);
+      setIsExistingChat(true);
+    } else {
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      setMessages([]);
+    }
+  }, [routeChatId, setMessages]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
@@ -425,11 +415,6 @@ export const Chat = ({
     // Ignore when no data or data is stale (doesn't match current chatId)
     if (!chatData || dataId !== chatId) {
       return;
-    }
-
-    if (chatData.title) {
-      // Always update title from server data to ensure consistency
-      setChatTitle(chatData.title);
     }
 
     // Load todos from the chat data if they exist.
@@ -470,14 +455,7 @@ export const Chat = ({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    chatData,
-    setChatTitle,
-    setTodos,
-    shouldFetchMessages,
-    isExistingChat,
-    chatId,
-  ]);
+  }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
 
   // Reset the one-time initializer when chat changes
   useEffect(() => {
@@ -649,8 +627,8 @@ export const Chat = ({
   const handleBranchMessage = async (messageId: string) => {
     try {
       const newChatId = await branchChatMutation({ messageId });
-      // Navigate to the new chat
-      window.location.href = `/c/${newChatId}`;
+      initializeChat(newChatId);
+      router.push(`/c/${newChatId}`);
     } catch (error) {
       console.error("Failed to branch chat:", error);
       throw error;
@@ -676,216 +654,182 @@ export const Chat = ({
 
   return (
     <ConvexErrorBoundary>
-      <div className="h-full bg-background flex flex-col overflow-hidden">
-        <div className="flex w-full h-full overflow-hidden">
-          {/* Chat Sidebar - Desktop screens: always mounted, collapses to icon rail when closed */}
-          {!isMobile && (
-            <div
-              data-testid="sidebar"
-              className={`transition-all duration-300 ${
-                chatSidebarOpen ? "w-72 flex-shrink-0" : "w-12 flex-shrink-0"
-              }`}
-            >
-              <SidebarProvider
-                open={chatSidebarOpen}
-                onOpenChange={setChatSidebarOpen}
-                defaultOpen={true}
-              >
-                <MainSidebar />
-              </SidebarProvider>
-            </div>
-          )}
+      <div className="flex flex-1 min-w-0 relative">
+        {/* Left side - Chat content */}
+        <div className="flex flex-col flex-1 min-w-0">
+          {/* Unified Header */}
+          <ChatHeader
+            hasMessages={hasMessages}
+            hasActiveChat={isExistingChat}
+            chatTitle={chatTitle}
+            id={routeChatId}
+            chatData={chatData}
+            chatSidebarOpen={chatSidebarOpen}
+            isExistingChat={isExistingChat}
+            isChatNotFound={isChatNotFound}
+            branchedFromChatTitle={branchedFromChatTitle}
+          />
 
-          {/* Main Content Area */}
-          <div className="flex flex-1 min-w-0 relative">
-            {/* Left side - Chat content */}
-            <div className="flex flex-col flex-1 min-w-0">
-              {/* Unified Header */}
-              <ChatHeader
-                hasMessages={hasMessages}
-                hasActiveChat={isExistingChat}
+          {/* Chat interface */}
+          <div className="bg-background flex flex-col flex-1 relative min-h-0">
+            {/* Messages area */}
+            {isChatNotFound ? (
+              <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
+                <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  <div className="text-center">
+                    <h1 className="text-2xl font-bold text-foreground mb-2">
+                      Chat Not Found
+                    </h1>
+                    <p className="text-muted-foreground">
+                      This chat doesn&apos;t exist or you don&apos;t have
+                      permission to view it.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            ) : isExistingChat &&
+              paginatedMessages.status === "LoadingFirstPage" ? (
+              <div
+                className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center min-h-0"
+                data-testid="messages-loading"
+              >
+                <Loading size={10} />
+              </div>
+            ) : showChatLayout ? (
+              <Messages
+                scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
+                contentRef={contentRef as RefObject<HTMLDivElement | null>}
+                messages={messages}
+                setMessages={setMessages}
+                onRegenerate={handleRegenerate}
+                onRetry={handleRetry}
+                onEditMessage={handleEditMessage}
+                onBranchMessage={handleBranchMessage}
+                status={status}
+                error={error || null}
+                paginationStatus={paginatedMessages.status}
+                loadMore={paginatedMessages.loadMore}
+                isTemporaryChat={isTempChat}
+                tempChatFileDetails={tempChatFileDetails}
+                finishReason={chatData?.finish_reason}
+                uploadStatus={uploadStatus}
+                summarizationStatus={summarizationStatus}
+                mode={chatMode ?? (chatData as any)?.default_model_slug}
                 chatTitle={chatTitle}
-                id={routeChatId}
-                chatData={chatData}
-                chatSidebarOpen={chatSidebarOpen}
-                isExistingChat={isExistingChat}
-                isChatNotFound={isChatNotFound}
+                branchedFromChatId={branchedFromChatId}
                 branchedFromChatTitle={branchedFromChatTitle}
               />
+            ) : (
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
+                  <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                    <div className="text-center">
+                      {temporaryChatsEnabled ? (
+                        <>
+                          <h1 className="text-3xl font-bold text-foreground mb-2">
+                            Temporary Chat
+                          </h1>
+                          <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
+                            This chat won&apos;t appear in history, use or
+                            update HackerAI&apos;s memory, or be used to train
+                            models. This chat will be deleted when you refresh
+                            the page.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <h1 className="text-3xl font-bold text-foreground mb-2">
+                            HackerAI
+                          </h1>
+                          <p className="text-muted-foreground">
+                            Your AI pentest assistant
+                          </p>
+                        </>
+                      )}
+                    </div>
 
-              {/* Chat interface */}
-              <div className="bg-background flex flex-col flex-1 relative min-h-0">
-                {/* Messages area */}
-                {isChatNotFound ? (
-                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
-                      <div className="text-center">
-                        <h1 className="text-2xl font-bold text-foreground mb-2">
-                          Chat Not Found
-                        </h1>
-                        <p className="text-muted-foreground">
-                          This chat doesn&apos;t exist or you don&apos;t have
-                          permission to view it.
-                        </p>
+                    {/* Centered input (desktop only) */}
+                    {!isMobile && (
+                      <div className="w-full">
+                        <ChatInput
+                          onSubmit={handleSubmit}
+                          onStop={handleStop}
+                          onSendNow={handleSendNow}
+                          status={status}
+                          isCentered={true}
+                          hasMessages={hasMessages}
+                          isAtBottom={isAtBottom}
+                          onScrollToBottom={handleScrollToBottom}
+                          isNewChat={!isExistingChat}
+                          chatId={chatId}
+                          rateLimitWarning={
+                            rateLimitWarning ? rateLimitWarning : undefined
+                          }
+                          onDismissRateLimitWarning={
+                            handleDismissRateLimitWarning
+                          }
+                        />
                       </div>
-                    </div>
+                    )}
                   </div>
-                ) : showChatLayout ? (
-                  <Messages
-                    scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
-                    contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                    messages={messages}
-                    setMessages={setMessages}
-                    onRegenerate={handleRegenerate}
-                    onRetry={handleRetry}
-                    onEditMessage={handleEditMessage}
-                    onBranchMessage={handleBranchMessage}
-                    status={status}
-                    error={error || null}
-                    paginationStatus={paginatedMessages.status}
-                    loadMore={paginatedMessages.loadMore}
-                    isSwitchingChats={false}
-                    isTemporaryChat={isTempChat}
-                    tempChatFileDetails={tempChatFileDetails}
-                    finishReason={chatData?.finish_reason}
-                    uploadStatus={uploadStatus}
-                    summarizationStatus={summarizationStatus}
-                    mode={chatMode ?? (chatData as any)?.default_model_slug}
-                    chatTitle={chatTitle}
-                    branchedFromChatId={branchedFromChatId}
-                    branchedFromChatTitle={branchedFromChatTitle}
-                  />
-                ) : (
-                  <div className="flex-1 flex flex-col min-h-0">
-                    <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                      <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
-                        <div className="text-center">
-                          {temporaryChatsEnabled ? (
-                            <>
-                              <h1 className="text-3xl font-bold text-foreground mb-2">
-                                Temporary Chat
-                              </h1>
-                              <p className="text-muted-foreground max-w-md mx-auto px-4 py-3">
-                                This chat won&apos;t appear in history, use or
-                                update HackerAI&apos;s memory, or be used to
-                                train models. This chat will be deleted when you
-                                refresh the page.
-                              </p>
-                            </>
-                          ) : (
-                            <>
-                              <h1 className="text-3xl font-bold text-foreground mb-2">
-                                HackerAI
-                              </h1>
-                              <p className="text-muted-foreground">
-                                Your AI pentest assistant
-                              </p>
-                            </>
-                          )}
-                        </div>
+                </div>
 
-                        {/* Centered input (desktop only) */}
-                        {!isMobile && (
-                          <div className="w-full">
-                            <ChatInput
-                              onSubmit={handleSubmit}
-                              onStop={handleStop}
-                              onSendNow={handleSendNow}
-                              status={status}
-                              isCentered={true}
-                              hasMessages={hasMessages}
-                              isAtBottom={isAtBottom}
-                              onScrollToBottom={handleScrollToBottom}
-                              isNewChat={!isExistingChat}
-                              chatId={chatId}
-                              rateLimitWarning={
-                                rateLimitWarning ? rateLimitWarning : undefined
-                              }
-                              onDismissRateLimitWarning={
-                                handleDismissRateLimitWarning
-                              }
-                            />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Footer - only show when user is not logged in */}
-                    <div className="flex-shrink-0">
-                      <Footer />
-                    </div>
-                  </div>
-                )}
-
-                {/* Chat Input - Bottom placement (also for mobile new chats) */}
-                {(hasMessages || isExistingChat || isMobile) &&
-                  !isChatNotFound && (
-                    <ChatInput
-                      onSubmit={handleSubmit}
-                      onStop={handleStop}
-                      onSendNow={handleSendNow}
-                      status={status}
-                      hasMessages={hasMessages}
-                      isAtBottom={isAtBottom}
-                      onScrollToBottom={handleScrollToBottom}
-                      isNewChat={!isExistingChat}
-                      chatId={chatId}
-                      rateLimitWarning={
-                        rateLimitWarning ? rateLimitWarning : undefined
-                      }
-                      onDismissRateLimitWarning={handleDismissRateLimitWarning}
-                    />
-                  )}
-              </div>
-            </div>
-
-            {/* Desktop Computer Sidebar */}
-            {!isMobile && (
-              <div
-                className={`transition-all duration-300 min-w-0 ${
-                  sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
-                }`}
-              >
-                {sidebarOpen && (
-                  <ComputerSidebar messages={messages} status={status} />
-                )}
+                {/* Footer - only show when user is not logged in */}
+                <div className="flex-shrink-0">
+                  <Footer />
+                </div>
               </div>
             )}
 
-            {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
-            <DragDropOverlay
-              isVisible={showDragOverlay}
-              isDragOver={isDragOver}
-            />
+            {/* Chat Input - Bottom placement (also for mobile new chats) */}
+            {(hasMessages || isExistingChat || isMobile) && !isChatNotFound && (
+              <ChatInput
+                onSubmit={handleSubmit}
+                onStop={handleStop}
+                onSendNow={handleSendNow}
+                status={status}
+                hasMessages={hasMessages}
+                isAtBottom={isAtBottom}
+                onScrollToBottom={handleScrollToBottom}
+                isNewChat={!isExistingChat}
+                chatId={chatId}
+                rateLimitWarning={
+                  rateLimitWarning ? rateLimitWarning : undefined
+                }
+                onDismissRateLimitWarning={handleDismissRateLimitWarning}
+              />
+            )}
           </div>
         </div>
 
-        {/* Mobile Computer Sidebar */}
-        {isMobile && sidebarOpen && (
-          <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
-            <div className="w-full max-w-4xl h-full">
+        {/* Desktop Computer Sidebar */}
+        {!isMobile && (
+          <div
+            className={`transition-all duration-300 min-w-0 ${
+              sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
+            }`}
+          >
+            {sidebarOpen && (
               <ComputerSidebar messages={messages} status={status} />
-            </div>
+            )}
           </div>
         )}
 
-        {/* Overlay Chat Sidebar - Mobile screens */}
-        {isMobile && chatSidebarOpen && (
-          <div
-            className="fixed inset-0 z-40 bg-black/50 flex"
-            onClick={() => setChatSidebarOpen(false)}
-          >
-            <div
-              className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <MainSidebar isMobileOverlay={true} />
-            </div>
-            {/* Clickable area to close sidebar */}
-            <div className="flex-1" />
-          </div>
-        )}
+        {/* Drag and Drop Overlay - covers main content area only (excludes sidebars) */}
+        <DragDropOverlay isVisible={showDragOverlay} isDragOver={isDragOver} />
       </div>
+
+      {/* Mobile Computer Sidebar */}
+      {isMobile && sidebarOpen && (
+        <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
+          <div className="w-full max-w-4xl h-full">
+            <ComputerSidebar messages={messages} status={status} />
+          </div>
+        </div>
+      )}
     </ConvexErrorBoundary>
   );
 };
+
+/** @deprecated Use ChatContent when inside (chat) layout. Exported for backward compatibility. */
+export const Chat = ChatContent;
