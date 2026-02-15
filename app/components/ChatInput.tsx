@@ -49,6 +49,10 @@ import {
   type RateLimitWarningData,
 } from "./RateLimitWarning";
 import { SandboxSelector } from "./SandboxSelector";
+import {
+  ContextUsageIndicator,
+  type ContextUsageData,
+} from "./ContextUsageIndicator";
 
 interface ChatInputProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -65,6 +69,7 @@ interface ChatInputProps {
   chatId?: string;
   rateLimitWarning?: RateLimitWarningData;
   onDismissRateLimitWarning?: () => void;
+  contextUsage?: ContextUsageData;
 }
 
 export const ChatInput = ({
@@ -82,6 +87,7 @@ export const ChatInput = ({
   chatId,
   rateLimitWarning,
   onDismissRateLimitWarning,
+  contextUsage,
 }: ChatInputProps) => {
   const {
     input,
@@ -403,8 +409,19 @@ export const ChatInput = ({
               )}
             </div>
 
+            {/* Context Usage Indicator */}
+            {process.env.NEXT_PUBLIC_ENABLE_CONTEXT_USAGE === "true" &&
+              contextUsage &&
+              contextUsage.maxTokens > 0 && (
+                <div className="ml-auto">
+                  <ContextUsageIndicator {...contextUsage} />
+                </div>
+              )}
+
             {/* Send/Stop button container */}
-            <div className="flex gap-2 shrink-0 items-center ml-auto">
+            <div
+              className={`flex gap-2 shrink-0 items-center ${contextUsage ? "" : "ml-auto"}`}
+            >
               {isGenerating && !hideStop ? (
                 // Show only stop button during streaming for both modes
                 <TooltipPrimitive.Root>

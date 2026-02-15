@@ -33,6 +33,7 @@ export const checkAndSummarizeIfNeeded = async (
   fileTokens: Record<Id<"files">, number> = {},
   todos: Todo[] = [],
   abortSignal?: AbortSignal,
+  systemPromptTokens: number = 0,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -51,7 +52,14 @@ export const checkAndSummarizeIfNeeded = async (
   }
 
   // Check token threshold on full messages (including summary) to determine need
-  if (!isAboveTokenThreshold(uiMessages, subscription, fileTokens)) {
+  if (
+    !isAboveTokenThreshold(
+      uiMessages,
+      subscription,
+      fileTokens,
+      systemPromptTokens,
+    )
+  ) {
     return NO_SUMMARIZATION(uiMessages);
   }
 
@@ -63,23 +71,33 @@ export const checkAndSummarizeIfNeeded = async (
 
   writeSummarizationStarted(writer);
 
-  const summaryText = await generateSummaryText(
-    messagesToSummarize,
-    languageModel,
-    mode,
-    abortSignal,
-    existingSummaryText ?? undefined,
-  );
-  const summaryMessage = buildSummaryMessage(summaryText, todos);
+  try {
+    const summaryText = await generateSummaryText(
+      messagesToSummarize,
+      languageModel,
+      mode,
+      abortSignal,
+      existingSummaryText ?? undefined,
+    );
+    const summaryMessage = buildSummaryMessage(summaryText, todos);
 
-  await persistSummary(chatId, summaryText, cutoffMessageId);
+    await persistSummary(chatId, summaryText, cutoffMessageId);
 
-  writeSummarizationCompleted(writer);
-
-  return {
-    needsSummarization: true,
-    summarizedMessages: [summaryMessage, ...lastMessages],
-    cutoffMessageId,
-    summaryText,
-  };
+    return {
+      needsSummarization: true,
+      summarizedMessages: [summaryMessage, ...lastMessages],
+      cutoffMessageId,
+      summaryText,
+    };
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      throw error;
+    }
+    console.error("[Summarization] Failed:", error);
+    return NO_SUMMARIZATION(uiMessages);
+  } finally {
+    if (!abortSignal?.aborted) {
+      writeSummarizationCompleted(writer);
+    }
+  }
 };
