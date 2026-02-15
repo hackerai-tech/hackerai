@@ -4,12 +4,16 @@
  * Utility functions extracted from chat-handler to keep it clean and focused.
  */
 
-import type { UIMessage, UIMessageStreamWriter } from "ai";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type { LanguageModel, UIMessage, UIMessageStreamWriter } from "ai";
+import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
 import { countMessagesTokens } from "@/lib/token-utils";
+import {
+  checkAndSummarizeIfNeeded,
+  type EnsureSandbox,
+} from "@/lib/chat/summarization";
 
 /**
  * Check if messages contain file attachments
@@ -229,6 +233,62 @@ export function writeContextUsage(
   usage: ContextUsageData,
 ): void {
   writer.write({ type: "data-context-usage", data: usage });
+}
+
+export interface SummarizationStepResult {
+  needsSummarization: boolean;
+  summarizedMessages?: UIMessage[];
+  contextUsage?: ContextUsageData;
+}
+
+export async function runSummarizationStep(options: {
+  messages: UIMessage[];
+  subscription: SubscriptionTier;
+  languageModel: LanguageModel;
+  mode: ChatMode;
+  writer: UIMessageStreamWriter;
+  chatId: string | null;
+  fileTokens: Record<Id<"files">, number>;
+  todos: Todo[];
+  abortSignal?: AbortSignal;
+  ensureSandbox?: EnsureSandbox;
+  systemPromptTokens: number;
+  ctxSystemTokens: number;
+  ctxMaxTokens: number;
+}): Promise<SummarizationStepResult> {
+  const { needsSummarization, summarizedMessages } =
+    await checkAndSummarizeIfNeeded(
+      options.messages,
+      options.subscription,
+      options.languageModel,
+      options.mode,
+      options.writer,
+      options.chatId,
+      options.fileTokens,
+      options.todos,
+      options.abortSignal,
+      options.ensureSandbox,
+      options.systemPromptTokens,
+    );
+
+  if (!needsSummarization) {
+    return { needsSummarization: false };
+  }
+
+  const contextUsage = contextUsageEnabled
+    ? computeContextUsage(
+        summarizedMessages,
+        options.fileTokens,
+        options.ctxSystemTokens,
+        options.ctxMaxTokens,
+      )
+    : undefined;
+
+  if (contextUsage) {
+    writeContextUsage(options.writer, contextUsage);
+  }
+
+  return { needsSummarization: true, summarizedMessages, contextUsage };
 }
 
 export function buildProviderOptions(
