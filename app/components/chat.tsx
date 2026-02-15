@@ -28,8 +28,9 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Todo, ChatMessage, ChatMode } from "@/types";
+import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
+import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -107,6 +108,14 @@ export const Chat = ({
   const [tempChatFileDetails, setTempChatFileDetails] = useState<
     Map<string, FileDetails[]>
   >(new Map());
+
+  // Context usage tracking (populated by server via data stream on each generation)
+  const [contextUsage, setContextUsage] = useState<ContextUsageData>({
+    messagesTokens: 0,
+    summaryTokens: 0,
+    systemTokens: 0,
+    maxTokens: 0,
+  });
 
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   // Use global state ref so streaming callback reads latest value
@@ -279,6 +288,10 @@ export const Chat = ({
           next.set(fileData.messageId, fileData.fileDetails);
           return next;
         });
+      }
+      if (dataPart.type === "data-context-usage") {
+        const usage = dataPart.data as ContextUsageData;
+        setContextUsage(usage);
       }
       if (dataPart.type === "data-sandbox-fallback") {
         const fallbackData = dataPart.data as {
@@ -873,6 +886,7 @@ export const Chat = ({
                             onDismissRateLimitWarning={
                               handleDismissRateLimitWarning
                             }
+                            contextUsage={contextUsage}
                           />
                         </div>
                       )}
@@ -903,6 +917,7 @@ export const Chat = ({
                       rateLimitWarning ? rateLimitWarning : undefined
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
+                    contextUsage={contextUsage}
                   />
                 )}
             </div>

@@ -26,7 +26,11 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
-import { countMessagesTokens } from "@/lib/token-utils";
+import {
+  countMessagesTokens,
+  getMaxTokensForSubscription,
+} from "@/lib/token-utils";
+import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
@@ -423,6 +427,37 @@ export const createChatHandler = (
             chat?.finish_reason,
             sandboxContext,
           );
+
+          // Compute and stream actual context usage breakdown
+          const ctxSystemTokens = countTokens(currentSystemPrompt);
+          const summaryMsg = truncatedMessages.find((m) =>
+            m.parts?.some(
+              (p: any) =>
+                p.type === "text" &&
+                typeof p.text === "string" &&
+                p.text.includes("<context_summary>"),
+            ),
+          );
+          const ctxSummaryTokens = summaryMsg
+            ? countMessagesTokens([summaryMsg], fileTokens)
+            : 0;
+          const nonSummaryMessages = summaryMsg
+            ? truncatedMessages.filter((m) => m !== summaryMsg)
+            : truncatedMessages;
+          const ctxMessagesTokens = countMessagesTokens(
+            nonSummaryMessages,
+            fileTokens,
+          );
+          const ctxMaxTokens = getMaxTokensForSubscription(subscription);
+          writer.write({
+            type: "data-context-usage",
+            data: {
+              systemTokens: ctxSystemTokens,
+              summaryTokens: ctxSummaryTokens,
+              messagesTokens: ctxMessagesTokens,
+              maxTokens: ctxMaxTokens,
+            },
+          });
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
@@ -1074,6 +1109,17 @@ export const createChatHandler = (
                   );
                   await nextJsAxiomLogger.flush();
                 }
+
+                // Send updated context usage with output tokens included
+                writer.write({
+                  type: "data-context-usage",
+                  data: {
+                    systemTokens: ctxSystemTokens,
+                    summaryTokens: ctxSummaryTokens,
+                    messagesTokens: ctxMessagesTokens + accumulatedOutputTokens,
+                    maxTokens: ctxMaxTokens,
+                  },
+                });
 
                 // Deduct accumulated usage if not already done
                 await deductAccumulatedUsage();
