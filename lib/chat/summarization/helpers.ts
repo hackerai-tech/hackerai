@@ -45,8 +45,10 @@ export const isAboveTokenThreshold = (
   uiMessages: UIMessage[],
   subscription: SubscriptionTier,
   fileTokens: Record<Id<"files">, number>,
+  systemPromptTokens: number = 0,
 ): boolean => {
-  const totalTokens = countMessagesTokens(uiMessages, fileTokens);
+  const totalTokens =
+    countMessagesTokens(uiMessages, fileTokens) + systemPromptTokens;
   const maxTokens = getMaxTokensForSubscription(subscription);
   const threshold = Math.floor(maxTokens * SUMMARIZATION_THRESHOLD_PERCENTAGE);
   return totalTokens > threshold;

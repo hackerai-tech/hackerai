@@ -414,10 +414,10 @@ export const createChatHandler = (
             sandboxContext,
           );
 
+          const systemPromptTokens = countTokens(currentSystemPrompt);
+
           // Compute and stream actual context usage breakdown (when enabled)
-          const ctxSystemTokens = contextUsageEnabled
-            ? countTokens(currentSystemPrompt)
-            : 0;
+          const ctxSystemTokens = contextUsageEnabled ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageEnabled
             ? getMaxTokensForSubscription(subscription)
             : 0;
@@ -504,6 +504,7 @@ export const createChatHandler = (
                         fileTokens,
                         getTodoManager().getAllTodos(),
                         userStopSignal.signal,
+                        systemPromptTokens,
                       );
 
                     if (needsSummarization) {
