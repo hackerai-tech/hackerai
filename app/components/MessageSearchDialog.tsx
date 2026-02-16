@@ -24,6 +24,7 @@ import {
 import type { Doc } from "@/convex/_generated/dataModel";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useChats } from "../hooks/useChats";
 
 interface MessageSearchResult {
   id: string;
@@ -53,7 +54,8 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 }) => {
   const { user } = useAuth();
   const router = useRouter();
-  const { chats, setChatSidebarOpen, closeSidebar } = useGlobalState();
+  const { setChatSidebarOpen, closeSidebar } = useGlobalState();
+  const { results: chats = [] } = useChats();
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");

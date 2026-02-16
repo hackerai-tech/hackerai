@@ -26,7 +26,7 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
-import type { Doc, Id } from "@/convex/_generated/dataModel";
+import type { Id } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
@@ -64,10 +64,6 @@ interface GlobalStateType {
   // Chat title state
   chatTitle: string | null;
   setChatTitle: (title: string | null) => void;
-
-  // User chats state
-  chats: Doc<"chats">[];
-  setChats: (chats: Doc<"chats">[]) => void;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -192,7 +188,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     },
     [],
   );
-  const [chats, setChats] = useState<Doc<"chats">[]>([]);
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
@@ -650,8 +645,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatMode,
     chatTitle,
     setChatTitle,
-    chats,
-    setChats,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
