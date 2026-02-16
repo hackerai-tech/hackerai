@@ -41,6 +41,7 @@ import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { useAgentLongStream } from "../hooks/useAgentLongStream";
+import Loading from "@/components/ui/loading";
 
 export const Chat = ({
   chatId: routeChatId,
@@ -798,6 +799,14 @@ export const Chat = ({
                       </p>
                     </div>
                   </div>
+                </div>
+              ) : isExistingChat &&
+                paginatedMessages.status === "LoadingFirstPage" ? (
+                <div
+                  className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center min-h-0"
+                  data-testid="messages-loading"
+                >
+                  <Loading size={10} />
                 </div>
               ) : showChatLayout ? (
                 <Messages
