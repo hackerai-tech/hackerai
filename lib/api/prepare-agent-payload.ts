@@ -17,7 +17,10 @@ import {
 } from "@/lib/db/actions";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { processChatMessages } from "@/lib/chat/chat-processor";
-import { hasFileAttachments } from "@/lib/api/chat-stream-helpers";
+import {
+  hasFileAttachments,
+  countFileAttachments,
+} from "@/lib/api/chat-stream-helpers";
 import type {
   ChatMode,
   Todo,
@@ -69,6 +72,10 @@ export type AgentTaskPayload = {
   sandboxFiles?: SandboxFile[];
   fileTokens: Record<string, number>;
   chatFinishReason?: string;
+  hasSandboxFiles: boolean;
+  hasFileAttachments: boolean;
+  fileCount: number;
+  fileImageCount: number;
 };
 
 function serializeRateLimitInfo(
@@ -229,6 +236,8 @@ export async function prepareAgentPayload(
   const fileTokens: Record<string, number> =
     typeof fileTokensMap === "number" ? {} : fileTokensMap;
 
+  const fileCounts = countFileAttachments(truncatedMessages);
+
   const rateLimitInfo = await checkRateLimit(
     userId,
     mode,
@@ -275,5 +284,9 @@ export async function prepareAgentPayload(
     sandboxFiles,
     fileTokens,
     chatFinishReason: chat?.finish_reason,
+    hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
+    hasFileAttachments: hasFileAttachments(truncatedMessages),
+    fileCount: fileCounts.totalFiles,
+    fileImageCount: fileCounts.imageCount,
   };
 }
