@@ -18,13 +18,14 @@ import SidebarUserNav from "./SidebarUserNav";
 import SidebarHistory from "./SidebarHistory";
 import SidebarHeaderContent from "./SidebarHeader";
 
-// ChatList component content
-const ChatListContent: FC = () => {
-  // Create ref for scroll container
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
+/** Chat list data lifted from parent so the subscription stays active when sidebar closes. */
+export type ChatListData = ReturnType<typeof useChats>;
 
-  // Get user's chats with pagination using the shared hook
-  const paginatedChats = useChats();
+// ChatList component content - receives data from parent to avoid refetch on open/close
+const ChatListContent: FC<{ chatListData: ChatListData }> = ({
+  chatListData,
+}) => {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   return (
     <div
@@ -32,9 +33,9 @@ const ChatListContent: FC = () => {
       ref={scrollContainerRef}
     >
       <SidebarHistory
-        chats={paginatedChats.results || []}
-        paginationStatus={paginatedChats.status}
-        loadMore={paginatedChats.loadMore}
+        chats={chatListData.results || []}
+        paginationStatus={chatListData.status}
+        loadMore={chatListData.loadMore}
         containerRef={scrollContainerRef}
       />
     </div>
@@ -45,7 +46,8 @@ const ChatListContent: FC = () => {
 const DesktopSidebarContent: FC<{
   isMobile: boolean;
   handleCloseSidebar: () => void;
-}> = ({ isMobile, handleCloseSidebar }) => {
+  chatListData: ChatListData;
+}> = ({ isMobile, handleCloseSidebar, chatListData }) => {
   const { state } = useSidebar();
   const isCollapsed = state === "collapsed";
 
@@ -65,8 +67,8 @@ const DesktopSidebarContent: FC<{
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
-            {/* Hide chat list when collapsed */}
-            {!isCollapsed && <ChatListContent />}
+            {/* Always render so subscription stays active; hide when collapsed */}
+            {!isCollapsed && <ChatListContent chatListData={chatListData} />}
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
@@ -79,11 +81,16 @@ const DesktopSidebarContent: FC<{
   );
 };
 
-const MainSidebar: FC<{ isMobileOverlay?: boolean }> = ({
-  isMobileOverlay = false,
-}) => {
+const MainSidebar: FC<{
+  isMobileOverlay?: boolean;
+  /** When provided (e.g. from ChatLayout), avoids refetching when sidebar opens/closes */
+  chatListData?: ChatListData;
+}> = ({ isMobileOverlay = false, chatListData: chatListDataProp }) => {
   const isMobile = useIsMobile();
   const { setChatSidebarOpen } = useGlobalState();
+  // Use lifted data when provided; otherwise subscribe here (e.g. SharedChatView)
+  const chatListDataFromHook = useChats();
+  const chatListData = chatListDataProp ?? chatListDataFromHook;
 
   const handleCloseSidebar = () => {
     setChatSidebarOpen(false);
@@ -103,7 +110,7 @@ const MainSidebar: FC<{ isMobileOverlay?: boolean }> = ({
 
           {/* Chat List */}
           <div className="flex-1 overflow-hidden">
-            <ChatListContent />
+            <ChatListContent chatListData={chatListData} />
           </div>
 
           {/* Footer */}
@@ -117,6 +124,7 @@ const MainSidebar: FC<{ isMobileOverlay?: boolean }> = ({
     <DesktopSidebarContent
       isMobile={isMobile}
       handleCloseSidebar={handleCloseSidebar}
+      chatListData={chatListData}
     />
   );
 };

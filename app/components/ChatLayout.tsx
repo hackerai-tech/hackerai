@@ -3,6 +3,7 @@
 import { useEffect, useRef } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
 
@@ -15,6 +16,8 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile();
   const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
   const panelRef = useRef<HTMLDivElement>(null);
+  // Keep chat list subscription in layout so it doesn't refetch when sidebar opens/closes
+  const chatListData = useChats();
   const previousActiveElementRef = useRef<HTMLElement | null>(null);
 
   // Escape key handler and focus trap for mobile overlay
@@ -109,7 +112,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             onOpenChange={setChatSidebarOpen}
             defaultOpen={true}
           >
-            <MainSidebar />
+            <MainSidebar chatListData={chatListData} />
           </SidebarProvider>
         </div>
       )}
@@ -133,7 +136,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
             onClick={(e) => e.stopPropagation()}
           >
-            <MainSidebar isMobileOverlay={true} />
+            <MainSidebar isMobileOverlay={true} chatListData={chatListData} />
           </div>
         </div>
       )}
