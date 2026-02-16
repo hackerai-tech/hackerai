@@ -61,10 +61,6 @@ interface GlobalStateType {
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
 
-  // Chat title state
-  chatTitle: string | null;
-  setChatTitle: (title: string | null) => void;
-
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
   setSidebarOpen: (open: boolean) => void;
@@ -161,7 +157,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const saved = readChatMode();
     return isChatMode(saved) ? saved : "ask";
   });
-  const [chatTitle, setChatTitle] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -554,7 +549,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
     setTodos([]);
     setIsTodoPanelExpanded(false);
-    setChatTitle(null);
   }, []);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
@@ -643,8 +637,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isUploadingFiles,
     chatMode,
     setChatMode,
-    chatTitle,
-    setChatTitle,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,

@@ -37,7 +37,6 @@ export interface UseAgentLongStreamOptions {
   serverMessages: ChatMessage[];
   todos: Todo[];
   sandboxPreference: SandboxPreference;
-  setChatTitle: (title: string | null) => void;
   setUploadStatus: (
     status: { message: string; isUploading: boolean } | null,
   ) => void;
@@ -96,7 +95,6 @@ export function useAgentLongStream(
     serverMessages,
     todos,
     sandboxPreference,
-    setChatTitle,
     setUploadStatus,
     setSummarizationStatus,
     setRateLimitWarning,
@@ -313,8 +311,6 @@ export function useAgentLongStream(
       if (event.type === "data-appendMessage") {
         setDataStream((ds) => (ds ? [...ds, event] : []));
       }
-      if (event.type === "data-title")
-        setChatTitle((event.data as { chatTitle: string }).chatTitle);
       if (event.type === "data-upload-status") {
         const d = event.data as { message: string; isUploading: boolean };
         setUploadStatus(d.isUploading ? d : null);

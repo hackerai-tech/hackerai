@@ -76,7 +76,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
     setChatSidebarOpen,
     initializeNewChat,
     initializeChat,
-    chatTitle: globalChatTitle,
   } = useGlobalState();
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
@@ -86,11 +85,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   // Check if this chat is currently active based on URL
   const isCurrentlyActive = window.location.pathname === `/c/${id}`;
-
-  // Use global state title only for the currently active chat (based on URL, not global state)
-  // to show real-time updates while avoiding flashing the wrong title during navigation
-  const displayTitle =
-    isCurrentlyActive && globalChatTitle ? globalChatTitle : title;
 
   const handleClick = () => {
     // Don't navigate if dialog is open or dropdown is open
@@ -166,7 +160,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
     e.stopPropagation();
     // Close dropdown first, then open dialog with a small delay to avoid focus conflicts
     setIsDropdownOpen(false);
-    setEditTitle(displayTitle); // Set the current title when opening dialog
+    setEditTitle(title); // Set the current title when opening dialog
 
     // Small delay to ensure dropdown is fully closed before opening dialog
     setTimeout(() => {
@@ -221,9 +215,9 @@ const ChatItem: React.FC<ChatItemProps> = ({
     const trimmedTitle = editTitle.trim();
 
     // Don't save if title is empty or unchanged
-    if (!trimmedTitle || trimmedTitle === displayTitle) {
+    if (!trimmedTitle || trimmedTitle === title) {
       setShowRenameDialog(false);
-      setEditTitle(displayTitle); // Reset to original title
+      setEditTitle(title); // Reset to original title
       return;
     }
 
@@ -242,7 +236,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
             ? error.message
             : "Failed to rename chat";
       toast.error(errorMessage);
-      setEditTitle(displayTitle); // Reset to original title on error
+      setEditTitle(title); // Reset to original title on error
     } finally {
       setIsRenaming(false);
     }
@@ -250,7 +244,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleCancelRename = () => {
     setShowRenameDialog(false);
-    setEditTitle(displayTitle); // Reset to original title
+    setEditTitle(title); // Reset to original title
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent) => {
@@ -284,10 +278,10 @@ const ChatItem: React.FC<ChatItemProps> = ({
       onMouseLeave={() => setIsHovered(false)}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
-      title={displayTitle}
+      title={title}
       role="button"
       tabIndex={0}
-      aria-label={`Open chat: ${displayTitle}`}
+      aria-label={`Open chat: ${title}`}
       data-testid={`chat-item-${id}`}
     >
       <div
@@ -317,7 +311,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               </Tooltip>
             </TooltipProvider>
           )}
-          {displayTitle}
+          {title}
         </span>
       </div>
 
@@ -427,7 +421,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
         open={showShareDialog}
         onOpenChange={setShowShareDialog}
         chatId={id}
-        chatTitle={displayTitle}
+        chatTitle={title}
         existingShareId={shareId}
         existingShareDate={shareDate}
       />
