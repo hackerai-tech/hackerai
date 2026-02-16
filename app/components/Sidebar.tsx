@@ -27,7 +27,10 @@ const ChatListContent: FC = () => {
   const paginatedChats = useChats();
 
   return (
-    <div className={`h-full overflow-y-auto`} ref={scrollContainerRef}>
+    <div
+      className="h-full min-w-0 overflow-y-auto overflow-x-hidden"
+      ref={scrollContainerRef}
+    >
       <SidebarHistory
         chats={paginatedChats.results || []}
         paginationStatus={paginatedChats.status}

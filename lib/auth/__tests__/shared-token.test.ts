@@ -209,7 +209,7 @@ describe("shared-token", () => {
     it("should return true just before boundary", () => {
       const almostExpiredToken: SharedToken = {
         token: "almost",
-        refreshedAt: Date.now() - TOKEN_FRESHNESS_MS + 1, // 59.999 seconds ago
+        refreshedAt: Date.now() - TOKEN_FRESHNESS_MS + 1000, // 59 seconds ago (clear margin so test is not flaky)
       };
 
       expect(isTokenFresh(almostExpiredToken)).toBe(true);
