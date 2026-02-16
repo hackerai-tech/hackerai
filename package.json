@@ -57,7 +57,7 @@
     "@convex-dev/aggregate": "^0.2.1",
     "@convex-dev/workos": "^0.0.1",
     "@e2b/code-interpreter": "2.3.3",
-    "@langchain/community": "^1.1.12",
+    "@langchain/community": "^1.1.14",
     "@monaco-editor/react": "^4.7.0",
     "@openrouter/ai-sdk-provider": "^2.1.1",
     "@posthog/ai": "^7.8.8",
