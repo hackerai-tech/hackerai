@@ -21,7 +21,7 @@ export const createWebSearch = (context: ToolContext) => {
 
 <instructions>
 - MUST use this tool to access up-to-date or external information when needed; DO NOT rely solely on internal knowledge
-- Each search may contain up to 3 \`queries\`, which MUST be variants of the same intent (i.e., query expansions), NOT different goals
+- Each search MUST contain exactly 1 to 3 \`queries\` (NEVER more than 3). Queries MUST be variants of the same intent (i.e., query expansions), NOT different goals
 - For non-English queries, MUST include at least one English query as the final variant to expand coverage
 - For complex searches, MUST break down into step-by-step searches instead of using a single complex query
 - Access multiple URLs from search results for comprehensive information or cross-validation
@@ -34,8 +34,11 @@ export const createWebSearch = (context: ToolContext) => {
     inputSchema: z.object({
       queries: z
         .array(z.string())
+        .min(1)
         .max(3)
-        .describe("Up to 3 query variants that express the same search intent"),
+        .describe(
+          "MAXIMUM 3 query variants (1-3 items only). Express the same search intent with different wording.",
+        ),
       time: z
         .enum(["all", "past_day", "past_week", "past_month", "past_year"])
         .optional()
@@ -50,7 +53,7 @@ export const createWebSearch = (context: ToolContext) => {
     }),
     execute: async (
       {
-        queries,
+        queries: rawQueries,
         time,
       }: {
         explanation: string;
@@ -60,6 +63,9 @@ export const createWebSearch = (context: ToolContext) => {
       { abortSignal },
     ) => {
       try {
+        // Defensively cap at 3 queries in case the model sends more
+        const queries = rawQueries.slice(0, 3);
+
         const searchBody = buildPerplexitySearchBody(
           queries.length === 1 ? queries[0] : queries,
           {
