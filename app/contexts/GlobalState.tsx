@@ -65,10 +65,6 @@ interface GlobalStateType {
   chatTitle: string | null;
   setChatTitle: (title: string | null) => void;
 
-  // Current chat ID state
-  currentChatId: string | null;
-  setCurrentChatId: (chatId: string | null) => void;
-
   // User chats state
   chats: Doc<"chats">[];
   setChats: (chats: Doc<"chats">[]) => void;
@@ -132,7 +128,6 @@ interface GlobalStateType {
   toggleChatSidebar: () => void;
   initializeChat: (chatId: string, fromRoute?: boolean) => void;
   initializeNewChat: () => void;
-  activateChat: (chatId: string) => void;
 
   // Temporary chats preference
   temporaryChatsEnabled: boolean;
@@ -175,7 +170,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return isChatMode(saved) ? saved : "ask";
   });
   const [chatTitle, setChatTitle] = useState<string | null>(null);
-  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [isSwitchingChats, setIsSwitchingChats] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
@@ -558,7 +552,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
     setIsSwitchingChats(true);
-    setCurrentChatId(chatId);
     // Don't clear input here - let ChatInput restore draft automatically
     // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
@@ -570,7 +563,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     if (chatResetRef.current) {
       chatResetRef.current();
     }
-    setCurrentChatId(null);
     setTodos([]);
     setIsTodoPanelExpanded(false);
     setChatTitle(null);
@@ -578,10 +570,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
     chatResetRef.current = fn;
-  }, []);
-
-  const activateChat = useCallback((chatId: string) => {
-    setCurrentChatId(chatId);
   }, []);
 
   const openSidebar = (content: SidebarContent) => {
@@ -668,8 +656,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatMode,
     chatTitle,
     setChatTitle,
-    currentChatId,
-    setCurrentChatId,
     chats,
     setChats,
     isSwitchingChats,
@@ -699,7 +685,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     toggleChatSidebar,
     initializeChat,
     initializeNewChat,
-    activateChat,
 
     temporaryChatsEnabled,
     setTemporaryChatsEnabled: setTemporaryChatsEnabledWithUrl,

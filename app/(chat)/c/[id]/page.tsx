@@ -1,11 +1,11 @@
 "use client";
 
-import { Chat } from "../../components/chat";
+import { Chat } from "../../../components/chat";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import Loading from "@/components/ui/loading";
-import PricingDialog from "../../components/PricingDialog";
-import { usePricingDialog } from "../../hooks/usePricingDialog";
-import { useGlobalState } from "../../contexts/GlobalState";
+import PricingDialog from "../../../components/PricingDialog";
+import { usePricingDialog } from "../../../hooks/usePricingDialog";
+import { useGlobalState } from "../../../contexts/GlobalState";
 import { use } from "react";
 
 export default function Page(props: { params: Promise<{ id: string }> }) {

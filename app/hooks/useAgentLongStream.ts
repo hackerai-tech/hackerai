@@ -54,7 +54,6 @@ export interface UseAgentLongStreamOptions {
   setAwaitingServerChat: (v: boolean) => void;
   setMessages: (msgs: ChatMessage[]) => void;
   setIsExistingChat: (v: boolean) => void;
-  setCurrentChatId: (id: string | null) => void;
   hasUserDismissedWarningRef: RefObject<boolean>;
   isExistingChatRef: RefObject<boolean>;
   onRunComplete?: (params: { chatId: string }) => void;
@@ -108,7 +107,6 @@ export function useAgentLongStream(
     setAwaitingServerChat,
     setMessages,
     setIsExistingChat,
-    setCurrentChatId,
     hasUserDismissedWarningRef,
     isExistingChatRef,
     onRunComplete,
@@ -525,7 +523,6 @@ export function useAgentLongStream(
 
     if (!isExistingChatRef.current) {
       setIsExistingChat(true);
-      setCurrentChatId(chatId);
       onRunComplete?.({ chatId });
     }
     reconnectedForRef.current = null;
@@ -537,7 +534,6 @@ export function useAgentLongStream(
     aiParts,
     reconnectRunId,
     setMessages,
-    setCurrentChatId,
     chatId,
     isExistingChatRef,
     setIsExistingChat,

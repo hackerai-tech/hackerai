@@ -77,7 +77,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
     initializeNewChat,
     initializeChat,
     chatTitle: globalChatTitle,
-    currentChatId,
   } = useGlobalState();
   const isMobile = useIsMobile();
   const deleteChat = useMutation(api.chats.deleteChat);
@@ -291,7 +290,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       aria-label={`Open chat: ${displayTitle}`}
     >
       <div
-        className={`mr-2 flex-1 overflow-hidden text-clip whitespace-nowrap text-sm font-medium ${
+        className={`mr-2 min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium ${
           isHovered || isCurrentlyActive || isDropdownOpen || isMobile
             ? "[-webkit-mask-image:var(--sidebar-mask-active)] [mask-image:var(--sidebar-mask-active)]"
             : "[-webkit-mask-image:var(--sidebar-mask)] [mask-image:var(--sidebar-mask)]"
