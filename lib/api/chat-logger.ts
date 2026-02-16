@@ -16,7 +16,7 @@ import type { ChatSDKError } from "@/lib/errors";
 
 export interface ChatLoggerConfig {
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent";
+  endpoint: "/api/chat" | "/api/agent" | "/api/agent-long";
 }
 
 export interface RequestDetails {

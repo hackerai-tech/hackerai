@@ -283,7 +283,7 @@ export const updateChat = mutation({
       return null;
     } catch (error) {
       console.error("Failed to update chat:", error);
-      throw new Error("Failed to update chat");
+      throw error;
     }
   },
 });

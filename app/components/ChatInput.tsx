@@ -21,6 +21,7 @@ import {
   Infinity,
   Timer,
   ChevronDown,
+  Lock,
 } from "lucide-react";
 import { useHotkeys } from "react-hotkeys-hook";
 import TextareaAutosize from "react-textarea-autosize";
@@ -100,6 +101,7 @@ export const ChatInput = ({
     setQueueBehavior,
     sandboxPreference,
     setSandboxPreference,
+    temporaryChatsEnabled,
   } = useGlobalState();
   const {
     fileInputRef,
@@ -128,7 +130,20 @@ export const ChatInput = ({
     }
   }, [subscription, isCheckingProPlan, chatMode, setChatMode]);
 
+  // Fallback to 'ask' mode when temporary chats are enabled (agent modes not allowed)
+  useEffect(() => {
+    if (temporaryChatsEnabled && isAgentMode(chatMode)) {
+      setChatMode("ask");
+    }
+  }, [temporaryChatsEnabled, chatMode, setChatMode]);
+
   const handleAgentModeClick = () => {
+    if (temporaryChatsEnabled) {
+      toast.info("Agent mode requires chat history", {
+        description: "Turn off temporary chat to use Agent mode.",
+      });
+      return;
+    }
     if (subscription !== "free") {
       setChatMode("agent");
     } else {
@@ -137,6 +152,12 @@ export const ChatInput = ({
   };
 
   const handleAgentLongModeClick = () => {
+    if (temporaryChatsEnabled) {
+      toast.info("Agent-Long mode requires chat history", {
+        description: "Turn off temporary chat to use Agent-Long mode.",
+      });
+      return;
+    }
     if (subscription !== "free") {
       setChatMode("agent-long");
     } else {
@@ -386,6 +407,9 @@ export const ChatInput = ({
                       <div className="flex flex-col">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">Agent</span>
+                          {temporaryChatsEnabled && (
+                            <Lock className="w-3 h-3 text-muted-foreground" />
+                          )}
                         </div>
                         <span className="text-xs text-muted-foreground">
                           Hack, test, secure anything
@@ -402,9 +426,13 @@ export const ChatInput = ({
                       <div className="flex flex-col flex-1">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">Agent</span>
-                          <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
-                            PRO
-                          </span>
+                          {temporaryChatsEnabled ? (
+                            <Lock className="w-3 h-3 text-muted-foreground" />
+                          ) : (
+                            <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
+                              PRO
+                            </span>
+                          )}
                         </div>
                         <span className="text-xs text-muted-foreground">
                           Hack, test, secure anything
@@ -420,7 +448,12 @@ export const ChatInput = ({
                     >
                       <Timer className="w-4 h-4 mr-2" />
                       <div className="flex flex-col">
-                        <span className="font-medium">Agent-Long</span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Agent-Long</span>
+                          {temporaryChatsEnabled && (
+                            <Lock className="w-3 h-3 text-muted-foreground" />
+                          )}
+                        </div>
                         <span className="text-xs text-muted-foreground">
                           Long-running agent tasks
                         </span>
@@ -436,9 +469,13 @@ export const ChatInput = ({
                       <div className="flex flex-col flex-1">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">Agent-Long</span>
-                          <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
-                            PRO
-                          </span>
+                          {temporaryChatsEnabled ? (
+                            <Lock className="w-3 h-3 text-muted-foreground" />
+                          ) : (
+                            <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
+                              PRO
+                            </span>
+                          )}
                         </div>
                         <span className="text-xs text-muted-foreground">
                           Long-running agent tasks
