@@ -375,7 +375,6 @@ export const Chat = ({
     setAwaitingServerChat,
     setMessages,
     setIsExistingChat,
-    setCurrentChatId: () => {},
     hasUserDismissedWarningRef,
     isExistingChatRef,
     onRunComplete: () => {
