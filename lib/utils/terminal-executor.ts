@@ -16,10 +16,11 @@ export type TerminalResult = {
 };
 
 /**
- * Simple terminal output handler with token limits and timeout
+ * Simple terminal output handler with token limits and timeout.
+ * If onOutput returns a Promise, it is awaited so the run yields (e.g. for real-time stream delivery).
  */
 export const createTerminalHandler = (
-  onOutput: (output: string) => void,
+  onOutput: (output: string) => void | Promise<void>,
   options: {
     maxTokens?: number;
     timeoutSeconds?: number;
@@ -42,7 +43,7 @@ export const createTerminalHandler = (
     }, timeoutSeconds * 1000);
   }
 
-  const handleOutput = (output: string) => {
+  const handleOutput = async (output: string) => {
     // Accumulate output in chronological order
     combinedOutput += output;
 
@@ -62,22 +63,22 @@ export const createTerminalHandler = (
         const contentBudget = remainingTokens - truncationTokens;
         const truncatedOutput = sliceByTokens(output, contentBudget);
         if (truncatedOutput.trim()) {
-          onOutput(truncatedOutput);
+          await onOutput(truncatedOutput);
           totalTokens += countTokens(truncatedOutput);
         }
       }
 
-      onOutput(TRUNCATION_MESSAGE);
+      await onOutput(TRUNCATION_MESSAGE);
       return;
     }
 
     totalTokens += tokens;
-    onOutput(output);
+    await onOutput(output);
   };
 
   return {
-    stdout: (output: string) => handleOutput(output),
-    stderr: (output: string) => handleOutput(output),
+    stdout: (output: string) => void handleOutput(output),
+    stderr: (output: string) => void handleOutput(output),
     getResult: (pid?: number): TerminalResult => {
       const timeoutMsg = timedOut
         ? TIMEOUT_MESSAGE(timeoutSeconds || 0, pid)

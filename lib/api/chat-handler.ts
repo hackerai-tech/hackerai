@@ -69,8 +69,9 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
-import { logger as axiomLogger } from "@/lib/axiom/server";
+import { nextJsAxiomLogger } from "@/lib/axiom/server";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 function getStreamContext() {
   try {
@@ -115,6 +116,14 @@ export const createChatHandler = (
         sandboxPreference?: SandboxPreference;
       } = await req.json();
 
+      // Agent-long must use /api/agent-long (Trigger.dev), not this handler
+      if (mode === "agent-long") {
+        throw new ChatSDKError(
+          "bad_request:api",
+          "Agent-long mode must use POST /api/agent-long",
+        );
+      }
+
       // Initialize chat logger
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({
@@ -134,7 +143,7 @@ export const createChatHandler = (
         region: userLocation?.region,
       });
 
-      if (mode === "agent" && subscription === "free") {
+      if (isAgentMode(mode) && subscription === "free") {
         throw new ChatSDKError(
           "forbidden:chat",
           "Agent mode is only available for Pro users. Please upgrade to access this feature.",
@@ -208,7 +217,7 @@ export const createChatHandler = (
       // Note: File tokens are not included because counts are inaccurate (especially PDFs)
       // and deductUsage reconciles with actual provider cost anyway
       const estimatedInputTokens =
-        mode === "agent" || subscription !== "free"
+        isAgentMode(mode) || subscription !== "free"
           ? countMessagesTokens(truncatedMessages)
           : 0;
 
@@ -362,7 +371,7 @@ export const createChatHandler = (
           // Get sandbox context for system prompt (only for local sandboxes)
           let sandboxContext: string | null = null;
           if (
-            mode === "agent" &&
+            isAgentMode(mode) &&
             "getSandboxContextForPrompt" in sandboxManager
           ) {
             try {
@@ -376,7 +385,7 @@ export const createChatHandler = (
             }
           }
 
-          if (mode === "agent" && sandboxFiles && sandboxFiles.length > 0) {
+          if (isAgentMode(mode) && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
             try {
               await uploadSandboxFiles(sandboxFiles, ensureSandbox);
@@ -411,7 +420,7 @@ export const createChatHandler = (
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let hasSummarized = false;
-          const isReasoningModel = mode === "agent";
+          const isReasoningModel = isAgentMode(mode);
 
           // Track metrics for data collection
           const streamStartTime = Date.now();
@@ -560,6 +569,7 @@ export const createChatHandler = (
                       distinctId: userId,
                       event: "hackerai-" + chunk.chunk.toolName,
                       properties: {
+                        mode,
                         ...(sandboxType && { sandboxType }),
                       },
                     });
@@ -599,7 +609,7 @@ export const createChatHandler = (
                   console.error("Error:", error);
 
                   // Log provider errors to Axiom with request context
-                  axiomLogger.error("Provider streaming error", {
+                  nextJsAxiomLogger.error("Provider streaming error", {
                     chatId,
                     endpoint,
                     mode,
@@ -621,17 +631,20 @@ export const createChatHandler = (
           } catch (error) {
             // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback
             if (isProviderApiError(error) && !isRetryWithFallback) {
-              axiomLogger.error("Provider API error, retrying with fallback", {
-                chatId,
-                endpoint,
-                mode,
-                originalModel: selectedModel,
-                fallbackModel,
-                userId,
-                subscription,
-                isTemporary: temporary,
-                ...extractErrorDetails(error),
-              });
+              nextJsAxiomLogger.error(
+                "Provider API error, retrying with fallback",
+                {
+                  chatId,
+                  endpoint,
+                  mode,
+                  originalModel: selectedModel,
+                  fallbackModel,
+                  userId,
+                  subscription,
+                  isTemporary: temporary,
+                  ...extractErrorDetails(error),
+                },
+              );
 
               isRetryWithFallback = true;
               result = await createStream(fallbackModel);
@@ -654,7 +667,7 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  axiomLogger.error(
+                  nextJsAxiomLogger.error(
                     "Stream finished incomplete - triggering fallback",
                     {
                       chatId,
@@ -789,7 +802,7 @@ export const createChatHandler = (
                               (p) => p.type,
                             ) ?? [];
 
-                          axiomLogger.info("Fallback completed", {
+                          nextJsAxiomLogger.info("Fallback completed", {
                             chatId,
                             originalModel: selectedModel,
                             originalAssistantMessageId: assistantMessageId,
@@ -826,7 +839,7 @@ export const createChatHandler = (
                     const stepDuration = Date.now() - stepStartTime;
                     const totalElapsed =
                       Date.now() - (triggerTime || onFinishStartTime);
-                    axiomLogger.info("Preemptive timeout cleanup step", {
+                    nextJsAxiomLogger.info("Preemptive timeout cleanup step", {
                       chatId,
                       step,
                       stepDurationMs: stepDuration,
@@ -837,15 +850,18 @@ export const createChatHandler = (
                 };
 
                 if (isPreemptiveAbort) {
-                  axiomLogger.info("Preemptive timeout onFinish started", {
-                    chatId,
-                    endpoint,
-                    timeSinceTriggerMs: triggerTime
-                      ? onFinishStartTime - triggerTime
-                      : null,
-                    messageCount: messages.length,
-                    isTemporary: temporary,
-                  });
+                  nextJsAxiomLogger.info(
+                    "Preemptive timeout onFinish started",
+                    {
+                      chatId,
+                      endpoint,
+                      timeSinceTriggerMs: triggerTime
+                        ? onFinishStartTime - triggerTime
+                        : null,
+                      messageCount: messages.length,
+                      isTemporary: temporary,
+                    },
+                  );
                 }
 
                 // Clear pre-emptive timeout
@@ -1036,15 +1052,18 @@ export const createChatHandler = (
 
                 if (isPreemptiveAbort) {
                   const totalDuration = Date.now() - onFinishStartTime;
-                  axiomLogger.info("Preemptive timeout onFinish completed", {
-                    chatId,
-                    endpoint,
-                    totalOnFinishDurationMs: totalDuration,
-                    totalSinceTriggerMs: triggerTime
-                      ? Date.now() - triggerTime
-                      : null,
-                  });
-                  await axiomLogger.flush();
+                  nextJsAxiomLogger.info(
+                    "Preemptive timeout onFinish completed",
+                    {
+                      chatId,
+                      endpoint,
+                      totalOnFinishDurationMs: totalDuration,
+                      totalSinceTriggerMs: triggerTime
+                        ? Date.now() - triggerTime
+                        : null,
+                    },
+                  );
+                  await nextJsAxiomLogger.flush();
                 }
 
                 // Deduct accumulated usage if not already done

@@ -53,7 +53,7 @@ interface MessagesProps {
     status: "started" | "completed";
     message: string;
   } | null;
-  mode?: "ask" | "agent";
+  mode?: "ask" | "agent" | "agent-long";
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;

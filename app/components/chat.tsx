@@ -2,7 +2,13 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { RefObject, useRef, useEffect, useState } from "react";
+import {
+  useRef,
+  useEffect,
+  useState,
+  useCallback,
+  type RefObject,
+} from "react";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
@@ -24,7 +30,8 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
+import type { Todo, ChatMessage, ChatMode } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -33,6 +40,8 @@ import { useAutoResume } from "../hooks/useAutoResume";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
+import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
+import { useAgentLongStream } from "../hooks/useAgentLongStream";
 
 export const Chat = ({
   chatId: routeChatId,
@@ -66,6 +75,7 @@ export const Chat = ({
     setTodos,
     replaceAssistantTodos,
     currentChatId,
+    setCurrentChatId,
     temporaryChatsEnabled,
     setChatReset,
     hasUserDismissedRateLimitWarning,
@@ -156,8 +166,16 @@ export const Chat = ({
       ? convertToUIMessages([...paginatedMessages.results].reverse())
       : [];
 
+  // Same as sync effect: Convex-backed messages for agent-long reconnect/backfill so refresh shows history
+  const serverMessages: ChatMessage[] =
+    paginatedMessages.results && paginatedMessages.results.length > 0
+      ? convertToUIMessages([...paginatedMessages.results].reverse())
+      : [];
+
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
+  // Re-trigger sync effect after skip window expires (agent-long recovery)
+  const [syncTrigger, setSyncTrigger] = useState(0);
   // Ref to track when "Send Now" is actively processing to prevent auto-processing interference
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
@@ -259,54 +277,11 @@ export const Chat = ({
         );
       }
       if (dataPart.type === "data-rate-limit-warning") {
-        const rawData = dataPart.data as {
-          warningType: "sliding-window" | "token-bucket" | "extra-usage-active";
-          resetTime: string;
-          subscription: SubscriptionTier;
-          // sliding-window fields
-          remaining?: number;
-          mode?: ChatMode;
-          // token-bucket and extra-usage-active fields
-          bucketType?: "session" | "weekly";
-          // token-bucket only
-          remainingPercent?: number;
-        };
-
-        // Only show or update warning if user hasn't dismissed it
-        if (!hasUserDismissedWarningRef.current) {
-          if (rawData.warningType === "sliding-window") {
-            setRateLimitWarning({
-              warningType: "sliding-window",
-              remaining: rawData.remaining!,
-              resetTime: new Date(rawData.resetTime),
-              mode: rawData.mode!,
-              subscription: rawData.subscription,
-            });
-          } else if (rawData.warningType === "extra-usage-active") {
-            // Only show extra usage warning once per reset period (localStorage tracks this)
-            const storageKey = `extraUsageWarningShownUntil_${rawData.bucketType}`;
-            const storedResetTime = localStorage.getItem(storageKey);
-
-            // Show warning only if we haven't shown it for this period
-            if (!storedResetTime || new Date(storedResetTime) < new Date()) {
-              localStorage.setItem(storageKey, rawData.resetTime);
-              setRateLimitWarning({
-                warningType: "extra-usage-active",
-                bucketType: rawData.bucketType!,
-                resetTime: new Date(rawData.resetTime),
-                subscription: rawData.subscription,
-              });
-            }
-          } else {
-            setRateLimitWarning({
-              warningType: "token-bucket",
-              bucketType: rawData.bucketType!,
-              remainingPercent: rawData.remainingPercent!,
-              resetTime: new Date(rawData.resetTime),
-              subscription: rawData.subscription,
-            });
-          }
-        }
+        const rawData = dataPart.data as Record<string, unknown>;
+        const parsed = parseRateLimitWarning(rawData, {
+          hasUserDismissed: hasUserDismissedWarningRef.current,
+        });
+        if (parsed) setRateLimitWarning(parsed);
       }
       if (dataPart.type === "data-file-metadata") {
         const fileData = dataPart.data as {
@@ -390,9 +365,55 @@ export const Chat = ({
     },
   });
 
+  // Agent-long: Trigger.dev streaming via dedicated hook (must be after useChat for messages/setMessages)
+  const agentLong = useAgentLongStream({
+    chatId,
+    enabled: chatMode === "agent-long",
+    reconnectRunId:
+      chatMode === "agent-long" && chatData?.id === chatId
+        ? ((chatData as { active_trigger_run_id?: string })
+            .active_trigger_run_id ?? null)
+        : null,
+    messages,
+    serverMessages,
+    todos,
+    sandboxPreference,
+    setChatTitle,
+    setUploadStatus,
+    setSummarizationStatus,
+    setRateLimitWarning,
+    setTempChatFileDetails,
+    setSandboxPreference,
+    setDataStream: setDataStream as React.Dispatch<
+      React.SetStateAction<unknown[]>
+    >,
+    setIsAutoResuming,
+    setAwaitingServerChat,
+    setMessages,
+    setIsExistingChat,
+    setCurrentChatId,
+    hasUserDismissedWarningRef,
+    isExistingChatRef,
+    onRunComplete: () => {
+      removeDraft("new");
+      window.history.replaceState({}, "", `/c/${chatId}`);
+    },
+  });
+
+  // Derive serverMode from chatData to gate useAutoResume (prevents firing before we know chat type)
+  // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
+  const serverMode =
+    chatData?.id === chatId
+      ? (chatData?.default_model_slug as string | undefined) ||
+        (chatData?.active_trigger_run_id ? "agent-long" : undefined)
+      : undefined;
+
   // Auto-resume controlled by prop; default to true when a specific chat id is present, false on "/"
+  // Disable for agent-long: resuming hits AI SDK /api/chat, not Trigger.dev, and can block sync
+  // Use serverMode (from DB) instead of chatMode (from GlobalState) to avoid stale state from previous chat
   useAutoResume({
-    autoResume,
+    autoResume:
+      autoResume && serverMode !== undefined && serverMode !== "agent-long",
     initialMessages,
     resumeStream,
     setMessages,
@@ -409,10 +430,17 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
+      agentLong.reset();
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setChatTitle, setTodos]);
+  }, [setChatReset, setMessages, setChatTitle, setTodos, agentLong.reset]);
+
+  // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
+  useEffect(() => {
+    hasInitializedModeFromChatRef.current = false;
+    agentLong.lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
+  }, [chatId, agentLong.lastTriggerAssistantIdRef]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
@@ -463,8 +491,11 @@ export const Chat = ({
     setAwaitingServerChat(false);
     // Initialize mode from server once per chat id (only for existing chats)
     if (!hasInitializedModeFromChatRef.current && isExistingChat) {
-      const slug = (chatData as any).default_model_slug;
-      if (slug === "ask" || slug === "agent") {
+      // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
+      const slug =
+        (chatData as any).default_model_slug ||
+        ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
+      if (slug === "ask" || slug === "agent" || slug === "agent-long") {
         setChatMode(slug);
         hasInitializedModeFromChatRef.current = true;
       }
@@ -479,13 +510,27 @@ export const Chat = ({
     chatId,
   ]);
 
-  // Reset the one-time initializer when chat changes
-  useEffect(() => {
-    hasInitializedModeFromChatRef.current = false;
-  }, [chatId]);
-
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
+    // Skip sync while streaming (messages come from streaming state, not Convex)
+    if (agentLong.isActive) {
+      return;
+    }
+    // Also skip if useChat is streaming (for temporary chats or fallback path)
+    if (status === "streaming") {
+      return;
+    }
+
+    if (Date.now() < agentLong.skipPaginatedSyncUntilRef.current) {
+      // Schedule a re-sync after skip window so messages load when timer expires
+      const remaining =
+        agentLong.skipPaginatedSyncUntilRef.current - Date.now();
+      const timer = setTimeout(
+        () => setSyncTrigger((t) => t + 1),
+        remaining + 50,
+      );
+      return () => clearTimeout(timer);
+    }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
       return;
     }
@@ -496,10 +541,37 @@ export const Chat = ({
     );
 
     // Simple sync: always use server messages for existing chats
+    // BUT: If we just completed a Trigger.dev run, verify the assistant message exists in Convex
+    // before overwriting (prevents race condition where Convex hasn't propagated the new message yet)
     if (isExistingChat) {
-      setMessages(uiMessages);
+      const lastTriggerId = agentLong.lastTriggerAssistantIdRef.current;
+      if (lastTriggerId) {
+        // Check if Convex has the assistant message from the trigger run
+        const hasAssistantMessage = uiMessages.some(
+          (msg) => msg.id === lastTriggerId,
+        );
+        if (hasAssistantMessage) {
+          // Convex has caught up, safe to sync
+          setMessages(uiMessages);
+          agentLong.lastTriggerAssistantIdRef.current = null; // Clear the ref
+        }
+        // If Convex doesn't have it yet, skip this sync and wait for next update
+      } else {
+        // No pending trigger completion, safe to sync normally
+        setMessages(uiMessages);
+      }
     }
-  }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
+  }, [
+    paginatedMessages.results,
+    setMessages,
+    isExistingChat,
+    chatId,
+    agentLong.isActive,
+    agentLong.skipPaginatedSyncUntilRef,
+    agentLong.lastTriggerAssistantIdRef,
+    status,
+    syncTrigger,
+  ]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -521,60 +593,7 @@ export const Chat = ({
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Automatic queue processing - send next queued message when ready
-  useEffect(() => {
-    if (
-      status === "ready" &&
-      messageQueue.length > 0 &&
-      !isProcessingQueue &&
-      !isSendingNowRef.current && // Don't auto-process if "Send Now" is active
-      !hasManuallyStoppedRef.current && // Don't auto-process if user manually stopped
-      chatMode === "agent" &&
-      queueBehavior === "queue" // Only auto-process in queue mode
-    ) {
-      setIsProcessingQueue(true);
-      const nextMessage = dequeueNext();
-
-      if (nextMessage) {
-        // Send the message with files if available
-        sendMessage(
-          {
-            text: nextMessage.text,
-            files: nextMessage.files
-              ? nextMessage.files.map((f) => ({
-                  type: "file" as const,
-                  filename: f.file.name,
-                  mediaType: f.file.type,
-                  url: f.url,
-                  fileId: f.fileId,
-                }))
-              : undefined,
-          },
-          {
-            body: {
-              mode: chatMode,
-              todos: todosRef.current,
-              temporary: temporaryChatsEnabledRef.current,
-              sandboxPreference: sandboxPreferenceRef.current,
-            },
-          },
-        );
-      }
-
-      // Reset processing flag after brief delay
-      setTimeout(() => setIsProcessingQueue(false), 100);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- todosRef and sandboxPreferenceRef are stable refs, .current is read at runtime
-  }, [
-    status,
-    messageQueue.length,
-    isProcessingQueue,
-    chatMode,
-    dequeueNext,
-    sendMessage,
-    temporaryChatsEnabledRef,
-    queueBehavior,
-  ]);
+  const displayStatusForQueue = agentLong.isActive ? agentLong.status : status;
 
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useRef(messageQueue);
@@ -606,6 +625,82 @@ export const Chat = ({
     handleDrop,
   });
 
+  const wrappedSendMessage = useCallback(
+    (payload: unknown, opts?: { body?: Record<string, unknown> }) => {
+      if (chatMode === "agent-long") {
+        agentLong.submit(
+          payload as Parameters<typeof agentLong.submit>[0],
+          opts,
+        );
+        return;
+      }
+      sendMessage(payload as Parameters<typeof sendMessage>[0], opts);
+    },
+    [chatMode, agentLong.submit, sendMessage],
+  );
+
+  const wrappedRegenerate = useCallback(
+    (opts?: { body?: Record<string, unknown> }) => {
+      if (chatMode === "agent-long") {
+        agentLong.regenerate(opts);
+        return;
+      }
+      regenerate(opts);
+    },
+    [chatMode, agentLong.regenerate, regenerate],
+  );
+
+  // Automatic queue processing - send next queued message when ready (wrappedSendMessage routes agent-long to hook)
+  useEffect(() => {
+    if (
+      displayStatusForQueue === "ready" &&
+      messageQueue.length > 0 &&
+      !isProcessingQueue &&
+      !isSendingNowRef.current &&
+      !hasManuallyStoppedRef.current &&
+      (chatMode === "agent" || chatMode === "agent-long") &&
+      queueBehavior === "queue"
+    ) {
+      setIsProcessingQueue(true);
+      const nextMessage = dequeueNext();
+
+      if (nextMessage) {
+        wrappedSendMessage(
+          {
+            text: nextMessage.text,
+            files: nextMessage.files
+              ? nextMessage.files.map((f) => ({
+                  type: "file" as const,
+                  filename: f.file.name,
+                  mediaType: f.file.type,
+                  url: f.url,
+                  fileId: f.fileId,
+                }))
+              : undefined,
+          },
+          {
+            body: {
+              mode: chatMode,
+              todos: todosRef.current,
+              temporary: temporaryChatsEnabledRef.current,
+              sandboxPreference: sandboxPreferenceRef.current,
+            },
+          },
+        );
+      }
+
+      setTimeout(() => setIsProcessingQueue(false), 100);
+    }
+  }, [
+    displayStatusForQueue,
+    messageQueue.length,
+    isProcessingQueue,
+    chatMode,
+    dequeueNext,
+    wrappedSendMessage,
+    queueBehavior,
+  ]);
+
   // Chat handlers
   const {
     handleSubmit,
@@ -616,17 +711,23 @@ export const Chat = ({
     handleSendNow,
   } = useChatHandlers({
     chatId,
-    messages,
-    sendMessage,
-    stop,
-    regenerate,
+    messages: agentLong.isActive ? agentLong.displayMessages : messages,
+    sendMessage: wrappedSendMessage,
+    stop: useCallback(() => {
+      if (agentLong.isActive) {
+        agentLong.cancel();
+      } else {
+        stop();
+      }
+    }, [agentLong.isActive, agentLong.cancel, stop]),
+    regenerate: wrappedRegenerate,
     setMessages,
     isExistingChat,
     activateChatLocally: () => {
       setIsExistingChat(true);
       setAwaitingServerChat(true);
     },
-    status,
+    status: agentLong.isActive ? agentLong.status : status,
     isSendingNowRef,
     hasManuallyStoppedRef,
     onStopCallback: () => {
@@ -657,7 +758,11 @@ export const Chat = ({
     }
   };
 
-  const hasMessages = messages.length > 0;
+  const displayMessages = agentLong.isActive
+    ? agentLong.displayMessages
+    : messages;
+  const displayStatus = agentLong.isActive ? agentLong.status : status;
+  const hasMessages = displayMessages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
   // UI-level temporary chat flag
@@ -734,13 +839,13 @@ export const Chat = ({
                   <Messages
                     scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                     contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                    messages={messages}
+                    messages={displayMessages}
                     setMessages={setMessages}
                     onRegenerate={handleRegenerate}
                     onRetry={handleRetry}
                     onEditMessage={handleEditMessage}
                     onBranchMessage={handleBranchMessage}
-                    status={status}
+                    status={displayStatus}
                     error={error || null}
                     paginationStatus={paginatedMessages.status}
                     loadMore={paginatedMessages.loadMore}
@@ -791,7 +896,7 @@ export const Chat = ({
                               onSubmit={handleSubmit}
                               onStop={handleStop}
                               onSendNow={handleSendNow}
-                              status={status}
+                              status={displayStatus}
                               isCentered={true}
                               hasMessages={hasMessages}
                               isAtBottom={isAtBottom}
@@ -824,7 +929,7 @@ export const Chat = ({
                       onSubmit={handleSubmit}
                       onStop={handleStop}
                       onSendNow={handleSendNow}
-                      status={status}
+                      status={displayStatus}
                       hasMessages={hasMessages}
                       isAtBottom={isAtBottom}
                       onScrollToBottom={handleScrollToBottom}
@@ -847,7 +952,10 @@ export const Chat = ({
                 }`}
               >
                 {sidebarOpen && (
-                  <ComputerSidebar messages={messages} status={status} />
+                  <ComputerSidebar
+                    messages={displayMessages}
+                    status={displayStatus}
+                  />
                 )}
               </div>
             )}
@@ -864,7 +972,10 @@ export const Chat = ({
         {isMobile && sidebarOpen && (
           <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
             <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar messages={messages} status={status} />
+              <ComputerSidebar
+                messages={displayMessages}
+                status={displayStatus}
+              />
             </div>
           </div>
         )}

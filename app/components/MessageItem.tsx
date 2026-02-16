@@ -13,7 +13,7 @@ import {
   hasTextContent,
   extractWebSourcesFromMessage,
 } from "@/lib/utils/message-utils";
-import type { ChatStatus, ChatMessage } from "@/types";
+import type { ChatStatus, ChatMessage, ChatMode } from "@/types";
 import type { FileDetails } from "@/types/file";
 
 interface MessageItemProps {
@@ -27,7 +27,7 @@ interface MessageItemProps {
   feedbackInputMessageId: string | null;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
-  mode?: "ask" | "agent";
+  mode?: ChatMode;
   isTemporaryChat?: boolean;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
@@ -142,6 +142,19 @@ export const MessageItem = memo(function MessageItem({
     const files = message.parts.filter((part) => part.type === "file");
     const nonFiles = message.parts.filter((part) => part.type !== "file");
     return { fileParts: files, nonFileParts: nonFiles };
+  }, [message.parts]);
+
+  // Pre-compute terminal output by toolCallId so TerminalToolHandler doesn't filter all parts per instance
+  const terminalOutputByToolCallId = useMemo(() => {
+    const map = new Map<string, string>();
+    message.parts.forEach((p) => {
+      if (p.type === "data-terminal" && (p as any).data?.toolCallId) {
+        const id = (p as any).data.toolCallId;
+        const terminal = (p as any).data?.terminal || "";
+        map.set(id, (map.get(id) || "") + terminal);
+      }
+    });
+    return map;
   }, [message.parts]);
 
   const hasFileContent = fileParts.length > 0;
@@ -280,6 +293,7 @@ export const MessageItem = memo(function MessageItem({
                         part={part}
                         partIndex={partIndex}
                         status={status}
+                        terminalOutputByToolCallId={terminalOutputByToolCallId}
                       />
                     ))}
                   </div>
@@ -293,6 +307,7 @@ export const MessageItem = memo(function MessageItem({
                       partIndex={partIndex}
                       status={status}
                       isLastMessage={isLastMessage}
+                      terminalOutputByToolCallId={terminalOutputByToolCallId}
                     />
                   ))
                 )}
@@ -309,6 +324,7 @@ export const MessageItem = memo(function MessageItem({
                     part={part}
                     partIndex={partIndex}
                     status={status}
+                    terminalOutputByToolCallId={terminalOutputByToolCallId}
                   />
                 ))}
               </div>

@@ -16,6 +16,7 @@
  */
 
 import { ChatSDKError } from "@/lib/errors";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type {
   ChatMode,
   SubscriptionTier,
@@ -68,7 +69,7 @@ export const checkRateLimit = async (
   // Free users: sliding window
   if (subscription === "free") {
     // Block agent mode for free users
-    if (mode === "agent") {
+    if (isAgentMode(mode)) {
       throw new ChatSDKError(
         "rate_limit:chat",
         "Agent mode is not available on the free tier. Upgrade to Pro for agent mode access.",

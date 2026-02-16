@@ -425,7 +425,6 @@ class LocalSandboxClient {
     console.log(chalk.blue("Connecting to HackerAI..."));
 
     try {
-       
       const result = (await (this.convex as any).mutation(
         api.localSandbox.connect,
         {
@@ -477,7 +476,7 @@ class LocalSandboxClient {
     if (!this.connectionId || !this.userId || !this.session) return;
 
     // Use Convex subscription for real-time command updates
-     
+
     this.commandSubscription = (this.convex as any).onUpdate(
       api.localSandbox.getPendingCommands,
       {
@@ -528,7 +527,6 @@ class LocalSandboxClient {
     }
 
     try {
-       
       await (this.convex as any).mutation(
         api.localSandbox.markCommandExecuting,
         {
@@ -563,7 +561,6 @@ class LocalSandboxClient {
         const pid = await this.spawnBackground(fullCommand);
         const duration = Date.now() - startTime;
 
-         
         await (this.convex as any).mutation(api.localSandbox.submitResult, {
           commandId: command_id,
           token: this.config.token,
@@ -601,7 +598,6 @@ class LocalSandboxClient {
 
       const duration = Date.now() - startTime;
 
-       
       await (this.convex as any).mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         token: this.config.token,
@@ -637,7 +633,6 @@ class LocalSandboxClient {
       const duration = Date.now() - startTime;
       const message = error instanceof Error ? error.message : String(error);
 
-       
       await (this.convex as any).mutation(api.localSandbox.submitResult, {
         commandId: command_id,
         token: this.config.token,
@@ -710,7 +705,6 @@ class LocalSandboxClient {
         }
 
         try {
-           
           const result = (await (this.convex as any).mutation(
             api.localSandbox.heartbeat,
             {
@@ -787,7 +781,6 @@ class LocalSandboxClient {
     try {
       if (this.connectionId) {
         try {
-           
           await (this.convex as any).mutation(api.localSandbox.disconnect, {
             token: this.config.token,
             connectionId: this.connectionId,

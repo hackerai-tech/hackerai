@@ -13,13 +13,14 @@ import {
 } from "@/lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
+import type { ChatMode } from "@/types/chat";
 import { useGlobalState } from "../contexts/GlobalState";
 import { Id } from "@/convex/_generated/dataModel";
 
 // Show warning when remaining uploads are at or below this threshold
 const RATE_LIMIT_WARNING_THRESHOLD = 10;
 
-export const useFileUpload = (mode: "ask" | "agent" = "ask") => {
+export const useFileUpload = (mode: ChatMode = "ask") => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const {
     uploadedFiles,

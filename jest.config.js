@@ -31,9 +31,12 @@ const customJestConfig = {
     "^@upstash/redis$": "<rootDir>/__mocks__/@upstash/redis.ts",
     "^@upstash/ratelimit$": "<rootDir>/__mocks__/@upstash/ratelimit.ts",
     "^convex/browser$": "<rootDir>/__mocks__/convex/browser.ts",
+    "^@trigger\\.dev/react-hooks$":
+      "<rootDir>/__mocks__/trigger-dev-react-hooks.ts",
+    "^@trigger\\.dev/sdk/v3$": "<rootDir>/__mocks__/trigger-dev-sdk.ts",
   },
   transformIgnorePatterns: [
-    "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop)/)",
+    "node_modules/(?!(uuid|@ai-sdk|ai|convex|react-hotkeys-hook|react-markdown|streamdown|remark-.*|unified|bail|is-plain-obj|trough|vfile|unist-.*|mdast-.*|micromark.*|decode-named-character-reference|character-entities|escape-string-regexp|markdown-table|property-information|hast-.*|space-separated-tokens|comma-separated-tokens|zwitch|html-void-elements|ccount|devlop|@trigger.dev|superjson)/)",
   ],
   testMatch: ["**/__tests__/**/*.[jt]s?(x)", "**/?(*.)+(spec|test).[jt]s?(x)"],
   testPathIgnorePatterns: ["/node_modules/", "/.next/", "/e2e/", "/dist/"],
