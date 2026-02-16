@@ -514,72 +514,81 @@ export const agentStreamTask = task({
         result.toUIMessageStream({
           generateMessageId: () => assistantMessageId,
           onFinish: async ({ messages, isAborted }) => {
-            const generatedTitle = await titlePromise;
+            try {
+              const generatedTitle = await titlePromise;
 
-            if (!temporary) {
-              const mergedTodos = getTodoManager().mergeWith(
-                baseTodos,
-                assistantMessageId,
-              );
-              const shouldPersist = regenerate
-                ? true
-                : Boolean(
-                    generatedTitle ||
-                    streamFinishReason ||
-                    mergedTodos.length > 0,
-                  );
-              if (shouldPersist) {
-                await updateChat({
-                  chatId,
-                  title: generatedTitle,
-                  finishReason: streamFinishReason,
-                  todos: mergedTodos,
-                  defaultModelSlug: mode,
-                });
+              if (!temporary) {
+                const mergedTodos = getTodoManager().mergeWith(
+                  baseTodos,
+                  assistantMessageId,
+                );
+                const shouldPersist = regenerate
+                  ? true
+                  : Boolean(
+                      generatedTitle ||
+                      streamFinishReason ||
+                      mergedTodos.length > 0,
+                    );
+                if (shouldPersist) {
+                  await updateChat({
+                    chatId,
+                    title: generatedTitle,
+                    finishReason: streamFinishReason,
+                    todos: mergedTodos,
+                    defaultModelSlug: mode,
+                  });
+                } else {
+                  await prepareForNewStream({ chatId });
+                }
+                const accumulatedFiles = getFileAccumulator().getAll();
+                const newFileIds = accumulatedFiles.map((f) => f.fileId);
+                for (const message of messages) {
+                  if (message.role !== "assistant") continue;
+                  const processedMessage =
+                    summarizationParts.length > 0
+                      ? {
+                          ...message,
+                          parts: [
+                            ...summarizationParts,
+                            ...(message.parts || []),
+                          ],
+                        }
+                      : message;
+                  await saveMessage({
+                    chatId,
+                    userId,
+                    message: processedMessage,
+                    extraFileIds: newFileIds,
+                    model: responseModel || configuredModelId,
+                    generationTimeMs: Date.now() - streamStartTime,
+                    finishReason: streamFinishReason,
+                    usage: streamUsage,
+                  });
+                }
+                sendFileMetadataToStream(accumulatedFiles);
               } else {
-                await prepareForNewStream({ chatId });
+                const tempFiles = getFileAccumulator().getAll();
+                sendFileMetadataToStream(tempFiles);
+                await deleteTempStreamForBackend({ chatId });
               }
-              const accumulatedFiles = getFileAccumulator().getAll();
-              const newFileIds = accumulatedFiles.map((f) => f.fileId);
-              for (const message of messages) {
-                if (message.role !== "assistant") continue;
-                const processedMessage =
-                  summarizationParts.length > 0
-                    ? {
-                        ...message,
-                        parts: [
-                          ...summarizationParts,
-                          ...(message.parts || []),
-                        ],
-                      }
-                    : message;
-                await saveMessage({
-                  chatId,
-                  userId,
-                  message: processedMessage,
-                  extraFileIds: newFileIds,
-                  model: responseModel || configuredModelId,
-                  generationTimeMs: Date.now() - streamStartTime,
-                  finishReason: streamFinishReason,
-                  usage: streamUsage,
-                });
-              }
-              sendFileMetadataToStream(accumulatedFiles);
-            } else {
-              const tempFiles = getFileAccumulator().getAll();
-              sendFileMetadataToStream(tempFiles);
-              await deleteTempStreamForBackend({ chatId });
-            }
-            await deductAccumulatedUsage();
+              await deductAccumulatedUsage();
 
-            // Emit wide event
-            chatLogger.setSandbox(sandboxManager.getSandboxInfo());
-            chatLogger.emitSuccess({
-              finishReason: streamFinishReason,
-              wasAborted: !!isAborted,
-              wasPreemptiveTimeout: false,
-              hadSummarization: hasSummarized,
-            });
+              // Emit wide event
+              chatLogger.setSandbox(sandboxManager.getSandboxInfo());
+              chatLogger.emitSuccess({
+                finishReason: streamFinishReason,
+                wasAborted: !!isAborted,
+                wasPreemptiveTimeout: false,
+                hadSummarization: hasSummarized,
+              });
+            } catch (error) {
+              logger.error("onFinish failed", {
+                chatId,
+                userId,
+                mode,
+                error,
+              });
+            }
           },
           sendReasoning: true,
         }),

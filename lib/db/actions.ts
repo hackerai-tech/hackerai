@@ -204,7 +204,10 @@ export async function updateChat({
       defaultModelSlug,
     });
   } catch (error) {
-    throw new ChatSDKError("bad_request:database", "Failed to update chat");
+    throw new ChatSDKError(
+      "bad_request:database",
+      `Failed to update chat: ${error}`,
+    );
   }
 }
 
