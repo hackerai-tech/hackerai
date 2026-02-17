@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
+import { saveTruncatedOutput } from "./utils/terminal-output-saver";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
 import { findProcessPid } from "./utils/pid-discovery";
@@ -306,7 +307,7 @@ If you are generating files:
             }
 
             handler = createTerminalHandler(
-              (output) => createTerminalWriter(output),
+              (output: string) => createTerminalWriter(output),
               {
                 timeoutSeconds: effectiveStreamTimeout,
                 onTimeout: async () => {
@@ -465,6 +466,19 @@ If you are generating files:
                     );
                   }
 
+                  // Save full output to file when truncated (show path at top so AI sees it first)
+                  let outputWithSaveInfo = finalResult.output || "";
+                  if (!is_background && handler) {
+                    const saveMsg = await saveTruncatedOutput({
+                      handler,
+                      sandbox: sandboxInstance,
+                      terminalWriter: createTerminalWriter,
+                    });
+                    if (saveMsg) {
+                      outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
+                    }
+                  }
+
                   resolve({
                     result: is_background
                       ? {
@@ -473,12 +487,12 @@ If you are generating files:
                         }
                       : {
                           exitCode: 0,
-                          output: finalResult.output,
+                          output: outputWithSaveInfo,
                         },
                   });
                 }
               })
-              .catch((error) => {
+              .catch(async (error) => {
                 if (handler) {
                   handler.cleanup();
                 }
@@ -490,10 +504,25 @@ If you are generating files:
                     const finalResult = handler
                       ? handler.getResult(processId ?? undefined)
                       : { output: "" };
+
+                    // Save full output to file when truncated (show path at top so AI sees it first)
+                    let outputWithSaveInfo = finalResult.output || "";
+                    if (handler) {
+                      const saveMsg = await saveTruncatedOutput({
+                        handler,
+                        sandbox: sandboxInstance,
+                        terminalWriter: createTerminalWriter,
+                      });
+                      if (saveMsg) {
+                        outputWithSaveInfo =
+                          saveMsg + "\n" + outputWithSaveInfo;
+                      }
+                    }
+
                     resolve({
                       result: {
                         exitCode: error.exitCode,
-                        output: finalResult.output,
+                        output: outputWithSaveInfo,
                         error: error.message,
                       },
                     });

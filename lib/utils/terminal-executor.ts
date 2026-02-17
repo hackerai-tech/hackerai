@@ -15,6 +15,10 @@ export type TerminalResult = {
   exitCode?: number | null;
 };
 
+// Max size for full output accumulation (5MB). Beyond this we stop buffering
+// to avoid holding huge strings in memory. Output that exceeds this is lost.
+const MAX_FULL_OUTPUT_CHARS = 5 * 1024 * 1024;
+
 /**
  * Simple terminal output handler with token limits and timeout.
  * If onOutput returns a Promise, it is awaited so the run yields (e.g. for real-time stream delivery).
@@ -32,7 +36,11 @@ export const createTerminalHandler = (
   let totalTokens = 0;
   let truncated = false;
   let timedOut = false;
-  let combinedOutput = "";
+  // Use chunks array instead of string concatenation to avoid
+  // creating increasingly large intermediate strings on each append
+  const outputChunks: string[] = [];
+  let totalChars = 0;
+  let fullOutputCapped = false;
   let timeoutId: NodeJS.Timeout | null = null;
 
   // Set timeout if specified
@@ -44,8 +52,17 @@ export const createTerminalHandler = (
   }
 
   const handleOutput = async (output: string) => {
-    // Accumulate output in chronological order
-    combinedOutput += output;
+    // Accumulate output in chronological order, up to the memory cap
+    if (!fullOutputCapped) {
+      if (totalChars + output.length > MAX_FULL_OUTPUT_CHARS) {
+        outputChunks.push(output.slice(0, MAX_FULL_OUTPUT_CHARS - totalChars));
+        totalChars = MAX_FULL_OUTPUT_CHARS;
+        fullOutputCapped = true;
+      } else {
+        outputChunks.push(output);
+        totalChars += output.length;
+      }
+    }
 
     // Don't stream if truncated or timed out
     if (truncated || timedOut) return;
@@ -83,16 +100,22 @@ export const createTerminalHandler = (
       const timeoutMsg = timedOut
         ? TIMEOUT_MESSAGE(timeoutSeconds || 0, pid)
         : "";
-      let finalOutput = combinedOutput;
+      let finalOutput = outputChunks.join("");
       if (timeoutMsg) {
         finalOutput += timeoutMsg;
       }
 
-      const truncated = truncateTerminalOutput(finalOutput);
+      const truncatedResult = truncateTerminalOutput(finalOutput);
       return {
-        output: truncated.output,
+        output: truncatedResult.output,
       };
     },
+    /** Returns true if the output exceeded the token limit and was truncated */
+    wasTruncated: (): boolean => truncated,
+    /** Returns the full buffered output (for saving to file). May be capped at 5MB. */
+    getFullOutput: (): string => outputChunks.join(""),
+    /** Returns true if the full output exceeded the memory cap and was itself truncated */
+    wasFullOutputCapped: (): boolean => fullOutputCapped,
     cleanup: () => {
       if (timeoutId) {
         clearTimeout(timeoutId);
