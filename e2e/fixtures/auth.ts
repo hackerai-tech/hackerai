@@ -1,30 +1,13 @@
 import { Page, BrowserContext } from "@playwright/test";
 import { TIMEOUTS } from "../constants";
-import { SubscriptionTier } from "@/types/chat";
+import {
+  getTestUsersRecord,
+  type TestUser as TestUserFromConfig,
+} from "../../scripts/test-users-config";
 
-export interface TestUser {
-  email: string;
-  password: string;
-  tier: SubscriptionTier;
-}
+export type TestUser = TestUserFromConfig;
 
-export const TEST_USERS: Record<"free" | "pro" | "ultra", TestUser> = {
-  free: {
-    email: process.env.TEST_FREE_TIER_USER || "free@hackerai.com",
-    password: process.env.TEST_FREE_TIER_PASSWORD || "l#m3Y4d)P^umI-E-",
-    tier: "free",
-  },
-  pro: {
-    email: process.env.TEST_PRO_TIER_USER || "pro@hackerai.com",
-    password: process.env.TEST_PRO_TIER_PASSWORD || "i.LY[^H6D=ZVeFgo",
-    tier: "pro",
-  },
-  ultra: {
-    email: process.env.TEST_ULTRA_TIER_USER || "ultra@hackerai.com",
-    password: process.env.TEST_ULTRA_TIER_PASSWORD || "U<hD`:b23JUa66g]",
-    tier: "ultra",
-  },
-};
+export const TEST_USERS = getTestUsersRecord();
 
 interface SessionCache {
   cookies: Array<{

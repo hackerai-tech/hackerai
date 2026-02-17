@@ -12,6 +12,7 @@ import {
 import { ChatComponent } from "./page-objects/ChatComponent";
 import { SidebarComponent } from "./page-objects/SidebarComponent";
 import { TIMEOUTS, TEST_DATA } from "./constants";
+import { getTestUsersRecord } from "../scripts/test-users-config";
 
 async function deleteFreeUserChats(): Promise<void> {
   dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
@@ -25,8 +26,9 @@ async function deleteFreeUserChats(): Promise<void> {
   }
   try {
     const workos = new WorkOS(workosKey, { clientId: workosClientId });
+    const proEmail = getTestUsersRecord().pro.email;
     const { data } = await workos.userManagement.listUsers({
-      email: process.env.TEST_PRO_TIER_USER,
+      email: proEmail,
     });
     const userId = data[0]?.id;
     if (!userId) return;

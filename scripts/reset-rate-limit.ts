@@ -26,6 +26,7 @@ import { config } from "dotenv";
 import { resolve } from "path";
 import { Redis } from "@upstash/redis";
 import { WorkOS } from "@workos-inc/node";
+import { getTestUsersRecord } from "./test-users-config";
 
 // Load .env.e2e first so TEST_* can override, then .env.local
 config({ path: resolve(process.cwd(), ".env.e2e") });
@@ -34,22 +35,9 @@ config({ path: resolve(process.cwd(), ".env.local") });
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-type TestUser = "free" | "pro" | "ultra";
+type TestUserTier = "free" | "pro" | "ultra";
 
-const TEST_USERS: Record<TestUser, { email: string; tier: string }> = {
-  free: {
-    email: process.env.TEST_FREE_TIER_USER || "free@hackerai.com",
-    tier: "free",
-  },
-  pro: {
-    email: process.env.TEST_PRO_TIER_USER || "pro@hackerai.com",
-    tier: "pro",
-  },
-  ultra: {
-    email: process.env.TEST_ULTRA_TIER_USER || "ultra@hackerai.com",
-    tier: "ultra",
-  },
-};
+const TEST_USERS = getTestUsersRecord();
 
 async function getUserId(email: string): Promise<string | null> {
   const workos = new WorkOS(process.env.WORKOS_API_KEY, {
@@ -69,7 +57,7 @@ async function getUserId(email: string): Promise<string | null> {
 }
 
 async function resetRateLimitForUser(
-  user: TestUser,
+  user: TestUserTier,
   userEmail: string,
 ): Promise<void> {
   if (!REDIS_URL || !REDIS_TOKEN) {
@@ -130,7 +118,7 @@ async function resetAllTestUsers(): Promise<void> {
   console.log("\n🔄 Resetting rate limits for all test users...\n");
 
   for (const [user, { email }] of Object.entries(TEST_USERS)) {
-    await resetRateLimitForUser(user as TestUser, email);
+    await resetRateLimitForUser(user as TestUserTier, email);
     console.log();
   }
 
@@ -170,9 +158,9 @@ Examples:
   pnpm rate-limit:reset --all
 
 Test Users:
-  free   -> free@hackerai.com
-  pro    -> pro@hackerai.com
-  ultra  -> ultra@hackerai.com
+  free   -> ${TEST_USERS.free.email}
+  pro    -> ${TEST_USERS.pro.email}
+  ultra  -> ${TEST_USERS.ultra.email}
 
 Note: This script automatically looks up user IDs from WorkOS
       and deletes all rate limit keys for the specified user.
@@ -195,7 +183,7 @@ Note: This script automatically looks up user IDs from WorkOS
   }
 
   // Parse user argument
-  const user = args[0] as TestUser;
+  const user = args[0] as TestUserTier;
 
   // Validate user
   if (!TEST_USERS[user]) {
