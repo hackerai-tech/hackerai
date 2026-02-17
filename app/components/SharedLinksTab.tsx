@@ -20,9 +20,9 @@ import { Copy, Trash2, ExternalLink, Share2 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 const SharedLinksTab = () => {
-  const sharedChats = useQuery(api.chats.getUserSharedChats);
-  const unshareChat = useMutation(api.chats.unshareChat);
-  const unshareAllChats = useMutation(api.chats.unshareAllChats);
+  const sharedChats = useQuery(api.sharedChats.getUserSharedChats);
+  const unshareChat = useMutation(api.sharedChats.unshareChat);
+  const unshareAllChats = useMutation(api.sharedChats.unshareAllChats);
 
   const [showUnshareAll, setShowUnshareAll] = useState(false);
   const [isUnsharingAll, setIsUnsharingAll] = useState(false);

@@ -1,7 +1,7 @@
 import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 
 // Note: Keep in sync with VALID_NOTE_CATEGORIES in types/chat.ts
 const VALID_CATEGORIES = [

@@ -17,7 +17,7 @@ import type {
   ProcessFileOptions,
 } from "../types/file";
 import { Id } from "./_generated/dataModel";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { MAX_TOKENS_FILE } from "../lib/token-utils";
 

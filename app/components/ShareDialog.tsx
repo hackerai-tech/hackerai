@@ -42,8 +42,8 @@ export const ShareDialog = ({
   const [error, setError] = useState<string>("");
   const [copied, setCopied] = useState(false);
 
-  const shareChat = useMutation(api.chats.shareChat);
-  const updateShareDate = useMutation(api.chats.updateShareDate);
+  const shareChat = useMutation(api.sharedChats.shareChat);
+  const updateShareDate = useMutation(api.sharedChats.updateShareDate);
 
   // Fetch preview messages for the dialog
   const previewMessages = useQuery(

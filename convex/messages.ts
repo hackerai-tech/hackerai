@@ -3,7 +3,7 @@ import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 
 /**

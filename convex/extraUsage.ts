@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v } from "convex/values";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 
 // =============================================================================

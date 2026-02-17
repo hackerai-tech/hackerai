@@ -1,12 +1,7 @@
 import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
-
-export function validateServiceKey(serviceKey: string): void {
-  if (serviceKey !== process.env.CONVEX_SERVICE_ROLE_KEY) {
-    throw new Error("Unauthorized: Invalid service key");
-  }
-}
+import { validateServiceKey } from "./lib/utils";
 
 /**
  * Start (or refresh) a temporary stream coordination row.

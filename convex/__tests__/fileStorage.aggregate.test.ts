@@ -32,7 +32,7 @@ jest.mock("convex/values", () => ({
     }
   },
 }));
-jest.mock("../chats", () => ({
+jest.mock("../lib/utils", () => ({
   validateServiceKey: jest.fn(),
 }));
 jest.mock("../../lib/utils/file-utils", () => ({

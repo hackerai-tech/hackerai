@@ -10,7 +10,7 @@ jest.mock("../_generated/server", () => ({
 }));
 
 // Mock chats module to avoid circular dependency
-jest.mock("../chats", () => ({
+jest.mock("../lib/utils", () => ({
   validateServiceKey: jest.fn(),
 }));
 
@@ -36,7 +36,7 @@ describe("s3Actions", () => {
     jest.clearAllMocks();
 
     // Reset validateServiceKey mock to no-op
-    const { validateServiceKey } = await import("../chats");
+    const { validateServiceKey } = await import("../lib/utils");
     const mockValidateServiceKey = validateServiceKey as jest.MockedFunction<
       typeof validateServiceKey
     >;
@@ -1226,7 +1226,7 @@ describe("s3Actions", () => {
   describe("getFileUrlsByFileIdsAction", () => {
     it("should generate URLs for multiple S3 files using service key", async () => {
       const { generateS3DownloadUrl } = await import("../s3Utils");
-      const { validateServiceKey } = await import("../chats");
+      const { validateServiceKey } = await import("../lib/utils");
       const mockGenerateS3DownloadUrl =
         generateS3DownloadUrl as jest.MockedFunction<
           typeof generateS3DownloadUrl
@@ -1382,7 +1382,7 @@ describe("s3Actions", () => {
     });
 
     it("should throw error for invalid service key", async () => {
-      const { validateServiceKey } = await import("../chats");
+      const { validateServiceKey } = await import("../lib/utils");
       const mockValidateServiceKey = validateServiceKey as jest.MockedFunction<
         typeof validateServiceKey
       >;

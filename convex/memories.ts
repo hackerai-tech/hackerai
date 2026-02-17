@@ -1,6 +1,6 @@
 import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 
 /**
  * Get memories for backend processing (with service key)

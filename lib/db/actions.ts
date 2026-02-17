@@ -501,7 +501,7 @@ export async function startStream({
   streamId: string;
 }) {
   try {
-    await convex.mutation(api.chats.startStream, {
+    await convex.mutation(api.chatStreams.startStream, {
       serviceKey,
       chatId,
       streamId,
@@ -514,7 +514,7 @@ export async function startStream({
 
 export async function prepareForNewStream({ chatId }: { chatId: string }) {
   try {
-    await convex.mutation(api.chats.prepareForNewStream, {
+    await convex.mutation(api.chatStreams.prepareForNewStream, {
       serviceKey,
       chatId,
     });
@@ -533,7 +533,7 @@ export async function clearActiveTriggerRunIdFromBackend({
   chatId: string;
 }) {
   try {
-    await convex.mutation(api.chats.clearActiveTriggerRunIdFromBackend, {
+    await convex.mutation(api.chatStreams.clearActiveTriggerRunIdFromBackend, {
       serviceKey,
       chatId,
     });
@@ -545,7 +545,7 @@ export async function clearActiveTriggerRunIdFromBackend({
 
 export async function getCancellationStatus({ chatId }: { chatId: string }) {
   try {
-    const status = await convex.query(api.chats.getCancellationStatus, {
+    const status = await convex.query(api.chatStreams.getCancellationStatus, {
       serviceKey,
       chatId,
     });
