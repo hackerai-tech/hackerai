@@ -4,7 +4,7 @@ import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
 export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_PAID = 100000;
+export const MAX_TOKENS_PAID = 128000;
 /**
  * Maximum total tokens allowed across all files
  */
