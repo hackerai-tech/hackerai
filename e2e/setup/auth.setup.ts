@@ -1,5 +1,10 @@
 import { test as setup } from "@playwright/test";
 import { authenticateUser, TEST_USERS } from "../fixtures/auth";
+import { config } from "dotenv";
+import { resolve } from "path";
+
+// Load .env.local
+config({ path: resolve(process.cwd(), ".env.e2e") });
 
 const authFiles = {
   free: "e2e/.auth/free.json",

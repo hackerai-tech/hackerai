@@ -1105,6 +1105,97 @@ export const deleteAllChats = mutation({
 });
 
 /**
+ * Delete all chats for a given user (service key only).
+ * Used by scripts for test hygiene (e.g. after e2e runs).
+ */
+export const deleteAllChatsForUser = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const userChats = await ctx.db
+      .query("chats")
+      .withIndex("by_user_and_updated", (q) => q.eq("user_id", args.userId))
+      .collect();
+
+    for (const chat of userChats) {
+      const messages = await ctx.db
+        .query("messages")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+        .collect();
+
+      for (const message of messages) {
+        if (!message.source_message_id && message.file_ids?.length) {
+          for (const storageId of message.file_ids) {
+            try {
+              const file = await ctx.db.get(storageId);
+              if (file) {
+                if (file.s3_key) {
+                  await ctx.scheduler.runAfter(
+                    0,
+                    internal.s3Cleanup.deleteS3ObjectAction,
+                    { s3Key: file.s3_key },
+                  );
+                }
+                if (file.storage_id) {
+                  await ctx.storage.delete(file.storage_id);
+                }
+                await fileCountAggregate.deleteIfExists(ctx, file);
+                await ctx.db.delete(file._id);
+              }
+            } catch (error) {
+              console.error(`Failed to delete file ${storageId}:`, error);
+            }
+          }
+        }
+        if (message.feedback_id) {
+          try {
+            await ctx.db.delete(message.feedback_id);
+          } catch (error) {
+            console.error(
+              `Failed to delete feedback ${message.feedback_id}:`,
+              error,
+            );
+          }
+        }
+        await ctx.db.delete(message._id);
+      }
+
+      if (chat.latest_summary_id) {
+        try {
+          await ctx.db.delete(chat.latest_summary_id);
+        } catch (error) {
+          console.error(
+            `Failed to delete summary ${chat.latest_summary_id}:`,
+            error,
+          );
+        }
+      }
+
+      const summaries = await ctx.db
+        .query("chat_summaries")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+        .collect();
+      for (const summary of summaries) {
+        try {
+          await ctx.db.delete(summary._id);
+        } catch (error) {
+          console.error(`Failed to delete summary ${summary._id}:`, error);
+        }
+      }
+
+      await ctx.db.delete(chat._id);
+    }
+
+    return null;
+  },
+});
+
+/**
  * Save conversation summary for a chat (backend only, agent mode)
  * Optimized: stores summary in separate table and references ID in chat
  */

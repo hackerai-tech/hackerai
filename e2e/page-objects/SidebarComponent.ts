@@ -10,10 +10,6 @@ export class SidebarComponent {
     this.sidebarToggle = page.getByTestId("sidebar-toggle");
   }
 
-  async getSubscriptionBadge(): Promise<Locator> {
-    return this.subscriptionBadge;
-  }
-
   async expandIfCollapsed(): Promise<void> {
     const badgeVisible = await this.subscriptionBadge
       .isVisible()
@@ -23,6 +19,15 @@ export class SidebarComponent {
       await this.sidebarToggle.click();
       await expect(this.subscriptionBadge).toBeVisible();
     }
+  }
+
+  /**
+   * Collapse the sidebar by clicking the toggle (when expanded).
+   * Use for tests that need to close then reopen the sidebar.
+   */
+  async collapse(): Promise<void> {
+    await expect(this.sidebarToggle).toBeVisible({ timeout: TIMEOUTS.MEDIUM });
+    await this.sidebarToggle.click();
   }
 
   async getSubscriptionTier(): Promise<string> {
@@ -43,22 +48,6 @@ export class SidebarComponent {
   }
 
   /**
-   * Check if a chat with the given title exists in the sidebar
-   */
-  async hasChatWithTitle(
-    title: string,
-    timeout: number = TIMEOUTS.MEDIUM,
-  ): Promise<boolean> {
-    try {
-      const chatItem = await this.findChatByTitle(title);
-      await chatItem.waitFor({ state: "visible", timeout });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * Verify that a chat with the given title appears in the sidebar
    */
   async expectChatWithTitle(
@@ -71,10 +60,54 @@ export class SidebarComponent {
 
   /**
    * Navigate to a chat by clicking its sidebar item.
+   * Uses .first() when multiple elements match (e.g. same chat in pinned + list).
+   * Scrolls the item into view so the visible instance is clicked.
    */
   async clickChatByTitle(title: string): Promise<void> {
-    const chatItem = await this.findChatByTitle(title);
+    const chatItem = (await this.findChatByTitle(title)).first();
+    await chatItem.scrollIntoViewIfNeeded();
     await chatItem.click();
+  }
+
+  /**
+   * Navigate to a chat by clicking the sidebar item with the given chat ID.
+   * Use when multiple chats share the same title and you need the exact chat (e.g. from URL).
+   */
+  async clickChatById(chatId: string): Promise<void> {
+    const chatItem = this.page.getByTestId(`chat-item-${chatId}`).first();
+    await chatItem.scrollIntoViewIfNeeded();
+    await chatItem.click();
+  }
+
+  /**
+   * Find the sidebar menu item that navigates to the given chat URL and click it.
+   * Uses the URL to resolve the chat ID and clicks the item with matching test ID.
+   */
+  async clickChatByUrl(url: string): Promise<void> {
+    const chatId = new URL(url).pathname.replace(/^\/c\//, "");
+    await this.clickChatById(chatId);
+  }
+
+  /**
+   * Verify that a chat with the given ID appears in the sidebar.
+   */
+  async expectChatWithId(
+    chatId: string,
+    timeout: number = TIMEOUTS.MEDIUM,
+  ): Promise<void> {
+    const chatItem = this.page.getByTestId(`chat-item-${chatId}`).first();
+    await expect(chatItem).toBeVisible({ timeout });
+  }
+
+  /**
+   * Get the visible title of a sidebar chat row by its chat ID (from aria-label).
+   */
+  async getChatTitleById(chatId: string): Promise<string> {
+    const chatItem = this.page.getByTestId(`chat-item-${chatId}`).first();
+    const label = await chatItem.getAttribute("aria-label");
+    const prefix = "Open chat: ";
+    if (!label?.startsWith(prefix)) return label ?? "";
+    return label.slice(prefix.length);
   }
 
   /**
@@ -93,11 +126,43 @@ export class SidebarComponent {
   }
 
   /**
+   * Wait for the sidebar chat list to finish loading after expand.
+   * Use after expandIfCollapsed() when the list was previously collapsed (unmounted),
+   * so the list has time to mount and load before e.g. getChatCount().
+   */
+  async waitForChatListReady(timeout: number = TIMEOUTS.MEDIUM): Promise<void> {
+    await Promise.race([
+      this.page
+        .locator('[role="button"][aria-label^="Open chat:"]')
+        .first()
+        .waitFor({ state: "visible", timeout }),
+      this.page
+        .getByTestId("sidebar-chat-empty")
+        .waitFor({ state: "visible", timeout }),
+    ]);
+  }
+
+  /**
    * Open the chat options dropdown menu for a chat by title.
    * Waits for the menu to be visible.
    */
   async openChatOptionsByTitle(title: string): Promise<void> {
     const chatRow = await this.findChatByTitle(title);
+    const optionsTrigger = chatRow.getByRole("button", {
+      name: "Open conversation options",
+    });
+    await optionsTrigger.click();
+    await expect(this.page.getByRole("menu")).toBeVisible({
+      timeout: TIMEOUTS.SHORT,
+    });
+  }
+
+  /**
+   * Open the chat options dropdown menu for a chat by ID.
+   * Use when the title may change; finds the sidebar item by test ID.
+   */
+  async openChatOptionsById(chatId: string): Promise<void> {
+    const chatRow = this.page.getByTestId(`chat-item-${chatId}`).first();
     const optionsTrigger = chatRow.getByRole("button", {
       name: "Open conversation options",
     });

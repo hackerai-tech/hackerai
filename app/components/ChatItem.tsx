@@ -288,6 +288,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       role="button"
       tabIndex={0}
       aria-label={`Open chat: ${displayTitle}`}
+      data-testid={`chat-item-${id}`}
     >
       <div
         className={`mr-2 min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-sm font-medium ${

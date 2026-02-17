@@ -27,7 +27,8 @@ import { resolve } from "path";
 import { Redis } from "@upstash/redis";
 import { WorkOS } from "@workos-inc/node";
 
-// Load .env.local
+// Load .env.e2e first so TEST_* can override, then .env.local
+config({ path: resolve(process.cwd(), ".env.e2e") });
 config({ path: resolve(process.cwd(), ".env.local") });
 
 const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
@@ -36,9 +37,18 @@ const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 type TestUser = "free" | "pro" | "ultra";
 
 const TEST_USERS: Record<TestUser, { email: string; tier: string }> = {
-  free: { email: "free@hackerai.com", tier: "free" },
-  pro: { email: "pro@hackerai.com", tier: "pro" },
-  ultra: { email: "ultra@hackerai.com", tier: "ultra" },
+  free: {
+    email: process.env.TEST_FREE_TIER_USER || "free@hackerai.com",
+    tier: "free",
+  },
+  pro: {
+    email: process.env.TEST_PRO_TIER_USER || "pro@hackerai.com",
+    tier: "pro",
+  },
+  ultra: {
+    email: process.env.TEST_ULTRA_TIER_USER || "ultra@hackerai.com",
+    tier: "ultra",
+  },
 };
 
 async function getUserId(email: string): Promise<string | null> {
