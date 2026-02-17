@@ -4,11 +4,12 @@ import {
   sendAndWaitForResponse,
   attachTestFile,
 } from "./helpers/test-helpers";
+import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS, TEST_DATA } from "./constants";
 
 test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
   test.describe("Pro Tier", () => {
-    test.use({ storageState: "e2e/.auth/pro.json" });
+    test.use({ storageState: AUTH_STORAGE_PATHS.pro });
 
     test("should generate markdown from image in Agent mode", async ({
       page,
@@ -110,7 +111,7 @@ test.describe("Agent Mode Tests - Pro and Ultra Tiers", () => {
   });
 
   test.describe("Ultra Tier", () => {
-    test.use({ storageState: "e2e/.auth/ultra.json" });
+    test.use({ storageState: AUTH_STORAGE_PATHS.ultra });
 
     test("should generate markdown from image in Agent mode", async ({
       page,

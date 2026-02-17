@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS } from "./constants";
 import { SidebarComponent } from "./page-objects/SidebarComponent";
 import { ChatComponent } from "@/e2e/page-objects";
@@ -11,12 +12,12 @@ const SHARED_CHAT_NAMES = [
 ];
 
 test.describe("Pinned Chats", () => {
-  test.use({ storageState: "e2e/.auth/free.json" });
+  test.use({ storageState: AUTH_STORAGE_PATHS.free });
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(TIMEOUTS.LONG);
     const context = await browser.newContext({
-      storageState: "e2e/.auth/free.json",
+      storageState: AUTH_STORAGE_PATHS.free,
     });
     const page = await context.newPage();
     await page.goto("/");

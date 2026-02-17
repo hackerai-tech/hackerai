@@ -11,6 +11,7 @@ import {
 } from "./helpers/test-helpers";
 import { ChatComponent } from "./page-objects/ChatComponent";
 import { SidebarComponent } from "./page-objects/SidebarComponent";
+import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS, TEST_DATA } from "./constants";
 import { getTestUsersRecord } from "../scripts/test-users-config";
 
@@ -47,7 +48,7 @@ async function deleteFreeUserChats(): Promise<void> {
  * See e2e/docs/chat-switching-test-plan.md for the full numbered list of cases.
  */
 test.describe("Chat switching", () => {
-  test.use({ storageState: "e2e/.auth/pro.json" });
+  test.use({ storageState: AUTH_STORAGE_PATHS.pro });
 
   test.afterAll(async () => {
     await deleteFreeUserChats();
