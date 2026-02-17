@@ -145,8 +145,21 @@ If you are generating files:
           });
         }
 
+        // Bail early if sandbox was already marked unavailable by any tool
+        if (sandboxManager.isSandboxUnavailable()) {
+          return {
+            result: {
+              output: "",
+              exitCode: 1,
+              error:
+                "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+            },
+          };
+        }
+
         try {
           await waitForSandboxReady(sandbox, 5, abortSignal);
+          sandboxManager.resetHealthFailures();
         } catch (healthError) {
           // If aborted, don't retry - propagate the abort
           if (
@@ -154,6 +167,21 @@ If you are generating files:
             healthError.name === "AbortError"
           ) {
             throw healthError;
+          }
+
+          const exceeded = sandboxManager.recordHealthFailure();
+          if (exceeded) {
+            console.error(
+              "[Terminal Command] Sandbox health check failed too many times, marking unavailable",
+            );
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error:
+                  "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+              },
+            };
           }
 
           // Sandbox health check failed - force recreation by resetting the cached instance
@@ -166,7 +194,26 @@ If you are generating files:
           const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
 
           // Verify the fresh sandbox is ready
-          await waitForSandboxReady(freshSandbox, 5, abortSignal);
+          try {
+            await waitForSandboxReady(freshSandbox, 5, abortSignal);
+            sandboxManager.resetHealthFailures();
+          } catch (freshHealthError) {
+            if (
+              freshHealthError instanceof DOMException &&
+              freshHealthError.name === "AbortError"
+            ) {
+              throw freshHealthError;
+            }
+            sandboxManager.recordHealthFailure();
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error:
+                  "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
+              },
+            };
+          }
 
           return executeCommand(freshSandbox);
         }

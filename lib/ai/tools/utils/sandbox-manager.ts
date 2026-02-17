@@ -3,8 +3,12 @@ import type { SandboxInfo, SandboxManager, SandboxType } from "@/types";
 import { ensureSandboxConnection } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 
+const MAX_SANDBOX_HEALTH_FAILURES = 3;
+
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: Sandbox | null = null;
+  private healthFailureCount = 0;
+  private sandboxUnavailable = false;
 
   constructor(
     private userID: string,
@@ -12,6 +16,23 @@ export class DefaultSandboxManager implements SandboxManager {
     initialSandbox?: Sandbox | null,
   ) {
     this.sandbox = initialSandbox || null;
+  }
+
+  recordHealthFailure(): boolean {
+    this.healthFailureCount++;
+    if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
+      this.sandboxUnavailable = true;
+    }
+    return this.sandboxUnavailable;
+  }
+
+  resetHealthFailures(): void {
+    this.healthFailureCount = 0;
+    this.sandboxUnavailable = false;
+  }
+
+  isSandboxUnavailable(): boolean {
+    return this.sandboxUnavailable;
   }
 
   getSandboxInfo(): SandboxInfo | null {
