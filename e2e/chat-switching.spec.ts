@@ -15,7 +15,7 @@ import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS, TEST_DATA } from "./constants";
 import { getTestUsersRecord } from "../scripts/test-users-config";
 
-async function deleteFreeUserChats(): Promise<void> {
+async function deleteTestUserChats(): Promise<void> {
   dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
   dotenv.config({ path: path.join(process.cwd(), ".env.local") });
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -51,7 +51,7 @@ test.describe("Chat switching", () => {
   test.use({ storageState: AUTH_STORAGE_PATHS.pro });
 
   test.afterAll(async () => {
-    await deleteFreeUserChats();
+    await deleteTestUserChats();
   });
 
   test("Switch from chat A to chat B via sidebar – URL and content update", async ({

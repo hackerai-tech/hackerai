@@ -45,9 +45,3 @@ export const TEST_DATA = {
     MATH_NEXT: "What is 3+3?",
   },
 } as const;
-
-/** Prefix for chat-switching test chat titles (idempotency). */
-export const CHAT_SWITCHING_PREFIX = "Switch-";
-
-/** Page size for message pagination (used in test 10). */
-export const PAGINATION_PAGE_SIZE = 28;

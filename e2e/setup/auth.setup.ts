@@ -3,7 +3,7 @@ import { authenticateUser, TEST_USERS } from "../fixtures/auth";
 import { config } from "dotenv";
 import { resolve } from "path";
 
-// Load .env.local
+// Load .env.e2e
 config({ path: resolve(process.cwd(), ".env.e2e") });
 
 setup("authenticate free tier", async ({ page }) => {
