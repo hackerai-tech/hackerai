@@ -168,7 +168,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, [chatMode]);
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
-    chatSidebarStorage.get(isMobile),
+    chatSidebarStorage.get(isMobile ?? false),
   );
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
@@ -256,7 +256,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     // Save state on desktop
-    chatSidebarStorage.save(chatSidebarOpen, isMobile);
+    chatSidebarStorage.save(chatSidebarOpen, isMobile ?? false);
 
     // Close sidebar when transitioning from desktop to mobile
     if (!prevIsMobile.current && isMobile && chatSidebarOpen) {

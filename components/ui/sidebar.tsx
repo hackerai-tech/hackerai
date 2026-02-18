@@ -71,7 +71,7 @@ function SidebarProvider({
 
   // Internal sidebar state - mobile always false, desktop from localStorage
   const [_open, _setOpen] = React.useState<boolean>(() => {
-    const stored = mainSidebarStorage.get(isMobile);
+    const stored = mainSidebarStorage.get(isMobile ?? false);
     return stored ?? defaultOpen;
   });
   const open = openProp ?? _open;
@@ -85,8 +85,8 @@ function SidebarProvider({
       }
 
       // Persist state on desktop only
-      if (!isMobile && typeof window !== "undefined") {
-        mainSidebarStorage.save(openState, isMobile);
+      if (isMobile === false && typeof window !== "undefined") {
+        mainSidebarStorage.save(openState, false);
         // Keep cookie for backward compatibility
         try {
           document.cookie = `${STORAGE_KEYS.MAIN_SIDEBAR}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`;
@@ -130,7 +130,7 @@ function SidebarProvider({
       state,
       open,
       setOpen,
-      isMobile,
+      isMobile: isMobile ?? false,
       openMobile,
       setOpenMobile,
       toggleSidebar,
@@ -656,10 +656,12 @@ function SidebarMenuSkeleton({
 }: React.ComponentProps<"div"> & {
   showIcon?: boolean;
 }) {
-  // Random width between 50 to 90%.
+  // Deterministic width between 50-90% derived from useId for visual variety
+  const id = React.useId();
   const width = React.useMemo(() => {
-    return `${Math.floor(Math.random() * 40) + 50}%`;
-  }, []);
+    const hash = id.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0);
+    return `${50 + (Math.abs(hash) % 40)}%`;
+  }, [id]);
 
   return (
     <div

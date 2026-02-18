@@ -67,7 +67,7 @@ const DesktopSidebarContent: FC<{
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>
-            {/* Always render so subscription stays active; hide when collapsed */}
+            {/* Subscription stays active in MainSidebar; only render list when expanded */}
             {!isCollapsed && <ChatListContent chatListData={chatListData} />}
           </SidebarGroupContent>
         </SidebarGroup>
@@ -122,7 +122,7 @@ const MainSidebar: FC<{
 
   return (
     <DesktopSidebarContent
-      isMobile={isMobile}
+      isMobile={isMobile ?? false}
       handleCloseSidebar={handleCloseSidebar}
       chatListData={chatListData}
     />
