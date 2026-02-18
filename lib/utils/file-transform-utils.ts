@@ -181,11 +181,12 @@ const applyModeSpecificTransforms = async (
   messages: UIMessage[],
   mode: ChatMode,
   sandboxFiles: SandboxFile[],
+  uploadBasePath?: string,
 ) => {
   const fileIds = extractAllFileIdsFromMessages(messages);
 
   if (mode === "agent") {
-    collectSandboxFiles(messages, sandboxFiles);
+    collectSandboxFiles(messages, sandboxFiles, uploadBasePath);
     removeNonMediaFileParts(messages);
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
@@ -216,11 +217,13 @@ const applyModeSpecificTransforms = async (
  *
  * @param messages - Messages to process
  * @param mode - Chat mode ("ask" or "agent")
+ * @param uploadBasePath - Override for agent mode (/home/user/upload or /tmp/hackerai-upload for local dangerous)
  * @returns Processed messages with file metadata and sandbox files for upload
  */
 export const processMessageFiles = async (
   messages: UIMessage[],
   mode: ChatMode = "ask",
+  uploadBasePath?: string,
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
@@ -245,7 +248,12 @@ export const processMessageFiles = async (
     await applyUrlsToFileParts(updatedMessages, files, mode);
   }
 
-  await applyModeSpecificTransforms(updatedMessages, mode, sandboxFiles);
+  await applyModeSpecificTransforms(
+    updatedMessages,
+    mode,
+    sandboxFiles,
+    uploadBasePath,
+  );
 
   return {
     messages: updatedMessages,

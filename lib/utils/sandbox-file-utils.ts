@@ -1,11 +1,23 @@
 import "server-only";
 
 import { UIMessage } from "ai";
+import type { SandboxPreference } from "@/types";
 
 export type SandboxFile = {
   url: string;
   localPath: string;
 };
+
+/**
+ * E2B uses /home/user/upload; any local connection uses /tmp/hackerai-upload
+ * since the host machine may not have /home/user (e.g. macOS in dangerous mode).
+ */
+export const getUploadBasePath = (
+  sandboxPreference: SandboxPreference | undefined,
+): string =>
+  sandboxPreference === "e2b" || !sandboxPreference
+    ? "/home/user/upload"
+    : "/tmp/hackerai-upload";
 
 const getLastUserMessageIndex = (messages: UIMessage[]): number => {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -40,6 +52,7 @@ const sanitizeFilenameForTerminal = (filename: string): string => {
 export const collectSandboxFiles = (
   updatedMessages: UIMessage[],
   sandboxFiles: SandboxFile[],
+  uploadBasePath: string = getUploadBasePath(undefined),
 ): void => {
   const lastUserIdx = getLastUserMessageIndex(updatedMessages);
   if (lastUserIdx === -1) return;
@@ -53,7 +66,7 @@ export const collectSandboxFiles = (
         const sanitizedName = sanitizeFilenameForTerminal(
           part.name || part.filename || "file",
         );
-        const localPath = `/home/user/upload/${sanitizedName}`;
+        const localPath = `${uploadBasePath}/${sanitizedName}`;
 
         if (i === lastUserIdx) {
           sandboxFiles.push({ url: part.url, localPath });
@@ -121,11 +134,9 @@ export const uploadSandboxFiles = async (
 
     // Download files directly from URLs in the sandbox
     await Promise.all(
-      sandboxFiles
-        .filter((file) => file.url && file.localPath)
-        .map((file) =>
-          downloadFileToSandbox(sandbox, file.url, file.localPath),
-        ),
+      sandboxFiles.map((file) =>
+        downloadFileToSandbox(sandbox, file.url, file.localPath),
+      ),
     );
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);

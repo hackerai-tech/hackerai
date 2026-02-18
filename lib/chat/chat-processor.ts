@@ -355,10 +355,12 @@ export async function processChatMessages({
   messages,
   mode,
   subscription,
+  uploadBasePath,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
   subscription: SubscriptionTier;
+  uploadBasePath?: string;
 }) {
   // Strip provider metadata from incoming messages early
   const cleanMessages = messages.map(stripProviderMetadata);
@@ -376,7 +378,7 @@ export async function processChatMessages({
     hasMediaFiles: containsMediaFiles,
     sandboxFiles,
     containsPdfFiles,
-  } = await processMessageFiles(messagesWithLimitedFiles, mode);
+  } = await processMessageFiles(messagesWithLimitedFiles, mode, uploadBasePath);
 
   // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini

@@ -339,6 +339,7 @@ System Environment:
 - OS: ${platformName} ${release} (${arch})
 - Hostname: ${hostname}
 - Mode: DANGEROUS (no Docker isolation)
+- User attachments: /tmp/hackerai-upload
 
 Security Warning:
 - File system operations affect the host directly
@@ -358,6 +359,7 @@ Container Environment:
 - Image: hackerai/sandbox (pre-built pentesting tools)
 - Mode: Docker container
 - Network: Host network (--network host)
+- User attachments: /tmp/hackerai-upload
 
 ${PREINSTALLED_PENTESTING_TOOLS}
 </sandbox_environment>`;
