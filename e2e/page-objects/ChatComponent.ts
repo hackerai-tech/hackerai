@@ -77,6 +77,7 @@ export class ChatComponent {
 
   async sendMessage(message: string): Promise<void> {
     await this.chatInput.fill(message);
+    await expect(this.sendButton).toBeEnabled({ timeout: TIMEOUTS.MEDIUM });
     await this.sendButton.click();
   }
 
@@ -162,16 +163,14 @@ export class ChatComponent {
       .waitFor({ state: "visible", timeout: TIMEOUTS.SHORT });
   }
 
-  async waitForMessageCount(
-    count: number,
+  async getMessageCount(
     timeout: number = TIMEOUTS.SHORT,
-  ): Promise<void> {
-    await expect(this.messages).toHaveCount(count, { timeout });
-  }
-
-  async getMessageCount(timeout: number = TIMEOUTS.SHORT): Promise<number> {
-    // Wait for at least one message to exist before counting
-    await this.messages.first().waitFor({ state: "visible", timeout });
+    options?: { allowEmpty?: boolean },
+  ): Promise<number> {
+    if (!options?.allowEmpty) {
+      // Wait for at least one message to exist before counting
+      await this.messages.first().waitFor({ state: "visible", timeout });
+    }
     return await this.messages.count();
   }
 
@@ -179,10 +178,6 @@ export class ChatComponent {
     const lastMessage = this.messages.last();
     await lastMessage.waitFor({ state: "visible", timeout });
     return await lastMessage.innerText();
-  }
-
-  async getMessageText(index: number): Promise<string> {
-    return await this.messages.nth(index).innerText();
   }
 
   async expectMessageContains(

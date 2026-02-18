@@ -144,10 +144,10 @@ export function useAgentLongStream(
   const cachedAiPartsRef = useRef<unknown[]>([]);
 
   const setActiveTriggerRunIdMutation = useMutation(
-    api.chats.setActiveTriggerRunId,
+    api.chatStreams.setActiveTriggerRunId,
   );
   const clearActiveTriggerRunIdMutation = useMutation(
-    api.chats.clearActiveTriggerRunId,
+    api.chatStreams.clearActiveTriggerRunId,
   );
 
   // Backfill: when already reconnected but Convex messages arrived after we set triggerRun,

@@ -78,7 +78,7 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isValidUUID = UUID_REGEX.test(shareId);
 
   const chat = useQuery(
-    api.chats.getSharedChat,
+    api.sharedChats.getSharedChat,
     isValidUUID ? { shareId } : "skip",
   );
   const messages = useQuery(

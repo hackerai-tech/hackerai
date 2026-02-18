@@ -4,7 +4,7 @@ import { action } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { Doc } from "./_generated/dataModel";
 

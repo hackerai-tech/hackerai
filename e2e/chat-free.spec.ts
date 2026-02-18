@@ -1,10 +1,11 @@
 import { test, expect } from "@playwright/test";
 import { setupChat, sendAndWaitForResponse } from "./helpers/test-helpers";
+import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS, TEST_DATA } from "./constants";
 import { SidebarComponent } from "./page-objects/SidebarComponent";
 
 test.describe("Free Tier Simple Chat Tests", () => {
-  test.use({ storageState: "e2e/.auth/free.json" });
+  test.use({ storageState: AUTH_STORAGE_PATHS.free });
 
   test("should handle multiple messages in conversation", async ({ page }) => {
     const chat = await setupChat(page);

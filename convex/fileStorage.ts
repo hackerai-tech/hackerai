@@ -6,7 +6,7 @@ import {
 } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";

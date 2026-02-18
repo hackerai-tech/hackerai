@@ -1,30 +1,15 @@
 import { Page, BrowserContext } from "@playwright/test";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import { TIMEOUTS } from "../constants";
-import { SubscriptionTier } from "@/types/chat";
+import {
+  getTestUsersRecord,
+  type TestUser as TestUserFromConfig,
+} from "../../scripts/test-users-config";
 
-export interface TestUser {
-  email: string;
-  password: string;
-  tier: SubscriptionTier;
-}
+export type TestUser = TestUserFromConfig;
 
-export const TEST_USERS: Record<"free" | "pro" | "ultra", TestUser> = {
-  free: {
-    email: process.env.TEST_FREE_TIER_USER || "free@hackerai.com",
-    password: process.env.TEST_FREE_TIER_PASSWORD || "l#m3Y4d)P^umI-E-",
-    tier: "free",
-  },
-  pro: {
-    email: process.env.TEST_PRO_TIER_USER || "pro@hackerai.com",
-    password: process.env.TEST_PRO_TIER_PASSWORD || "i.LY[^H6D=ZVeFgo",
-    tier: "pro",
-  },
-  ultra: {
-    email: process.env.TEST_ULTRA_TIER_USER || "ultra@hackerai.com",
-    password: process.env.TEST_ULTRA_TIER_PASSWORD || "U<hD`:b23JUa66g]",
-    tier: "ultra",
-  },
-};
+export const TEST_USERS = getTestUsersRecord();
 
 interface SessionCache {
   cookies: Array<{
@@ -42,6 +27,46 @@ interface SessionCache {
 
 const sessionCache = new Map<string, SessionCache>();
 const SESSION_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+
+/** Storage state file paths by tier (relative to project root). Use for setup and test.use(). */
+export const AUTH_STORAGE_PATHS = {
+  free: "e2e/.auth/free.json",
+  pro: "e2e/.auth/pro.json",
+  ultra: "e2e/.auth/ultra.json",
+} as const satisfies Record<"free" | "pro" | "ultra", string>;
+
+function getStorageStatePath(user: TestUser): string {
+  return join(process.cwd(), AUTH_STORAGE_PATHS[user.tier]);
+}
+
+interface PlaywrightStorageState {
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: "Strict" | "Lax" | "None";
+  }>;
+  origins?: Array<{
+    origin: string;
+    localStorage: Array<{ name: string; value: string }>;
+  }>;
+}
+
+async function tryLoadFromStorageStateFile(
+  page: Page,
+  storagePath: string,
+): Promise<boolean> {
+  const state: PlaywrightStorageState = JSON.parse(
+    readFileSync(storagePath, "utf-8"),
+  );
+  await page.context().addCookies(state.cookies);
+  await page.goto("/");
+  return true;
+}
 
 function isSessionValid(cache: SessionCache): boolean {
   const now = Date.now();
@@ -69,15 +94,33 @@ export async function authenticateUser(
 
   const cacheKey = user.email;
 
-  // Try to use cached session if available
   if (!skipCache) {
+    // 1. Try storage state file (e.g. e2e/.auth/pro.json) - survives process restarts
+    const storagePath = getStorageStatePath(user);
+    if (existsSync(storagePath)) {
+      const ok = await tryLoadFromStorageStateFile(page, storagePath);
+      if (ok) {
+        const cookies = await page.context().cookies();
+        const sessionCookies = cookies.filter(
+          (c) => c.name.startsWith("wos-") || c.name === "session",
+        );
+        if (sessionCookies.length > 0) {
+          sessionCache.set(cacheKey, {
+            cookies: sessionCookies,
+            timestamp: Date.now(),
+          });
+        }
+        await page.context().storageState({ path: storagePath });
+        return;
+      }
+    }
+
+    // 2. Try in-memory session cache (same process only)
     const cached = sessionCache.get(cacheKey);
     if (cached && isSessionValid(cached)) {
       await page.context().addCookies(cached.cookies);
       await page.goto("/");
 
-      // Verify session is still valid by checking for authenticated UI
-      // Check for both collapsed and expanded user menu button
       const userMenuButton = page
         .getByTestId("user-menu-button")
         .or(page.getByTestId("user-menu-button-collapsed"));
@@ -85,9 +128,9 @@ export async function authenticateUser(
         .isVisible({ timeout: TIMEOUTS.SHORT })
         .catch(() => false);
       if (isAuthenticated) {
+        await page.context().storageState({ path: getStorageStatePath(user) });
         return;
       }
-      // If verification failed, clear cache and proceed with login
       sessionCache.delete(cacheKey);
     }
   }
@@ -111,6 +154,7 @@ export async function authenticateUser(
         });
       }
 
+      await page.context().storageState({ path: getStorageStatePath(user) });
       return;
     } catch (error) {
       lastError = error as Error;

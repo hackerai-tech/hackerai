@@ -2,6 +2,7 @@ import { WorkOS } from "@workos-inc/node";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import chalk from "chalk";
+import { getTestUsers } from "./test-users-config";
 
 // Load environment variables from .env.e2e first, then .env.local
 dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
@@ -10,30 +11,6 @@ dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 const workos = new WorkOS(process.env.WORKOS_API_KEY, {
   clientId: process.env.WORKOS_CLIENT_ID,
 });
-
-interface TestUser {
-  email: string;
-  password: string;
-  tier: "free" | "pro" | "ultra";
-}
-
-const TEST_USERS: TestUser[] = [
-  {
-    email: process.env.TEST_FREE_TIER_USER || "free@hackerai.com",
-    password: process.env.TEST_FREE_TIER_PASSWORD || "hackerai123@",
-    tier: "free",
-  },
-  {
-    email: process.env.TEST_PRO_TIER_USER || "pro@hackerai.com",
-    password: process.env.TEST_PRO_TIER_PASSWORD || "hackerai123@",
-    tier: "pro",
-  },
-  {
-    email: process.env.TEST_ULTRA_TIER_USER || "ultra@hackerai.com",
-    password: process.env.TEST_ULTRA_TIER_PASSWORD || "hackerai123@",
-    tier: "ultra",
-  },
-];
 
 async function deleteTestUsers() {
   console.log(chalk.bold.red("\n🗑️  Deleting Test Users\n"));
@@ -47,7 +24,8 @@ async function deleteTestUsers() {
     process.exit(1);
   }
 
-  for (const testUser of TEST_USERS) {
+  const testUsers = getTestUsers();
+  for (const testUser of testUsers) {
     console.log(chalk.cyan(`\nDeleting ${testUser.email}...`));
 
     try {
@@ -84,7 +62,8 @@ async function resetPasswords() {
     process.exit(1);
   }
 
-  for (const testUser of TEST_USERS) {
+  const testUsers = getTestUsers();
+  for (const testUser of testUsers) {
     console.log(chalk.cyan(`\nResetting password for ${testUser.email}...`));
 
     try {
@@ -131,7 +110,8 @@ async function createTestUsers() {
   const existingUsers: Array<{ email: string; userId: string; tier: string }> =
     [];
 
-  for (const testUser of TEST_USERS) {
+  const testUsers = getTestUsers();
+  for (const testUser of testUsers) {
     console.log(
       chalk.cyan(
         `\nProcessing ${testUser.tier.toUpperCase()} tier user: ${testUser.email}`,
@@ -246,24 +226,19 @@ async function createTestUsers() {
   // Print next steps
   console.log(chalk.bold.blue("\n📝 Next Steps\n"));
 
+  const users = getTestUsers();
   console.log(
     "1. Ensure your " + chalk.bold(".env.e2e") + " file has these credentials:",
   );
   console.log();
-  console.log(chalk.cyan(`   TEST_FREE_TIER_USER=${TEST_USERS[0].email}`));
-  console.log(
-    chalk.cyan(`   TEST_FREE_TIER_PASSWORD=${TEST_USERS[0].password}`),
-  );
+  console.log(chalk.cyan(`   TEST_FREE_TIER_USER=${users[0].email}`));
+  console.log(chalk.cyan(`   TEST_FREE_TIER_PASSWORD=${users[0].password}`));
   console.log();
-  console.log(chalk.cyan(`   TEST_PRO_TIER_USER=${TEST_USERS[1].email}`));
-  console.log(
-    chalk.cyan(`   TEST_PRO_TIER_PASSWORD=${TEST_USERS[1].password}`),
-  );
+  console.log(chalk.cyan(`   TEST_PRO_TIER_USER=${users[1].email}`));
+  console.log(chalk.cyan(`   TEST_PRO_TIER_PASSWORD=${users[1].password}`));
   console.log();
-  console.log(chalk.cyan(`   TEST_ULTRA_TIER_USER=${TEST_USERS[2].email}`));
-  console.log(
-    chalk.cyan(`   TEST_ULTRA_TIER_PASSWORD=${TEST_USERS[2].password}`),
-  );
+  console.log(chalk.cyan(`   TEST_ULTRA_TIER_USER=${users[2].email}`));
+  console.log(chalk.cyan(`   TEST_ULTRA_TIER_PASSWORD=${users[2].password}`));
   console.log();
 
   console.log("\n2. Run verification script to verify all emails:");

@@ -1,6 +1,6 @@
 import { mutation, query, internalMutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
-import { validateServiceKey } from "./chats";
+import { validateServiceKey } from "./lib/utils";
 
 // ============================================================================
 // TOKEN MANAGEMENT

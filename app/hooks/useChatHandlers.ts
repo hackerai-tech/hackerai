@@ -78,7 +78,7 @@ export const useChatHandlers = ({
   const regenerateWithNewContent = useMutation(
     api.messages.regenerateWithNewContent,
   );
-  const cancelStreamMutation = useMutation(api.chats.cancelStreamFromClient);
+  const cancelStreamMutation = useMutation(api.chatStreams.cancelStreamFromClient);
   const cancelTempStreamMutation = useMutation(
     api.tempStreams.cancelTempStreamFromClient,
   );

@@ -2,19 +2,15 @@ import { WorkOS } from "@workos-inc/node";
 import * as dotenv from "dotenv";
 import * as path from "path";
 import chalk from "chalk";
+import { getTestUsers } from "./test-users-config";
 
-// Load environment variables from .env.local
+// Load environment variables from .env.e2e and .env.local
+dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
 dotenv.config({ path: path.join(process.cwd(), ".env.local") });
 
 const workos = new WorkOS(process.env.WORKOS_API_KEY, {
   clientId: process.env.WORKOS_CLIENT_ID,
 });
-
-const TEST_EMAILS = [
-  "free@hackerai.com",
-  "pro@hackerai.com",
-  "ultra@hackerai.com",
-];
 
 async function verifyTestUsers() {
   console.log(chalk.bold.blue("\n✉️  Verifying Test User Emails\n"));
@@ -30,8 +26,10 @@ async function verifyTestUsers() {
 
   const userIds: Array<{ email: string; id: string }> = [];
 
+  const testEmails = getTestUsers().map((u) => u.email);
+
   // First, get all user IDs
-  for (const email of TEST_EMAILS) {
+  for (const email of testEmails) {
     try {
       const usersList = await workos.userManagement.listUsers({
         email,

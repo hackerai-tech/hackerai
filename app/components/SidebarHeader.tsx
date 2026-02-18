@@ -182,6 +182,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
         <div className="flex items-center gap-2">
           {/* Show close button on mobile or desktop when expanded */}
           <Button
+            data-testid="sidebar-toggle"
             variant="ghost"
             size="sm"
             className="h-8 w-8 p-0"
