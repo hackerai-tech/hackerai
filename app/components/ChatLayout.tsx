@@ -26,7 +26,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
   );
 
   const handleOpenSettings = useCallback((tab?: string) => {
-    if (tab) setSettingsDialogTab(tab);
+    setSettingsDialogTab(tab ?? null);
     setSettingsDialogOpen(true);
   }, []);
 

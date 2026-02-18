@@ -40,15 +40,6 @@ const SettingsDialog = ({
 }: SettingsDialogProps) => {
   const [activeTab, setActiveTab] = useState("Personalization");
   const [prevOpen, setPrevOpen] = useState(false);
-
-  // Switch to initialTab when dialog opens (closed → open transition)
-  if (open && !prevOpen && initialTab) {
-    setActiveTab(initialTab);
-  }
-  if (open !== prevOpen) {
-    setPrevOpen(open);
-  }
-
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
   // const [showMemoriesDialog, setShowMemoriesDialog] = useState(false);
   const [showNotesDialog, setShowNotesDialog] = useState(false);
@@ -79,6 +70,19 @@ const SettingsDialog = ({
       : subscription !== "free"
         ? [...baseTabs, agentsTab, localSandboxTab, usageTab, accountTab]
         : [...baseTabs, accountTab];
+
+  // Switch to initialTab when dialog opens (closed → open transition)
+  if (
+    open &&
+    !prevOpen &&
+    initialTab &&
+    tabs.some((t) => t.id === initialTab)
+  ) {
+    setActiveTab(initialTab);
+  }
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+  }
 
   const handleCustomInstructions = () => {
     setShowCustomizeDialog(true);
