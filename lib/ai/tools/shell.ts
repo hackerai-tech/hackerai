@@ -42,7 +42,7 @@ export const createShell = (context: ToolContext) => {
     effectiveGuardrails,
   });
 
-  // Only health-check the sandbox once per chat context
+  // Only health-check the sandbox once per chat context (for E2B sandboxes)
   let healthChecked = false;
 
   return tool({
@@ -216,14 +216,36 @@ If you are generating files:
 
         const e2b = sandbox as Sandbox;
 
+        // Bail early if sandbox was already marked unavailable by any tool
+        if (sandboxManager.isSandboxUnavailable()) {
+          return {
+            output:
+              "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+            error: true,
+          };
+        }
+
         // Health-check the sandbox before first PTY creation
         if (action === "exec" && !healthChecked) {
           healthChecked = true;
           try {
             await waitForSandboxReady(sandbox, 5, abortSignal);
+            sandboxManager.resetHealthFailures();
           } catch (err) {
             if (err instanceof DOMException && err.name === "AbortError")
               throw err;
+
+            const exceeded = sandboxManager.recordHealthFailure();
+            if (exceeded) {
+              console.error(
+                "[Shell] Sandbox health check failed too many times, marking unavailable",
+              );
+              return {
+                output:
+                  "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+                error: true,
+              };
+            }
 
             console.warn("[Shell] Sandbox health check failed, recreating");
             sandboxManager.setSandbox(null as any);
@@ -241,7 +263,22 @@ If you are generating files:
                 abortSignal,
               );
             }
-            await waitForSandboxReady(fresh, 5, abortSignal);
+            try {
+              await waitForSandboxReady(fresh, 5, abortSignal);
+              sandboxManager.resetHealthFailures();
+            } catch (freshErr) {
+              if (
+                freshErr instanceof DOMException &&
+                freshErr.name === "AbortError"
+              )
+                throw freshErr;
+              sandboxManager.recordHealthFailure();
+              return {
+                output:
+                  "Sandbox recreation failed. The sandbox environment is not responding.",
+                error: true,
+              };
+            }
             return e2bHandlers.dispatch(
               fresh as Sandbox,
               action,

@@ -44,6 +44,8 @@ interface ConnectionInfo {
  * - Automatic fallback to E2B when local unavailable
  * - Dangerous mode (no Docker) with OS context for AI
  */
+const MAX_SANDBOX_HEALTH_FAILURES = 3;
+
 export class HybridSandboxManager implements SandboxManager {
   private sandbox: SandboxInstance | null = null;
   private isLocal = false;
@@ -53,6 +55,8 @@ export class HybridSandboxManager implements SandboxManager {
   private convex: ConvexHttpClient;
   private convexUrl: string;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
+  private healthFailureCount = 0;
+  private sandboxUnavailable = false;
 
   constructor(
     private userID: string,
@@ -68,6 +72,23 @@ export class HybridSandboxManager implements SandboxManager {
     }
     this.convexUrl = convexUrl;
     this.convex = new ConvexHttpClient(convexUrl);
+  }
+
+  recordHealthFailure(): boolean {
+    this.healthFailureCount++;
+    if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
+      this.sandboxUnavailable = true;
+    }
+    return this.sandboxUnavailable;
+  }
+
+  resetHealthFailures(): void {
+    this.healthFailureCount = 0;
+    this.sandboxUnavailable = false;
+  }
+
+  isSandboxUnavailable(): boolean {
+    return this.sandboxUnavailable;
   }
 
   /**

@@ -28,6 +28,12 @@ export interface SandboxManager {
   getSandboxInfo(): SandboxInfo | null;
   // Optional: only HybridSandboxManager implements this
   consumeFallbackInfo?(): SandboxFallbackInfo | null;
+  /** Track consecutive sandbox health failures across all tools. Returns true if the limit has been exceeded. */
+  recordHealthFailure(): boolean;
+  /** Reset the health failure counter (call on successful health check). */
+  resetHealthFailures(): void;
+  /** Check if the sandbox has been marked as permanently unavailable for this session. */
+  isSandboxUnavailable(): boolean;
 }
 
 export interface SandboxContext {

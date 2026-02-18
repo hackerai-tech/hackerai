@@ -5,6 +5,7 @@ import { randomUUID } from "crypto";
 import type { ToolContext } from "@/types";
 import { createTerminalHandler } from "@/lib/utils/terminal-executor";
 import { TIMEOUT_MESSAGE } from "@/lib/token-utils";
+import { saveTruncatedOutput } from "./utils/terminal-output-saver";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
 import { findProcessPid } from "./utils/pid-discovery";
@@ -145,8 +146,21 @@ If you are generating files:
           });
         }
 
+        // Bail early if sandbox was already marked unavailable by any tool
+        if (sandboxManager.isSandboxUnavailable()) {
+          return {
+            result: {
+              output: "",
+              exitCode: 1,
+              error:
+                "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+            },
+          };
+        }
+
         try {
           await waitForSandboxReady(sandbox, 5, abortSignal);
+          sandboxManager.resetHealthFailures();
         } catch (healthError) {
           // If aborted, don't retry - propagate the abort
           if (
@@ -154,6 +168,21 @@ If you are generating files:
             healthError.name === "AbortError"
           ) {
             throw healthError;
+          }
+
+          const exceeded = sandboxManager.recordHealthFailure();
+          if (exceeded) {
+            console.error(
+              "[Terminal Command] Sandbox health check failed too many times, marking unavailable",
+            );
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error:
+                  "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+              },
+            };
           }
 
           // Sandbox health check failed - force recreation by resetting the cached instance
@@ -166,7 +195,26 @@ If you are generating files:
           const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
 
           // Verify the fresh sandbox is ready
-          await waitForSandboxReady(freshSandbox, 5, abortSignal);
+          try {
+            await waitForSandboxReady(freshSandbox, 5, abortSignal);
+            sandboxManager.resetHealthFailures();
+          } catch (freshHealthError) {
+            if (
+              freshHealthError instanceof DOMException &&
+              freshHealthError.name === "AbortError"
+            ) {
+              throw freshHealthError;
+            }
+            sandboxManager.recordHealthFailure();
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error:
+                  "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
+              },
+            };
+          }
 
           return executeCommand(freshSandbox);
         }
@@ -259,7 +307,7 @@ If you are generating files:
             }
 
             handler = createTerminalHandler(
-              (output) => createTerminalWriter(output),
+              (output: string) => createTerminalWriter(output),
               {
                 timeoutSeconds: effectiveStreamTimeout,
                 onTimeout: async () => {
@@ -418,6 +466,19 @@ If you are generating files:
                     );
                   }
 
+                  // Save full output to file when truncated (show path at top so AI sees it first)
+                  let outputWithSaveInfo = finalResult.output || "";
+                  if (!is_background && handler) {
+                    const saveMsg = await saveTruncatedOutput({
+                      handler,
+                      sandbox: sandboxInstance,
+                      terminalWriter: createTerminalWriter,
+                    });
+                    if (saveMsg) {
+                      outputWithSaveInfo = saveMsg + "\n" + outputWithSaveInfo;
+                    }
+                  }
+
                   resolve({
                     result: is_background
                       ? {
@@ -426,12 +487,12 @@ If you are generating files:
                         }
                       : {
                           exitCode: 0,
-                          output: finalResult.output,
+                          output: outputWithSaveInfo,
                         },
                   });
                 }
               })
-              .catch((error) => {
+              .catch(async (error) => {
                 if (handler) {
                   handler.cleanup();
                 }
@@ -443,10 +504,25 @@ If you are generating files:
                     const finalResult = handler
                       ? handler.getResult(processId ?? undefined)
                       : { output: "" };
+
+                    // Save full output to file when truncated (show path at top so AI sees it first)
+                    let outputWithSaveInfo = finalResult.output || "";
+                    if (handler) {
+                      const saveMsg = await saveTruncatedOutput({
+                        handler,
+                        sandbox: sandboxInstance,
+                        terminalWriter: createTerminalWriter,
+                      });
+                      if (saveMsg) {
+                        outputWithSaveInfo =
+                          saveMsg + "\n" + outputWithSaveInfo;
+                      }
+                    }
+
                     resolve({
                       result: {
                         exitCode: error.exitCode,
-                        output: finalResult.output,
+                        output: outputWithSaveInfo,
                         error: error.message,
                       },
                     });

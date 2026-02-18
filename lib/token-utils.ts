@@ -4,7 +4,7 @@ import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
 export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_PAID = 100000;
+export const MAX_TOKENS_PAID = 128000;
 /**
  * Maximum total tokens allowed across all files
  */
@@ -25,11 +25,20 @@ export const TOOL_DEFAULT_MAX_TOKENS = 4096;
 export const TRUNCATION_MESSAGE =
   "\n\n[... OUTPUT TRUNCATED - middle content removed ...]\n\n";
 export const FILE_READ_TRUNCATION_MESSAGE =
-  "\n\n[Content truncated due to size limit. Use line ranges to read in chunks]";
+  "\n\n[Content truncated due to size limit. Use line ranges to read in chunks]\n\n";
 export const TIMEOUT_MESSAGE = (seconds: number, pid?: number) =>
   pid
     ? `\n\nCommand output paused after ${seconds} seconds. Command continues in background with PID: ${pid}`
     : `\n\nCommand output paused after ${seconds} seconds. Command continues in background.`;
+
+export const FULL_OUTPUT_SAVED_MESSAGE = (
+  filePath: string,
+  charCount: number,
+  capped?: boolean,
+) =>
+  capped
+    ? `\n[Output too large - first ${charCount} chars saved to: ${filePath}]`
+    : `\n[Full output (${charCount} chars) saved to: ${filePath}]`;
 
 /**
  * Count tokens for a single message part, excluding providerMetadata/callProviderMetadata
