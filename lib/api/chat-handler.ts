@@ -58,7 +58,10 @@ import {
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
+import {
+  uploadSandboxFiles,
+  getUploadBasePath,
+} from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
 import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
@@ -192,11 +195,16 @@ export const createChatHandler = (
           ? await checkRateLimit(userId, mode, subscription)
           : null;
 
+      const uploadBasePath = isAgentMode(mode)
+        ? getUploadBasePath(sandboxPreference)
+        : undefined;
+
       const { processedMessages, selectedModel, sandboxFiles } =
         await processChatMessages({
           messages: truncatedMessages,
           mode,
           subscription,
+          uploadBasePath,
         });
 
       // Validate that we have at least one message with content after processing
@@ -482,6 +490,7 @@ export const createChatHandler = (
                         fileTokens,
                         getTodoManager().getAllTodos(),
                         userStopSignal.signal,
+                        ensureSandbox,
                       );
 
                     if (needsSummarization) {

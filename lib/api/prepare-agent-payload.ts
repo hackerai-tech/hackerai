@@ -17,6 +17,7 @@ import {
 } from "@/lib/db/actions";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import { processChatMessages } from "@/lib/chat/chat-processor";
+import { getUploadBasePath } from "@/lib/utils/sandbox-file-utils";
 import {
   hasFileAttachments,
   countFileAttachments,
@@ -193,11 +194,14 @@ export async function prepareAgentPayload(
     });
   }
 
+  const uploadBasePath = getUploadBasePath(sandboxPreference);
+
   const { processedMessages, selectedModel, sandboxFiles } =
     await processChatMessages({
       messages: truncatedMessages,
       mode,
       subscription,
+      uploadBasePath,
     });
 
   if (!processedMessages || processedMessages.length === 0) {
