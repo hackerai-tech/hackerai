@@ -19,7 +19,7 @@ export async function saveFullOutputToFile(
       .replace(/[T]/g, "_")
       .replace(/[:]/g, "-")
       .replace(/\./, "_");
-    // e.g. 2026-02-17_16-54-34_442590
+    // e.g. 2026-02-17_16-54-34_442Z
 
     const dir = isE2BSandbox(sandbox)
       ? "/home/user/terminal_full_output"
