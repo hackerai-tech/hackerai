@@ -34,8 +34,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
-import { SettingsDialog } from "./SettingsDialog";
 import { clientLogout } from "@/lib/utils/logout";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 const NEXT_PUBLIC_HELP_CENTER_URL =
   process.env.NEXT_PUBLIC_HELP_CENTER_URL || "https://help.hackerai.co/en/";
@@ -94,7 +94,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { isCheckingProPlan, subscription } = useGlobalState();
   const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
-  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const isMobile = useIsMobile();
 
   if (!user) return null;
@@ -295,7 +294,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenuItem
             data-testid="settings-button"
-            onClick={() => setShowSettingsDialog(true)}
+            onClick={() => openSettingsDialog()}
             className="py-2.5"
           >
             <Settings className="mr-2.5 h-5 w-5 text-foreground" />
@@ -352,12 +351,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-
-      {/* Settings Dialog */}
-      <SettingsDialog
-        open={showSettingsDialog}
-        onOpenChange={setShowSettingsDialog}
-      />
 
       {/* Customize HackerAI Dialog */}
       <CustomizeHackerAIDialog

@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Terminal,
   Server,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -143,9 +144,20 @@ const LocalSandboxTab = () => {
   return (
     <div className="space-y-5">
       {/* Section Header */}
-      <div className="flex items-center gap-2 border-b pb-3">
-        <Server className="h-4 w-4 text-muted-foreground" />
-        <h3 className="text-sm font-semibold">Local Sandbox</h3>
+      <div className="flex items-center justify-between border-b pb-3">
+        <div className="flex items-center gap-2">
+          <Server className="h-4 w-4 text-muted-foreground" />
+          <h3 className="text-sm font-semibold">Local Sandbox</h3>
+        </div>
+        <a
+          href="https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <span>Learn more</span>
+          <ExternalLink className="h-3 w-3" />
+        </a>
       </div>
 
       {/* Active Connections */}
