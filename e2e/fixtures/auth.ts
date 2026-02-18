@@ -60,16 +60,12 @@ async function tryLoadFromStorageStateFile(
   page: Page,
   storagePath: string,
 ): Promise<boolean> {
-  try {
-    const state: PlaywrightStorageState = JSON.parse(
-      readFileSync(storagePath, "utf-8"),
-    );
-    await page.context().addCookies(state.cookies);
-    await page.goto("/");
-    return true;
-  } catch {
-    return false;
-  }
+  const state: PlaywrightStorageState = JSON.parse(
+    readFileSync(storagePath, "utf-8"),
+  );
+  await page.context().addCookies(state.cookies);
+  await page.goto("/");
+  return true;
 }
 
 function isSessionValid(cache: SessionCache): boolean {
@@ -104,26 +100,18 @@ export async function authenticateUser(
     if (existsSync(storagePath)) {
       const ok = await tryLoadFromStorageStateFile(page, storagePath);
       if (ok) {
-        const userMenuButton = page
-          .getByTestId("user-menu-button")
-          .or(page.getByTestId("user-menu-button-collapsed"));
-        const isAuthenticated = await userMenuButton
-          .isVisible({ timeout: TIMEOUTS.SHORT })
-          .catch(() => false);
-        if (isAuthenticated) {
-          const cookies = await page.context().cookies();
-          const sessionCookies = cookies.filter(
-            (c) => c.name.startsWith("wos-") || c.name === "session",
-          );
-          if (sessionCookies.length > 0) {
-            sessionCache.set(cacheKey, {
-              cookies: sessionCookies,
-              timestamp: Date.now(),
-            });
-          }
-          await page.context().storageState({ path: storagePath });
-          return;
+        const cookies = await page.context().cookies();
+        const sessionCookies = cookies.filter(
+          (c) => c.name.startsWith("wos-") || c.name === "session",
+        );
+        if (sessionCookies.length > 0) {
+          sessionCache.set(cacheKey, {
+            cookies: sessionCookies,
+            timestamp: Date.now(),
+          });
         }
+        await page.context().storageState({ path: storagePath });
+        return;
       }
     }
 
