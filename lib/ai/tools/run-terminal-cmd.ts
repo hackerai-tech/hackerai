@@ -253,8 +253,13 @@ If you are generating files:
               // from the killed process might trigger retries
               resolved = true;
 
-              // For foreground commands, attempt to discover PID if not already known
-              if (!processId && !is_background) {
+              // Try to get PID from execution object first (cheap, no shell call)
+              if (!processId && execution && (execution as any)?.pid) {
+                processId = (execution as any).pid;
+              }
+
+              // Fall back to PID discovery via pgrep/ps for any command type
+              if (!processId) {
                 processId = await findProcessPid(sandboxInstance, command);
               }
 
