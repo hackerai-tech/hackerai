@@ -232,4 +232,29 @@ export class SidebarComponent {
       timeout,
     });
   }
+
+  /**
+   * Open the chat options dropdown menu for a chat by URL.
+   * Extracts the chat ID from the URL and uses openChatOptionsById.
+   */
+  async openChatOptionsByUrl(url: string): Promise<void> {
+    const chatId = new URL(url).pathname.replace(/^\/c\//, "");
+    await this.openChatOptionsById(chatId);
+  }
+
+  /**
+   * Pin a chat by URL: open its options menu and click Pin.
+   */
+  async clickPinByUrl(url: string): Promise<void> {
+    await this.openChatOptionsByUrl(url);
+    await this.page.getByRole("menuitem", { name: "Pin" }).click();
+  }
+
+  /**
+   * Unpin a chat by URL: open its options menu and click Unpin.
+   */
+  async clickUnpinByUrl(url: string): Promise<void> {
+    await this.openChatOptionsByUrl(url);
+    await this.page.getByRole("menuitem", { name: "Unpin" }).click();
+  }
 }
