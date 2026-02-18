@@ -8,7 +8,7 @@ import {
   Laptop,
   AlertTriangle,
   ChevronDown,
-  Copy,
+  Settings,
 } from "lucide-react";
 import {
   Popover,
@@ -18,6 +18,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
 interface SandboxSelectorProps {
   value: string;
@@ -179,29 +180,20 @@ export function SandboxSelector({
             );
           })}
           {connections && connections.length === 0 && (
-            <div className="px-2 py-2 border-t mt-1 pt-2 space-y-2">
-              <div className="text-xs text-muted-foreground">
+            <div className="px-2 py-2 border-t mt-1 pt-2 space-y-1">
+              <div className="text-xs text-muted-foreground mb-2">
                 No local connections.
               </div>
-              <div className="flex gap-1.5">
-                <code className="flex-1 p-2 rounded-md font-mono text-xs bg-zinc-900 dark:bg-zinc-950 text-zinc-300 dark:text-zinc-400 overflow-x-auto">
-                  npx @hackerai/local@latest
-                </code>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  className="shrink-0 h-8 w-8"
-                  onClick={() => {
-                    navigator.clipboard.writeText("npx @hackerai/local@latest");
-                    toast.success("Command copied to clipboard");
-                  }}
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                </Button>
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Run this command to enable local execution.
-              </div>
+              <button
+                onClick={() => {
+                  setOpen(false);
+                  openSettingsDialog("Local Sandbox");
+                }}
+                className="w-full flex items-center gap-2 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
+              >
+                <Settings className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span>Set up in Settings</span>
+              </button>
             </div>
           )}
         </div>
