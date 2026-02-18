@@ -1,11 +1,13 @@
 import "server-only";
 
 import { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
-import { SubscriptionTier, ChatMode, Todo } from "@/types";
+import { v4 as uuidv4 } from "uuid";
+import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
 import {
   writeSummarizationStarted,
   writeSummarizationCompleted,
 } from "@/lib/utils/stream-writer-utils";
+import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
 import type { Id } from "@/convex/_generated/dataModel";
 
 import { MESSAGES_TO_KEEP_UNSUMMARIZED } from "./constants";
@@ -19,9 +21,61 @@ import {
   isSummaryMessage,
   extractSummaryText,
 } from "./helpers";
+import { formatTranscript } from "./transcript-formatter";
 import type { SummarizationResult } from "./helpers";
 
 export type { SummarizationResult } from "./helpers";
+
+export type EnsureSandbox = () => Promise<AnySandbox>;
+
+/**
+ * Builds the instructional notice appended to summaryText pointing the agent
+ * to the saved transcript file on the sandbox filesystem.
+ */
+const buildTranscriptNotice = (path: string): string => `
+
+Transcript location:
+   This is the full plain-text transcript of your past conversation with the user (pre- and post-summary): ${path}
+
+   If anything about the task or current state is unclear (missing context, ambiguous requirements, uncertain decisions, exact wording, IDs/paths, errors/logs, tool inputs/outputs), you should consult this transcript rather than guessing.
+
+   How to use it:
+   - Search first for relevant keywords (task name, filenames, IDs, errors, tool names).
+   - Then read a small window around the matching lines to reconstruct intent and state.
+   - Avoid reading linearly end-to-end; the file can be very large and some single lines (tool payloads/results) can be huge.
+
+   Format:
+   - Plain text with role labels ("user:", "A:")
+   - Tool calls: [Tool call] toolName with arguments
+   - Tool results: [Tool result] toolName
+   - Reasoning/thinking: [Thinking] ...
+   - Images/files: [Image] and [File: filename]`;
+
+/**
+ * Writes a plain-text transcript of the summarized messages to the sandbox.
+ * E2B (cloud) persists to ~/agent-transcripts/, local Docker to /tmp/agent-transcripts/.
+ * Returns the file path if saved, or null on failure.
+ */
+const saveTranscriptToSandbox = async (
+  messages: UIMessage[],
+  sandbox: AnySandbox,
+): Promise<string | null> => {
+  try {
+    const transcriptId = uuidv4();
+    const dir = isE2BSandbox(sandbox)
+      ? "/home/user/agent-transcripts"
+      : "/tmp/agent-transcripts";
+    const path = `${dir}/${transcriptId}`;
+
+    await sandbox.commands.run(`mkdir -p ${dir}`, { timeoutMs: 5000 });
+    await sandbox.files.write(path, formatTranscript(messages));
+
+    return path;
+  } catch (error) {
+    console.error("[Summarization] Failed to save transcript:", error);
+    return null;
+  }
+};
 
 export const checkAndSummarizeIfNeeded = async (
   uiMessages: UIMessage[],
@@ -33,6 +87,7 @@ export const checkAndSummarizeIfNeeded = async (
   fileTokens: Record<Id<"files">, number> = {},
   todos: Todo[] = [],
   abortSignal?: AbortSignal,
+  ensureSandbox?: EnsureSandbox,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -63,13 +118,34 @@ export const checkAndSummarizeIfNeeded = async (
 
   writeSummarizationStarted(writer);
 
-  const summaryText = await generateSummaryText(
+  let summaryText = await generateSummaryText(
     messagesToSummarize,
     languageModel,
     mode,
     abortSignal,
     existingSummaryText ?? undefined,
   );
+
+  // In agent modes, save the full transcript of summarized messages to the sandbox
+  // so the agent can consult the raw conversation later if context is lost
+  if (ensureSandbox && (mode === "agent" || mode === "agent-long")) {
+    try {
+      const sandbox = await ensureSandbox();
+      const savedPath = await saveTranscriptToSandbox(
+        messagesToSummarize,
+        sandbox,
+      );
+      if (savedPath) {
+        summaryText += buildTranscriptNotice(savedPath);
+      }
+    } catch (error) {
+      console.error(
+        "[Summarization] Failed to ensure sandbox for transcript:",
+        error,
+      );
+    }
+  }
+
   const summaryMessage = buildSummaryMessage(summaryText, todos);
 
   await persistSummary(chatId, summaryText, cutoffMessageId);

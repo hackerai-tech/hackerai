@@ -359,6 +359,9 @@ export const agentStreamTask = task({
                     metadataWriter,
                     chatId,
                     fileTokens,
+                    getTodoManager().getAllTodos(),
+                    undefined,
+                    ensureSandbox,
                   );
                 if (needsSummarization) {
                   hasSummarized = true;
