@@ -5,7 +5,7 @@ import { ChatLayout } from "@/app/components/ChatLayout";
 import Loading from "@/components/ui/loading";
 
 const fullWidthShell = (
-  <div className="h-screen min-h-0 flex flex-col bg-background overflow-hidden">
+  <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
     <div className="flex-1 flex items-center justify-center min-h-0">
       <Loading />
     </div>
@@ -26,12 +26,12 @@ export default function ChatRouteLayout({
     <>
       <AuthLoading>{fullWidthShell}</AuthLoading>
       <Unauthenticated>
-        <div className="h-screen min-h-0 flex flex-col bg-background overflow-hidden">
+        <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
           {children}
         </div>
       </Unauthenticated>
       <Authenticated>
-        <div className="h-screen min-h-0 flex flex-col bg-background overflow-hidden">
+        <div className="h-dvh min-h-0 flex flex-col bg-background overflow-hidden">
           <ChatLayout>{children}</ChatLayout>
         </div>
       </Authenticated>
