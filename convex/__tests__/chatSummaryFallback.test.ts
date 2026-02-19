@@ -204,11 +204,11 @@ describe("saveLatestSummary — previous_summaries chain", () => {
     );
   });
 
-  it("should truncate previous_summaries at MAX_PREVIOUS_SUMMARIES (5)", async () => {
+  it("should truncate previous_summaries at MAX_PREVIOUS_SUMMARIES (10)", async () => {
     const chat = makeChatDoc();
     setupChatQuery(chat);
 
-    const existingChain = Array.from({ length: 6 }, (_, i) => ({
+    const existingChain = Array.from({ length: 11 }, (_, i) => ({
       summary_text: `prev-${i}`,
       summary_up_to_message_id: `msg-prev-${i}`,
     }));
@@ -230,7 +230,7 @@ describe("saveLatestSummary — previous_summaries chain", () => {
 
     const insertCall = mockCtx.db.insert.mock.calls[0];
     const insertedDoc = insertCall[1];
-    expect(insertedDoc.previous_summaries).toHaveLength(5);
+    expect(insertedDoc.previous_summaries).toHaveLength(10);
     expect(insertedDoc.previous_summaries[0]).toEqual({
       summary_text: "old text",
       summary_up_to_message_id: "msg-5",
