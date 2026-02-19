@@ -62,6 +62,35 @@ const createMockWriter = (): UIMessageStreamWriter =>
 
 const mockLanguageModel = {} as LanguageModel;
 
+/**
+ * Extract all `[msg-N]` IDs from every generateText call's messages.
+ * Used to verify which messages were included in summarization prompts.
+ */
+const collectMessageIdsFromGenerateCalls = (
+  generateTextMock: jest.Mock,
+): Set<string> => {
+  const ids = new Set<string>();
+  for (const call of generateTextMock.mock.calls) {
+    const msgs = call[0].messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; text: string }>;
+    }>;
+    for (const msg of msgs) {
+      const text =
+        typeof msg.content === "string"
+          ? msg.content
+          : msg.content.map((p) => p.text).join("");
+      const matches = text.match(/\[msg-(\d+)\]/g);
+      if (matches) {
+        for (const m of matches) {
+          ids.add(m.slice(1, -1));
+        }
+      }
+    }
+  }
+  return ids;
+};
+
 describe("checkAndSummarizeIfNeeded", () => {
   let mockWriter: UIMessageStreamWriter;
 
@@ -620,26 +649,8 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
     expect(result3.cutoffMessageId).toBe("msg-10");
 
-    // Collect all message IDs passed to generateText across all 3 calls
-    const summarizedIds = new Set<string>();
-    for (const call of mockGenerateText.mock.calls) {
-      const messages = call[0].messages as Array<{
-        role: string;
-        content: string | Array<{ type: string; text: string }>;
-      }>;
-      for (const msg of messages) {
-        const text =
-          typeof msg.content === "string"
-            ? msg.content
-            : msg.content.map((p) => p.text).join("");
-        const match = text.match(/\[msg-(\d+)\]/g);
-        if (match) {
-          for (const m of match) {
-            summarizedIds.add(m.slice(1, -1));
-          }
-        }
-      }
-    }
+    // Collect all message IDs that were passed to generateText across all 3 calls
+    const summarizedIds = collectMessageIdsFromGenerateCalls(mockGenerateText);
 
     // Every message up to the last cutoff (msg-10) must have been summarized
     for (let i = 1; i <= 10; i++) {
