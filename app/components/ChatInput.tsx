@@ -119,6 +119,10 @@ export const ChatInput = ({
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isGenerating = status === "submitted" || status === "streaming";
+  const showContextIndicator =
+    process.env.NEXT_PUBLIC_ENABLE_CONTEXT_USAGE === "true" &&
+    !!contextUsage &&
+    contextUsage.maxTokens > 0;
 
   // Compute draft ID:
   // - For new chats (no messages yet): use "new" key so draft is preserved when navigating
@@ -502,17 +506,15 @@ export const ChatInput = ({
             </div>
 
             {/* Context Usage Indicator */}
-            {process.env.NEXT_PUBLIC_ENABLE_CONTEXT_USAGE === "true" &&
-              contextUsage &&
-              contextUsage.maxTokens > 0 && (
-                <div className="ml-auto">
-                  <ContextUsageIndicator {...contextUsage} />
-                </div>
-              )}
+            {showContextIndicator && (
+              <div className="ml-auto">
+                <ContextUsageIndicator {...contextUsage!} />
+              </div>
+            )}
 
             {/* Send/Stop button container */}
             <div
-              className={`flex gap-2 shrink-0 items-center ${contextUsage ? "" : "ml-auto"}`}
+              className={`flex gap-2 shrink-0 items-center ${showContextIndicator ? "" : "ml-auto"}`}
             >
               {isGenerating && !hideStop ? (
                 // Show only stop button during streaming for both modes

@@ -192,9 +192,6 @@ export function isProviderApiError(error: unknown): boolean {
 }
 
 /**
- * Build provider options for streamText
- */
-/**
  * Compute context usage breakdown from messages, separating summary from regular messages.
  */
 export function computeContextUsage(
@@ -208,7 +205,7 @@ export function computeContextUsage(
       (p: { type?: string; text?: string }) =>
         p.type === "text" &&
         typeof p.text === "string" &&
-        p.text.includes("<context_summary>"),
+        p.text.startsWith("<context_summary>"),
     ),
   );
   const summaryTokens = summaryMsg
@@ -291,6 +288,9 @@ export async function runSummarizationStep(options: {
   return { needsSummarization: true, summarizedMessages, contextUsage };
 }
 
+/**
+ * Build provider options for streamText
+ */
 export function buildProviderOptions(
   isReasoningModel: boolean,
   subscription: SubscriptionTier,

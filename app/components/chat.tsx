@@ -426,6 +426,12 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
+      setContextUsage({
+        messagesTokens: 0,
+        summaryTokens: 0,
+        systemTokens: 0,
+        maxTokens: 0,
+      });
       agentLong.reset();
     };
     setChatReset(reset);

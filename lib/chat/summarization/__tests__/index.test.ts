@@ -546,10 +546,11 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(hasContextSummary).toBe(false);
 
-    // 4 real messages (msg-3..msg-6) converted + 1 summarization prompt
+    // First call: msg-1, msg-2 converted + 1 summarization prompt
     const firstCallMessages = mockGenerateText.mock.calls[0][0].messages;
-    expect(firstCallMessages).toHaveLength(3); // 2 msgs + 1 prompt
-    expect(secondCallMessages).toHaveLength(5); // 4 msgs + 1 prompt
+    expect(firstCallMessages).toHaveLength(3);
+    // Second call: msg-3..msg-6 converted + 1 summarization prompt
+    expect(secondCallMessages).toHaveLength(5);
 
     expect(result2.summarizedMessages).toHaveLength(3);
     expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
@@ -632,7 +633,11 @@ describe("checkAndSummarizeIfNeeded", () => {
             ? msg.content
             : msg.content.map((p) => p.text).join("");
         const match = text.match(/\[msg-(\d+)\]/g);
-        if (match) match.forEach((m) => summarizedIds.add(m.slice(1, -1)));
+        if (match) {
+          for (const m of match) {
+            summarizedIds.add(m.slice(1, -1));
+          }
+        }
       }
     }
 
