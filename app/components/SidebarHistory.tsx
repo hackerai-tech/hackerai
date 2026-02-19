@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useRef, useEffect } from "react";
 import { MessageSquare } from "lucide-react";
 import ChatItem from "./ChatItem";
 import Loading from "@/components/ui/loading";
@@ -20,33 +20,44 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
   chats,
   paginationStatus,
   loadMore,
-  containerRef,
 }) => {
-  // Handle scroll to load more chats when scrolling to bottom
-  React.useEffect(() => {
-    const handleScroll = () => {
-      if (
-        !containerRef?.current ||
-        !loadMore ||
-        paginationStatus !== "CanLoadMore"
-      ) {
-        return;
+  const loaderRef = useRef<HTMLDivElement>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const statusRef = useRef(paginationStatus);
+
+  // IntersectionObserver for infinite scroll – reliable vs scroll listener on ref that can be null
+  useEffect(() => {
+    statusRef.current = paginationStatus;
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+    }
+
+    if (paginationStatus === "CanLoadMore" && chats.length > 0 && loadMore) {
+      const options: IntersectionObserverInit = {
+        root: null,
+        rootMargin: "50px",
+        threshold: 0.1,
+      };
+
+      observerRef.current = new IntersectionObserver((entries) => {
+        const [entry] = entries;
+        if (entry.isIntersecting && statusRef.current === "CanLoadMore") {
+          loadMore(28);
+        }
+      }, options);
+
+      const currentLoader = loaderRef.current;
+      if (currentLoader) {
+        observerRef.current.observe(currentLoader);
       }
+    }
 
-      const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
-
-      // Check if we're near the bottom (within 100px)
-      if (scrollTop + clientHeight >= scrollHeight - 100) {
-        loadMore(28); // Load 28 more chats
+    return () => {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
       }
     };
-
-    const container = containerRef?.current;
-    if (container) {
-      container.addEventListener("scroll", handleScroll);
-      return () => container.removeEventListener("scroll", handleScroll);
-    }
-  }, [containerRef, loadMore, paginationStatus]);
+  }, [paginationStatus, loadMore, chats.length]);
 
   if (paginationStatus === "LoadingFirstPage") {
     // Loading state
@@ -102,6 +113,18 @@ const SidebarHistory: React.FC<SidebarHistoryProps> = ({
       {paginationStatus === "LoadingMore" && (
         <div className="flex justify-center py-2">
           <Loading size={6} />
+        </div>
+      )}
+
+      {/* Sentinel for IntersectionObserver – load more when scrolled into view */}
+      {paginationStatus === "CanLoadMore" && chats.length > 0 && (
+        <div
+          ref={loaderRef}
+          data-testid="sidebar-load-more-sentinel"
+          className="flex justify-center py-2 text-sidebar-accent-foreground"
+          aria-hidden
+        >
+          <span className="text-xs">Scroll for more</span>
         </div>
       )}
     </div>
