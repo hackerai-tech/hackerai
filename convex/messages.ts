@@ -30,19 +30,26 @@ const tryFallbackSummary = async (
   }[],
   earliestDeletedTime: number,
 ): Promise<boolean> => {
-  for (let i = 0; i < previousSummaries.length; i++) {
-    const candidate = previousSummaries[i];
-    const cutoffMsg = await ctx.db
-      .query("messages")
-      .withIndex("by_message_id", (q: any) =>
-        q.eq("id", candidate.summary_up_to_message_id),
-      )
-      .first();
+  // Batch-fetch all cutoff messages in one pass
+  const cutoffMessages = await Promise.all(
+    previousSummaries.map((s) =>
+      ctx.db
+        .query("messages")
+        .withIndex("by_message_id", (q: any) =>
+          q.eq("id", s.summary_up_to_message_id),
+        )
+        .first(),
+    ),
+  );
 
+  // Find the first candidate whose cutoff message still exists and predates the deletion
+  for (let i = 0; i < previousSummaries.length; i++) {
+    const cutoffMsg = cutoffMessages[i];
     if (cutoffMsg && cutoffMsg._creationTime < earliestDeletedTime) {
       await ctx.db.patch(summaryId, {
-        summary_text: candidate.summary_text,
-        summary_up_to_message_id: candidate.summary_up_to_message_id,
+        summary_text: previousSummaries[i].summary_text,
+        summary_up_to_message_id:
+          previousSummaries[i].summary_up_to_message_id,
         previous_summaries: previousSummaries.slice(i + 1),
       });
       return true;
