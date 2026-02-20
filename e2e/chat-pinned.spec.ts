@@ -134,6 +134,29 @@ test.describe("Pinned Chats", () => {
     return titles;
   }
 
+  /**
+   * Get chat URLs in current sidebar order (first = top of list).
+   * Extracts chat IDs from test IDs and constructs full URLs.
+   */
+  async function getOrderedChatUrls(
+    sidebar: SidebarComponent,
+    page: Page,
+  ): Promise<string[]> {
+    const items = await sidebar.getAllChatItems();
+    const count = await items.count();
+    const baseUrl = new URL(page.url()).origin;
+    const urls: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const item = items.nth(i);
+      const testId = await item.getAttribute("data-testid");
+      if (testId && testId.startsWith("chat-item-")) {
+        const chatId = testId.replace("chat-item-", "");
+        urls.push(`${baseUrl}/c/${chatId}`);
+      }
+    }
+    return urls;
+  }
+
   test("should pin a chat and show Unpin in menu", async ({ page }) => {
     const sidebar = new SidebarComponent(page);
     await sidebar.expandIfCollapsed();
@@ -187,24 +210,24 @@ test.describe("Pinned Chats", () => {
 
     await waitForChatsToAppear(page);
 
-    const titles = await getOrderedChatTitles(sidebar);
-    const titleTwo = titles[1];
+    const urls = await getOrderedChatUrls(sidebar, page);
+    const urlTwo = urls[1];
 
-    // Pin titleTwo and wait for backend to confirm it worked
-    await sidebar.openChatOptionsByTitle(titleTwo);
+    // Pin urlTwo and wait for backend to confirm it worked
+    await sidebar.openChatOptionsByUrl(urlTwo);
     await page.getByRole("menuitem", { name: "Pin" }).click();
 
     await expect(async () => {
-      await sidebar.openChatOptionsByTitle(titleTwo);
+      await sidebar.openChatOptionsByUrl(urlTwo);
       await expect(page.getByRole("menuitem", { name: "Unpin" })).toBeVisible({
         timeout: TIMEOUTS.SHORT,
       });
       await page.keyboard.press("Escape");
     }).toPass({ timeout: TIMEOUTS.MEDIUM });
 
-    // Now verify titleTwo is at the top
-    const updatedTitles = await getOrderedChatTitles(sidebar);
-    expect(updatedTitles[0]).toBe(titleTwo);
+    // Now verify urlTwo is at the top
+    const updatedUrls = await getOrderedChatUrls(sidebar, page);
+    expect(updatedUrls[0]).toBe(urlTwo);
   });
 
   test("pin order is preserved in sidebar", async ({ page }) => {
@@ -213,23 +236,23 @@ test.describe("Pinned Chats", () => {
 
     await waitForChatsToAppear(page);
 
-    let titles = await getOrderedChatTitles(sidebar);
-    const title1 = titles[2];
-    const title2 = titles[1];
-    const title3 = titles[0];
+    let urls = await getOrderedChatUrls(sidebar, page);
+    const url1 = urls[2];
+    const url2 = urls[1];
+    const url3 = urls[0];
 
-    // Pin in order: 2nd, 1st, 3rd -> sidebar order should be title2, title1, title3
-    await sidebar.clickPin(title2);
+    // Pin in order: 2nd, 1st, 3rd -> sidebar order should be url2, url1, url3
+    await sidebar.clickPinByUrl(url2);
     await page.waitForTimeout(200);
-    await sidebar.clickPin(title1);
+    await sidebar.clickPinByUrl(url1);
     await page.waitForTimeout(200);
-    await sidebar.clickPin(title3);
+    await sidebar.clickPinByUrl(url3);
 
     await expect(async () => {
-      titles = await getOrderedChatTitles(sidebar);
-      expect(titles[0]).toBe(title2);
-      expect(titles[1]).toBe(title1);
-      expect(titles[2]).toBe(title3);
+      urls = await getOrderedChatUrls(sidebar, page);
+      expect(urls[0]).toBe(url2);
+      expect(urls[1]).toBe(url1);
+      expect(urls[2]).toBe(url3);
     }).toPass({ timeout: TIMEOUTS.MEDIUM });
   });
 
