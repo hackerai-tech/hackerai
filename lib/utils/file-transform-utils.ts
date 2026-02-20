@@ -88,6 +88,7 @@ const collectFilesToProcess = (
 
       const shouldProcess =
         mode === "agent" ||
+        mode === "agent-long" ||
         part.mediaType === "application/pdf" ||
         isMediaFile(part.mediaType);
 
@@ -185,7 +186,7 @@ const applyModeSpecificTransforms = async (
 ) => {
   const fileIds = extractAllFileIdsFromMessages(messages);
 
-  if (mode === "agent") {
+  if (mode === "agent" || mode === "agent-long") {
     collectSandboxFiles(messages, sandboxFiles, uploadBasePath);
     removeNonMediaFileParts(messages);
   } else {
@@ -205,7 +206,7 @@ const applyModeSpecificTransforms = async (
  *
  * Transforms file parts based on chat mode:
  * - **Ask mode**: Converts non-media files to document content, keeps images/PDFs as file parts
- * - **Agent mode**: Prepares all files for sandbox upload, keeps only images as file parts
+ * - **Agent / Agent-long mode**: Prepares all files for sandbox upload, keeps only images as file parts
  *
  * Processing steps:
  * 1. Generates fresh URLs for files (prevents expiration)
@@ -213,10 +214,10 @@ const applyModeSpecificTransforms = async (
  * 3. Detects media files (images/PDFs)
  * 4. Applies mode-specific transforms:
  *    - Ask: Injects document content for text files, removes audio
- *    - Agent: Collects files for sandbox, adds attachment tags, removes non-images
+ *    - Agent/Agent-long: Collects files for sandbox, adds attachment tags, removes non-images
  *
  * @param messages - Messages to process
- * @param mode - Chat mode ("ask" or "agent")
+ * @param mode - Chat mode ("ask", "agent", or "agent-long")
  * @param uploadBasePath - Override for agent mode (/home/user/upload or /tmp/hackerai-upload for local dangerous)
  * @returns Processed messages with file metadata and sandbox files for upload
  */
