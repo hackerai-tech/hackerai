@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, usePathname } from "next/navigation";
 import { ConvexError } from "convex/values";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -63,6 +63,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   isPinned = false,
 }) => {
   const router = useRouter();
+  const pathname = usePathname();
   const [isHovered, setIsHovered] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
@@ -83,8 +84,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const pinChat = usePinChat();
   const unpinChat = useUnpinChat();
 
-  // Check if this chat is currently active based on URL
-  const isCurrentlyActive = window.location.pathname === `/c/${id}`;
+  // Check if this chat is currently active based on URL (usePathname so we re-render when route changes)
+  const isCurrentlyActive = pathname === `/c/${id}`;
 
   const handleClick = () => {
     // Don't navigate if dialog is open or dropdown is open
@@ -124,8 +125,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
       // If we're deleting the currently active chat, navigate to home
       if (isCurrentlyActive) {
-        initializeNewChat();
         router.push("/");
+        initializeNewChat();
       }
     } catch (error: any) {
       // Extract error message
@@ -143,8 +144,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
         // Even if chat not found in DB, still clean up draft
         removeDraft(id);
         if (isCurrentlyActive) {
-          initializeNewChat();
           router.push("/");
+          initializeNewChat();
         }
       } else {
         console.error("Failed to delete chat:", error);
