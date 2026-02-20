@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "../contexts/GlobalState";
+import { useChats } from "../hooks/useChats";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import MainSidebar from "./Sidebar";
 import { SettingsDialog } from "./SettingsDialog";
@@ -17,6 +18,8 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
   const isMobile = useIsMobile();
   const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
   const panelRef = useRef<HTMLDivElement>(null);
+  // Keep chat list subscription in layout so it doesn't refetch when sidebar opens/closes
+  const chatListData = useChats();
   const previousActiveElementRef = useRef<HTMLElement | null>(null);
 
   // Settings dialog — local state, opened via custom event from anywhere
@@ -114,8 +117,8 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-0 flex-1 w-full overflow-hidden">
-      {/* Chat Sidebar - Desktop: always mounted, collapses to icon rail when closed */}
-      {!isMobile && (
+      {/* Chat Sidebar - Desktop: only mount once isMobile is resolved to avoid flash on mobile */}
+      {isMobile === false && (
         <div
           data-testid="sidebar"
           className={`relative z-10 min-w-0 shrink-0 overflow-hidden bg-sidebar transition-all duration-300 ${
@@ -127,7 +130,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             onOpenChange={setChatSidebarOpen}
             defaultOpen={true}
           >
-            <MainSidebar />
+            <MainSidebar chatListData={chatListData} />
           </SidebarProvider>
         </div>
       )}
@@ -137,8 +140,8 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
         {children}
       </div>
 
-      {/* Overlay Chat Sidebar - Mobile */}
-      {isMobile && chatSidebarOpen && (
+      {/* Overlay Chat Sidebar - Mobile: only when resolved to mobile */}
+      {isMobile === true && chatSidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 flex"
           onClick={() => setChatSidebarOpen(false)}
@@ -151,7 +154,7 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
             className="w-full max-w-80 h-full bg-background shadow-lg transform transition-transform duration-300 ease-in-out"
             onClick={(e) => e.stopPropagation()}
           >
-            <MainSidebar isMobileOverlay={true} />
+            <MainSidebar isMobileOverlay={true} chatListData={chatListData} />
           </div>
         </div>
       )}

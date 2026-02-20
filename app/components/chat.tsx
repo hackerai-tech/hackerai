@@ -42,6 +42,7 @@ import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { useAgentLongStream } from "../hooks/useAgentLongStream";
+import Loading from "@/components/ui/loading";
 
 export const Chat = ({
   chatId: routeChatId,
@@ -64,8 +65,6 @@ export const Chat = ({
     useState<RateLimitWarningData | null>(null);
 
   const {
-    chatTitle,
-    setChatTitle,
     chatMode,
     setChatMode,
     sidebarOpen,
@@ -150,6 +149,9 @@ export const Chat = ({
     api.chats.getChatByIdFromClient,
     shouldFetchMessages ? { id: chatId } : "skip",
   );
+
+  // Derive title from Convex (single source of truth)
+  const chatTitle = chatData?.title ?? null;
 
   // Convert paginated Convex messages to UI format for useChat
   // Messages come from server in descending order (newest first from pagination)
@@ -250,8 +252,6 @@ export const Chat = ({
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
-      if (dataPart.type === "data-title")
-        setChatTitle((dataPart.data as { chatTitle: string }).chatTitle);
       if (dataPart.type === "data-upload-status") {
         const uploadData = dataPart.data as {
           message: string;
@@ -375,7 +375,6 @@ export const Chat = ({
     serverMessages,
     todos,
     sandboxPreference,
-    setChatTitle,
     setUploadStatus,
     setSummarizationStatus,
     setRateLimitWarning,
@@ -421,7 +420,6 @@ export const Chat = ({
       setMessages([]);
       setIsExistingChat(false);
       setChatId(uuidv4());
-      setChatTitle(null);
       setTodos([]);
       setAwaitingServerChat(false);
       setUploadStatus(null);
@@ -436,7 +434,7 @@ export const Chat = ({
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setChatTitle, setTodos, agentLong.reset]);
+  }, [setChatReset, setMessages, setTodos, agentLong.reset]);
 
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
@@ -455,11 +453,6 @@ export const Chat = ({
     // Ignore when no data or data is stale (doesn't match current chatId)
     if (!chatData || dataId !== chatId) {
       return;
-    }
-
-    if (chatData.title) {
-      // Always update title from server data to ensure consistency
-      setChatTitle(chatData.title);
     }
 
     // Load todos from the chat data if they exist.
@@ -503,14 +496,7 @@ export const Chat = ({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    chatData,
-    setChatTitle,
-    setTodos,
-    shouldFetchMessages,
-    isExistingChat,
-    chatId,
-  ]);
+  }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
@@ -818,6 +804,14 @@ export const Chat = ({
                     </div>
                   </div>
                 </div>
+              ) : isExistingChat &&
+                paginatedMessages.status === "LoadingFirstPage" ? (
+                <div
+                  className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center min-h-0"
+                  data-testid="messages-loading"
+                >
+                  <Loading size={10} />
+                </div>
               ) : showChatLayout ? (
                 <Messages
                   scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
@@ -832,7 +826,6 @@ export const Chat = ({
                   error={error || null}
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
-                  isSwitchingChats={false}
                   isTemporaryChat={isTempChat}
                   tempChatFileDetails={tempChatFileDetails}
                   finishReason={chatData?.finish_reason}

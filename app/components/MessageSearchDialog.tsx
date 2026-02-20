@@ -24,6 +24,7 @@ import {
 import type { Doc } from "@/convex/_generated/dataModel";
 import { useGlobalState } from "../contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useChats } from "../hooks/useChats";
 
 interface MessageSearchResult {
   id: string;
@@ -53,14 +54,20 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 }) => {
   const { user } = useAuth();
   const router = useRouter();
-  const { chats, setChatSidebarOpen, closeSidebar } = useGlobalState();
+  const { setChatSidebarOpen, closeSidebar } = useGlobalState();
   const isMobile = useIsMobile();
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  // Only fetch chats when dialog is open and there's no search query
+  const shouldFetchChats = isOpen && !searchQuery.trim();
+  const chatsQuery = useChats(shouldFetchChats);
+  const chats = chatsQuery.results ?? [];
   const [allResults, setAllResults] = useState<MessageSearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const loaderRef = useRef<HTMLDivElement>(null);
+  const chatsLoaderRef = useRef<HTMLDivElement>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
+  const chatsObserverRef = useRef<IntersectionObserver | null>(null);
 
   // Use Convex usePaginatedQuery for search
   const searchResults = usePaginatedQuery(
@@ -124,7 +131,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     }
   }, [debouncedQuery]);
 
-  // Set up Intersection Observer for infinite scrolling
+  // Set up Intersection Observer for infinite scrolling of search results
   useEffect(() => {
     // Clean up existing observer
     if (observerRef.current) {
@@ -173,6 +180,57 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
     searchResults.loadMore,
     searchResults.isLoading,
     allResults.length,
+  ]);
+
+  // Set up Intersection Observer for infinite scrolling of chats
+  useEffect(() => {
+    // Clean up existing observer
+    if (chatsObserverRef.current) {
+      chatsObserverRef.current.disconnect();
+    }
+
+    // Only set up observer if we have chats and can load more, and no search query
+    if (
+      chatsQuery.status === "CanLoadMore" &&
+      !debouncedQuery.trim() &&
+      chats.length > 0
+    ) {
+      const options = {
+        root: null,
+        rootMargin: "50px",
+        threshold: 0.1,
+      };
+
+      chatsObserverRef.current = new IntersectionObserver((entries) => {
+        const [entry] = entries;
+        if (
+          entry.isIntersecting &&
+          chatsQuery.status === "CanLoadMore" &&
+          !debouncedQuery.trim() &&
+          !chatsQuery.isLoading
+        ) {
+          chatsQuery.loadMore(8);
+        }
+      }, options);
+
+      const currentLoader = chatsLoaderRef.current;
+      if (currentLoader) {
+        chatsObserverRef.current.observe(currentLoader);
+      }
+    }
+
+    return () => {
+      if (chatsObserverRef.current) {
+        chatsObserverRef.current.disconnect();
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    chatsQuery.status,
+    debouncedQuery,
+    chatsQuery.loadMore,
+    chatsQuery.isLoading,
+    chats.length,
   ]);
 
   const handleChatClick = (chatId: string) => {
@@ -317,7 +375,7 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
 
                     return (
                       <div key={category}>
-                        <div className="px-6 py-2 text-xs font-semibold text-muted-foreground bg-muted/30 sticky top-0 z-10">
+                        <div className="px-6 py-2 text-xs font-semibold text-muted-foreground bg-background sticky top-0 z-10">
                           {category}
                         </div>
                         {categoryChats.map((chat) => (
@@ -340,6 +398,27 @@ export const MessageSearchDialog: React.FC<MessageSearchDialogProps> = ({
                       </div>
                     );
                   })}
+
+                  {/* Loader element for chats pagination - only show if we have chats and can load more */}
+                  {chatsQuery.status === "CanLoadMore" &&
+                    !debouncedQuery.trim() &&
+                    chats.length > 0 &&
+                    !chatsQuery.isLoading && (
+                      <div
+                        ref={chatsLoaderRef}
+                        className="flex justify-center py-4 text-muted-foreground"
+                      >
+                        <div className="text-sm">Scroll for more chats...</div>
+                      </div>
+                    )}
+
+                  {/* Show loading state when actively loading more chats */}
+                  {chatsQuery.isLoading && chats.length > 0 && (
+                    <div className="flex justify-center py-4">
+                      <Loader2 className="animate-spin mr-2" size={16} />
+                      <span className="text-sm">Loading more chats...</span>
+                    </div>
+                  )}
                 </div>
               )
             ) : isSearching ? (

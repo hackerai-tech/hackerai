@@ -26,7 +26,7 @@ import {
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
-import type { Doc, Id } from "@/convex/_generated/dataModel";
+import type { Id } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
@@ -60,18 +60,6 @@ interface GlobalStateType {
   // Chat mode state
   chatMode: ChatMode;
   setChatMode: (mode: ChatMode) => void;
-
-  // Chat title state
-  chatTitle: string | null;
-  setChatTitle: (title: string | null) => void;
-
-  // User chats state
-  chats: Doc<"chats">[];
-  setChats: (chats: Doc<"chats">[]) => void;
-
-  // Chat switching state
-  isSwitchingChats: boolean;
-  setIsSwitchingChats: (switching: boolean) => void;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -169,8 +157,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     const saved = readChatMode();
     return isChatMode(saved) ? saved : "ask";
   });
-  const [chatTitle, setChatTitle] = useState<string | null>(null);
-  const [isSwitchingChats, setIsSwitchingChats] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -182,7 +168,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, [chatMode]);
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
-    chatSidebarStorage.get(isMobile),
+    chatSidebarStorage.get(isMobile ?? false),
   );
   const [todos, setTodos] = useState<Todo[]>([]);
   const [isTodoPanelExpanded, setIsTodoPanelExpanded] = useState(false);
@@ -197,7 +183,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     },
     [],
   );
-  const [chats, setChats] = useState<Doc<"chats">[]>([]);
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
@@ -271,7 +256,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   useEffect(() => {
     // Save state on desktop
-    chatSidebarStorage.save(chatSidebarOpen, isMobile);
+    chatSidebarStorage.save(chatSidebarOpen, isMobile ?? false);
 
     // Close sidebar when transitioning from desktop to mobile
     if (!prevIsMobile.current && isMobile && chatSidebarOpen) {
@@ -551,7 +536,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []);
 
   const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
-    setIsSwitchingChats(true);
     // Don't clear input here - let ChatInput restore draft automatically
     // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
@@ -565,7 +549,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
     setTodos([]);
     setIsTodoPanelExpanded(false);
-    setChatTitle(null);
   }, []);
 
   const setChatReset = useCallback((fn: (() => void) | null) => {
@@ -654,12 +637,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     isUploadingFiles,
     chatMode,
     setChatMode,
-    chatTitle,
-    setChatTitle,
-    chats,
-    setChats,
-    isSwitchingChats,
-    setIsSwitchingChats,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
