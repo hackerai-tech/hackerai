@@ -333,6 +333,7 @@ export const createChatHandler = (
 
       // Start stream timing
       chatLogger.startStream();
+      preemptiveTimeout?.setPhase("streaming");
 
       const stream = createUIMessageStream({
         execute: async ({ writer }) => {
@@ -746,8 +747,8 @@ export const createChatHandler = (
                           messages: retryMessages,
                           isAborted: retryAborted,
                         }) => {
-                          // Cleanup for retry
-                          preemptiveTimeout?.clear();
+                          // Cleanup for retry (keep diagnostic timeout alive)
+                          preemptiveTimeout?.clearPreemptiveOnly();
                           if (!subscriberStopped) {
                             await cancellationSubscriber.stop();
                             subscriberStopped = true;
@@ -866,6 +867,9 @@ export const createChatHandler = (
 
                           // Deduct accumulated usage (includes both original + retry streams)
                           await deductAccumulatedUsage();
+
+                          // Clear diagnostic timeout now that retry onFinish is done
+                          preemptiveTimeout?.clear();
                         },
                         sendReasoning: true,
                       }),
@@ -875,6 +879,7 @@ export const createChatHandler = (
                   }
                 }
 
+                preemptiveTimeout?.setPhase("onFinish_started");
                 const isPreemptiveAbort =
                   preemptiveTimeout?.isPreemptive() ?? false;
                 const onFinishStartTime = Date.now();
@@ -911,12 +916,14 @@ export const createChatHandler = (
                   );
                 }
 
-                // Clear pre-emptive timeout
+                // Clear only the preemptive timeout (keep diagnostic timeout alive
+                // so it can still fire if onFinish blocks near Vercel's hard limit)
                 let stepStart = Date.now();
-                preemptiveTimeout?.clear();
+                preemptiveTimeout?.clearPreemptiveOnly();
                 logStep("clear_timeout", stepStart);
 
                 // Stop cancellation subscriber
+                preemptiveTimeout?.setPhase("onFinish_stopSubscriber");
                 stepStart = Date.now();
                 await cancellationSubscriber.stop();
                 subscriberStopped = true;
@@ -944,6 +951,7 @@ export const createChatHandler = (
                 // No manual pause needed
 
                 // Always wait for title generation to complete
+                preemptiveTimeout?.setPhase("onFinish_waiting_title");
                 stepStart = Date.now();
                 const generatedTitle = await titlePromise;
                 logStep("wait_title_generation", stepStart);
@@ -966,6 +974,7 @@ export const createChatHandler = (
 
                   if (shouldPersist) {
                     // updateChat automatically clears stream state (active_stream_id and canceled_at)
+                    preemptiveTimeout?.setPhase("onFinish_updateChat");
                     stepStart = Date.now();
                     await updateChat({
                       chatId,
@@ -1009,6 +1018,7 @@ export const createChatHandler = (
                   let resolvedUsage: Record<string, unknown> | undefined =
                     streamUsage;
                   if (!resolvedUsage && isAborted) {
+                    preemptiveTimeout?.setPhase("onFinish_awaitUsage");
                     try {
                       resolvedUsage = (await result.usage) as Record<
                         string,
@@ -1037,6 +1047,7 @@ export const createChatHandler = (
                   }
 
                   // Save messages (either full save or just append extraFileIds)
+                  preemptiveTimeout?.setPhase("onFinish_saveMessages");
                   stepStart = Date.now();
                   for (const message of messages) {
                     // For assistant messages, prepend summarization parts if any
@@ -1096,6 +1107,9 @@ export const createChatHandler = (
                   await deleteTempStreamForBackend({ chatId });
                   logStep("delete_temp_stream", stepStart);
                 }
+
+                // Clear diagnostic timeout now that onFinish is done
+                preemptiveTimeout?.clear();
 
                 if (isPreemptiveAbort) {
                   const totalDuration = Date.now() - onFinishStartTime;
