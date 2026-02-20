@@ -38,6 +38,7 @@ import {
   writeSelectedModelForMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 interface GlobalStateType {
   // Input state
@@ -201,6 +202,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
+  const setSubscriptionWithNormalize = useCallback((tier: SubscriptionTier) => {
+    setSubscription(tier);
+    setChatMode((prev) =>
+      tier === "free" && isAgentMode(prev) ? "ask" : prev,
+    );
+  }, []);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
 
@@ -321,7 +328,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Prefer normalized entitlements ("pro-plan", "ultra-plan"); fall back to monthly/yearly keys for backward compatibility
   useEffect(() => {
     if (!user) {
-      setSubscription("free");
+      setSubscriptionWithNormalize("free");
       return;
     }
 
@@ -339,7 +346,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         entitlements.includes("pro-plan") ||
         entitlements.includes("pro-monthly-plan") ||
         entitlements.includes("pro-yearly-plan");
-      setSubscription(
+      setSubscriptionWithNormalize(
         hasUltra
           ? "ultra"
           : hasTeam
@@ -351,13 +358,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
                 : "free",
       );
     }
-  }, [user, entitlements]);
+  }, [user, entitlements, setSubscriptionWithNormalize]);
 
   // Refresh entitlements only when explicitly requested via URL param
   useEffect(() => {
     const refreshFromUrl = async () => {
       if (!user) {
-        setSubscription("free");
+        setSubscriptionWithNormalize("free");
         setIsCheckingProPlan(false);
         return;
       }
@@ -399,10 +406,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
               return;
             }
           }
-          setSubscription("free");
+          setSubscriptionWithNormalize("free");
         }
       } catch {
-        setSubscription("free");
+        setSubscriptionWithNormalize("free");
       } finally {
         setIsCheckingProPlan(false);
         // Remove the refresh param to avoid repeated refreshes
@@ -412,7 +419,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     };
 
     refreshFromUrl();
-  }, [user]);
+  }, [user, setSubscriptionWithNormalize]);
 
   // Listen for URL changes to sync temporary chat state
   useEffect(() => {
@@ -424,6 +431,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       // Only update state if it differs from URL to avoid infinite loops
       if (temporaryChatsEnabled !== urlTemporaryEnabled) {
         setTemporaryChatsEnabled(urlTemporaryEnabled);
+        setChatMode((prev) =>
+          urlTemporaryEnabled && isAgentMode(prev) ? "ask" : prev,
+        );
       }
     };
 
@@ -629,6 +639,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Custom setter for temporary chats that also updates URL
   const setTemporaryChatsEnabledWithUrl = useCallback((enabled: boolean) => {
     setTemporaryChatsEnabled(enabled);
+    setChatMode((prev) => (enabled && isAgentMode(prev) ? "ask" : prev));
 
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);

@@ -28,13 +28,14 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Todo, ChatMessage } from "@/types";
+import type { Todo, ChatMessage, ChatMode } from "@/types";
 import { isSelectedModel } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useLatestRef } from "../hooks/useLatestRef";
@@ -44,13 +45,10 @@ import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import { useAgentLongStream } from "../hooks/useAgentLongStream";
 import Loading from "@/components/ui/loading";
 
-export const Chat = ({
-  chatId: routeChatId,
-  autoResume,
-}: {
-  chatId?: string;
-  autoResume: boolean;
-}) => {
+export const Chat = ({ autoResume }: { autoResume: boolean }) => {
+  const params = useParams();
+  const routeChatId = params?.id as string | undefined;
+  const router = useRouter();
   const isMobile = useIsMobile();
   const { setDataStream, setIsAutoResuming } = useDataStream();
   const [uploadStatus, setUploadStatus] = useState<{
@@ -142,7 +140,6 @@ export const Chat = ({
   useEffect(() => {
     if (routeChatId) {
       setChatId(routeChatId);
-      setIsExistingChat(true);
     }
   }, [routeChatId]);
 
@@ -175,15 +172,8 @@ export const Chat = ({
   // Derive title from Convex (single source of truth)
   const chatTitle = chatData?.title ?? null;
 
-  // Convert paginated Convex messages to UI format for useChat
-  // Messages come from server in descending order (newest first from pagination)
-  // We need to reverse them to show chronological order (oldest first)
-  const initialMessages: ChatMessage[] =
-    paginatedMessages.results && paginatedMessages.results.length > 0
-      ? convertToUIMessages([...paginatedMessages.results].reverse())
-      : [];
-
-  // Same as sync effect: Convex-backed messages for agent-long reconnect/backfill so refresh shows history
+  // Convert paginated Convex messages to UI format for useChat, useAutoResume, and agent-long reconnect/backfill
+  // Messages come from server in descending order (newest first from pagination); reverse for chronological order
   const serverMessages: ChatMessage[] =
     paginatedMessages.results && paginatedMessages.results.length > 0
       ? convertToUIMessages([...paginatedMessages.results].reverse())
@@ -209,7 +199,7 @@ export const Chat = ({
     resumeStream,
   } = useChat({
     id: chatId,
-    messages: initialMessages,
+    messages: serverMessages,
     experimental_throttle: 100,
     generateId: () => uuidv4(),
 
@@ -364,12 +354,12 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
-      // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
       if (!isExistingChatRef.current && !isTemporaryChat) {
-        setIsExistingChat(true);
-        // Clear the "new" draft when transitioning from new chat to existing chat
+        // Update URL without full navigation so this Chat stays mounted and
+        // status can transition to "ready" (stop button → send button).
+        window.history.replaceState({}, "", `/c/${chatId}`);
         removeDraft("new");
       }
     },
@@ -408,7 +398,6 @@ export const Chat = ({
     setIsAutoResuming,
     setAwaitingServerChat,
     setMessages,
-    setIsExistingChat,
     hasUserDismissedWarningRef,
     isExistingChatRef,
     onRunComplete: () => {
@@ -429,8 +418,9 @@ export const Chat = ({
   // Disable only for agent-long: resuming hits AI SDK /api/chat, not Trigger.dev, and can block sync
   // Enable when serverMode is undefined (old chats, or before chatData loads) so agent mode can reconnect
   useAutoResume({
-    autoResume: autoResume && serverMode !== "agent-long",
-    initialMessages,
+    autoResume:
+      autoResume && serverMode !== undefined && serverMode !== "agent-long",
+    initialMessages: serverMessages,
     resumeStream,
     setMessages,
   });
@@ -439,7 +429,6 @@ export const Chat = ({
   useEffect(() => {
     const reset = () => {
       setMessages([]);
-      setIsExistingChat(false);
       setChatId(uuidv4());
       setTodos([]);
       setAwaitingServerChat(false);
@@ -794,10 +783,6 @@ export const Chat = ({
     regenerate: wrappedRegenerate,
     setMessages,
     isExistingChat,
-    activateChatLocally: () => {
-      setIsExistingChat(true);
-      setAwaitingServerChat(true);
-    },
     status: agentLong.isActive ? agentLong.status : status,
     isSendingNowRef,
     hasManuallyStoppedRef,
@@ -818,7 +803,6 @@ export const Chat = ({
   // Branch chat handler
   const branchChatMutation = useMutation(api.messages.branchChat);
 
-  const router = useRouter();
   const handleBranchMessage = async (messageId: string) => {
     try {
       const newChatId = await branchChatMutation({ messageId });
