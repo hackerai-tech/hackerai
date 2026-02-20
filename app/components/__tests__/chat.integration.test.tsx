@@ -25,6 +25,18 @@ jest.mock("@ai-sdk/react", () => ({
   })),
 }));
 
+jest.mock("next/navigation", () => ({
+  useParams: jest.fn(() => ({})),
+  useRouter: jest.fn(() => ({
+    push: jest.fn(),
+    replace: jest.fn(),
+    back: jest.fn(),
+    forward: jest.fn(),
+    refresh: jest.fn(),
+    prefetch: jest.fn(),
+  })),
+}));
+
 jest.mock("react-hotkeys-hook", () => ({
   useHotkeys: jest.fn(),
 }));
@@ -164,6 +176,8 @@ describe("Chat Component Integration", () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    const { useParams } = require("next/navigation");
+    useParams.mockReturnValue({});
     const { useChat } = require("@ai-sdk/react");
     mockUseChat = useChat as jest.Mock;
 
@@ -192,9 +206,12 @@ describe("Chat Component Integration", () => {
     });
 
     it("should render with provided chatId", () => {
+      const { useParams } = require("next/navigation");
+      useParams.mockReturnValue({ id: "test-chat-123" });
+
       const { container } = render(
         <TestWrapper>
-          <Chat chatId="test-chat-123" autoResume={false} />
+          <Chat autoResume={false} />
         </TestWrapper>,
       );
 
