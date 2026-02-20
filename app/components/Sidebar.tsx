@@ -30,6 +30,7 @@ const ChatListContent: FC = () => {
     <div
       className="h-full min-w-0 overflow-y-auto overflow-x-hidden"
       ref={scrollContainerRef}
+      data-testid="sidebar-chat-list-scroll-container"
     >
       <SidebarHistory
         chats={paginatedChats.results || []}

@@ -1,47 +1,17 @@
 import { test, expect } from "@playwright/test";
-import * as dotenv from "dotenv";
-import * as path from "path";
-import { WorkOS } from "@workos-inc/node";
-import { ConvexHttpClient } from "convex/browser";
-import { api } from "../convex/_generated/api";
 import {
   setupChat,
   sendAndWaitForResponse,
   createTwoChats,
 } from "./helpers/test-helpers";
+import {
+  deleteTestUserChats,
+  createManyTestChatsForProUser,
+} from "./helpers/convex-helpers";
 import { ChatComponent } from "./page-objects/ChatComponent";
 import { SidebarComponent } from "./page-objects/SidebarComponent";
 import { AUTH_STORAGE_PATHS } from "./fixtures/auth";
 import { TIMEOUTS, TEST_DATA } from "./constants";
-import { getTestUsersRecord } from "../scripts/test-users-config";
-
-async function deleteTestUserChats(): Promise<void> {
-  dotenv.config({ path: path.join(process.cwd(), ".env.e2e") });
-  dotenv.config({ path: path.join(process.cwd(), ".env.local") });
-  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
-  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
-  const workosKey = process.env.WORKOS_API_KEY;
-  const workosClientId = process.env.WORKOS_CLIENT_ID;
-  if (!convexUrl || !serviceKey || !workosKey || !workosClientId) {
-    return;
-  }
-  try {
-    const workos = new WorkOS(workosKey, { clientId: workosClientId });
-    const proEmail = getTestUsersRecord().pro.email;
-    const { data } = await workos.userManagement.listUsers({
-      email: proEmail,
-    });
-    const userId = data[0]?.id;
-    if (!userId) return;
-    const convex = new ConvexHttpClient(convexUrl);
-    await convex.mutation(api.chats.deleteAllChatsForUser, {
-      serviceKey,
-      userId,
-    });
-  } catch {
-    // Teardown is best-effort; do not fail the run
-  }
-}
 
 /**
  * E2E tests for chat switching and ChatProvider behavior.
@@ -253,5 +223,39 @@ test.describe("Chat switching", () => {
     await sidebar.clickChatByUrl(urlB);
     await expect(page).toHaveURL(urlB, { timeout: TIMEOUTS.MEDIUM });
     await new ChatComponent(page).expectMessageContains("6");
+  });
+
+  test("Sidebar chat list pagination – scroll loads more chats", async ({
+    page,
+  }) => {
+    await createManyTestChatsForProUser(29);
+    await page.goto("/");
+
+    const sidebar = new SidebarComponent(page);
+    await sidebar.expandIfCollapsed();
+    await sidebar.waitForChatListReady();
+
+    const initialCount = await sidebar.getChatCount();
+    expect(initialCount).toBeGreaterThanOrEqual(28);
+
+    const scrollContainer = page.getByTestId(
+      "sidebar-chat-list-scroll-container",
+    );
+    await scrollContainer.evaluate((el: Element) => {
+      const div = el as HTMLDivElement;
+      div.scrollTop = div.scrollHeight;
+    });
+
+    // Ensure sentinel is in view so IntersectionObserver (viewport root) fires
+    const sentinel = page.getByTestId("sidebar-load-more-sentinel");
+    await sentinel.scrollIntoViewIfNeeded();
+
+    await expect(async () => {
+      const count = await sidebar.getChatCount();
+      expect(count).toBeGreaterThan(initialCount);
+    }).toPass({ timeout: TIMEOUTS.MEDIUM });
+
+    const finalCount = await sidebar.getChatCount();
+    expect(finalCount).toBeGreaterThan(initialCount);
   });
 });
