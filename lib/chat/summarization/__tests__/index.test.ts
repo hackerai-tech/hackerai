@@ -1,89 +1,106 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
 import type { Todo } from "@/types";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "../constants";
+import { MAX_TOKENS_FREE } from "@/lib/token-utils";
+
+const mockGenerateText = jest.fn<() => Promise<any>>();
+const mockSaveChatSummary = jest.fn<() => Promise<void>>();
+
+jest.doMock("server-only", () => ({}));
+jest.doMock("ai", () => ({
+  ...jest.requireActual("ai"),
+  generateText: mockGenerateText,
+}));
+jest.doMock("@/lib/db/actions", () => ({
+  saveChatSummary: mockSaveChatSummary,
+}));
+
+const { checkAndSummarizeIfNeeded } =
+  require("../index") as typeof import("../index");
+const { isSummaryMessage, extractSummaryText } =
+  require("../helpers") as typeof import("../helpers");
+
+const FREE_THRESHOLD = Math.floor(
+  MAX_TOKENS_FREE * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+);
+
+const TOKENS_PER_ABOVE_MSG = Math.ceil(FREE_THRESHOLD / 4) + 500;
+
+const createMessageWithTokens = (
+  id: string,
+  role: "user" | "assistant",
+  targetTokens: number,
+): UIMessage => ({
+  id,
+  role,
+  parts: [{ type: "text", text: `[${id}] ${"a ".repeat(targetTokens)}` }],
+});
+
+const createMessage = (id: string, role: "user" | "assistant"): UIMessage => ({
+  id,
+  role,
+  parts: [{ type: "text", text: `Message ${id}` }],
+});
+
+const fourMessages: UIMessage[] = [
+  createMessage("msg-1", "user"),
+  createMessage("msg-2", "assistant"),
+  createMessage("msg-3", "user"),
+  createMessage("msg-4", "assistant"),
+];
+
+const fourMessagesAboveThreshold: UIMessage[] = [
+  createMessageWithTokens("msg-1", "user", TOKENS_PER_ABOVE_MSG),
+  createMessageWithTokens("msg-2", "assistant", TOKENS_PER_ABOVE_MSG),
+  createMessageWithTokens("msg-3", "user", TOKENS_PER_ABOVE_MSG),
+  createMessageWithTokens("msg-4", "assistant", TOKENS_PER_ABOVE_MSG),
+];
+
+const createMockWriter = (): UIMessageStreamWriter =>
+  ({ write: jest.fn() }) as unknown as UIMessageStreamWriter;
+
+const mockLanguageModel = {} as LanguageModel;
+
+/**
+ * Extract all `[msg-N]` IDs from every generateText call's messages.
+ * Used to verify which messages were included in summarization prompts.
+ */
+const collectMessageIdsFromGenerateCalls = (
+  generateTextMock: jest.Mock,
+): Set<string> => {
+  const ids = new Set<string>();
+  for (const call of generateTextMock.mock.calls) {
+    const msgs = call[0].messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; text: string }>;
+    }>;
+    for (const msg of msgs) {
+      const text =
+        typeof msg.content === "string"
+          ? msg.content
+          : msg.content.map((p) => p.text).join("");
+      const matches = text.match(/\[msg-(\d+)\]/g);
+      if (matches) {
+        for (const m of matches) {
+          ids.add(m.slice(1, -1));
+        }
+      }
+    }
+  }
+  return ids;
+};
 
 describe("checkAndSummarizeIfNeeded", () => {
-  const mockGenerateText = jest.fn<() => Promise<any>>();
-
-  const mockConvertToModelMessages = jest.fn<() => Promise<any[]>>();
-  const mockCountMessagesTokens = jest.fn<() => number>();
-  const mockGetMaxTokensForSubscription = jest.fn<() => number>();
-  const mockWriteSummarizationStarted = jest.fn<() => void>();
-  const mockWriteSummarizationCompleted = jest.fn<() => void>();
-  const mockSaveChatSummary = jest.fn<() => Promise<void>>();
-  const mockUuid = jest.fn<() => string>();
-
-  const mockWriter = {} as UIMessageStreamWriter;
-  const mockLanguageModel = {} as LanguageModel;
+  let mockWriter: UIMessageStreamWriter;
 
   beforeEach(() => {
-    jest.resetModules();
     jest.clearAllMocks();
-
-    mockUuid.mockReturnValue("test-uuid-123");
-    mockConvertToModelMessages.mockResolvedValue([]);
     mockSaveChatSummary.mockResolvedValue(undefined);
+    mockWriter = createMockWriter();
   });
-
-  const getIsolatedModule = () => {
-    let isolatedModule: typeof import("../index");
-
-    jest.isolateModules(() => {
-      jest.doMock("server-only", () => ({}));
-
-      jest.doMock("ai", () => ({
-        generateText: mockGenerateText,
-        convertToModelMessages: mockConvertToModelMessages,
-      }));
-
-      jest.doMock("uuid", () => ({
-        v4: mockUuid,
-      }));
-
-      jest.doMock("@/lib/token-utils", () => ({
-        countMessagesTokens: mockCountMessagesTokens,
-        getMaxTokensForSubscription: mockGetMaxTokensForSubscription,
-      }));
-
-      jest.doMock("@/lib/utils/stream-writer-utils", () => ({
-        writeSummarizationStarted: mockWriteSummarizationStarted,
-        writeSummarizationCompleted: mockWriteSummarizationCompleted,
-      }));
-
-      jest.doMock("@/lib/db/actions", () => ({
-        saveChatSummary: mockSaveChatSummary,
-      }));
-
-      isolatedModule = require("../index");
-    });
-
-    return isolatedModule!;
-  };
-
-  const createMessage = (
-    id: string,
-    role: "user" | "assistant",
-  ): UIMessage => ({
-    id,
-    role,
-    parts: [{ type: "text", text: `Message ${id}` }],
-  });
-
-  const fourMessages: UIMessage[] = [
-    createMessage("msg-1", "user"),
-    createMessage("msg-2", "assistant"),
-    createMessage("msg-3", "user"),
-    createMessage("msg-4", "assistant"),
-  ];
-
-  const setupAboveThreshold = () => {
-    mockCountMessagesTokens.mockReturnValue(9500);
-    mockGetMaxTokensForSubscription.mockReturnValue(10000);
-  };
 
   it("should skip summarization when message count is insufficient", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
     const messages = [createMessage("msg-1", "user")];
 
     const result = await checkAndSummarizeIfNeeded(
@@ -102,11 +119,6 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should skip summarization when tokens are below threshold", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    mockCountMessagesTokens.mockReturnValue(1000);
-    mockGetMaxTokensForSubscription.mockReturnValue(10000);
-
     const result = await checkAndSummarizeIfNeeded(
       fourMessages,
       "free",
@@ -121,13 +133,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should summarize and return correct structure when threshold exceeded", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
     const result = await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -145,17 +154,16 @@ describe("checkAndSummarizeIfNeeded", () => {
       type: "text",
       text: "<context_summary>\nTest summary content\n</context_summary>",
     });
-    expect(result.summarizedMessages.slice(1)).toEqual(fourMessages.slice(-2));
+    expect(result.summarizedMessages.slice(1)).toEqual(
+      fourMessagesAboveThreshold.slice(-2),
+    );
   });
 
   it("should use agent prompt when mode is agent", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Agent summary" });
 
     const result = await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "agent",
@@ -172,13 +180,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should persist summary when chatId is provided", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
     await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -194,13 +199,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should skip database persistence for temporary chats", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
     await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -211,14 +213,11 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
   });
 
-  it("should use fallback summary and complete UI flow when AI fails", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
+  it("should write summarization completed even when AI fails", async () => {
     mockGenerateText.mockRejectedValue(new Error("API error"));
 
     const result = await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -226,21 +225,24 @@ describe("checkAndSummarizeIfNeeded", () => {
       null,
     );
 
-    expect(result.needsSummarization).toBe(true);
-    expect(result.summaryText).toContain("Summary of");
-    expect(result.summaryText).toContain("2 messages");
-    expect(mockWriteSummarizationCompleted).toHaveBeenCalled();
+    expect(result.needsSummarization).toBe(false);
+    expect(result.summaryText).toBeNull();
+
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const completedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(completedWrite).toBeDefined();
   });
 
-  it("should complete UI flow even when database save fails", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
+  it("should write summarization completed even when database save fails", async () => {
     mockGenerateText.mockResolvedValue({ text: "Summary" });
     mockSaveChatSummary.mockRejectedValue(new Error("DB error"));
 
     const result = await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -250,13 +252,17 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Summary");
-    expect(mockWriteSummarizationCompleted).toHaveBeenCalled();
+
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const completedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(completedWrite).toBeDefined();
   });
 
   it("should include todo list in summary message when todos exist", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
     const todos: Todo[] = [
@@ -266,7 +272,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     ];
 
     const result = await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -301,11 +307,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
   });
 
-  it("should abort summarization and skip persist/completion when signal is aborted", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
-
+  it("should abort summarization and not write completed when signal is aborted", async () => {
     const abortController = new AbortController();
     const abortError = new DOMException(
       "The operation was aborted",
@@ -318,7 +320,7 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     await expect(
       checkAndSummarizeIfNeeded(
-        fourMessages,
+        fourMessagesAboveThreshold,
         "free",
         mockLanguageModel,
         "ask",
@@ -330,21 +332,29 @@ describe("checkAndSummarizeIfNeeded", () => {
       ),
     ).rejects.toThrow(abortError);
 
-    expect(mockWriteSummarizationStarted).toHaveBeenCalled();
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const startedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "started",
+    );
+    const completedWrite = writeCalls.find(
+      (call) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(startedWrite).toBeDefined();
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
-    expect(mockWriteSummarizationCompleted).not.toHaveBeenCalled();
+    expect(completedWrite).toBeUndefined();
   });
 
   it("should pass abortSignal to generateText", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Summary" });
 
     const abortController = new AbortController();
 
     await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -363,13 +373,10 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should not include todo block in summary when todos are empty", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Test summary content" });
 
     const result = await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -389,9 +396,6 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should use real message ID as cutoff when input starts with summary message", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Updated summary" });
 
     const summaryMsg: UIMessage = {
@@ -406,10 +410,10 @@ describe("checkAndSummarizeIfNeeded", () => {
     };
 
     const realMessages = [
-      createMessage("real-1", "user"),
-      createMessage("real-2", "assistant"),
-      createMessage("real-3", "user"),
-      createMessage("real-4", "assistant"),
+      createMessageWithTokens("real-1", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("real-2", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("real-3", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("real-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
     const result = await checkAndSummarizeIfNeeded(
@@ -422,16 +426,11 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    // Cutoff must be a real message ID, NOT the synthetic summary's ID
     expect(result.cutoffMessageId).toBe("real-2");
     expect(result.cutoffMessageId).not.toBe("synthetic-uuid-not-in-db");
   });
 
   it("should skip re-summarization when only summary + 2 real messages", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
-
     const summaryMsg: UIMessage = {
       id: "synthetic-uuid",
       role: "user",
@@ -465,9 +464,6 @@ describe("checkAndSummarizeIfNeeded", () => {
   });
 
   it("should pass existing summary text for incremental summarization", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
-
-    setupAboveThreshold();
     mockGenerateText.mockResolvedValue({ text: "Merged summary" });
 
     const summaryMsg: UIMessage = {
@@ -482,10 +478,10 @@ describe("checkAndSummarizeIfNeeded", () => {
     };
 
     const realMessages = [
-      createMessage("real-1", "user"),
-      createMessage("real-2", "assistant"),
-      createMessage("real-3", "user"),
-      createMessage("real-4", "assistant"),
+      createMessageWithTokens("real-1", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("real-2", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("real-3", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("real-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
     await checkAndSummarizeIfNeeded(
@@ -497,7 +493,6 @@ describe("checkAndSummarizeIfNeeded", () => {
       "chat-123",
     );
 
-    // Verify generateText was called with system prompt containing previous_summary
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
         system: expect.stringContaining("<previous_summary>"),
@@ -515,14 +510,163 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
   });
 
-  it("should handle normal first-time summarization unchanged", async () => {
-    const { checkAndSummarizeIfNeeded } = getIsolatedModule();
+  it("should produce 2 summaries when threshold is triggered twice", async () => {
+    mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
+    mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
 
-    setupAboveThreshold();
+    const result1 = await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+
+    expect(result1.needsSummarization).toBe(true);
+    expect(result1.cutoffMessageId).toBe("msg-2");
+
+    const newMessages = [
+      createMessageWithTokens("msg-5", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-6", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-7", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-8", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const secondInput = [...result1.summarizedMessages, ...newMessages];
+
+    const result2 = await checkAndSummarizeIfNeeded(
+      secondInput,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+
+    expect(result2.needsSummarization).toBe(true);
+    expect(mockSaveChatSummary).toHaveBeenCalledTimes(2);
+    expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ summaryUpToMessageId: "msg-2" }),
+    );
+    expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        summaryUpToMessageId: expect.not.stringMatching(/^msg-2$/),
+      }),
+    );
+
+    const secondCallArgs = mockGenerateText.mock.calls[1][0];
+    expect(secondCallArgs.system).toContain("<previous_summary>");
+    expect(secondCallArgs.system).toContain("First summary");
+
+    // Verify only messages between cutoffs are sent (not the summary message)
+    const secondCallMessages = secondCallArgs.messages as Array<{
+      role: string;
+      content: string | Array<{ type: string; text: string }>;
+    }>;
+    const hasContextSummary = secondCallMessages.some((m) => {
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : m.content.map((p) => p.text).join("");
+      return text.includes("<context_summary>");
+    });
+    expect(hasContextSummary).toBe(false);
+
+    // First call: msg-1, msg-2 converted + 1 summarization prompt
+    const firstCallMessages = mockGenerateText.mock.calls[0][0].messages;
+    expect(firstCallMessages).toHaveLength(3);
+    // Second call: msg-3..msg-6 converted + 1 summarization prompt
+    expect(secondCallMessages).toHaveLength(5);
+
+    expect(result2.summarizedMessages).toHaveLength(3);
+    expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
+    expect(extractSummaryText(result2.summarizedMessages[0])).toBe(
+      "Second summary",
+    );
+  });
+
+  it("should pass every message up to the last cutoff through generateText at least once", async () => {
+    mockGenerateText.mockResolvedValueOnce({ text: "First summary" });
+    mockGenerateText.mockResolvedValueOnce({ text: "Second summary" });
+    mockGenerateText.mockResolvedValueOnce({ text: "Third summary" });
+
+    // Round 1: msg-1..msg-4
+    const round1Messages = [
+      createMessageWithTokens("msg-1", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-2", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-3", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-4", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const result1 = await checkAndSummarizeIfNeeded(
+      round1Messages,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+    expect(result1.cutoffMessageId).toBe("msg-2");
+
+    // Round 2: result1 + msg-5..msg-8
+    const round2Input = [
+      ...result1.summarizedMessages,
+      createMessageWithTokens("msg-5", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-6", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-7", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-8", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const result2 = await checkAndSummarizeIfNeeded(
+      round2Input,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+    expect(result2.cutoffMessageId).toBe("msg-6");
+
+    // Round 3: result2 + msg-9..msg-12
+    const round3Input = [
+      ...result2.summarizedMessages,
+      createMessageWithTokens("msg-9", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-10", "assistant", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-11", "user", TOKENS_PER_ABOVE_MSG),
+      createMessageWithTokens("msg-12", "assistant", TOKENS_PER_ABOVE_MSG),
+    ];
+
+    const result3 = await checkAndSummarizeIfNeeded(
+      round3Input,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      "chat-123",
+    );
+    expect(result3.cutoffMessageId).toBe("msg-10");
+
+    // Collect all message IDs that were passed to generateText across all 3 calls
+    const summarizedIds = collectMessageIdsFromGenerateCalls(mockGenerateText);
+
+    // Every message up to the last cutoff (msg-10) must have been summarized
+    for (let i = 1; i <= 10; i++) {
+      expect(summarizedIds).toContain(`msg-${i}`);
+    }
+
+    // Messages after the last cutoff should NOT have been summarized
+    expect(summarizedIds).not.toContain("msg-11");
+    expect(summarizedIds).not.toContain("msg-12");
+  });
+
+  it("should handle normal first-time summarization unchanged", async () => {
     mockGenerateText.mockResolvedValue({ text: "First summary" });
 
     const result = await checkAndSummarizeIfNeeded(
-      fourMessages,
+      fourMessagesAboveThreshold,
       "free",
       mockLanguageModel,
       "ask",
@@ -532,7 +676,6 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.cutoffMessageId).toBe("msg-2");
-    // System prompt should NOT contain previous_summary
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
         system: expect.not.stringContaining("<previous_summary>"),
@@ -542,27 +685,6 @@ describe("checkAndSummarizeIfNeeded", () => {
 });
 
 describe("isSummaryMessage and extractSummaryText", () => {
-  let helpers: typeof import("../helpers");
-
-  beforeEach(() => {
-    jest.resetModules();
-    jest.isolateModules(() => {
-      jest.doMock("ai", () => ({
-        generateText: jest.fn(),
-        convertToModelMessages: jest.fn(),
-      }));
-      jest.doMock("uuid", () => ({ v4: jest.fn() }));
-      jest.doMock("@/lib/token-utils", () => ({
-        countMessagesTokens: jest.fn(),
-        getMaxTokensForSubscription: jest.fn(),
-      }));
-      jest.doMock("@/lib/db/actions", () => ({
-        saveChatSummary: jest.fn(),
-      }));
-      helpers = require("../helpers");
-    });
-  });
-
   it("should detect summary messages correctly", () => {
     const summaryMsg: UIMessage = {
       id: "test",
@@ -587,9 +709,9 @@ describe("isSummaryMessage and extractSummaryText", () => {
       parts: [],
     };
 
-    expect(helpers.isSummaryMessage(summaryMsg)).toBe(true);
-    expect(helpers.isSummaryMessage(normalMsg)).toBe(false);
-    expect(helpers.isSummaryMessage(emptyMsg)).toBe(false);
+    expect(isSummaryMessage(summaryMsg)).toBe(true);
+    expect(isSummaryMessage(normalMsg)).toBe(false);
+    expect(isSummaryMessage(emptyMsg)).toBe(false);
   });
 
   it("should extract summary text from summary messages", () => {
@@ -610,9 +732,7 @@ describe("isSummaryMessage and extractSummaryText", () => {
       parts: [{ type: "text", text: "Not a summary" }],
     };
 
-    expect(helpers.extractSummaryText(summaryMsg)).toBe(
-      "Extracted content here",
-    );
-    expect(helpers.extractSummaryText(normalMsg)).toBeNull();
+    expect(extractSummaryText(summaryMsg)).toBe("Extracted content here");
+    expect(extractSummaryText(normalMsg)).toBeNull();
   });
 });

@@ -57,7 +57,7 @@ async function getUserId(email: string): Promise<string | null> {
 }
 
 async function resetRateLimitForUser(
-  user: TestUserTier,
+  user: string,
   userEmail: string,
 ): Promise<void> {
   if (!REDIS_URL || !REDIS_TOKEN) {
@@ -87,7 +87,10 @@ async function resetRateLimitForUser(
     token: REDIS_TOKEN,
   });
 
-  console.log(`\n🔄 Resetting all rate limits for ${user} tier user...\n`);
+  const label = ["free", "pro", "ultra"].includes(user)
+    ? `${user} tier user`
+    : user;
+  console.log(`\n🔄 Resetting all rate limits for ${label}...\n`);
 
   try {
     // Get all keys for this user using pattern matching
@@ -107,7 +110,7 @@ async function resetRateLimitForUser(
       console.log(`✅ Deleted: ${key}`);
     }
 
-    console.log(`\n✨ All rate limits reset for ${user} tier user!`);
+    console.log(`\n✨ All rate limits reset for ${label}!`);
   } catch (error) {
     console.error("\n❌ Error resetting rate limits:", error);
     process.exit(1);
@@ -183,12 +186,20 @@ Note: This script automatically looks up user IDs from WorkOS
   }
 
   // Parse user argument
-  const user = args[0] as TestUserTier;
+  const arg = args[0];
+
+  // Check if it's an email address (arbitrary user)
+  if (arg.includes("@")) {
+    await resetRateLimitForUser(arg, arg);
+    return;
+  }
+
+  const user = arg as TestUserTier;
 
   // Validate user
   if (!TEST_USERS[user]) {
     console.error(
-      `❌ Error: Invalid user "${user}". Must be: free | pro | ultra`,
+      `❌ Error: Invalid user "${user}". Must be: free | pro | ultra | an email address`,
     );
     console.log("\n💡 Tip: Use --help to see available options");
     process.exit(1);

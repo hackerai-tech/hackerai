@@ -88,6 +88,7 @@ export const checkAndSummarizeIfNeeded = async (
   todos: Todo[] = [],
   abortSignal?: AbortSignal,
   ensureSandbox?: EnsureSandbox,
+  systemPromptTokens: number = 0,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -106,7 +107,14 @@ export const checkAndSummarizeIfNeeded = async (
   }
 
   // Check token threshold on full messages (including summary) to determine need
-  if (!isAboveTokenThreshold(uiMessages, subscription, fileTokens)) {
+  if (
+    !isAboveTokenThreshold(
+      uiMessages,
+      subscription,
+      fileTokens,
+      systemPromptTokens,
+    )
+  ) {
     return NO_SUMMARIZATION(uiMessages);
   }
 
@@ -118,44 +126,54 @@ export const checkAndSummarizeIfNeeded = async (
 
   writeSummarizationStarted(writer);
 
-  let summaryText = await generateSummaryText(
-    messagesToSummarize,
-    languageModel,
-    mode,
-    abortSignal,
-    existingSummaryText ?? undefined,
-  );
+  try {
+    let summaryText = await generateSummaryText(
+      messagesToSummarize,
+      languageModel,
+      mode,
+      abortSignal,
+      existingSummaryText ?? undefined,
+    );
 
-  // In agent modes, save the full transcript of summarized messages to the sandbox
-  // so the agent can consult the raw conversation later if context is lost
-  if (ensureSandbox && (mode === "agent" || mode === "agent-long")) {
-    try {
-      const sandbox = await ensureSandbox();
-      const savedPath = await saveTranscriptToSandbox(
-        messagesToSummarize,
-        sandbox,
-      );
-      if (savedPath) {
-        summaryText += buildTranscriptNotice(savedPath);
+    // In agent modes, save the full transcript of summarized messages to the sandbox
+    // so the agent can consult the raw conversation later if context is lost
+    if (ensureSandbox && (mode === "agent" || mode === "agent-long")) {
+      try {
+        const sandbox = await ensureSandbox();
+        const savedPath = await saveTranscriptToSandbox(
+          messagesToSummarize,
+          sandbox,
+        );
+        if (savedPath) {
+          summaryText += buildTranscriptNotice(savedPath);
+        }
+      } catch (error) {
+        console.error(
+          "[Summarization] Failed to ensure sandbox for transcript:",
+          error,
+        );
       }
-    } catch (error) {
-      console.error(
-        "[Summarization] Failed to ensure sandbox for transcript:",
-        error,
-      );
+    }
+
+    const summaryMessage = buildSummaryMessage(summaryText, todos);
+
+    await persistSummary(chatId, summaryText, cutoffMessageId);
+
+    return {
+      needsSummarization: true,
+      summarizedMessages: [summaryMessage, ...lastMessages],
+      cutoffMessageId,
+      summaryText,
+    };
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      throw error;
+    }
+    console.error("[Summarization] Failed:", error);
+    return NO_SUMMARIZATION(uiMessages);
+  } finally {
+    if (!abortSignal?.aborted) {
+      writeSummarizationCompleted(writer);
     }
   }
-
-  const summaryMessage = buildSummaryMessage(summaryText, todos);
-
-  await persistSummary(chatId, summaryText, cutoffMessageId);
-
-  writeSummarizationCompleted(writer);
-
-  return {
-    needsSummarization: true,
-    summarizedMessages: [summaryMessage, ...lastMessages],
-    cutoffMessageId,
-    summaryText,
-  };
 };

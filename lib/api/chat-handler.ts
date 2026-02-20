@@ -26,7 +26,11 @@ import {
   UsageRefundTracker,
 } from "@/lib/rate-limit";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
-import { countMessagesTokens } from "@/lib/token-utils";
+import {
+  countMessagesTokens,
+  getMaxTokensForSubscription,
+} from "@/lib/token-utils";
+import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
@@ -37,6 +41,10 @@ import {
   buildProviderOptions,
   isXaiSafetyError,
   isProviderApiError,
+  computeContextUsage,
+  writeContextUsage,
+  contextUsageEnabled,
+  runSummarizationStep,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -64,7 +72,6 @@ import {
 } from "@/lib/utils/sandbox-file-utils";
 import { after } from "next/server";
 import { createResumableStreamContext } from "resumable-stream";
-import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -424,6 +431,30 @@ export const createChatHandler = (
             sandboxContext,
           );
 
+          const systemPromptTokens = countTokens(currentSystemPrompt);
+
+          // Compute and stream actual context usage breakdown (when enabled)
+          const ctxSystemTokens = contextUsageEnabled ? systemPromptTokens : 0;
+          const ctxMaxTokens = contextUsageEnabled
+            ? getMaxTokensForSubscription(subscription)
+            : 0;
+          let ctxUsage = contextUsageEnabled
+            ? computeContextUsage(
+                truncatedMessages,
+                fileTokens,
+                ctxSystemTokens,
+                ctxMaxTokens,
+              )
+            : {
+                systemTokens: 0,
+                summaryTokens: 0,
+                messagesTokens: 0,
+                maxTokens: 0,
+              };
+          if (contextUsageEnabled) {
+            writeContextUsage(writer, ctxUsage);
+          }
+
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
@@ -479,30 +510,37 @@ export const createChatHandler = (
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
-                    const { needsSummarization, summarizedMessages } =
-                      await checkAndSummarizeIfNeeded(
-                        finalMessages,
-                        subscription,
-                        trackedProvider.languageModel(modelName),
-                        mode,
-                        writer,
-                        chatId,
-                        fileTokens,
-                        getTodoManager().getAllTodos(),
-                        userStopSignal.signal,
-                        ensureSandbox,
-                      );
+                    const result = await runSummarizationStep({
+                      messages: finalMessages,
+                      subscription,
+                      languageModel: trackedProvider.languageModel(modelName),
+                      mode,
+                      writer,
+                      chatId,
+                      fileTokens,
+                      todos: getTodoManager().getAllTodos(),
+                      abortSignal: userStopSignal.signal,
+                      ensureSandbox,
+                      systemPromptTokens,
+                      ctxSystemTokens,
+                      ctxMaxTokens,
+                    });
 
-                    if (needsSummarization) {
+                    if (
+                      result.needsSummarization &&
+                      result.summarizedMessages
+                    ) {
                       hasSummarized = true;
-                      // Push only the completed event to parts array for persistence
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
                       );
-                      // Return updated messages for this step
+                      if (result.contextUsage) {
+                        ctxUsage = result.contextUsage;
+                      }
                       return {
-                        messages:
-                          await convertToModelMessages(summarizedMessages),
+                        messages: await convertToModelMessages(
+                          result.summarizedMessages,
+                        ),
                       };
                     }
                   }
@@ -1073,6 +1111,15 @@ export const createChatHandler = (
                     },
                   );
                   await nextJsAxiomLogger.flush();
+                }
+
+                // Send updated context usage with output tokens included
+                if (contextUsageEnabled) {
+                  writeContextUsage(writer, {
+                    ...ctxUsage,
+                    messagesTokens:
+                      ctxUsage.messagesTokens + accumulatedOutputTokens,
+                  });
                 }
 
                 // Deduct accumulated usage if not already done
