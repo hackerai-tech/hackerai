@@ -10,6 +10,11 @@ import {
   smoothStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
+import {
+  tokenExhaustedAfterSummarization,
+  TOKEN_EXHAUSTION_FINISH_REASON,
+  TOKEN_STOP_THRESHOLD,
+} from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -459,6 +464,8 @@ export const createChatHandler = (
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let hasSummarized = false;
+          let stoppedDueToTokenExhaustion = false;
+          let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
 
           // Track metrics for data collection
@@ -524,6 +531,7 @@ export const createChatHandler = (
                       systemPromptTokens,
                       ctxSystemTokens,
                       ctxMaxTokens,
+                      providerInputTokens: lastStepInputTokens,
                     });
 
                     if (
@@ -602,7 +610,15 @@ export const createChatHandler = (
                 subscription,
               ),
               experimental_transform: smoothStream({ chunking: "word" }),
-              stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
+              stopWhen: isAgentMode(mode)
+                ? [
+                    stepCountIs(getMaxStepsForUser(mode, subscription)),
+                    tokenExhaustedAfterSummarization({
+                      getLastStepInputTokens: () => lastStepInputTokens,
+                      getHasSummarized: () => hasSummarized,
+                    }),
+                  ]
+                : stepCountIs(getMaxStepsForUser(mode, subscription)),
               onChunk: async (chunk) => {
                 if (chunk.chunk.type === "tool-call") {
                   const sandboxType = sandboxManager.getSandboxType(
@@ -628,6 +644,7 @@ export const createChatHandler = (
                 if (usage) {
                   accumulatedInputTokens += usage.inputTokens || 0;
                   accumulatedOutputTokens += usage.outputTokens || 0;
+                  lastStepInputTokens = usage.inputTokens || 0;
                   // Provider cost when available; deductUsage falls back to token-based calculation
                   const stepCost = (usage as { raw?: { cost?: number } }).raw
                     ?.cost;
@@ -637,9 +654,19 @@ export const createChatHandler = (
                 }
               },
               onFinish: async ({ finishReason, usage, response }) => {
+                // Detect if we stopped due to token exhaustion after summarization
+                if (
+                  hasSummarized &&
+                  lastStepInputTokens > TOKEN_STOP_THRESHOLD
+                ) {
+                  stoppedDueToTokenExhaustion = true;
+                }
+
                 // If preemptive timeout triggered, use "timeout" as finish reason
                 if (preemptiveTimeout?.isPreemptive()) {
                   streamFinishReason = "timeout";
+                } else if (stoppedDueToTokenExhaustion) {
+                  streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
                 } else {
                   streamFinishReason = finishReason;
                 }

@@ -1,20 +1,26 @@
 export const AGENT_SUMMARIZATION_PROMPT =
-  "You are an agent performing context condensation for a security agent. Your job is to compress scan data while preserving ALL operationally critical information for continuing the security assessment.\n\n" +
-  "CRITICAL ELEMENTS TO PRESERVE:\n" +
-  "- Discovered vulnerabilities and potential attack vectors\n" +
-  "- Scan results and tool outputs (compressed but maintaining key findings)\n" +
-  "- Access credentials, tokens, or authentication details found\n" +
-  "- System architecture insights and potential weak points\n" +
-  "- Progress made in the assessment\n" +
-  "- Failed attempts and dead ends (to avoid duplication)\n" +
-  "- Any decisions made about the testing approach\n\n" +
-  "COMPRESSION GUIDELINES:\n" +
-  "- Preserve exact technical details (URLs, paths, parameters, payloads)\n" +
-  "- Summarize verbose tool outputs while keeping critical findings\n" +
-  "- Maintain version numbers, specific technologies identified\n" +
-  "- Keep exact error messages that might indicate vulnerabilities\n" +
-  "- Compress repetitive or similar findings into consolidated form\n\n" +
-  "Remember: Another security agent will use this summary to continue the assessment. They must be able to pick up exactly where you left off without losing any operational advantage or context needed to find vulnerabilities.";
+  "You are a context condensation engine. You receive a conversation between a user and a security agent. " +
+  "You must output ONLY a structured summary — never continue the conversation, never role-play as the agent, " +
+  "and never produce tool calls or action plans.\n\n" +
+  "OUTPUT FORMAT (use these exact section headers):\n" +
+  "## Target & Scope\n" +
+  "One-line description of the target and assessment scope.\n\n" +
+  "## Key Findings\n" +
+  "Bulleted list of discovered vulnerabilities, attack vectors, and critical observations. " +
+  "Include exact URLs, paths, parameters, payloads, version numbers, and error messages.\n\n" +
+  "## Progress & Decisions\n" +
+  "What has been completed, what approach was chosen, and what the agent was doing when interrupted.\n\n" +
+  "## Failed Attempts\n" +
+  "Dead ends and approaches that didn't work (to avoid repeating them).\n\n" +
+  "## Next Steps\n" +
+  "What the agent should do next to continue the assessment.\n\n" +
+  "RULES:\n" +
+  "- Output ONLY the structured summary. No preamble, no conversational text.\n" +
+  "- Preserve exact technical details (URLs, IPs, ports, headers, payloads).\n" +
+  "- Compress verbose tool outputs into key findings.\n" +
+  "- Consolidate repetitive or similar findings.\n" +
+  "- Keep credentials, tokens, or authentication details found.\n" +
+  "- Another agent will use this summary to continue — they must pick up exactly where you left off.";
 
 export const ASK_SUMMARIZATION_PROMPT =
   "You are performing context condensation for a conversational assistant. Your job is to compress the conversation while preserving key information for continuity.\n\n" +
