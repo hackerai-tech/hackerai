@@ -24,7 +24,12 @@ import {
   writeUploadCompleteStatus,
   createSummarizationCompletedPart,
 } from "@/lib/utils/stream-writer-utils";
-import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
+import {
+  runObservationalMemoryStepAsync,
+  injectObservationsIntoMessages,
+  injectObservationsIntoModelMessages,
+  type ObservationalMemoryStepResult,
+} from "@/lib/api/observational-memory-helpers";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -130,6 +135,8 @@ export const agentStreamTask = task({
       hasFileAttachments: hasFiles,
       fileCount,
       fileImageCount,
+      observationContext: existingObservationContext,
+      observedMessageIds: serializedObservedIds,
     } = payload;
 
     const rateLimitInfo = deserializeRateLimitInfo(serializedRateLimitInfo);
@@ -306,9 +313,19 @@ export const agentStreamTask = task({
         sandboxContext,
       );
 
+      // Observation context loaded during payload preparation (KV-cache
+      // optimization: kept separate from system prompt, injected into messages).
+      let hasObserved = !!existingObservationContext;
+      let currentObservationContext: string | null = existingObservationContext;
+      let currentObservedIds: Set<string> = new Set(
+        serializedObservedIds ?? [],
+      );
+
+      // Pending observation result from async callback (checked in prepareStep)
+      let pendingObservation: ObservationalMemoryStepResult | null = null;
+
       let streamFinishReason: string | undefined;
       let finalMessages = processedMessages;
-      let hasSummarized = false;
       const isReasoningModel = isAgentMode(mode);
       // Use permissive types so we can push data parts (e.g. summarization) that aren't tool parts
       const summarizationParts: UIMessagePart<
@@ -341,41 +358,102 @@ export const agentStreamTask = task({
         }
       };
 
+      // Helper to build messages with observation context injected
+      // and observed messages filtered out (observations replace them)
+      const buildMessages = () =>
+        convertToModelMessages(
+          injectObservationsIntoMessages(
+            finalMessages,
+            currentObservationContext,
+            currentObservedIds,
+          ),
+        );
+
       const createStream = async (modelName: string) =>
         streamText({
           model: trackedProvider.languageModel(modelName),
           system: currentSystemPrompt,
-          messages: await convertToModelMessages(finalMessages),
+          messages: await buildMessages(),
           tools,
           prepareStep: async ({ steps, messages }) => {
             try {
-              if (!temporary && !hasSummarized) {
-                const { needsSummarization, summarizedMessages } =
-                  await checkAndSummarizeIfNeeded(
-                    finalMessages,
-                    subscription,
-                    trackedProvider.languageModel(modelName),
-                    mode,
-                    metadataWriter,
+              const stepNum = Array.isArray(steps) ? steps.length : 0;
+
+              // --- Continuous Observational Memory ---
+              // Async callback pattern: the observation runs in background
+              // and pushes results into `pendingObservation` when done.
+              // Each prepareStep checks for pending results (zero DB queries)
+              // and fires a new async observation for the latest messages.
+              if (!temporary && chatId) {
+                logger.info("OM prepareStep", {
+                  step: stepNum,
+                  chatId,
+                  hasPending: !!pendingObservation,
+                  hasObserved,
+                });
+
+                // 1. Check for results from previous async observation (no DB call)
+                if (pendingObservation) {
+                  if (!hasObserved) {
+                    hasObserved = true;
+                    summarizationParts.push(
+                      createSummarizationCompletedPart() as UIMessagePart<
+                        Record<string, unknown>,
+                        Record<string, { input: unknown; output: unknown }>
+                      >,
+                    );
+                  }
+                  currentObservationContext =
+                    pendingObservation.observationContext;
+                  currentObservedIds = pendingObservation.observedMessageIds;
+                  pendingObservation = null;
+
+                  logger.info("Applied pending OM observations", {
+                    step: stepNum,
                     chatId,
-                    fileTokens,
-                    getTodoManager().getAllTodos(),
-                    undefined,
-                    ensureSandbox,
-                  );
-                if (needsSummarization) {
-                  hasSummarized = true;
-                  summarizationParts.push(
-                    createSummarizationCompletedPart() as UIMessagePart<
-                      Record<string, unknown>,
-                      Record<string, { input: unknown; output: unknown }>
-                    >,
-                  );
+                    contextLength: currentObservationContext?.length ?? 0,
+                    observedIds: currentObservedIds.size,
+                  });
+
+                  // 2. Fire next async observation with the growing conversation (non-blocking)
+                  runObservationalMemoryStepAsync({
+                    modelMessages: messages,
+                    chatId,
+                    userId,
+                    onComplete: (result) => {
+                      logger.info("OM onComplete callback fired", {
+                        chatId,
+                        hasObs: result.hasObservations,
+                      });
+                      pendingObservation = result;
+                    },
+                  });
+
+                  // Inject observations into the growing messages (preserves tool calls/results)
                   return {
-                    messages: await convertToModelMessages(summarizedMessages),
+                    messages: injectObservationsIntoModelMessages(
+                      messages,
+                      currentObservationContext,
+                    ),
+                    system: currentSystemPrompt,
                   };
                 }
+
+                // 2. Fire async observation if not already in-flight (non-blocking)
+                runObservationalMemoryStepAsync({
+                  modelMessages: messages,
+                  chatId,
+                  userId,
+                  onComplete: (result) => {
+                    logger.info("OM onComplete callback fired", {
+                      chatId,
+                      hasObs: result.hasObservations,
+                    });
+                    pendingObservation = result;
+                  },
+                });
               }
+
               const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
               const toolResults =
                 (lastStep &&
@@ -582,7 +660,7 @@ export const agentStreamTask = task({
                 finishReason: streamFinishReason,
                 wasAborted: !!isAborted,
                 wasPreemptiveTimeout: false,
-                hadSummarization: hasSummarized,
+                hadSummarization: hasObserved,
               });
             } catch (error) {
               logger.error("onFinish failed", {

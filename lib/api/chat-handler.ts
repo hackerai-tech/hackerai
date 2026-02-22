@@ -44,8 +44,14 @@ import {
   computeContextUsage,
   writeContextUsage,
   contextUsageEnabled,
-  runSummarizationStep,
+  // runSummarizationStep, // Replaced by Observational Memory
 } from "@/lib/api/chat-stream-helpers";
+import {
+  runObservationalMemoryStepAsync,
+  injectObservationsIntoMessages,
+  injectObservationsIntoModelMessages,
+  type ObservationalMemoryStepResult,
+} from "@/lib/api/observational-memory-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
 import {
@@ -206,13 +212,21 @@ export const createChatHandler = (
         ? getUploadBasePath(sandboxPreference)
         : undefined;
 
-      const { processedMessages, selectedModel, sandboxFiles } =
-        await processChatMessages({
-          messages: truncatedMessages,
-          mode,
-          subscription,
-          uploadBasePath,
-        });
+      const {
+        processedMessages,
+        selectedModel,
+        sandboxFiles,
+        observationContext: existingObservationContext,
+        observedMessageIds: existingObservedIds,
+      } = await processChatMessages({
+        messages: truncatedMessages,
+        mode,
+        subscription,
+        uploadBasePath,
+        chatId,
+        userId,
+        temporary,
+      });
 
       // Validate that we have at least one message with content after processing
       // This prevents "must include at least one parts field" errors from providers like Gemini
@@ -455,10 +469,18 @@ export const createChatHandler = (
             writeContextUsage(writer, ctxUsage);
           }
 
+          // Observation context loaded during message processing (KV-cache
+          // optimization: kept separate from system prompt, injected into messages).
+          let hasObserved = !!existingObservationContext;
+          let currentObservationContext: string | null =
+            existingObservationContext;
+          let currentObservedIds: Set<string> = existingObservedIds;
+
+          // Pending observation result from async callback (checked in prepareStep)
+          let pendingObservation: ObservationalMemoryStepResult | null = null;
+
           let streamFinishReason: string | undefined;
-          // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
-          let hasSummarized = false;
           const isReasoningModel = isAgentMode(mode);
 
           // Track metrics for data collection
@@ -497,52 +519,93 @@ export const createChatHandler = (
             }
           };
 
+          // Helper to build messages with observation context injected
+          // and observed messages filtered out (observations replace them)
+          const buildMessages = () =>
+            convertToModelMessages(
+              injectObservationsIntoMessages(
+                finalMessages,
+                currentObservationContext,
+                currentObservedIds,
+              ),
+            );
+
           // Helper to create streamText with a given model (reused for retry)
           const createStream = async (modelName: string) =>
             streamText({
               model: trackedProvider.languageModel(modelName),
               system: currentSystemPrompt,
-              messages: await convertToModelMessages(finalMessages),
+              messages: await buildMessages(),
               tools,
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
-                  // Run summarization check on every step (non-temporary chats only)
-                  // but only summarize once
-                  if (!temporary && !hasSummarized) {
-                    const result = await runSummarizationStep({
-                      messages: finalMessages,
-                      subscription,
-                      languageModel: trackedProvider.languageModel(modelName),
-                      mode,
-                      writer,
-                      chatId,
-                      fileTokens,
-                      todos: getTodoManager().getAllTodos(),
-                      abortSignal: userStopSignal.signal,
-                      ensureSandbox,
-                      systemPromptTokens,
-                      ctxSystemTokens,
-                      ctxMaxTokens,
-                    });
+                  const stepNum = Array.isArray(steps) ? steps.length : 0;
 
-                    if (
-                      result.needsSummarization &&
-                      result.summarizedMessages
-                    ) {
-                      hasSummarized = true;
-                      summarizationParts.push(
-                        createSummarizationCompletedPart(),
-                      );
-                      if (result.contextUsage) {
-                        ctxUsage = result.contextUsage;
+                  // --- Continuous Observational Memory ---
+                  // Async callback pattern: the observation runs in background
+                  // and pushes results into `pendingObservation` when done.
+                  // Each prepareStep checks for pending results (zero DB queries)
+                  // and fires a new async observation for the latest messages.
+                  if (!temporary && chatId) {
+                    console.log(
+                      `[OM] prepareStep step=${stepNum} chatId=${chatId} hasPending=${!!pendingObservation} hasObserved=${hasObserved}`,
+                    );
+
+                    // 1. Check for results from previous async observation (no DB call)
+                    if (pendingObservation) {
+                      if (!hasObserved) {
+                        hasObserved = true;
+                        summarizationParts.push(
+                          createSummarizationCompletedPart(),
+                        );
                       }
+                      currentObservationContext =
+                        pendingObservation.observationContext;
+                      currentObservedIds =
+                        pendingObservation.observedMessageIds;
+                      pendingObservation = null;
+
+                      console.log(
+                        `[OM] Applied pending observations step=${stepNum} chatId=${chatId} ` +
+                          `contextLength=${currentObservationContext?.length ?? 0} observedIds=${currentObservedIds.size}`,
+                      );
+
+                      // 2. Fire next async observation with the growing conversation (non-blocking)
+                      runObservationalMemoryStepAsync({
+                        modelMessages: messages,
+                        chatId,
+                        userId,
+                        onComplete: (result) => {
+                          console.log(
+                            `[OM] onComplete callback fired chatId=${chatId} hasObs=${result.hasObservations}`,
+                          );
+                          pendingObservation = result;
+                        },
+                      });
+
+                      // Inject observations into the growing messages (preserves tool calls/results)
                       return {
-                        messages: await convertToModelMessages(
-                          result.summarizedMessages,
+                        messages: injectObservationsIntoModelMessages(
+                          messages,
+                          currentObservationContext,
                         ),
+                        system: currentSystemPrompt,
                       };
                     }
+
+                    // 2. Fire async observation if not already in-flight (non-blocking)
+                    runObservationalMemoryStepAsync({
+                      modelMessages: messages,
+                      chatId,
+                      userId,
+                      onComplete: (result) => {
+                        console.log(
+                          `[OM] onComplete callback fired chatId=${chatId} hasObs=${result.hasObservations}`,
+                        );
+                        pendingObservation = result;
+                      },
+                    });
                   }
 
                   const lastStep = Array.isArray(steps)
@@ -760,7 +823,7 @@ export const createChatHandler = (
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
                             wasPreemptiveTimeout: false,
-                            hadSummarization: hasSummarized,
+                            hadSummarization: hasObserved,
                           });
 
                           const generatedTitle = await titlePromise;
@@ -935,7 +998,7 @@ export const createChatHandler = (
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
                   wasPreemptiveTimeout: isPreemptiveAbort,
-                  hadSummarization: hasSummarized,
+                  hadSummarization: hasObserved,
                 });
                 logStep("emit_success_event", stepStart);
 

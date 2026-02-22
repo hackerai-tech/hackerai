@@ -48,8 +48,7 @@ const tryFallbackSummary = async (
     if (cutoffMsg && cutoffMsg._creationTime < earliestDeletedTime) {
       await ctx.db.patch(summaryId, {
         summary_text: previousSummaries[i].summary_text,
-        summary_up_to_message_id:
-          previousSummaries[i].summary_up_to_message_id,
+        summary_up_to_message_id: previousSummaries[i].summary_up_to_message_id,
         previous_summaries: previousSummaries.slice(i + 1),
       });
       return true;
@@ -759,6 +758,7 @@ export const getMessagesPageForBackend = query({
           v.literal("system"),
         ),
         parts: v.array(v.any()),
+        createdAt: v.number(),
       }),
     ),
     isDone: v.boolean(),
@@ -791,6 +791,7 @@ export const getMessagesPageForBackend = query({
         id: message.id,
         role: message.role,
         parts: message.parts,
+        createdAt: message._creationTime,
       })),
       isDone: result.isDone,
       continueCursor: result.continueCursor,

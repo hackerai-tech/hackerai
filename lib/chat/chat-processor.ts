@@ -349,18 +349,25 @@ const filterUIOnlyParts = <T extends { parts?: any[] }>(message: T): T => {
 };
 
 /**
- * Processes chat messages with moderation, truncation, and analytics
+ * Processes chat messages with moderation, truncation, and analytics.
+ * Optionally loads existing observation context when chatId/userId are provided.
  */
 export async function processChatMessages({
   messages,
   mode,
   subscription,
   uploadBasePath,
+  chatId,
+  userId,
+  temporary,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
   subscription: SubscriptionTier;
   uploadBasePath?: string;
+  chatId?: string;
+  userId?: string;
+  temporary?: boolean;
 }) {
   // Strip provider metadata from incoming messages early
   const cleanMessages = messages.map(stripProviderMetadata);
@@ -445,9 +452,23 @@ export async function processChatMessages({
     addAuthMessage(cleanedMessages);
   }
 
+  // Load existing observation context + observed message IDs
+  // (KV-cache optimization: stored separately from system prompt so it can be injected into messages)
+  let observationContext: string | null = null;
+  let observedMessageIds: Set<string> = new Set();
+  if (!temporary && chatId && userId) {
+    const { loadExistingObservationContext } =
+      await import("@/lib/api/observational-memory-helpers");
+    const omData = await loadExistingObservationContext(chatId, userId);
+    observationContext = omData.observationContext;
+    observedMessageIds = omData.observedMessageIds;
+  }
+
   return {
     processedMessages: cleanedMessages,
     selectedModel,
     sandboxFiles,
+    observationContext,
+    observedMessageIds,
   };
 }

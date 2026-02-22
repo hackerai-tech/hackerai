@@ -60,3 +60,6 @@ packages/desktop/node_modules/
 packages/desktop/src-tauri/target/
 
 .trigger
+
+# Mastra Observational Memory (LibSQL)
+mastra-memory.db*

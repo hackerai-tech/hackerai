@@ -77,6 +77,8 @@ export type AgentTaskPayload = {
   hasFileAttachments: boolean;
   fileCount: number;
   fileImageCount: number;
+  observationContext: string | null;
+  observedMessageIds?: string[];
 };
 
 function serializeRateLimitInfo(
@@ -196,13 +198,21 @@ export async function prepareAgentPayload(
 
   const uploadBasePath = getUploadBasePath(sandboxPreference);
 
-  const { processedMessages, selectedModel, sandboxFiles } =
-    await processChatMessages({
-      messages: truncatedMessages,
-      mode,
-      subscription,
-      uploadBasePath,
-    });
+  const {
+    processedMessages,
+    selectedModel,
+    sandboxFiles,
+    observationContext,
+    observedMessageIds,
+  } = await processChatMessages({
+    messages: truncatedMessages,
+    mode,
+    subscription,
+    uploadBasePath,
+    chatId,
+    userId,
+    temporary,
+  });
 
   if (!processedMessages || processedMessages.length === 0) {
     throw new ChatSDKError(
@@ -292,5 +302,7 @@ export async function prepareAgentPayload(
     hasFileAttachments: hasFileAttachments(truncatedMessages),
     fileCount: fileCounts.totalFiles,
     fileImageCount: fileCounts.imageCount,
+    observationContext,
+    observedMessageIds: [...observedMessageIds],
   };
 }

@@ -18,6 +18,10 @@ const baseProviders = {
   "summarization-model": openrouter("google/gemini-3-flash-preview"),
 } as Record<string, any>;
 
+// Mastra Observational Memory model identifier (used by @mastra/memory)
+export const OBSERVATIONAL_MEMORY_MODEL =
+  "openrouter/google/gemini-3-flash-preview";
+
 export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> = {

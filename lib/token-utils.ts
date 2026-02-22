@@ -10,6 +10,14 @@ export const MAX_TOKENS_PAID = 128000;
  */
 export const MAX_TOKENS_FILE = 24000;
 
+/**
+ * When observations exist, messages are trimmed to this budget.
+ * Observations capture compressed context from older messages,
+ * so the model receives: trimmed recent messages + observation summary.
+ * Matches the `messageTokens` config in observational-memory.ts.
+ */
+export const OBSERVATION_MESSAGE_BUDGET = Math.floor(MAX_TOKENS_PAID * 0.55);
+
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
 ): number => {

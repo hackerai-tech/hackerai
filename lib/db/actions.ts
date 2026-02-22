@@ -258,7 +258,12 @@ export async function getMessagesByChatId({
 
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
-            page: UIMessage[];
+            page: Array<{
+              id: string;
+              role: "user" | "assistant" | "system";
+              parts: any[];
+              createdAt: number;
+            }>;
             isDone: boolean;
             continueCursor: string | null;
           } = await convex.query(api.messages.getMessagesPageForBackend, {
@@ -267,7 +272,12 @@ export async function getMessagesByChatId({
             userId,
             paginationOpts: { numItems: PAGE_SIZE, cursor },
           });
-          const { page, isDone, continueCursor: nextCursor } = pageResult;
+          // Convert createdAt timestamp (epoch ms) to Date for UIMessage compatibility
+          const page: UIMessage[] = pageResult.page.map((msg) => ({
+            ...msg,
+            createdAt: new Date(msg.createdAt),
+          })) as UIMessage[];
+          const { isDone, continueCursor: nextCursor } = pageResult;
 
           fetchedDesc = fetchedDesc.concat(page);
           pagesFetched++;
