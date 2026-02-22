@@ -227,6 +227,27 @@ export function extractSidebarContentFromMessage(
       });
     }
 
+    // File write/append streaming - extract during input-streaming/input-available
+    // so sidebar auto-follow works for file creation (like terminals)
+    if (
+      part.type === "tool-file" &&
+      (part.state === "input-streaming" || part.state === "input-available")
+    ) {
+      const fileInput = part.input;
+      if (fileInput?.path) {
+        const fileAction = fileInput.action as string;
+        if (fileAction === "write" || fileAction === "append") {
+          contentList.push({
+            path: fileInput.path,
+            content: fileInput.text || "",
+            action: fileAction === "write" ? "creating" : "appending",
+            toolCallId: part.toolCallId || "",
+            isExecuting: true,
+          });
+        }
+      }
+    }
+
     // File Operations - only extract when output is available
     // This ensures content is ready when auto-following
     if (
