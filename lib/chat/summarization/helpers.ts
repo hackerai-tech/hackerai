@@ -10,6 +10,7 @@ import {
   countMessagesTokens,
 } from "@/lib/token-utils";
 import { saveChatSummary } from "@/lib/db/actions";
+import { myProvider } from "@/lib/ai/providers";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
@@ -81,7 +82,7 @@ export const extractSummaryText = (message: UIMessage): string | null => {
 
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
-  languageModel: LanguageModel,
+  _languageModel: LanguageModel,
   mode: ChatMode,
   abortSignal?: AbortSignal,
   existingSummaryText?: string,
@@ -92,7 +93,7 @@ export const generateSummaryText = async (
     : basePrompt;
 
   const result = await generateText({
-    model: languageModel,
+    model: myProvider.languageModel("summarization-model"),
     system,
     abortSignal,
     providerOptions: {

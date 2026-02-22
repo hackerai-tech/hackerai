@@ -15,6 +15,11 @@ jest.doMock("ai", () => ({
 jest.doMock("@/lib/db/actions", () => ({
   saveChatSummary: mockSaveChatSummary,
 }));
+jest.doMock("@/lib/ai/providers", () => ({
+  myProvider: {
+    languageModel: () => ({}) as LanguageModel,
+  },
+}));
 
 const { checkAndSummarizeIfNeeded } =
   require("../index") as typeof import("../index");
