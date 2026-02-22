@@ -87,6 +87,17 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
     return (live ?? sidebarContent) as typeof sidebarContent;
   }, [sidebarContent, toolExecutions]);
 
+  // When showing a file, use live data from toolExecutions so streaming content updates in real time
+  const resolvedFile = useMemo(() => {
+    if (!sidebarContent || !isSidebarFile(sidebarContent)) return null;
+    if (!sidebarContent.toolCallId) return sidebarContent;
+    const live = toolExecutions.find(
+      (item) =>
+        isSidebarFile(item) && item.toolCallId === sidebarContent.toolCallId,
+    );
+    return (live ?? sidebarContent) as typeof sidebarContent;
+  }, [sidebarContent, toolExecutions]);
+
   // Initialize tool count ref on mount
   useEffect(() => {
     if (sidebarOpen && toolExecutions.length > 0) {
@@ -170,10 +181,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
 
-  const actionText = getActionText(sidebarContent);
-  const icon = getSidebarIcon(sidebarContent);
-  const toolName = getToolName(sidebarContent);
-  const displayTarget = getDisplayTarget(sidebarContent);
+  // Use resolved versions for display metadata so streaming updates are reflected
+  const displayContent =
+    (isFile && resolvedFile) ||
+    (isTerminal && resolvedTerminal) ||
+    sidebarContent;
+
+  const actionText = getActionText(displayContent);
+  const icon = getSidebarIcon(displayContent);
+  const toolName = getToolName(displayContent);
+  const displayTarget = getDisplayTarget(displayContent);
 
   const handleClose = () => {
     closeSidebar();
@@ -268,14 +285,13 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Notes
                     </div>
-                  ) : isFile && sidebarContent.action === "searching" ? (
+                  ) : isFile && resolvedFile?.action === "searching" ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Search Results
                     </div>
-                  ) : isFile ? (
+                  ) : isFile && resolvedFile ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                      {sidebarContent.path.split("/").pop() ||
-                        sidebarContent.path}
+                      {resolvedFile.path.split("/").pop() || resolvedFile.path}
                     </div>
                   ) : null}
                 </div>
@@ -284,8 +300,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 {!isWebSearch && !isNotes && (
                   <CodeActionButtons
                     content={
-                      isFile
-                        ? sidebarContent.content
+                      isFile && resolvedFile
+                        ? resolvedFile.content
                         : isPython
                           ? sidebarContent.code
                           : isTerminal && resolvedTerminal
@@ -332,34 +348,34 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                         whiteSpace: "pre-wrap",
                       }}
                     >
-                      {isFile && (
+                      {isFile && resolvedFile && (
                         <>
                           {/* Show DiffView for editing/appending actions with diff data */}
-                          {(sidebarContent.action === "editing" ||
-                            sidebarContent.action === "appending") &&
-                          sidebarContent.originalContent !== undefined &&
-                          sidebarContent.modifiedContent !== undefined ? (
+                          {(resolvedFile.action === "editing" ||
+                            resolvedFile.action === "appending") &&
+                          resolvedFile.originalContent !== undefined &&
+                          resolvedFile.modifiedContent !== undefined ? (
                             <DiffView
-                              originalContent={sidebarContent.originalContent}
-                              modifiedContent={sidebarContent.modifiedContent}
+                              originalContent={resolvedFile.originalContent}
+                              modifiedContent={resolvedFile.modifiedContent}
                               language={
-                                sidebarContent.language ||
-                                getLanguageFromPath(sidebarContent.path)
+                                resolvedFile.language ||
+                                getLanguageFromPath(resolvedFile.path)
                               }
                               wrap={isWrapped}
                             />
                           ) : (
                             <ComputerCodeBlock
                               language={
-                                sidebarContent.action === "searching"
+                                resolvedFile.action === "searching"
                                   ? "text"
-                                  : sidebarContent.language ||
-                                    getLanguageFromPath(sidebarContent.path)
+                                  : resolvedFile.language ||
+                                    getLanguageFromPath(resolvedFile.path)
                               }
                               wrap={isWrapped}
                               showButtons={false}
                             >
-                              {sidebarContent.content}
+                              {resolvedFile.content}
                             </ComputerCodeBlock>
                           )}
                         </>
