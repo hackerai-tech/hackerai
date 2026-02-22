@@ -89,6 +89,7 @@ export const checkAndSummarizeIfNeeded = async (
   abortSignal?: AbortSignal,
   ensureSandbox?: EnsureSandbox,
   systemPromptTokens: number = 0,
+  providerInputTokens: number = 0,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -113,6 +114,7 @@ export const checkAndSummarizeIfNeeded = async (
       subscription,
       fileTokens,
       systemPromptTokens,
+      providerInputTokens,
     )
   ) {
     return NO_SUMMARIZATION(uiMessages);
@@ -127,7 +129,9 @@ export const checkAndSummarizeIfNeeded = async (
   writeSummarizationStarted(writer);
 
   try {
-    let summaryText = await generateSummaryText(
+    // Run summary generation and transcript saving in parallel — they are
+    // independent (transcript is formatted from raw messages, not the summary).
+    const summaryPromise = generateSummaryText(
       messagesToSummarize,
       languageModel,
       mode,
@@ -137,33 +141,40 @@ export const checkAndSummarizeIfNeeded = async (
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
     // so the agent can consult the raw conversation later if context is lost
-    if (ensureSandbox && (mode === "agent" || mode === "agent-long")) {
-      try {
-        const sandbox = await ensureSandbox();
-        const savedPath = await saveTranscriptToSandbox(
-          messagesToSummarize,
-          sandbox,
-        );
-        if (savedPath) {
-          summaryText += buildTranscriptNotice(savedPath);
-        }
-      } catch (error) {
-        console.error(
-          "[Summarization] Failed to ensure sandbox for transcript:",
-          error,
-        );
-      }
+    const transcriptPromise: Promise<string | null> =
+      ensureSandbox && (mode === "agent" || mode === "agent-long")
+        ? ensureSandbox()
+            .then((sandbox) =>
+              saveTranscriptToSandbox(messagesToSummarize, sandbox),
+            )
+            .catch((error) => {
+              console.error(
+                "[Summarization] Failed to ensure sandbox for transcript:",
+                error,
+              );
+              return null;
+            })
+        : Promise.resolve(null);
+
+    const [summaryText, savedPath] = await Promise.all([
+      summaryPromise,
+      transcriptPromise,
+    ]);
+
+    let finalSummaryText = summaryText;
+    if (savedPath) {
+      finalSummaryText += buildTranscriptNotice(savedPath);
     }
 
-    const summaryMessage = buildSummaryMessage(summaryText, todos);
+    const summaryMessage = buildSummaryMessage(finalSummaryText, todos);
 
-    await persistSummary(chatId, summaryText, cutoffMessageId);
+    await persistSummary(chatId, finalSummaryText, cutoffMessageId);
 
     return {
       needsSummarization: true,
       summarizedMessages: [summaryMessage, ...lastMessages],
       cutoffMessageId,
-      summaryText,
+      summaryText: finalSummaryText,
     };
   } catch (error) {
     if (abortSignal?.aborted) {

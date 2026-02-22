@@ -8,7 +8,7 @@ import { stripProviderMetadata } from "@/lib/utils/message-processor";
 
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
- * Agent mode: Paid: 35 steps
+ * Agent mode: Paid: 100 steps
  * Ask mode: Free: 5 steps, Paid: 15 steps
  */
 export const getMaxStepsForUser = (
@@ -17,7 +17,7 @@ export const getMaxStepsForUser = (
 ): number => {
   // Agent / Agent-Long mode
   if (isAgentMode(mode)) {
-    return 35;
+    return 100;
   }
 
   // Ask mode steps: Free: 5, Ultra: 15, Pro/Team: 10

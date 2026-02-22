@@ -10,6 +10,7 @@ import {
   countMessagesTokens,
 } from "@/lib/token-utils";
 import { saveChatSummary } from "@/lib/db/actions";
+import { myProvider } from "@/lib/ai/providers";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
@@ -46,11 +47,20 @@ export const isAboveTokenThreshold = (
   subscription: SubscriptionTier,
   fileTokens: Record<Id<"files">, number>,
   systemPromptTokens: number = 0,
+  providerInputTokens: number = 0,
 ): boolean => {
-  const totalTokens =
-    countMessagesTokens(uiMessages, fileTokens) + systemPromptTokens;
   const maxTokens = getMaxTokensForSubscription(subscription);
   const threshold = Math.floor(maxTokens * SUMMARIZATION_THRESHOLD_PERCENTAGE);
+
+  // If the provider already reported input tokens exceeding the threshold,
+  // trust that over our local gpt-tokenizer estimate (which misses tool
+  // schemas, formatting overhead, and uses a different tokenizer).
+  if (providerInputTokens > threshold) {
+    return true;
+  }
+
+  const totalTokens =
+    countMessagesTokens(uiMessages, fileTokens) + systemPromptTokens;
   return totalTokens > threshold;
 };
 
@@ -81,7 +91,7 @@ export const extractSummaryText = (message: UIMessage): string | null => {
 
 export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
-  languageModel: LanguageModel,
+  _languageModel: LanguageModel,
   mode: ChatMode,
   abortSignal?: AbortSignal,
   existingSummaryText?: string,
@@ -92,7 +102,7 @@ export const generateSummaryText = async (
     : basePrompt;
 
   const result = await generateText({
-    model: languageModel,
+    model: myProvider.languageModel("summarization-model"),
     system,
     abortSignal,
     providerOptions: {
@@ -103,7 +113,7 @@ export const generateSummaryText = async (
       {
         role: "user",
         content:
-          "Provide a technically precise summary of the above conversation segment that preserves all operational security context while keeping the summary concise and to the point.",
+          "Summarize the above conversation using the structured format specified in your instructions. Output ONLY the summary — do not continue the conversation or role-play as the assistant.",
       },
     ],
   });

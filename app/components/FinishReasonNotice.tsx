@@ -40,6 +40,16 @@ export const FinishReasonNotice = ({
       );
     }
 
+    if (finishReason === "context-limit") {
+      return (
+        <>
+          I reached the context limit for this conversation after summarizing
+          earlier messages. Say &quot;continue&quot; to pick up where I left
+          off.
+        </>
+      );
+    }
+
     return null;
   };
 
