@@ -107,11 +107,11 @@ importers:
         specifier: ^1.2.2
         version: 1.2.2(@types/react@19.1.9)(react@19.2.4)
       '@trigger.dev/react-hooks':
-        specifier: 4.3.3
-        version: 4.3.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.2)
+        specifier: 4.4.0
+        version: 4.4.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.2)
       '@trigger.dev/sdk':
-        specifier: 4.3.3
-        version: 4.3.3(ai@6.0.86(zod@4.3.6))(typescript@5.9.2)(zod@4.3.6)
+        specifier: 4.4.0
+        version: 4.4.0(ai@6.0.86(zod@4.3.6))(typescript@5.9.2)(zod@4.3.6)
       '@upstash/ratelimit':
         specifier: ^2.0.8
         version: 2.0.8(@upstash/redis@1.36.2)
@@ -276,8 +276,8 @@ importers:
         specifier: ^14.6.1
         version: 14.6.1(@testing-library/dom@10.4.1)
       '@trigger.dev/build':
-        specifier: 4.3.3
-        version: 4.3.3(typescript@5.9.2)
+        specifier: 4.4.0
+        version: 4.4.0(typescript@5.9.2)
       '@types/jest':
         specifier: ^30.0.0
         version: 30.0.0
@@ -3719,23 +3719,23 @@ packages:
   '@tokenizer/token@0.3.0':
     resolution: {integrity: sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==}
 
-  '@trigger.dev/build@4.3.3':
-    resolution: {integrity: sha512-57U2nb8n9RERqFktmamSqriAgK4+e3985fwYi0EHtQ1/WDmQ0KYdiK0FEGN1ls5/vcZxbyfH/cifIA2fW0vHEg==}
+  '@trigger.dev/build@4.4.0':
+    resolution: {integrity: sha512-F9MDGTdUpz8e2k10WO/353FOeucyvgA38ufxhrQSXr4OIIEQ8pA9ptauuWHbXpT2+SulZOEfpGzMUAbla9MBWw==}
     engines: {node: '>=18.20.0'}
 
-  '@trigger.dev/core@4.3.3':
-    resolution: {integrity: sha512-HPPxbesDiEEuA1U/Qi1RWXVMkQNDCNyB7zhd3cIYd6T0KUTIt6i7ZdaqSRDhkAxva2hpaWXQsQIYwr5Jnsyohw==}
+  '@trigger.dev/core@4.4.0':
+    resolution: {integrity: sha512-aZ3tRG7SaG3pawGqGNnE6DBRSK14RjpexLkLk7ZwXvpxmw93QJkXXERm+G0PCPl3tRIS2pQNaGaLK5/8mOGtAg==}
     engines: {node: '>=18.20.0'}
 
-  '@trigger.dev/react-hooks@4.3.3':
-    resolution: {integrity: sha512-SXAAfPIj8LTYRy9FbZmvD2PO3zcTlZk8zPJus0bqbuAhz7t/Ayf/3zF3vvAhfFynrXcx7l1g085DSpgXn27a2w==}
+  '@trigger.dev/react-hooks@4.4.0':
+    resolution: {integrity: sha512-XeGbxYXO7EtEwfIwwMuLhYH3fA84Kr2XHEFeVb7nM3cjzlED5nTQfq1urr+q6JLmRWmKP1WAMQU8FMrplVN5lw==}
     engines: {node: '>=18.20.0'}
     peerDependencies:
       react: ^18.0 || ^19.0 || ^19.0.0-rc
       react-dom: ^18.0 || ^19.0 || ^19.0.0-rc
 
-  '@trigger.dev/sdk@4.3.3':
-    resolution: {integrity: sha512-aNKbmn6O8XfAJsQ3j9A8tVUm6nr+5SktHxUs804i7S4BG//b0YX0yhrKwPUe8rUGmFCYxmb3B43OOtZ0MsPyfA==}
+  '@trigger.dev/sdk@4.4.0':
+    resolution: {integrity: sha512-cW0amtiKsyEcK/aI5QP65i+Ln9/4+YS8GUWXWW09u1Q8gP7oB4Kl9ivJya8SAT2dd2pjhqgeynduah9uSy5mTQ==}
     engines: {node: '>=18.20.0'}
     peerDependencies:
       ai: ^4.2.0 || ^5.0.0 || ^6.0.0
@@ -4610,10 +4610,6 @@ packages:
   cookie@0.7.2:
     resolution: {integrity: sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==}
     engines: {node: '>= 0.6'}
-
-  copy-anything@4.0.5:
-    resolution: {integrity: sha512-7Vv6asjS4gMOuILabD3l739tsaxFQmC+a7pLZm02zyvs8p977bL3zEgq3yDk5rn9B0PbYgIv++jmHcuUab4RhA==}
-    engines: {node: '>=18'}
 
   core-js@3.45.1:
     resolution: {integrity: sha512-L4NPsJlCfZsPeXukyzHFlg/i7IIVwHSItR0wg0FLNqYClJ4MQYTYLbC7EkjKYRLZF2iof2MUgN0EGy7MdQFChg==}
@@ -5733,10 +5729,6 @@ packages:
   is-weakset@2.0.4:
     resolution: {integrity: sha512-mfcwb6IzQyOKTs84CQMrOwW4gQcaTOAWJ0zzJCl2WSPDrWk/OzDaImWFH3djXhb24g4eudZfLRozAvPGw4d9hQ==}
     engines: {node: '>= 0.4'}
-
-  is-what@5.5.0:
-    resolution: {integrity: sha512-oG7cgbmg5kLYae2N5IVd3jm2s+vldjxJzK1pcu9LfpGuQ93MQSzo0okvRna+7y5ifrD+20FE8FvjusyGaz14fw==}
-    engines: {node: '>=18'}
 
   isarray@1.0.0:
     resolution: {integrity: sha512-VLghIWNM6ELQzo7zwmcg0NmTVyWKYjvIeM83yjp0wRDTmUnrM678fQbcKBo6n2CJEF0szoG//ytg+TKla89ALQ==}
@@ -7465,10 +7457,6 @@ packages:
         optional: true
       babel-plugin-macros:
         optional: true
-
-  superjson@2.2.6:
-    resolution: {integrity: sha512-H+ue8Zo4vJmV2nRjpx86P35lzwDT3nItnIsocgumgr0hHMQ+ZGq5vrERg9kJBo5AWGmxZDhzDo+WVIJqkB0cGA==}
-    engines: {node: '>=16'}
 
   supports-color@7.2.0:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
@@ -11445,10 +11433,10 @@ snapshots:
 
   '@tokenizer/token@0.3.0': {}
 
-  '@trigger.dev/build@4.3.3(typescript@5.9.2)':
+  '@trigger.dev/build@4.4.0(typescript@5.9.2)':
     dependencies:
       '@prisma/config': 6.19.2
-      '@trigger.dev/core': 4.3.3(typescript@5.9.2)
+      '@trigger.dev/core': 4.4.0(typescript@5.9.2)
       mlly: 1.8.0
       pkg-types: 1.3.1
       resolve: 1.22.11
@@ -11461,7 +11449,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@trigger.dev/core@4.3.3(typescript@5.9.2)':
+  '@trigger.dev/core@4.4.0(typescript@5.9.2)':
     dependencies:
       '@bugsnag/cuid': 3.2.1
       '@electric-sql/client': 1.0.14
@@ -11490,7 +11478,6 @@ snapshots:
       socket.io: 4.7.4
       socket.io-client: 4.7.5
       std-env: 3.9.0
-      superjson: 2.2.6
       tinyexec: 0.3.2
       uncrypto: 0.1.3
       zod: 3.25.76
@@ -11502,9 +11489,9 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@trigger.dev/react-hooks@4.3.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.2)':
+  '@trigger.dev/react-hooks@4.4.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.2)':
     dependencies:
-      '@trigger.dev/core': 4.3.3(typescript@5.9.2)
+      '@trigger.dev/core': 4.4.0(typescript@5.9.2)
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)
       swr: 2.3.5(react@19.2.4)
@@ -11514,11 +11501,11 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@trigger.dev/sdk@4.3.3(ai@6.0.86(zod@4.3.6))(typescript@5.9.2)(zod@4.3.6)':
+  '@trigger.dev/sdk@4.4.0(ai@6.0.86(zod@4.3.6))(typescript@5.9.2)(zod@4.3.6)':
     dependencies:
       '@opentelemetry/api': 1.9.0
       '@opentelemetry/semantic-conventions': 1.36.0
-      '@trigger.dev/core': 4.3.3(typescript@5.9.2)
+      '@trigger.dev/core': 4.4.0(typescript@5.9.2)
       chalk: 5.6.2
       cronstrue: 2.59.0
       debug: 4.4.3
@@ -12412,10 +12399,6 @@ snapshots:
   cookie@0.4.2: {}
 
   cookie@0.7.2: {}
-
-  copy-anything@4.0.5:
-    dependencies:
-      is-what: 5.5.0
 
   core-js@3.45.1: {}
 
@@ -13825,8 +13808,6 @@ snapshots:
     dependencies:
       call-bound: 1.0.4
       get-intrinsic: 1.3.0
-
-  is-what@5.5.0: {}
 
   isarray@1.0.0: {}
 
@@ -16120,10 +16101,6 @@ snapshots:
     optionalDependencies:
       '@babel/core': 7.28.5
       babel-plugin-macros: 3.1.0
-
-  superjson@2.2.6:
-    dependencies:
-      copy-anything: 4.0.5
 
   supports-color@7.2.0:
     dependencies:

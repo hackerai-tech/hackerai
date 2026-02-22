@@ -93,10 +93,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
       setChatSidebarOpen(false);
     }
 
-    // Initialize new chat state using global state function
+    // Reset chat state while current Chat is still mounted (so chatResetRef is set)
     initializeNewChat();
-
-    // Always disable temporary chat for a new chat
     setTemporaryChatsEnabled(false);
     router.push("/");
   };
