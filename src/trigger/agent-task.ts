@@ -268,6 +268,16 @@ export const agentStreamTask = task({
     };
     process.on("unhandledRejection", unhandledRejectionHandler);
 
+    // TEMPORARY: Test S2Error handling. Set TEST_S2_ERROR=1 to trigger an unhandled rejection that the handler should treat as client disconnect (log only, no emitUnexpectedError). Remove after testing.
+    if (process.env.TEST_S2_ERROR === "1") {
+      const s2Error = Object.assign(new Error("HTTP/2 stream is not open"), {
+        name: "S2Error",
+      });
+      setImmediate(() => {
+        void Promise.reject(s2Error);
+      });
+    }
+
     try {
       sendRateLimitWarnings(metadataWriter, {
         subscription,
