@@ -29,7 +29,11 @@ export async function POST(req: NextRequest) {
           ...(payload.subscription && { subscription: payload.subscription }),
         },
       });
-      await posthog.flush();
+      try {
+        await posthog.flush();
+      } catch (flushError) {
+        console.error("PostHog flush failed after trigger", flushError);
+      }
     }
 
     return Response.json({
@@ -40,6 +44,13 @@ export async function POST(req: NextRequest) {
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
-    throw error;
+    console.error("agent-long POST error", error);
+    return Response.json(
+      {
+        message: "Service temporarily unavailable. Please try again.",
+        code: "SERVICE_ERROR",
+      },
+      { status: 503 },
+    );
   }
 }

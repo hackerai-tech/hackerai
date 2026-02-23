@@ -49,6 +49,26 @@ import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
 import PostHogClient from "@/app/posthog";
 
+/**
+ * Classifies errors that indicate client disconnect / stream closed (S2Error, ECONNRESET).
+ * These should be logged for ops but not reported as user-facing unexpected errors.
+ */
+function isClientDisconnectError(err: unknown): boolean {
+  if (err instanceof Error) {
+    if (err.name === "S2Error") return true;
+    const msg = err.message ?? "";
+    if (
+      msg.includes("stream is not open") ||
+      msg.includes("HTTP/2") ||
+      msg.includes("ECONNRESET")
+    )
+      return true;
+  }
+  const nodeErr = err as NodeJS.ErrnoException | undefined;
+  if (nodeErr?.code === "ECONNRESET") return true;
+  return false;
+}
+
 function deserializeRateLimitInfo(info: SerializableRateLimitInfo): {
   remaining: number;
   resetTime: Date;
@@ -80,17 +100,16 @@ function appendMetadata(event: MetadataEvent): Promise<void> {
   return metadataStream.append(JSON.stringify(event));
 }
 
-/** Creates a writer-like object that appends data-* parts to metadataStream */
-function createMetadataWriter(): UIMessageStreamWriter {
+/** Creates a writer-like object that appends data-* parts to metadataStream. Uses shared reporter for append failures. */
+function createMetadataWriter(
+  reportStreamWriteError: (err: unknown, context?: { type?: string }) => void,
+): UIMessageStreamWriter {
   return {
     write(part: { type: string; data?: unknown }) {
       if (!part.type.startsWith("data-")) return;
       const event = { type: part.type, data: part.data } as MetadataEvent;
       appendMetadata(event).catch((err) =>
-        logger.warn("Failed to append metadata event", {
-          type: part.type,
-          err,
-        }),
+        reportStreamWriteError(err, { type: part.type }),
       );
     },
     merge: () => {
@@ -100,6 +119,15 @@ function createMetadataWriter(): UIMessageStreamWriter {
   };
 }
 
+/**
+ * Agent-long error boundaries (for ops/docs):
+ * - Route (POST /api/agent-long): ChatSDKError → toResponse(); other errors → 503 JSON. posthog.flush() wrapped in try/catch so trigger success always returns runId/token.
+ * - Task outer catch (below): logs + chatLogger.emitUnexpectedError + Axiom, then rethrows.
+ * - reportStreamWriteError: all metadata append failures; client-disconnect (S2Error, ECONNRESET) → log only; others → log + emitUnexpectedError + Axiom.
+ * - onFinish catch: log + emitUnexpectedError + Axiom; no rethrow (best-effort persistence).
+ * - streamText onError: log + Axiom + emitUnexpectedError.
+ * - unhandledRejection (pipe/stream): client-disconnect → log only + promise.catch(); others → reportStreamWriteError. Listener removed in outer finally so it is always cleaned up (including when error escapes before waitUntilComplete).
+ */
 export const agentStreamTask = task({
   id: "agent-stream",
   retry: { maxAttempts: 0 },
@@ -134,7 +162,6 @@ export const agentStreamTask = task({
 
     const rateLimitInfo = deserializeRateLimitInfo(serializedRateLimitInfo);
     const posthog = PostHogClient();
-    const metadataWriter = createMetadataWriter();
 
     // Initialize wide event logger (mirrors chat-handler)
     const chatLogger = createChatLogger({
@@ -189,6 +216,57 @@ export const agentStreamTask = task({
     );
     chatLogger.getBuilder().setAssistantId(assistantMessageId);
     chatLogger.startStream();
+
+    /** Shared stream-write error reporter: logs all; for non–client-disconnect errors also reports via chatLogger and Axiom. */
+    const reportStreamWriteError = (
+      err: unknown,
+      context?: { type?: string },
+    ) => {
+      if (isClientDisconnectError(err)) {
+        logger.warn("Stream write failed (client likely disconnected)", {
+          ...context,
+          err,
+        });
+        triggerAxiomLogger.warn("Stream lost (client likely disconnected)", {
+          chatId,
+          endpoint: "/api/agent-long",
+          ...context,
+          ...extractErrorDetails(err),
+        });
+        return;
+      }
+      logger.warn("Stream write failed", { ...context, err });
+      chatLogger.emitUnexpectedError(err);
+      triggerAxiomLogger.error("Stream write failed in agent-task", {
+        chatId,
+        endpoint: "/api/agent-long",
+        ...context,
+        ...extractErrorDetails(err),
+      });
+    };
+
+    const metadataWriter = createMetadataWriter(reportStreamWriteError);
+
+    const unhandledRejectionHandler = (
+      reason: unknown,
+      promise: Promise<unknown>,
+    ) => {
+      if (isClientDisconnectError(reason)) {
+        logger.warn("Stream lost (client likely disconnected)", {
+          chatId,
+          err: reason,
+        });
+        triggerAxiomLogger.warn("Stream lost (client likely disconnected)", {
+          chatId,
+          endpoint: "/api/agent-long",
+          ...extractErrorDetails(reason),
+        });
+      } else {
+        reportStreamWriteError(reason);
+      }
+      promise.catch(() => {});
+    };
+    process.on("unhandledRejection", unhandledRejectionHandler);
 
     try {
       sendRateLimitWarnings(metadataWriter, {
@@ -247,7 +325,9 @@ export const agentStreamTask = task({
             messageId: assistantMessageId,
             fileDetails: fileMetadata,
           },
-        });
+        }).catch((err) =>
+          reportStreamWriteError(err, { type: "data-file-metadata" }),
+        );
       };
 
       let sandboxContext: string | null = null;
@@ -478,6 +558,7 @@ export const agentStreamTask = task({
                 ...extractErrorDetails(error),
               });
               await triggerAxiomLogger.flush();
+              chatLogger.emitUnexpectedError(error);
             }
           },
         });
@@ -591,6 +672,15 @@ export const agentStreamTask = task({
                 mode,
                 error,
               });
+              chatLogger.emitUnexpectedError(error);
+              triggerAxiomLogger.error("onFinish failed in agent-task", {
+                chatId,
+                userId,
+                mode,
+                endpoint: "/api/agent-long",
+                ...extractErrorDetails(error),
+              });
+              // Do not rethrow: best-effort persistence; we still report so observability sees the failure.
             }
           },
           sendReasoning: true,
@@ -614,6 +704,8 @@ export const agentStreamTask = task({
       });
       await triggerAxiomLogger.flush();
       throw error;
+    } finally {
+      process.off("unhandledRejection", unhandledRejectionHandler);
     }
   },
 });

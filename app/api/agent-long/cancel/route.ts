@@ -9,6 +9,7 @@ import type { NextRequest } from "next/server";
  * Verifies the user owns the chat, then cancels the run server-side (where TRIGGER_SECRET_KEY is available).
  * Accepts cancel when active_trigger_run_id matches runId OR when it is already cleared (client may clear
  * it before this request completes for responsive UX), so we only require chat ownership.
+ * Errors: ChatSDKError → toResponse(); other errors → 503 JSON (stable shape for client).
  */
 export async function POST(req: NextRequest) {
   try {
@@ -63,6 +64,13 @@ export async function POST(req: NextRequest) {
     if (error instanceof ChatSDKError) {
       return error.toResponse();
     }
-    throw error;
+    console.error("agent-long cancel POST error", error);
+    return Response.json(
+      {
+        message: "Service temporarily unavailable. Please try again.",
+        code: "SERVICE_ERROR",
+      },
+      { status: 503 },
+    );
   }
 }
