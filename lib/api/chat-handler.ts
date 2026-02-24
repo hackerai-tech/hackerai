@@ -715,6 +715,8 @@ export const createChatHandler = (
               );
 
               isRetryWithFallback = true;
+              lastStepInputTokens = 0;
+              stoppedDueToTokenExhaustion = false;
               result = await createStream(fallbackModel);
             } else {
               throw error;
@@ -755,6 +757,8 @@ export const createChatHandler = (
                   // Retry with fallback model if not already retrying
                   if (!isRetryWithFallback && !isAborted) {
                     isRetryWithFallback = true;
+                    lastStepInputTokens = 0;
+                    stoppedDueToTokenExhaustion = false;
                     const fallbackStartTime = Date.now();
 
                     const retryResult = await createStream(fallbackModel);
