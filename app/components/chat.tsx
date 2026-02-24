@@ -175,6 +175,9 @@ export const Chat = ({
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
+  // Ref to track last streamed assistant message id to prevent Convex sync from overwriting
+  // streamed messages before the backend has saved them (race condition on production)
+  const lastStreamedAssistantIdRef = useRef<string | null>(null);
 
   const {
     messages,
@@ -337,11 +340,18 @@ export const Chat = ({
         }
       }
     },
-    onFinish: () => {
+    onFinish: ({ message }) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
+      // Track the last streamed assistant message id so the Convex sync effect
+      // waits for it to appear before overwriting useChat state. This prevents
+      // a race condition where Convex hasn't received the saved message yet and
+      // the sync overwrites the streamed response with stale data (empty output).
+      if (message?.role === "assistant" && message?.id) {
+        lastStreamedAssistantIdRef.current = message.id;
+      }
       // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
@@ -429,6 +439,7 @@ export const Chat = ({
         systemTokens: 0,
         maxTokens: 0,
       });
+      lastStreamedAssistantIdRef.current = null;
       agentLong.reset();
     };
     setChatReset(reset);
@@ -439,6 +450,7 @@ export const Chat = ({
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
     agentLong.lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
+    lastStreamedAssistantIdRef.current = null; // Clear streamed message tracking when switching chats
   }, [chatId, agentLong.lastTriggerAssistantIdRef]);
 
   // Set chat title and load todos when chat data is loaded
@@ -528,23 +540,30 @@ export const Chat = ({
     );
 
     // Simple sync: always use server messages for existing chats
-    // BUT: If we just completed a Trigger.dev run, verify the assistant message exists in Convex
-    // before overwriting (prevents race condition where Convex hasn't propagated the new message yet)
+    // BUT: If we just completed streaming (useChat or Trigger.dev), verify the assistant
+    // message exists in Convex before overwriting. This prevents a race condition where
+    // the backend hasn't saved the message to Convex yet and the sync overwrites the
+    // streamed response with stale data (causing empty output on production).
     if (isExistingChat) {
-      const lastTriggerId = agentLong.lastTriggerAssistantIdRef.current;
-      if (lastTriggerId) {
-        // Check if Convex has the assistant message from the trigger run
+      // Check both agent-long (Trigger.dev) and normal useChat streaming
+      const pendingAssistantId =
+        agentLong.lastTriggerAssistantIdRef.current ||
+        lastStreamedAssistantIdRef.current;
+
+      if (pendingAssistantId) {
+        // Check if Convex has the assistant message from the completed stream
         const hasAssistantMessage = uiMessages.some(
-          (msg) => msg.id === lastTriggerId,
+          (msg) => msg.id === pendingAssistantId,
         );
         if (hasAssistantMessage) {
           // Convex has caught up, safe to sync
           setMessages(uiMessages);
-          agentLong.lastTriggerAssistantIdRef.current = null; // Clear the ref
+          agentLong.lastTriggerAssistantIdRef.current = null;
+          lastStreamedAssistantIdRef.current = null;
         }
         // If Convex doesn't have it yet, skip this sync and wait for next update
       } else {
-        // No pending trigger completion, safe to sync normally
+        // No pending stream completion, safe to sync normally
         setMessages(uiMessages);
       }
     }
