@@ -559,7 +559,9 @@ export const agentStreamTask = task({
                     finishReason: streamFinishReason,
                     todos: mergedTodos,
                     defaultModelSlug: mode,
-                    sandboxType: sandboxPreference,
+                    sandboxType:
+                      sandboxManager.getEffectivePreference?.() ??
+                      sandboxPreference,
                   });
                 } else {
                   await prepareForNewStream({ chatId });

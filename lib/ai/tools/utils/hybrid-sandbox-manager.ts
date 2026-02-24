@@ -77,6 +77,31 @@ export class HybridSandboxManager implements SandboxManager {
   recordHealthFailure(): boolean {
     this.healthFailureCount++;
     if (this.healthFailureCount >= MAX_SANDBOX_HEALTH_FAILURES) {
+      // If we're on a local sandbox, auto-fallback to E2B instead of giving up
+      if (this.isLocal && this.sandboxPreference !== "e2b") {
+        console.warn(
+          `[${this.userID}] Local sandbox health failures exceeded threshold, auto-falling back to E2B`,
+        );
+        this.pendingFallbackInfo = {
+          occurred: true,
+          reason: "connection_unavailable",
+          requestedPreference: this.sandboxPreference,
+          actualSandbox: "e2b",
+          actualSandboxName: "Cloud",
+        };
+        // Reset state to allow E2B to work
+        this.sandboxPreference = "e2b";
+        this.healthFailureCount = 0;
+        this.sandboxUnavailable = false;
+        this.isLocal = false;
+        this.currentConnectionId = null;
+        this.currentConnectionMode = null;
+        this.currentConnectionName = null;
+        // Close stale local sandbox; E2B will be created on next getSandbox()
+        this.closeCurrentSandbox().catch(() => {});
+        this.sandbox = null;
+        return false; // Not unavailable — we've switched to E2B
+      }
       this.sandboxUnavailable = true;
     }
     return this.sandboxUnavailable;
@@ -89,6 +114,23 @@ export class HybridSandboxManager implements SandboxManager {
 
   isSandboxUnavailable(): boolean {
     return this.sandboxUnavailable;
+  }
+
+  /**
+   * Get the effective sandbox preference after any fallbacks.
+   * Returns the actual sandbox in use: "e2b" or a connectionId.
+   * Use this instead of the original sandboxPreference to persist accurate state.
+   */
+  getEffectivePreference(): SandboxPreference {
+    if (this.isLocal && this.currentConnectionId) {
+      return this.currentConnectionId;
+    }
+    // If we've initialized a sandbox and it's not local, it's E2B
+    if (this.sandbox && !this.isLocal) {
+      return "e2b";
+    }
+    // Sandbox hasn't been initialized yet; return original preference
+    return this.sandboxPreference;
   }
 
   /**

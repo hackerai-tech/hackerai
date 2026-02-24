@@ -128,6 +128,8 @@ export const Chat = ({
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
+  // Track whether sandbox preference has been initialized from chat for this chat id
+  const hasInitializedSandboxRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -149,6 +151,9 @@ export const Chat = ({
     api.chats.getChatByIdFromClient,
     shouldFetchMessages ? { id: chatId } : "skip",
   );
+
+  // Query local sandbox connections for sandbox_type validation on chat load
+  const localConnections = useQuery(api.localSandbox.listConnections);
 
   // Derive title from Convex (single source of truth)
   const chatTitle = chatData?.title ?? null;
@@ -438,6 +443,7 @@ export const Chat = ({
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
+    hasInitializedSandboxRef.current = false;
     agentLong.lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
   }, [chatId, agentLong.lastTriggerAssistantIdRef]);
 
@@ -493,16 +499,45 @@ export const Chat = ({
         setChatMode(slug);
         hasInitializedModeFromChatRef.current = true;
       }
-      // Initialize sandbox preference from server (only for existing chats with a stored sandbox type)
-      const storedSandboxType = (chatData as any).sandbox_type as
-        | string
-        | undefined;
-      if (storedSandboxType) {
-        setSandboxPreference(storedSandboxType);
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
+
+  // Initialize sandbox preference from chat data, validated against available connections.
+  // Separate from the main chatData effect so it can re-run when localConnections loads.
+  useEffect(() => {
+    if (hasInitializedSandboxRef.current || !isExistingChat) return;
+
+    const dataId = (chatData as any)?.id as string | undefined;
+    if (!chatData || dataId !== chatId) return;
+
+    const storedSandboxType = (chatData as any).sandbox_type as
+      | string
+      | undefined;
+    if (!storedSandboxType) {
+      hasInitializedSandboxRef.current = true;
+      return;
+    }
+
+    if (storedSandboxType === "e2b") {
+      // E2B is always valid
+      setSandboxPreference(storedSandboxType);
+      hasInitializedSandboxRef.current = true;
+    } else if (localConnections !== undefined) {
+      // For local connectionIds, validate the connection still exists
+      const connectionExists = localConnections.some(
+        (conn) => conn.connectionId === storedSandboxType,
+      );
+      if (connectionExists) {
+        setSandboxPreference(storedSandboxType);
+      }
+      // If connection doesn't exist, keep current preference (from localStorage);
+      // SandboxSelector will show available options
+      hasInitializedSandboxRef.current = true;
+    }
+    // If localConnections is still loading (undefined), wait for next render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatData, localConnections, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
