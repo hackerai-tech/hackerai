@@ -609,18 +609,16 @@ export const createChatHandler = (
                 subscription,
               ),
               experimental_transform: smoothStream({ chunking: "word" }),
-              stopWhen: isAgentMode(mode)
-                ? [
-                    stepCountIs(getMaxStepsForUser(mode, subscription)),
-                    tokenExhaustedAfterSummarization({
-                      getLastStepInputTokens: () => lastStepInputTokens,
-                      getHasSummarized: () => hasSummarized,
-                      onFired: () => {
-                        stoppedDueToTokenExhaustion = true;
-                      },
-                    }),
-                  ]
-                : stepCountIs(getMaxStepsForUser(mode, subscription)),
+              stopWhen: [
+                stepCountIs(getMaxStepsForUser(mode, subscription)),
+                tokenExhaustedAfterSummarization({
+                  getLastStepInputTokens: () => lastStepInputTokens,
+                  getHasSummarized: () => hasSummarized,
+                  onFired: () => {
+                    stoppedDueToTokenExhaustion = true;
+                  },
+                }),
+              ],
               onChunk: async (chunk) => {
                 if (chunk.chunk.type === "tool-call") {
                   const sandboxType = sandboxManager.getSandboxType(
