@@ -252,6 +252,7 @@ export async function runSummarizationStep(options: {
   systemPromptTokens: number;
   ctxSystemTokens: number;
   ctxMaxTokens: number;
+  providerInputTokens?: number;
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages } =
     await checkAndSummarizeIfNeeded(
@@ -266,6 +267,7 @@ export async function runSummarizationStep(options: {
       options.abortSignal,
       options.ensureSandbox,
       options.systemPromptTokens,
+      options.providerInputTokens ?? 0,
     );
 
   if (!needsSummarization) {

@@ -283,6 +283,146 @@ export const ChatInput = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handlePasteEvent]);
 
+  const renderModeSelector = () => (
+    <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="sm"
+            data-testid="mode-selector"
+            className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 shrink-0 ${
+              chatMode === "agent"
+                ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20"
+                : chatMode === "agent-long"
+                  ? "bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:bg-amber-400/20"
+                  : "bg-muted hover:bg-muted/50"
+            }`}
+          >
+            {chatMode === "agent" ? (
+              <>
+                <Infinity className="w-3 h-3 mr-1" />
+                Agent
+              </>
+            ) : chatMode === "agent-long" ? (
+              <>
+                <Timer className="w-3 h-3 mr-1" />
+                Agent-Long
+              </>
+            ) : (
+              <>
+                <MessageSquare className="w-3 h-3 mr-1" />
+                Ask
+              </>
+            )}
+            <ChevronDown className="w-3 h-3 ml-1" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="w-[13.5rem]">
+          <DropdownMenuItem
+            onClick={() => setChatMode("ask")}
+            className="cursor-pointer"
+            data-testid="mode-ask"
+          >
+            <MessageSquare className="w-4 h-4 mr-2" />
+            <div className="flex flex-col">
+              <span className="font-medium">Ask</span>
+              <span className="text-xs text-muted-foreground">
+                Ask your hacking questions
+              </span>
+            </div>
+          </DropdownMenuItem>
+          {subscription !== "free" || isCheckingProPlan ? (
+            <DropdownMenuItem
+              onClick={handleAgentModeClick}
+              className="cursor-pointer"
+              data-testid="mode-agent"
+            >
+              <Infinity className="w-4 h-4 mr-2" />
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">Agent</span>
+                  {temporaryChatsEnabled && (
+                    <Lock className="w-3 h-3 text-muted-foreground" />
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Hack, test, secure anything
+                </span>
+              </div>
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem
+              onClick={handleAgentModeClick}
+              className="cursor-pointer"
+              data-testid="mode-agent"
+            >
+              <Infinity className="w-4 h-4 mr-2" />
+              <div className="flex flex-col flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">Agent</span>
+                  {temporaryChatsEnabled ? (
+                    <Lock className="w-3 h-3 text-muted-foreground" />
+                  ) : (
+                    <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
+                      PRO
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Hack, test, secure anything
+                </span>
+              </div>
+            </DropdownMenuItem>
+          )}
+          {subscription !== "free" || isCheckingProPlan ? (
+            <DropdownMenuItem
+              onClick={handleAgentLongModeClick}
+              className="cursor-pointer"
+              data-testid="mode-agent-long"
+            >
+              <Timer className="w-4 h-4 mr-2" />
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">Agent-Long</span>
+                  {temporaryChatsEnabled && (
+                    <Lock className="w-3 h-3 text-muted-foreground" />
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Long-running agent tasks
+                </span>
+              </div>
+            </DropdownMenuItem>
+          ) : (
+            <DropdownMenuItem
+              onClick={handleAgentLongModeClick}
+              className="cursor-pointer"
+              data-testid="mode-agent-long"
+            >
+              <Timer className="w-4 h-4 mr-2" />
+              <div className="flex flex-col flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">Agent-Long</span>
+                  {temporaryChatsEnabled ? (
+                    <Lock className="w-3 h-3 text-muted-foreground" />
+                  ) : (
+                    <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
+                      PRO
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs text-muted-foreground">
+                  Long-running agent tasks
+                </span>
+              </div>
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+
   return (
     <div className={`relative px-4 ${isCentered ? "" : "pb-3"}`}>
       <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
@@ -327,8 +467,18 @@ export const ChatInput = ({
           onChange={handleFileUploadEvent}
         />
 
+        {/* Sandbox selector for new chats: above input on mobile, below on desktop (single instance) */}
+        {isNewChat && isAgentMode(chatMode) && (
+          <div className="order-1 sm:order-2 flex px-1 pb-2 sm:pt-2 sm:pb-0">
+            <SandboxSelector
+              value={sandboxPreference}
+              onChange={setSandboxPreference}
+            />
+          </div>
+        )}
+
         <div
-          className={`flex flex-col gap-3 transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+          className={`order-2 sm:order-1 flex flex-col gap-3 transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
         >
           <div className="overflow-y-auto pl-4 pr-2">
             <TextareaAutosize
@@ -358,152 +508,16 @@ export const ChatInput = ({
               <AttachmentButton onAttachClick={handleAttachClick} />
             </div>
 
-            {/* Mode selector + Sandbox selector container */}
-            <div className="flex items-center gap-1.5 min-w-0 overflow-hidden">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    data-testid="mode-selector"
-                    className={`h-7 px-2 text-xs font-medium rounded-md focus-visible:ring-1 shrink-0 ${
-                      chatMode === "agent"
-                        ? "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20"
-                        : chatMode === "agent-long"
-                          ? "bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:bg-amber-400/20"
-                          : "bg-muted hover:bg-muted/50"
-                    }`}
-                  >
-                    {chatMode === "agent" ? (
-                      <>
-                        <Infinity className="w-3 h-3 mr-1" />
-                        Agent
-                      </>
-                    ) : chatMode === "agent-long" ? (
-                      <>
-                        <Timer className="w-3 h-3 mr-1" />
-                        Agent-Long
-                      </>
-                    ) : (
-                      <>
-                        <MessageSquare className="w-3 h-3 mr-1" />
-                        Ask
-                      </>
-                    )}
-                    <ChevronDown className="w-3 h-3 ml-1" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-54">
-                  <DropdownMenuItem
-                    onClick={() => setChatMode("ask")}
-                    className="cursor-pointer"
-                    data-testid="mode-ask"
-                  >
-                    <MessageSquare className="w-4 h-4 mr-2" />
-                    <div className="flex flex-col">
-                      <span className="font-medium">Ask</span>
-                      <span className="text-xs text-muted-foreground">
-                        Ask your hacking questions
-                      </span>
-                    </div>
-                  </DropdownMenuItem>
-                  {subscription !== "free" || isCheckingProPlan ? (
-                    <DropdownMenuItem
-                      onClick={handleAgentModeClick}
-                      className="cursor-pointer"
-                      data-testid="mode-agent"
-                    >
-                      <Infinity className="w-4 h-4 mr-2" />
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">Agent</span>
-                          {temporaryChatsEnabled && (
-                            <Lock className="w-3 h-3 text-muted-foreground" />
-                          )}
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          Hack, test, secure anything
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                  ) : (
-                    <DropdownMenuItem
-                      onClick={handleAgentModeClick}
-                      className="cursor-pointer"
-                      data-testid="mode-agent"
-                    >
-                      <Infinity className="w-4 h-4 mr-2" />
-                      <div className="flex flex-col flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">Agent</span>
-                          {temporaryChatsEnabled ? (
-                            <Lock className="w-3 h-3 text-muted-foreground" />
-                          ) : (
-                            <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
-                              PRO
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          Hack, test, secure anything
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                  )}
-                  {subscription !== "free" || isCheckingProPlan ? (
-                    <DropdownMenuItem
-                      onClick={handleAgentLongModeClick}
-                      className="cursor-pointer"
-                      data-testid="mode-agent-long"
-                    >
-                      <Timer className="w-4 h-4 mr-2" />
-                      <div className="flex flex-col">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">Agent-Long</span>
-                          {temporaryChatsEnabled && (
-                            <Lock className="w-3 h-3 text-muted-foreground" />
-                          )}
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          Long-running agent tasks
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                  ) : (
-                    <DropdownMenuItem
-                      onClick={handleAgentLongModeClick}
-                      className="cursor-pointer"
-                      data-testid="mode-agent-long"
-                    >
-                      <Timer className="w-4 h-4 mr-2" />
-                      <div className="flex flex-col flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">Agent-Long</span>
-                          {temporaryChatsEnabled ? (
-                            <Lock className="w-3 h-3 text-muted-foreground" />
-                          ) : (
-                            <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
-                              PRO
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-xs text-muted-foreground">
-                          Long-running agent tasks
-                        </span>
-                      </div>
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
+            {/* Mode selector - always inline */}
+            {renderModeSelector()}
 
-              {/* Sandbox selector - editable for new chats, read-only for existing */}
-              {isAgentMode(chatMode) && (
-                <SandboxSelector
-                  value={sandboxPreference}
-                  onChange={setSandboxPreference}
-                />
-              )}
-            </div>
+            {/* Sandbox selector - inline for existing chats */}
+            {!isNewChat && isAgentMode(chatMode) && (
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            )}
 
             {/* Context Usage Indicator */}
             {showContextIndicator && (
