@@ -404,11 +404,10 @@ export const Chat = ({
       : undefined;
 
   // Auto-resume controlled by prop; default to true when a specific chat id is present, false on "/"
-  // Disable for agent-long: resuming hits AI SDK /api/chat, not Trigger.dev, and can block sync
-  // Use serverMode (from DB) instead of chatMode (from GlobalState) to avoid stale state from previous chat
+  // Disable only for agent-long: resuming hits AI SDK /api/chat, not Trigger.dev, and can block sync
+  // Enable when serverMode is undefined (old chats, or before chatData loads) so agent mode can reconnect
   useAutoResume({
-    autoResume:
-      autoResume && serverMode !== undefined && serverMode !== "agent-long",
+    autoResume: autoResume && serverMode !== "agent-long",
     initialMessages,
     resumeStream,
     setMessages,
