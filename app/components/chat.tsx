@@ -493,6 +493,13 @@ export const Chat = ({
         setChatMode(slug);
         hasInitializedModeFromChatRef.current = true;
       }
+      // Initialize sandbox preference from server (only for existing chats with a stored sandbox type)
+      const storedSandboxType = (chatData as any).sandbox_type as
+        | string
+        | undefined;
+      if (storedSandboxType) {
+        setSandboxPreference(storedSandboxType);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);

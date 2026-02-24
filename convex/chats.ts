@@ -47,6 +47,7 @@ export const getChatByIdFromClient = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      sandbox_type: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -135,6 +136,7 @@ export const getChatById = query({
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
+      sandbox_type: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -215,6 +217,7 @@ export const updateChat = mutation({
         }),
       ),
     ),
+    sandboxType: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -246,6 +249,7 @@ export const updateChat = mutation({
           status: "pending" | "in_progress" | "completed" | "cancelled";
           sourceMessageId?: string;
         }>;
+        sandbox_type?: string;
         active_stream_id?: undefined;
         canceled_at?: undefined;
         update_time: number;
@@ -270,6 +274,10 @@ export const updateChat = mutation({
 
       if (args.todos !== undefined) {
         updateData.todos = args.todos;
+      }
+
+      if (args.sandboxType !== undefined) {
+        updateData.sandbox_type = args.sandboxType;
       }
 
       // Update the chat

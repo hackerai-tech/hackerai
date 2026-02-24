@@ -807,6 +807,7 @@ export const createChatHandler = (
                                 finishReason: streamFinishReason,
                                 todos: mergedTodos,
                                 defaultModelSlug: mode,
+                                sandboxType: sandboxPreference,
                               });
                             } else {
                               await prepareForNewStream({ chatId });
@@ -998,6 +999,7 @@ export const createChatHandler = (
                       finishReason: streamFinishReason,
                       todos: mergedTodos,
                       defaultModelSlug: mode,
+                      sandboxType: sandboxPreference,
                     });
                     logStep("update_chat", stepStart);
                   } else {
