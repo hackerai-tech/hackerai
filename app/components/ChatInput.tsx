@@ -467,13 +467,16 @@ export const ChatInput = ({
           onChange={handleFileUploadEvent}
         />
 
-        {/* Sandbox selector for new chats: above input on mobile, below on desktop (single instance) */}
-        {isNewChat && isAgentMode(chatMode) && (
-          <div className="order-1 sm:order-2 flex px-1 pb-2 sm:pt-2 sm:pb-0">
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
+        {/* Sandbox selector for new chats: above input on mobile, below on desktop.
+            Always reserve space (min-h-9) to prevent layout shift when switching modes. */}
+        {isNewChat && (
+          <div className="order-1 sm:order-2 flex px-1 pb-2 sm:pt-2 sm:pb-0 min-h-9">
+            {isAgentMode(chatMode) && (
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            )}
           </div>
         )}
 
