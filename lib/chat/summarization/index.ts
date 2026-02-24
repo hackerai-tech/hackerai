@@ -89,6 +89,7 @@ export const checkAndSummarizeIfNeeded = async (
   abortSignal?: AbortSignal,
   ensureSandbox?: EnsureSandbox,
   systemPromptTokens: number = 0,
+  providerInputTokens: number = 0,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -113,6 +114,7 @@ export const checkAndSummarizeIfNeeded = async (
       subscription,
       fileTokens,
       systemPromptTokens,
+      providerInputTokens,
     )
   ) {
     return NO_SUMMARIZATION(uiMessages);

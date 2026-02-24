@@ -29,6 +29,11 @@ import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import {
+  tokenExhaustedAfterSummarization,
+  TOKEN_EXHAUSTION_FINISH_REASON,
+  TOKEN_STOP_THRESHOLD,
+} from "@/lib/chat/stop-conditions";
+import {
   saveMessage,
   updateChat,
   prepareForNewStream,
@@ -309,6 +314,8 @@ export const agentStreamTask = task({
       let streamFinishReason: string | undefined;
       let finalMessages = processedMessages;
       let hasSummarized = false;
+      let stoppedDueToTokenExhaustion = false;
+      let lastStepInputTokens = 0;
       const isReasoningModel = isAgentMode(mode);
       // Use permissive types so we can push data parts (e.g. summarization) that aren't tool parts
       const summarizationParts: UIMessagePart<
@@ -362,6 +369,8 @@ export const agentStreamTask = task({
                     getTodoManager().getAllTodos(),
                     undefined,
                     ensureSandbox,
+                    undefined,
+                    lastStepInputTokens,
                   );
                 if (needsSummarization) {
                   hasSummarized = true;
@@ -420,7 +429,13 @@ export const agentStreamTask = task({
           },
           providerOptions: buildProviderOptions(isReasoningModel, subscription),
           experimental_transform: smoothStream({ chunking: "word" }),
-          stopWhen: stepCountIs(getMaxStepsForUser(mode, subscription)),
+          stopWhen: [
+            stepCountIs(getMaxStepsForUser(mode, subscription)),
+            tokenExhaustedAfterSummarization({
+              getLastStepInputTokens: () => lastStepInputTokens,
+              getHasSummarized: () => hasSummarized,
+            }),
+          ],
           onChunk: async (chunk) => {
             if (chunk.chunk.type === "tool-call") {
               const sandboxType = sandboxManager.getSandboxType(
@@ -445,12 +460,20 @@ export const agentStreamTask = task({
             if (usage) {
               accumulatedInputTokens += usage.inputTokens || 0;
               accumulatedOutputTokens += usage.outputTokens || 0;
+              lastStepInputTokens = usage.inputTokens || 0;
               const stepCost = (usage as { raw?: { cost?: number } }).raw?.cost;
               if (stepCost) accumulatedProviderCost += stepCost;
             }
           },
           onFinish: async ({ finishReason, usage, response }) => {
-            streamFinishReason = finishReason;
+            // Detect if we stopped due to token exhaustion after summarization
+            if (hasSummarized && lastStepInputTokens > TOKEN_STOP_THRESHOLD) {
+              stoppedDueToTokenExhaustion = true;
+            }
+
+            streamFinishReason = stoppedDueToTokenExhaustion
+              ? TOKEN_EXHAUSTION_FINISH_REASON
+              : finishReason;
             streamUsage = usage as Record<string, unknown>;
             responseModel = response?.modelId;
             chatLogger.setStreamResponse(responseModel, streamUsage);
