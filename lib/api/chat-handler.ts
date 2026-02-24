@@ -13,7 +13,6 @@ import { systemPrompt } from "@/lib/system-prompt";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
-  TOKEN_STOP_THRESHOLD,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -616,6 +615,9 @@ export const createChatHandler = (
                     tokenExhaustedAfterSummarization({
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: () => hasSummarized,
+                      onFired: () => {
+                        stoppedDueToTokenExhaustion = true;
+                      },
                     }),
                   ]
                 : stepCountIs(getMaxStepsForUser(mode, subscription)),
@@ -654,14 +656,6 @@ export const createChatHandler = (
                 }
               },
               onFinish: async ({ finishReason, usage, response }) => {
-                // Detect if we stopped due to token exhaustion after summarization
-                if (
-                  hasSummarized &&
-                  lastStepInputTokens > TOKEN_STOP_THRESHOLD
-                ) {
-                  stoppedDueToTokenExhaustion = true;
-                }
-
                 // If preemptive timeout triggered, use "timeout" as finish reason
                 if (preemptiveTimeout?.isPreemptive()) {
                   streamFinishReason = "timeout";

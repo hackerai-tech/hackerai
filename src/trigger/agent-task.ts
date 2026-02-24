@@ -31,7 +31,6 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
-  TOKEN_STOP_THRESHOLD,
 } from "@/lib/chat/stop-conditions";
 import {
   saveMessage,
@@ -434,6 +433,9 @@ export const agentStreamTask = task({
             tokenExhaustedAfterSummarization({
               getLastStepInputTokens: () => lastStepInputTokens,
               getHasSummarized: () => hasSummarized,
+              onFired: () => {
+                stoppedDueToTokenExhaustion = true;
+              },
             }),
           ],
           onChunk: async (chunk) => {
@@ -466,11 +468,6 @@ export const agentStreamTask = task({
             }
           },
           onFinish: async ({ finishReason, usage, response }) => {
-            // Detect if we stopped due to token exhaustion after summarization
-            if (hasSummarized && lastStepInputTokens > TOKEN_STOP_THRESHOLD) {
-              stoppedDueToTokenExhaustion = true;
-            }
-
             streamFinishReason = stoppedDueToTokenExhaustion
               ? TOKEN_EXHAUSTION_FINISH_REASON
               : finishReason;

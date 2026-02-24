@@ -24,10 +24,15 @@ export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 export function tokenExhaustedAfterSummarization(state: {
   getLastStepInputTokens: () => number;
   getHasSummarized: () => boolean;
+  onFired: () => void;
 }): StopCondition<any> {
   return () => {
     const lastStepInput = state.getLastStepInputTokens();
     const hasSummarized = state.getHasSummarized();
-    return hasSummarized && lastStepInput > TOKEN_STOP_THRESHOLD;
+    const shouldStop = hasSummarized && lastStepInput > TOKEN_STOP_THRESHOLD;
+    if (shouldStop) {
+      state.onFired();
+    }
+    return shouldStop;
   };
 }
