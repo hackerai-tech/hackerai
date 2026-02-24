@@ -152,8 +152,18 @@ export const Chat = ({
     shouldFetchMessages ? { id: chatId } : "skip",
   );
 
-  // Query local sandbox connections for sandbox_type validation on chat load
-  const localConnections = useQuery(api.localSandbox.listConnections);
+  // Query local sandbox connections only when we need to validate a non-E2B sandbox_type
+  const storedSandboxType = (chatData as any)?.sandbox_type as
+    | string
+    | undefined;
+  const needsConnectionValidation =
+    !!storedSandboxType &&
+    storedSandboxType !== "e2b" &&
+    !hasInitializedSandboxRef.current;
+  const localConnections = useQuery(
+    api.localSandbox.listConnections,
+    needsConnectionValidation ? undefined : "skip",
+  );
 
   // Derive title from Convex (single source of truth)
   const chatTitle = chatData?.title ?? null;
@@ -491,13 +501,13 @@ export const Chat = ({
     setAwaitingServerChat(false);
     // Initialize mode from server once per chat id (only for existing chats)
     if (!hasInitializedModeFromChatRef.current && isExistingChat) {
+      hasInitializedModeFromChatRef.current = true;
       // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
       const slug =
         (chatData as any).default_model_slug ||
         ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
       if (slug === "ask" || slug === "agent" || slug === "agent-long") {
         setChatMode(slug);
-        hasInitializedModeFromChatRef.current = true;
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

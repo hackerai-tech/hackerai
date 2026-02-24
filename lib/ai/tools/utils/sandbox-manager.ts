@@ -39,6 +39,10 @@ export class DefaultSandboxManager implements SandboxManager {
     return { type: "e2b" };
   }
 
+  getEffectivePreference(): string {
+    return "e2b";
+  }
+
   getSandboxType(toolName: string): SandboxType | undefined {
     if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
       return undefined;

@@ -560,8 +560,7 @@ export const agentStreamTask = task({
                     todos: mergedTodos,
                     defaultModelSlug: mode,
                     sandboxType:
-                      sandboxManager.getEffectivePreference?.() ??
-                      sandboxPreference,
+                      sandboxManager.getEffectivePreference(),
                   });
                 } else {
                   await prepareForNewStream({ chatId });

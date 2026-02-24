@@ -29,7 +29,7 @@ export interface SandboxManager {
   // Optional: only HybridSandboxManager implements these
   consumeFallbackInfo?(): SandboxFallbackInfo | null;
   /** Get the effective sandbox preference after any fallbacks (e.g. "e2b" or connectionId). */
-  getEffectivePreference?(): string;
+  getEffectivePreference(): string;
   /** Track consecutive sandbox health failures across all tools. Returns true if the limit has been exceeded. */
   recordHealthFailure(): boolean;
   /** Reset the health failure counter (call on successful health check). */

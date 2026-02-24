@@ -808,8 +808,7 @@ export const createChatHandler = (
                                 todos: mergedTodos,
                                 defaultModelSlug: mode,
                                 sandboxType:
-                                  sandboxManager.getEffectivePreference?.() ??
-                                  sandboxPreference,
+                                  sandboxManager.getEffectivePreference(),
                               });
                             } else {
                               await prepareForNewStream({ chatId });
@@ -1002,8 +1001,7 @@ export const createChatHandler = (
                       todos: mergedTodos,
                       defaultModelSlug: mode,
                       sandboxType:
-                        sandboxManager.getEffectivePreference?.() ??
-                        sandboxPreference,
+                        sandboxManager.getEffectivePreference(),
                     });
                     logStep("update_chat", stepStart);
                   } else {
