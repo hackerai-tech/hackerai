@@ -14,6 +14,8 @@ export function createMetadataWriter(): UIMessageStreamWriter {
   return {
     write(part: { type: string; data?: unknown }) {
       if (!part.type.startsWith("data-")) return;
+      // UIMessageStreamWriter types `part.type` as `string`; the `data-` prefix check
+      // above guarantees only our known metadata event types reach here.
       const event = { type: part.type, data: part.data } as MetadataEvent;
       appendMetadata(event).catch((err) =>
         logger.warn("Failed to append metadata event", {

@@ -113,6 +113,42 @@ export async function saveMessage({
   }
 }
 
+export async function saveErrorMessageWithTodos({
+  chatId,
+  userId,
+  message,
+  todos,
+}: {
+  chatId: string;
+  userId: string;
+  message: {
+    id: string;
+    parts: any[];
+  };
+  todos?: Array<{
+    id: string;
+    content: string;
+    status: "pending" | "in_progress" | "completed" | "cancelled";
+    sourceMessageId?: string;
+  }>;
+}) {
+  try {
+    return await convex.mutation(api.messages.saveErrorMessageWithTodos, {
+      serviceKey,
+      id: message.id,
+      chatId,
+      userId,
+      parts: message.parts,
+      todos,
+    });
+  } catch (error) {
+    throw new ChatSDKError(
+      "bad_request:database",
+      "Failed to save error message with todos",
+    );
+  }
+}
+
 export async function handleInitialChatAndUserMessage({
   chatId,
   userId,
@@ -723,6 +759,26 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
     return summary;
   } catch (error) {
     console.error("[DB Actions] Failed to get latest summary:", error);
+    return null;
+  }
+}
+
+export async function getLastAssistantMessageFromBackend({
+  chatId,
+  userId,
+}: {
+  chatId: string;
+  userId: string;
+}) {
+  try {
+    const message = await convex.query(api.messages.getLastAssistantMessage, {
+      serviceKey,
+      chatId,
+      userId,
+    });
+    return message;
+  } catch (error) {
+    console.error("[DB Actions] Failed to get last assistant message:", error);
     return null;
   }
 }

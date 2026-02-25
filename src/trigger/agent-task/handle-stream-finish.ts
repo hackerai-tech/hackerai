@@ -8,24 +8,34 @@ import {
 } from "@/lib/db/actions";
 import type { AgentStreamContext } from "./context";
 import type { AccumulatedFileMetadata } from "@/lib/ai/tools/utils/file-accumulator";
+import { clearChunks, clearTodoState } from "./chunk-store";
 
 export type StreamFinishArgs = {
   messages: UIMessage[];
   isAborted: boolean;
 };
 
-function sendFileMetadataToStream(
+async function sendFileMetadataToStream(
   context: AgentStreamContext,
   fileMetadata: Array<AccumulatedFileMetadata>,
-) {
+): Promise<void> {
   if (!fileMetadata?.length) return;
-  context.appendMetadata({
-    type: "data-file-metadata",
-    data: {
-      messageId: context.payload.assistantMessageId,
-      fileDetails: fileMetadata,
-    },
-  });
+  try {
+    await context.appendMetadata({
+      type: "data-file-metadata",
+      data: {
+        messageId: context.activeAssistantMessageId,
+        fileDetails: fileMetadata,
+      },
+    });
+  } catch (error) {
+    logger.error("Failed to send file metadata to stream", {
+      chatId: context.payload.chatId,
+      messageId: context.activeAssistantMessageId,
+      fileCount: fileMetadata.length,
+      error,
+    });
+  }
 }
 
 export async function handleAgentStreamFinish(
@@ -40,9 +50,9 @@ export async function handleAgentStreamFinish(
       temporary,
       regenerate,
       todos: baseTodos,
-      assistantMessageId,
       mode,
     } = context.payload;
+    const assistantMessageId = context.activeAssistantMessageId;
     const {
       getTodoManager,
       getFileAccumulator,
@@ -100,13 +110,16 @@ export async function handleAgentStreamFinish(
           usage: streamUsage,
         });
       }
-      sendFileMetadataToStream(context, accumulatedFiles);
+      await sendFileMetadataToStream(context, accumulatedFiles);
     } else {
       const tempFiles = getFileAccumulator().getAll();
-      sendFileMetadataToStream(context, tempFiles);
+      await sendFileMetadataToStream(context, tempFiles);
       await deleteTempStreamForBackend({ chatId });
     }
     await context.deductAccumulatedUsage();
+
+    clearChunks(context.payload.chatId);
+    clearTodoState(context.payload.chatId);
 
     context.chatLogger.setSandbox(sandboxManager.getSandboxInfo());
     context.chatLogger.emitSuccess({

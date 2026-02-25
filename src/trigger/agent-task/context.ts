@@ -1,8 +1,5 @@
 import type { UIMessagePart } from "ai";
-import type {
-  AgentTaskPayload,
-  SerializableRateLimitInfo,
-} from "@/lib/api/prepare-agent-payload";
+import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
 import type { ChatLogger } from "@/lib/api/chat-logger";
 import type { createTools } from "@/lib/ai/tools";
 import type { createTrackedProvider } from "@/lib/ai/providers";
@@ -38,6 +35,7 @@ export type AgentStreamContext = {
     Record<string, { input: unknown; output: unknown }>
   >[];
   finalMessages: AgentTaskPayload["messages"];
+  activeAssistantMessageId: string;
   hasSummarized: boolean;
   stoppedDueToTokenExhaustion: boolean;
   lastStepInputTokens: number;
@@ -51,8 +49,8 @@ export type AgentStreamContext = {
   deductAccumulatedUsage: () => Promise<void>;
 };
 
-/** Context shape returned by factory; orchestrator sets the remaining fields before createStream. */
-export type AgentStreamContextInitial = Omit<
+/** Fields set by createAgentStreamContext(); orchestrator adds the rest before createStream. */
+export type EarlyAgentStreamContext = Omit<
   AgentStreamContext,
   | "tools"
   | "getTodoManager"
@@ -65,23 +63,11 @@ export type AgentStreamContextInitial = Omit<
   | "currentSystemPrompt"
   | "configuredModelId"
   | "streamStartTime"
-> & {
-  tools?: AgentStreamContext["tools"];
-  getTodoManager?: AgentStreamContext["getTodoManager"];
-  getFileAccumulator?: AgentStreamContext["getFileAccumulator"];
-  sandboxManager?: AgentStreamContext["sandboxManager"];
-  ensureSandbox?: AgentStreamContext["ensureSandbox"];
-  sandboxContext?: string | null;
-  titlePromise?: Promise<string | undefined>;
-  trackedProvider?: ReturnType<typeof createTrackedProvider>;
-  currentSystemPrompt?: string;
-  configuredModelId?: string;
-  streamStartTime?: number;
-};
+>;
 
 export function createAgentStreamContext(
   payload: AgentTaskPayload,
-): AgentStreamContextInitial {
+): EarlyAgentStreamContext {
   const serializedRateLimitInfo = payload.rateLimitInfo;
   const rateLimitInfo = deserializeRateLimitInfo(serializedRateLimitInfo);
   const metadataWriter = createMetadataWriter();
@@ -92,7 +78,7 @@ export function createAgentStreamContext(
     Record<string, { input: unknown; output: unknown }>
   >[] = [];
 
-  const ctx: AgentStreamContextInitial = {
+  const ctx: EarlyAgentStreamContext = {
     payload,
     rateLimitInfo,
     metadataWriter,
@@ -101,6 +87,7 @@ export function createAgentStreamContext(
     isReasoningModel: isAgentMode(payload.mode),
     summarizationParts,
     finalMessages: payload.messages,
+    activeAssistantMessageId: payload.assistantMessageId,
     hasSummarized: false,
     stoppedDueToTokenExhaustion: false,
     lastStepInputTokens: 0,

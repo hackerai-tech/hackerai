@@ -1,11 +1,6 @@
 "use node";
 
-import {
-  convertToModelMessages,
-  streamText,
-  smoothStream,
-  type UIMessagePart,
-} from "ai";
+import { convertToModelMessages, streamText, smoothStream } from "ai";
 import { logger } from "@trigger.dev/sdk/v3";
 import { systemPrompt } from "@/lib/system-prompt";
 import {
@@ -48,7 +43,7 @@ async function trySummarizeStep(
 
   const { needsSummarization, summarizedMessages } =
     await checkAndSummarizeIfNeeded(
-      context.finalMessages,
+      finalMessages,
       subscription,
       trackedProvider.languageModel(modelName),
       mode,
@@ -64,12 +59,7 @@ async function trySummarizeStep(
   if (!needsSummarization) return null;
 
   context.hasSummarized = true;
-  summarizationParts.push(
-    createSummarizationCompletedPart() as UIMessagePart<
-      Record<string, unknown>,
-      Record<string, { input: unknown; output: unknown }>
-    >,
-  );
+  summarizationParts.push(createSummarizationCompletedPart());
   return {
     messages: await convertToModelMessages(summarizedMessages),
   };
@@ -118,22 +108,16 @@ export async function createAgentStream(
         const summarizationResult = await trySummarizeStep(context, modelName);
         if (summarizationResult) return summarizationResult;
 
-        const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
-        const toolResults =
-          (lastStep && (lastStep as { toolResults?: unknown[] }).toolResults) ||
-          [];
-        const wasMemoryUpdate =
-          Array.isArray(toolResults) &&
-          toolResults.some(
-            (r) => (r as { toolName?: string })?.toolName === "update_memory",
-          );
-        const wasNoteModified =
-          Array.isArray(toolResults) &&
-          toolResults.some((r) =>
-            ["create_note", "update_note", "delete_note"].includes(
-              (r as { toolName?: string })?.toolName ?? "",
-            ),
-          );
+        const lastStep = steps.at(-1);
+        const toolResults = lastStep?.toolResults ?? [];
+        const wasMemoryUpdate = toolResults.some(
+          (r) => r?.toolName === "update_memory",
+        );
+        const wasNoteModified = toolResults.some(
+          (r) =>
+            r != null &&
+            ["create_note", "update_note", "delete_note"].includes(r.toolName),
+        );
         if (!wasMemoryUpdate && !wasNoteModified) {
           return {
             messages,
@@ -200,14 +184,16 @@ export async function createAgentStream(
         context.accumulatedInputTokens += usage.inputTokens || 0;
         context.accumulatedOutputTokens += usage.outputTokens || 0;
         context.lastStepInputTokens = usage.inputTokens || 0;
-        const stepCost = (usage as { raw?: { cost?: number } }).raw?.cost;
-        if (stepCost) context.accumulatedProviderCost += stepCost;
+        const rawCost = usage.raw?.cost;
+        if (typeof rawCost === "number")
+          context.accumulatedProviderCost += rawCost;
       }
     },
     onFinish: async ({ finishReason, usage, response }) => {
       context.streamFinishReason = context.stoppedDueToTokenExhaustion
         ? TOKEN_EXHAUSTION_FINISH_REASON
         : finishReason;
+      // Safe widening: LanguageModelUsage → Record<string, unknown> for DB persistence
       context.streamUsage = usage as Record<string, unknown>;
       context.responseModel = response?.modelId;
       chatLogger.setStreamResponse(context.responseModel, context.streamUsage);

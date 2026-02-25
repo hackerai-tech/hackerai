@@ -25,6 +25,7 @@ import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
 import { normalizeMessages } from "@/lib/utils/message-processor";
+import { mergeInterruptedAssistantMessages } from "@/lib/utils/message-utils";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
@@ -740,6 +741,12 @@ export const Chat = ({
     queueBehavior,
   ]);
 
+  const displayMessages = agentLong.isActive
+    ? agentLong.displayMessages
+    : messages;
+  const mergedDisplayMessages =
+    mergeInterruptedAssistantMessages(displayMessages);
+
   // Chat handlers
   const {
     handleSubmit,
@@ -750,7 +757,7 @@ export const Chat = ({
     handleSendNow,
   } = useChatHandlers({
     chatId,
-    messages: agentLong.isActive ? agentLong.displayMessages : messages,
+    messages: mergedDisplayMessages,
     sendMessage: wrappedSendMessage,
     stop: useCallback(() => {
       if (agentLong.isActive) {
@@ -798,11 +805,8 @@ export const Chat = ({
     }
   };
 
-  const displayMessages = agentLong.isActive
-    ? agentLong.displayMessages
-    : messages;
   const displayStatus = agentLong.isActive ? agentLong.status : status;
-  const hasMessages = displayMessages.length > 0;
+  const hasMessages = mergedDisplayMessages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
   // UI-level temporary chat flag
@@ -867,7 +871,7 @@ export const Chat = ({
                 <Messages
                   scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                   contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                  messages={displayMessages}
+                  messages={mergedDisplayMessages}
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}
                   onRetry={handleRetry}
@@ -989,7 +993,7 @@ export const Chat = ({
             >
               {sidebarOpen && (
                 <ComputerSidebar
-                  messages={displayMessages}
+                  messages={mergedDisplayMessages}
                   status={displayStatus}
                 />
               )}
@@ -1008,7 +1012,7 @@ export const Chat = ({
           <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
             <div className="w-full max-w-4xl h-full">
               <ComputerSidebar
-                messages={displayMessages}
+                messages={mergedDisplayMessages}
                 status={displayStatus}
               />
             </div>

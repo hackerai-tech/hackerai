@@ -1,20 +1,20 @@
 "use node";
 
 import { task } from "@trigger.dev/sdk/v3";
-import { clearActiveTriggerRunIdFromBackend } from "@/lib/db/actions";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
 import { createAgentStreamContext } from "./context";
 import { runAgentStream } from "./run-agent-stream";
+import { handleCatchError } from "./catch-error";
 
 export const agentStreamTask = task({
   id: "agent-stream",
-  retry: { maxAttempts: 0 },
-  run: async (payload: AgentTaskPayload) => {
+  retry: { maxAttempts: 2 },
+  run: async (payload: AgentTaskPayload, { ctx }) => {
     const context = createAgentStreamContext(payload);
     try {
-      await runAgentStream(context, payload);
+      await runAgentStream(context, payload, ctx.attempt.number);
     } catch (error) {
       context.chatLogger.emitUnexpectedError(error);
       triggerAxiomLogger.error("Unexpected error in agent-task", {
@@ -28,5 +28,8 @@ export const agentStreamTask = task({
       await triggerAxiomLogger.flush();
       throw error;
     }
+  },
+  catchError: async ({ payload, error }) => {
+    await handleCatchError({ payload, error });
   },
 });

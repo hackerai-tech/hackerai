@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { ToolContext, Todo } from "@/types";
 
 export const createTodoWrite = (context: ToolContext) => {
-  const { todoManager, assistantMessageId } = context;
+  const { todoManager, assistantMessageId, onTodosUpdated } = context;
 
   return tool({
     description: `Use this tool to create and manage a structured task list for your penetration testing session. This helps track progress, organize complex security assessments, and ensure thorough coverage.
@@ -188,6 +188,13 @@ When in doubt, use this tool. Systematic task management ensures comprehensive s
             : todos.map((t) => ({ ...t, sourceMessageId: assistantMessageId })),
           shouldMerge,
         );
+
+        // Notify caller of updated todo state (used by Trigger.dev tasks to persist on retry)
+        try {
+          await onTodosUpdated?.(updatedTodos);
+        } catch (callbackError) {
+          console.error("onTodosUpdated callback failed:", callbackError);
+        }
 
         // Get current stats from the manager
         const stats = todoManager.getStats();
