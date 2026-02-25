@@ -48,8 +48,7 @@ const tryFallbackSummary = async (
     if (cutoffMsg && cutoffMsg._creationTime < earliestDeletedTime) {
       await ctx.db.patch(summaryId, {
         summary_text: previousSummaries[i].summary_text,
-        summary_up_to_message_id:
-          previousSummaries[i].summary_up_to_message_id,
+        summary_up_to_message_id: previousSummaries[i].summary_up_to_message_id,
         previous_summaries: previousSummaries.slice(i + 1),
       });
       return true;

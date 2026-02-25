@@ -26,6 +26,7 @@ You'll need the following accounts:
 - [OpenRouter](https://openrouter.ai/) - AI model provider
 - [OpenAI](https://platform.openai.com/) - AI model provider
 - [XAI](https://x.ai/) - AI model provider for agent mode
+- [Google Vertex AI](https://console.cloud.google.com/) - AI model provider (Gemini)
 - [E2B](https://e2b.dev/) - Sandbox environment for secure code execution in agent mode
 - [Convex](https://www.convex.dev/) - Database and backend
 - [WorkOS](https://workos.com/) - Authentication and user management
