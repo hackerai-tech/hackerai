@@ -82,16 +82,22 @@ export function SandboxSelector({
   ];
 
   // Auto-correct stale sandbox preference: if the stored value doesn't match any
-  // available option (e.g., local connection was disconnected), reset to "e2b"
+  // available option (e.g., local connection was disconnected), reset to "e2b".
+  // Skip when readOnly so the selector can fall through to the full dropdown instead.
   const valueMatchesOption = options.some((opt) => opt.id === value);
   useEffect(() => {
-    if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
+    if (
+      connections !== undefined &&
+      !valueMatchesOption &&
+      value !== "e2b" &&
+      !readOnly
+    ) {
       onChange?.("e2b");
       toast.info("Local sandbox disconnected. Switched to Cloud.", {
         duration: 5000,
       });
     }
-  }, [connections, valueMatchesOption, value, onChange]);
+  }, [connections, valueMatchesOption, value, onChange, readOnly]);
 
   const selectedOption = options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
