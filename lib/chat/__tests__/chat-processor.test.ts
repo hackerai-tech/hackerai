@@ -26,32 +26,32 @@ describe("limitFileParts", () => {
     expect(result).toBe(messages); // same reference, no changes
   });
 
-  it("should return messages unchanged when exactly at the limit (30)", () => {
-    const parts = Array.from({ length: 30 }, (_, i) => makeFilePart(`f${i}`));
+  it("should return messages unchanged when exactly at the limit (10 images)", () => {
+    const parts = Array.from({ length: 10 }, (_, i) => makeFilePart(`f${i}`));
     const messages = [makeMessage("m1", "user", parts)];
     const result = limitFileParts(messages);
     expect(result).toBe(messages);
   });
 
-  it("should remove oldest files when over the limit", () => {
-    const parts = Array.from({ length: 35 }, (_, i) => makeFilePart(`f${i}`));
+  it("should remove oldest images when over the limit", () => {
+    const parts = Array.from({ length: 15 }, (_, i) => makeFilePart(`f${i}`));
     const messages = [makeMessage("m1", "user", parts)];
     const result = limitFileParts(messages);
 
     const remainingFiles = result[0].parts.filter(
       (p: any) => p.type === "file",
     );
-    expect(remainingFiles).toHaveLength(30);
-    // Should keep f5..f34 (the 30 most recent), removing f0..f4
+    expect(remainingFiles).toHaveLength(10);
+    // Should keep f5..f14 (the 10 most recent), removing f0..f4
     expect((remainingFiles[0] as any).fileId).toBe("f5");
-    expect((remainingFiles[29] as any).fileId).toBe("f34");
+    expect((remainingFiles[9] as any).fileId).toBe("f14");
   });
 
-  it("should remove oldest files across multiple messages", () => {
-    // 3 messages with 12 files each = 36 total, should keep last 30
+  it("should remove oldest images across multiple messages", () => {
+    // 3 messages with 5 images each = 15 total, should keep last 10
     const messages = Array.from({ length: 3 }, (_, msgIdx) => {
-      const parts = Array.from({ length: 12 }, (_, fileIdx) =>
-        makeFilePart(`f${msgIdx * 12 + fileIdx}`),
+      const parts = Array.from({ length: 5 }, (_, fileIdx) =>
+        makeFilePart(`f${msgIdx * 5 + fileIdx}`),
       );
       return makeMessage(`m${msgIdx}`, "user", parts);
     });
@@ -61,16 +61,16 @@ describe("limitFileParts", () => {
     const allFiles = result.flatMap((msg) =>
       msg.parts.filter((p: any) => p.type === "file"),
     );
-    expect(allFiles).toHaveLength(30);
-    // Oldest 6 files (f0..f5) from first message should be removed
-    expect((allFiles[0] as any).fileId).toBe("f6");
-    expect((allFiles[29] as any).fileId).toBe("f35");
+    expect(allFiles).toHaveLength(10);
+    // Oldest 5 images (f0..f4) from first message should be removed
+    expect((allFiles[0] as any).fileId).toBe("f5");
+    expect((allFiles[9] as any).fileId).toBe("f14");
   });
 
-  it("should preserve non-file parts when removing files", () => {
+  it("should preserve non-file parts when removing images", () => {
     const parts: any[] = [
       { type: "text", text: "check these images" },
-      ...Array.from({ length: 32 }, (_, i) => makeFilePart(`f${i}`)),
+      ...Array.from({ length: 12 }, (_, i) => makeFilePart(`f${i}`)),
     ];
     const messages = [makeMessage("m1", "user", parts)];
     const result = limitFileParts(messages);
@@ -80,7 +80,7 @@ describe("limitFileParts", () => {
 
     expect(textParts).toHaveLength(1);
     expect((textParts[0] as any).text).toBe("check these images");
-    expect(fileParts).toHaveLength(30);
+    expect(fileParts).toHaveLength(10);
   });
 
   it("should handle messages with no parts", () => {
@@ -92,8 +92,8 @@ describe("limitFileParts", () => {
     expect(result).toBe(messages); // under limit, no changes
   });
 
-  it("should limit all file types, not just images", () => {
-    const parts = Array.from({ length: 35 }, (_, i) =>
+  it("should only limit images, leaving PDFs and other file types untouched", () => {
+    const parts = Array.from({ length: 25 }, (_, i) =>
       makeFilePart(`f${i}`, i % 2 === 0 ? "image/png" : "application/pdf"),
     );
     const messages = [makeMessage("m1", "user", parts)];
@@ -102,8 +102,25 @@ describe("limitFileParts", () => {
     const remainingFiles = result[0].parts.filter(
       (p: any) => p.type === "file",
     );
-    expect(remainingFiles).toHaveLength(30);
-    // Should keep f5..f34
-    expect((remainingFiles[0] as any).fileId).toBe("f5");
+    const images = remainingFiles.filter(
+      (p: any) => p.mediaType === "image/png",
+    );
+    const pdfs = remainingFiles.filter(
+      (p: any) => p.mediaType === "application/pdf",
+    );
+
+    // All 12 PDFs should remain (odd indices: 1,3,5,...,23 = 12 PDFs)
+    expect(pdfs).toHaveLength(12);
+    // Only 10 most recent images should remain (even indices: 0,2,4,...,24 = 13 images, keep last 10)
+    expect(images).toHaveLength(10);
+  });
+
+  it("should not remove any files when all are non-image types", () => {
+    const parts = Array.from({ length: 20 }, (_, i) =>
+      makeFilePart(`f${i}`, "application/pdf"),
+    );
+    const messages = [makeMessage("m1", "user", parts)];
+    const result = limitFileParts(messages);
+    expect(result).toBe(messages); // no images, nothing to limit
   });
 });

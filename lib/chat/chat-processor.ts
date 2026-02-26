@@ -3,6 +3,7 @@ import type { ChatMode, SubscriptionTier } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
+import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
 import type { ModelName } from "@/lib/ai/providers";
 import { stripProviderMetadata } from "@/lib/utils/message-processor";
 
@@ -281,38 +282,43 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
 }
 
 /**
- * Limits the number of file parts across all messages to stay within provider limits.
- * Fireworks limits conversations to 30 images. Keeps the most recent files
- * by removing the oldest ones first.
+ * Limits the number of image file parts across all messages to stay within provider limits.
+ * Google Vertex AI (Gemini 3) limits requests to 10 image links, returning
+ * INVALID_ARGUMENT if exceeded. Only counts image files — PDFs and other file types
+ * are left untouched. Keeps the most recent images by removing the oldest ones first.
  */
-const MAX_FILES_PER_CONVERSATION = 30;
+const MAX_IMAGES_PER_CONVERSATION = 10;
 
 export function limitFileParts(messages: UIMessage[]): UIMessage[] {
-  const filePositions: Array<{ messageIndex: number; partIndex: number }> = [];
+  const imagePositions: Array<{ messageIndex: number; partIndex: number }> = [];
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (!msg.parts) continue;
-    (msg.parts as any[]).forEach((part, j) => {
-      if (part.type === "file") {
-        filePositions.push({ messageIndex: i, partIndex: j });
+    (msg.parts as any[]).forEach((part: any, j) => {
+      if (
+        part.type === "file" &&
+        part.mediaType &&
+        isSupportedImageMediaType(part.mediaType)
+      ) {
+        imagePositions.push({ messageIndex: i, partIndex: j });
       }
     });
   }
 
-  if (filePositions.length <= MAX_FILES_PER_CONVERSATION) {
+  if (imagePositions.length <= MAX_IMAGES_PER_CONVERSATION) {
     return messages;
   }
 
-  const removedCount = filePositions.length - MAX_FILES_PER_CONVERSATION;
+  const removedCount = imagePositions.length - MAX_IMAGES_PER_CONVERSATION;
   console.log(
-    `[limitFileParts] Removing ${removedCount} oldest file parts (${filePositions.length} total, limit ${MAX_FILES_PER_CONVERSATION})`,
+    `[limitFileParts] Removing ${removedCount} oldest image parts (${imagePositions.length} total, limit ${MAX_IMAGES_PER_CONVERSATION})`,
   );
 
-  // Remove the oldest files, keep the last MAX_FILES_PER_CONVERSATION
+  // Remove the oldest images, keep the last MAX_IMAGES_PER_CONVERSATION
   const toRemove = new Set(
-    filePositions
-      .slice(0, filePositions.length - MAX_FILES_PER_CONVERSATION)
+    imagePositions
+      .slice(0, imagePositions.length - MAX_IMAGES_PER_CONVERSATION)
       .map(({ messageIndex, partIndex }) => `${messageIndex}:${partIndex}`),
   );
 
