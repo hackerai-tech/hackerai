@@ -2,23 +2,6 @@ import type { UIToolInvocation } from "ai";
 import { ChatMessage } from "@/types/chat";
 
 /**
- * Strips provider-specific fields from a single message part.
- * Removes providerMetadata, callProviderMetadata, providerExecuted, and providerOptions.
- */
-export const stripProviderMetadataFromPart = <T extends Record<string, any>>(
-  part: T,
-): T => {
-  const {
-    providerMetadata,
-    callProviderMetadata,
-    providerExecuted,
-    providerOptions,
-    ...rest
-  } = part;
-  return rest as T;
-};
-
-/**
  * Checks if a part is a completed reasoning block with redacted text.
  * These should be filtered out entirely as they provide no value when saved.
  */
@@ -31,24 +14,22 @@ const isRedactedReasoningPart = (part: Record<string, any>): boolean => {
 };
 
 /**
- * Strips OpenRouter providerMetadata and callProviderMetadata from all parts in a message.
- * Also filters out completed reasoning blocks with redacted text.
- * Used to clean messages before saving or for temporary chat handling.
+ * Filters out redacted reasoning parts from a message.
  *
- * NOTE: We intentionally preserve top-level reasoning/reasoning_details fields
- * because Gemini 3 models require thought signatures to be passed back in
- * subsequent requests for function calling to work correctly.
+ * IMPORTANT: This function intentionally preserves providerMetadata on all parts.
+ * Gemini 3 models require thought signatures (stored in providerMetadata) to be
+ * passed back in subsequent requests for function calling to work correctly.
+ * Stripping providerMetadata causes "missing thought_signature" 400 errors.
  */
-export const stripProviderMetadata = <T extends { parts?: any[] }>(
+export const filterRedactedReasoning = <T extends { parts?: any[] }>(
   message: T,
 ): T => {
   if (!message.parts) return message;
-  return {
-    ...message,
-    parts: message.parts
-      .filter((part) => !isRedactedReasoningPart(part))
-      .map(stripProviderMetadataFromPart),
-  };
+  const filtered = message.parts.filter(
+    (part) => !isRedactedReasoningPart(part),
+  );
+  if (filtered.length === message.parts.length) return message;
+  return { ...message, parts: filtered };
 };
 
 // Generic interface for all tool parts

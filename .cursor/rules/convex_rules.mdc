@@ -12,7 +12,6 @@ import { query } from "./_generated/server";
 import { v } from "convex/values";
 export const f = query({
     args: {},
-    returns: v.null(),
     handler: async (ctx, args) => {
     // Function body
     },
@@ -71,20 +70,6 @@ export default defineSchema({
     )
 });
 ```
-- Always use the `v.null()` validator when returning a null value. Below is an example query that returns a null value:
-```typescript
-import { query } from "./_generated/server";
-import { v } from "convex/values";
-
-export const exampleQuery = query({
-  args: {},
-  returns: v.null(),
-  handler: async (ctx, args) => {
-      console.log("This query returns a null value");
-      return null;
-  },
-});
-```
 - Here are the valid Convex types along with their respective validators:
 Convex Type  | TS/JS type  |  Example Usage         | Validator for argument validation and schemas  | Notes                                                                                                                                                                                                 |
 | ----------- | ------------| -----------------------| -----------------------------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
@@ -103,7 +88,7 @@ Convex Type  | TS/JS type  |  Example Usage         | Validator for argument val
 - Use `internalQuery`, `internalMutation`, and `internalAction` to register internal functions. These functions are private and aren't part of an app's API. They can only be called by other Convex functions. These functions are always imported from `./_generated/server`.
 - Use `query`, `mutation`, and `action` to register public functions. These functions are part of the public API and are exposed to the public Internet. Do NOT use `query`, `mutation`, or `action` to register sensitive internal functions that should be kept private.
 - You CANNOT register a function through the `api` or `internal` objects.
-- ALWAYS include argument and return validators for all Convex functions. This includes all of `query`, `internalQuery`, `mutation`, `internalMutation`, `action`, and `internalAction`. If a function doesn't return anything, include `returns: v.null()` as its output validator.
+- ALWAYS include argument validators for all Convex functions. This includes all of `query`, `internalQuery`, `mutation`, `internalMutation`, `action`, and `internalAction`.
 - If the JavaScript implementation of a Convex function doesn't have a return value, it implicitly returns `null`.
 
 ### Function calling
@@ -117,7 +102,6 @@ Convex Type  | TS/JS type  |  Example Usage         | Validator for argument val
 ```
 export const f = query({
   args: { name: v.string() },
-  returns: v.string(),
   handler: async (ctx, args) => {
     return "Hello " + args.name;
   },
@@ -125,7 +109,6 @@ export const f = query({
 
 export const g = query({
   args: {},
-  returns: v.null(),
   handler: async (ctx, args) => {
     const result: string = await ctx.runQuery(api.example.f, { name: "Bob" });
     return null;
@@ -194,7 +177,6 @@ import { Doc, Id } from "./_generated/dataModel";
 
 export const exampleQuery = query({
     args: { userIds: v.array(v.id("users")) },
-    returns: v.record(v.id("users"), v.string()),
     handler: async (ctx, args) => {
         const idToUsername: Record<Id<"users">, string> = {};
         for (const userId of args.userIds) {
@@ -240,6 +222,8 @@ const messages = await ctx.db
 
 ## Action guidelines
 - Always add `"use node";` to the top of files containing actions that use Node.js built-in modules.
+- Never add `"use node";` to a file that also exports queries or mutations. Only actions can run in the Node.js runtime; queries and mutations must stay in the default Convex runtime. If you need Node.js built-ins alongside queries or mutations, put the action in a separate file.
+- `fetch()` is available in the default Convex runtime. You do NOT need `"use node";` just to use `fetch()`.
 - Never use `ctx.db` inside of an action. Actions don't have access to the database.
 - Below is an example of the syntax for an action:
 ```ts
@@ -247,7 +231,6 @@ import { action } from "./_generated/server";
 
 export const exampleAction = action({
     args: {},
-    returns: v.null(),
     handler: async (ctx, args) => {
         console.log("This action does not return anything");
         return null;
@@ -267,7 +250,6 @@ import { internalAction } from "./_generated/server";
 
 const empty = internalAction({
   args: {},
-  returns: v.null(),
   handler: async (ctx, args) => {
     console.log("empty");
   },
@@ -304,7 +286,6 @@ type FileMetadata = {
 
 export const exampleQuery = query({
     args: { fileId: v.id("_storage") },
-    returns: v.null(),
     handler: async (ctx, args) => {
         const metadata: FileMetadata | null = await ctx.db.system.get("_storage", args.fileId);
         console.log(metadata);
@@ -485,7 +466,6 @@ export const createUser = mutation({
   args: {
     name: v.string(),
   },
-  returns: v.id("users"),
   handler: async (ctx, args) => {
     return await ctx.db.insert("users", { name: args.name });
   },
@@ -498,7 +478,6 @@ export const createChannel = mutation({
   args: {
     name: v.string(),
   },
-  returns: v.id("channels"),
   handler: async (ctx, args) => {
     return await ctx.db.insert("channels", { name: args.name });
   },
@@ -511,15 +490,6 @@ export const listMessages = query({
   args: {
     channelId: v.id("channels"),
   },
-  returns: v.array(
-    v.object({
-      _id: v.id("messages"),
-      _creationTime: v.number(),
-      channelId: v.id("channels"),
-      authorId: v.optional(v.id("users")),
-      content: v.string(),
-    }),
-  ),
   handler: async (ctx, args) => {
     const messages = await ctx.db
       .query("messages")
@@ -539,7 +509,6 @@ export const sendMessage = mutation({
     authorId: v.id("users"),
     content: v.string(),
   },
-  returns: v.null(),
   handler: async (ctx, args) => {
     const channel = await ctx.db.get(args.channelId);
     if (!channel) {
@@ -567,7 +536,6 @@ export const generateResponse = internalAction({
   args: {
     channelId: v.id("channels"),
   },
-  returns: v.null(),
   handler: async (ctx, args) => {
     const context = await ctx.runQuery(internal.index.loadContext, {
       channelId: args.channelId,
@@ -592,12 +560,6 @@ export const loadContext = internalQuery({
   args: {
     channelId: v.id("channels"),
   },
-  returns: v.array(
-    v.object({
-      role: v.union(v.literal("user"), v.literal("assistant")),
-      content: v.string(),
-    }),
-  ),
   handler: async (ctx, args) => {
     const channel = await ctx.db.get(args.channelId);
     if (!channel) {
@@ -633,7 +595,6 @@ export const writeAgentResponse = internalMutation({
     channelId: v.id("channels"),
     content: v.string(),
   },
-  returns: v.null(),
   handler: async (ctx, args) => {
     await ctx.db.insert("messages", {
       channelId: args.channelId,

@@ -14,7 +14,6 @@ import {
   checkAndSummarizeIfNeeded,
   type EnsureSandbox,
 } from "@/lib/chat/summarization";
-import { type GoogleLanguageModelOptions } from "@ai-sdk/google";
 
 /**
  * Check if messages contain file attachments
@@ -303,13 +302,6 @@ export function buildProviderOptions(
       // Disable storing the conversation in XAI's database
       store: false,
     },
-    ...(isReasoningModel && {
-      vertex: {
-        thinkingConfig: {
-          includeThoughts: true,
-        },
-      } satisfies GoogleLanguageModelOptions,
-    }),
     openrouter: {
       ...(isReasoningModel
         ? { reasoning: { enabled: true } }

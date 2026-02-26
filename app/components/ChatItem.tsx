@@ -23,6 +23,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -40,6 +50,7 @@ import {
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { removeDraft } from "@/lib/utils/client-storage";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { ShareDialog } from "./ShareDialog";
 import { usePinChat, useUnpinChat } from "../hooks/useChats";
 
@@ -67,6 +78,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [showRenameDialog, setShowRenameDialog] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [editTitle, setEditTitle] = useState(title);
   const [isRenaming, setIsRenaming] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -109,10 +121,17 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const handleDelete = async (e: React.MouseEvent) => {
+  const handleDeleteClick = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    setIsDropdownOpen(false);
 
+    setTimeout(() => {
+      setShowDeleteDialog(true);
+    }, 50);
+  };
+
+  const handleDeleteConfirm = async () => {
     if (isDeleting) return;
     setIsDeleting(true);
 
@@ -152,6 +171,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
       }
     } finally {
       setIsDeleting(false);
+      setShowDeleteDialog(false);
     }
   };
 
@@ -259,7 +279,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't handle keyboard events if dialog or dropdown is open
-    if (showRenameDialog || isDropdownOpen) return;
+    if (showRenameDialog || isDropdownOpen || showDeleteDialog) return;
 
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -364,7 +384,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
               Share
             </DropdownMenuItem>
             <DropdownMenuItem
-              onClick={handleDelete}
+              onClick={handleDeleteClick}
               className="text-destructive focus:text-destructive"
             >
               <Trash2 className="mr-2 h-4 w-4" />
@@ -425,6 +445,46 @@ const ChatItem: React.FC<ChatItemProps> = ({
         existingShareId={shareId}
         existingShareDate={shareDate}
       />
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete chat?</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div>
+                <p>
+                  This will delete <strong>{title}</strong>.
+                </p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Visit{" "}
+                  <button
+                    type="button"
+                    className="underline hover:text-foreground"
+                    onClick={() => {
+                      setShowDeleteDialog(false);
+                      openSettingsDialog();
+                    }}
+                  >
+                    settings
+                  </button>{" "}
+                  to delete any notes saved during this chat.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
