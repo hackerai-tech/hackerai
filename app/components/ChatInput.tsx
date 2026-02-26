@@ -469,7 +469,7 @@ export const ChatInput = ({
 
         {/* Sandbox selector for new chats: above input on mobile, below on desktop.
             Always reserve space (min-h-9) to prevent layout shift when switching modes. */}
-        {isNewChat && (
+        {isNewChat && !temporaryChatsEnabled && (
           <div className="order-1 sm:order-2 flex px-1 pb-2 sm:pt-2 sm:pb-0 min-h-9">
             {isAgentMode(chatMode) && (
               <SandboxSelector
