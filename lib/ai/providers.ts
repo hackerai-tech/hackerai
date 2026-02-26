@@ -1,22 +1,21 @@
 import { customProvider } from "ai";
 import { xai } from "@ai-sdk/xai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
-import { vertex } from "@ai-sdk/google-vertex";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
 // import type { SubscriptionTier } from "@/types";
 
 const baseProviders = {
-  "ask-model": vertex("gemini-3-flash-preview"),
+  "ask-model": openrouter("google/gemini-3-flash-preview"),
   "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
-  "ask-vision-model": vertex("gemini-3-flash-preview"),
-  "ask-vision-model-for-pdfs": vertex("gemini-3-flash-preview"),
-  "agent-model": vertex("gemini-3-flash-preview"),
-  "agent-vision-model": vertex("gemini-3-flash-preview"),
+  "ask-vision-model": openrouter("google/gemini-3-flash-preview"),
+  "ask-vision-model-for-pdfs": openrouter("google/gemini-3-flash-preview"),
+  "agent-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-vision-model": openrouter("google/gemini-3-flash-preview"),
   "fallback-agent-model": openrouter("moonshotai/kimi-k2.5"),
   "fallback-ask-model": openrouter("moonshotai/kimi-k2.5"),
   "title-generator-model": openrouter("x-ai/grok-4.1-fast"),
-  "summarization-model": vertex("gemini-3-flash-preview"),
+  "summarization-model": openrouter("google/gemini-3-flash-preview"),
 } as Record<string, any>;
 
 export type ModelName = keyof typeof baseProviders;

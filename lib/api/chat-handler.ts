@@ -1000,8 +1000,7 @@ export const createChatHandler = (
                       finishReason: streamFinishReason,
                       todos: mergedTodos,
                       defaultModelSlug: mode,
-                      sandboxType:
-                        sandboxManager.getEffectivePreference(),
+                      sandboxType: sandboxManager.getEffectivePreference(),
                     });
                     logStep("update_chat", stepStart);
                   } else {
