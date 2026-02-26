@@ -279,7 +279,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     // Don't handle keyboard events if dialog or dropdown is open
-    if (showRenameDialog || isDropdownOpen) return;
+    if (showRenameDialog || isDropdownOpen || showDeleteDialog) return;
 
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
