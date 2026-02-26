@@ -26,7 +26,7 @@ export interface SandboxManager {
   setSandbox(sandbox: AnySandbox): void;
   getSandboxType(toolName: string): SandboxType | undefined;
   getSandboxInfo(): SandboxInfo | null;
-  // Optional: only HybridSandboxManager implements these
+  // Optional: only HybridSandboxManager implements this
   consumeFallbackInfo?(): SandboxFallbackInfo | null;
   /** Get the effective sandbox preference after any fallbacks (e.g. "e2b" or connectionId). */
   getEffectivePreference(): string;
