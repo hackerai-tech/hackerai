@@ -5,8 +5,6 @@ import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
 import type { ModelName } from "@/lib/ai/providers";
-import { stripProviderMetadata } from "@/lib/utils/message-processor";
-
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
  * Agent mode: Paid: 100 steps
@@ -368,11 +366,8 @@ export async function processChatMessages({
   subscription: SubscriptionTier;
   uploadBasePath?: string;
 }) {
-  // Strip provider metadata from incoming messages early
-  const cleanMessages = messages.map(stripProviderMetadata);
-
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
-  const messagesWithoutUIOnlyParts = cleanMessages.map(filterUIOnlyParts);
+  const messagesWithoutUIOnlyParts = messages.map(filterUIOnlyParts);
 
   // Limit image parts before fetching URLs to avoid unnecessary S3 requests
   // Vertex AI (Gemini 3) limits conversations to 10 images
