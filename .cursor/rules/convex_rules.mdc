@@ -240,6 +240,8 @@ const messages = await ctx.db
 
 ## Action guidelines
 - Always add `"use node";` to the top of files containing actions that use Node.js built-in modules.
+- Never add `"use node";` to a file that also exports queries or mutations. Only actions can run in the Node.js runtime; queries and mutations must stay in the default Convex runtime. If you need Node.js built-ins alongside queries or mutations, put the action in a separate file.
+- `fetch()` is available in the default Convex runtime. You do NOT need `"use node";` just to use `fetch()`.
 - Never use `ctx.db` inside of an action. Actions don't have access to the database.
 - Below is an example of the syntax for an action:
 ```ts
