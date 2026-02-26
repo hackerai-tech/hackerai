@@ -128,6 +128,8 @@ export const Chat = ({
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
+  // Track whether sandbox preference has been initialized from chat for this chat id
+  const hasInitializedSandboxRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -148,6 +150,19 @@ export const Chat = ({
   const chatData = useQuery(
     api.chats.getChatByIdFromClient,
     shouldFetchMessages ? { id: chatId } : "skip",
+  );
+
+  // Query local sandbox connections only when we need to validate a non-E2B sandbox_type
+  const storedSandboxType = (chatData as any)?.sandbox_type as
+    | string
+    | undefined;
+  const needsConnectionValidation =
+    !!storedSandboxType &&
+    storedSandboxType !== "e2b" &&
+    !hasInitializedSandboxRef.current;
+  const localConnections = useQuery(
+    api.localSandbox.listConnections,
+    needsConnectionValidation ? undefined : "skip",
   );
 
   // Derive title from Convex (single source of truth)
@@ -438,6 +453,7 @@ export const Chat = ({
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
+    hasInitializedSandboxRef.current = false;
     agentLong.lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
   }, [chatId, agentLong.lastTriggerAssistantIdRef]);
 
@@ -485,17 +501,53 @@ export const Chat = ({
     setAwaitingServerChat(false);
     // Initialize mode from server once per chat id (only for existing chats)
     if (!hasInitializedModeFromChatRef.current && isExistingChat) {
+      hasInitializedModeFromChatRef.current = true;
       // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
       const slug =
         (chatData as any).default_model_slug ||
         ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
       if (slug === "ask" || slug === "agent" || slug === "agent-long") {
         setChatMode(slug);
-        hasInitializedModeFromChatRef.current = true;
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
+
+  // Initialize sandbox preference from chat data, validated against available connections.
+  // Separate from the main chatData effect so it can re-run when localConnections loads.
+  useEffect(() => {
+    if (hasInitializedSandboxRef.current || !isExistingChat) return;
+
+    const dataId = (chatData as any)?.id as string | undefined;
+    if (!chatData || dataId !== chatId) return;
+
+    const storedSandboxType = (chatData as any).sandbox_type as
+      | string
+      | undefined;
+    if (!storedSandboxType) {
+      hasInitializedSandboxRef.current = true;
+      return;
+    }
+
+    if (storedSandboxType === "e2b") {
+      // E2B is always valid
+      setSandboxPreference(storedSandboxType);
+      hasInitializedSandboxRef.current = true;
+    } else if (localConnections !== undefined) {
+      // For local connectionIds, validate the connection still exists
+      const connectionExists = localConnections.some(
+        (conn) => conn.connectionId === storedSandboxType,
+      );
+      if (connectionExists) {
+        setSandboxPreference(storedSandboxType);
+      }
+      // If connection doesn't exist, keep current preference (from localStorage);
+      // SandboxSelector will show available options
+      hasInitializedSandboxRef.current = true;
+    }
+    // If localConnections is still loading (undefined), wait for next render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatData, localConnections, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
@@ -885,6 +937,10 @@ export const Chat = ({
                               handleDismissRateLimitWarning
                             }
                             contextUsage={contextUsage}
+                            hasSavedSandboxType={
+                              !!storedSandboxType ||
+                              (isExistingChat && !chatData)
+                            }
                           />
                         </div>
                       )}
@@ -916,6 +972,9 @@ export const Chat = ({
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     contextUsage={contextUsage}
+                    hasSavedSandboxType={
+                      !!storedSandboxType || (isExistingChat && !chatData)
+                    }
                   />
                 )}
             </div>

@@ -25,6 +25,7 @@ interface SandboxSelectorProps {
   onChange?: (value: string) => void;
   disabled?: boolean;
   size?: "sm" | "md";
+  readOnly?: boolean;
 }
 
 interface LocalConnection {
@@ -52,6 +53,7 @@ export function SandboxSelector({
   onChange,
   disabled = false,
   size = "sm",
+  readOnly = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
 
@@ -80,19 +82,31 @@ export function SandboxSelector({
   ];
 
   // Auto-correct stale sandbox preference: if the stored value doesn't match any
-  // available option (e.g., local connection was disconnected), reset to "e2b"
+  // available option (e.g., local connection was disconnected), reset to "e2b".
+  // Skip when readOnly so the selector can fall through to the full dropdown instead.
   const valueMatchesOption = options.some((opt) => opt.id === value);
   useEffect(() => {
-    if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
+    if (
+      connections !== undefined &&
+      !valueMatchesOption &&
+      value !== "e2b" &&
+      !readOnly
+    ) {
       onChange?.("e2b");
       toast.info("Local sandbox disconnected. Switched to Cloud.", {
         duration: 5000,
       });
     }
-  }, [connections, valueMatchesOption, value, onChange]);
+  }, [connections, valueMatchesOption, value, onChange, readOnly]);
 
   const selectedOption = options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
+
+  // When readOnly and the sandbox is valid (cloud, or local still connected),
+  // hide the selector entirely. Falls through to the full dropdown if local disconnects.
+  if (readOnly && (value === "e2b" || valueMatchesOption)) {
+    return null;
+  }
 
   const buttonClassName =
     size === "md"
