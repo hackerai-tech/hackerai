@@ -289,7 +289,7 @@ function stripOriginalContentFromMessages(messages: UIMessage[]): UIMessage[] {
  */
 const MAX_IMAGES_PER_CONVERSATION = 10;
 
-export function limitFileParts(messages: UIMessage[]): UIMessage[] {
+export function limitImageParts(messages: UIMessage[]): UIMessage[] {
   const imagePositions: Array<{ messageIndex: number; partIndex: number }> = [];
 
   for (let i = 0; i < messages.length; i++) {
@@ -312,7 +312,7 @@ export function limitFileParts(messages: UIMessage[]): UIMessage[] {
 
   const removedCount = imagePositions.length - MAX_IMAGES_PER_CONVERSATION;
   console.log(
-    `[limitFileParts] Removing ${removedCount} oldest image parts (${imagePositions.length} total, limit ${MAX_IMAGES_PER_CONVERSATION})`,
+    `[limitImageParts] Removing ${removedCount} oldest image parts (${imagePositions.length} total, limit ${MAX_IMAGES_PER_CONVERSATION})`,
   );
 
   // Remove the oldest images, keep the last MAX_IMAGES_PER_CONVERSATION
@@ -374,9 +374,9 @@ export async function processChatMessages({
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
   const messagesWithoutUIOnlyParts = cleanMessages.map(filterUIOnlyParts);
 
-  // Limit file parts before fetching URLs to avoid unnecessary S3 requests
-  // Fireworks limits conversations to 30 images
-  const messagesWithLimitedFiles = limitFileParts(messagesWithoutUIOnlyParts);
+  // Limit image parts before fetching URLs to avoid unnecessary S3 requests
+  // Vertex AI (Gemini 3) limits conversations to 10 images
+  const messagesWithLimitedFiles = limitImageParts(messagesWithoutUIOnlyParts);
 
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
   const {

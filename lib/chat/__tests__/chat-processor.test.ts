@@ -1,6 +1,6 @@
 import { describe, it, expect } from "@jest/globals";
 import { UIMessage } from "ai";
-import { limitFileParts } from "../chat-processor";
+import { limitImageParts } from "../chat-processor";
 
 function makeFilePart(id: string, mediaType = "image/png") {
   return { type: "file", fileId: id, mediaType, name: `${id}.png`, size: 100 };
@@ -14,7 +14,7 @@ function makeMessage(
   return { id, role, parts } as UIMessage;
 }
 
-describe("limitFileParts", () => {
+describe("limitImageParts", () => {
   it("should return messages unchanged when under the limit", () => {
     const messages = [
       makeMessage("m1", "user", [
@@ -22,21 +22,21 @@ describe("limitFileParts", () => {
         makeFilePart("f1"),
       ]),
     ];
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
     expect(result).toBe(messages); // same reference, no changes
   });
 
   it("should return messages unchanged when exactly at the limit (10 images)", () => {
     const parts = Array.from({ length: 10 }, (_, i) => makeFilePart(`f${i}`));
     const messages = [makeMessage("m1", "user", parts)];
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
     expect(result).toBe(messages);
   });
 
   it("should remove oldest images when over the limit", () => {
     const parts = Array.from({ length: 15 }, (_, i) => makeFilePart(`f${i}`));
     const messages = [makeMessage("m1", "user", parts)];
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
 
     const remainingFiles = result[0].parts.filter(
       (p: any) => p.type === "file",
@@ -56,7 +56,7 @@ describe("limitFileParts", () => {
       return makeMessage(`m${msgIdx}`, "user", parts);
     });
 
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
 
     const allFiles = result.flatMap((msg) =>
       msg.parts.filter((p: any) => p.type === "file"),
@@ -73,7 +73,7 @@ describe("limitFileParts", () => {
       ...Array.from({ length: 12 }, (_, i) => makeFilePart(`f${i}`)),
     ];
     const messages = [makeMessage("m1", "user", parts)];
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
 
     const textParts = result[0].parts.filter((p: any) => p.type === "text");
     const fileParts = result[0].parts.filter((p: any) => p.type === "file");
@@ -88,7 +88,7 @@ describe("limitFileParts", () => {
       { id: "m1", role: "user" } as UIMessage,
       makeMessage("m2", "user", [makeFilePart("f1")]),
     ];
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
     expect(result).toBe(messages); // under limit, no changes
   });
 
@@ -97,7 +97,7 @@ describe("limitFileParts", () => {
       makeFilePart(`f${i}`, i % 2 === 0 ? "image/png" : "application/pdf"),
     );
     const messages = [makeMessage("m1", "user", parts)];
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
 
     const remainingFiles = result[0].parts.filter(
       (p: any) => p.type === "file",
@@ -120,7 +120,7 @@ describe("limitFileParts", () => {
       makeFilePart(`f${i}`, "application/pdf"),
     );
     const messages = [makeMessage("m1", "user", parts)];
-    const result = limitFileParts(messages);
+    const result = limitImageParts(messages);
     expect(result).toBe(messages); // no images, nothing to limit
   });
 });
