@@ -73,6 +73,7 @@ interface ChatInputProps {
   rateLimitWarning?: RateLimitWarningData;
   onDismissRateLimitWarning?: () => void;
   contextUsage?: ContextUsageData;
+  hasSavedSandboxType?: boolean;
 }
 
 export const ChatInput = ({
@@ -91,6 +92,7 @@ export const ChatInput = ({
   rateLimitWarning,
   onDismissRateLimitWarning,
   contextUsage,
+  hasSavedSandboxType = false,
 }: ChatInputProps) => {
   const {
     input,
@@ -514,11 +516,12 @@ export const ChatInput = ({
             {/* Mode selector - always inline */}
             {renderModeSelector()}
 
-            {/* Sandbox selector - inline for existing chats */}
+            {/* Sandbox selector - inline for existing chats (locked when sandbox type is saved) */}
             {!isNewChat && isAgentMode(chatMode) && (
               <SandboxSelector
                 value={sandboxPreference}
                 onChange={setSandboxPreference}
+                readOnly={hasSavedSandboxType}
               />
             )}
 
@@ -577,7 +580,9 @@ export const ChatInput = ({
                           className={`rounded-full p-0 w-8 h-8 min-w-0 ${
                             chatMode === "agent"
                               ? "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500"
-                              : ""
+                              : chatMode === "agent-long"
+                                ? "bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:bg-amber-400/10 dark:hover:bg-amber-400/20 dark:text-amber-400 focus-visible:ring-amber-500"
+                                : ""
                           }`}
                           aria-label="Send message"
                           data-testid="send-button"

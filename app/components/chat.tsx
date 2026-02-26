@@ -937,6 +937,10 @@ export const Chat = ({
                               handleDismissRateLimitWarning
                             }
                             contextUsage={contextUsage}
+                            hasSavedSandboxType={
+                              !!storedSandboxType ||
+                              (isExistingChat && !chatData)
+                            }
                           />
                         </div>
                       )}
@@ -968,6 +972,9 @@ export const Chat = ({
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     contextUsage={contextUsage}
+                    hasSavedSandboxType={
+                      !!storedSandboxType || (isExistingChat && !chatData)
+                    }
                   />
                 )}
             </div>
