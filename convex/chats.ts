@@ -276,7 +276,7 @@ export const updateChat = mutation({
         updateData.todos = args.todos;
       }
 
-      if (args.sandboxType !== undefined) {
+      if (args.sandboxType !== undefined && chat.sandbox_type === undefined) {
         updateData.sandbox_type = args.sandboxType;
       }
 
@@ -1031,4 +1031,3 @@ export const getLatestSummaryForBackend = query({
     }
   },
 });
-
