@@ -51,7 +51,9 @@ import {
   type RateLimitWarningData,
 } from "./RateLimitWarning";
 import { SandboxSelector } from "./SandboxSelector";
+import { ModelSelector } from "./ModelSelector";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   ContextUsageIndicator,
   type ContextUsageData,
@@ -109,6 +111,8 @@ export const ChatInput = ({
     setQueueBehavior,
     sandboxPreference,
     setSandboxPreference,
+    selectedModel,
+    setSelectedModel,
     temporaryChatsEnabled,
   } = useGlobalState();
   const {
@@ -119,6 +123,7 @@ export const ChatInput = ({
     handlePasteEvent,
   } = useFileUpload(chatMode);
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
+  const isMobile = useIsMobile();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const isGenerating = status === "submitted" || status === "streaming";
   const showContextIndicator =
@@ -303,18 +308,18 @@ export const ChatInput = ({
           >
             {chatMode === "agent" ? (
               <>
-                <Infinity className="w-3 h-3 mr-1" />
-                Agent
+                <Infinity className="w-3 h-3 md:mr-1" />
+                <span className="hidden md:inline">Agent</span>
               </>
             ) : chatMode === "agent-long" ? (
               <>
-                <Timer className="w-3 h-3 mr-1" />
-                Agent-Long
+                <Timer className="w-3 h-3 md:mr-1" />
+                <span className="hidden md:inline">Agent-Long</span>
               </>
             ) : (
               <>
-                <MessageSquare className="w-3 h-3 mr-1" />
-                Ask
+                <MessageSquare className="w-3 h-3 md:mr-1" />
+                <span className="hidden md:inline">Ask</span>
               </>
             )}
             <ChevronDown className="w-3 h-3 ml-1" />
@@ -366,7 +371,7 @@ export const ChatInput = ({
                   {temporaryChatsEnabled ? (
                     <Lock className="w-3 h-3 text-muted-foreground" />
                   ) : (
-                    <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
+                    <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-colors duration-200">
                       PRO
                     </span>
                   )}
@@ -409,7 +414,7 @@ export const ChatInput = ({
                   {temporaryChatsEnabled ? (
                     <Lock className="w-3 h-3 text-muted-foreground" />
                   ) : (
-                    <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-all duration-200">
+                    <span className="flex items-center gap-1 rounded-full py-1 px-2 text-xs font-medium bg-premium-bg text-premium-text hover:bg-premium-hover border-0 transition-colors duration-200">
                       PRO
                     </span>
                   )}
@@ -466,6 +471,7 @@ export const ChatInput = ({
           accept="*"
           multiple
           className="hidden"
+          aria-label="Upload files"
           onChange={handleFileUploadEvent}
         />
 
@@ -483,7 +489,7 @@ export const ChatInput = ({
         )}
 
         <div
-          className={`order-2 sm:order-1 flex flex-col gap-3 transition-all relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+          className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border focus-within:ring-2 focus-within:ring-ring/20 ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
         >
           <div className="overflow-y-auto pl-4 pr-2">
             <TextareaAutosize
@@ -516,8 +522,15 @@ export const ChatInput = ({
             {/* Mode selector - always inline */}
             {renderModeSelector()}
 
-            {/* Sandbox selector - inline for existing chats (locked when sandbox type is saved) */}
-            {!isNewChat && isAgentMode(chatMode) && (
+            {/* Model selector - always inline */}
+            <ModelSelector
+              value={selectedModel}
+              onChange={setSelectedModel}
+              mode={chatMode}
+            />
+
+            {/* Sandbox selector - inline for existing chats on desktop (locked when sandbox type is saved) */}
+            {!isNewChat && !isMobile && isAgentMode(chatMode) && (
               <SandboxSelector
                 value={sandboxPreference}
                 onChange={setSandboxPreference}
@@ -606,6 +619,19 @@ export const ChatInput = ({
             </div>
           </div>
         </div>
+
+        {/* Sandbox selector below input on mobile for existing chats */}
+        {!isNewChat &&
+          isMobile &&
+          isAgentMode(chatMode) &&
+          !hasSavedSandboxType && (
+            <div className="order-3 flex px-1 pt-2">
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+          )}
 
         {/* ScrollToBottomButton positioned relative to input */}
         {onScrollToBottom && (

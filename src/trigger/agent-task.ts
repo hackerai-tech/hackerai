@@ -126,6 +126,7 @@ export const agentStreamTask = task({
       userCustomization,
       isNewChat,
       selectedModel,
+      selectedModelOverride,
       rateLimitInfo: serializedRateLimitInfo,
       sandboxFiles,
       fileTokens,
@@ -342,6 +343,7 @@ export const agentStreamTask = task({
             accumulatedOutputTokens,
             extraUsageConfig ?? undefined,
             accumulatedProviderCost > 0 ? accumulatedProviderCost : undefined,
+            selectedModel,
           );
           hasDeductedUsage = true;
         }
@@ -560,6 +562,7 @@ export const agentStreamTask = task({
                     todos: mergedTodos,
                     defaultModelSlug: mode,
                     sandboxType: sandboxManager.getEffectivePreference(),
+                    selectedModel: selectedModelOverride,
                   });
                 } else {
                   await prepareForNewStream({ chatId });

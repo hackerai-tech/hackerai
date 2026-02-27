@@ -12,12 +12,13 @@ import React, {
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type {
   ChatMode,
+  SelectedModel,
   SidebarContent,
   QueuedMessage,
   QueueBehavior,
   SandboxPreference,
 } from "@/types/chat";
-import { isChatMode } from "@/types/chat";
+import { isChatMode, isSelectedModel } from "@/types/chat";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -33,6 +34,8 @@ import { toast } from "sonner";
 import {
   readChatMode,
   writeChatMode,
+  readSelectedModelForMode,
+  writeSelectedModelForMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
 
@@ -106,6 +109,10 @@ interface GlobalStateType {
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
+
+  // Model selection
+  selectedModel: SelectedModel;
+  setSelectedModel: (model: SelectedModel) => void;
 
   // Utility methods
   clearInput: () => void;
@@ -226,6 +233,35 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       localStorage.setItem("sandbox-preference", sandboxPreference);
     }
   }, [sandboxPreference]);
+
+  // Model selection (persisted per-mode to localStorage)
+  const getModeKey = (m: ChatMode): "ask" | "agent" =>
+    m === "agent" || m === "agent-long" ? "agent" : "ask";
+
+  const [selectedModel, setSelectedModelState] = useState<SelectedModel>(() => {
+    const modeKey = getModeKey(chatMode);
+    const saved = readSelectedModelForMode(modeKey);
+    return isSelectedModel(saved) ? saved : "auto";
+  });
+
+  // When chat mode changes, load the saved model preference for that mode
+  const modeJustChanged = useRef(false);
+  useEffect(() => {
+    modeJustChanged.current = true;
+    const modeKey = getModeKey(chatMode);
+    const saved = readSelectedModelForMode(modeKey);
+    setSelectedModelState(isSelectedModel(saved) ? saved : "auto");
+  }, [chatMode]);
+
+  // Persist model selection to localStorage for the current mode
+  useEffect(() => {
+    if (modeJustChanged.current) {
+      modeJustChanged.current = false;
+      return;
+    }
+    const modeKey = getModeKey(chatMode);
+    writeSelectedModelForMode(modeKey, selectedModel);
+  }, [selectedModel, chatMode]);
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -692,6 +728,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference: setSandboxPreferenceState,
+
+    selectedModel,
+    setSelectedModel: setSelectedModelState,
   };
 
   return (

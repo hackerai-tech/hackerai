@@ -62,6 +62,7 @@ export const useChatHandlers = ({
     removeQueuedMessage,
     queueBehavior,
     sandboxPreference,
+    selectedModel,
   } = useGlobalState();
 
   // Avoid stale closure on temporary flag
@@ -258,6 +259,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
+              selectedModel,
             },
           },
         );
@@ -272,6 +274,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
+              selectedModel,
             },
           },
         );
@@ -338,6 +341,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
+          selectedModel,
         },
       });
     } else {
@@ -352,6 +356,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
+          selectedModel,
         },
       });
     }
@@ -382,6 +387,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
+          selectedModel,
         },
       });
     } else {
@@ -404,6 +410,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
+          selectedModel,
         },
       });
     }
@@ -518,6 +525,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
+          selectedModel,
         },
       });
     } else {
@@ -553,6 +561,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
+          selectedModel,
         },
       });
     }
@@ -602,6 +611,7 @@ export const useChatHandlers = ({
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
+          selectedModel,
         },
       });
     } catch (error) {

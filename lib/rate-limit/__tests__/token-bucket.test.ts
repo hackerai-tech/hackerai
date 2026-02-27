@@ -172,4 +172,103 @@ describe("token-bucket", () => {
       expect(outputCost).toBeGreaterThan(inputCost * 10);
     });
   });
+
+  // ==========================================================================
+  // Per-model pricing - calculateTokenCost with modelName parameter
+  // ==========================================================================
+  describe("per-model pricing", () => {
+    it("should use default pricing when no modelName is provided", () => {
+      // Default: $0.50 input, $3.00 output
+      expect(calculateTokenCost(1_000_000, "input")).toBe(5000);
+      expect(calculateTokenCost(1_000_000, "output")).toBe(30000);
+    });
+
+    it("should use default pricing for unknown model names", () => {
+      expect(calculateTokenCost(1_000_000, "input", "unknown-model")).toBe(
+        5000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "unknown-model")).toBe(
+        30000,
+      );
+    });
+
+    it("should use Opus 4.6 pricing ($5.00/$25.00)", () => {
+      // 1M input tokens at $5.00 = 50000 points
+      expect(calculateTokenCost(1_000_000, "input", "model-opus-4.6")).toBe(
+        50000,
+      );
+      // 1M output tokens at $25.00 = 250000 points
+      expect(calculateTokenCost(1_000_000, "output", "model-opus-4.6")).toBe(
+        250000,
+      );
+    });
+
+    it("should use Sonnet 4.6 pricing ($3.00/$15.00)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-sonnet-4.6")).toBe(
+        30000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-sonnet-4.6")).toBe(
+        150000,
+      );
+    });
+
+    it("should use Codex 5.3 pricing ($1.75/$14.00)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-codex-5.3")).toBe(
+        17500,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-codex-5.3")).toBe(
+        140000,
+      );
+    });
+
+    it("should use Gemini 3.1 Pro pricing ($2.00/$12.00)", () => {
+      expect(
+        calculateTokenCost(1_000_000, "input", "model-gemini-3.1-pro"),
+      ).toBe(20000);
+      expect(
+        calculateTokenCost(1_000_000, "output", "model-gemini-3.1-pro"),
+      ).toBe(120000);
+    });
+
+    it("should use Grok 4.1 pricing ($0.20/$0.50)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-grok-4.1")).toBe(
+        2000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-grok-4.1")).toBe(
+        5000,
+      );
+    });
+
+    it("should use Kimi K2.5 pricing ($0.60/$3.00)", () => {
+      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k2.5")).toBe(
+        6000,
+      );
+      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k2.5")).toBe(
+        30000,
+      );
+    });
+
+    it("Opus 4.6 should cost 10x more input than default", () => {
+      const defaultCost = calculateTokenCost(1_000_000, "input");
+      const opusCost = calculateTokenCost(1_000_000, "input", "model-opus-4.6");
+      expect(opusCost / defaultCost).toBe(10); // $5.00 / $0.50
+    });
+
+    it("expensive models should deplete budget faster", () => {
+      const sessionBudget = getBudgetLimits("pro").session;
+      // Typical conversation: 2000 input + 500 output tokens
+      const defaultCost =
+        calculateTokenCost(2000, "input") + calculateTokenCost(500, "output");
+      const opusCost =
+        calculateTokenCost(2000, "input", "model-opus-4.6") +
+        calculateTokenCost(500, "output", "model-opus-4.6");
+
+      const defaultConversations = Math.floor(sessionBudget / defaultCost);
+      const opusConversations = Math.floor(sessionBudget / opusCost);
+
+      expect(defaultConversations).toBeGreaterThan(opusConversations);
+      // Opus should allow significantly fewer conversations
+      expect(opusConversations).toBeLessThan(defaultConversations / 5);
+    });
+  });
 });

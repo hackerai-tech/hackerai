@@ -29,7 +29,9 @@ import type {
   ExtraUsageConfig,
   SubscriptionTier,
   RateLimitInfo,
+  SelectedModel,
 } from "@/types";
+import { isSelectedModel } from "@/types";
 import type { UserCustomization } from "@/types/user";
 import type { SandboxFile } from "@/lib/utils/sandbox-file-utils";
 
@@ -69,6 +71,7 @@ export type AgentTaskPayload = {
   userCustomization: UserCustomization | null;
   isNewChat: boolean;
   selectedModel: string;
+  selectedModelOverride?: SelectedModel;
   rateLimitInfo: SerializableRateLimitInfo;
   sandboxFiles?: SandboxFile[];
   fileTokens: Record<string, number>;
@@ -125,6 +128,7 @@ export async function prepareAgentPayload(
     regenerate?: boolean;
     temporary?: boolean;
     sandboxPreference?: SandboxPreference;
+    selectedModel?: string;
   };
 
   try {
@@ -144,7 +148,13 @@ export async function prepareAgentPayload(
     regenerate,
     temporary,
     sandboxPreference,
+    selectedModel: rawSelectedModel,
   } = parsedBody;
+
+  const selectedModelOverride: SelectedModel | undefined =
+    rawSelectedModel && isSelectedModel(rawSelectedModel)
+      ? rawSelectedModel
+      : undefined;
 
   if (mode !== "agent-long") {
     throw new ChatSDKError(
@@ -202,6 +212,7 @@ export async function prepareAgentPayload(
       mode,
       subscription,
       uploadBasePath,
+      modelOverride: selectedModelOverride,
     });
 
   if (!processedMessages || processedMessages.length === 0) {
@@ -248,6 +259,7 @@ export async function prepareAgentPayload(
     subscription,
     estimatedInputTokens,
     extraUsageConfig,
+    selectedModel,
   );
 
   const assistantMessageId = uuidv4();
@@ -284,6 +296,7 @@ export async function prepareAgentPayload(
     userCustomization: userCustomization ?? null,
     isNewChat,
     selectedModel,
+    selectedModelOverride,
     rateLimitInfo: serializeRateLimitInfo(rateLimitInfo),
     sandboxFiles,
     fileTokens,

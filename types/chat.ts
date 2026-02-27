@@ -11,6 +11,33 @@ export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);
 }
 
+export type SelectedModel =
+  | "auto"
+  | "codex-5.3"
+  | "opus-4.6"
+  | "sonnet-4.6"
+  | "gemini-3.1-pro"
+  | "kimi-k2.5"
+  | "grok-4.1"
+  | "gemini-3-flash";
+
+export const SELECTABLE_MODELS: readonly SelectedModel[] = [
+  "auto",
+  "codex-5.3",
+  "opus-4.6",
+  "sonnet-4.6",
+  "gemini-3.1-pro",
+  "kimi-k2.5",
+  "grok-4.1",
+  "gemini-3-flash",
+];
+
+export function isSelectedModel(value: string | null): value is SelectedModel {
+  return (
+    value !== null && (SELECTABLE_MODELS as readonly string[]).includes(value)
+  );
+}
+
 export type SubscriptionTier = "free" | "pro" | "pro-plus" | "ultra" | "team";
 
 export const SUBSCRIPTION_TIERS: readonly SubscriptionTier[] = [
