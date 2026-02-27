@@ -33,7 +33,6 @@ interface ModelOption {
 const ASK_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash" },
   { id: "grok-4.1", label: "Grok 4.1" },
-  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6" },
   { id: "opus-4.6", label: "Claude Opus 4.6" },
 ];
