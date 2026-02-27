@@ -50,11 +50,7 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { STEPS_TO_KEEP_UNSUMMARIZED } from "@/lib/chat/summarization/constants";
-import {
-  splitStepMessages,
-  generateStepSummaryText,
-  buildStepSummaryModelMessage,
-} from "@/lib/chat/summarization/step-helpers";
+import { summarizeSteps } from "@/lib/chat/summarization/step-helpers";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
 import PostHogClient from "@/app/posthog";
@@ -394,51 +390,26 @@ export const agentStreamTask = task({
                     >,
                   );
 
-                  // Step-level summarization: compress older steps in agent mode
-                  // Use the SDK's `messages` param (contains initial + step responses)
-                  // and combine with summarized initial messages from message-level
-                  if (
-                    isAgentMode(mode) &&
-                    steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
-                    steps.length > lastSummarizedStepCount
-                  ) {
+                  // Step-level: compress older steps alongside message-level
+                  if (isAgentMode(mode)) {
                     try {
-                      const { stepsToSummarizeMessages, stepsToKeepMessages } =
-                        splitStepMessages(
-                          messages,
-                          initialModelMessageCount!,
-                          steps.length,
-                          STEPS_TO_KEEP_UNSUMMARIZED,
-                        );
-
-                      if (stepsToSummarizeMessages.length > 0) {
-                        const summarizedInitialMsgs =
-                          await convertToModelMessages(summarizedMessages);
-
-                        stepSummaryText = await generateStepSummaryText(
-                          stepsToSummarizeMessages,
-                          stepSummaryText ?? undefined,
-                        );
-                        lastSummarizedStepCount = steps.length;
-
-                        const stepSummaryMsg =
-                          buildStepSummaryModelMessage(stepSummaryText);
-
-                        return {
-                          messages: [
-                            ...summarizedInitialMsgs,
-                            stepSummaryMsg,
-                            ...stepsToKeepMessages,
-                          ],
-                        };
+                      const stepResult = await summarizeSteps({
+                        messages,
+                        initialModelMessageCount: initialModelMessageCount!,
+                        stepsLength: steps.length,
+                        stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                        lastSummarizedStepCount,
+                        existingStepSummary: stepSummaryText,
+                        summarizedInitialMessages:
+                          await convertToModelMessages(summarizedMessages),
+                      });
+                      if (stepResult.summarized) {
+                        stepSummaryText = stepResult.stepSummaryText;
+                        lastSummarizedStepCount =
+                          stepResult.lastSummarizedStepCount;
+                        return { messages: stepResult.messages };
                       }
                     } catch (stepError) {
-                      if (
-                        stepError instanceof Error &&
-                        stepError.name === "AbortError"
-                      ) {
-                        throw stepError;
-                      }
                       logger.error(
                         "Step summarization failed, using message-level only",
                         { error: stepError },
@@ -457,48 +428,24 @@ export const agentStreamTask = task({
               if (
                 !temporary &&
                 isAgentMode(mode) &&
-                steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
-                steps.length > lastSummarizedStepCount
+                steps.length > STEPS_TO_KEEP_UNSUMMARIZED
               ) {
                 try {
-                  const { stepsToSummarizeMessages, stepsToKeepMessages } =
-                    splitStepMessages(
-                      messages,
-                      initialModelMessageCount!,
-                      steps.length,
-                      STEPS_TO_KEEP_UNSUMMARIZED,
-                    );
-
-                  if (stepsToSummarizeMessages.length > 0) {
-                    const initialMsgs = messages.slice(
-                      0,
-                      initialModelMessageCount!,
-                    );
-
-                    stepSummaryText = await generateStepSummaryText(
-                      stepsToSummarizeMessages,
-                      stepSummaryText ?? undefined,
-                    );
-                    lastSummarizedStepCount = steps.length;
-
-                    const stepSummaryMsg =
-                      buildStepSummaryModelMessage(stepSummaryText);
-
-                    return {
-                      messages: [
-                        ...initialMsgs,
-                        stepSummaryMsg,
-                        ...stepsToKeepMessages,
-                      ],
-                    };
+                  const stepResult = await summarizeSteps({
+                    messages,
+                    initialModelMessageCount: initialModelMessageCount!,
+                    stepsLength: steps.length,
+                    stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                    lastSummarizedStepCount,
+                    existingStepSummary: stepSummaryText,
+                  });
+                  if (stepResult.summarized) {
+                    stepSummaryText = stepResult.stepSummaryText;
+                    lastSummarizedStepCount =
+                      stepResult.lastSummarizedStepCount;
+                    return { messages: stepResult.messages };
                   }
                 } catch (stepError) {
-                  if (
-                    stepError instanceof Error &&
-                    stepError.name === "AbortError"
-                  ) {
-                    throw stepError;
-                  }
                   logger.error(
                     "Standalone step summarization failed, continuing without",
                     { error: stepError },
@@ -544,6 +491,9 @@ export const agentStreamTask = task({
               );
               return { messages, system: currentSystemPrompt };
             } catch (error) {
+              if (error instanceof Error && error.name === "AbortError") {
+                throw error;
+              }
               logger.error("Error in prepareStep", { error });
               return currentSystemPrompt ? { system: currentSystemPrompt } : {};
             }

@@ -87,11 +87,7 @@ import { nextJsAxiomLogger } from "@/lib/axiom/server";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { STEPS_TO_KEEP_UNSUMMARIZED } from "@/lib/chat/summarization/constants";
-import {
-  splitStepMessages,
-  generateStepSummaryText,
-  buildStepSummaryModelMessage,
-} from "@/lib/chat/summarization/step-helpers";
+import { summarizeSteps } from "@/lib/chat/summarization/step-helpers";
 
 function getStreamContext() {
   try {
@@ -562,48 +558,27 @@ export const createChatHandler = (
                         ctxUsage = result.contextUsage;
                       }
 
-                      // Step-level summarization: compress older steps in agent mode
-                      // Use the SDK's `messages` param (contains initial + step responses)
-                      // and combine with summarized initial messages from message-level
-                      if (
-                        isAgentMode(mode) &&
-                        steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
-                        steps.length > lastSummarizedStepCount
-                      ) {
+                      // Step-level: compress older steps alongside message-level
+                      if (isAgentMode(mode)) {
                         try {
-                          const {
-                            stepsToSummarizeMessages,
-                            stepsToKeepMessages,
-                          } = splitStepMessages(
+                          const stepResult = await summarizeSteps({
                             messages,
-                            initialModelMessageCount!,
-                            steps.length,
-                            STEPS_TO_KEEP_UNSUMMARIZED,
-                          );
-
-                          if (stepsToSummarizeMessages.length > 0) {
-                            const summarizedInitialMsgs =
+                            initialModelMessageCount: initialModelMessageCount!,
+                            stepsLength: steps.length,
+                            stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                            lastSummarizedStepCount,
+                            existingStepSummary: stepSummaryText,
+                            abortSignal: userStopSignal.signal,
+                            summarizedInitialMessages:
                               await convertToModelMessages(
                                 result.summarizedMessages,
-                              );
-
-                            stepSummaryText = await generateStepSummaryText(
-                              stepsToSummarizeMessages,
-                              stepSummaryText ?? undefined,
-                              userStopSignal.signal,
-                            );
-                            lastSummarizedStepCount = steps.length;
-
-                            const stepSummaryMsg =
-                              buildStepSummaryModelMessage(stepSummaryText);
-
-                            return {
-                              messages: [
-                                ...summarizedInitialMsgs,
-                                stepSummaryMsg,
-                                ...stepsToKeepMessages,
-                              ],
-                            };
+                              ),
+                          });
+                          if (stepResult.summarized) {
+                            stepSummaryText = stepResult.stepSummaryText;
+                            lastSummarizedStepCount =
+                              stepResult.lastSummarizedStepCount;
+                            return { messages: stepResult.messages };
                           }
                         } catch (stepError) {
                           if (userStopSignal.signal.aborted) {
@@ -637,41 +612,23 @@ export const createChatHandler = (
                   if (
                     !temporary &&
                     isAgentMode(mode) &&
-                    steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
-                    steps.length > lastSummarizedStepCount
+                    steps.length > STEPS_TO_KEEP_UNSUMMARIZED
                   ) {
                     try {
-                      const { stepsToSummarizeMessages, stepsToKeepMessages } =
-                        splitStepMessages(
-                          messages,
-                          initialModelMessageCount!,
-                          steps.length,
-                          STEPS_TO_KEEP_UNSUMMARIZED,
-                        );
-
-                      if (stepsToSummarizeMessages.length > 0) {
-                        const initialMsgs = messages.slice(
-                          0,
-                          initialModelMessageCount!,
-                        );
-
-                        stepSummaryText = await generateStepSummaryText(
-                          stepsToSummarizeMessages,
-                          stepSummaryText ?? undefined,
-                          userStopSignal.signal,
-                        );
-                        lastSummarizedStepCount = steps.length;
-
-                        const stepSummaryMsg =
-                          buildStepSummaryModelMessage(stepSummaryText);
-
-                        return {
-                          messages: [
-                            ...initialMsgs,
-                            stepSummaryMsg,
-                            ...stepsToKeepMessages,
-                          ],
-                        };
+                      const stepResult = await summarizeSteps({
+                        messages,
+                        initialModelMessageCount: initialModelMessageCount!,
+                        stepsLength: steps.length,
+                        stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                        lastSummarizedStepCount,
+                        existingStepSummary: stepSummaryText,
+                        abortSignal: userStopSignal.signal,
+                      });
+                      if (stepResult.summarized) {
+                        stepSummaryText = stepResult.stepSummaryText;
+                        lastSummarizedStepCount =
+                          stepResult.lastSummarizedStepCount;
+                        return { messages: stepResult.messages };
                       }
                     } catch (stepError) {
                       if (userStopSignal.signal.aborted) {
@@ -735,7 +692,17 @@ export const createChatHandler = (
                     system: currentSystemPrompt,
                   };
                 } catch (error) {
-                  console.error("Error in prepareStep:", error);
+                  if (userStopSignal.signal.aborted) {
+                    throw error;
+                  }
+                  nextJsAxiomLogger.error("Error in prepareStep", {
+                    chatId,
+                    endpoint,
+                    mode,
+                    userId,
+                    subscription,
+                    ...extractErrorDetails(error),
+                  });
                   return currentSystemPrompt
                     ? { system: currentSystemPrompt }
                     : {};

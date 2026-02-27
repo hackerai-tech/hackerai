@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import type { ModelMessage } from "ai";
 
-const mockGenerateText = jest.fn<() => Promise<any>>();
+const mockGenerateText = jest.fn<() => Promise<{ text: string }>>();
 
 jest.doMock("ai", () => ({
   ...jest.requireActual("ai"),
@@ -9,7 +9,10 @@ jest.doMock("ai", () => ({
 }));
 jest.doMock("@/lib/ai/providers", () => ({
   myProvider: {
-    languageModel: () => ({}) as any,
+    languageModel: () =>
+      ({}) as ReturnType<
+        (typeof import("@/lib/ai/providers"))["myProvider"]["languageModel"]
+      >,
   },
 }));
 
@@ -17,6 +20,7 @@ const {
   splitStepMessages,
   generateStepSummaryText,
   buildStepSummaryModelMessage,
+  summarizeSteps,
 } = require("../step-helpers") as typeof import("../step-helpers");
 
 const makeAssistantMsg = (id: number): ModelMessage => ({
@@ -49,17 +53,16 @@ const makeSystemMsg = (): ModelMessage => ({
 describe("splitStepMessages", () => {
   it.each([
     {
-      name: "empty steps (stepsCompleted=0) returns all as initial, empty stepsToSummarize",
+      name: "no response messages returns all as initial",
       messages: (): ModelMessage[] => [makeSystemMsg(), makeUserMsg(1)],
       initialMsgCount: 2,
-      stepsCompleted: 0,
       stepsToKeep: 5,
       expectedInitialLen: 2,
       expectedSummarizeLen: 0,
       expectedKeepLen: 0,
     },
     {
-      name: "fewer steps than threshold returns nothing to summarize, all response messages in stepsToKeep",
+      name: "fewer steps than stepsToKeep returns nothing to summarize",
       messages: (): ModelMessage[] => [
         makeSystemMsg(),
         makeUserMsg(1),
@@ -71,7 +74,6 @@ describe("splitStepMessages", () => {
         makeToolMsg(3),
       ],
       initialMsgCount: 2,
-      stepsCompleted: 3,
       stepsToKeep: 5,
       expectedInitialLen: 2,
       expectedSummarizeLen: 0,
@@ -88,24 +90,22 @@ describe("splitStepMessages", () => {
         return msgs;
       },
       initialMsgCount: 2,
-      stepsCompleted: 10,
       stepsToKeep: 5,
       expectedInitialLen: 2,
       expectedSummarizeLen: 10,
       expectedKeepLen: 10,
     },
     {
-      name: "initialMsgCount exceeds message array length returns all as initial with empty splits",
+      name: "initialMsgCount exceeds array length returns all as initial",
       messages: (): ModelMessage[] => [makeUserMsg(1)],
       initialMsgCount: 3,
-      stepsCompleted: 10,
       stepsToKeep: 5,
       expectedInitialLen: 1,
       expectedSummarizeLen: 0,
       expectedKeepLen: 0,
     },
     {
-      name: "steps without tool messages (text-only assistant) still counts 1 step per assistant message",
+      name: "text-only assistant messages (no tool) still counted as step boundaries",
       messages: (): ModelMessage[] => {
         const msgs: ModelMessage[] = [makeSystemMsg(), makeUserMsg(1)];
         for (let i = 1; i <= 10; i++) {
@@ -114,7 +114,6 @@ describe("splitStepMessages", () => {
         return msgs;
       },
       initialMsgCount: 2,
-      stepsCompleted: 10,
       stepsToKeep: 5,
       expectedInitialLen: 2,
       expectedSummarizeLen: 5,
@@ -131,30 +130,42 @@ describe("splitStepMessages", () => {
         makeToolMsg(2),
       ],
       initialMsgCount: 2,
-      stepsCompleted: 2,
       stepsToKeep: 0,
       expectedInitialLen: 2,
       expectedSummarizeLen: 4,
       expectedKeepLen: 0,
+    },
+    {
+      name: "interleaved user messages in response section are grouped with adjacent steps",
+      messages: (): ModelMessage[] => [
+        makeSystemMsg(),
+        makeUserMsg(1),
+        makeAssistantMsg(1),
+        makeToolMsg(1),
+        makeUserMsg(2),
+        makeAssistantMsg(2),
+        makeToolMsg(2),
+        makeAssistantMsg(3),
+        makeToolMsg(3),
+      ],
+      initialMsgCount: 2,
+      stepsToKeep: 1,
+      expectedInitialLen: 2,
+      expectedSummarizeLen: 5,
+      expectedKeepLen: 2,
     },
   ])(
     "$name",
     ({
       messages,
       initialMsgCount,
-      stepsCompleted,
       stepsToKeep,
       expectedInitialLen,
       expectedSummarizeLen,
       expectedKeepLen,
     }) => {
       const msgs = messages();
-      const result = splitStepMessages(
-        msgs,
-        initialMsgCount,
-        stepsCompleted,
-        stepsToKeep,
-      );
+      const result = splitStepMessages(msgs, initialMsgCount, stepsToKeep);
 
       expect(result.initialMessages).toHaveLength(expectedInitialLen);
       expect(result.stepsToSummarizeMessages).toHaveLength(
@@ -162,7 +173,6 @@ describe("splitStepMessages", () => {
       );
       expect(result.stepsToKeepMessages).toHaveLength(expectedKeepLen);
 
-      // All three slices should reconstruct the original messages array
       const reconstructed = [
         ...result.initialMessages,
         ...result.stepsToSummarizeMessages,
@@ -179,13 +189,11 @@ describe("splitStepMessages", () => {
       msgs.push(makeToolMsg(i));
     }
 
-    const result = splitStepMessages(msgs, 2, 10, 5);
+    const result = splitStepMessages(msgs, 2, 5);
 
-    // Initial messages: system + user
     expect(result.initialMessages[0]).toEqual(makeSystemMsg());
     expect(result.initialMessages[1]).toEqual(makeUserMsg(1));
 
-    // Last kept step should start with assistant msg 6 (steps 6-10 kept)
     const firstKeptMsg = result.stepsToKeepMessages[0] as {
       role: string;
       content: Array<{ text: string }>;
@@ -193,7 +201,6 @@ describe("splitStepMessages", () => {
     expect(firstKeptMsg.role).toBe("assistant");
     expect(firstKeptMsg.content[0].text).toBe("step 6 response");
 
-    // Last summarized step should end with tool msg 5
     const lastSummarizedMsg = result.stepsToSummarizeMessages[
       result.stepsToSummarizeMessages.length - 1
     ] as {
@@ -204,7 +211,7 @@ describe("splitStepMessages", () => {
     expect(lastSummarizedMsg.content[0].toolName).toBe("tool-5");
   });
 
-  it("handles stepsCompleted being greater than actual assistant messages in the array", () => {
+  it("handles few assistant messages gracefully (fewer than stepsToKeep)", () => {
     const msgs: ModelMessage[] = [
       makeSystemMsg(),
       makeUserMsg(1),
@@ -218,9 +225,8 @@ describe("splitStepMessages", () => {
       makeToolMsg(10),
     ];
 
-    const result = splitStepMessages(msgs, 2, 10, 5);
+    const result = splitStepMessages(msgs, 2, 5);
 
-    // Only 4 assistant boundaries exist, fewer than stepsToKeep (5)
     expect(result.stepsToSummarizeMessages).toHaveLength(0);
     expect(result.stepsToKeepMessages).toHaveLength(8);
 
@@ -348,5 +354,181 @@ describe("buildStepSummaryModelMessage", () => {
     expect(content[0].text).toContain("line three");
     expect(content[0].text.startsWith("<step_summary>")).toBe(true);
     expect(content[0].text.endsWith("</step_summary>")).toBe(true);
+  });
+});
+
+describe("summarizeSteps", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const buildMessages = (
+    stepCount: number,
+  ): { messages: ModelMessage[]; initialMsgCount: number } => {
+    const messages: ModelMessage[] = [makeSystemMsg(), makeUserMsg(1)];
+    for (let i = 1; i <= stepCount; i++) {
+      messages.push(makeAssistantMsg(i));
+      messages.push(makeToolMsg(i));
+    }
+    return { messages, initialMsgCount: 2 };
+  };
+
+  it("returns summarized=false when stepsLength <= stepsToKeep", async () => {
+    const { messages, initialMsgCount } = buildMessages(3);
+    const result = await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 3,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 0,
+      existingStepSummary: null,
+    });
+
+    expect(result.summarized).toBe(false);
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it("returns summarized=false when stepsLength <= lastSummarizedStepCount (dedup guard)", async () => {
+    const { messages, initialMsgCount } = buildMessages(10);
+    const result = await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 10,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 10,
+      existingStepSummary: "already summarized",
+    });
+
+    expect(result.summarized).toBe(false);
+    expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it("generates summary and returns reconstituted messages when enough steps exist", async () => {
+    mockGenerateText.mockResolvedValue({ text: "step summary" });
+    const { messages, initialMsgCount } = buildMessages(10);
+
+    const result = await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 10,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 0,
+      existingStepSummary: null,
+    });
+
+    expect(result.summarized).toBe(true);
+    if (!result.summarized) return;
+
+    expect(result.stepSummaryText).toBe("step summary");
+    expect(result.lastSummarizedStepCount).toBe(10);
+    expect(mockGenerateText).toHaveBeenCalledTimes(1);
+
+    // Output should be: initial msgs + summary msg + kept step msgs
+    // 2 initial + 1 summary + 10 kept (5 steps * 2 msgs each) = 13
+    expect(result.messages).toHaveLength(13);
+    expect(result.messages[0]).toEqual(makeSystemMsg());
+    expect(result.messages[1]).toEqual(makeUserMsg(1));
+    expect(result.messages[2].role).toBe("user");
+    const summaryContent = result.messages[2].content as Array<{
+      text: string;
+    }>;
+    expect(summaryContent[0].text).toContain("<step_summary>");
+  });
+
+  it("uses summarizedInitialMessages when provided (combined path)", async () => {
+    mockGenerateText.mockResolvedValue({ text: "combined summary" });
+    const { messages, initialMsgCount } = buildMessages(10);
+    const overrideInitial: ModelMessage[] = [makeUserMsg(99)];
+
+    const result = await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 10,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 0,
+      existingStepSummary: null,
+      summarizedInitialMessages: overrideInitial,
+    });
+
+    expect(result.summarized).toBe(true);
+    if (!result.summarized) return;
+
+    // First message should be the override, not the original system msg
+    expect(result.messages[0]).toEqual(makeUserMsg(99));
+  });
+
+  it("passes existingStepSummary to generateStepSummaryText for incremental merge", async () => {
+    mockGenerateText.mockResolvedValue({ text: "merged" });
+    const { messages, initialMsgCount } = buildMessages(10);
+
+    await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 10,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 5,
+      existingStepSummary: "prior summary",
+    });
+
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        system: expect.stringContaining("prior summary"),
+      }),
+    );
+  });
+
+  it("passes abortSignal through to generateStepSummaryText", async () => {
+    mockGenerateText.mockResolvedValue({ text: "summary" });
+    const { messages, initialMsgCount } = buildMessages(10);
+    const controller = new AbortController();
+
+    await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 10,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 0,
+      existingStepSummary: null,
+      abortSignal: controller.signal,
+    });
+
+    expect(mockGenerateText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        abortSignal: controller.signal,
+      }),
+    );
+  });
+
+  it("propagates errors from generateText to the caller", async () => {
+    mockGenerateText.mockRejectedValue(new Error("LLM failure"));
+    const { messages, initialMsgCount } = buildMessages(10);
+
+    await expect(
+      summarizeSteps({
+        messages,
+        initialModelMessageCount: initialMsgCount,
+        stepsLength: 10,
+        stepsToKeep: 5,
+        lastSummarizedStepCount: 0,
+        existingStepSummary: null,
+      }),
+    ).rejects.toThrow("LLM failure");
+  });
+
+  it("returns summarized=false when splitStepMessages finds nothing to summarize", async () => {
+    // Only 3 steps but stepsToKeep=5 → splitStepMessages returns empty stepsToSummarize
+    const { messages, initialMsgCount } = buildMessages(3);
+
+    const result = await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 10,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 0,
+      existingStepSummary: null,
+    });
+
+    expect(result.summarized).toBe(false);
+    expect(mockGenerateText).not.toHaveBeenCalled();
   });
 });

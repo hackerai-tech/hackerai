@@ -3,10 +3,19 @@ import type { ModelMessage } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { STEP_SUMMARIZATION_PROMPT } from "./prompts";
 
+/**
+ * Splits model messages into three partitions: initial messages, steps to
+ * summarize, and recent steps to keep. The split boundary is determined solely
+ * by counting assistant-role messages (each assistant message = one step
+ * boundary). If fewer than `stepsToKeep` assistant messages exist in the
+ * response portion, nothing is marked for summarization.
+ *
+ * Invariant: `[...initial, ...toSummarize, ...toKeep]` reconstructs the
+ * original `messages` array.
+ */
 export function splitStepMessages(
   messages: ModelMessage[],
   initialMsgCount: number,
-  stepsCompleted: number,
   stepsToKeep: number,
 ): {
   initialMessages: ModelMessage[];
@@ -16,16 +25,8 @@ export function splitStepMessages(
   const initialMessages = messages.slice(0, initialMsgCount);
   const responseMessages = messages.slice(initialMsgCount);
 
-  if (stepsCompleted <= stepsToKeep) {
-    return {
-      initialMessages,
-      stepsToSummarizeMessages: [],
-      stepsToKeepMessages: responseMessages,
-    };
-  }
-
-  // Walk responseMessages counting assistant messages as step boundaries.
-  // Each step starts with an assistant message, optionally followed by a tool message.
+  // Count assistant messages as step boundaries. Each step begins with an
+  // assistant message, which may be followed by zero or more tool result messages.
   const stepBoundaries: number[] = [];
   for (let i = 0; i < responseMessages.length; i++) {
     if (responseMessages[i].role === "assistant") {
@@ -99,6 +100,12 @@ export async function generateStepSummaryText(
   return result.text;
 }
 
+/**
+ * Wraps a step summary string in a synthetic `user` ModelMessage with
+ * `<step_summary>` tags.  We use `role: "user"` because most LLMs ignore
+ * injected assistant messages during continuation — a user message ensures
+ * the summary is attended to.
+ */
 export function buildStepSummaryModelMessage(
   summaryText: string,
 ): ModelMessage {
@@ -110,5 +117,76 @@ export function buildStepSummaryModelMessage(
         text: `<step_summary>\n${summaryText}\n</step_summary>`,
       },
     ],
+  };
+}
+
+/**
+ * Result of a step-level summarization attempt.
+ * - `summarized: true` → caller should use `messages` as the replacement.
+ * - `summarized: false` → nothing to do, caller should fall through.
+ */
+export type StepSummarizationResult =
+  | {
+      summarized: true;
+      messages: ModelMessage[];
+      stepSummaryText: string;
+      lastSummarizedStepCount: number;
+    }
+  | { summarized: false };
+
+/**
+ * Orchestrates one round of step-level summarization: splits messages,
+ * generates (or incrementally updates) a summary, and returns the
+ * reconstituted message array.
+ *
+ * This is the single source of truth for the split → summarize → rebuild
+ * pipeline, called from both `agent-task.ts` and `chat-handler.ts`.
+ */
+export async function summarizeSteps(opts: {
+  messages: ModelMessage[];
+  initialModelMessageCount: number;
+  stepsLength: number;
+  stepsToKeep: number;
+  lastSummarizedStepCount: number;
+  existingStepSummary: string | null;
+  abortSignal?: AbortSignal;
+  /** When message-level summarization also fired, pass the already-compressed
+   *  initial messages so they replace the originals in the output. */
+  summarizedInitialMessages?: ModelMessage[];
+}): Promise<StepSummarizationResult> {
+  if (
+    opts.stepsLength <= opts.stepsToKeep ||
+    opts.stepsLength <= opts.lastSummarizedStepCount
+  ) {
+    return { summarized: false };
+  }
+
+  const { stepsToSummarizeMessages, stepsToKeepMessages } = splitStepMessages(
+    opts.messages,
+    opts.initialModelMessageCount,
+    opts.stepsToKeep,
+  );
+
+  if (stepsToSummarizeMessages.length === 0) {
+    return { summarized: false };
+  }
+
+  const initialMsgs =
+    opts.summarizedInitialMessages ??
+    opts.messages.slice(0, opts.initialModelMessageCount);
+
+  const stepSummaryText = await generateStepSummaryText(
+    stepsToSummarizeMessages,
+    opts.existingStepSummary ?? undefined,
+    opts.abortSignal,
+  );
+
+  const stepSummaryMsg = buildStepSummaryModelMessage(stepSummaryText);
+
+  return {
+    summarized: true,
+    messages: [...initialMsgs, stepSummaryMsg, ...stepsToKeepMessages],
+    stepSummaryText,
+    lastSummarizedStepCount: opts.stepsLength,
   };
 }
