@@ -183,6 +183,7 @@ export async function updateChat({
   todos,
   defaultModelSlug,
   sandboxType,
+  selectedModel,
 }: {
   chatId: string;
   title?: string;
@@ -195,6 +196,7 @@ export async function updateChat({
   }>;
   defaultModelSlug?: "ask" | "agent" | "agent-long";
   sandboxType?: string;
+  selectedModel?: string;
 }) {
   try {
     return await convex.mutation(api.chats.updateChat, {
@@ -205,6 +207,7 @@ export async function updateChat({
       todos,
       defaultModelSlug,
       sandboxType,
+      selectedModel,
     });
   } catch (error) {
     throw new ChatSDKError(

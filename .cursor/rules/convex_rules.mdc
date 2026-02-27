@@ -415,7 +415,7 @@ Internal Functions:
   "version": "1.0.0",
   "dependencies": {
     "convex": "^1.31.2",
-    "openai": "^4.79.0"
+    "openai": "^6.0.0"
   },
   "devDependencies": {
     "typescript": "^5.7.3"

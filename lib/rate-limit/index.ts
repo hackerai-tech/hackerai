@@ -65,6 +65,7 @@ export const checkRateLimit = async (
   subscription: SubscriptionTier,
   estimatedInputTokens?: number,
   extraUsageConfig?: ExtraUsageConfig,
+  modelName?: string,
 ): Promise<RateLimitInfo> => {
   // Free users: sliding window
   if (subscription === "free") {
@@ -84,5 +85,6 @@ export const checkRateLimit = async (
     subscription,
     estimatedInputTokens || 0,
     extraUsageConfig,
+    modelName,
   );
 };

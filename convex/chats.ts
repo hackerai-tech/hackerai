@@ -48,6 +48,7 @@ export const getChatByIdFromClient = query({
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
+      selected_model: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -137,6 +138,7 @@ export const getChatById = query({
       pinned_at: v.optional(v.number()),
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
+      selected_model: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -218,6 +220,7 @@ export const updateChat = mutation({
       ),
     ),
     sandboxType: v.optional(v.string()),
+    selectedModel: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -250,6 +253,7 @@ export const updateChat = mutation({
           sourceMessageId?: string;
         }>;
         sandbox_type?: string;
+        selected_model?: string;
         active_stream_id?: undefined;
         canceled_at?: undefined;
         update_time: number;
@@ -278,6 +282,10 @@ export const updateChat = mutation({
 
       if (args.sandboxType !== undefined && chat.sandbox_type === undefined) {
         updateData.sandbox_type = args.sandboxType;
+      }
+
+      if (args.selectedModel !== undefined) {
+        updateData.selected_model = args.selectedModel;
       }
 
       // Update the chat

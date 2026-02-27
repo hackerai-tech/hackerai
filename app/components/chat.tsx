@@ -28,8 +28,8 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Todo, ChatMessage, ChatMode, SubscriptionTier } from "@/types";
-import type { Id } from "@/convex/_generated/dataModel";
+import type { Todo, ChatMessage } from "@/types";
+import { isSelectedModel } from "@/types";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -85,6 +85,8 @@ export const Chat = ({
     todos,
     sandboxPreference,
     setSandboxPreference,
+    selectedModel,
+    setSelectedModel,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -130,6 +132,8 @@ export const Chat = ({
   const hasInitializedModeFromChatRef = useRef(false);
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
+  // Track whether model selection has been initialized from chat for this chat id
+  const hasInitializedModelRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -454,6 +458,7 @@ export const Chat = ({
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
+    hasInitializedModelRef.current = false;
     agentLong.lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
   }, [chatId, agentLong.lastTriggerAssistantIdRef]);
 
@@ -548,6 +553,22 @@ export const Chat = ({
     // If localConnections is still loading (undefined), wait for next render
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, localConnections, isExistingChat, chatId]);
+
+  // Initialize model selection from chat data (simpler than sandbox — no connection validation needed)
+  useEffect(() => {
+    if (hasInitializedModelRef.current || !isExistingChat) return;
+
+    const dataId = (chatData as any)?.id as string | undefined;
+    if (!chatData || dataId !== chatId) return;
+
+    const savedModel = (chatData as any).selected_model as string | undefined;
+    hasInitializedModelRef.current = true;
+
+    if (savedModel && isSelectedModel(savedModel)) {
+      setSelectedModel(savedModel);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatData, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
@@ -983,7 +1004,7 @@ export const Chat = ({
           {/* Desktop Computer Sidebar */}
           {!isMobile && (
             <div
-              className={`transition-all duration-300 min-w-0 ${
+              className={`transition-[width] duration-300 min-w-0 ${
                 sidebarOpen ? "w-1/2 flex-shrink-0" : "w-0 overflow-hidden"
               }`}
             >
