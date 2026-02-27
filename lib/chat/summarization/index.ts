@@ -8,6 +8,7 @@ import {
   writeSummarizationCompleted,
 } from "@/lib/utils/stream-writer-utils";
 import { isE2BSandbox } from "@/lib/ai/tools/utils/sandbox-types";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Id } from "@/convex/_generated/dataModel";
 
 import { MESSAGES_TO_KEEP_UNSUMMARIZED } from "./constants";
@@ -102,8 +103,16 @@ export const checkAndSummarizeIfNeeded = async (
     realMessages = uiMessages;
   }
 
-  // Guard: need enough real messages to split
-  if (realMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED) {
+  // Guard: need enough real messages to split.
+  // Agent mode summarizes everything but still needs at least 1 real message.
+  // Ask mode needs more than MESSAGES_TO_KEEP_UNSUMMARIZED.
+  if (realMessages.length === 0) {
+    return NO_SUMMARIZATION(uiMessages);
+  }
+  if (
+    !isAgentMode(mode) &&
+    realMessages.length <= MESSAGES_TO_KEEP_UNSUMMARIZED
+  ) {
     return NO_SUMMARIZATION(uiMessages);
   }
 
@@ -121,7 +130,10 @@ export const checkAndSummarizeIfNeeded = async (
   }
 
   // Split only real messages so cutoff always references a DB message
-  const { messagesToSummarize, lastMessages } = splitMessages(realMessages);
+  const { messagesToSummarize, lastMessages } = splitMessages(
+    realMessages,
+    mode,
+  );
 
   const cutoffMessageId =
     messagesToSummarize[messagesToSummarize.length - 1].id;

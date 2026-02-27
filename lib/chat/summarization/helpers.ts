@@ -12,6 +12,7 @@ import {
 import { saveChatSummary } from "@/lib/db/actions";
 import { myProvider } from "@/lib/ai/providers";
 import { SubscriptionTier, ChatMode, Todo } from "@/types";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Id } from "@/convex/_generated/dataModel";
 
 import {
@@ -66,10 +67,17 @@ export const isAboveTokenThreshold = (
 
 export const splitMessages = (
   uiMessages: UIMessage[],
-): { messagesToSummarize: UIMessage[]; lastMessages: UIMessage[] } => ({
-  messagesToSummarize: uiMessages.slice(0, -MESSAGES_TO_KEEP_UNSUMMARIZED),
-  lastMessages: uiMessages.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED),
-});
+  mode: ChatMode,
+): { messagesToSummarize: UIMessage[]; lastMessages: UIMessage[] } =>
+  isAgentMode(mode)
+    ? { messagesToSummarize: uiMessages, lastMessages: [] }
+    : {
+        messagesToSummarize: uiMessages.slice(
+          0,
+          -MESSAGES_TO_KEEP_UNSUMMARIZED,
+        ),
+        lastMessages: uiMessages.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED),
+      };
 
 export const isSummaryMessage = (message: UIMessage): boolean => {
   if (message.parts.length === 0) return false;

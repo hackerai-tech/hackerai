@@ -312,7 +312,7 @@ export const agentStreamTask = task({
 
       let streamFinishReason: string | undefined;
       let finalMessages = processedMessages;
-      let hasSummarized = false;
+      let summarizationCount = 0;
       let stoppedDueToTokenExhaustion = false;
       let lastStepInputTokens = 0;
       const isReasoningModel = isAgentMode(mode);
@@ -355,7 +355,7 @@ export const agentStreamTask = task({
           tools,
           prepareStep: async ({ steps, messages }) => {
             try {
-              if (!temporary && !hasSummarized) {
+              if (!temporary) {
                 const { needsSummarization, summarizedMessages } =
                   await checkAndSummarizeIfNeeded(
                     finalMessages,
@@ -372,7 +372,7 @@ export const agentStreamTask = task({
                     lastStepInputTokens,
                   );
                 if (needsSummarization) {
-                  hasSummarized = true;
+                  summarizationCount++;
                   summarizationParts.push(
                     createSummarizationCompletedPart() as UIMessagePart<
                       Record<string, unknown>,
@@ -432,7 +432,7 @@ export const agentStreamTask = task({
             stepCountIs(getMaxStepsForUser(mode, subscription)),
             tokenExhaustedAfterSummarization({
               getLastStepInputTokens: () => lastStepInputTokens,
-              getHasSummarized: () => hasSummarized,
+              getSummarizationCount: () => summarizationCount,
               onFired: () => {
                 stoppedDueToTokenExhaustion = true;
               },
@@ -603,7 +603,7 @@ export const agentStreamTask = task({
                 finishReason: streamFinishReason,
                 wasAborted: !!isAborted,
                 wasPreemptiveTimeout: false,
-                hadSummarization: hasSummarized,
+                hadSummarization: summarizationCount > 0,
               });
             } catch (error) {
               logger.error("onFinish failed", {

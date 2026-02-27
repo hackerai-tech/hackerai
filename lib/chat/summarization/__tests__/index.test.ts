@@ -431,7 +431,8 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.cutoffMessageId).toBe("real-2");
+    // Agent mode summarizes all messages, so cutoff is the last real message
+    expect(result.cutoffMessageId).toBe("real-4");
     expect(result.cutoffMessageId).not.toBe("synthetic-uuid-not-in-db");
   });
 
@@ -685,6 +686,81 @@ describe("checkAndSummarizeIfNeeded", () => {
       expect.objectContaining({
         system: expect.not.stringContaining("<previous_summary>"),
       }),
+    );
+  });
+
+  it("should trigger summarization in agent mode even with only 2 messages", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Agent summary of 2 msgs" });
+
+    // Each message needs enough tokens so that 2 messages exceed the threshold
+    const tokensPerMsg = Math.ceil(FREE_THRESHOLD / 2) + 500;
+    const twoMessages: UIMessage[] = [
+      createMessageWithTokens("msg-1", "user", tokensPerMsg),
+      createMessageWithTokens("msg-2", "assistant", tokensPerMsg),
+    ];
+
+    const result = await checkAndSummarizeIfNeeded(
+      twoMessages,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      null,
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    // Agent mode summarizes ALL messages (no kept lastMessages)
+    expect(result.summarizedMessages).toHaveLength(1);
+    expect(isSummaryMessage(result.summarizedMessages[0])).toBe(true);
+  });
+
+  it("should summarize all messages in agent mode (no kept messages)", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Full agent summary" });
+
+    const result = await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "agent",
+      mockWriter,
+      null,
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    // All messages are summarized, cutoff is the LAST message
+    expect(result.cutoffMessageId).toBe("msg-4");
+    // Only the summary message, no kept lastMessages
+    expect(result.summarizedMessages).toHaveLength(1);
+    expect(isSummaryMessage(result.summarizedMessages[0])).toBe(true);
+
+    // Verify all 4 message IDs were passed to generateText
+    const summarizedIds = collectMessageIdsFromGenerateCalls(mockGenerateText);
+    expect(summarizedIds).toContain("msg-1");
+    expect(summarizedIds).toContain("msg-2");
+    expect(summarizedIds).toContain("msg-3");
+    expect(summarizedIds).toContain("msg-4");
+  });
+
+  it("should still keep last 2 messages in ask mode", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Ask mode summary" });
+
+    const result = await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+    );
+
+    expect(result.needsSummarization).toBe(true);
+    // Ask mode: first 2 summarized, last 2 kept
+    expect(result.cutoffMessageId).toBe("msg-2");
+    // summary message + 2 kept messages
+    expect(result.summarizedMessages).toHaveLength(3);
+    expect(isSummaryMessage(result.summarizedMessages[0])).toBe(true);
+    expect(result.summarizedMessages.slice(1)).toEqual(
+      fourMessagesAboveThreshold.slice(-2),
     );
   });
 });

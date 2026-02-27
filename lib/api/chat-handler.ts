@@ -462,7 +462,7 @@ export const createChatHandler = (
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
-          let hasSummarized = false;
+          let summarizationCount = 0;
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
@@ -514,8 +514,11 @@ export const createChatHandler = (
               prepareStep: async ({ steps, messages }) => {
                 try {
                   // Run summarization check on every step (non-temporary chats only)
-                  // but only summarize once
-                  if (!temporary && !hasSummarized) {
+                  // Agent mode: allow re-summarization. Ask mode: summarize once.
+                  if (
+                    !temporary &&
+                    (isAgentMode(mode) || summarizationCount < 1)
+                  ) {
                     const result = await runSummarizationStep({
                       messages: finalMessages,
                       subscription,
@@ -537,7 +540,7 @@ export const createChatHandler = (
                       result.needsSummarization &&
                       result.summarizedMessages
                     ) {
-                      hasSummarized = true;
+                      summarizationCount++;
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
                       );
@@ -614,7 +617,7 @@ export const createChatHandler = (
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
                       getLastStepInputTokens: () => lastStepInputTokens,
-                      getHasSummarized: () => hasSummarized,
+                      getSummarizationCount: () => summarizationCount,
                       onFired: () => {
                         stoppedDueToTokenExhaustion = true;
                       },
@@ -785,7 +788,7 @@ export const createChatHandler = (
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
                             wasPreemptiveTimeout: false,
-                            hadSummarization: hasSummarized,
+                            hadSummarization: summarizationCount > 0,
                           });
 
                           const generatedTitle = await titlePromise;
@@ -962,7 +965,7 @@ export const createChatHandler = (
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
                   wasPreemptiveTimeout: isPreemptiveAbort,
-                  hadSummarization: hasSummarized,
+                  hadSummarization: summarizationCount > 0,
                 });
                 logStep("emit_success_event", stepStart);
 
