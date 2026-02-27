@@ -13,6 +13,7 @@ import { LocalPtySessionManager } from "./utils/local-pty-session-manager";
 import type { ConvexSandbox } from "./utils/convex-sandbox";
 import { createE2BHandlers } from "./shell-e2b";
 import { createLocalHandlers } from "./shell-local";
+import { getUserFacingE2BErrorMessage } from "./utils/e2b-errors";
 
 const DEFAULT_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
@@ -240,9 +241,11 @@ If you are generating files:
               console.error(
                 "[Shell] Sandbox health check failed too many times, marking unavailable",
               );
+              const specificMessage = getUserFacingE2BErrorMessage(err);
               return {
-                output:
-                  "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+                output: specificMessage
+                  ? `${specificMessage} Do NOT retry any terminal or sandbox commands.`
+                  : "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
                 error: true,
               };
             }
@@ -273,9 +276,11 @@ If you are generating files:
               )
                 throw freshErr;
               sandboxManager.recordHealthFailure();
+              const specificMessage = getUserFacingE2BErrorMessage(freshErr);
               return {
-                output:
-                  "Sandbox recreation failed. The sandbox environment is not responding.",
+                output: specificMessage
+                  ? `${specificMessage} Another attempt may be made but the sandbox will be marked unavailable after repeated failures.`
+                  : "Sandbox recreation failed. The sandbox environment is not responding.",
                 error: true,
               };
             }

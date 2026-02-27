@@ -7,6 +7,7 @@
 import axiomClient from "@/lib/axiom/axiom";
 import { Logger, AxiomJSTransport } from "@axiomhq/logging";
 import type { Formatter } from "@axiomhq/logging";
+import { classifyE2BError } from "@/lib/ai/tools/utils/e2b-errors";
 
 /** Formatter that injects context for retry/sandbox logs (runtime, default source) */
 export const retryContextFormatter: Formatter = (logEvent) => ({
@@ -60,6 +61,13 @@ export function createRetryLogger(
         error instanceof Error ? error.message : String(error);
       if (error instanceof Error && error.stack)
         fields.errorStack = error.stack;
+      // Add E2B error classification for observability
+      const category = classifyE2BError(error);
+      if (category !== "unknown") {
+        fields.e2bErrorCategory = category;
+        fields.e2bErrorType =
+          error instanceof Error ? error.constructor.name : "unknown";
+      }
     }
     if (logger) {
       logger.warn(message, fields);

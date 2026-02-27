@@ -1,4 +1,5 @@
 import { createRetryLogger } from "@/lib/axiom/worker";
+import { isE2BPermanentError, isE2BRateLimitError } from "./e2b-errors";
 
 /** Logger used for retry/abort events; safe in Trigger.dev (no @axiomhq/nextjs). */
 const retryLogger = createRetryLogger("retry-with-backoff");
@@ -22,16 +23,12 @@ export interface RetryOptions {
 }
 
 /**
- * Default function to check if error is permanent (sandbox terminated)
+ * Default function to check if error is permanent using E2B's typed error hierarchy.
+ * Covers: AuthenticationError, TemplateError, InvalidArgumentError, NotFoundError,
+ * CommandExitError, and string-based fallbacks for "not running anymore" / "Sandbox not found".
  */
 function defaultIsPermanentError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-
-  return (
-    error.name === "NotFoundError" ||
-    error.message.includes("not running anymore") ||
-    error.message.includes("Sandbox not found")
-  );
+  return isE2BPermanentError(error);
 }
 
 /**
@@ -104,7 +101,10 @@ export async function retryWithBackoff<T>(
       }
 
       // Calculate exponential backoff with jitter
-      const baseDelay = baseDelayMs * Math.pow(2, attempt);
+      // Rate limit errors get 5x longer backoff to let the limiter recover
+      const rateLimitMultiplier = isE2BRateLimitError(error) ? 5 : 1;
+      const baseDelay =
+        baseDelayMs * Math.pow(2, attempt) * rateLimitMultiplier;
       const jitter = Math.random() * (jitterMs * 2) - jitterMs;
       const delayMs = Math.max(0, baseDelay + jitter);
 
