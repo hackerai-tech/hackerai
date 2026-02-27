@@ -42,7 +42,10 @@ export function splitStepMessages(
     };
   }
 
-  const splitIndex = stepBoundaries[keepFromStep];
+  const splitIndex =
+    keepFromStep < stepBoundaries.length
+      ? stepBoundaries[keepFromStep]
+      : responseMessages.length;
   const stepsToSummarizeMessages = responseMessages.slice(0, splitIndex);
   const stepsToKeepMessages = responseMessages.slice(splitIndex);
 

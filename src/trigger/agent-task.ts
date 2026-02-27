@@ -433,6 +433,12 @@ export const agentStreamTask = task({
                         };
                       }
                     } catch (stepError) {
+                      if (
+                        stepError instanceof Error &&
+                        stepError.name === "AbortError"
+                      ) {
+                        throw stepError;
+                      }
                       logger.error(
                         "Step summarization failed, using message-level only",
                         { error: stepError },
@@ -445,6 +451,61 @@ export const agentStreamTask = task({
                   };
                 }
               }
+
+              // Standalone step-level summarization (token threshold not hit,
+              // but many steps accumulated in agent mode)
+              if (
+                !temporary &&
+                isAgentMode(mode) &&
+                steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
+                steps.length > lastSummarizedStepCount
+              ) {
+                try {
+                  const { stepsToSummarizeMessages, stepsToKeepMessages } =
+                    splitStepMessages(
+                      messages,
+                      initialModelMessageCount!,
+                      steps.length,
+                      STEPS_TO_KEEP_UNSUMMARIZED,
+                    );
+
+                  if (stepsToSummarizeMessages.length > 0) {
+                    const initialMsgs = messages.slice(
+                      0,
+                      initialModelMessageCount!,
+                    );
+
+                    stepSummaryText = await generateStepSummaryText(
+                      stepsToSummarizeMessages,
+                      stepSummaryText ?? undefined,
+                    );
+                    lastSummarizedStepCount = steps.length;
+
+                    const stepSummaryMsg =
+                      buildStepSummaryModelMessage(stepSummaryText);
+
+                    return {
+                      messages: [
+                        ...initialMsgs,
+                        stepSummaryMsg,
+                        ...stepsToKeepMessages,
+                      ],
+                    };
+                  }
+                } catch (stepError) {
+                  if (
+                    stepError instanceof Error &&
+                    stepError.name === "AbortError"
+                  ) {
+                    throw stepError;
+                  }
+                  logger.error(
+                    "Standalone step summarization failed, continuing without",
+                    { error: stepError },
+                  );
+                }
+              }
+
               const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
               const toolResults =
                 (lastStep &&

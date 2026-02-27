@@ -120,6 +120,23 @@ describe("splitStepMessages", () => {
       expectedSummarizeLen: 5,
       expectedKeepLen: 5,
     },
+    {
+      name: "stepsToKeep=0 puts all response messages in stepsToSummarize",
+      messages: (): ModelMessage[] => [
+        makeSystemMsg(),
+        makeUserMsg(1),
+        makeAssistantMsg(1),
+        makeToolMsg(1),
+        makeAssistantMsg(2),
+        makeToolMsg(2),
+      ],
+      initialMsgCount: 2,
+      stepsCompleted: 2,
+      stepsToKeep: 0,
+      expectedInitialLen: 2,
+      expectedSummarizeLen: 4,
+      expectedKeepLen: 0,
+    },
   ])(
     "$name",
     ({
@@ -185,6 +202,34 @@ describe("splitStepMessages", () => {
     };
     expect(lastSummarizedMsg.role).toBe("tool");
     expect(lastSummarizedMsg.content[0].toolName).toBe("tool-5");
+  });
+
+  it("handles stepsCompleted being greater than actual assistant messages in the array", () => {
+    const msgs: ModelMessage[] = [
+      makeSystemMsg(),
+      makeUserMsg(1),
+      makeAssistantMsg(7),
+      makeToolMsg(7),
+      makeAssistantMsg(8),
+      makeToolMsg(8),
+      makeAssistantMsg(9),
+      makeToolMsg(9),
+      makeAssistantMsg(10),
+      makeToolMsg(10),
+    ];
+
+    const result = splitStepMessages(msgs, 2, 10, 5);
+
+    // Only 4 assistant boundaries exist, fewer than stepsToKeep (5)
+    expect(result.stepsToSummarizeMessages).toHaveLength(0);
+    expect(result.stepsToKeepMessages).toHaveLength(8);
+
+    const reconstructed = [
+      ...result.initialMessages,
+      ...result.stepsToSummarizeMessages,
+      ...result.stepsToKeepMessages,
+    ];
+    expect(reconstructed).toEqual(msgs);
   });
 });
 
@@ -265,6 +310,15 @@ describe("generateStepSummaryText", () => {
       expect.objectContaining({
         abortSignal: controller.signal,
       }),
+    );
+  });
+
+  it("propagates errors from generateText to the caller", async () => {
+    mockGenerateText.mockRejectedValue(new Error("Rate limit exceeded"));
+
+    const messages: ModelMessage[] = [makeAssistantMsg(1)];
+    await expect(generateStepSummaryText(messages)).rejects.toThrow(
+      "Rate limit exceeded",
     );
   });
 });

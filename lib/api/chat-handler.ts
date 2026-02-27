@@ -606,9 +606,20 @@ export const createChatHandler = (
                             };
                           }
                         } catch (stepError) {
-                          console.error(
+                          if (userStopSignal.signal.aborted) {
+                            throw stepError;
+                          }
+                          nextJsAxiomLogger.error(
                             "Step summarization failed, using message-level only",
-                            stepError,
+                            {
+                              chatId,
+                              endpoint,
+                              mode,
+                              userId,
+                              subscription,
+                              stepsCompleted: steps.length,
+                              ...extractErrorDetails(stepError),
+                            },
                           );
                         }
                       }
@@ -618,6 +629,66 @@ export const createChatHandler = (
                           result.summarizedMessages,
                         ),
                       };
+                    }
+                  }
+
+                  // Standalone step-level summarization (token threshold not hit,
+                  // but many steps accumulated in agent mode)
+                  if (
+                    !temporary &&
+                    isAgentMode(mode) &&
+                    steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
+                    steps.length > lastSummarizedStepCount
+                  ) {
+                    try {
+                      const { stepsToSummarizeMessages, stepsToKeepMessages } =
+                        splitStepMessages(
+                          messages,
+                          initialModelMessageCount!,
+                          steps.length,
+                          STEPS_TO_KEEP_UNSUMMARIZED,
+                        );
+
+                      if (stepsToSummarizeMessages.length > 0) {
+                        const initialMsgs = messages.slice(
+                          0,
+                          initialModelMessageCount!,
+                        );
+
+                        stepSummaryText = await generateStepSummaryText(
+                          stepsToSummarizeMessages,
+                          stepSummaryText ?? undefined,
+                          userStopSignal.signal,
+                        );
+                        lastSummarizedStepCount = steps.length;
+
+                        const stepSummaryMsg =
+                          buildStepSummaryModelMessage(stepSummaryText);
+
+                        return {
+                          messages: [
+                            ...initialMsgs,
+                            stepSummaryMsg,
+                            ...stepsToKeepMessages,
+                          ],
+                        };
+                      }
+                    } catch (stepError) {
+                      if (userStopSignal.signal.aborted) {
+                        throw stepError;
+                      }
+                      nextJsAxiomLogger.error(
+                        "Standalone step summarization failed, continuing without",
+                        {
+                          chatId,
+                          endpoint,
+                          mode,
+                          userId,
+                          subscription,
+                          stepsCompleted: steps.length,
+                          ...extractErrorDetails(stepError),
+                        },
+                      );
                     }
                   }
 
