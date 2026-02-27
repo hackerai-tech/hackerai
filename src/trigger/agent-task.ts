@@ -49,6 +49,12 @@ import type { UIMessageStreamWriter } from "ai";
 import type { Id } from "@/convex/_generated/dataModel";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { STEPS_TO_KEEP_UNSUMMARIZED } from "@/lib/chat/summarization/constants";
+import {
+  splitStepMessages,
+  generateStepSummaryText,
+  buildStepSummaryModelMessage,
+} from "@/lib/chat/summarization/step-helpers";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
 import PostHogClient from "@/app/posthog";
@@ -313,6 +319,9 @@ export const agentStreamTask = task({
       let streamFinishReason: string | undefined;
       let finalMessages = processedMessages;
       let summarizationCount = 0;
+      let stepSummaryText: string | null = null;
+      let lastSummarizedStepCount = 0;
+      let initialModelMessageCount: number | null = null;
       let stoppedDueToTokenExhaustion = false;
       let lastStepInputTokens = 0;
       const isReasoningModel = isAgentMode(mode);
@@ -355,6 +364,11 @@ export const agentStreamTask = task({
           tools,
           prepareStep: async ({ steps, messages }) => {
             try {
+              // Capture initial model message count on first call (step 0)
+              if (initialModelMessageCount === null) {
+                initialModelMessageCount = messages.length;
+              }
+
               if (!temporary) {
                 const { needsSummarization, summarizedMessages } =
                   await checkAndSummarizeIfNeeded(
@@ -379,6 +393,53 @@ export const agentStreamTask = task({
                       Record<string, { input: unknown; output: unknown }>
                     >,
                   );
+
+                  // Step-level summarization: compress older steps in agent mode
+                  // Use the SDK's `messages` param (contains initial + step responses)
+                  // and combine with summarized initial messages from message-level
+                  if (
+                    isAgentMode(mode) &&
+                    steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
+                    steps.length > lastSummarizedStepCount
+                  ) {
+                    try {
+                      const { stepsToSummarizeMessages, stepsToKeepMessages } =
+                        splitStepMessages(
+                          messages,
+                          initialModelMessageCount!,
+                          steps.length,
+                          STEPS_TO_KEEP_UNSUMMARIZED,
+                        );
+
+                      if (stepsToSummarizeMessages.length > 0) {
+                        const summarizedInitialMsgs =
+                          await convertToModelMessages(summarizedMessages);
+
+                        stepSummaryText = await generateStepSummaryText(
+                          stepsToSummarizeMessages,
+                          stepSummaryText ?? undefined,
+                        );
+                        lastSummarizedStepCount = steps.length;
+
+                        const stepSummaryMsg =
+                          buildStepSummaryModelMessage(stepSummaryText);
+
+                        return {
+                          messages: [
+                            ...summarizedInitialMsgs,
+                            stepSummaryMsg,
+                            ...stepsToKeepMessages,
+                          ],
+                        };
+                      }
+                    } catch (stepError) {
+                      logger.error(
+                        "Step summarization failed, using message-level only",
+                        { error: stepError },
+                      );
+                    }
+                  }
+
                   return {
                     messages: await convertToModelMessages(summarizedMessages),
                   };

@@ -86,6 +86,12 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { nextJsAxiomLogger } from "@/lib/axiom/server";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { STEPS_TO_KEEP_UNSUMMARIZED } from "@/lib/chat/summarization/constants";
+import {
+  splitStepMessages,
+  generateStepSummaryText,
+  buildStepSummaryModelMessage,
+} from "@/lib/chat/summarization/step-helpers";
 
 function getStreamContext() {
   try {
@@ -463,6 +469,9 @@ export const createChatHandler = (
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
           let summarizationCount = 0;
+          let stepSummaryText: string | null = null;
+          let lastSummarizedStepCount = 0;
+          let initialModelMessageCount: number | null = null;
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
@@ -513,6 +522,11 @@ export const createChatHandler = (
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
+                  // Capture initial model message count on first call (step 0)
+                  if (initialModelMessageCount === null) {
+                    initialModelMessageCount = messages.length;
+                  }
+
                   // Run summarization check on every step (non-temporary chats only)
                   // Agent mode: allow re-summarization. Ask mode: summarize once.
                   if (
@@ -547,6 +561,58 @@ export const createChatHandler = (
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
                       }
+
+                      // Step-level summarization: compress older steps in agent mode
+                      // Use the SDK's `messages` param (contains initial + step responses)
+                      // and combine with summarized initial messages from message-level
+                      if (
+                        isAgentMode(mode) &&
+                        steps.length > STEPS_TO_KEEP_UNSUMMARIZED &&
+                        steps.length > lastSummarizedStepCount
+                      ) {
+                        try {
+                          const {
+                            stepsToSummarizeMessages,
+                            stepsToKeepMessages,
+                          } = splitStepMessages(
+                            messages,
+                            initialModelMessageCount!,
+                            steps.length,
+                            STEPS_TO_KEEP_UNSUMMARIZED,
+                          );
+
+                          if (stepsToSummarizeMessages.length > 0) {
+                            const summarizedInitialMsgs =
+                              await convertToModelMessages(
+                                result.summarizedMessages,
+                              );
+
+                            stepSummaryText = await generateStepSummaryText(
+                              stepsToSummarizeMessages,
+                              stepSummaryText ?? undefined,
+                              userStopSignal.signal,
+                            );
+                            lastSummarizedStepCount = steps.length;
+
+                            const stepSummaryMsg =
+                              buildStepSummaryModelMessage(stepSummaryText);
+
+                            return {
+                              messages: [
+                                ...summarizedInitialMsgs,
+                                stepSummaryMsg,
+                                ...stepsToKeepMessages,
+                              ],
+                            };
+                          }
+                        } catch (stepError) {
+                          console.error(
+                            "Step summarization failed, using message-level only",
+                            stepError,
+                          );
+                        }
+                      }
+
                       return {
                         messages: await convertToModelMessages(
                           result.summarizedMessages,
@@ -564,7 +630,6 @@ export const createChatHandler = (
                     Array.isArray(toolResults) &&
                     toolResults.some((r) => r?.toolName === "update_memory");
 
-                  // Check if any note was created, updated, or deleted (need to refresh notes in system prompt)
                   const wasNoteModified =
                     Array.isArray(toolResults) &&
                     toolResults.some(
@@ -583,7 +648,6 @@ export const createChatHandler = (
                     };
                   }
 
-                  // Refresh and cache the updated system prompt
                   currentSystemPrompt = await systemPrompt(
                     userId,
                     mode,
