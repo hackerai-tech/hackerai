@@ -203,7 +203,9 @@ describe("generateStepSummaryText", () => {
     expect(mockGenerateText).toHaveBeenCalledTimes(1);
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
-        system: expect.stringContaining("step-level context condensation"),
+        system: expect.stringContaining(
+          "step-level context condensation engine",
+        ),
         messages: expect.arrayContaining([
           expect.objectContaining({ role: "assistant" }),
         ]),
