@@ -28,50 +28,29 @@ interface ModelOption {
   id: SelectedModel;
   label: string;
   thinking?: boolean;
-  requiresPro: boolean;
 }
 
 const ASK_MODEL_OPTIONS: ModelOption[] = [
-  { id: "gemini-3-flash", label: "Gemini 3 Flash", requiresPro: false },
-  { id: "grok-4.1", label: "Grok 4.1", requiresPro: true },
-  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", requiresPro: true },
-  { id: "sonnet-4.6", label: "Claude Sonnet 4.6", requiresPro: true },
-  { id: "opus-4.6", label: "Claude Opus 4.6", requiresPro: true },
+  { id: "gemini-3-flash", label: "Gemini 3 Flash" },
+  { id: "grok-4.1", label: "Grok 4.1" },
+  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro" },
+  { id: "sonnet-4.6", label: "Claude Sonnet 4.6" },
+  { id: "opus-4.6", label: "Claude Opus 4.6" },
 ];
 
 const AGENT_MODEL_OPTIONS: ModelOption[] = [
-  { id: "kimi-k2.5", label: "Kimi K2.5", thinking: true, requiresPro: false },
-  {
-    id: "gemini-3-flash",
-    label: "Gemini 3 Flash",
-    thinking: true,
-    requiresPro: true,
-  },
-  { id: "grok-4.1", label: "Grok 4.1", thinking: true, requiresPro: true },
-  {
-    id: "gemini-3.1-pro",
-    label: "Gemini 3.1 Pro",
-    thinking: true,
-    requiresPro: true,
-  },
-  {
-    id: "sonnet-4.6",
-    label: "Claude Sonnet 4.6",
-    thinking: true,
-    requiresPro: true,
-  },
-  {
-    id: "opus-4.6",
-    label: "Claude Opus 4.6",
-    thinking: true,
-    requiresPro: true,
-  },
-  { id: "codex-5.3", label: "Codex 5.3", thinking: true, requiresPro: true },
+  { id: "kimi-k2.5", label: "Kimi K2.5", thinking: true },
+  { id: "gemini-3-flash", label: "Gemini 3 Flash", thinking: true },
+  { id: "grok-4.1", label: "Grok 4.1", thinking: true },
+  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", thinking: true },
+  { id: "sonnet-4.6", label: "Claude Sonnet 4.6", thinking: true },
+  { id: "opus-4.6", label: "Claude Opus 4.6", thinking: true },
+  { id: "codex-5.3", label: "Codex 5.3", thinking: true },
 ];
 
 const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
-  return (options.find((opt) => !opt.requiresPro) ?? options[0]).id;
+  return options[0].id;
 };
 
 interface ModelSelectorProps {
@@ -202,7 +181,7 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const triggerLabel = isFreeUser ? "Model" : selected.label;
 
   const handleModelSelect = (option: ModelOption) => {
-    if (isFreeUser && option.requiresPro) {
+    if (isFreeUser) {
       window.location.hash = "pricing";
       setOpen(false);
       return;

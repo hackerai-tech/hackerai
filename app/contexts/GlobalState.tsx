@@ -245,7 +245,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   });
 
   // When chat mode changes, load the saved model preference for that mode
+  const modeJustChanged = useRef(false);
   useEffect(() => {
+    modeJustChanged.current = true;
     const modeKey = getModeKey(chatMode);
     const saved = readSelectedModelForMode(modeKey);
     setSelectedModelState(isSelectedModel(saved) ? saved : "auto");
@@ -253,6 +255,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Persist model selection to localStorage for the current mode
   useEffect(() => {
+    if (modeJustChanged.current) {
+      modeJustChanged.current = false;
+      return;
+    }
     const modeKey = getModeKey(chatMode);
     writeSelectedModelForMode(modeKey, selectedModel);
   }, [selectedModel, chatMode]);
