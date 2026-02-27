@@ -11,6 +11,7 @@ import { accumulateChunksToMessage } from "@/lib/utils/accumulate-ui-chunks";
 
 export async function handleCatchError({
   payload,
+  error,
 }: {
   payload: AgentTaskPayload;
   error: unknown;
@@ -53,5 +54,9 @@ export async function handleCatchError({
   } catch (saveError) {
     console.error("catchError: failed to save error state", saveError);
     return { skipRetrying: true };
+  }
+
+  if (error instanceof Error && error.message === "SimulatedRetryError") {
+    return;
   }
 }

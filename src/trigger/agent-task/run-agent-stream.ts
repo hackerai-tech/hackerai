@@ -180,7 +180,8 @@ export async function runAgentStream(
     },
   });
 
-  const { waitUntilComplete } = aiStream.pipe(
+  const abortController = new AbortController();
+  const { waitUntilComplete, stream } = aiStream.pipe(
     result
       .toUIMessageStream({
         generateMessageId: () => fullContext.activeAssistantMessageId,
@@ -190,13 +191,43 @@ export async function runAgentStream(
         sendReasoning: true,
       })
       .pipeThrough(chunkInterceptor),
+    { signal: abortController.signal },
   );
 
+  let isRetrying = false;
   try {
+    if (attemptNumber === 1) {
+      // Abort during stream: after N chunks, abort the pipe and throw → task fails → retry.
+      // No timer; the abort is triggered by stream progress itself.
+      const CHUNKS_BEFORE_ABORT = 200;
+      try {
+        await Promise.race([
+          waitUntilComplete(),
+          (async () => {
+            let chunkCount = 0;
+            for await (const _ of stream) {
+              chunkCount++;
+              if (chunkCount >= CHUNKS_BEFORE_ABORT) {
+                abortController.abort();
+                throw new Error("SimulatedRetryError");
+              }
+            }
+            // Stream ended before we hit threshold; let waitUntilComplete win
+          })(),
+        ]);
+      } catch (e) {
+        if (e instanceof Error && e.message === "SimulatedRetryError") {
+          isRetrying = true;
+        }
+        throw e;
+      }
+    }
     await waitUntilComplete();
     clearChunks(chatId);
     clearTodoState(chatId);
   } finally {
-    await clearActiveTriggerRunIdFromBackend({ chatId });
+    if (!isRetrying) {
+      await clearActiveTriggerRunIdFromBackend({ chatId });
+    }
   }
 }
