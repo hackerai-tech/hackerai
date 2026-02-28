@@ -56,15 +56,17 @@ export const writeSummarizationCompleted = (
   });
 };
 
-export const createSummarizationCompletedPart = (): UIMessagePart<
-  any,
-  any
-> => ({
+export const createSummarizationCompletedPart = (opts?: {
+  messageSummary?: string;
+  stepSummary?: string;
+}): UIMessagePart<any, any> => ({
   type: "data-summarization" as const,
   id: "summarization-status",
   data: {
     status: "completed",
     message: "Chat context summarized",
+    ...(opts?.messageSummary && { messageSummary: opts.messageSummary }),
+    ...(opts?.stepSummary && { stepSummary: opts.stepSummary }),
   },
 });
 
