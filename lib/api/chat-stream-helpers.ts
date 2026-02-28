@@ -235,6 +235,7 @@ export function writeContextUsage(
 export interface SummarizationStepResult {
   needsSummarization: boolean;
   summarizedMessages?: UIMessage[];
+  summaryText?: string;
   contextUsage?: ContextUsageData;
 }
 
@@ -254,7 +255,7 @@ export async function runSummarizationStep(options: {
   ctxMaxTokens: number;
   providerInputTokens?: number;
 }): Promise<SummarizationStepResult> {
-  const { needsSummarization, summarizedMessages } =
+  const { needsSummarization, summarizedMessages, summaryText } =
     await checkAndSummarizeIfNeeded(
       options.messages,
       options.subscription,
@@ -287,7 +288,12 @@ export async function runSummarizationStep(options: {
     writeContextUsage(options.writer, contextUsage);
   }
 
-  return { needsSummarization: true, summarizedMessages, contextUsage };
+  return {
+    needsSummarization: true,
+    summarizedMessages,
+    summaryText: summaryText ?? undefined,
+    contextUsage,
+  };
 }
 
 /**

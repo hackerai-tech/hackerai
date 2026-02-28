@@ -38,6 +38,7 @@ import {
   prepareForNewStream,
   deleteTempStreamForBackend,
   clearActiveTriggerRunIdFromBackend,
+  saveStepSummary,
 } from "@/lib/db/actions";
 import { deductUsage } from "@/lib/rate-limit";
 import { aiStream, metadataStream, type MetadataEvent } from "./streams";
@@ -50,7 +51,10 @@ import type { Id } from "@/convex/_generated/dataModel";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { STEPS_TO_KEEP_UNSUMMARIZED } from "@/lib/chat/summarization/constants";
-import { summarizeSteps } from "@/lib/chat/summarization/step-helpers";
+import {
+  summarizeSteps,
+  injectPersistedStepSummary,
+} from "@/lib/chat/summarization/step-helpers";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
 import PostHogClient from "@/app/posthog";
@@ -136,6 +140,7 @@ export const agentStreamTask = task({
       hasFileAttachments: hasFiles,
       fileCount,
       fileImageCount,
+      stepSummary,
     } = payload;
 
     const rateLimitInfo = deserializeRateLimitInfo(serializedRateLimitInfo);
@@ -315,17 +320,47 @@ export const agentStreamTask = task({
       let streamFinishReason: string | undefined;
       let finalMessages = processedMessages;
       let summarizationCount = 0;
-      let stepSummaryText: string | null = null;
+      let stepSummaryText: string | null = stepSummary?.text ?? null;
+      let stepSummaryLastToolCallId: string | null =
+        stepSummary?.upToToolCallId ?? null;
       let lastSummarizedStepCount = 0;
       let initialModelMessageCount: number | null = null;
       let stoppedDueToTokenExhaustion = false;
       let lastStepInputTokens = 0;
       const isReasoningModel = isAgentMode(mode);
-      // Use permissive types so we can push data parts (e.g. summarization) that aren't tool parts
-      const summarizationParts: UIMessagePart<
-        Record<string, unknown>, // UIDataTypes
-        Record<string, { input: unknown; output: unknown }> // UITools
-      >[] = [];
+      // Track which step indices triggered summarization (for inline placement with diagnostic text)
+      const summarizationAtSteps: Array<{
+        stepIndex: number;
+        messageSummary?: string;
+        stepSummary?: string;
+      }> = [];
+
+      /** Insert summarization parts inline at the step where they happened */
+      const injectSummarizationParts = (
+        parts: UIMessagePart<any, any>[],
+      ): UIMessagePart<any, any>[] => {
+        if (summarizationAtSteps.length === 0) return parts;
+        const result: UIMessagePart<any, any>[] = [];
+        let stepStartCount = 0;
+        for (const part of parts) {
+          if ((part as { type: string }).type === "step-start") {
+            const match = summarizationAtSteps.find(
+              (s) => s.stepIndex === stepStartCount,
+            );
+            if (match) {
+              result.push(
+                createSummarizationCompletedPart({
+                  messageSummary: match.messageSummary,
+                  stepSummary: match.stepSummary,
+                }),
+              );
+            }
+            stepStartCount++;
+          }
+          result.push(part);
+        }
+        return result;
+      };
       const streamStartTime = Date.now();
       const configuredModelId =
         trackedProvider.languageModel(selectedModel).modelId;
@@ -363,32 +398,42 @@ export const agentStreamTask = task({
               // Capture initial model message count on first call (step 0)
               if (initialModelMessageCount === null) {
                 initialModelMessageCount = messages.length;
+
+                // Inject persisted step summary at step 0
+                if (stepSummaryText && stepSummaryLastToolCallId) {
+                  const injected = injectPersistedStepSummary(
+                    messages,
+                    stepSummaryText,
+                    stepSummaryLastToolCallId,
+                  );
+                  if (injected) {
+                    initialModelMessageCount = injected.length;
+                    return { messages: injected };
+                  }
+                }
               }
 
               if (!temporary) {
-                const { needsSummarization, summarizedMessages } =
-                  await checkAndSummarizeIfNeeded(
-                    finalMessages,
-                    subscription,
-                    trackedProvider.languageModel(modelName),
-                    mode,
-                    metadataWriter,
-                    chatId,
-                    fileTokens,
-                    getTodoManager().getAllTodos(),
-                    undefined,
-                    ensureSandbox,
-                    undefined,
-                    lastStepInputTokens,
-                  );
+                const {
+                  needsSummarization,
+                  summarizedMessages,
+                  summaryText: messageSummaryText,
+                } = await checkAndSummarizeIfNeeded(
+                  finalMessages,
+                  subscription,
+                  trackedProvider.languageModel(modelName),
+                  mode,
+                  metadataWriter,
+                  chatId,
+                  fileTokens,
+                  getTodoManager().getAllTodos(),
+                  undefined,
+                  ensureSandbox,
+                  undefined,
+                  lastStepInputTokens,
+                );
                 if (needsSummarization) {
                   summarizationCount++;
-                  summarizationParts.push(
-                    createSummarizationCompletedPart() as UIMessagePart<
-                      Record<string, unknown>,
-                      Record<string, { input: unknown; output: unknown }>
-                    >,
-                  );
 
                   // Step-level: compress older steps alongside message-level
                   if (isAgentMode(mode)) {
@@ -405,8 +450,14 @@ export const agentStreamTask = task({
                       });
                       if (stepResult.summarized) {
                         stepSummaryText = stepResult.stepSummaryText;
+                        stepSummaryLastToolCallId = stepResult.lastToolCallId;
                         lastSummarizedStepCount =
                           stepResult.lastSummarizedStepCount;
+                        summarizationAtSteps.push({
+                          stepIndex: steps.length,
+                          messageSummary: messageSummaryText ?? undefined,
+                          stepSummary: stepResult.stepSummaryText,
+                        });
                         return { messages: stepResult.messages };
                       }
                     } catch (stepError) {
@@ -416,6 +467,12 @@ export const agentStreamTask = task({
                       );
                     }
                   }
+
+                  // Message-level only (step didn't fire or failed)
+                  summarizationAtSteps.push({
+                    stepIndex: steps.length,
+                    messageSummary: messageSummaryText ?? undefined,
+                  });
 
                   return {
                     messages: await convertToModelMessages(summarizedMessages),
@@ -441,8 +498,13 @@ export const agentStreamTask = task({
                   });
                   if (stepResult.summarized) {
                     stepSummaryText = stepResult.stepSummaryText;
+                    stepSummaryLastToolCallId = stepResult.lastToolCallId;
                     lastSummarizedStepCount =
                       stepResult.lastSummarizedStepCount;
+                    summarizationAtSteps.push({
+                      stepIndex: steps.length,
+                      stepSummary: stepResult.stepSummaryText,
+                    });
                     return { messages: stepResult.messages };
                   }
                 } catch (stepError) {
@@ -641,13 +703,10 @@ export const agentStreamTask = task({
                 for (const message of messages) {
                   if (message.role !== "assistant") continue;
                   const processedMessage =
-                    summarizationParts.length > 0
+                    summarizationAtSteps.length > 0
                       ? {
                           ...message,
-                          parts: [
-                            ...summarizationParts,
-                            ...(message.parts || []),
-                          ],
+                          parts: injectSummarizationParts(message.parts || []),
                         }
                       : message;
                   await saveMessage({
@@ -661,6 +720,16 @@ export const agentStreamTask = task({
                     usage: streamUsage,
                   });
                 }
+
+                // Persist step summary if accumulated during this run
+                if (stepSummaryText && stepSummaryLastToolCallId) {
+                  await saveStepSummary({
+                    chatId,
+                    stepSummaryText,
+                    stepSummaryUpToToolCallId: stepSummaryLastToolCallId,
+                  });
+                }
+
                 sendFileMetadataToStream(accumulatedFiles);
               } else {
                 const tempFiles = getFileAccumulator().getAll();
