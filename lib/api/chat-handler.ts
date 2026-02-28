@@ -619,7 +619,14 @@ export const createChatHandler = (
                     system: currentSystemPrompt,
                   };
                 } catch (error) {
-                  console.error("Error in prepareStep:", error);
+                  if (
+                    error instanceof DOMException &&
+                    error.name === "AbortError"
+                  ) {
+                    // Expected when user stops the stream
+                  } else {
+                    console.error("Error in prepareStep:", error);
+                  }
                   return currentSystemPrompt
                     ? { system: currentSystemPrompt }
                     : {};

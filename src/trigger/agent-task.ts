@@ -433,7 +433,14 @@ export const agentStreamTask = task({
               );
               return { messages, system: currentSystemPrompt };
             } catch (error) {
-              logger.error("Error in prepareStep", { error });
+              if (
+                error instanceof DOMException &&
+                error.name === "AbortError"
+              ) {
+                // Expected when user stops the stream
+              } else {
+                logger.error("Error in prepareStep", { error });
+              }
               return currentSystemPrompt ? { system: currentSystemPrompt } : {};
             }
           },
