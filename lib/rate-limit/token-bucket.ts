@@ -13,11 +13,20 @@ import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
 // Configuration
 // =============================================================================
 
-/** Model pricing: $/1M tokens (same model for default and agent vision) */
-const MODEL_PRICING = {
-  input: 0.5,
-  output: 3.0,
+/** Model pricing: $/1M tokens per model (default used for ask models + kimi k2.5 agent) */
+const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
+  default: { input: 0.5, output: 3.0 },
+  "model-codex-5.3": { input: 1.75, output: 14.0 },
+  "model-opus-4.6": { input: 5.0, output: 25.0 },
+  "model-sonnet-4.6": { input: 3.0, output: 15.0 },
+  "model-gemini-3.1-pro": { input: 2.0, output: 12.0 },
+  "model-grok-4.1": { input: 0.2, output: 0.5 },
+  "model-gemini-3-flash": { input: 0.5, output: 3.0 },
+  "model-kimi-k2.5": { input: 0.6, output: 3.0 },
 };
+
+const getModelPricing = (modelName?: string) =>
+  (modelName && MODEL_PRICING_MAP[modelName]) || MODEL_PRICING_MAP.default;
 
 /** Points per dollar (1 point = $0.0001) */
 export const POINTS_PER_DOLLAR = 10_000;
@@ -30,13 +39,16 @@ export const POINTS_PER_DOLLAR = 10_000;
  * Calculate point cost for tokens.
  * @param tokens - Number of tokens
  * @param type - "input" or "output"
+ * @param modelName - Optional model name for model-specific pricing
  */
 export const calculateTokenCost = (
   tokens: number,
   type: "input" | "output",
+  modelName?: string,
 ): number => {
   if (tokens <= 0) return 0;
-  const price = type === "input" ? MODEL_PRICING.input : MODEL_PRICING.output;
+  const pricing = getModelPricing(modelName);
+  const price = type === "input" ? pricing.input : pricing.output;
   return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
 };
 
@@ -117,6 +129,7 @@ export const checkTokenBucketLimit = async (
   subscription: SubscriptionTier,
   estimatedInputTokens: number = 0,
   extraUsageConfig?: ExtraUsageConfig,
+  modelName?: string,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
@@ -142,7 +155,11 @@ export const checkTokenBucketLimit = async (
     }
 
     // const isLongContext = estimatedInputTokens > LONG_CONTEXT_THRESHOLD;
-    const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
+    const estimatedCost = calculateTokenCost(
+      estimatedInputTokens,
+      "input",
+      modelName,
+    );
 
     // Step 1: Check both limits first WITHOUT deducting (rate: 0 peeks at current state)
     // This prevents the race condition where we deduct from weekly but session fails
@@ -301,6 +318,7 @@ export const deductUsage = async (
   actualOutputTokens: number,
   extraUsageConfig?: ExtraUsageConfig,
   providerCostDollars?: number,
+  modelName?: string,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -317,6 +335,7 @@ export const deductUsage = async (
     const estimatedInputCost = calculateTokenCost(
       estimatedInputTokens,
       "input",
+      modelName,
     );
 
     // Calculate actual cost - prefer provider cost if available
@@ -327,8 +346,16 @@ export const deductUsage = async (
       actualCostPoints = Math.ceil(providerCostDollars * POINTS_PER_DOLLAR);
     } else {
       // Fallback to token-based calculation
-      const actualInputCost = calculateTokenCost(actualInputTokens, "input");
-      const outputCost = calculateTokenCost(actualOutputTokens, "output");
+      const actualInputCost = calculateTokenCost(
+        actualInputTokens,
+        "input",
+        modelName,
+      );
+      const outputCost = calculateTokenCost(
+        actualOutputTokens,
+        "output",
+        modelName,
+      );
       actualCostPoints = actualInputCost + outputCost;
     }
 

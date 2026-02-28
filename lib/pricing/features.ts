@@ -45,7 +45,7 @@ export const freeFeatures: Array<PricingFeature> = [
 ];
 
 export const proFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "Access to smartest AI model" },
+  { icon: Check, text: "Access to the latest AI models, best for pentesting" },
   { icon: Check, text: "Extended limits" },
   { icon: Check, text: "File uploads" },
   { icon: Check, text: "Agent mode with terminal" },
@@ -53,11 +53,11 @@ export const proFeatures: Array<PricingFeature> = [
 ];
 
 export const proPlusFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "3x more usage than Pro" },
+  { icon: Check, text: "3x usage on all OpenAI, Claude, Gemini models" },
 ];
 
 export const ultraFeatures: Array<PricingFeature> = [
-  { icon: Check, text: "20x more usage than Pro" },
+  { icon: Check, text: "10x usage on all OpenAI, Claude, Gemini models" },
   { icon: Check, text: "Priority access to new features" },
 ];
 

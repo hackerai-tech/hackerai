@@ -1,4 +1,9 @@
-import { isChatMode, type ChatMode } from "@/types/chat";
+import {
+  isChatMode,
+  isSelectedModel,
+  type ChatMode,
+  type SelectedModel,
+} from "@/types/chat";
 
 export type ConversationDraft = {
   id: string;
@@ -14,6 +19,7 @@ export type ConversationDraftStore = {
 export const CONVERSATION_DRAFTS_STORAGE_KEY = "conversation_drafts";
 export const NULL_THREAD_DRAFT_ID = "null_thread";
 export const CHAT_MODE_STORAGE_KEY = "chat_mode";
+const SELECTED_MODEL_STORAGE_KEY = "selected_model";
 
 const isBrowser = (): boolean => typeof window !== "undefined";
 
@@ -58,6 +64,34 @@ export const writeChatMode = (mode: ChatMode): void => {
   if (!isBrowser()) return;
   try {
     window.localStorage.setItem(CHAT_MODE_STORAGE_KEY, mode);
+  } catch {
+    // ignore
+  }
+};
+
+/** Read the saved model preference for a specific mode (ask vs agent) */
+export const readSelectedModelForMode = (
+  mode: "ask" | "agent",
+): SelectedModel | null => {
+  if (!isBrowser()) return null;
+  try {
+    const raw = window.localStorage.getItem(
+      `${SELECTED_MODEL_STORAGE_KEY}_${mode}`,
+    );
+    return isSelectedModel(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Save the model preference for a specific mode (ask vs agent) */
+export const writeSelectedModelForMode = (
+  mode: "ask" | "agent",
+  model: SelectedModel,
+): void => {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(`${SELECTED_MODEL_STORAGE_KEY}_${mode}`, model);
   } catch {
     // ignore
   }

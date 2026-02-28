@@ -22,7 +22,9 @@ import type {
   Todo,
   SandboxPreference,
   ExtraUsageConfig,
+  SelectedModel,
 } from "@/types";
+import { isSelectedModel } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   checkRateLimit,
@@ -120,6 +122,7 @@ export const createChatHandler = (
         regenerate,
         temporary,
         sandboxPreference,
+        selectedModel: rawSelectedModel,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -128,7 +131,13 @@ export const createChatHandler = (
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
+        selectedModel?: string;
       } = await req.json();
+
+      const selectedModelOverride: SelectedModel | undefined =
+        rawSelectedModel && isSelectedModel(rawSelectedModel)
+          ? rawSelectedModel
+          : undefined;
 
       // Agent-long must use /api/agent-long (Trigger.dev), not this handler
       if (mode === "agent-long") {
@@ -216,6 +225,7 @@ export const createChatHandler = (
           mode,
           subscription,
           uploadBasePath,
+          modelOverride: selectedModelOverride,
         });
 
       // Validate that we have at least one message with content after processing
@@ -290,6 +300,7 @@ export const createChatHandler = (
           subscription,
           estimatedInputTokens,
           extraUsageConfig,
+          selectedModel,
         ));
 
       // Track deductions for potential refund on error
@@ -499,6 +510,7 @@ export const createChatHandler = (
                 accumulatedProviderCost > 0
                   ? accumulatedProviderCost
                   : undefined,
+                selectedModel,
               );
             }
           };
@@ -809,6 +821,7 @@ export const createChatHandler = (
                                 defaultModelSlug: mode,
                                 sandboxType:
                                   sandboxManager.getEffectivePreference(),
+                                selectedModel: selectedModelOverride,
                               });
                             } else {
                               await prepareForNewStream({ chatId });
@@ -1001,6 +1014,7 @@ export const createChatHandler = (
                       todos: mergedTodos,
                       defaultModelSlug: mode,
                       sandboxType: sandboxManager.getEffectivePreference(),
+                      selectedModel: selectedModelOverride,
                     });
                     logStep("update_chat", stepStart);
                   } else {

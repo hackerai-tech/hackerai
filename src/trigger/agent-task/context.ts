@@ -116,6 +116,7 @@ export function createAgentStreamContext(
           (ctx.accumulatedProviderCost ?? 0) > 0
             ? ctx.accumulatedProviderCost
             : undefined,
+          payload.selectedModel,
         );
         ctx.hasDeductedUsage = true;
       }

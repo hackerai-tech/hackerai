@@ -1,5 +1,5 @@
 import { getModerationResult } from "@/lib/moderation";
-import type { ChatMode, SubscriptionTier } from "@/types";
+import type { ChatMode, SubscriptionTier, SelectedModel } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
@@ -28,36 +28,26 @@ export const getMaxStepsForUser = (
 };
 
 /**
- * Selects the appropriate model based on mode and file content
+ * Selects the appropriate model based on mode and subscription
  * @param mode - Chat mode (ask or agent)
- * @param containsMediaFiles - Whether messages contain media files
  * @returns Model name to use
  */
 export function selectModel(
   mode: ChatMode,
-  containsMediaFiles: boolean,
-  containsPdfFiles: boolean,
   subscription: SubscriptionTier,
+  selectedModel?: SelectedModel,
 ): ModelName {
-  // Prefer a dedicated PDF vision model for PDFs in ask mode
-  if (containsPdfFiles && mode === "ask") {
-    return "ask-vision-model-for-pdfs";
+  // User-selected model override (paid users only)
+  if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
+    return `model-${selectedModel}` as ModelName;
   }
 
-  // If there are media files (images or otherwise), choose appropriate vision model
-  if (containsMediaFiles && mode === "ask") {
-    return "ask-vision-model";
-  }
-  if (containsMediaFiles && isAgentMode(mode)) {
-    return "agent-vision-model";
+  // Default models by mode
+  if (isAgentMode(mode)) {
+    return "agent-model";
   }
 
-  // Otherwise, choose based on mode
-  return mode === "ask"
-    ? subscription === "free"
-      ? "ask-model-free"
-      : "ask-model"
-    : "agent-model";
+  return subscription === "free" ? "ask-model-free" : "ask-model";
 }
 
 /**
@@ -360,11 +350,13 @@ export async function processChatMessages({
   mode,
   subscription,
   uploadBasePath,
+  modelOverride,
 }: {
   messages: UIMessage[];
   mode: ChatMode;
   subscription: SubscriptionTier;
   uploadBasePath?: string;
+  modelOverride?: SelectedModel;
 }) {
   // Filter out UI-only parts (data-summarization) that AI providers don't understand
   const messagesWithoutUIOnlyParts = messages.map(filterUIOnlyParts);
@@ -374,12 +366,8 @@ export async function processChatMessages({
   const messagesWithLimitedFiles = limitImageParts(messagesWithoutUIOnlyParts);
 
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
-  const {
-    messages: messagesWithUrls,
-    hasMediaFiles: containsMediaFiles,
-    sandboxFiles,
-    containsPdfFiles,
-  } = await processMessageFiles(messagesWithLimitedFiles, mode, uploadBasePath);
+  const { messages: messagesWithUrls, sandboxFiles } =
+    await processMessageFiles(messagesWithLimitedFiles, mode, uploadBasePath);
 
   // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini
@@ -428,12 +416,7 @@ export async function processChatMessages({
   );
 
   // Select the appropriate model
-  const selectedModel = selectModel(
-    mode,
-    containsMediaFiles,
-    containsPdfFiles,
-    subscription,
-  );
+  const selectedModel = selectModel(mode, subscription, modelOverride);
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(

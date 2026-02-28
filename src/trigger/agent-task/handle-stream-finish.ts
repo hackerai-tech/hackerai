@@ -84,6 +84,7 @@ export async function handleAgentStreamFinish(
           todos: mergedTodos,
           defaultModelSlug: mode,
           sandboxType: sandboxManager.getEffectivePreference(),
+          selectedModel: context.payload.selectedModelOverride,
         });
       } else {
         await prepareForNewStream({ chatId });

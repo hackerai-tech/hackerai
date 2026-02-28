@@ -36,6 +36,7 @@ export default defineSchema({
     share_date: v.optional(v.number()),
     pinned_at: v.optional(v.number()),
     sandbox_type: v.optional(v.string()),
+    selected_model: v.optional(v.string()),
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
