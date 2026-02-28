@@ -10,7 +10,7 @@ import {
 } from "ai";
 import { task } from "@trigger.dev/sdk/v3";
 import { logger } from "@trigger.dev/sdk/v3";
-import { systemPrompt } from "@/lib/system-prompt";
+import { systemPrompt, getResumeSection } from "@/lib/system-prompt";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessage } from "@/lib/actions";
 import {
@@ -18,6 +18,7 @@ import {
   buildProviderOptions,
   isXaiSafetyError,
   isProviderApiError,
+  appendSystemReminderToLastUserMessage,
 } from "@/lib/api/chat-stream-helpers";
 import {
   writeUploadStartStatus,
@@ -307,12 +308,21 @@ export const agentStreamTask = task({
         selectedModel,
         userCustomization,
         temporary,
-        chatFinishReason,
         sandboxContext,
       );
 
       let streamFinishReason: string | undefined;
       let finalMessages = processedMessages;
+
+      // Inject resume context into messages instead of system prompt
+      const resumeContext = getResumeSection(chatFinishReason);
+      if (resumeContext) {
+        finalMessages = appendSystemReminderToLastUserMessage(
+          finalMessages,
+          resumeContext,
+        );
+      }
+
       let hasSummarized = false;
       let stoppedDueToTokenExhaustion = false;
       let lastStepInputTokens = 0;
@@ -419,7 +429,6 @@ export const agentStreamTask = task({
                 selectedModel,
                 userCustomization,
                 temporary,
-                chatFinishReason,
                 sandboxContext,
               );
               return { messages, system: currentSystemPrompt };

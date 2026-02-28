@@ -232,7 +232,7 @@ not remind the person of its cutoff date unless it is relevant to the person's m
 </knowledge_cutoff>`;
 };
 
-const getResumeSection = (finishReason?: string): string => {
+export const getResumeSection = (finishReason?: string): string => {
   if (finishReason === "tool-calls") {
     return `<resume_context>
 Your previous response was interrupted during tool calls before completing the user's original request. \
@@ -270,7 +270,6 @@ export const systemPrompt = async (
   modelName: ModelName,
   userCustomization?: UserCustomization | null,
   isTemporary?: boolean,
-  finishReason?: string,
   sandboxContext?: string | null,
 ): Promise<string> => {
   // Only get notes if the user has memory/notes entries enabled
@@ -323,8 +322,6 @@ The current date is ${currentDateTime}.`;
   if (personalityInstructions) {
     sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
   }
-
-  sections.push(getResumeSection(finishReason));
 
   return sections.filter(Boolean).join("\n\n");
 };

@@ -312,3 +312,37 @@ export function buildProviderOptions(
     },
   } as const;
 }
+
+/**
+ * Appends a <system-reminder> block to the last user message's text part.
+ * Returns a new array (does not mutate input).
+ */
+export function appendSystemReminderToLastUserMessage(
+  messages: UIMessage[],
+  reminderContent: string,
+): UIMessage[] {
+  const result = [...messages];
+  for (let i = result.length - 1; i >= 0; i--) {
+    if (result[i].role === "user") {
+      const parts = [...(result[i].parts || [])];
+      const textPartIndex = parts.findIndex((p) => p.type === "text");
+
+      if (textPartIndex >= 0) {
+        const textPart = parts[textPartIndex] as { type: "text"; text: string };
+        parts[textPartIndex] = {
+          ...textPart,
+          text: `${textPart.text}\n\n<system-reminder>\n${reminderContent}\n</system-reminder>`,
+        };
+      } else {
+        parts.push({
+          type: "text" as const,
+          text: `<system-reminder>\n${reminderContent}\n</system-reminder>`,
+        });
+      }
+
+      result[i] = { ...result[i], parts };
+      break;
+    }
+  }
+  return result;
+}
