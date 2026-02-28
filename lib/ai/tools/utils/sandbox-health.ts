@@ -45,8 +45,14 @@ export async function waitForSandboxReady(
           displayName: "",
         } as { timeoutMs: number; displayName?: string });
       } catch (error) {
+        // Re-throw original error to preserve instanceof checks for
+        // isPermanentError (AuthenticationError, TemplateError, etc.)
+        if (error instanceof Error) {
+          error.message = `Sandbox running but not ready to execute commands: ${error.message}`;
+          throw error;
+        }
         throw new Error(
-          `Sandbox running but not ready to execute commands: ${error instanceof Error ? error.message : error}`,
+          `Sandbox running but not ready to execute commands: ${error}`,
         );
       }
     },

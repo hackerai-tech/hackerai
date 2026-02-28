@@ -242,10 +242,12 @@ If you are generating files:
                 "[Shell] Sandbox health check failed too many times, marking unavailable",
               );
               const specificMessage = getUserFacingE2BErrorMessage(err);
+              const fallbackMessage =
+                "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.";
               return {
                 output: specificMessage
-                  ? `${specificMessage} Do NOT retry any terminal or sandbox commands.`
-                  : "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+                  ? `${specificMessage} Do NOT retry any terminal or sandbox commands. Inform the user and suggest they delete the sandbox in Settings > Data Controls, or contact HackerAI support.`
+                  : fallbackMessage,
                 error: true,
               };
             }
