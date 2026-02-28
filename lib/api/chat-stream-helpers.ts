@@ -232,12 +232,14 @@ export function writeContextUsage(
   writer.write({ type: "data-context-usage", data: usage });
 }
 
-export interface SummarizationStepResult {
-  needsSummarization: boolean;
-  summarizedMessages?: UIMessage[];
-  summaryText?: string;
-  contextUsage?: ContextUsageData;
-}
+export type SummarizationStepResult =
+  | {
+      needsSummarization: true;
+      summarizedMessages: UIMessage[];
+      summaryText: string;
+      contextUsage?: ContextUsageData;
+    }
+  | { needsSummarization: false };
 
 export async function runSummarizationStep(options: {
   messages: UIMessage[];
@@ -291,7 +293,7 @@ export async function runSummarizationStep(options: {
   return {
     needsSummarization: true,
     summarizedMessages,
-    summaryText: summaryText ?? undefined,
+    summaryText: summaryText ?? "",
     contextUsage,
   };
 }

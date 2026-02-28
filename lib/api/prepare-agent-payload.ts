@@ -32,6 +32,7 @@ import type {
 } from "@/types";
 import type { UserCustomization } from "@/types/user";
 import type { SandboxFile } from "@/lib/utils/sandbox-file-utils";
+import type { PersistedStepSummary } from "@/lib/chat/summarization/step-helpers";
 
 /** Serializable rate limit info for Trigger.dev payload (Date -> ISO string) */
 export type SerializableRateLimitInfo = Omit<
@@ -77,7 +78,7 @@ export type AgentTaskPayload = {
   hasFileAttachments: boolean;
   fileCount: number;
   fileImageCount: number;
-  stepSummary: { text: string; upToToolCallId: string } | null;
+  stepSummary: PersistedStepSummary | null;
 };
 
 function serializeRateLimitInfo(

@@ -16,6 +16,7 @@ import {
   truncateMessagesToTokenLimit,
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
+import type { PersistedStepSummary } from "@/lib/chat/summarization/step-helpers";
 import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
@@ -312,8 +313,7 @@ export async function getMessagesByChatId({
           // Use all fetched messages chronologically as existing
           existingMessages = [...fetchedDesc].reverse();
         } else {
-          // Helper to extract step summary from latestSummary (both fields must be present)
-          const buildStepSummary = () =>
+          const buildStepSummary = (): PersistedStepSummary | null =>
             latestSummary?.step_summary_text &&
             latestSummary?.step_summary_up_to_tool_call_id
               ? {

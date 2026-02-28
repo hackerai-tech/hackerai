@@ -70,6 +70,37 @@ export const createSummarizationCompletedPart = (opts?: {
   },
 });
 
+export type SummarizationEvent = {
+  stepIndex: number;
+  messageSummary?: string;
+  stepSummary?: string;
+};
+
+export function injectSummarizationParts(
+  parts: UIMessagePart<any, any>[],
+  events: SummarizationEvent[],
+): UIMessagePart<any, any>[] {
+  if (events.length === 0) return parts;
+  const result: UIMessagePart<any, any>[] = [];
+  let stepStartCount = 0;
+  for (const part of parts) {
+    if ((part as { type: string }).type === "step-start") {
+      const match = events.find((s) => s.stepIndex === stepStartCount);
+      if (match) {
+        result.push(
+          createSummarizationCompletedPart({
+            messageSummary: match.messageSummary,
+            stepSummary: match.stepSummary,
+          }),
+        );
+      }
+      stepStartCount++;
+    }
+    result.push(part);
+  }
+  return result;
+}
+
 // Unified rate limit warning data types
 export type RateLimitWarningData =
   | {

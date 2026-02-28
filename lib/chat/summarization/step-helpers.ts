@@ -3,6 +3,11 @@ import type { ModelMessage } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { STEP_SUMMARIZATION_PROMPT } from "./prompts";
 
+export type PersistedStepSummary = {
+  text: string;
+  upToToolCallId: string;
+};
+
 /**
  * Splits model messages into three partitions: initial messages, steps to
  * summarize, and recent steps to keep. The split boundary is determined solely
@@ -172,7 +177,6 @@ export function injectPersistedStepSummary(
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
-    // Find first assistant message with tool-call content
     if (
       firstToolCallIndex === -1 &&
       msg.role === "assistant" &&
@@ -190,7 +194,6 @@ export function injectPersistedStepSummary(
       }
     }
 
-    // Find tool-result with matching toolCallId
     if (msg.role === "tool" && Array.isArray(msg.content)) {
       for (const part of msg.content) {
         if (
