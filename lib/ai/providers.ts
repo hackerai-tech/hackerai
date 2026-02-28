@@ -1,5 +1,4 @@
 import { customProvider } from "ai";
-import { xai } from "@ai-sdk/xai";
 import { openrouter } from "@openrouter/ai-sdk-provider";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
@@ -7,7 +6,7 @@ import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-model-free": xai("grok-4-1-fast-non-reasoning"),
+  "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
   "agent-model": openrouter("moonshotai/kimi-k2.5"),
   "model-codex-5.3": openrouter("openai/gpt-5.3-codex"),
   "model-opus-4.6": openrouter("anthropic/claude-opus-4.6"),

@@ -47,7 +47,6 @@
   "dependencies": {
     "@ai-sdk/openai": "^3.0.31",
     "@ai-sdk/react": "^3.0.99",
-    "@ai-sdk/xai": "^3.0.57",
     "@aws-sdk/client-s3": "^3.996.0",
     "@aws-sdk/s3-request-presigner": "^3.996.0",
     "@axiomhq/js": "^1.4.0",
