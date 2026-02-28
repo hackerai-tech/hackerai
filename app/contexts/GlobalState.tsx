@@ -576,6 +576,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     // setInput("");  // Removed - ChatInput will handle draft restoration
     setTodos([]);
     setIsTodoPanelExpanded(false);
+    // Navigating to an existing chat means we're no longer in temporary chat mode
+    setTemporaryChatsEnabled(false);
   }, []);
 
   const initializeNewChat = useCallback(() => {
