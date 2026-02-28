@@ -173,7 +173,7 @@ describe("selectModel", () => {
     });
 
     it("should use selected model override for team users", () => {
-      expect(selectModel("agent", "team", "codex-5.3")).toBe("model-codex-5.3");
+      expect(selectModel("agent", "team", "opus-4.6")).toBe("model-opus-4.6");
     });
 
     it("should work with all selectable models", () => {

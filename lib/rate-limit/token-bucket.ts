@@ -16,7 +16,6 @@ import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
 /** Model pricing: $/1M tokens per model (default used for ask models + kimi k2.5 agent) */
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
-  "model-codex-5.3": { input: 1.75, output: 14.0 },
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-gemini-3.1-pro": { input: 2.0, output: 12.0 },

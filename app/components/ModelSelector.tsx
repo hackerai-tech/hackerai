@@ -44,7 +44,6 @@ const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", thinking: true },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", thinking: true },
   { id: "opus-4.6", label: "Claude Opus 4.6", thinking: true },
-  { id: "codex-5.3", label: "Codex 5.3", thinking: true },
 ];
 
 const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
