@@ -2,6 +2,7 @@ import { query, mutation } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
+import { Doc } from "./_generated/dataModel";
 import { fileCountAggregate } from "./fileAggregate";
 import { MAX_PINNED_CHATS, MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
@@ -917,6 +918,8 @@ export const saveLatestSummary = mutation({
     chatId: v.string(),
     summaryText: v.string(),
     summaryUpToMessageId: v.string(),
+    stepSummaryText: v.optional(v.string()),
+    stepSummaryUpToToolCallId: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -941,9 +944,11 @@ export const saveLatestSummary = mutation({
         summary_up_to_message_id: string;
       }[] = [];
 
+      let oldSummary: Doc<"chat_summaries"> | null = null;
+
       if (chat.latest_summary_id) {
         try {
-          const oldSummary = await ctx.db.get(chat.latest_summary_id);
+          oldSummary = await ctx.db.get(chat.latest_summary_id);
           if (oldSummary) {
             previousSummaries = [
               {
@@ -968,6 +973,11 @@ export const saveLatestSummary = mutation({
         summary_text: args.summaryText,
         summary_up_to_message_id: args.summaryUpToMessageId,
         previous_summaries: previousSummaries,
+        step_summary_text:
+          args.stepSummaryText ?? oldSummary?.step_summary_text,
+        step_summary_up_to_tool_call_id:
+          args.stepSummaryUpToToolCallId ??
+          oldSummary?.step_summary_up_to_tool_call_id,
       });
 
       // Update chat to reference the latest summary (fast ID lookup)
@@ -997,6 +1007,8 @@ export const getLatestSummaryForBackend = query({
     v.object({
       summary_text: v.string(),
       summary_up_to_message_id: v.string(),
+      step_summary_text: v.optional(v.string()),
+      step_summary_up_to_tool_call_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -1024,10 +1036,63 @@ export const getLatestSummaryForBackend = query({
       return {
         summary_text: summary.summary_text,
         summary_up_to_message_id: summary.summary_up_to_message_id,
+        step_summary_text: summary.step_summary_text,
+        step_summary_up_to_tool_call_id:
+          summary.step_summary_up_to_tool_call_id,
       };
     } catch (error) {
       console.error("Failed to get latest summary:", error);
       return null;
     }
+  },
+});
+
+export const saveStepSummaryForBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    stepSummaryText: v.string(),
+    stepSummaryUpToToolCallId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+
+    if (chat.latest_summary_id) {
+      try {
+        await ctx.db.patch(chat.latest_summary_id, {
+          step_summary_text: args.stepSummaryText,
+          step_summary_up_to_tool_call_id: args.stepSummaryUpToToolCallId,
+        });
+      } catch (error) {
+        console.error("Failed to patch step summary:", error);
+      }
+    } else {
+      const summaryId = await ctx.db.insert("chat_summaries", {
+        chat_id: args.chatId,
+        summary_text: "",
+        summary_up_to_message_id: "",
+        step_summary_text: args.stepSummaryText,
+        step_summary_up_to_tool_call_id: args.stepSummaryUpToToolCallId,
+      });
+      await ctx.db.patch(chat._id, {
+        latest_summary_id: summaryId,
+        update_time: Date.now(),
+      });
+    }
+
+    return null;
   },
 });

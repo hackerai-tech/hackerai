@@ -77,6 +77,7 @@ export type AgentTaskPayload = {
   hasFileAttachments: boolean;
   fileCount: number;
   fileImageCount: number;
+  stepSummary: { text: string; upToToolCallId: string } | null;
 };
 
 function serializeRateLimitInfo(
@@ -168,6 +169,7 @@ export async function prepareAgentPayload(
     chat,
     isNewChat,
     fileTokens: fileTokensMap,
+    stepSummary,
   } = await getMessagesByChatId({
     chatId,
     userId,
@@ -292,5 +294,6 @@ export async function prepareAgentPayload(
     hasFileAttachments: hasFileAttachments(truncatedMessages),
     fileCount: fileCounts.totalFiles,
     fileImageCount: fileCounts.imageCount,
+    stepSummary,
   };
 }

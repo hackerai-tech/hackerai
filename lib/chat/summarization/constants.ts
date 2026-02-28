@@ -2,7 +2,7 @@
 export const MESSAGES_TO_KEEP_UNSUMMARIZED = 2;
 
 // Summarize at 90% of token limit to leave buffer for current response
-export const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.1;
+export const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.07;
 
 // Keep last N steps unsummarized during step-level summarization
 export const STEPS_TO_KEEP_UNSUMMARIZED = 2;

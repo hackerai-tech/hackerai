@@ -121,6 +121,107 @@ export function buildStepSummaryModelMessage(
 }
 
 /**
+ * Scans messages backward to find the toolCallId of the last tool-result part.
+ * Returns null if no tool results exist.
+ */
+export function extractLastToolCallId(messages: ModelMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role !== "tool") continue;
+    const content = msg.content;
+    if (!Array.isArray(content)) continue;
+    for (let j = content.length - 1; j >= 0; j--) {
+      const part = content[j];
+      if (
+        typeof part === "object" &&
+        part !== null &&
+        "type" in part &&
+        part.type === "tool-result" &&
+        "toolCallId" in part &&
+        typeof part.toolCallId === "string"
+      ) {
+        return part.toolCallId;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Replaces raw tool-call messages covered by a persisted step summary with
+ * a synthetic summary message. Returns null if the cutoff tool-call ID is
+ * not found or no tool-call assistant messages exist.
+ *
+ * Scans for:
+ *  - The first assistant message whose content contains a `tool-call` part
+ *    (marks the beginning of tool-call messages)
+ *  - The tool-result message whose `toolCallId` matches `upToToolCallId`
+ *    (marks the end of the summarized range)
+ *
+ * Everything from `firstToolCallIndex` through `cutoffIndex` (inclusive) is
+ * replaced with the step summary message.
+ */
+export function injectPersistedStepSummary(
+  messages: ModelMessage[],
+  stepSummaryText: string,
+  upToToolCallId: string,
+): ModelMessage[] | null {
+  let firstToolCallIndex = -1;
+  let cutoffIndex = -1;
+
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+
+    // Find first assistant message with tool-call content
+    if (
+      firstToolCallIndex === -1 &&
+      msg.role === "assistant" &&
+      Array.isArray(msg.content)
+    ) {
+      const hasToolCall = msg.content.some(
+        (part) =>
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "tool-call",
+      );
+      if (hasToolCall) {
+        firstToolCallIndex = i;
+      }
+    }
+
+    // Find tool-result with matching toolCallId
+    if (msg.role === "tool" && Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (
+          typeof part === "object" &&
+          part !== null &&
+          "type" in part &&
+          part.type === "tool-result" &&
+          "toolCallId" in part &&
+          part.toolCallId === upToToolCallId
+        ) {
+          cutoffIndex = i;
+          break;
+        }
+      }
+      if (cutoffIndex !== -1) break;
+    }
+  }
+
+  if (firstToolCallIndex === -1 || cutoffIndex === -1) {
+    return null;
+  }
+
+  const summaryMsg = buildStepSummaryModelMessage(stepSummaryText);
+  return [
+    ...messages.slice(0, firstToolCallIndex),
+    summaryMsg,
+    ...messages.slice(cutoffIndex + 1),
+  ];
+}
+
+/**
  * Result of a step-level summarization attempt.
  * - `summarized: true` → caller should use `messages` as the replacement.
  * - `summarized: false` → nothing to do, caller should fall through.
@@ -131,6 +232,7 @@ export type StepSummarizationResult =
       messages: ModelMessage[];
       stepSummaryText: string;
       lastSummarizedStepCount: number;
+      lastToolCallId: string | null;
     }
   | { summarized: false };
 
@@ -188,5 +290,6 @@ export async function summarizeSteps(opts: {
     messages: [...initialMsgs, stepSummaryMsg, ...stepsToKeepMessages],
     stepSummaryText,
     lastSummarizedStepCount: opts.stepsLength,
+    lastToolCallId: extractLastToolCallId(stepsToSummarizeMessages),
   };
 }

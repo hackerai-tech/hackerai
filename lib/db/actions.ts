@@ -312,9 +312,19 @@ export async function getMessagesByChatId({
           // Use all fetched messages chronologically as existing
           existingMessages = [...fetchedDesc].reverse();
         } else {
-          // Apply summary if it exists (regardless of current mode)
+          // Helper to extract step summary from latestSummary (both fields must be present)
+          const buildStepSummary = () =>
+            latestSummary?.step_summary_text &&
+            latestSummary?.step_summary_up_to_tool_call_id
+              ? {
+                  text: latestSummary.step_summary_text,
+                  upToToolCallId: latestSummary.step_summary_up_to_tool_call_id,
+                }
+              : null;
+
+          // Apply message-level summary if it exists with non-empty text
           // Note: Summaries are only created in agent mode but provide value in any mode
-          if (latestSummary) {
+          if (latestSummary && latestSummary.summary_text) {
             const summaryUpToId = latestSummary.summary_up_to_message_id;
 
             // Find cutoff index once
@@ -365,15 +375,17 @@ export async function getMessagesByChatId({
               chat,
               isNewChat,
               fileTokens: fileTokensFromLoop,
+              stepSummary: buildStepSummary(),
             };
           }
 
-          // No summary injection (ask mode or no summary), return as normal
+          // No message-level summary injection, but step summary may still exist
           return {
             truncatedMessages: truncatedFromLoop,
             chat,
             isNewChat,
             fileTokens: fileTokensFromLoop,
+            stepSummary: buildStepSummary(),
           };
         }
       } catch (error) {
@@ -437,7 +449,7 @@ export async function getMessagesByChatId({
     );
   }
 
-  return { truncatedMessages, chat, isNewChat, fileTokens };
+  return { truncatedMessages, chat, isNewChat, fileTokens, stepSummary: null };
 }
 
 export async function getUserCustomization({ userId }: { userId: string }) {
@@ -688,10 +700,14 @@ export async function saveChatSummary({
   chatId,
   summaryText,
   summaryUpToMessageId,
+  stepSummaryText,
+  stepSummaryUpToToolCallId,
 }: {
   chatId: string;
   summaryText: string;
   summaryUpToMessageId: string;
+  stepSummaryText?: string;
+  stepSummaryUpToToolCallId?: string;
 }) {
   try {
     await convex.mutation(api.chats.saveLatestSummary, {
@@ -699,6 +715,8 @@ export async function saveChatSummary({
       chatId,
       summaryText,
       summaryUpToMessageId,
+      stepSummaryText,
+      stepSummaryUpToToolCallId,
     });
 
     return;
@@ -724,6 +742,30 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
   } catch (error) {
     console.error("[DB Actions] Failed to get latest summary:", error);
     return null;
+  }
+}
+
+export async function saveStepSummary({
+  chatId,
+  stepSummaryText,
+  stepSummaryUpToToolCallId,
+}: {
+  chatId: string;
+  stepSummaryText: string;
+  stepSummaryUpToToolCallId: string;
+}) {
+  try {
+    await convex.mutation(api.chats.saveStepSummaryForBackend, {
+      serviceKey,
+      chatId,
+      stepSummaryText,
+      stepSummaryUpToToolCallId,
+    });
+  } catch (error) {
+    console.error("[DB Actions] Failed to save step summary", {
+      chatId,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

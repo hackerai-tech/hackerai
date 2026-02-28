@@ -21,6 +21,8 @@ const {
   generateStepSummaryText,
   buildStepSummaryModelMessage,
   summarizeSteps,
+  extractLastToolCallId,
+  injectPersistedStepSummary,
 } = require("../step-helpers") as typeof import("../step-helpers");
 
 const makeAssistantMsg = (id: number): ModelMessage => ({
@@ -530,5 +532,224 @@ describe("summarizeSteps", () => {
 
     expect(result.summarized).toBe(false);
     expect(mockGenerateText).not.toHaveBeenCalled();
+  });
+
+  it("includes lastToolCallId in result when summarized", async () => {
+    mockGenerateText.mockResolvedValue({ text: "step summary" });
+    const { messages, initialMsgCount } = buildMessages(10);
+
+    const result = await summarizeSteps({
+      messages,
+      initialModelMessageCount: initialMsgCount,
+      stepsLength: 10,
+      stepsToKeep: 5,
+      lastSummarizedStepCount: 0,
+      existingStepSummary: null,
+    });
+
+    expect(result.summarized).toBe(true);
+    if (!result.summarized) return;
+
+    expect(result).toHaveProperty("lastToolCallId");
+    expect(
+      typeof result.lastToolCallId === "string" ||
+        result.lastToolCallId === null,
+    ).toBe(true);
+  });
+});
+
+const makeAssistantWithToolCall = (id: number): ModelMessage => ({
+  role: "assistant",
+  content: [
+    {
+      type: "tool-call",
+      toolCallId: `call-${id}`,
+      toolName: `tool-${id}`,
+      args: {},
+    },
+  ],
+});
+
+describe("extractLastToolCallId", () => {
+  it.each([
+    {
+      name: "returns correct toolCallId from last tool message in array",
+      messages: (): ModelMessage[] => [
+        makeAssistantMsg(1),
+        makeToolMsg(1),
+        makeAssistantMsg(2),
+        makeToolMsg(2),
+      ],
+      expected: "call-2",
+    },
+    {
+      name: "returns null for empty array",
+      messages: (): ModelMessage[] => [],
+      expected: null,
+    },
+    {
+      name: "returns null for messages with no tool results",
+      messages: (): ModelMessage[] => [makeUserMsg(1), makeAssistantMsg(1)],
+      expected: null,
+    },
+    {
+      name: "returns toolCallId from single tool message",
+      messages: (): ModelMessage[] => [makeAssistantMsg(1), makeToolMsg(5)],
+      expected: "call-5",
+    },
+    {
+      name: "handles mixed messages correctly, picks last tool-result",
+      messages: (): ModelMessage[] => [
+        makeSystemMsg(),
+        makeUserMsg(1),
+        makeAssistantMsg(1),
+        makeToolMsg(1),
+        makeUserMsg(2),
+        makeAssistantMsg(2),
+        makeToolMsg(3),
+      ],
+      expected: "call-3",
+    },
+  ])("$name", ({ messages, expected }) => {
+    expect(extractLastToolCallId(messages())).toBe(expected);
+  });
+});
+
+describe("injectPersistedStepSummary", () => {
+  it("replaces tool messages correctly when cutoff found", () => {
+    const messages: ModelMessage[] = [
+      makeSystemMsg(),
+      makeUserMsg(1),
+      makeAssistantWithToolCall(1),
+      makeToolMsg(1),
+      makeAssistantWithToolCall(2),
+      makeToolMsg(2),
+      makeAssistantWithToolCall(3),
+      makeToolMsg(3),
+    ];
+
+    const result = injectPersistedStepSummary(
+      messages,
+      "persisted summary",
+      "call-2",
+    );
+
+    expect(result).not.toBeNull();
+    if (!result) return;
+
+    // Should contain: initial msgs + summary msg + remaining after cutoff
+    // initial: [system, user] (2)
+    // summary: 1
+    // remaining after cutoff (tool-result call-2): [assistantToolCall(3), toolMsg(3)] (2)
+    expect(result).toHaveLength(5);
+    expect(result[0]).toEqual(makeSystemMsg());
+    expect(result[1]).toEqual(makeUserMsg(1));
+    expect(result[2].role).toBe("user");
+    const summaryContent = result[2].content as Array<{ text: string }>;
+    expect(summaryContent[0].text).toContain("<step_summary>");
+    expect(summaryContent[0].text).toContain("persisted summary");
+    expect(result[3]).toEqual(makeAssistantWithToolCall(3));
+    expect(result[4]).toEqual(makeToolMsg(3));
+  });
+
+  it("returns null when upToToolCallId not found in messages", () => {
+    const messages: ModelMessage[] = [
+      makeSystemMsg(),
+      makeUserMsg(1),
+      makeAssistantWithToolCall(1),
+      makeToolMsg(1),
+    ];
+
+    const result = injectPersistedStepSummary(
+      messages,
+      "summary text",
+      "call-999",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when messages have no tool-call content", () => {
+    const messages: ModelMessage[] = [
+      makeSystemMsg(),
+      makeUserMsg(1),
+      makeAssistantMsg(1),
+      makeUserMsg(2),
+    ];
+
+    const result = injectPersistedStepSummary(
+      messages,
+      "summary text",
+      "call-1",
+    );
+
+    expect(result).toBeNull();
+  });
+
+  it("preserves messages before first tool call and after cutoff", () => {
+    const messages: ModelMessage[] = [
+      makeSystemMsg(),
+      makeUserMsg(1),
+      makeAssistantWithToolCall(1),
+      makeToolMsg(1),
+      makeAssistantWithToolCall(2),
+      makeToolMsg(2),
+      makeAssistantWithToolCall(3),
+      makeToolMsg(3),
+      makeAssistantWithToolCall(4),
+      makeToolMsg(4),
+    ];
+
+    const result = injectPersistedStepSummary(
+      messages,
+      "mid summary",
+      "call-2",
+    );
+
+    expect(result).not.toBeNull();
+    if (!result) return;
+
+    // initial msgs preserved
+    expect(result[0]).toEqual(makeSystemMsg());
+    expect(result[1]).toEqual(makeUserMsg(1));
+
+    // summary msg injected
+    const summaryContent = result[2].content as Array<{ text: string }>;
+    expect(summaryContent[0].text).toContain("mid summary");
+
+    // after cutoff preserved: assistantToolCall(3), toolMsg(3), assistantToolCall(4), toolMsg(4)
+    expect(result[3]).toEqual(makeAssistantWithToolCall(3));
+    expect(result[4]).toEqual(makeToolMsg(3));
+    expect(result[5]).toEqual(makeAssistantWithToolCall(4));
+    expect(result[6]).toEqual(makeToolMsg(4));
+    expect(result).toHaveLength(7);
+  });
+
+  it("handles edge case: cutoff is at the very last tool result message", () => {
+    const messages: ModelMessage[] = [
+      makeSystemMsg(),
+      makeUserMsg(1),
+      makeAssistantWithToolCall(1),
+      makeToolMsg(1),
+      makeAssistantWithToolCall(2),
+      makeToolMsg(2),
+    ];
+
+    const result = injectPersistedStepSummary(
+      messages,
+      "final summary",
+      "call-2",
+    );
+
+    expect(result).not.toBeNull();
+    if (!result) return;
+
+    // initial: [system, user], summary: 1, remaining after last cutoff: nothing
+    expect(result).toHaveLength(3);
+    expect(result[0]).toEqual(makeSystemMsg());
+    expect(result[1]).toEqual(makeUserMsg(1));
+    expect(result[2].role).toBe("user");
+    const summaryContent = result[2].content as Array<{ text: string }>;
+    expect(summaryContent[0].text).toContain("final summary");
   });
 });

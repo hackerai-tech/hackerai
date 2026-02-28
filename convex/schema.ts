@@ -58,6 +58,8 @@ export default defineSchema({
         }),
       ),
     ),
+    step_summary_text: v.optional(v.string()),
+    step_summary_up_to_tool_call_id: v.optional(v.string()),
   }).index("by_chat_id", ["chat_id"]),
 
   messages: defineTable({
