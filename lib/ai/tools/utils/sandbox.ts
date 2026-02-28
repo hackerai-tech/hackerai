@@ -1,5 +1,6 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxContext } from "@/types";
+import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
 const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000; // 15 minutes connection timeout
@@ -83,8 +84,8 @@ export const ensureSandboxConnection = async (
       } catch (e) {
         // Handle specific error cases
         if (
-          e instanceof Error &&
-          (e.name === "NotFoundError" || e.message?.includes("not found"))
+          e instanceof NotFoundError ||
+          (e instanceof Error && e.message?.includes("not found"))
         ) {
           console.error(
             `[${userID}] Sandbox ${existingSandbox.sandboxId} expired/deleted, creating new one`,
@@ -129,6 +130,13 @@ export const ensureSandboxConnection = async (
     return { sandbox };
   } catch (error) {
     console.error("Error creating persistent sandbox:", error);
+
+    // Surface specific error messages for known E2B errors
+    const userMessage = getUserFacingE2BErrorMessage(error);
+    if (userMessage) {
+      throw new Error(userMessage);
+    }
+
     throw new Error(
       `Failed creating persistent sandbox: ${error instanceof Error ? error.message : "Unknown error"}`,
     );

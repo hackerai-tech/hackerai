@@ -2,6 +2,11 @@ import type { AnySandbox } from "@/types";
 import { createRetryLogger } from "@/lib/axiom/worker";
 import { isE2BSandbox } from "./sandbox-types";
 import { retryWithBackoff } from "./retry-with-backoff";
+import {
+  AuthenticationError,
+  TemplateError,
+  InvalidArgumentError,
+} from "./e2b-errors";
 
 const sandboxHealthLogger = createRetryLogger("sandbox-health");
 
@@ -40,8 +45,14 @@ export async function waitForSandboxReady(
           displayName: "",
         } as { timeoutMs: number; displayName?: string });
       } catch (error) {
+        // Re-throw original error to preserve instanceof checks for
+        // isPermanentError (AuthenticationError, TemplateError, etc.)
+        if (error instanceof Error) {
+          error.message = `Sandbox running but not ready to execute commands: ${error.message}`;
+          throw error;
+        }
         throw new Error(
-          `Sandbox running but not ready to execute commands: ${error instanceof Error ? error.message : error}`,
+          `Sandbox running but not ready to execute commands: ${error}`,
         );
       }
     },
@@ -49,7 +60,13 @@ export async function waitForSandboxReady(
       maxRetries,
       baseDelayMs: 1000, // 1s, 2s, 4s, 8s, 16s (~31s total for 5 retries)
       jitterMs: 100,
-      isPermanentError: () => false, // Retry all errors - sandbox might be starting
+      isPermanentError: (error: unknown) => {
+        // Auth and template errors will never recover by retrying health checks
+        if (error instanceof AuthenticationError) return true;
+        if (error instanceof TemplateError) return true;
+        if (error instanceof InvalidArgumentError) return true;
+        return false; // All other errors: keep retrying - sandbox might be starting
+      },
       logger: (message, error) => {
         // Only log final failure (when it gives up) - sends to Axiom when configured
         if (message.includes("failed after")) {
