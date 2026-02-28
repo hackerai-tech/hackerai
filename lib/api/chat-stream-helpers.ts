@@ -294,7 +294,7 @@ export async function runSummarizationStep(options: {
  * Build provider options for streamText
  */
 export function buildProviderOptions(
-  isReasoningModel: boolean,
+  shouldEnableReasoning: boolean,
   subscription: SubscriptionTier,
 ) {
   return {
@@ -303,7 +303,7 @@ export function buildProviderOptions(
       store: false,
     },
     openrouter: {
-      ...(isReasoningModel
+      ...(shouldEnableReasoning
         ? { reasoning: { enabled: true } }
         : { reasoning: { enabled: false } }),
       provider: {

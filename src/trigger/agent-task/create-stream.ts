@@ -81,7 +81,7 @@ export async function createAgentStream(
     ensureSandbox,
     sandboxContext,
     summarizationParts,
-    isReasoningModel,
+    shouldEnableReasoning,
   } = context;
   const { fileTokens } = payload;
 
@@ -147,7 +147,7 @@ export async function createAgentStream(
           : {};
       }
     },
-    providerOptions: buildProviderOptions(isReasoningModel, subscription),
+    providerOptions: buildProviderOptions(shouldEnableReasoning, subscription),
     experimental_transform: smoothStream({ chunking: "word" }),
     stopWhen: [
       stepCountIs(getMaxStepsForUser(mode, subscription)),

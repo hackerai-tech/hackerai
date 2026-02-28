@@ -135,5 +135,6 @@ export async function handleAgentStreamFinish(
       mode: context.payload.mode,
       error,
     });
+    throw error;
   }
 }

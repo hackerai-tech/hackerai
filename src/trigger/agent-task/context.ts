@@ -29,7 +29,7 @@ export type AgentStreamContext = {
   currentSystemPrompt: string;
   configuredModelId: string;
   streamStartTime: number;
-  isReasoningModel: boolean;
+  shouldEnableReasoning: boolean;
   summarizationParts: UIMessagePart<
     Record<string, unknown>,
     Record<string, { input: unknown; output: unknown }>
@@ -84,7 +84,7 @@ export function createAgentStreamContext(
     metadataWriter,
     chatLogger,
     appendMetadata,
-    isReasoningModel: isAgentMode(payload.mode),
+    shouldEnableReasoning: isAgentMode(payload.mode),
     summarizationParts,
     finalMessages: payload.messages,
     activeAssistantMessageId: payload.assistantMessageId,
