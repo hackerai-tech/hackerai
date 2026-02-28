@@ -550,11 +550,7 @@ describe("summarizeSteps", () => {
     expect(result.summarized).toBe(true);
     if (!result.summarized) return;
 
-    expect(result).toHaveProperty("lastToolCallId");
-    expect(
-      typeof result.lastToolCallId === "string" ||
-        result.lastToolCallId === null,
-    ).toBe(true);
+    expect(result.lastToolCallId).toBe("call-5");
   });
 });
 

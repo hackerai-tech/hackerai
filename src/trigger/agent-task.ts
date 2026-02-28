@@ -6,7 +6,6 @@ import {
   stepCountIs,
   streamText,
   smoothStream,
-  UIMessagePart,
 } from "ai";
 import { task } from "@trigger.dev/sdk/v3";
 import { logger } from "@trigger.dev/sdk/v3";
@@ -22,7 +21,8 @@ import {
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
-  createSummarizationCompletedPart,
+  injectSummarizationParts,
+  type SummarizationEvent,
 } from "@/lib/utils/stream-writer-utils";
 import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
@@ -328,39 +328,7 @@ export const agentStreamTask = task({
       let stoppedDueToTokenExhaustion = false;
       let lastStepInputTokens = 0;
       const isReasoningModel = isAgentMode(mode);
-      // Track which step indices triggered summarization (for inline placement with diagnostic text)
-      const summarizationAtSteps: Array<{
-        stepIndex: number;
-        messageSummary?: string;
-        stepSummary?: string;
-      }> = [];
-
-      /** Insert summarization parts inline at the step where they happened */
-      const injectSummarizationParts = (
-        parts: UIMessagePart<any, any>[],
-      ): UIMessagePart<any, any>[] => {
-        if (summarizationAtSteps.length === 0) return parts;
-        const result: UIMessagePart<any, any>[] = [];
-        let stepStartCount = 0;
-        for (const part of parts) {
-          if ((part as { type: string }).type === "step-start") {
-            const match = summarizationAtSteps.find(
-              (s) => s.stepIndex === stepStartCount,
-            );
-            if (match) {
-              result.push(
-                createSummarizationCompletedPart({
-                  messageSummary: match.messageSummary,
-                  stepSummary: match.stepSummary,
-                }),
-              );
-            }
-            stepStartCount++;
-          }
-          result.push(part);
-        }
-        return result;
-      };
+      const summarizationAtSteps: SummarizationEvent[] = [];
       const streamStartTime = Date.now();
       const configuredModelId =
         trackedProvider.languageModel(selectedModel).modelId;
@@ -410,6 +378,16 @@ export const agentStreamTask = task({
                     initialModelMessageCount = injected.length;
                     return { messages: injected };
                   }
+                  logger.warn(
+                    "Persisted step summary could not be injected, toolCallId not found in messages",
+                    {
+                      chatId,
+                      upToToolCallId: stepSummaryLastToolCallId,
+                      messageCount: messages.length,
+                    },
+                  );
+                  stepSummaryText = null;
+                  stepSummaryLastToolCallId = null;
                 }
               }
 
@@ -463,7 +441,13 @@ export const agentStreamTask = task({
                     } catch (stepError) {
                       logger.error(
                         "Step summarization failed, using message-level only",
-                        { error: stepError },
+                        {
+                          error: stepError,
+                          chatId,
+                          mode,
+                          subscription,
+                          stepsCompleted: steps.length,
+                        },
                       );
                     }
                   }
@@ -510,7 +494,13 @@ export const agentStreamTask = task({
                 } catch (stepError) {
                   logger.error(
                     "Standalone step summarization failed, continuing without",
-                    { error: stepError },
+                    {
+                      error: stepError,
+                      chatId,
+                      mode,
+                      subscription,
+                      stepsCompleted: steps.length,
+                    },
                   );
                 }
               }
@@ -706,7 +696,10 @@ export const agentStreamTask = task({
                     summarizationAtSteps.length > 0
                       ? {
                           ...message,
-                          parts: injectSummarizationParts(message.parts || []),
+                          parts: injectSummarizationParts(
+                            message.parts || [],
+                            summarizationAtSteps,
+                          ),
                         }
                       : message;
                   await saveMessage({

@@ -6,7 +6,6 @@ import {
   stepCountIs,
   streamText,
   UIMessage,
-  UIMessagePart,
   smoothStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
@@ -80,7 +79,8 @@ import { createResumableStreamContext } from "resumable-stream";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
-  createSummarizationCompletedPart,
+  injectSummarizationParts,
+  type SummarizationEvent,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -338,39 +338,7 @@ export const createChatHandler = (
         },
       });
 
-      // Track which step indices triggered summarization (for inline placement with diagnostic text)
-      const summarizationAtSteps: Array<{
-        stepIndex: number;
-        messageSummary?: string;
-        stepSummary?: string;
-      }> = [];
-
-      /** Insert summarization parts inline at the step where they happened */
-      const injectSummarizationParts = (
-        parts: UIMessagePart<any, any>[],
-      ): UIMessagePart<any, any>[] => {
-        if (summarizationAtSteps.length === 0) return parts;
-        const result: UIMessagePart<any, any>[] = [];
-        let stepStartCount = 0;
-        for (const part of parts) {
-          if ((part as { type: string }).type === "step-start") {
-            const match = summarizationAtSteps.find(
-              (s) => s.stepIndex === stepStartCount,
-            );
-            if (match) {
-              result.push(
-                createSummarizationCompletedPart({
-                  messageSummary: match.messageSummary,
-                  stepSummary: match.stepSummary,
-                }),
-              );
-            }
-            stepStartCount++;
-          }
-          result.push(part);
-        }
-        return result;
-      };
+      const summarizationAtSteps: SummarizationEvent[] = [];
 
       // Start stream timing
       chatLogger.startStream();
@@ -497,7 +465,7 @@ export const createChatHandler = (
           }
 
           let streamFinishReason: string | undefined;
-          // finalMessages will be set in prepareStep if summarization is needed
+          // Base messages for streamText; prepareStep may return modified messages per-step
           let finalMessages = processedMessages;
           let summarizationCount = 0;
           let stepSummaryText: string | null = stepSummary?.text ?? null;
@@ -570,6 +538,16 @@ export const createChatHandler = (
                         initialModelMessageCount = injected.length;
                         return { messages: injected };
                       }
+                      nextJsAxiomLogger.warn(
+                        "Persisted step summary could not be injected, toolCallId not found in messages",
+                        {
+                          chatId,
+                          upToToolCallId: stepSummaryLastToolCallId,
+                          messageCount: messages.length,
+                        },
+                      );
+                      stepSummaryText = null;
+                      stepSummaryLastToolCallId = null;
                     }
                   }
 
@@ -596,10 +574,7 @@ export const createChatHandler = (
                       providerInputTokens: lastStepInputTokens,
                     });
 
-                    if (
-                      result.needsSummarization &&
-                      result.summarizedMessages
-                    ) {
+                    if (result.needsSummarization) {
                       summarizationCount++;
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
@@ -1000,6 +975,7 @@ export const createChatHandler = (
                                       ...msg,
                                       parts: injectSummarizationParts(
                                         msg.parts || [],
+                                        summarizationAtSteps,
                                       ),
                                     }
                                   : msg;
@@ -1242,7 +1218,10 @@ export const createChatHandler = (
                       summarizationAtSteps.length > 0
                         ? {
                             ...message,
-                            parts: injectSummarizationParts(message.parts),
+                            parts: injectSummarizationParts(
+                              message.parts,
+                              summarizationAtSteps,
+                            ),
                           }
                         : message;
 
