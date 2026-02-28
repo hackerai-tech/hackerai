@@ -131,6 +131,11 @@ export function useAgentLongStream(
   serverMessagesRef.current = serverMessages;
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  // Retry detection: track the last seen streaming message ID so we can detect
+  // when a retry changes it (accumulateChunksToMessage resets on a second `start` chunk).
+  const prevStreamingIdRef = useRef<string | null>(null);
+  // When retry is detected but serverMessages hasn't updated yet, defer the base snap.
+  const retryBaseNeedsUpdateRef = useRef(false);
 
   // Terminal streaming: collect data-terminal events from metadataStream
   // so they can be injected into the accumulated message's parts for
@@ -419,6 +424,8 @@ export function useAgentLongStream(
     if (!triggerRun) {
       setTriggerAssistantMessage(null);
       cachedAccumulatedMsgRef.current = null;
+      prevStreamingIdRef.current = null;
+      retryBaseNeedsUpdateRef.current = false;
       return;
     }
     if (aiParts.length === 0) {
@@ -447,6 +454,24 @@ export function useAgentLongStream(
           cachedAccumulatedMsgRef.current = msg;
           cachedAiPartsRef.current = aiParts;
         }
+
+        // Retry detection: accumulateChunksToMessage resets on a second `start` chunk,
+        // which causes msg.id to change mid-stream. Update base messages with the latest
+        // server messages (which by now include the partial saved by catchError).
+        const currentId = msg.id;
+        const prevId = prevStreamingIdRef.current;
+        if (prevId !== null && prevId !== currentId) {
+          const latest = serverMessagesRef.current;
+          if (latest.length > 0) {
+            setTriggerBaseAndUserMessages(latest);
+            retryBaseNeedsUpdateRef.current = false;
+          } else {
+            // serverMessages hasn't propagated yet; defer to the effect below
+            retryBaseNeedsUpdateRef.current = true;
+          }
+        }
+        prevStreamingIdRef.current = currentId;
+
         // Inject terminal data parts from metadata stream for live streaming display.
         // Avoid triple spread: reuse msg.parts when no terminal parts; otherwise one concat.
         const terminalParts = terminalPartsRef.current;
@@ -468,6 +493,15 @@ export function useAgentLongStream(
 
     update();
   }, [triggerRun, aiParts, terminalDataGeneration]);
+
+  // Deferred retry base update: fires when serverMessages propagates after a retry was detected
+  // but serverMessages was empty at detection time.
+  useEffect(() => {
+    if (!triggerRun || !retryBaseNeedsUpdateRef.current) return;
+    if (serverMessages.length === 0) return;
+    setTriggerBaseAndUserMessages(serverMessages);
+    retryBaseNeedsUpdateRef.current = false;
+  }, [serverMessages, triggerRun]);
 
   useEffect(() => {
     if (!triggerRun || triggerStatus !== "ready") return;
@@ -606,6 +640,8 @@ export function useAgentLongStream(
         }
         const { runId, publicAccessToken } = await res.json();
         skipPaginatedSyncUntilRef.current = 0;
+        prevStreamingIdRef.current = null;
+        retryBaseNeedsUpdateRef.current = false;
         setTriggerRun({ runId, publicAccessToken });
         setTriggerBaseAndUserMessages(fullMessages as ChatMessage[]);
         setTriggerAssistantMessage(null);
@@ -691,7 +727,12 @@ export function useAgentLongStream(
   const displayMessages =
     triggerRun !== null
       ? [
-          ...triggerBaseAndUserMessages,
+          // Exclude any base message whose ID matches the live streaming message to prevent
+          // duplicate keys when the base already contains a persisted version of it
+          // (e.g. reconnect after retry where serverMessages includes the partial message).
+          ...triggerBaseAndUserMessages.filter(
+            (m) => m.id !== triggerAssistantMessage?.id,
+          ),
           ...(triggerAssistantMessage ? [triggerAssistantMessage] : []),
         ]
       : messages; // Return parent messages instead of empty array to prevent UI flash

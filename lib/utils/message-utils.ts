@@ -1,3 +1,6 @@
+import type { ChatMessage } from "@/types";
+import { ERROR_NOTICE_MARKER } from "@/lib/constants/error-notice";
+
 /**
  * Utility functions for processing message parts
  */
@@ -96,3 +99,42 @@ export const extractWebSourcesFromMessage = (message: {
 
   return sources;
 };
+
+/**
+ * Merges consecutive assistant messages where the first contains the connection-interrupted
+ * marker (saved by trigger catchError before retry). Returns a new array with merged pairs
+ * collapsed into single messages, using the continuation message's id and metadata.
+ */
+export function mergeInterruptedAssistantMessages(
+  messages: ChatMessage[],
+): ChatMessage[] {
+  const result: ChatMessage[] = [];
+
+  for (let i = 0; i < messages.length; i++) {
+    const curr = messages[i];
+    const next = messages[i + 1];
+
+    if (
+      curr.role === "assistant" &&
+      next?.role === "assistant" &&
+      extractMessageText(curr.parts).includes(ERROR_NOTICE_MARKER)
+    ) {
+      const merged: ChatMessage = {
+        ...next,
+        id: next.id,
+        parts: [...curr.parts, ...next.parts],
+        fileDetails: next.fileDetails?.length
+          ? next.fileDetails
+          : curr.fileDetails,
+        metadata: next.metadata,
+        sourceMessageId: next.sourceMessageId,
+      };
+      result.push(merged);
+      i += 1; // skip next in next iteration
+    } else {
+      result.push(curr);
+    }
+  }
+
+  return result;
+}
