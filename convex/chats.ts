@@ -950,11 +950,17 @@ export const saveLatestSummary = mutation({
         try {
           oldSummary = await ctx.db.get(chat.latest_summary_id);
           if (oldSummary) {
+            const oldEntries = oldSummary.summary_text
+              ? [
+                  {
+                    summary_text: oldSummary.summary_text,
+                    summary_up_to_message_id:
+                      oldSummary.summary_up_to_message_id,
+                  },
+                ]
+              : [];
             previousSummaries = [
-              {
-                summary_text: oldSummary.summary_text,
-                summary_up_to_message_id: oldSummary.summary_up_to_message_id,
-              },
+              ...oldEntries,
               ...(oldSummary.previous_summaries ?? []),
             ].slice(0, MAX_PREVIOUS_SUMMARIES);
           }
@@ -1071,14 +1077,10 @@ export const saveStepSummaryForBackend = mutation({
     }
 
     if (chat.latest_summary_id) {
-      try {
-        await ctx.db.patch(chat.latest_summary_id, {
-          step_summary_text: args.stepSummaryText,
-          step_summary_up_to_tool_call_id: args.stepSummaryUpToToolCallId,
-        });
-      } catch (error) {
-        console.error("Failed to patch step summary:", error);
-      }
+      await ctx.db.patch(chat.latest_summary_id, {
+        step_summary_text: args.stepSummaryText,
+        step_summary_up_to_tool_call_id: args.stepSummaryUpToToolCallId,
+      });
     } else {
       const summaryId = await ctx.db.insert("chat_summaries", {
         chat_id: args.chatId,

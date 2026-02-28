@@ -1,7 +1,8 @@
 // Keep last N messages unsummarized for context
 export const MESSAGES_TO_KEEP_UNSUMMARIZED = 2;
 
-// Summarize at 90% of token limit to leave buffer for current response
+// Fraction of the model's max token limit used as the summarization trigger.
+// Summarization fires when total token usage exceeds this percentage of the limit (i.e. 7%).
 export const SUMMARIZATION_THRESHOLD_PERCENTAGE = 0.07;
 
 // Keep last N steps unsummarized during step-level summarization
