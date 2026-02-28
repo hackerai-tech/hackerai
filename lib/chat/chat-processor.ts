@@ -323,6 +323,51 @@ export function limitImageParts(messages: UIMessage[]): UIMessage[] {
   });
 }
 
+/**
+ * Checks if the selected model is an Anthropic model (Claude).
+ * Anthropic models have strict signature validation on thinking blocks.
+ */
+function isAnthropicModel(modelName: ModelName): boolean {
+  return modelName.includes("opus") || modelName.includes("sonnet");
+}
+
+/**
+ * Strips providerMetadata from all parts in all messages.
+ * Anthropic models require valid signatures on thinking blocks, and signatures
+ * from other models (or different Anthropic models) cause "Invalid signature in
+ * thinking block" 400 errors. Stripping providerMetadata removes these signatures.
+ * Only applied for Anthropic models — other providers (e.g., Gemini) need
+ * providerMetadata/thought_signature for tool calling to work.
+ */
+function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
+  return messages.map((message) => {
+    if (!message.parts) return message;
+
+    let hasChanges = false;
+    const cleanedParts = message.parts.map((part: any) => {
+      if (
+        part.providerMetadata ||
+        part.callProviderMetadata ||
+        part.providerExecuted ||
+        part.providerOptions
+      ) {
+        hasChanges = true;
+        const {
+          providerMetadata,
+          callProviderMetadata,
+          providerExecuted,
+          providerOptions,
+          ...rest
+        } = part;
+        return rest;
+      }
+      return part;
+    });
+
+    return hasChanges ? { ...message, parts: cleanedParts } : message;
+  });
+}
+
 // UI-only part types that should not be sent to AI providers
 const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
 
@@ -410,13 +455,20 @@ export async function processChatMessages({
     messagesWithFixedTools,
   );
 
-  // Strip originalContent from file edit outputs (large data not needed by model)
-  const cleanedMessages = stripOriginalContentFromMessages(
-    messagesWithoutDuplicates,
-  );
-
-  // Select the appropriate model
+  // Select the appropriate model early so we can make model-aware decisions below
   const selectedModel = selectModel(mode, subscription, modelOverride);
+
+  // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
+  // Anthropic requires valid signatures on thinking blocks, and signatures from other
+  // models (or different Anthropic models) cause "Invalid signature in thinking block"
+  // 400 errors. Other providers (e.g., Gemini) need providerMetadata for tool calling,
+  // so we only strip it when targeting Anthropic.
+  const sanitizedMessages = isAnthropicModel(selectedModel)
+    ? stripProviderMetadata(messagesWithoutDuplicates)
+    : messagesWithoutDuplicates;
+
+  // Strip originalContent from file edit outputs (large data not needed by model)
+  const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(
