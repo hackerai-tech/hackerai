@@ -8,28 +8,24 @@ interface Note {
 }
 
 /**
- * Generate the notes section for the system prompt
- * Only "general" category notes are passed here (filtered by getNotesForBackend)
- * Other categories must be retrieved via the list_notes tool
+ * Static message for the system prompt when notes are disabled.
+ * This is stable across the session and safe for prompt caching.
  */
-export const generateNotesSection = (
-  notes: Note[] | null,
-  shouldIncludeNotes: boolean = true,
-): string => {
-  const disabledNotesMessage = `<notes>
+export const getNotesDisabledMessage = (): string => `<notes>
 The notes tool is disabled. Do not use it.
 If the user explicitly asks you to save a note, politely ask them to go to **Settings > Personalization > Notes** to enable notes.
 </notes>`;
 
-  if (!shouldIncludeNotes) {
-    return disabledNotesMessage;
-  }
-
+/**
+ * Generate the notes section for injection via system-reminder in messages.
+ * Only "general" category notes are passed here (filtered by getNotesForBackend).
+ * Other categories must be retrieved via the list_notes tool.
+ */
+export const generateNotesSection = (notes: Note[] | null): string => {
   if (!notes || notes.length === 0) {
     return "";
   }
 
-  // Format notes for the system prompt
   const notesContent = notes
     .map((note) => {
       const date = new Date(note.updated_at).toISOString().split("T")[0];

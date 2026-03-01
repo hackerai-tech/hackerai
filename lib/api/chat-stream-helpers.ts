@@ -14,6 +14,9 @@ import {
   checkAndSummarizeIfNeeded,
   type EnsureSandbox,
 } from "@/lib/chat/summarization";
+import { getNotes } from "@/lib/db/actions";
+import { generateNotesSection } from "@/lib/system-prompt/notes";
+import { logger } from "@/lib/logger";
 
 /**
  * Check if messages contain file attachments
@@ -347,4 +350,123 @@ export function appendSystemReminderToLastUserMessage(
     }
   }
   return result;
+}
+
+/**
+ * Fetches user notes and injects them into messages via <system-reminder>.
+ * Returns the (possibly updated) messages array.
+ */
+export async function injectNotesIntoMessages(
+  messages: UIMessage[],
+  opts: {
+    userId: string;
+    subscription: SubscriptionTier;
+    shouldIncludeNotes: boolean;
+    isTemporary?: boolean;
+  },
+): Promise<UIMessage[]> {
+  if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
+
+  const notes = await getNotes({
+    userId: opts.userId,
+    subscription: opts.subscription,
+  });
+  const notesContent = generateNotesSection(notes);
+  if (!notesContent) return messages;
+
+  logger.warn("Notes injected via system-reminder", {
+    userId: opts.userId,
+    noteCount: notes?.length ?? 0,
+  });
+
+  return appendSystemReminderToLastUserMessage(messages, notesContent);
+}
+
+// Regex to match a system-reminder block that contains <notes>.
+// Uses \s* instead of literal \n so it stays in sync even if the
+// template strings in appendSystemReminderToLastUserMessage or
+// generateNotesSection change their whitespace slightly.
+const NOTES_REMINDER_REGEX =
+  /<system-reminder>\s*<notes>[\s\S]*?<\/notes>\s*<\/system-reminder>/;
+
+/**
+ * Replaces the notes <system-reminder> block inside a text string.
+ * Returns the original string unchanged if no notes block is found.
+ */
+export function replaceNotesBlock(
+  text: string,
+  newNotesContent: string,
+): string {
+  if (NOTES_REMINDER_REGEX.test(text)) {
+    return newNotesContent
+      ? text.replace(
+          NOTES_REMINDER_REGEX,
+          `<system-reminder>\n${newNotesContent}\n</system-reminder>`,
+        )
+      : text.replace(NOTES_REMINDER_REGEX, "");
+  }
+  return text;
+}
+
+/**
+ * Updates the notes system-reminder within model messages (CoreMessage[])
+ * from prepareStep. Preserves full conversation history (tool calls, results,
+ * assistant messages) — only the notes content is replaced.
+ *
+ * Searches backwards for the last user message containing a notes block
+ * and replaces its content with the freshly-fetched notes.
+ */
+export async function refreshNotesInModelMessages(
+  messages: Array<Record<string, unknown>>,
+  opts: {
+    userId: string;
+    subscription: SubscriptionTier;
+    shouldIncludeNotes: boolean;
+    isTemporary?: boolean;
+  },
+): Promise<Array<Record<string, unknown>>> {
+  if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
+
+  const notes = await getNotes({
+    userId: opts.userId,
+    subscription: opts.subscription,
+  });
+  const newNotesContent = generateNotesSection(notes);
+
+  logger.warn("Notes refreshed in model messages (prepareStep)", {
+    userId: opts.userId,
+    noteCount: notes?.length ?? 0,
+  });
+
+  // Walk backwards to find the user message with the notes block
+  const result = [...messages];
+  for (let i = result.length - 1; i >= 0; i--) {
+    const msg = result[i];
+    if (msg.role !== "user") continue;
+
+    const content = msg.content;
+
+    if (typeof content === "string") {
+      const updated = replaceNotesBlock(content, newNotesContent);
+      if (updated !== content) {
+        result[i] = { ...msg, content: updated };
+        return result;
+      }
+    } else if (Array.isArray(content)) {
+      const parts = [...(content as Array<Record<string, unknown>>)];
+      for (let j = 0; j < parts.length; j++) {
+        if (parts[j].type !== "text") continue;
+        const text = parts[j].text as string;
+        const updated = replaceNotesBlock(text, newNotesContent);
+        if (updated !== text) {
+          parts[j] = { ...parts[j], text: updated };
+          result[i] = { ...msg, content: parts };
+          return result;
+        }
+      }
+    }
+  }
+
+  // No existing notes block found — nothing to replace
+  return messages;
 }
