@@ -43,6 +43,16 @@ export const NO_SUMMARIZATION = (
 export const getSummarizationPrompt = (mode: ChatMode): string =>
   mode === "agent" ? AGENT_SUMMARIZATION_PROMPT : ASK_SUMMARIZATION_PROMPT;
 
+/**
+ * Strips `<analysis>...</analysis>` blocks from LLM output.
+ * The analysis is used for chain-of-thought during summarization but should
+ * not be persisted or re-injected into the conversation.
+ */
+export function stripAnalysisTags(text: string): string {
+  const stripped = text.replace(/<analysis>[\s\S]*?<\/analysis>\s*/g, "");
+  return stripped.trim() || text.trim();
+}
+
 export const isAboveTokenThreshold = (
   uiMessages: UIMessage[],
   subscription: SubscriptionTier,
@@ -121,11 +131,11 @@ export const generateSummaryText = async (
       {
         role: "user",
         content:
-          "Summarize the above conversation using the structured format specified in your instructions. Output ONLY the summary — do not continue the conversation or role-play as the assistant.",
+          "Summarize the above conversation using the structured format specified in your instructions. First analyze chronologically in <analysis> tags, then output the structured summary. Do not continue the conversation or role-play as the assistant.",
       },
     ],
   });
-  return result.text;
+  return stripAnalysisTags(result.text);
 };
 
 export const buildSummaryMessage = (

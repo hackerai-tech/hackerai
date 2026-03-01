@@ -179,7 +179,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(result.needsSummarization).toBe(true);
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
-        system: expect.stringContaining("security agent"),
+        system: expect.stringContaining("security assessment agent"),
       }),
     );
   });

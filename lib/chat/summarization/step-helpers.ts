@@ -2,6 +2,7 @@ import { generateText } from "ai";
 import type { ModelMessage } from "ai";
 import { myProvider } from "@/lib/ai/providers";
 import { STEP_SUMMARIZATION_PROMPT } from "./prompts";
+import { stripAnalysisTags } from "./helpers";
 
 export type PersistedStepSummary = {
   text: string;
@@ -97,12 +98,12 @@ export async function generateStepSummaryText(
       {
         role: "user",
         content:
-          "Summarize the above agent steps using the structured format specified in your instructions. Output ONLY the summary — do not continue the conversation or produce tool calls.",
+          "Summarize the above agent steps using the structured format specified in your instructions. First analyze the steps chronologically in <analysis> tags, then output the structured summary. Do not continue the conversation or produce tool calls.",
       },
     ],
   });
 
-  return result.text;
+  return stripAnalysisTags(result.text);
 }
 
 /**
