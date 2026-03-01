@@ -392,7 +392,8 @@ async function executeGrep(
   const regexB64 = Buffer.from(regex).toString("base64");
 
   // Use a generous line buffer — post-processing enforces the actual match cap
-  const cmd = `PATTERN=$(${base64DecodeExpr(regexB64)}) && ${rgArgs.join(" ")} -e "$PATTERN" '${safeBaseDir}' 2>'${errFile}' | head -${GREP_LINE_BUFFER}`;
+  // Note: space after $( prevents bash from parsing "$((echo" as arithmetic expansion
+  const cmd = `PATTERN=$( ${base64DecodeExpr(regexB64)} ) && ${rgArgs.join(" ")} -e "$PATTERN" '${safeBaseDir}' 2>'${errFile}' | head -${GREP_LINE_BUFFER}`;
 
   const result = await sandbox.commands.run(cmd, {
     timeoutMs: COMMAND_TIMEOUT_MS,
