@@ -715,6 +715,16 @@ export const createChatHandler = (
                       );
                       if (injected) {
                         effectiveMessages = injected;
+                      } else {
+                        nextJsAxiomLogger.warn(
+                          "Step summary re-injection failed, toolCallId not found in messages",
+                          {
+                            chatId,
+                            stepIndex: steps.length,
+                            upToToolCallId: stepSummaryLastToolCallId,
+                            messageCount: messages.length,
+                          },
+                        );
                       }
                     }
 
@@ -1295,11 +1305,18 @@ export const createChatHandler = (
                   // Persist step summary if accumulated during this run
                   if (stepSummaryText && stepSummaryLastToolCallId) {
                     stepStart = Date.now();
-                    await saveStepSummary({
-                      chatId,
-                      stepSummaryText,
-                      stepSummaryUpToToolCallId: stepSummaryLastToolCallId,
-                    });
+                    try {
+                      await saveStepSummary({
+                        chatId,
+                        stepSummaryText,
+                        stepSummaryUpToToolCallId: stepSummaryLastToolCallId,
+                      });
+                    } catch (error) {
+                      console.error(
+                        "[onFinish] Failed to save step summary:",
+                        error,
+                      );
+                    }
                     logStep("save_step_summary", stepStart);
                   }
 

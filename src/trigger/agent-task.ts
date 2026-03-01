@@ -334,6 +334,7 @@ export const agentStreamTask = task({
       let lastStepInputTokens = 0;
       const isReasoningModel = isAgentMode(mode);
       const summarizationAtSteps: SummarizationEvent[] = [];
+      const abortController = new AbortController();
       const streamStartTime = Date.now();
       const configuredModelId =
         trackedProvider.languageModel(selectedModel).modelId;
@@ -433,6 +434,7 @@ export const agentStreamTask = task({
                           stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
                           lastSummarizedStepCount,
                           existingStepSummary: stepSummaryText,
+                          abortSignal: abortController.signal,
                           summarizedInitialMessages:
                             await convertToModelMessages(summarizedMessages),
                         });
@@ -449,6 +451,9 @@ export const agentStreamTask = task({
                           return { messages: stepResult.messages };
                         }
                       } catch (stepError) {
+                        if (abortController.signal.aborted) {
+                          throw stepError;
+                        }
                         logger.error(
                           "Step summarization failed, using message-level only",
                           {
@@ -494,6 +499,7 @@ export const agentStreamTask = task({
                       stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
                       lastSummarizedStepCount,
                       existingStepSummary: stepSummaryText,
+                      abortSignal: abortController.signal,
                     });
                     if (stepResult.summarized) {
                       stepSummaryText = stepResult.stepSummaryText;
@@ -507,6 +513,9 @@ export const agentStreamTask = task({
                       return { messages: stepResult.messages };
                     }
                   } catch (stepError) {
+                    if (abortController.signal.aborted) {
+                      throw stepError;
+                    }
                     logger.error(
                       "Standalone step summarization failed, continuing without",
                       {
@@ -530,6 +539,16 @@ export const agentStreamTask = task({
                   );
                   if (injected) {
                     effectiveMessages = injected;
+                  } else {
+                    logger.warn(
+                      "Step summary re-injection failed, toolCallId not found in messages",
+                      {
+                        chatId,
+                        stepIndex: steps.length,
+                        upToToolCallId: stepSummaryLastToolCallId,
+                        messageCount: messages.length,
+                      },
+                    );
                   }
                 }
 
@@ -760,11 +779,18 @@ export const agentStreamTask = task({
 
                 // Persist step summary if accumulated during this run
                 if (stepSummaryText && stepSummaryLastToolCallId) {
-                  await saveStepSummary({
-                    chatId,
-                    stepSummaryText,
-                    stepSummaryUpToToolCallId: stepSummaryLastToolCallId,
-                  });
+                  try {
+                    await saveStepSummary({
+                      chatId,
+                      stepSummaryText,
+                      stepSummaryUpToToolCallId: stepSummaryLastToolCallId,
+                    });
+                  } catch (error) {
+                    console.error(
+                      "[onFinish] Failed to save step summary:",
+                      error,
+                    );
+                  }
                 }
 
                 sendFileMetadataToStream(accumulatedFiles);

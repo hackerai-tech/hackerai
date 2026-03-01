@@ -766,6 +766,10 @@ export async function saveStepSummary({
       chatId,
       error: error instanceof Error ? error.message : String(error),
     });
+    throw new ChatSDKError(
+      "bad_request:database",
+      error instanceof Error ? error.message : "Failed to save step summary",
+    );
   }
 }
 

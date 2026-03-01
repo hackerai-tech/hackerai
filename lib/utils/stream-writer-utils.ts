@@ -49,9 +49,11 @@ export function logPrepareStepMessages(
     lines.push(`  ${m.role} (${msgChars}c ~${tokens}t): ${truncated}`);
   }
   const totalTokens = Math.round(totalChars / 4);
-  console.log(
-    `[prepareStep] step=${step} ${phase} msgs=${messages.length} total=${totalChars}c ~${totalTokens}t\n${lines.join("\n")}`,
-  );
+  if (process.env.DEBUG_PREPARE_STEP) {
+    console.log(
+      `[prepareStep] step=${step} ${phase} msgs=${messages.length} total=${totalChars}c ~${totalTokens}t\n${lines.join("\n")}`,
+    );
+  }
 }
 
 // Upload status notifications
