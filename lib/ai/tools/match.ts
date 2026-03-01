@@ -443,13 +443,14 @@ async function executeGrep(
     timeoutMs: COMMAND_TIMEOUT_MS,
   });
 
+  // mtimeSortPipeline() already strips timestamps via `cut -d" " -f2-`,
+  // so each line is just a filepath — push directly.
   const fileOrder: string[] = [];
   for (const line of String(statResult?.stdout ?? "")
     .trim()
     .split("\n")) {
     if (!line) continue;
-    const spaceIdx = line.indexOf(" ");
-    if (spaceIdx > 0) fileOrder.push(line.slice(spaceIdx + 1));
+    fileOrder.push(line);
   }
   // Append any files that stat couldn't resolve (defensive)
   for (const f of filePaths) {
