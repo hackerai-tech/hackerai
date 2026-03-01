@@ -113,6 +113,15 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
       isToolPart && part.state === "result" && part.result !== undefined;
 
     if (isIncomplete || hasWrongFormat) {
+      // If the tool never executed (input-streaming or input-available), remove it entirely.
+      // These tools were interrupted before producing any output, so there's nothing real
+      // to report. Keeping them with fabricated output pollutes the conversation history.
+      // This also prevents "must have at least one content element" errors from providers
+      // like xAI/Grok when the conversation is resumed with empty tool args.
+      if (isIncomplete && part.output == null && part.result == null) {
+        return null; // Mark for removal in second pass
+      }
+
       // Custom tool-xxx format uses state: "output-available" with output property
       // Convert result to output if it exists (legacy data migration)
       const output = part.output ?? part.result;
@@ -126,10 +135,22 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
     return part;
   });
 
-  // Second pass: remove incomplete reasoning and the step-start before it
+  // Second pass: remove incomplete reasoning, removed tool parts, and their preceding step-starts
   const filteredParts: any[] = [];
   for (let i = 0; i < partsWithFixedTools.length; i++) {
     const part = partsWithFixedTools[i];
+
+    // Skip tool parts marked for removal (interrupted before receiving input)
+    if (part === null) {
+      // Remove the step-start that immediately precedes this tool (if any)
+      if (
+        filteredParts.length > 0 &&
+        filteredParts[filteredParts.length - 1].type === "step-start"
+      ) {
+        filteredParts.pop();
+      }
+      continue;
+    }
 
     // Check if this is an incomplete reasoning part
     const isIncompleteReasoning =

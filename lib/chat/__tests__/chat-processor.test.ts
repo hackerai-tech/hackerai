@@ -4,6 +4,7 @@ import {
   limitImageParts,
   selectModel,
   getMaxStepsForUser,
+  fixIncompleteMessageParts,
 } from "../chat-processor";
 
 function makeFilePart(id: string, mediaType = "image/png") {
@@ -241,5 +242,142 @@ describe("getMaxStepsForUser", () => {
     expect(getMaxStepsForUser("ask", "pro")).toBe(15);
     expect(getMaxStepsForUser("ask", "ultra")).toBe(15);
     expect(getMaxStepsForUser("ask", "team")).toBe(15);
+  });
+});
+
+// ==========================================================================
+// fixIncompleteMessageParts - Fixing incomplete tool invocations on abort
+// ==========================================================================
+describe("fixIncompleteMessageParts", () => {
+  it("should not modify already-complete tool parts", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "output-available",
+        input: { title: "Test" },
+        output: { message: "Created" },
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    expect(result).toEqual(parts);
+  });
+
+  it("should remove incomplete tool with input but no output", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "input-available",
+        input: { title: "Test", content: "Content" },
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    // Tool never executed (no output), so remove it and its step-start
+    expect(result).toHaveLength(0);
+  });
+
+  it("should remove tool parts with input-streaming and no input", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "input-streaming",
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    expect(result).toHaveLength(0);
+  });
+
+  it("should remove tool parts with undefined input", () => {
+    const parts = [
+      { type: "text", text: "Let me help" },
+      { type: "step-start" },
+      {
+        type: "tool-file",
+        toolCallId: "call_2",
+        state: "input-streaming",
+        input: undefined,
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    // Text should remain, step-start and tool should be removed
+    expect(result).toHaveLength(1);
+    expect(result[0].type).toBe("text");
+  });
+
+  it("should remove incomplete tool with partial input but no output", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "input-streaming",
+        input: { title: "Partial" },
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    // Tool never produced output, so remove entirely
+    expect(result).toHaveLength(0);
+  });
+
+  it("should handle mixed complete and incomplete parts", () => {
+    const parts = [
+      { type: "step-start" },
+      { type: "text", text: "I'll create a note" },
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "output-available",
+        input: { title: "Done" },
+        output: { message: "Created" },
+      },
+      { type: "step-start" },
+      {
+        type: "tool-file",
+        toolCallId: "call_2",
+        state: "input-streaming",
+        // No input - interrupted
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    // Should keep first step-start, text, and completed tool; remove second step-start and incomplete tool
+    expect(result).toHaveLength(3);
+    expect(result[0].type).toBe("step-start");
+    expect(result[1].type).toBe("text");
+    expect(result[2].type).toBe("tool-create_note");
+    expect(result[2].state).toBe("output-available");
+  });
+
+  it("should preserve existing output on incomplete tool with input", () => {
+    const parts = [
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "input-available",
+        input: { title: "Test" },
+        output: { message: "Partial result" },
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    expect(result[0].state).toBe("output-available");
+    expect(result[0].output).toEqual({ message: "Partial result" });
+  });
+
+  it("should preserve error tool parts", () => {
+    const parts = [
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "output-error",
+        errorText: "Something went wrong",
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    expect(result).toHaveLength(1);
+    expect(result[0].errorText).toBe("Something went wrong");
   });
 });
