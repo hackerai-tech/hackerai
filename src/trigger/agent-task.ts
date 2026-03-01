@@ -22,6 +22,7 @@ import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
   injectSummarizationParts,
+  logPrepareStepMessages,
   type SummarizationEvent,
 } from "@/lib/utils/stream-writer-utils";
 import { checkAndSummarizeIfNeeded } from "@/lib/chat/summarization";
@@ -41,6 +42,7 @@ import {
   saveStepSummary,
 } from "@/lib/db/actions";
 import { deductUsage } from "@/lib/rate-limit";
+import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { aiStream, metadataStream, type MetadataEvent } from "./streams";
 import type {
   AgentTaskPayload,
@@ -50,7 +52,10 @@ import type { UIMessageStreamWriter } from "ai";
 import type { Id } from "@/convex/_generated/dataModel";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import { STEPS_TO_KEEP_UNSUMMARIZED } from "@/lib/chat/summarization/constants";
+import {
+  STEPS_TO_KEEP_UNSUMMARIZED,
+  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+} from "@/lib/chat/summarization/constants";
 import {
   summarizeSteps,
   injectPersistedStepSummary,
@@ -362,12 +367,161 @@ export const agentStreamTask = task({
           messages: await convertToModelMessages(finalMessages),
           tools,
           prepareStep: async ({ steps, messages }) => {
-            try {
-              // Capture initial model message count on first call (step 0)
-              if (initialModelMessageCount === null) {
-                initialModelMessageCount = messages.length;
+            logPrepareStepMessages(steps.length, "input", messages);
+            const result = await (async (): Promise<
+              Record<string, unknown>
+            > => {
+              try {
+                // Capture initial model message count on first call (step 0)
+                if (initialModelMessageCount === null) {
+                  initialModelMessageCount = messages.length;
 
-                // Inject persisted step summary at step 0
+                  // Inject persisted step summary at step 0
+                  if (stepSummaryText && stepSummaryLastToolCallId) {
+                    const injected = injectPersistedStepSummary(
+                      messages,
+                      stepSummaryText,
+                      stepSummaryLastToolCallId,
+                    );
+                    if (injected) {
+                      initialModelMessageCount = injected.length;
+                      return { messages: injected };
+                    }
+                    logger.warn(
+                      "Persisted step summary could not be injected, toolCallId not found in messages",
+                      {
+                        chatId,
+                        upToToolCallId: stepSummaryLastToolCallId,
+                        messageCount: messages.length,
+                      },
+                    );
+                    stepSummaryText = null;
+                    stepSummaryLastToolCallId = null;
+                  }
+                }
+
+                if (!temporary) {
+                  const {
+                    needsSummarization,
+                    summarizedMessages,
+                    summaryText: messageSummaryText,
+                  } = await checkAndSummarizeIfNeeded(
+                    finalMessages,
+                    subscription,
+                    trackedProvider.languageModel(modelName),
+                    mode,
+                    metadataWriter,
+                    chatId,
+                    fileTokens,
+                    getTodoManager().getAllTodos(),
+                    undefined,
+                    ensureSandbox,
+                    undefined,
+                    lastStepInputTokens,
+                  );
+                  if (needsSummarization) {
+                    summarizationCount++;
+                    finalMessages = summarizedMessages;
+
+                    // Step-level: compress older steps alongside message-level
+                    if (isAgentMode(mode)) {
+                      try {
+                        const stepResult = await summarizeSteps({
+                          messages,
+                          initialModelMessageCount: initialModelMessageCount!,
+                          stepsLength: steps.length,
+                          stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                          lastSummarizedStepCount,
+                          existingStepSummary: stepSummaryText,
+                          summarizedInitialMessages:
+                            await convertToModelMessages(summarizedMessages),
+                        });
+                        if (stepResult.summarized) {
+                          stepSummaryText = stepResult.stepSummaryText;
+                          stepSummaryLastToolCallId = stepResult.lastToolCallId;
+                          lastSummarizedStepCount =
+                            stepResult.lastSummarizedStepCount;
+                          summarizationAtSteps.push({
+                            stepIndex: steps.length,
+                            messageSummary: messageSummaryText ?? undefined,
+                            stepSummary: stepResult.stepSummaryText,
+                          });
+                          return { messages: stepResult.messages };
+                        }
+                      } catch (stepError) {
+                        logger.error(
+                          "Step summarization failed, using message-level only",
+                          {
+                            error: stepError,
+                            chatId,
+                            mode,
+                            subscription,
+                            stepsCompleted: steps.length,
+                          },
+                        );
+                      }
+                    }
+
+                    // Message-level only (step didn't fire or failed)
+                    summarizationAtSteps.push({
+                      stepIndex: steps.length,
+                      messageSummary: messageSummaryText ?? undefined,
+                    });
+
+                    return {
+                      messages:
+                        await convertToModelMessages(summarizedMessages),
+                    };
+                  }
+                }
+
+                // Standalone step-level summarization (context usage exceeds
+                // threshold but message-level didn't fire)
+                const stepThreshold = Math.floor(
+                  getMaxTokensForSubscription(subscription) *
+                    SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                );
+                if (
+                  !temporary &&
+                  isAgentMode(mode) &&
+                  lastStepInputTokens > stepThreshold
+                ) {
+                  try {
+                    const stepResult = await summarizeSteps({
+                      messages,
+                      initialModelMessageCount: initialModelMessageCount!,
+                      stepsLength: steps.length,
+                      stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                      lastSummarizedStepCount,
+                      existingStepSummary: stepSummaryText,
+                    });
+                    if (stepResult.summarized) {
+                      stepSummaryText = stepResult.stepSummaryText;
+                      stepSummaryLastToolCallId = stepResult.lastToolCallId;
+                      lastSummarizedStepCount =
+                        stepResult.lastSummarizedStepCount;
+                      summarizationAtSteps.push({
+                        stepIndex: steps.length,
+                        stepSummary: stepResult.stepSummaryText,
+                      });
+                      return { messages: stepResult.messages };
+                    }
+                  } catch (stepError) {
+                    logger.error(
+                      "Standalone step summarization failed, continuing without",
+                      {
+                        error: stepError,
+                        chatId,
+                        mode,
+                        subscription,
+                        stepsCompleted: steps.length,
+                      },
+                    );
+                  }
+                }
+
+                // Re-apply existing step summary to keep context compressed.
+                let effectiveMessages = messages;
                 if (stepSummaryText && stepSummaryLastToolCallId) {
                   const injected = injectPersistedStepSummary(
                     messages,
@@ -375,180 +529,70 @@ export const agentStreamTask = task({
                     stepSummaryLastToolCallId,
                   );
                   if (injected) {
-                    initialModelMessageCount = injected.length;
-                    return { messages: injected };
+                    effectiveMessages = injected;
                   }
-                  logger.warn(
-                    "Persisted step summary could not be injected, toolCallId not found in messages",
-                    {
-                      chatId,
-                      upToToolCallId: stepSummaryLastToolCallId,
-                      messageCount: messages.length,
-                    },
-                  );
-                  stepSummaryText = null;
-                  stepSummaryLastToolCallId = null;
                 }
-              }
 
-              if (!temporary) {
-                const {
-                  needsSummarization,
-                  summarizedMessages,
-                  summaryText: messageSummaryText,
-                } = await checkAndSummarizeIfNeeded(
-                  finalMessages,
-                  subscription,
-                  trackedProvider.languageModel(modelName),
-                  mode,
-                  metadataWriter,
-                  chatId,
-                  fileTokens,
-                  getTodoManager().getAllTodos(),
-                  undefined,
-                  ensureSandbox,
-                  undefined,
-                  lastStepInputTokens,
-                );
-                if (needsSummarization) {
-                  summarizationCount++;
-
-                  // Step-level: compress older steps alongside message-level
-                  if (isAgentMode(mode)) {
-                    try {
-                      const stepResult = await summarizeSteps({
-                        messages,
-                        initialModelMessageCount: initialModelMessageCount!,
-                        stepsLength: steps.length,
-                        stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
-                        lastSummarizedStepCount,
-                        existingStepSummary: stepSummaryText,
-                        summarizedInitialMessages:
-                          await convertToModelMessages(summarizedMessages),
-                      });
-                      if (stepResult.summarized) {
-                        stepSummaryText = stepResult.stepSummaryText;
-                        stepSummaryLastToolCallId = stepResult.lastToolCallId;
-                        lastSummarizedStepCount =
-                          stepResult.lastSummarizedStepCount;
-                        summarizationAtSteps.push({
-                          stepIndex: steps.length,
-                          messageSummary: messageSummaryText ?? undefined,
-                          stepSummary: stepResult.stepSummaryText,
-                        });
-                        return { messages: stepResult.messages };
-                      }
-                    } catch (stepError) {
-                      logger.error(
-                        "Step summarization failed, using message-level only",
-                        {
-                          error: stepError,
-                          chatId,
-                          mode,
-                          subscription,
-                          stepsCompleted: steps.length,
-                        },
-                      );
-                    }
-                  }
-
-                  // Message-level only (step didn't fire or failed)
-                  summarizationAtSteps.push({
-                    stepIndex: steps.length,
-                    messageSummary: messageSummaryText ?? undefined,
-                  });
-
+                const lastStep = Array.isArray(steps)
+                  ? steps.at(-1)
+                  : undefined;
+                const toolResults =
+                  (lastStep &&
+                    (lastStep as { toolResults?: unknown[] }).toolResults) ||
+                  [];
+                const wasMemoryUpdate =
+                  Array.isArray(toolResults) &&
+                  toolResults.some(
+                    (r) =>
+                      (r as { toolName?: string })?.toolName ===
+                      "update_memory",
+                  );
+                const wasNoteModified =
+                  Array.isArray(toolResults) &&
+                  toolResults.some((r) =>
+                    ["create_note", "update_note", "delete_note"].includes(
+                      (r as { toolName?: string })?.toolName ?? "",
+                    ),
+                  );
+                if (!wasMemoryUpdate && !wasNoteModified) {
                   return {
-                    messages: await convertToModelMessages(summarizedMessages),
+                    messages: effectiveMessages,
+                    ...(currentSystemPrompt && {
+                      system: currentSystemPrompt,
+                    }),
                   };
                 }
-              }
-
-              // Standalone step-level summarization (token threshold not hit,
-              // but many steps accumulated in agent mode)
-              if (
-                !temporary &&
-                isAgentMode(mode) &&
-                steps.length > STEPS_TO_KEEP_UNSUMMARIZED
-              ) {
-                try {
-                  const stepResult = await summarizeSteps({
-                    messages,
-                    initialModelMessageCount: initialModelMessageCount!,
-                    stepsLength: steps.length,
-                    stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
-                    lastSummarizedStepCount,
-                    existingStepSummary: stepSummaryText,
-                  });
-                  if (stepResult.summarized) {
-                    stepSummaryText = stepResult.stepSummaryText;
-                    stepSummaryLastToolCallId = stepResult.lastToolCallId;
-                    lastSummarizedStepCount =
-                      stepResult.lastSummarizedStepCount;
-                    summarizationAtSteps.push({
-                      stepIndex: steps.length,
-                      stepSummary: stepResult.stepSummaryText,
-                    });
-                    return { messages: stepResult.messages };
-                  }
-                } catch (stepError) {
-                  logger.error(
-                    "Standalone step summarization failed, continuing without",
-                    {
-                      error: stepError,
-                      chatId,
-                      mode,
-                      subscription,
-                      stepsCompleted: steps.length,
-                    },
-                  );
-                }
-              }
-
-              const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
-              const toolResults =
-                (lastStep &&
-                  (lastStep as { toolResults?: unknown[] }).toolResults) ||
-                [];
-              const wasMemoryUpdate =
-                Array.isArray(toolResults) &&
-                toolResults.some(
-                  (r) =>
-                    (r as { toolName?: string })?.toolName === "update_memory",
+                currentSystemPrompt = await systemPrompt(
+                  userId,
+                  mode,
+                  subscription,
+                  selectedModel,
+                  userCustomization,
+                  temporary,
+                  chatFinishReason,
+                  sandboxContext,
                 );
-              const wasNoteModified =
-                Array.isArray(toolResults) &&
-                toolResults.some((r) =>
-                  ["create_note", "update_note", "delete_note"].includes(
-                    (r as { toolName?: string })?.toolName ?? "",
-                  ),
-                );
-              if (!wasMemoryUpdate && !wasNoteModified) {
                 return {
-                  messages,
-                  ...(currentSystemPrompt && {
-                    system: currentSystemPrompt,
-                  }),
+                  messages: effectiveMessages,
+                  system: currentSystemPrompt,
                 };
+              } catch (error) {
+                if (error instanceof Error && error.name === "AbortError") {
+                  throw error;
+                }
+                logger.error("Error in prepareStep", { error });
+                return currentSystemPrompt
+                  ? { system: currentSystemPrompt }
+                  : {};
               }
-              currentSystemPrompt = await systemPrompt(
-                userId,
-                mode,
-                subscription,
-                selectedModel,
-                userCustomization,
-                temporary,
-                chatFinishReason,
-                sandboxContext,
-              );
-              return { messages, system: currentSystemPrompt };
-            } catch (error) {
-              if (error instanceof Error && error.name === "AbortError") {
-                throw error;
-              }
-              logger.error("Error in prepareStep", { error });
-              return currentSystemPrompt ? { system: currentSystemPrompt } : {};
-            }
+            })();
+            logPrepareStepMessages(
+              steps.length,
+              "output",
+              ((result as { messages?: unknown })
+                .messages as import("ai").ModelMessage[]) ?? messages,
+            );
+            return result;
           },
           providerOptions: buildProviderOptions(isReasoningModel, subscription),
           experimental_transform: smoothStream({ chunking: "word" }),

@@ -1,7 +1,58 @@
 import "server-only";
 
 import { UIMessagePart, UIMessageStreamWriter } from "ai";
+import type { ModelMessage } from "ai";
 import type { ChatMode, SubscriptionTier } from "@/types";
+
+function countMessageChars(messages: ModelMessage[]): number {
+  let total = 0;
+  for (const m of messages) {
+    if (typeof m.content === "string") {
+      total += m.content.length;
+    } else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (p !== null && typeof p === "object" && "text" in p) {
+          total += ((p as { text: string }).text ?? "").length;
+        }
+      }
+    }
+  }
+  return total;
+}
+
+export function logPrepareStepMessages(
+  step: number,
+  phase: "input" | "output",
+  messages: ModelMessage[],
+): void {
+  const lines: string[] = [];
+  let totalChars = 0;
+  for (const m of messages) {
+    const msgChars = countMessageChars([m]);
+    totalChars += msgChars;
+    const tokens = Math.round(msgChars / 4);
+    const text =
+      typeof m.content === "string"
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content
+              .map((p) =>
+                "text" in p
+                  ? (p as { text: string }).text
+                  : "type" in p
+                    ? `[${(p as { type: string }).type}]`
+                    : "[part]",
+              )
+              .join(" ")
+          : "[non-text]";
+    const truncated = text.length > 50 ? `${text.slice(0, 50)}...` : text;
+    lines.push(`  ${m.role} (${msgChars}c ~${tokens}t): ${truncated}`);
+  }
+  const totalTokens = Math.round(totalChars / 4);
+  console.log(
+    `[prepareStep] step=${step} ${phase} msgs=${messages.length} total=${totalChars}c ~${totalTokens}t\n${lines.join("\n")}`,
+  );
+}
 
 // Upload status notifications
 export const writeUploadStartStatus = (writer: UIMessageStreamWriter): void => {

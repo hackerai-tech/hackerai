@@ -80,6 +80,7 @@ import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
   injectSummarizationParts,
+  logPrepareStepMessages,
   type SummarizationEvent,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
@@ -87,7 +88,10 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { nextJsAxiomLogger } from "@/lib/axiom/server";
 import { extractErrorDetails } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
-import { STEPS_TO_KEEP_UNSUMMARIZED } from "@/lib/chat/summarization/constants";
+import {
+  STEPS_TO_KEEP_UNSUMMARIZED,
+  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+} from "@/lib/chat/summarization/constants";
 import {
   summarizeSteps,
   injectPersistedStepSummary,
@@ -522,12 +526,187 @@ export const createChatHandler = (
               tools,
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
-                try {
-                  // Capture initial model message count on first call (step 0)
-                  if (initialModelMessageCount === null) {
-                    initialModelMessageCount = messages.length;
+                logPrepareStepMessages(steps.length, "input", messages);
+                const result = await (async (): Promise<
+                  Record<string, unknown>
+                > => {
+                  try {
+                    // Capture initial model message count on first call (step 0)
+                    if (initialModelMessageCount === null) {
+                      initialModelMessageCount = messages.length;
 
-                    // Inject persisted step summary at step 0
+                      // Inject persisted step summary at step 0
+                      if (stepSummaryText && stepSummaryLastToolCallId) {
+                        const injected = injectPersistedStepSummary(
+                          messages,
+                          stepSummaryText,
+                          stepSummaryLastToolCallId,
+                        );
+                        if (injected) {
+                          initialModelMessageCount = injected.length;
+
+                          return { messages: injected };
+                        }
+                        nextJsAxiomLogger.warn(
+                          "Persisted step summary could not be injected, toolCallId not found in messages",
+                          {
+                            chatId,
+                            upToToolCallId: stepSummaryLastToolCallId,
+                            messageCount: messages.length,
+                          },
+                        );
+                        stepSummaryText = null;
+                        stepSummaryLastToolCallId = null;
+                      }
+                    }
+
+                    // Run summarization check on every step (non-temporary chats only)
+                    // Agent mode: allow re-summarization. Ask mode: summarize once.
+                    if (
+                      !temporary &&
+                      (isAgentMode(mode) || summarizationCount < 1)
+                    ) {
+                      const result = await runSummarizationStep({
+                        messages: finalMessages,
+                        subscription,
+                        languageModel: trackedProvider.languageModel(modelName),
+                        mode,
+                        writer,
+                        chatId,
+                        fileTokens,
+                        todos: getTodoManager().getAllTodos(),
+                        abortSignal: userStopSignal.signal,
+                        ensureSandbox,
+                        systemPromptTokens,
+                        ctxSystemTokens,
+                        ctxMaxTokens,
+                        providerInputTokens: lastStepInputTokens,
+                      });
+
+                      if (result.needsSummarization) {
+                        summarizationCount++;
+                        finalMessages = result.summarizedMessages;
+                        if (result.contextUsage) {
+                          ctxUsage = result.contextUsage;
+                        }
+
+                        // Step-level: compress older steps alongside message-level
+                        if (isAgentMode(mode)) {
+                          try {
+                            const stepResult = await summarizeSteps({
+                              messages,
+                              initialModelMessageCount:
+                                initialModelMessageCount!,
+                              stepsLength: steps.length,
+                              stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                              lastSummarizedStepCount,
+                              existingStepSummary: stepSummaryText,
+                              abortSignal: userStopSignal.signal,
+                              summarizedInitialMessages:
+                                await convertToModelMessages(
+                                  result.summarizedMessages,
+                                ),
+                            });
+                            if (stepResult.summarized) {
+                              stepSummaryText = stepResult.stepSummaryText;
+                              stepSummaryLastToolCallId =
+                                stepResult.lastToolCallId;
+                              lastSummarizedStepCount =
+                                stepResult.lastSummarizedStepCount;
+                              summarizationAtSteps.push({
+                                stepIndex: steps.length,
+                                messageSummary: result.summaryText,
+                                stepSummary: stepResult.stepSummaryText,
+                              });
+
+                              return { messages: stepResult.messages };
+                            }
+                          } catch (stepError) {
+                            if (userStopSignal.signal.aborted) {
+                              throw stepError;
+                            }
+                            nextJsAxiomLogger.error(
+                              "Step summarization failed, using message-level only",
+                              {
+                                chatId,
+                                endpoint,
+                                mode,
+                                userId,
+                                subscription,
+                                stepsCompleted: steps.length,
+                                ...extractErrorDetails(stepError),
+                              },
+                            );
+                          }
+                        }
+
+                        // Message-level only (step didn't fire or failed)
+                        summarizationAtSteps.push({
+                          stepIndex: steps.length,
+                          messageSummary: result.summaryText,
+                        });
+
+                        return {
+                          messages: await convertToModelMessages(finalMessages),
+                        };
+                      }
+                    }
+
+                    // Standalone step-level summarization (context usage exceeds
+                    // threshold but message-level didn't fire)
+                    const stepThreshold = Math.floor(
+                      getMaxTokensForSubscription(subscription) *
+                        SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    );
+                    if (
+                      !temporary &&
+                      isAgentMode(mode) &&
+                      lastStepInputTokens > stepThreshold
+                    ) {
+                      try {
+                        const stepResult = await summarizeSteps({
+                          messages,
+                          initialModelMessageCount: initialModelMessageCount!,
+                          stepsLength: steps.length,
+                          stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
+                          lastSummarizedStepCount,
+                          existingStepSummary: stepSummaryText,
+                          abortSignal: userStopSignal.signal,
+                        });
+                        if (stepResult.summarized) {
+                          stepSummaryText = stepResult.stepSummaryText;
+                          stepSummaryLastToolCallId = stepResult.lastToolCallId;
+                          lastSummarizedStepCount =
+                            stepResult.lastSummarizedStepCount;
+                          summarizationAtSteps.push({
+                            stepIndex: steps.length,
+                            stepSummary: stepResult.stepSummaryText,
+                          });
+                          return { messages: stepResult.messages };
+                        }
+                      } catch (stepError) {
+                        if (userStopSignal.signal.aborted) {
+                          throw stepError;
+                        }
+                        nextJsAxiomLogger.error(
+                          "Standalone step summarization failed, continuing without",
+                          {
+                            chatId,
+                            endpoint,
+                            mode,
+                            userId,
+                            subscription,
+                            stepsCompleted: steps.length,
+                            ...extractErrorDetails(stepError),
+                          },
+                        );
+                      }
+                    }
+
+                    // Re-apply existing step summary to keep context compressed.
+                    // The SDK always passes full message history — without this,
+                    // the LLM would see uncompressed tool calls from prior steps.
+                    let effectiveMessages = messages;
                     if (stepSummaryText && stepSummaryLastToolCallId) {
                       const injected = injectPersistedStepSummary(
                         messages,
@@ -535,218 +714,76 @@ export const createChatHandler = (
                         stepSummaryLastToolCallId,
                       );
                       if (injected) {
-                        initialModelMessageCount = injected.length;
-                        return { messages: injected };
+                        effectiveMessages = injected;
                       }
-                      nextJsAxiomLogger.warn(
-                        "Persisted step summary could not be injected, toolCallId not found in messages",
-                        {
-                          chatId,
-                          upToToolCallId: stepSummaryLastToolCallId,
-                          messageCount: messages.length,
-                        },
-                      );
-                      stepSummaryText = null;
-                      stepSummaryLastToolCallId = null;
                     }
-                  }
 
-                  // Run summarization check on every step (non-temporary chats only)
-                  // Agent mode: allow re-summarization. Ask mode: summarize once.
-                  if (
-                    !temporary &&
-                    (isAgentMode(mode) || summarizationCount < 1)
-                  ) {
-                    const result = await runSummarizationStep({
-                      messages: finalMessages,
-                      subscription,
-                      languageModel: trackedProvider.languageModel(modelName),
-                      mode,
-                      writer,
-                      chatId,
-                      fileTokens,
-                      todos: getTodoManager().getAllTodos(),
-                      abortSignal: userStopSignal.signal,
-                      ensureSandbox,
-                      systemPromptTokens,
-                      ctxSystemTokens,
-                      ctxMaxTokens,
-                      providerInputTokens: lastStepInputTokens,
-                    });
+                    const lastStep = Array.isArray(steps)
+                      ? steps.at(-1)
+                      : undefined;
+                    const toolResults =
+                      (lastStep && (lastStep as any).toolResults) || [];
+                    const wasMemoryUpdate =
+                      Array.isArray(toolResults) &&
+                      toolResults.some((r) => r?.toolName === "update_memory");
 
-                    if (result.needsSummarization) {
-                      summarizationCount++;
-                      if (result.contextUsage) {
-                        ctxUsage = result.contextUsage;
-                      }
+                    const wasNoteModified =
+                      Array.isArray(toolResults) &&
+                      toolResults.some(
+                        (r) =>
+                          r?.toolName === "create_note" ||
+                          r?.toolName === "update_note" ||
+                          r?.toolName === "delete_note",
+                      );
 
-                      // Step-level: compress older steps alongside message-level
-                      if (isAgentMode(mode)) {
-                        try {
-                          const stepResult = await summarizeSteps({
-                            messages,
-                            initialModelMessageCount: initialModelMessageCount!,
-                            stepsLength: steps.length,
-                            stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
-                            lastSummarizedStepCount,
-                            existingStepSummary: stepSummaryText,
-                            abortSignal: userStopSignal.signal,
-                            summarizedInitialMessages:
-                              await convertToModelMessages(
-                                result.summarizedMessages,
-                              ),
-                          });
-                          if (stepResult.summarized) {
-                            stepSummaryText = stepResult.stepSummaryText;
-                            stepSummaryLastToolCallId =
-                              stepResult.lastToolCallId;
-                            lastSummarizedStepCount =
-                              stepResult.lastSummarizedStepCount;
-                            summarizationAtSteps.push({
-                              stepIndex: steps.length,
-                              messageSummary: result.summaryText,
-                              stepSummary: stepResult.stepSummaryText,
-                            });
-                            return { messages: stepResult.messages };
-                          }
-                        } catch (stepError) {
-                          if (userStopSignal.signal.aborted) {
-                            throw stepError;
-                          }
-                          nextJsAxiomLogger.error(
-                            "Step summarization failed, using message-level only",
-                            {
-                              chatId,
-                              endpoint,
-                              mode,
-                              userId,
-                              subscription,
-                              stepsCompleted: steps.length,
-                              ...extractErrorDetails(stepError),
-                            },
-                          );
-                        }
-                      }
-
-                      // Message-level only (step didn't fire or failed)
-                      summarizationAtSteps.push({
-                        stepIndex: steps.length,
-                        messageSummary: result.summaryText,
-                      });
-
+                    if (!wasMemoryUpdate && !wasNoteModified) {
                       return {
-                        messages: await convertToModelMessages(
-                          result.summarizedMessages,
-                        ),
+                        messages: effectiveMessages,
+                        ...(currentSystemPrompt && {
+                          system: currentSystemPrompt,
+                        }),
                       };
                     }
-                  }
 
-                  // Standalone step-level summarization (token threshold not hit,
-                  // but many steps accumulated in agent mode)
-                  if (
-                    !temporary &&
-                    isAgentMode(mode) &&
-                    steps.length > STEPS_TO_KEEP_UNSUMMARIZED
-                  ) {
-                    try {
-                      const stepResult = await summarizeSteps({
-                        messages,
-                        initialModelMessageCount: initialModelMessageCount!,
-                        stepsLength: steps.length,
-                        stepsToKeep: STEPS_TO_KEEP_UNSUMMARIZED,
-                        lastSummarizedStepCount,
-                        existingStepSummary: stepSummaryText,
-                        abortSignal: userStopSignal.signal,
-                      });
-                      if (stepResult.summarized) {
-                        stepSummaryText = stepResult.stepSummaryText;
-                        stepSummaryLastToolCallId = stepResult.lastToolCallId;
-                        lastSummarizedStepCount =
-                          stepResult.lastSummarizedStepCount;
-                        summarizationAtSteps.push({
-                          stepIndex: steps.length,
-                          stepSummary: stepResult.stepSummaryText,
-                        });
-                        return { messages: stepResult.messages };
-                      }
-                    } catch (stepError) {
-                      if (userStopSignal.signal.aborted) {
-                        throw stepError;
-                      }
-                      nextJsAxiomLogger.error(
-                        "Standalone step summarization failed, continuing without",
-                        {
-                          chatId,
-                          endpoint,
-                          mode,
-                          userId,
-                          subscription,
-                          stepsCompleted: steps.length,
-                          ...extractErrorDetails(stepError),
-                        },
-                      );
-                    }
-                  }
-
-                  const lastStep = Array.isArray(steps)
-                    ? steps.at(-1)
-                    : undefined;
-                  const toolResults =
-                    (lastStep && (lastStep as any).toolResults) || [];
-                  const wasMemoryUpdate =
-                    Array.isArray(toolResults) &&
-                    toolResults.some((r) => r?.toolName === "update_memory");
-
-                  const wasNoteModified =
-                    Array.isArray(toolResults) &&
-                    toolResults.some(
-                      (r) =>
-                        r?.toolName === "create_note" ||
-                        r?.toolName === "update_note" ||
-                        r?.toolName === "delete_note",
+                    currentSystemPrompt = await systemPrompt(
+                      userId,
+                      mode,
+                      subscription,
+                      selectedModel,
+                      userCustomization,
+                      temporary,
+                      chat?.finish_reason,
+                      sandboxContext,
                     );
 
-                  if (!wasMemoryUpdate && !wasNoteModified) {
                     return {
-                      messages,
-                      ...(currentSystemPrompt && {
-                        system: currentSystemPrompt,
-                      }),
+                      messages: effectiveMessages,
+                      system: currentSystemPrompt,
                     };
+                  } catch (error) {
+                    if (userStopSignal.signal.aborted) {
+                      throw error;
+                    }
+                    nextJsAxiomLogger.error("Error in prepareStep", {
+                      chatId,
+                      endpoint,
+                      mode,
+                      userId,
+                      subscription,
+                      ...extractErrorDetails(error),
+                    });
+                    return currentSystemPrompt
+                      ? { system: currentSystemPrompt }
+                      : {};
                   }
-
-                  currentSystemPrompt = await systemPrompt(
-                    userId,
-                    mode,
-                    subscription,
-                    selectedModel,
-                    userCustomization,
-                    temporary,
-                    chat?.finish_reason,
-                    sandboxContext,
-                  );
-
-                  return {
-                    messages,
-                    system: currentSystemPrompt,
-                  };
-                } catch (error) {
-                  if (userStopSignal.signal.aborted) {
-                    throw error;
-                  }
-                  nextJsAxiomLogger.error("Error in prepareStep", {
-                    chatId,
-                    endpoint,
-                    mode,
-                    userId,
-                    subscription,
-                    ...extractErrorDetails(error),
-                  });
-                  return currentSystemPrompt
-                    ? { system: currentSystemPrompt }
-                    : {};
-                }
+                })();
+                logPrepareStepMessages(
+                  steps.length,
+                  "output",
+                  ((result as { messages?: unknown })
+                    .messages as import("ai").ModelMessage[]) ?? messages,
+                );
+                return result;
               },
               abortSignal: userStopSignal.signal,
               providerOptions: buildProviderOptions(
