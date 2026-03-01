@@ -444,7 +444,11 @@ export const agentStreamTask = task({
               return currentSystemPrompt ? { system: currentSystemPrompt } : {};
             }
           },
-          providerOptions: buildProviderOptions(isReasoningModel, subscription),
+          providerOptions: buildProviderOptions(
+            isReasoningModel,
+            subscription,
+            userId,
+          ),
           experimental_transform: smoothStream({ chunking: "word" }),
           stopWhen: [
             stepCountIs(getMaxStepsForUser(mode, subscription)),

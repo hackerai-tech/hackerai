@@ -636,6 +636,7 @@ export const createChatHandler = (
               providerOptions: buildProviderOptions(
                 isReasoningModel,
                 subscription,
+                userId,
               ),
               experimental_transform: smoothStream({ chunking: "word" }),
               stopWhen: isAgentMode(mode)

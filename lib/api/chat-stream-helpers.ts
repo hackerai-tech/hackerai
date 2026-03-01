@@ -296,6 +296,7 @@ export async function runSummarizationStep(options: {
 export function buildProviderOptions(
   isReasoningModel: boolean,
   subscription: SubscriptionTier,
+  userId?: string,
 ) {
   return {
     xai: {
@@ -306,6 +307,7 @@ export function buildProviderOptions(
       ...(isReasoningModel
         ? { reasoning: { enabled: true } }
         : { reasoning: { enabled: false } }),
+      ...(userId && { user: userId }),
       provider: {
         ...(subscription === "free" ? { sort: "price" } : { sort: "latency" }),
       },
