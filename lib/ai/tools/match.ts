@@ -19,33 +19,11 @@ const COMMAND_TIMEOUT_MS = 30000;
 const PREFLIGHT_TIMEOUT_MS = 5000;
 
 /**
- * Escape single quotes in a string for embedding inside bash -c '...' scripts.
+ * Escape single quotes in a string for embedding inside bash '...' strings.
  * Replaces ' with '\'' (end quote, escaped quote, start quote).
  */
 export function escapeSingleQuotes(str: string): string {
   return str.replace(/'/g, "'\\''");
-}
-
-/**
- * Shell pipeline that reads null-separated file paths from stdin and outputs
- * them sorted by modification time (newest first).
- * Detects GNU stat (Linux) vs BSD stat (macOS) at runtime.
- */
-function mtimeSortPipeline(): string {
-  return (
-    `sh -c 'if stat -c "%Y" /dev/null >/dev/null 2>&1; then` +
-    ` xargs -0 stat -c "%Y %n" 2>/dev/null;` +
-    ` else xargs -0 stat -f "%m %N" 2>/dev/null; fi'` +
-    ` | sort -rn | cut -d" " -f2-`
-  );
-}
-
-/**
- * Shell expression that decodes a base64 string, compatible with both
- * GNU coreutils (base64 -d) and BSD/macOS (base64 -D).
- */
-function base64DecodeExpr(b64Value: string): string {
-  return `(echo "${b64Value}" | base64 -d 2>/dev/null || echo "${b64Value}" | base64 -D 2>/dev/null)`;
 }
 
 /**
@@ -287,7 +265,7 @@ export const createMatch = (context: ToolContext) => {
 
 /**
  * Use ripgrep in file-listing mode (`rg --files`) to find files matching
- * the scope pattern, then sort by modification time (newest first).
+ * the scope pattern, sorted by modification time (newest first) via --sortr=modified.
  */
 async function executeGlob(
   sandbox: any,
@@ -303,17 +281,22 @@ async function executeGlob(
   // Unique temp file to capture rg stderr without race conditions
   const errFile = `/tmp/_match_err_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // Build rg --files command (matches opencode's approach)
-  const rgArgs = ["rg", "--files", "--hidden", "--glob='!.git/*'"];
+  // Build rg --files command with mtime sorting (matches opencode's approach)
+  const rgArgs = [
+    "rg",
+    "--files",
+    "--hidden",
+    "--sortr=modified",
+    "--glob='!.git/*'",
+  ];
   if (globPattern) {
     rgArgs.push(`--glob='${escapeSingleQuotes(globPattern)}'`);
   }
   rgArgs.push(`'${safeBaseDir}'`);
 
-  // Fetch more than the limit so we can detect truncation, then sort by mtime
+  // Fetch more than the limit so we can detect truncation
   const fetchLimit = GLOB_MAX_RESULTS + 1;
-  // Redirect rg stderr to temp file for diagnostics instead of discarding it
-  const cmd = `${rgArgs.join(" ")} 2>'${errFile}' | head -${fetchLimit} | tr '\\n' '\\0' | ${mtimeSortPipeline()}`;
+  const cmd = `${rgArgs.join(" ")} 2>'${errFile}' | head -${fetchLimit}`;
 
   const result = await sandbox.commands.run(cmd, {
     timeoutMs: COMMAND_TIMEOUT_MS,
@@ -353,8 +336,8 @@ interface GrepEntry {
 }
 
 /**
- * Use ripgrep with --json output for structured parsing, group results by file,
- * and sort file groups by modification time (newest first).
+ * Use ripgrep with --json output for structured parsing, group results by file
+ * (sorted by modification time via --sortr=modified, newest first).
  * Handles rg exit code 2 gracefully — returns partial matches with a note.
  */
 async function executeGrep(
@@ -374,12 +357,13 @@ async function executeGrep(
   // Unique temp file to capture rg stderr without race conditions
   const errFile = `/tmp/_match_err_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
-  // Build rg command — use --json for structured output (matches opencode's approach)
+  // Build rg command — use --json for structured output, --sortr=modified for mtime ordering
   const rgArgs = [
     "rg",
     "--json",
     "--hidden",
     "--no-messages",
+    "--sortr=modified",
     "--glob='!.git/*'",
   ];
   if (leading > 0) rgArgs.push(`-B ${leading}`);
@@ -388,12 +372,12 @@ async function executeGrep(
     rgArgs.push(`--glob='${escapeSingleQuotes(globPattern)}'`);
   }
 
-  // Encode regex as base64 to safely pass it without shell escaping issues
-  const regexB64 = Buffer.from(regex).toString("base64");
+  // Single-quote the regex — bash single quotes are completely literal (no $, `, \ interpretation).
+  // The only character needing escaping is ' itself, handled by escapeSingleQuotes().
+  const safeRegex = escapeSingleQuotes(regex);
 
   // Use a generous line buffer — post-processing enforces the actual match cap
-  // Note: space after $( prevents bash from parsing "$((echo" as arithmetic expansion
-  const cmd = `PATTERN=$( ${base64DecodeExpr(regexB64)} ) && ${rgArgs.join(" ")} -e "$PATTERN" '${safeBaseDir}' 2>'${errFile}' | head -${GREP_LINE_BUFFER}`;
+  const cmd = `${rgArgs.join(" ")} -e '${safeRegex}' '${safeBaseDir}' 2>'${errFile}' | head -${GREP_LINE_BUFFER}`;
 
   const result = await sandbox.commands.run(cmd, {
     timeoutMs: COMMAND_TIMEOUT_MS,
@@ -409,9 +393,10 @@ async function executeGrep(
     return { output: `No matches found for "${regex}" in ${scope}` };
   }
 
-  // --- Parse JSON lines into structured entries ---
-  const entries: GrepEntry[] = [];
-  const uniqueFiles = new Set<string>();
+  // --- Parse JSON lines into entries grouped by file (mtime order from --sortr=modified) ---
+  // Map insertion order preserves the mtime ordering from ripgrep.
+  const fileGroups = new Map<string, GrepEntry[]>();
+  let totalMatches = 0;
 
   for (const line of rawOutput.split("\n")) {
     if (!line) continue;
@@ -421,64 +406,33 @@ async function executeGrep(
         const file: string = obj.data.path.text;
         const lineNo: number = obj.data.line_number;
         const content: string = (obj.data.lines.text || "").replace(/\n$/, "");
-        entries.push({ file, lineNo, content, isMatch: obj.type === "match" });
-        uniqueFiles.add(file);
+        const isMatch = obj.type === "match";
+
+        let group = fileGroups.get(file);
+        if (!group) {
+          group = [];
+          fileGroups.set(file, group);
+        }
+        group.push({ file, lineNo, content, isMatch });
+        if (isMatch) totalMatches++;
       }
     } catch {
       // Skip unparseable lines (truncated JSON from head, summary lines, etc.)
     }
   }
 
-  if (entries.length === 0) {
+  if (fileGroups.size === 0) {
     if (stderrContent)
       return { output: formatRgError(stderrContent, "grep", scope) };
     return { output: `No matches found for "${regex}" in ${scope}` };
   }
 
-  // --- Sort files by modification time (newest first) ---
-  const filePaths = [...uniqueFiles];
-  const fileListB64 = Buffer.from(filePaths.join("\n")).toString("base64");
-  const statCmd = `${base64DecodeExpr(fileListB64)} | tr '\\n' '\\0' | ${mtimeSortPipeline()}`;
-
-  const statResult = await sandbox.commands.run(statCmd, {
-    timeoutMs: COMMAND_TIMEOUT_MS,
-  });
-
-  // mtimeSortPipeline() already strips timestamps via `cut -d" " -f2-`,
-  // so each line is just a filepath — push directly.
-  const fileOrder: string[] = [];
-  for (const line of String(statResult?.stdout ?? "")
-    .trim()
-    .split("\n")) {
-    if (!line) continue;
-    fileOrder.push(line);
-  }
-  // Append any files that stat couldn't resolve (defensive)
-  for (const f of filePaths) {
-    if (!fileOrder.includes(f)) fileOrder.push(f);
-  }
-
-  // --- Group entries by file ---
-  const fileGroups = new Map<string, GrepEntry[]>();
-  for (const entry of entries) {
-    let group = fileGroups.get(entry.file);
-    if (!group) {
-      group = [];
-      fileGroups.set(entry.file, group);
-    }
-    group.push(entry);
-  }
-
   // --- Build grouped output, respecting match cap ---
-  const totalMatches = entries.filter((e) => e.isMatch).length;
   const outputParts: string[] = [];
   let matchCount = 0;
 
-  for (const file of fileOrder) {
+  for (const [file, group] of fileGroups) {
     if (matchCount >= GREP_MAX_MATCHES) break;
-
-    const group = fileGroups.get(file);
-    if (!group) continue;
 
     const lines: string[] = [];
     for (const entry of group) {
