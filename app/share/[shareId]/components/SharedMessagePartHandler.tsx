@@ -9,7 +9,6 @@ import {
   FilePen,
   FileMinus,
   FileOutput,
-  Code2,
   FileIcon,
   ListTodo,
   NotebookPen,
@@ -129,11 +128,6 @@ export const SharedMessagePartHandler = ({
   // New unified file tool
   if (part.type === "tool-file") {
     return renderFileTool(part, idx, openSidebar);
-  }
-
-  // Python execution
-  if (part.type === "data-python" || part.type === "tool-python") {
-    return renderPythonTool(part, idx, openSidebar);
   }
 
   // Web search
@@ -435,50 +429,6 @@ function renderFileTool(
         icon={icon}
         action={action}
         target={`${filePath}${getFileRange()}`}
-        isClickable={true}
-        onClick={handleOpenInSidebar}
-        onKeyDown={handleKeyDown}
-      />
-    );
-  }
-  return null;
-}
-
-// Python tool renderer
-function renderPythonTool(
-  part: MessagePart,
-  idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
-) {
-  const pythonInput = part.input as { code?: string };
-  const pythonOutput = part.output as { result?: string; output?: string };
-  const code = pythonInput?.code || "";
-  const output = pythonOutput?.result || pythonOutput?.output || "";
-  const codePreview = code.split("\n")[0]?.substring(0, 50);
-
-  if (part.state === "input-available" || part.state === "output-available") {
-    const handleOpenInSidebar = () => {
-      openSidebar({
-        code,
-        output,
-        isExecuting: false,
-        toolCallId: part.toolCallId || "",
-      });
-    };
-
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenInSidebar();
-      }
-    };
-
-    return (
-      <ToolBlock
-        key={idx}
-        icon={<Code2 aria-hidden="true" />}
-        action="Executed Python"
-        target={codePreview}
         isClickable={true}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}

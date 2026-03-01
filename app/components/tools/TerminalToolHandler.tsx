@@ -1,10 +1,10 @@
-import React, { memo, useEffect, useMemo, useCallback } from "react";
+import React, { memo, useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Terminal } from "lucide-react";
-import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
+import { useToolSidebar } from "../../hooks/useToolSidebar";
 import {
   getShellActionLabel,
   getShellDisplayCommand,
@@ -43,8 +43,6 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   status,
   precomputedStreamingOutput,
 }: TerminalToolHandlerProps) {
-  const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
-    useGlobalState();
   const { toolCallId, state, input, output, errorText } = part;
 
   // Support both legacy run_terminal_cmd and new shell tool input shapes
@@ -99,62 +97,36 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       isActive,
     });
 
-  const handleOpenInSidebar = useCallback(() => {
-    if (!displayCommand) return;
-
-    const sidebarTerminal: SidebarTerminal = {
+  const sidebarContent = useMemo((): SidebarTerminal | null => {
+    if (!displayCommand) return null;
+    return {
       command: displayCommand,
       output: finalOutput,
       isExecuting,
-      isBackground: terminalInput.is_background,
-      toolCallId: toolCallId,
+      isBackground: terminalInput?.is_background,
+      toolCallId,
       shellAction,
       pid: shellPid,
       session: shellSession,
       input: (input as { input?: string })?.input,
     };
-
-    openSidebar(sidebarTerminal);
   }, [
     displayCommand,
-    terminalInput?.is_background,
     finalOutput,
     isExecuting,
+    terminalInput?.is_background,
     toolCallId,
     shellAction,
     shellPid,
     shellSession,
-    openSidebar,
+    input,
   ]);
 
-  // Track if this sidebar is currently active
-  const isSidebarActive =
-    sidebarOpen &&
-    sidebarContent &&
-    isSidebarTerminal(sidebarContent) &&
-    sidebarContent.toolCallId === toolCallId;
-
-  // Update sidebar content in real-time if it's currently open for this tool call
-  useEffect(() => {
-    if (!isSidebarActive) return;
-
-    updateSidebarContent({
-      command: displayCommand,
-      output: finalOutput,
-      isExecuting,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSidebarActive, displayCommand, finalOutput, isExecuting]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenInSidebar();
-      }
-    },
-    [handleOpenInSidebar],
-  );
+  const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
+    toolCallId,
+    content: sidebarContent,
+    typeGuard: isSidebarTerminal,
+  });
 
   switch (state) {
     case "input-streaming": {

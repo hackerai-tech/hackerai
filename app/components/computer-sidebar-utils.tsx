@@ -1,16 +1,8 @@
 import React from "react";
-import {
-  Edit,
-  Terminal,
-  Code2,
-  Search,
-  FolderSearch,
-  StickyNote,
-} from "lucide-react";
+import { Edit, Terminal, Search, FolderSearch, StickyNote } from "lucide-react";
 import {
   isSidebarFile,
   isSidebarTerminal,
-  isSidebarPython,
   isSidebarWebSearch,
   isSidebarNotes,
   type SidebarContent,
@@ -119,10 +111,6 @@ export function getActionText(content: SidebarContent): string {
     });
   }
 
-  if (isSidebarPython(content)) {
-    return content.isExecuting ? "Executing Python" : "Python executed";
-  }
-
   if (isSidebarWebSearch(content)) {
     return content.isSearching ? "Searching web" : "Search results";
   }
@@ -159,7 +147,6 @@ export function getSidebarIcon(content: SidebarContent): React.ReactNode {
     return <Edit className={iconClass} />;
   }
   if (isSidebarTerminal(content)) return <Terminal className={iconClass} />;
-  if (isSidebarPython(content)) return <Code2 className={iconClass} />;
   if (isSidebarWebSearch(content)) return <Search className={iconClass} />;
   if (isSidebarNotes(content)) return <StickyNote className={iconClass} />;
   return <Edit className={iconClass} />;
@@ -170,7 +157,6 @@ export function getToolName(content: SidebarContent): string {
     return content.action === "searching" ? "File Search" : "Editor";
   }
   if (isSidebarTerminal(content)) return "Terminal";
-  if (isSidebarPython(content)) return "Python";
   if (isSidebarWebSearch(content)) return "Search";
   if (isSidebarNotes(content)) return "Notes";
   return "Tool";
@@ -186,7 +172,6 @@ export function getDisplayTarget(content: SidebarContent): string {
     }
     return content.command;
   }
-  if (isSidebarPython(content)) return content.code.replace(/\n/g, " ");
   if (isSidebarWebSearch(content)) return content.query;
   if (isSidebarNotes(content)) {
     if (content.action === "list") {

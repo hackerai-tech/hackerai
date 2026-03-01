@@ -1,12 +1,5 @@
 import React from "react";
-import {
-  Minimize2,
-  Terminal,
-  Code2,
-  Play,
-  SkipBack,
-  SkipForward,
-} from "lucide-react";
+import { Minimize2, Terminal, Play, SkipBack, SkipForward } from "lucide-react";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useGlobalState } from "../contexts/GlobalState";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
@@ -22,7 +15,6 @@ import {
 import {
   isSidebarFile,
   isSidebarTerminal,
-  isSidebarPython,
   isSidebarWebSearch,
   isSidebarNotes,
   type SidebarContent,
@@ -177,7 +169,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   const isFile = isSidebarFile(sidebarContent);
   const isTerminal = isSidebarTerminal(sidebarContent);
-  const isPython = isSidebarPython(sidebarContent);
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
 
@@ -272,11 +263,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                         className="text-muted-foreground flex-shrink-0"
                       />
                     )
-                  ) : isPython ? (
-                    <Code2
-                      size={14}
-                      className="text-muted-foreground flex-shrink-0"
-                    />
                   ) : isWebSearch ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium text-center">
                       Search
@@ -302,22 +288,18 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     content={
                       isFile && resolvedFile
                         ? resolvedFile.content
-                        : isPython
-                          ? sidebarContent.code
-                          : isTerminal && resolvedTerminal
-                            ? resolvedTerminal.output
-                              ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
-                              : `$ ${resolvedTerminal.command}`
-                            : ""
+                        : isTerminal && resolvedTerminal
+                          ? resolvedTerminal.output
+                            ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
+                            : `$ ${resolvedTerminal.command}`
+                          : ""
                     }
                     filename={
                       isFile
                         ? sidebarContent.action === "searching"
                           ? "search-results.txt"
                           : sidebarContent.path.split("/").pop() || "code.txt"
-                        : isPython
-                          ? "python-code.py"
-                          : "terminal-output.txt"
+                        : "terminal-output.txt"
                     }
                     language={
                       isFile
@@ -325,9 +307,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           ? "text"
                           : sidebarContent.language ||
                             getLanguageFromPath(sidebarContent.path)
-                        : isPython
-                          ? "python"
-                          : "ansi"
+                        : "ansi"
                     }
                     isWrapped={isWrapped}
                     onToggleWrap={handleToggleWrap}
@@ -392,36 +372,6 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           variant="sidebar"
                           wrap={isWrapped}
                         />
-                      )}
-                      {isPython && (
-                        <div className="h-full overflow-auto">
-                          <div className="pb-4">
-                            <ComputerCodeBlock
-                              language="python"
-                              wrap={isWrapped}
-                              showButtons={false}
-                            >
-                              {sidebarContent.code}
-                            </ComputerCodeBlock>
-                          </div>
-                          {sidebarContent.output && (
-                            <>
-                              <div className="border-t border-border/30 mb-3" />
-                              <div className="px-4 pb-4">
-                                <div className="text-xs text-muted-foreground font-semibold mb-3">
-                                  Result:
-                                </div>
-                                <ComputerCodeBlock
-                                  language="text"
-                                  wrap={isWrapped}
-                                  showButtons={false}
-                                >
-                                  {sidebarContent.output}
-                                </ComputerCodeBlock>
-                              </div>
-                            </>
-                          )}
-                        </div>
                       )}
                       {isWebSearch && (
                         <div className="flex-1 min-h-0 h-full overflow-y-auto">

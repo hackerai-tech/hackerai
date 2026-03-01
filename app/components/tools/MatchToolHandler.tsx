@@ -1,8 +1,9 @@
-import { memo, useCallback, useMemo } from "react";
+import { memo, useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FolderSearch } from "lucide-react";
 import type { ChatStatus } from "@/types";
-import { useGlobalState } from "../../contexts/GlobalState";
+import { isSidebarFile } from "@/types/chat";
+import { useToolSidebar } from "../../hooks/useToolSidebar";
 
 interface MatchToolHandlerProps {
   part: any;
@@ -58,7 +59,6 @@ export const MatchToolHandler = memo(function MatchToolHandler({
   part,
   status,
 }: MatchToolHandlerProps) {
-  const { openSidebar } = useGlobalState();
   const { toolCallId, state, input, output } = part;
   const matchInput = input as
     | {
@@ -97,25 +97,21 @@ export const MatchToolHandler = memo(function MatchToolHandler({
     return getResultLabel(outputText, isGlob);
   }, [outputText, isGlob]);
 
-  const handleOpenInSidebar = useCallback(() => {
-    if (!matchInput) return;
-    openSidebar({
+  const sidebarContent = useMemo(() => {
+    if (!matchInput) return null;
+    return {
       path: matchInput.scope,
       content: outputText || "No results",
-      action: "searching",
+      action: "searching" as const,
       toolCallId,
-    });
-  }, [matchInput, outputText, toolCallId, openSidebar]);
+    };
+  }, [matchInput, outputText, toolCallId]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenInSidebar();
-      }
-    },
-    [handleOpenInSidebar],
-  );
+  const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
+    toolCallId,
+    content: sidebarContent,
+    typeGuard: isSidebarFile,
+  });
 
   switch (state) {
     case "input-streaming":
