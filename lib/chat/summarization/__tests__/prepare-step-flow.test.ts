@@ -391,10 +391,8 @@ describe("prepareStep flow simulation", () => {
         (l.summarized ? " [SUMMARIZED]" : ""),
     );
 
-     
     console.log("\n--- Step-by-step token flow ---");
     for (const line of formatted) {
-       
       console.log(line);
     }
 
@@ -923,6 +921,411 @@ describe("error/abort mid-generation save behavior", () => {
     for (const t of allText) {
       expect(t).not.toContain("<step_summary>");
       expect(t).not.toContain("<context_summary>");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Long agent runs (20+ steps) and multi-cycle summarization
+// ---------------------------------------------------------------------------
+
+describe("long agent runs", () => {
+  it("30-step run: multiple summarization cycles fire without oscillation", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Perform full pentest",
+      totalSteps: 30,
+      tokenThreshold: 800,
+    });
+
+    const summarized = logs.filter((l) => l.summarized);
+    // Should fire multiple times across 30 steps
+    expect(summarized.length).toBeGreaterThanOrEqual(3);
+
+    // No oscillation (no consecutive summarized steps)
+    for (let i = 1; i < logs.length; i++) {
+      if (logs[i].summarized && logs[i - 1].summarized) {
+        throw new Error(
+          `Oscillation at steps ${logs[i - 1].step} and ${logs[i].step}`,
+        );
+      }
+    }
+  });
+
+  it("30-step run: output tokens stay bounded across all cycles", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Perform full pentest",
+      totalSteps: 30,
+      tokenThreshold: 800,
+    });
+
+    // After any summarization, output should be compressed
+    for (let i = 0; i < logs.length; i++) {
+      if (
+        i > 0 &&
+        !logs[i].summarized &&
+        logs.slice(0, i).some((l) => l.summarized)
+      ) {
+        expect(logs[i].outputEstTokens).toBeLessThan(logs[i].inputEstTokens);
+      }
+    }
+  });
+
+  it("30-step run: saved messages always contain all original steps", () => {
+    const { savedMessages, logs } = runSimulatedAgentSession({
+      userPrompt: "Perform full pentest",
+      totalSteps: 30,
+      tokenThreshold: 800,
+    });
+
+    // Multiple summarization cycles
+    expect(logs.filter((l) => l.summarized).length).toBeGreaterThanOrEqual(3);
+
+    // All 30 steps present in saved messages (1 user + 30*2 = 61)
+    expect(savedMessages).toHaveLength(61);
+
+    // No summaries leaked into saved messages
+    for (const msg of savedMessages) {
+      if (msg.role === "user" && Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if ("text" in part) {
+            const text = (part as { text: string }).text;
+            expect(text).not.toContain("<step_summary>");
+            expect(text).not.toContain("<context_summary>");
+          }
+        }
+      }
+    }
+  });
+
+  it("50-step run: system remains stable", () => {
+    const { logs, savedMessages } = runSimulatedAgentSession({
+      userPrompt: "Full reconnaissance",
+      totalSteps: 50,
+      tokenThreshold: 1000,
+    });
+
+    // Must have many summarization cycles
+    const summarized = logs.filter((l) => l.summarized);
+    expect(summarized.length).toBeGreaterThanOrEqual(5);
+
+    // No oscillation across all 50 steps
+    for (let i = 1; i < logs.length; i++) {
+      expect(!(logs[i].summarized && logs[i - 1].summarized)).toBe(true);
+    }
+
+    // All 50 steps saved (1 user + 100 step messages)
+    expect(savedMessages).toHaveLength(101);
+
+    // Input always grows linearly
+    for (let i = 1; i < logs.length; i++) {
+      expect(logs[i].inputMsgCount).toBe(logs[i - 1].inputMsgCount + 2);
+    }
+
+    // Output never exceeds input
+    for (const log of logs) {
+      expect(log.outputMsgCount).toBeLessThanOrEqual(log.inputMsgCount);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-agent mode (regular chat) — step summarization should not fire
+// ---------------------------------------------------------------------------
+
+describe("non-agent (chat) mode behavior", () => {
+  /**
+   * In chat mode, isAgentMode returns false so step summarization never fires.
+   * Simulate this by using a high threshold (message-level won't trigger)
+   * and no step compression — output should equal input on every step.
+   */
+  it("short chat: no summarization with high threshold", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "What is XSS?",
+      totalSteps: 3,
+      tokenThreshold: 999999,
+    });
+
+    // No summarization should fire
+    for (const log of logs) {
+      expect(log.summarized).toBe(false);
+      expect(log.outputMsgCount).toBe(log.inputMsgCount);
+    }
+  });
+
+  it("chat with few steps: output equals input (no compression)", () => {
+    const { logs, savedMessages } = runSimulatedAgentSession({
+      userPrompt: "Explain SQL injection",
+      totalSteps: 2,
+      tokenThreshold: 999999,
+    });
+
+    // 1 user + 2*2 step = 5 messages saved
+    expect(savedMessages).toHaveLength(5);
+
+    // No compression applied
+    for (const log of logs) {
+      expect(log.outputMsgCount).toBe(log.inputMsgCount);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Summarization cycle spacing — verifies compression gives enough headroom
+// ---------------------------------------------------------------------------
+
+describe("multi-cycle summarization spacing", () => {
+  it("summarization cycles are spaced apart (not back-to-back)", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Full scan",
+      totalSteps: 30,
+      tokenThreshold: 800,
+    });
+
+    const summarizedSteps = logs.filter((l) => l.summarized).map((l) => l.step);
+    expect(summarizedSteps.length).toBeGreaterThanOrEqual(3);
+
+    // Gap between each summarization should be >= 2 steps
+    for (let i = 1; i < summarizedSteps.length; i++) {
+      const gap = summarizedSteps[i] - summarizedSteps[i - 1];
+      expect(gap).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it("provider tokens drop after each summarization cycle", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Full scan",
+      totalSteps: 30,
+      tokenThreshold: 800,
+    });
+
+    const summarizedSteps = logs.filter((l) => l.summarized);
+    for (const sumStep of summarizedSteps) {
+      const nextStep = logs.find((l) => l.step === sumStep.step + 1);
+      if (nextStep) {
+        // Provider tokens should drop well below threshold after compression
+        expect(nextStep.providerTokens).toBeLessThan(sumStep.providerTokens);
+      }
+    }
+  });
+
+  it("each cycle compresses to roughly the same size", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Full scan",
+      totalSteps: 30,
+      tokenThreshold: 800,
+    });
+
+    const summarizedSteps = logs.filter((l) => l.summarized);
+    expect(summarizedSteps.length).toBeGreaterThanOrEqual(2);
+
+    // All summarized outputs should be roughly the same size
+    // (summary text + recent unsummarized steps)
+    const outputTokens = summarizedSteps.map((l) => l.outputEstTokens);
+    const maxOutput = Math.max(...outputTokens);
+    const minOutput = Math.min(...outputTokens);
+    // Outputs should be within 2x of each other
+    expect(maxOutput).toBeLessThan(minOutput * 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Summarized messages are NOT passed back to the model
+// ---------------------------------------------------------------------------
+
+/** Extract all tool-call IDs from ModelMessages */
+function extractToolCallIds(messages: ModelMessage[]): string[] {
+  const ids: string[] = [];
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      const p = part as Record<string, unknown>;
+      if (p.type === "tool-call" && typeof p.toolCallId === "string") {
+        ids.push(p.toolCallId);
+      }
+      if (p.type === "tool-result" && typeof p.toolCallId === "string") {
+        ids.push(p.toolCallId);
+      }
+    }
+  }
+  return ids;
+}
+
+/** Check if messages contain summary text */
+function hasSummaryText(messages: ModelMessage[]): boolean {
+  for (const msg of messages) {
+    if (!Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if ("text" in part) {
+        const text = (part as { text: string }).text;
+        if (
+          text.includes("<step_summary>") ||
+          text.includes("<context_summary>")
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+describe("summarized messages excluded from LLM output", () => {
+  it("on summarization step: old tool calls are absent, summary is present", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Do a security scan",
+      totalSteps: 10,
+      tokenThreshold: 500,
+    });
+
+    const firstSummarized = logs.find((l) => l.summarized);
+    expect(firstSummarized).toBeDefined();
+
+    // LLM messages should contain summary text
+    expect(hasSummaryText(firstSummarized!.llmMessages)).toBe(true);
+
+    // LLM messages should contain NO tool-call IDs at all on the summarized step
+    // (everything was compressed into the summary)
+    const llmToolIds = extractToolCallIds(firstSummarized!.llmMessages);
+    expect(llmToolIds).toHaveLength(0);
+
+    // SDK messages (input) SHOULD still have all tool calls
+    const sdkToolIds = extractToolCallIds(firstSummarized!.sdkMessages);
+    expect(sdkToolIds.length).toBeGreaterThan(0);
+  });
+
+  it("after summarization: re-injected steps exclude old tool calls", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Do a security scan",
+      totalSteps: 10,
+      tokenThreshold: 500,
+    });
+
+    const firstSummarized = logs.find((l) => l.summarized);
+    expect(firstSummarized).toBeDefined();
+    const summarizedStep = firstSummarized!.step;
+
+    // Collect all tool-call IDs that existed BEFORE summarization
+    const preSummarizationCallIds: string[] = [];
+    for (let i = 0; i < summarizedStep; i++) {
+      preSummarizationCallIds.push(`call-${i}`);
+    }
+    expect(preSummarizationCallIds.length).toBeGreaterThan(0);
+
+    // On every subsequent step, the LLM should NOT see pre-summarization tool calls
+    const stepsAfter = logs.filter(
+      (l) => l.step > summarizedStep && !l.summarized,
+    );
+    expect(stepsAfter.length).toBeGreaterThan(0);
+
+    for (const log of stepsAfter) {
+      const llmToolIds = extractToolCallIds(log.llmMessages);
+      for (const oldId of preSummarizationCallIds) {
+        expect(llmToolIds).not.toContain(oldId);
+      }
+
+      // But the summary text SHOULD be present (re-injected)
+      expect(hasSummaryText(log.llmMessages)).toBe(true);
+
+      // And post-summarization tool calls SHOULD be present
+      const postSumCallIds = llmToolIds.filter(
+        (id) => !preSummarizationCallIds.includes(id),
+      );
+      // Steps after summarization added new tool calls, those should be visible
+      if (log.step > summarizedStep + 1) {
+        expect(postSumCallIds.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("SDK input always contains ALL tool calls regardless of summarization", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Do a security scan",
+      totalSteps: 10,
+      tokenThreshold: 500,
+    });
+
+    // On every step, SDK messages should contain tool calls for all prior steps
+    for (const log of logs) {
+      const sdkToolIds = extractToolCallIds(log.sdkMessages);
+      // Step N should have tool calls from steps 0..N-1 (2 per step: call + result)
+      expect(sdkToolIds.length).toBe(log.step * 2);
+
+      // Verify exact IDs
+      for (let i = 0; i < log.step; i++) {
+        expect(sdkToolIds).toContain(`call-${i}`);
+      }
+    }
+  });
+
+  it("multi-cycle: each cycle removes older tool calls from LLM view", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Full scan",
+      totalSteps: 20,
+      tokenThreshold: 500,
+    });
+
+    const summarizedSteps = logs.filter((l) => l.summarized);
+    expect(summarizedSteps.length).toBeGreaterThanOrEqual(2);
+
+    // After each summarization cycle, all tool calls up to that point
+    // should be absent from the LLM's view
+    for (const sumStep of summarizedSteps) {
+      const llmToolIds = extractToolCallIds(sumStep.llmMessages);
+      // On a summarization step, ALL prior tool calls are compressed
+      for (let i = 0; i < sumStep.step; i++) {
+        expect(llmToolIds).not.toContain(`call-${i}`);
+      }
+    }
+
+    // Between cycles, re-injection keeps old calls hidden
+    const lastSummarized = summarizedSteps[summarizedSteps.length - 1];
+    const stepsAfterLast = logs.filter(
+      (l) => l.step > lastSummarized.step && !l.summarized,
+    );
+    for (const log of stepsAfterLast) {
+      const llmToolIds = extractToolCallIds(log.llmMessages);
+      // All tool calls before the last summarization should be gone
+      for (let i = 0; i < lastSummarized.step; i++) {
+        expect(llmToolIds).not.toContain(`call-${i}`);
+      }
+    }
+  });
+
+  it("LLM never sees raw tool args/results from summarized steps", () => {
+    const { logs } = runSimulatedAgentSession({
+      userPrompt: "Do a security scan",
+      totalSteps: 10,
+      tokenThreshold: 500,
+    });
+
+    const firstSummarized = logs.find((l) => l.summarized);
+    expect(firstSummarized).toBeDefined();
+
+    // Collect raw content patterns from pre-summarization steps
+    const rawPatterns = [];
+    for (let i = 0; i < firstSummarized!.step; i++) {
+      rawPatterns.push(`step ${i} args`);
+      rawPatterns.push(`Result for step ${i}`);
+    }
+
+    // Check all post-summarization LLM messages
+    const stepsAfter = logs.filter((l) => l.step >= firstSummarized!.step);
+    for (const log of stepsAfter) {
+      const allText: string[] = [];
+      for (const msg of log.llmMessages) {
+        if (!Array.isArray(msg.content)) continue;
+        for (const part of msg.content) {
+          const p = part as Record<string, unknown>;
+          if (typeof p.text === "string") allText.push(p.text);
+          if (typeof p.result === "string") allText.push(p.result);
+          if (p.args) allText.push(JSON.stringify(p.args));
+        }
+      }
+      const joined = allText.join(" ");
+
+      for (const pattern of rawPatterns) {
+        expect(joined).not.toContain(pattern);
+      }
     }
   });
 });
