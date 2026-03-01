@@ -42,7 +42,8 @@
     "local-sandbox": "npx tsx packages/local/src/index.ts",
     "local-sandbox:build": "cd packages/local && pnpm build",
     "desktop:dev": "cd packages/desktop && pnpm dev",
-    "desktop:build": "cd packages/desktop && pnpm build"
+    "desktop:build": "cd packages/desktop && pnpm build",
+    "docker:build": "docker buildx build --platform linux/amd64,linux/arm64 -t hackerai-sandbox:latest -f docker/Dockerfile docker/"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.31",

@@ -33,8 +33,6 @@ export function extractSidebarContentFromMessage(
 
   // Collect terminal output from data-terminal parts (for streaming)
   const terminalDataMap = new Map<string, string>();
-  // Collect Python output from data-python parts (for streaming)
-  const pythonDataMap = new Map<string, string>();
   // Collect diff data from data-diff parts (for search_replace UI-only diff display)
   const diffDataMap = new Map<
     string,
@@ -47,12 +45,6 @@ export function extractSidebarContentFromMessage(
       const terminalOutput = part.data?.terminal || "";
       const existing = terminalDataMap.get(toolCallId) || "";
       terminalDataMap.set(toolCallId, existing + terminalOutput);
-    }
-    if (part.type === "data-python" && part.data?.toolCallId) {
-      const toolCallId = part.data.toolCallId;
-      const pythonOutput = part.data?.terminal || ""; // Python uses same 'terminal' field
-      const existing = pythonDataMap.get(toolCallId) || "";
-      pythonDataMap.set(toolCallId, existing + pythonOutput);
     }
     if (part.type === "data-diff" && part.data?.toolCallId) {
       const toolCallId = part.data.toolCallId;
@@ -132,43 +124,6 @@ export function extractSidebarContentFromMessage(
       });
     }
 
-    // Python
-    if (part.type === "tool-python" && part.input?.code) {
-      const code = part.input.code;
-
-      // Get streaming output from data-python parts
-      const streamingOutput = pythonDataMap.get(part.toolCallId || "") || "";
-
-      const result = part.output?.result;
-      let output = "";
-
-      if (result) {
-        // New format: result.output
-        if (typeof result.output === "string") {
-          output = result.output;
-        }
-        // Legacy format: result.stdout + result.stderr
-        else if (result.stdout !== undefined || result.stderr !== undefined) {
-          output = (result.stdout || "") + (result.stderr || "");
-        }
-        // If result is a string directly (fallback)
-        else if (typeof result === "string") {
-          output = result;
-        }
-      }
-
-      const finalOutput =
-        output || streamingOutput || part.output?.output || "";
-
-      contentList.push({
-        code,
-        output: finalOutput,
-        isExecuting:
-          part.state === "input-available" || part.state === "running",
-        toolCallId: part.toolCallId || "",
-      });
-    }
-
     // HTTP Request
     if (part.type === "tool-http_request" && part.input?.url) {
       const method = part.input.method || "GET";
@@ -196,8 +151,20 @@ export function extractSidebarContentFromMessage(
       });
     }
 
-    // Web Search - only extract when output is available
-    // This ensures results are ready when auto-following, consistent with file operations
+    // Web Search - extract at input-available for auto-follow, and output-available for results
+    if (part.type === "tool-web_search" && part.state === "input-available") {
+      const queries = part.input?.queries || [];
+      const query = Array.isArray(queries) ? queries.join(", ") : queries;
+      if (query) {
+        contentList.push({
+          query,
+          results: [],
+          isSearching: true,
+          toolCallId: part.toolCallId || "",
+        });
+      }
+    }
+
     if (part.type === "tool-web_search" && part.state === "output-available") {
       const queries = part.input?.queries || [];
       const query = Array.isArray(queries) ? queries.join(", ") : queries;
@@ -227,8 +194,8 @@ export function extractSidebarContentFromMessage(
       });
     }
 
-    // File write/append streaming - extract during input-streaming/input-available
-    // so sidebar auto-follow works for file creation (like terminals)
+    // File tool streaming - extract during input-streaming/input-available
+    // so sidebar auto-follow works for file operations (like terminals)
     if (
       part.type === "tool-file" &&
       (part.state === "input-streaming" || part.state === "input-available")
@@ -244,12 +211,66 @@ export function extractSidebarContentFromMessage(
             toolCallId: part.toolCallId || "",
             isExecuting: true,
           });
+        } else if (
+          part.state === "input-available" &&
+          (fileAction === "read" || fileAction === "edit")
+        ) {
+          const range =
+            fileAction === "read" && fileInput.range
+              ? {
+                  start: fileInput.range[0],
+                  end:
+                    fileInput.range[1] === -1 ? undefined : fileInput.range[1],
+                }
+              : undefined;
+          contentList.push({
+            path: fileInput.path,
+            content: "",
+            range,
+            action: fileAction === "read" ? "reading" : "editing",
+            toolCallId: part.toolCallId || "",
+            isExecuting: true,
+          });
         }
       }
     }
 
-    // File Operations - only extract when output is available
-    // This ensures content is ready when auto-following
+    // File Operations - extract at input-available for early auto-follow
+    if (
+      (part.type === "tool-read_file" ||
+        part.type === "tool-search_replace" ||
+        part.type === "tool-multi_edit") &&
+      part.state === "input-available"
+    ) {
+      const fileInput = part.input;
+      const filePath =
+        fileInput?.file_path || fileInput?.path || fileInput?.target_file || "";
+      if (filePath) {
+        const action: SidebarFile["action"] =
+          part.type === "tool-read_file" ? "reading" : "editing";
+        let range = undefined;
+        if (
+          part.type === "tool-read_file" &&
+          fileInput.offset &&
+          fileInput.limit
+        ) {
+          range = {
+            start: fileInput.offset,
+            end: fileInput.offset + fileInput.limit - 1,
+          };
+        }
+        contentList.push({
+          path: filePath,
+          content: "",
+          range,
+          action,
+          toolCallId: part.toolCallId || "",
+          isExecuting: true,
+        });
+      }
+    }
+
+    // File Operations - extract when output is available with full content
     if (
       (part.type === "tool-read_file" ||
         part.type === "tool-write_file" ||
@@ -410,7 +431,22 @@ export function extractSidebarContentFromMessage(
       });
     }
 
-    // Match tool (glob/grep file search)
+    // Match tool (glob/grep file search) - extract at input-available for early auto-follow
+    if (
+      part.type === "tool-match" &&
+      part.state === "input-available" &&
+      part.input?.scope
+    ) {
+      contentList.push({
+        path: part.input.scope,
+        content: "",
+        action: "searching",
+        toolCallId: part.toolCallId || "",
+        isExecuting: true,
+      });
+    }
+
+    // Match tool - extract with full results when output is available
     if (
       part.type === "tool-match" &&
       part.state === "output-available" &&
