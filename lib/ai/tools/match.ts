@@ -32,7 +32,7 @@ export function escapeSingleQuotes(str: string): string {
  *
  * Examples:
  *   `/home/user/**\/*.py` → `{ baseDir: "/home/user", globPattern: "**\/*.py" }`
- *   `/home/user/src/**`   → `{ baseDir: "/home/user/src", globPattern: null }`
+ *   `/home/user/src/**`   → `{ baseDir: "/home/user/src", globPattern: "**" }`
  *   `**\/*.ts`            → `{ baseDir: ".", globPattern: "**\/*.ts" }`
  */
 export function parseScope(scope: string): {
