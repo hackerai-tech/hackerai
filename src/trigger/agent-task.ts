@@ -10,7 +10,8 @@ import {
 } from "ai";
 import { task } from "@trigger.dev/sdk/v3";
 import { logger } from "@trigger.dev/sdk/v3";
-import { systemPrompt, getResumeSection } from "@/lib/system-prompt";
+import { systemPrompt } from "@/lib/system-prompt";
+import { getResumeSection } from "@/lib/system-prompt/resume";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessage } from "@/lib/actions";
 import {

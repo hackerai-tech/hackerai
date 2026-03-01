@@ -9,7 +9,8 @@ import {
   UIMessagePart,
   smoothStream,
 } from "ai";
-import { systemPrompt, getResumeSection } from "@/lib/system-prompt";
+import { systemPrompt } from "@/lib/system-prompt";
+import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
