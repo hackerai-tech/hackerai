@@ -521,6 +521,12 @@ function renderMatchTool(
     }
     if (outputText.startsWith("No files found")) return "No files found";
     if (outputText.startsWith("No matches found")) return "No matches found";
+    if (outputText.startsWith("Search timed out")) return "Search timed out";
+    if (
+      outputText.startsWith("Error:") ||
+      outputText.startsWith("Search failed")
+    )
+      return "Search failed";
     return "Search complete";
   };
 
