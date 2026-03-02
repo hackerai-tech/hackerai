@@ -1,10 +1,11 @@
-import { useMemo, useEffect, useRef } from "react";
+import { useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
-import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus } from "@/types";
+import type { SidebarFile } from "@/types/chat";
 import { isSidebarFile } from "@/types/chat";
+import { useToolSidebar } from "../../hooks/useToolSidebar";
 
 interface DiffDataPart {
   type: "data-diff";
@@ -27,68 +28,7 @@ export const FileToolsHandler = ({
   part,
   status,
 }: FileToolsHandlerProps) => {
-  const { openSidebar, updateSidebarContent, sidebarContent, sidebarOpen } =
-    useGlobalState();
-
-  // Track the last streamed content to avoid unnecessary updates
-  const lastStreamedContentRef = useRef<string | null>(null);
-  // Track if this tool opened the sidebar (to know when to update it)
-  const isOwnSidebarRef = useRef(false);
-
-  // Extract streaming write content for write_file tool
-  const writeStreamingContent = useMemo(() => {
-    if (part.type !== "tool-write_file") return null;
-    const writeInput = part.input as
-      | { file_path: string; contents: string }
-      | undefined;
-    return writeInput?.contents || null;
-  }, [part.type, part.input]);
-
-  // Update sidebar content as write_file content streams in
-  useEffect(() => {
-    // Only update for write_file tool during streaming
-    if (part.type !== "tool-write_file") return;
-    if (part.state !== "input-streaming" && part.state !== "input-available")
-      return;
-    if (!writeStreamingContent) return;
-    if (!sidebarOpen || !isOwnSidebarRef.current) return;
-
-    // Check if sidebar is showing our file
-    if (!sidebarContent || !isSidebarFile(sidebarContent)) return;
-
-    const writeInput = part.input as
-      | { file_path: string; contents: string }
-      | undefined;
-    if (!writeInput?.file_path) return;
-    if (sidebarContent.path !== writeInput.file_path) return;
-
-    // Only update if content actually changed
-    if (lastStreamedContentRef.current === writeStreamingContent) return;
-    lastStreamedContentRef.current = writeStreamingContent;
-
-    updateSidebarContent({
-      content: writeStreamingContent,
-    });
-  }, [
-    part.type,
-    part.state,
-    part.input,
-    writeStreamingContent,
-    sidebarOpen,
-    sidebarContent,
-    updateSidebarContent,
-  ]);
-
-  // Reset tracking refs when tool completes or changes
-  useEffect(() => {
-    if (part.state === "output-available") {
-      isOwnSidebarRef.current = false;
-      lastStreamedContentRef.current = null;
-    }
-  }, [part.state]);
-
   // Extract diff data from data-diff parts in the message (streamed separately from tool result)
-  // This data only exists in memory/stream - not persisted, so on reload we just show the result message
   const diffDataFromStream = useMemo(() => {
     if (part.type !== "tool-search_replace") return null;
 
@@ -101,14 +41,138 @@ export const FileToolsHandler = ({
     return diffPart?.data || null;
   }, [message.parts, part.type, part.toolCallId]);
 
+  // Compute sidebar content based on tool type and state
+  const sidebarContent = useMemo((): SidebarFile | null => {
+    const { type, toolCallId, state, input, output } = part;
+
+    // write_file during streaming — show content as it streams in
+    if (
+      type === "tool-write_file" &&
+      (state === "input-streaming" || state === "input-available")
+    ) {
+      const writeInput = input as
+        | { file_path: string; contents: string }
+        | undefined;
+      if (!writeInput?.file_path) return null;
+      if (state === "input-streaming" && !writeInput.contents) return null;
+      return {
+        path: writeInput.file_path,
+        content: writeInput.contents || "",
+        action: "creating",
+        toolCallId,
+        isExecuting: true,
+      };
+    }
+
+    // Output available — build content from result
+    if (state !== "output-available") return null;
+
+    if (type === "tool-read_file") {
+      const readInput = input as
+        | { target_file: string; offset?: number; limit?: number }
+        | undefined;
+      if (!readInput) return null;
+      const readOutput = output as { result: string };
+      const cleanContent = readOutput?.result?.replace(/^\s*\d+\|/gm, "") || "";
+      const range =
+        readInput.offset && readInput.limit
+          ? {
+              start: readInput.offset,
+              end: readInput.offset + readInput.limit - 1,
+            }
+          : undefined;
+      return {
+        path: readInput.target_file,
+        content: cleanContent,
+        range,
+        action: "reading",
+        toolCallId,
+        isExecuting: false,
+      };
+    }
+
+    if (type === "tool-write_file") {
+      const writeInput = input as
+        | { file_path: string; contents: string }
+        | undefined;
+      if (!writeInput) return null;
+      return {
+        path: writeInput.file_path,
+        content: writeInput.contents,
+        action: "writing",
+        toolCallId,
+        isExecuting: false,
+      };
+    }
+
+    if (type === "tool-search_replace") {
+      const searchReplaceInput = input as
+        | {
+            file_path: string;
+            old_string: string;
+            new_string: string;
+            replace_all?: boolean;
+          }
+        | undefined;
+      if (!searchReplaceInput) return null;
+      const searchReplaceOutput = output as { result: string };
+      return {
+        path: searchReplaceInput.file_path,
+        content:
+          diffDataFromStream?.modifiedContent ||
+          searchReplaceOutput?.result ||
+          "",
+        action: "editing",
+        toolCallId,
+        originalContent: diffDataFromStream?.originalContent,
+        modifiedContent: diffDataFromStream?.modifiedContent,
+        isExecuting: false,
+      };
+    }
+
+    if (type === "tool-multi_edit") {
+      const multiEditInput = input as
+        | {
+            file_path: string;
+            edits: Array<{
+              old_string: string;
+              new_string: string;
+              replace_all?: boolean;
+            }>;
+          }
+        | undefined;
+      if (!multiEditInput) return null;
+      return {
+        path: multiEditInput.file_path,
+        content: "",
+        action: "editing",
+        toolCallId,
+        isExecuting: false,
+      };
+    }
+
+    return null;
+  }, [
+    part.type,
+    part.state,
+    part.toolCallId,
+    part.input,
+    part.output,
+    diffDataFromStream,
+  ]);
+
+  const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
+    toolCallId: part.toolCallId,
+    content: sidebarContent,
+    typeGuard: isSidebarFile,
+  });
+
+  const isClickable = !!sidebarContent;
+
   const renderReadFileTool = () => {
-    const { toolCallId, state, input, output } = part;
+    const { toolCallId, state, input } = part;
     const readInput = input as
-      | {
-          target_file: string;
-          offset?: number;
-          limit?: number;
-        }
+      | { target_file: string; offset?: number; limit?: number }
       | undefined;
 
     const getFileRange = () => {
@@ -151,32 +215,6 @@ export const FileToolsHandler = ({
         ) : null;
       case "output-available": {
         if (!readInput) return null;
-        const readOutput = output as { result: string };
-
-        const handleOpenInSidebar = () => {
-          const cleanContent = readOutput.result.replace(/^\s*\d+\|/gm, "");
-          const range =
-            readInput.offset && readInput.limit
-              ? {
-                  start: readInput.offset,
-                  end: readInput.offset + readInput.limit - 1,
-                }
-              : undefined;
-
-          openSidebar({
-            path: readInput.target_file,
-            content: cleanContent,
-            range,
-            action: "reading",
-          });
-        };
-
-        const handleKeyDown = (e: React.KeyboardEvent) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleOpenInSidebar();
-          }
-        };
 
         return (
           <ToolBlock
@@ -184,7 +222,7 @@ export const FileToolsHandler = ({
             icon={<FileText />}
             action="Read"
             target={`${readInput.target_file}${getFileRange()}`}
-            isClickable={true}
+            isClickable={isClickable}
             onClick={handleOpenInSidebar}
             onKeyDown={handleKeyDown}
           />
@@ -196,36 +234,13 @@ export const FileToolsHandler = ({
   };
 
   const renderWriteFileTool = () => {
-    const { toolCallId, state, input, output } = part;
+    const { toolCallId, state, input } = part;
     const writeInput = input as
-      | {
-          file_path: string;
-          contents: string;
-        }
+      | { file_path: string; contents: string }
       | undefined;
-
-    const handleOpenStreamingSidebar = () => {
-      if (!writeInput?.file_path) return;
-      isOwnSidebarRef.current = true;
-      lastStreamedContentRef.current = writeInput.contents || "";
-      openSidebar({
-        path: writeInput.file_path,
-        content: writeInput.contents || "",
-        action: "creating",
-        toolCallId,
-      });
-    };
-
-    const handleStreamingKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenStreamingSidebar();
-      }
-    };
 
     switch (state) {
       case "input-streaming": {
-        // Show shimmer when just starting, clickable when content starts arriving
         const hasContent = !!writeInput?.contents;
         const hasFilePath = !!writeInput?.file_path;
 
@@ -238,13 +253,9 @@ export const FileToolsHandler = ({
             action={hasContent ? "Creating" : "Creating file"}
             target={hasFilePath ? writeInput.file_path : undefined}
             isShimmer={true}
-            isClickable={hasContent && hasFilePath}
-            onClick={
-              hasContent && hasFilePath ? handleOpenStreamingSidebar : undefined
-            }
-            onKeyDown={
-              hasContent && hasFilePath ? handleStreamingKeyDown : undefined
-            }
+            isClickable={isClickable}
+            onClick={isClickable ? handleOpenInSidebar : undefined}
+            onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
       }
@@ -257,13 +268,9 @@ export const FileToolsHandler = ({
             action="Writing to"
             target={writeInput?.file_path}
             isShimmer={true}
-            isClickable={!!writeInput?.file_path}
-            onClick={
-              writeInput?.file_path ? handleOpenStreamingSidebar : undefined
-            }
-            onKeyDown={
-              writeInput?.file_path ? handleStreamingKeyDown : undefined
-            }
+            isClickable={isClickable}
+            onClick={isClickable ? handleOpenInSidebar : undefined}
+            onKeyDown={isClickable ? handleKeyDown : undefined}
           />
         );
       case "output-available":
@@ -274,26 +281,9 @@ export const FileToolsHandler = ({
             icon={<FilePlus />}
             action="Successfully wrote"
             target={writeInput.file_path}
-            isClickable={true}
-            onClick={() => {
-              isOwnSidebarRef.current = false;
-              openSidebar({
-                path: writeInput.file_path,
-                content: writeInput.contents,
-                action: "writing",
-              });
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                isOwnSidebarRef.current = false;
-                openSidebar({
-                  path: writeInput.file_path,
-                  content: writeInput.contents,
-                  action: "writing",
-                });
-              }
-            }}
+            isClickable={isClickable}
+            onClick={handleOpenInSidebar}
+            onKeyDown={handleKeyDown}
           />
         );
       default:
@@ -304,10 +294,7 @@ export const FileToolsHandler = ({
   const renderDeleteFileTool = () => {
     const { toolCallId, state, input, output } = part;
     const deleteInput = input as
-      | {
-          target_file: string;
-          explanation: string;
-        }
+      | { target_file: string; explanation: string }
       | undefined;
 
     switch (state) {
@@ -388,33 +375,13 @@ export const FileToolsHandler = ({
         const isSuccess =
           searchReplaceOutput.result.includes("Successfully made");
 
-        const handleOpenInSidebar = () => {
-          // Use diff data from stream if available (not persisted across reloads)
-          openSidebar({
-            path: searchReplaceInput.file_path,
-            content:
-              diffDataFromStream?.modifiedContent || searchReplaceOutput.result,
-            action: "editing",
-            toolCallId,
-            originalContent: diffDataFromStream?.originalContent,
-            modifiedContent: diffDataFromStream?.modifiedContent,
-          });
-        };
-
-        const handleKeyDown = (e: React.KeyboardEvent) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            handleOpenInSidebar();
-          }
-        };
-
         return (
           <ToolBlock
             key={toolCallId}
             icon={<FilePen />}
             action={isSuccess ? "Successfully edited" : "Failed to edit"}
             target={searchReplaceInput.file_path}
-            isClickable={true}
+            isClickable={isClickable}
             onClick={handleOpenInSidebar}
             onKeyDown={handleKeyDown}
           />
@@ -426,7 +393,7 @@ export const FileToolsHandler = ({
   };
 
   const renderMultiEditTool = () => {
-    const { toolCallId, state, input, output } = part;
+    const { toolCallId, state, input } = part;
     const multiEditInput = input as
       | {
           file_path: string;
@@ -464,7 +431,7 @@ export const FileToolsHandler = ({
         ) : null;
       case "output-available": {
         if (!multiEditInput) return null;
-        const multiEditOutput = output as { result: string };
+        const multiEditOutput = part.output as { result: string };
         const isSuccess = multiEditOutput.result.includes(
           "Successfully applied",
         );

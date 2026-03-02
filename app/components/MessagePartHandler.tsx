@@ -5,7 +5,6 @@ import { FileToolsHandler } from "./tools/FileToolsHandler";
 import { FileHandler } from "./tools/FileHandler";
 import { TerminalToolHandler } from "./tools/TerminalToolHandler";
 import { HttpRequestToolHandler } from "./tools/HttpRequestToolHandler";
-import { PythonToolHandler } from "./tools/PythonToolHandler";
 import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
@@ -162,13 +161,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     case "tool-http_request":
       return (
         <HttpRequestToolHandler message={message} part={part} status={status} />
-      );
-
-    // Legacy tool
-    case "data-python":
-    case "tool-python":
-      return (
-        <PythonToolHandler message={message} part={part} status={status} />
       );
 
     case "tool-get_terminal_files":

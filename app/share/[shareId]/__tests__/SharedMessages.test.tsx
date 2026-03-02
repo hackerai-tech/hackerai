@@ -234,31 +234,6 @@ describe("SharedMessages", () => {
     });
   });
 
-  describe("Tool Execution - Python", () => {
-    it("should render Python execution tool block", () => {
-      const messages = [
-        {
-          id: "1",
-          role: "assistant" as const,
-          parts: [
-            {
-              type: "tool-python",
-              state: "output-available",
-              input: { code: "print('Hello World')" },
-            },
-          ],
-          update_time: mockShareDate,
-        },
-      ];
-
-      renderWithContext(
-        <SharedMessages messages={messages} shareDate={mockShareDate} />,
-      );
-      expect(screen.getByText("Executed Python")).toBeInTheDocument();
-      expect(screen.getByText("print('Hello World')")).toBeInTheDocument();
-    });
-  });
-
   describe("Tool Execution - Web Search", () => {
     it("should render web search tool block", () => {
       const messages = [

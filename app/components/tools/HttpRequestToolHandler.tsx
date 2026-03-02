@@ -1,10 +1,10 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Globe } from "lucide-react";
-import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarTerminal } from "@/types/chat";
 import { isSidebarTerminal } from "@/types/chat";
+import { useToolSidebar } from "../../hooks/useToolSidebar";
 
 interface HttpRequestToolHandlerProps {
   message: UIMessage;
@@ -17,8 +17,6 @@ export const HttpRequestToolHandler = ({
   part,
   status,
 }: HttpRequestToolHandlerProps) => {
-  const { openSidebar, sidebarOpen, sidebarContent, updateSidebarContent } =
-    useGlobalState();
   const { toolCallId, state, input, output, errorText } = part;
 
   const httpInput = input as {
@@ -65,54 +63,29 @@ export const HttpRequestToolHandler = ({
 
   // Memoize final output computation
   const finalOutput = useMemo(() => {
-    // Prefer output from tool result, fall back to streaming output
     const resultOutput = httpOutput?.output || "";
     const errorOutput = httpOutput?.error || errorText || "";
-
     return resultOutput || streamingOutput || errorOutput || "";
   }, [httpOutput, streamingOutput, errorText]);
 
   const isExecuting = state === "input-available" && status === "streaming";
 
-  const handleOpenInSidebar = () => {
-    if (!httpInput?.url) return;
-
-    // Reuse SidebarTerminal type for consistency
-    const sidebarTerminal: SidebarTerminal = {
+  const sidebarContent = useMemo((): SidebarTerminal | null => {
+    if (!httpInput?.url) return null;
+    return {
       command: displayCommand,
       output: finalOutput,
       isExecuting,
       isBackground: false,
-      toolCallId: toolCallId,
+      toolCallId,
     };
+  }, [httpInput?.url, displayCommand, finalOutput, isExecuting, toolCallId]);
 
-    openSidebar(sidebarTerminal);
-  };
-
-  // Track if this sidebar is currently active
-  const isSidebarActive =
-    sidebarOpen &&
-    sidebarContent &&
-    isSidebarTerminal(sidebarContent) &&
-    sidebarContent.toolCallId === toolCallId;
-
-  // Update sidebar content in real-time if it's currently open for this tool call
-  useEffect(() => {
-    if (!isSidebarActive) return;
-
-    updateSidebarContent({
-      output: finalOutput,
-      isExecuting,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isSidebarActive, finalOutput, isExecuting]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      handleOpenInSidebar();
-    }
-  };
+  const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
+    toolCallId,
+    content: sidebarContent,
+    typeGuard: isSidebarTerminal,
+  });
 
   // Determine action text based on state
   const getActionText = (): string => {

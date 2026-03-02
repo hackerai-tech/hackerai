@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAG="${1:-latest}"
-IMAGE_NAME="hackerai-sandbox:${TAG}"
+IMAGE_NAME="hackerai/sandbox:${TAG}"
 
 echo "🔨 Building HackerAI Sandbox image..."
 echo "   Tag: ${IMAGE_NAME}"

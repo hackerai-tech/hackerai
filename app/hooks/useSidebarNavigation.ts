@@ -7,7 +7,6 @@ import {
 import {
   isSidebarFile,
   isSidebarTerminal,
-  isSidebarPython,
   isSidebarWebSearch,
   type SidebarContent,
 } from "@/types/chat";
@@ -55,9 +54,6 @@ export const useSidebarNavigation = ({
           item.path === sidebarContent.path &&
           item.action === sidebarContent.action
         );
-      }
-      if (isSidebarPython(item) && isSidebarPython(sidebarContent)) {
-        return item.code === sidebarContent.code;
       }
       if (isSidebarWebSearch(item) && isSidebarWebSearch(sidebarContent)) {
         return item.toolCallId === sidebarContent.toolCallId;

@@ -1,6 +1,8 @@
+import { useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
-import { useGlobalState } from "../../contexts/GlobalState";
 import type { ChatStatus, SidebarNote, SidebarNotes } from "@/types/chat";
+import { isSidebarNotes } from "@/types/chat";
+import { useToolSidebar } from "../../hooks/useToolSidebar";
 import {
   getNotesIcon,
   getNotesStreamingActionText,
@@ -20,8 +22,6 @@ export const NotesToolHandler = ({
   status,
   toolName,
 }: NotesToolHandlerProps) => {
-  const { openSidebar } = useGlobalState();
-
   const { toolCallId, state, input, output } = part;
 
   const getTarget = () => {
@@ -44,7 +44,7 @@ export const NotesToolHandler = ({
     return undefined;
   };
 
-  const buildSidebarContent = (): SidebarNotes => {
+  const sidebarContent = useMemo((): SidebarNotes | null => {
     const result = output || part.result;
     const action = getNotesActionType(toolName);
 
@@ -59,7 +59,6 @@ export const NotesToolHandler = ({
       notes = result.notes;
       totalCount = result.total_count || notes.length;
     } else if (action === "create" && input) {
-      // For create, show the created note
       notes = [
         {
           note_id: result?.note_id || "pending",
@@ -67,20 +66,18 @@ export const NotesToolHandler = ({
           content: input.content || "",
           category: input.category || "general",
           tags: input.tags || [],
-          updated_at: Date.now(),
+          updated_at: 0,
         },
       ];
       totalCount = 1;
       affectedTitle = input.title;
       newNoteId = result?.note_id;
     } else if (action === "update") {
-      // For update, use original/modified for before/after comparison
       original = result?.original;
       modified = result?.modified;
       affectedTitle = modified?.title || input?.title || input?.note_id;
       totalCount = 1;
     } else if (action === "delete") {
-      // For delete, show what was deleted
       affectedTitle = result?.deleted_title || input?.note_id;
       totalCount = 0;
     }
@@ -96,18 +93,13 @@ export const NotesToolHandler = ({
       original,
       modified,
     };
-  };
+  }, [toolName, output, part.result, input, state, toolCallId]);
 
-  const handleOpenSidebar = () => {
-    openSidebar(buildSidebarContent());
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      handleOpenSidebar();
-    }
-  };
+  const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
+    toolCallId,
+    content: sidebarContent,
+    typeGuard: isSidebarNotes,
+  });
 
   switch (state) {
     case "input-streaming":
@@ -136,7 +128,6 @@ export const NotesToolHandler = ({
       const isFailure = result?.success === false;
 
       if (isFailure) {
-        // For failures, show error message in target and don't make clickable
         return (
           <ToolBlock
             key={toolCallId}
@@ -154,7 +145,7 @@ export const NotesToolHandler = ({
           action={getNotesActionText(toolName)}
           target={getTarget()}
           isClickable={true}
-          onClick={handleOpenSidebar}
+          onClick={handleOpenInSidebar}
           onKeyDown={handleKeyDown}
         />
       );

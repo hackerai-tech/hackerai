@@ -2,7 +2,8 @@ import { memo, useCallback, useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { Search, ExternalLink } from "lucide-react";
 import type { ChatStatus, SidebarWebSearch, WebSearchResult } from "@/types";
-import { useGlobalState } from "../../contexts/GlobalState";
+import { isSidebarWebSearch } from "@/types/chat";
+import { useToolSidebar } from "../../hooks/useToolSidebar";
 
 interface WebSearchInput {
   queries?: string[];
@@ -47,11 +48,9 @@ export const WebToolHandler = memo(function WebToolHandler({
   part,
   status,
 }: WebToolHandlerProps) {
-  const { openSidebar } = useGlobalState();
   const { toolCallId, toolName, type, state, input, output } = part;
 
   // Determine if this is an open_url action
-  // Check toolName, part.type, or legacy command field
   const isOpenUrl =
     toolName === "open_url" ||
     type === "tool-open_url" ||
@@ -73,18 +72,15 @@ export const WebToolHandler = memo(function WebToolHandler({
   const target = useMemo(() => {
     if (!input) return undefined;
 
-    // Handle open_url tool or legacy web tool with open_url command
     if (isOpenUrl) {
       return (input as OpenUrlInput | LegacyWebInput).url;
     }
 
-    // Handle web_search tool (queries array)
     const searchInput = input as WebSearchInput;
     if (searchInput.queries && searchInput.queries.length > 0) {
       return searchInput.queries.join(", ");
     }
 
-    // Handle legacy web tool (single query string)
     const legacyInput = input as LegacyWebInput;
     if (legacyInput.query) {
       return legacyInput.query;
@@ -126,29 +122,22 @@ export const WebToolHandler = memo(function WebToolHandler({
       : [];
   }, [output]);
 
-  const handleOpenInSidebar = useCallback(() => {
-    if (isOpenUrl) return; // Don't open sidebar for URL opens
-    if (!query) return;
-
-    const sidebarWebSearch: SidebarWebSearch = {
+  const sidebarContent = useMemo((): SidebarWebSearch | null => {
+    if (isOpenUrl || !query) return null;
+    return {
       query,
       results: parsedResults,
       isSearching: state === "input-available" || state === "input-streaming",
       toolCallId,
     };
+  }, [isOpenUrl, query, parsedResults, state, toolCallId]);
 
-    openSidebar(sidebarWebSearch);
-  }, [isOpenUrl, query, parsedResults, state, toolCallId, openSidebar]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenInSidebar();
-      }
-    },
-    [handleOpenInSidebar],
-  );
+  const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({
+    toolCallId,
+    content: sidebarContent,
+    typeGuard: isSidebarWebSearch,
+    disabled: isOpenUrl,
+  });
 
   const canOpenSidebar = !isOpenUrl;
 

@@ -14,7 +14,7 @@
  *   [Source: url]
  *   ...response text...
  *
- * Transient/data parts (data-terminal, data-python, data-diff, data-summarization,
+ * Transient/data parts (data-terminal, data-diff, data-summarization,
  * step-start) are skipped.
  */
 import type { UIMessage } from "ai";
@@ -131,7 +131,7 @@ const formatMessageParts = (message: UIMessage): string => {
       continue;
     }
 
-    // Skip transient/data parts (data-terminal, data-python, data-diff, data-summarization, step-start)
+    // Skip transient/data parts (data-terminal, data-diff, data-summarization, step-start)
   }
 
   return sections.join("\n\n");

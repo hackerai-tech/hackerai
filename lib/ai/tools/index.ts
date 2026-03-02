@@ -19,6 +19,7 @@ import {
   createUpdateNote,
   createDeleteNote,
 } from "./notes";
+import { createMatch } from "./match";
 import type { UIMessageStreamWriter } from "ai";
 import type {
   ChatMode,
@@ -109,6 +110,7 @@ export const createTools = (
     run_terminal_cmd: createRunTerminalCmd(context),
     get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),
+    match: createMatch(context),
     todo_write: createTodoWrite(context),
     // ...(!isTemporary &&
     //   memoryEnabled && { update_memory: createUpdateMemory(context) }),

@@ -80,6 +80,8 @@ RUN set -eux; \
     traceroute \
     netcat-traditional \
     tcpdump \
+    # Search tools
+    ripgrep \
     # Text editors
     vim \
     nano \
@@ -283,6 +285,7 @@ RUN set -eux; \
     which trivy && echo "✓ trivy" && \
     which zaproxy && echo "✓ zaproxy" && \
     which httpx && echo "✓ httpx" && \
+    which rg && echo "✓ ripgrep" && \
     which go && echo "✓ go" && \
     which python3 && echo "✓ python3" && \
     which node && echo "✓ node" && \
