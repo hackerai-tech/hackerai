@@ -356,6 +356,7 @@ export const agentStreamTask = task({
       let stepSummaryLastToolCallId: string | null =
         stepSummary?.upToToolCallId ?? null;
       let lastSummarizedStepCount = 0;
+      let lastMessageSummary: string | undefined;
       let initialModelMessageCount: number | null = null;
       let stoppedDueToTokenExhaustion = false;
       let lastStepInputTokens = 0;
@@ -466,6 +467,7 @@ export const agentStreamTask = task({
                     const currentSummarizationId = summarizationCount;
                     summarizationCount++;
                     finalMessages = summarizedMessages;
+                    lastMessageSummary = messageSummaryText ?? undefined;
 
                     // Step-level: compress older steps alongside message-level
                     if (isAgentMode(mode)) {
@@ -563,7 +565,13 @@ export const agentStreamTask = task({
                       summarizationAtSteps.push({
                         stepIndex: steps.length,
                         stepSummary: stepResult.stepSummaryText,
+                        messageSummary: lastMessageSummary,
                         summarizationId: summarizationCount,
+                      });
+                      writeSummarizationEnriched(metadataWriter, {
+                        summarizationId: summarizationCount,
+                        stepSummary: stepResult.stepSummaryText,
+                        messageSummary: lastMessageSummary,
                       });
                       return { messages: stepResult.messages };
                     }

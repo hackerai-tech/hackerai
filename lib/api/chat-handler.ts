@@ -479,6 +479,7 @@ export const createChatHandler = (
           let stepSummaryLastToolCallId: string | null =
             stepSummary?.upToToolCallId ?? null;
           let lastSummarizedStepCount = 0;
+          let lastMessageSummary: string | undefined;
           let initialModelMessageCount: number | null = null;
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
@@ -592,6 +593,7 @@ export const createChatHandler = (
                         const currentSummarizationId = summarizationCount;
                         summarizationCount++;
                         finalMessages = result.summarizedMessages;
+                        lastMessageSummary = result.summaryText;
                         if (result.contextUsage) {
                           ctxUsage = result.contextUsage;
                         }
@@ -698,7 +700,13 @@ export const createChatHandler = (
                           summarizationAtSteps.push({
                             stepIndex: steps.length,
                             stepSummary: stepResult.stepSummaryText,
+                            messageSummary: lastMessageSummary,
                             summarizationId: summarizationCount,
+                          });
+                          writeSummarizationEnriched(writer, {
+                            summarizationId: summarizationCount,
+                            stepSummary: stepResult.stepSummaryText,
+                            messageSummary: lastMessageSummary,
                           });
                           return { messages: stepResult.messages };
                         }

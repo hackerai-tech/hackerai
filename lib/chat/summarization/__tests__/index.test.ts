@@ -763,6 +763,95 @@ describe("checkAndSummarizeIfNeeded", () => {
       fourMessagesAboveThreshold.slice(-2),
     );
   });
+
+  it("should pass summarizationId to writeSummarizationStarted and writeSummarizationCompleted", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary with ID" });
+
+    await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      5,
+    );
+
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const startedWrite = writeCalls.find(
+      (call: any[]) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "started",
+    );
+    const completedWrite = writeCalls.find(
+      (call: any[]) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(startedWrite![0].id).toBe("summarization-status-5");
+    expect(completedWrite![0].id).toBe("summarization-status-5");
+  });
+
+  it("should use default summarization ID when summarizationId is not provided", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary no ID" });
+
+    await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+    );
+
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const startedWrite = writeCalls.find(
+      (call: any[]) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "started",
+    );
+    const completedWrite = writeCalls.find(
+      (call: any[]) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "completed",
+    );
+    expect(startedWrite![0].id).toBe("summarization-status");
+    expect(completedWrite![0].id).toBe("summarization-status");
+  });
+
+  it("should use summarizationId=0 correctly (falsy but defined)", async () => {
+    mockGenerateText.mockResolvedValue({ text: "Summary zero" });
+
+    await checkAndSummarizeIfNeeded(
+      fourMessagesAboveThreshold,
+      "free",
+      mockLanguageModel,
+      "ask",
+      mockWriter,
+      null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      0,
+    );
+
+    const writeCalls = (mockWriter.write as jest.Mock).mock.calls;
+    const startedWrite = writeCalls.find(
+      (call: any[]) =>
+        call[0]?.type === "data-summarization" &&
+        call[0]?.data?.status === "started",
+    );
+    expect(startedWrite![0].id).toBe("summarization-status-0");
+  });
 });
 
 describe("isSummaryMessage and extractSummaryText", () => {

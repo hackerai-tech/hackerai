@@ -381,3 +381,59 @@ describe("injectSummarizationParts", () => {
     expect(injected.id).toBe("summarization-status-0");
   });
 });
+
+describe("lastMessageSummary carry-forward pattern", () => {
+  it("enriched event carries forward a previous message summary alongside step summary", () => {
+    const writer = createMockWriter();
+    const lastMessageSummary = "Previous message summary from combined path";
+
+    // Simulate standalone step path: writeSummarizationEnriched called with
+    // lastMessageSummary carried forward from a previous combined summarization
+    writeSummarizationEnriched(writer as any, {
+      summarizationId: 2,
+      stepSummary: "New step summary",
+      messageSummary: lastMessageSummary,
+    });
+
+    const call = writer.write.mock.calls[0][0];
+    expect(call.id).toBe("summarization-status-2");
+    expect(call.data.status).toBe("completed");
+    expect(call.data.messageSummary).toBe(lastMessageSummary);
+    expect(call.data.stepSummary).toBe("New step summary");
+  });
+
+  it("enriched event omits messageSummary when no previous summary exists", () => {
+    const writer = createMockWriter();
+    const lastMessageSummary: string | undefined = undefined;
+
+    writeSummarizationEnriched(writer as any, {
+      summarizationId: 1,
+      stepSummary: "Step summary only",
+      messageSummary: lastMessageSummary,
+    });
+
+    const data = writer.write.mock.calls[0][0].data;
+    expect(data.stepSummary).toBe("Step summary only");
+    expect(data).not.toHaveProperty("messageSummary");
+  });
+
+  it("injectSummarizationParts preserves carried-forward messageSummary at save time", () => {
+    const stepStartPart = { type: "step-start" as const };
+    const events = [
+      {
+        stepIndex: 0,
+        stepSummary: "step text",
+        messageSummary: "carried-forward msg",
+        summarizationId: 2,
+      },
+    ];
+
+    const result = injectSummarizationParts([stepStartPart], events);
+
+    expect(result).toHaveLength(2);
+    const injected = result[0] as { id: string; data: Record<string, unknown> };
+    expect(injected.id).toBe("summarization-status-2");
+    expect(injected.data.messageSummary).toBe("carried-forward msg");
+    expect(injected.data.stepSummary).toBe("step text");
+  });
+});
