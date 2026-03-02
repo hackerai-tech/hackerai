@@ -367,19 +367,27 @@ export async function injectNotesIntoMessages(
 ): Promise<UIMessage[]> {
   if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
 
-  const notes = await getNotes({
-    userId: opts.userId,
-    subscription: opts.subscription,
-  });
-  const notesContent = generateNotesSection(notes);
-  if (!notesContent) return messages;
+  try {
+    const notes = await getNotes({
+      userId: opts.userId,
+      subscription: opts.subscription,
+    });
+    const notesContent = generateNotesSection(notes);
+    if (!notesContent) return messages;
 
-  logger.warn("Notes injected via system-reminder", {
-    userId: opts.userId,
-    noteCount: notes?.length ?? 0,
-  });
+    logger.warn("Notes injected via system-reminder", {
+      userId: opts.userId,
+      noteCount: notes?.length ?? 0,
+    });
 
-  return appendSystemReminderToLastUserMessage(messages, notesContent);
+    return appendSystemReminderToLastUserMessage(messages, notesContent);
+  } catch (error) {
+    logger.warn("Failed to fetch notes, continuing without them", {
+      userId: opts.userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return messages;
+  }
 }
 
 // Regex to match a system-reminder block that contains <notes>.
@@ -433,79 +441,87 @@ export async function refreshNotesInModelMessages(
 ): Promise<Array<Record<string, unknown>>> {
   if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
 
-  const notes = await getNotes({
-    userId: opts.userId,
-    subscription: opts.subscription,
-  });
-  const newNotesContent = generateNotesSection(notes);
+  try {
+    const notes = await getNotes({
+      userId: opts.userId,
+      subscription: opts.subscription,
+    });
+    const newNotesContent = generateNotesSection(notes);
 
-  logger.warn("Notes refreshed in model messages (prepareStep)", {
-    userId: opts.userId,
-    noteCount: notes?.length ?? 0,
-  });
+    logger.warn("Notes refreshed in model messages (prepareStep)", {
+      userId: opts.userId,
+      noteCount: notes?.length ?? 0,
+    });
 
-  // First pass: try to replace (or remove) an existing notes block.
-  // replaceNotesBlock handles empty newNotesContent by removing the block.
-  const result = [...messages];
-  for (let i = result.length - 1; i >= 0; i--) {
-    const msg = result[i];
-    if (msg.role !== "user") continue;
+    // First pass: try to replace (or remove) an existing notes block.
+    // replaceNotesBlock handles empty newNotesContent by removing the block.
+    const result = [...messages];
+    for (let i = result.length - 1; i >= 0; i--) {
+      const msg = result[i];
+      if (msg.role !== "user") continue;
 
-    const content = msg.content;
+      const content = msg.content;
 
-    if (typeof content === "string") {
-      const updated = replaceNotesBlock(content, newNotesContent);
-      if (updated !== content) {
-        result[i] = { ...msg, content: updated };
-        return result;
-      }
-    } else if (Array.isArray(content)) {
-      const parts = [...(content as Array<Record<string, unknown>>)];
-      for (let j = 0; j < parts.length; j++) {
-        if (parts[j].type !== "text") continue;
-        const text = parts[j].text as string;
-        const updated = replaceNotesBlock(text, newNotesContent);
-        if (updated !== text) {
-          parts[j] = { ...parts[j], text: updated };
-          result[i] = { ...msg, content: parts };
+      if (typeof content === "string") {
+        const updated = replaceNotesBlock(content, newNotesContent);
+        if (updated !== content) {
+          result[i] = { ...msg, content: updated };
           return result;
+        }
+      } else if (Array.isArray(content)) {
+        const parts = [...(content as Array<Record<string, unknown>>)];
+        for (let j = 0; j < parts.length; j++) {
+          if (parts[j].type !== "text") continue;
+          const text = parts[j].text as string;
+          const updated = replaceNotesBlock(text, newNotesContent);
+          if (updated !== text) {
+            parts[j] = { ...parts[j], text: updated };
+            result[i] = { ...msg, content: parts };
+            return result;
+          }
         }
       }
     }
-  }
 
-  // Nothing to append if user has no notes (and no existing block to remove)
-  if (!newNotesContent) return messages;
+    // Nothing to append if user has no notes (and no existing block to remove)
+    if (!newNotesContent) return messages;
 
-  const reminder = `<system-reminder>\n${newNotesContent}\n</system-reminder>`;
+    const reminder = `<system-reminder>\n${newNotesContent}\n</system-reminder>`;
 
-  // No existing notes block found (AI SDK strips <system-reminder> from its
-  // internal message state). Append the notes to the last user message.
-  for (let i = result.length - 1; i >= 0; i--) {
-    const msg = result[i];
-    if (msg.role !== "user") continue;
+    // No existing notes block found (AI SDK strips <system-reminder> from its
+    // internal message state). Append the notes to the last user message.
+    for (let i = result.length - 1; i >= 0; i--) {
+      const msg = result[i];
+      if (msg.role !== "user") continue;
 
-    const content = msg.content;
+      const content = msg.content;
 
-    if (typeof content === "string") {
-      result[i] = { ...msg, content: `${content}\n\n${reminder}` };
-      return result;
-    } else if (Array.isArray(content)) {
-      const parts = [...(content as Array<Record<string, unknown>>)];
-      const textIdx = parts.findIndex((p) => p.type === "text");
-      if (textIdx >= 0) {
-        const textPart = parts[textIdx];
-        parts[textIdx] = {
-          ...textPart,
-          text: `${textPart.text as string}\n\n${reminder}`,
-        };
-      } else {
-        parts.push({ type: "text", text: reminder });
+      if (typeof content === "string") {
+        result[i] = { ...msg, content: `${content}\n\n${reminder}` };
+        return result;
+      } else if (Array.isArray(content)) {
+        const parts = [...(content as Array<Record<string, unknown>>)];
+        const textIdx = parts.findIndex((p) => p.type === "text");
+        if (textIdx >= 0) {
+          const textPart = parts[textIdx];
+          parts[textIdx] = {
+            ...textPart,
+            text: `${textPart.text as string}\n\n${reminder}`,
+          };
+        } else {
+          parts.push({ type: "text", text: reminder });
+        }
+        result[i] = { ...msg, content: parts };
+        return result;
       }
-      result[i] = { ...msg, content: parts };
-      return result;
     }
-  }
 
-  return messages;
+    return messages;
+  } catch (error) {
+    logger.warn("Failed to refresh notes in prepareStep, continuing without", {
+      userId: opts.userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return messages;
+  }
 }
