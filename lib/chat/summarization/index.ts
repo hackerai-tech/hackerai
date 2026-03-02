@@ -91,6 +91,7 @@ export const checkAndSummarizeIfNeeded = async (
   ensureSandbox?: EnsureSandbox,
   systemPromptTokens: number = 0,
   providerInputTokens: number = 0,
+  summarizationId?: number,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -138,7 +139,7 @@ export const checkAndSummarizeIfNeeded = async (
   const cutoffMessageId =
     messagesToSummarize[messagesToSummarize.length - 1].id;
 
-  writeSummarizationStarted(writer);
+  writeSummarizationStarted(writer, summarizationId);
 
   try {
     // Run summary generation and transcript saving in parallel — they are
@@ -196,7 +197,7 @@ export const checkAndSummarizeIfNeeded = async (
     return NO_SUMMARIZATION(uiMessages);
   } finally {
     if (!abortSignal?.aborted) {
-      writeSummarizationCompleted(writer);
+      writeSummarizationCompleted(writer, summarizationId);
     }
   }
 };

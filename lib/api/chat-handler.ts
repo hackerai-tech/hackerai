@@ -80,6 +80,7 @@ import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
   injectSummarizationParts,
+  writeSummarizationEnriched,
   logPrepareStepMessages,
   type SummarizationEvent,
 } from "@/lib/utils/stream-writer-utils";
@@ -584,9 +585,11 @@ export const createChatHandler = (
                         ctxSystemTokens,
                         ctxMaxTokens,
                         providerInputTokens: lastStepInputTokens,
+                        summarizationId: summarizationCount,
                       });
 
                       if (result.needsSummarization) {
+                        const currentSummarizationId = summarizationCount;
                         summarizationCount++;
                         finalMessages = result.summarizedMessages;
                         if (result.contextUsage) {
@@ -620,6 +623,12 @@ export const createChatHandler = (
                                 stepIndex: steps.length,
                                 messageSummary: result.summaryText,
                                 stepSummary: stepResult.stepSummaryText,
+                                summarizationId: currentSummarizationId,
+                              });
+                              writeSummarizationEnriched(writer, {
+                                summarizationId: currentSummarizationId,
+                                messageSummary: result.summaryText,
+                                stepSummary: stepResult.stepSummaryText,
                               });
 
                               return { messages: stepResult.messages };
@@ -646,6 +655,11 @@ export const createChatHandler = (
                         // Message-level only (step didn't fire or failed)
                         summarizationAtSteps.push({
                           stepIndex: steps.length,
+                          messageSummary: result.summaryText,
+                          summarizationId: currentSummarizationId,
+                        });
+                        writeSummarizationEnriched(writer, {
+                          summarizationId: currentSummarizationId,
                           messageSummary: result.summaryText,
                         });
 
@@ -684,6 +698,7 @@ export const createChatHandler = (
                           summarizationAtSteps.push({
                             stepIndex: steps.length,
                             stepSummary: stepResult.stepSummaryText,
+                            summarizationId: summarizationCount,
                           });
                           return { messages: stepResult.messages };
                         }

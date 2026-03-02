@@ -22,6 +22,7 @@ import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
   injectSummarizationParts,
+  writeSummarizationEnriched,
   logPrepareStepMessages,
   type SummarizationEvent,
 } from "@/lib/utils/stream-writer-utils";
@@ -459,8 +460,10 @@ export const agentStreamTask = task({
                     ensureSandbox,
                     undefined,
                     lastStepInputTokens,
+                    summarizationCount,
                   );
                   if (needsSummarization) {
+                    const currentSummarizationId = summarizationCount;
                     summarizationCount++;
                     finalMessages = summarizedMessages;
 
@@ -487,6 +490,12 @@ export const agentStreamTask = task({
                             stepIndex: steps.length,
                             messageSummary: messageSummaryText ?? undefined,
                             stepSummary: stepResult.stepSummaryText,
+                            summarizationId: currentSummarizationId,
+                          });
+                          writeSummarizationEnriched(metadataWriter, {
+                            summarizationId: currentSummarizationId,
+                            messageSummary: messageSummaryText ?? undefined,
+                            stepSummary: stepResult.stepSummaryText,
                           });
                           return { messages: stepResult.messages };
                         }
@@ -510,6 +519,11 @@ export const agentStreamTask = task({
                     // Message-level only (step didn't fire or failed)
                     summarizationAtSteps.push({
                       stepIndex: steps.length,
+                      messageSummary: messageSummaryText ?? undefined,
+                      summarizationId: currentSummarizationId,
+                    });
+                    writeSummarizationEnriched(metadataWriter, {
+                      summarizationId: currentSummarizationId,
                       messageSummary: messageSummaryText ?? undefined,
                     });
 
@@ -549,6 +563,7 @@ export const agentStreamTask = task({
                       summarizationAtSteps.push({
                         stepIndex: steps.length,
                         stepSummary: stepResult.stepSummaryText,
+                        summarizationId: summarizationCount,
                       });
                       return { messages: stepResult.messages };
                     }

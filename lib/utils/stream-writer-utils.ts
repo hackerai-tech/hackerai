@@ -84,10 +84,14 @@ export const writeUploadCompleteStatus = (
 // Summarization notifications
 export const writeSummarizationStarted = (
   writer: UIMessageStreamWriter,
+  summarizationId?: number,
 ): void => {
   writer.write({
     type: "data-summarization",
-    id: "summarization-status",
+    id:
+      summarizationId != null
+        ? `summarization-status-${summarizationId}`
+        : "summarization-status",
     data: {
       status: "started",
       message: "Summarizing chat context",
@@ -98,10 +102,14 @@ export const writeSummarizationStarted = (
 
 export const writeSummarizationCompleted = (
   writer: UIMessageStreamWriter,
+  summarizationId?: number,
 ): void => {
   writer.write({
     type: "data-summarization",
-    id: "summarization-status",
+    id:
+      summarizationId != null
+        ? `summarization-status-${summarizationId}`
+        : "summarization-status",
     data: {
       status: "completed",
       message: "Chat context summarized",
@@ -112,9 +120,13 @@ export const writeSummarizationCompleted = (
 export const createSummarizationCompletedPart = (opts?: {
   messageSummary?: string;
   stepSummary?: string;
+  summarizationId?: number;
 }): UIMessagePart<any, any> => ({
   type: "data-summarization" as const,
-  id: "summarization-status",
+  id:
+    opts?.summarizationId != null
+      ? `summarization-status-${opts.summarizationId}`
+      : "summarization-status",
   data: {
     status: "completed",
     message: "Chat context summarized",
@@ -123,10 +135,34 @@ export const createSummarizationCompletedPart = (opts?: {
   },
 });
 
+export const writeSummarizationEnriched = (
+  writer: UIMessageStreamWriter,
+  opts: {
+    summarizationId?: number;
+    messageSummary?: string;
+    stepSummary?: string;
+  },
+): void => {
+  writer.write({
+    type: "data-summarization",
+    id:
+      opts.summarizationId != null
+        ? `summarization-status-${opts.summarizationId}`
+        : "summarization-status",
+    data: {
+      status: "completed",
+      message: "Chat context summarized",
+      ...(opts.messageSummary && { messageSummary: opts.messageSummary }),
+      ...(opts.stepSummary && { stepSummary: opts.stepSummary }),
+    },
+  });
+};
+
 export type SummarizationEvent = {
   stepIndex: number;
   messageSummary?: string;
   stepSummary?: string;
+  summarizationId?: number;
 };
 
 export function injectSummarizationParts(
@@ -144,6 +180,7 @@ export function injectSummarizationParts(
           createSummarizationCompletedPart({
             messageSummary: match.messageSummary,
             stepSummary: match.stepSummary,
+            summarizationId: match.summarizationId,
           }),
         );
       }

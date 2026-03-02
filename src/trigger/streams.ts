@@ -15,7 +15,12 @@ export type MetadataEvent =
     }
   | {
       type: "data-summarization";
-      data: { status: "started" | "completed"; message: string };
+      data: {
+        status: "started" | "completed";
+        message: string;
+        messageSummary?: string;
+        stepSummary?: string;
+      };
     }
   | { type: "data-rate-limit-warning"; data: RateLimitWarningData }
   | {
