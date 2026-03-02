@@ -77,16 +77,20 @@ async function preflightCheck(
     const out = String(result?.stdout ?? "").trim();
 
     if (out.includes("ERR_NO_RG")) {
-      return "Error: ripgrep (rg) is not installed in the sandbox. Install it with: apt-get install -y ripgrep";
+      return "Error: ripgrep (rg) is not installed in the sandbox. Install it with: apt-get install -y ripgrep (Linux), brew install ripgrep (macOS), or choco install ripgrep (Windows). See https://github.com/BurntSushi/ripgrep#installation";
     }
     if (out.includes("ERR_NO_PATH")) {
       const displayPath = safeBaseDir.replace(/^'|'$/g, "");
       return `Error: Path '${displayPath}' does not exist. Verify the scope path is correct and use an absolute path (e.g. /home/user/project/**/*.ts).`;
     }
     return null;
-  } catch {
-    // If preflight itself fails, let the main command attempt and report its own error
-    return null;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const lower = msg.toLowerCase();
+    if (lower.includes("timeout") || lower.includes("timed out")) {
+      return "Error: Sandbox is not responding. Verify the sandbox is running and accessible.";
+    }
+    return `Error: Preflight check failed — ${msg}. The sandbox may not be ready.`;
   }
 }
 
@@ -150,7 +154,7 @@ export function classifyExecutionError(error: unknown): string {
   const lower = msg.toLowerCase();
 
   if (lower.includes("timeout") || lower.includes("timed out")) {
-    return "Error: Search timed out. Try a more specific scope pattern to narrow the search area, or increase specificity of the glob/regex.";
+    return "Error: Search timed out. Try a more specific scope pattern to narrow the search area. If this persists, verify that ripgrep (rg) is installed and working in the sandbox.";
   }
   if (
     lower.includes("sandbox") &&
