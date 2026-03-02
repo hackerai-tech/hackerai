@@ -24,6 +24,82 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 
+type CostTier = "low" | "medium" | "high" | "very-high";
+
+const MODEL_COST_TIER: Record<Exclude<SelectedModel, "auto">, CostTier> = {
+  "kimi-k2.5": "medium",
+  "gemini-3-flash": "low",
+  "grok-4.1": "low",
+  "gemini-3.1-pro": "high",
+  "sonnet-4.6": "high",
+  "opus-4.6": "very-high",
+};
+
+const COST_CONFIG: Record<
+  CostTier,
+  { count: number; label: string; activeClass: string }
+> = {
+  low: {
+    count: 1,
+    label: "Low cost",
+    activeClass: "text-emerald-600/80 dark:text-emerald-400/80",
+  },
+  medium: {
+    count: 2,
+    label: "Medium cost",
+    activeClass: "text-amber-600/80 dark:text-amber-400/80",
+  },
+  high: {
+    count: 3,
+    label: "High cost",
+    activeClass: "text-orange-600/80 dark:text-orange-400/80",
+  },
+  "very-high": {
+    count: 3,
+    label: "Very high cost",
+    activeClass: "text-red-600/80 dark:text-red-400/80",
+  },
+};
+
+const MAX_DOLLARS = 3;
+
+function CostIndicator({
+  modelId,
+}: {
+  modelId: Exclude<SelectedModel, "auto">;
+}) {
+  const tier = MODEL_COST_TIER[modelId];
+  const config = COST_CONFIG[tier];
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          aria-label={`Cost: ${config.label}`}
+          className="inline-flex items-center gap-0 font-semibold tracking-tight text-xs cursor-default"
+        >
+          {Array.from({ length: MAX_DOLLARS }, (_, i) => (
+            <span
+              key={i}
+              aria-hidden="true"
+              className={
+                i < config.count
+                  ? config.activeClass
+                  : "text-muted-foreground/30"
+              }
+            >
+              $
+            </span>
+          ))}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={4} className="text-xs px-2 py-1">
+        {config.label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 interface ModelOption {
   id: SelectedModel;
   label: string;
@@ -117,6 +193,7 @@ const ModelOptionList = ({
               {option.thinking && (
                 <Brain className="h-3 w-3 text-muted-foreground/60" />
               )}
+              {option.id !== "auto" && <CostIndicator modelId={option.id} />}
             </div>
           </div>
           {isFreeUser ? (
