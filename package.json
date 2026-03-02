@@ -43,8 +43,8 @@
     "local-sandbox:build": "cd packages/local && pnpm build",
     "desktop:dev": "cd packages/desktop && pnpm dev",
     "desktop:build": "cd packages/desktop && pnpm build",
-    "docker:build": "docker buildx build --load -t hackerai-sandbox:latest -f docker/Dockerfile docker/",
-    "docker:build:push": "docker buildx build --platform linux/amd64,linux/arm64 --push -t hackerai-sandbox:latest -f docker/Dockerfile docker/"
+    "docker:build": "docker buildx build --load -t hackerai/sandbox:latest -f docker/Dockerfile docker/",
+    "docker:build:push": "docker buildx build --platform linux/amd64,linux/arm64 --push -t hackerai/sandbox:latest -f docker/Dockerfile docker/"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.31",
