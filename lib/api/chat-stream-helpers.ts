@@ -14,6 +14,9 @@ import {
   checkAndSummarizeIfNeeded,
   type EnsureSandbox,
 } from "@/lib/chat/summarization";
+import { getNotes } from "@/lib/db/actions";
+import { generateNotesSection } from "@/lib/system-prompt/notes";
+import { logger } from "@/lib/logger";
 
 /**
  * Check if messages contain file attachments
@@ -347,4 +350,178 @@ export function appendSystemReminderToLastUserMessage(
     }
   }
   return result;
+}
+
+/**
+ * Fetches user notes and injects them into messages via <system-reminder>.
+ * Returns the (possibly updated) messages array.
+ */
+export async function injectNotesIntoMessages(
+  messages: UIMessage[],
+  opts: {
+    userId: string;
+    subscription: SubscriptionTier;
+    shouldIncludeNotes: boolean;
+    isTemporary?: boolean;
+  },
+): Promise<UIMessage[]> {
+  if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
+
+  try {
+    const notes = await getNotes({
+      userId: opts.userId,
+      subscription: opts.subscription,
+    });
+    const notesContent = generateNotesSection(notes);
+    if (!notesContent) return messages;
+
+    logger.warn("Notes injected via system-reminder", {
+      userId: opts.userId,
+      noteCount: notes?.length ?? 0,
+    });
+
+    return appendSystemReminderToLastUserMessage(messages, notesContent);
+  } catch (error) {
+    logger.warn("Failed to fetch notes, continuing without them", {
+      userId: opts.userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return messages;
+  }
+}
+
+// Regex to match a system-reminder block that contains <notes>.
+// Uses \s* instead of literal \n so it stays in sync even if the
+// template strings in appendSystemReminderToLastUserMessage or
+// generateNotesSection change their whitespace slightly.
+const NOTES_REMINDER_REGEX =
+  /<system-reminder>\s*<notes>[\s\S]*?<\/notes>\s*<\/system-reminder>/;
+
+/**
+ * Replaces the notes <system-reminder> block inside a text string.
+ * Returns the original string unchanged if no notes block is found.
+ */
+export function replaceNotesBlock(
+  text: string,
+  newNotesContent: string,
+): string {
+  if (NOTES_REMINDER_REGEX.test(text)) {
+    return newNotesContent
+      ? text.replace(
+          NOTES_REMINDER_REGEX,
+          `<system-reminder>\n${newNotesContent}\n</system-reminder>`,
+        )
+      : text.replace(NOTES_REMINDER_REGEX, "");
+  }
+  return text;
+}
+
+/**
+ * Updates the notes in model messages (CoreMessage[]) from prepareStep.
+ * Preserves full conversation history (tool calls, results, assistant messages).
+ *
+ * The AI SDK does NOT preserve `<system-reminder>` text that was injected into
+ * user messages via `appendSystemReminderToLastUserMessage`. So on subsequent
+ * agentic steps, the notes block will be missing from prepareStep's messages.
+ *
+ * Strategy:
+ * 1. Try to find and replace an existing `<notes>` block (in case the SDK
+ *    does preserve it in some path).
+ * 2. If no block is found, append the notes as a new `<system-reminder>` to
+ *    the last user message — this ensures the model always sees fresh notes.
+ */
+export async function refreshNotesInModelMessages(
+  messages: Array<Record<string, unknown>>,
+  opts: {
+    userId: string;
+    subscription: SubscriptionTier;
+    shouldIncludeNotes: boolean;
+    isTemporary?: boolean;
+  },
+): Promise<Array<Record<string, unknown>>> {
+  if (!opts.shouldIncludeNotes || opts.isTemporary) return messages;
+
+  try {
+    const notes = await getNotes({
+      userId: opts.userId,
+      subscription: opts.subscription,
+    });
+    const newNotesContent = generateNotesSection(notes);
+
+    logger.warn("Notes refreshed in model messages (prepareStep)", {
+      userId: opts.userId,
+      noteCount: notes?.length ?? 0,
+    });
+
+    // First pass: try to replace (or remove) an existing notes block.
+    // replaceNotesBlock handles empty newNotesContent by removing the block.
+    const result = [...messages];
+    for (let i = result.length - 1; i >= 0; i--) {
+      const msg = result[i];
+      if (msg.role !== "user") continue;
+
+      const content = msg.content;
+
+      if (typeof content === "string") {
+        const updated = replaceNotesBlock(content, newNotesContent);
+        if (updated !== content) {
+          result[i] = { ...msg, content: updated };
+          return result;
+        }
+      } else if (Array.isArray(content)) {
+        const parts = [...(content as Array<Record<string, unknown>>)];
+        for (let j = 0; j < parts.length; j++) {
+          if (parts[j].type !== "text") continue;
+          const text = parts[j].text as string;
+          const updated = replaceNotesBlock(text, newNotesContent);
+          if (updated !== text) {
+            parts[j] = { ...parts[j], text: updated };
+            result[i] = { ...msg, content: parts };
+            return result;
+          }
+        }
+      }
+    }
+
+    // Nothing to append if user has no notes (and no existing block to remove)
+    if (!newNotesContent) return messages;
+
+    const reminder = `<system-reminder>\n${newNotesContent}\n</system-reminder>`;
+
+    // No existing notes block found (AI SDK strips <system-reminder> from its
+    // internal message state). Append the notes to the last user message.
+    for (let i = result.length - 1; i >= 0; i--) {
+      const msg = result[i];
+      if (msg.role !== "user") continue;
+
+      const content = msg.content;
+
+      if (typeof content === "string") {
+        result[i] = { ...msg, content: `${content}\n\n${reminder}` };
+        return result;
+      } else if (Array.isArray(content)) {
+        const parts = [...(content as Array<Record<string, unknown>>)];
+        const textIdx = parts.findIndex((p) => p.type === "text");
+        if (textIdx >= 0) {
+          const textPart = parts[textIdx];
+          parts[textIdx] = {
+            ...textPart,
+            text: `${textPart.text as string}\n\n${reminder}`,
+          };
+        } else {
+          parts.push({ type: "text", text: reminder });
+        }
+        result[i] = { ...msg, content: parts };
+        return result;
+      }
+    }
+
+    return messages;
+  } catch (error) {
+    logger.warn("Failed to refresh notes in prepareStep, continuing without", {
+      userId: opts.userId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return messages;
+  }
 }

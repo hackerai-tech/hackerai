@@ -3,9 +3,8 @@ import { getPersonalityInstructions } from "./system-prompt/personality";
 import type { UserCustomization } from "@/types";
 import { generateUserBio } from "./system-prompt/bio";
 // import { generateMemorySection } from "./system-prompt/memory";
-import { generateNotesSection } from "./system-prompt/notes";
+import { getNotesDisabledMessage } from "./system-prompt/notes";
 // import { getMemories, getNotes } from "@/lib/db/actions";
-import { getNotes } from "@/lib/db/actions";
 import { getModelCutoffDate, type ModelName } from "@/lib/ai/providers";
 
 // Constants
@@ -278,18 +277,7 @@ export const systemPrompt = async (
   isTemporary?: boolean,
   sandboxContext?: string | null,
 ): Promise<string> => {
-  // Only get notes if the user has memory/notes entries enabled
   const shouldIncludeNotes = userCustomization?.include_memory_entries ?? true;
-  // const memories =
-  //   userId && shouldIncludeNotes && !isTemporary
-  //     ? await getMemories({ userId, subscription })
-  //     : null;
-
-  // Get notes for system prompt context (gated by notes/memory preference)
-  const notes =
-    userId && shouldIncludeNotes && !isTemporary
-      ? await getNotes({ userId, subscription })
-      : null;
 
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,
@@ -316,8 +304,12 @@ The current date is ${currentDateTime}.`;
   sections.push(getSecurityInstructions());
 
   sections.push(generateUserBio(userCustomization || null));
-  // sections.push(generateMemorySection(memories || null, shouldIncludeNotes));
-  sections.push(generateNotesSection(notes || null, shouldIncludeNotes));
+
+  // Notes are injected via <system-reminder> in messages to keep the system prompt
+  // stable for prompt caching. Only include the static "disabled" message here.
+  if (!shouldIncludeNotes) {
+    sections.push(getNotesDisabledMessage());
+  }
 
   // Add personality instructions at the end
   if (personalityInstructions) {

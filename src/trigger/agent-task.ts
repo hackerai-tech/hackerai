@@ -20,6 +20,8 @@ import {
   isXaiSafetyError,
   isProviderApiError,
   appendSystemReminderToLastUserMessage,
+  injectNotesIntoMessages,
+  refreshNotesInModelMessages,
 } from "@/lib/api/chat-stream-helpers";
 import {
   writeUploadStartStatus,
@@ -324,6 +326,21 @@ export const agentStreamTask = task({
         );
       }
 
+      // Inject notes into messages instead of system prompt
+      // to keep the system prompt stable for prompt caching
+      const shouldIncludeNotes =
+        userCustomization?.include_memory_entries ?? true;
+      const noteInjectionOpts = {
+        userId,
+        subscription,
+        shouldIncludeNotes,
+        isTemporary: temporary,
+      };
+      finalMessages = await injectNotesIntoMessages(
+        finalMessages,
+        noteInjectionOpts,
+      );
+
       let hasSummarized = false;
       let stoppedDueToTokenExhaustion = false;
       let lastStepInputTokens = 0;
@@ -402,12 +419,8 @@ export const agentStreamTask = task({
                 (lastStep &&
                   (lastStep as { toolResults?: unknown[] }).toolResults) ||
                 [];
-              const wasMemoryUpdate =
-                Array.isArray(toolResults) &&
-                toolResults.some(
-                  (r) =>
-                    (r as { toolName?: string })?.toolName === "update_memory",
-                );
+
+              // Check if any note was created, updated, or deleted
               const wasNoteModified =
                 Array.isArray(toolResults) &&
                 toolResults.some((r) =>
@@ -415,24 +428,19 @@ export const agentStreamTask = task({
                     (r as { toolName?: string })?.toolName ?? "",
                   ),
                 );
-              if (!wasMemoryUpdate && !wasNoteModified) {
-                return {
-                  messages,
-                  ...(currentSystemPrompt && {
-                    system: currentSystemPrompt,
-                  }),
-                };
+
+              if (!wasNoteModified) {
+                return { messages };
               }
-              currentSystemPrompt = await systemPrompt(
-                userId,
-                mode,
-                subscription,
-                selectedModel,
-                userCustomization,
-                temporary,
-                sandboxContext,
+
+              // Update the notes block within the existing messages,
+              // preserving the full conversation history (tool calls/results)
+              const updatedMessages = await refreshNotesInModelMessages(
+                messages as Array<Record<string, unknown>>,
+                noteInjectionOpts,
               );
-              return { messages, system: currentSystemPrompt };
+
+              return { messages: updatedMessages as typeof messages };
             } catch (error) {
               if (
                 error instanceof DOMException &&
