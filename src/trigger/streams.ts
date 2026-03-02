@@ -35,7 +35,16 @@ export type MetadataEvent =
       type: "data-terminal";
       data: { terminal: string; toolCallId: string };
     }
-  | { type: "data-appendMessage"; data: string };
+  | { type: "data-appendMessage"; data: string }
+  | {
+      type: "data-context-usage";
+      data: {
+        messagesTokens: number;
+        summaryTokens: number;
+        systemTokens: number;
+        maxTokens: number;
+      };
+    };
 
 // We send JSON-stringified MetadataEvent so the client receives parseable strings
 // (Trigger's pipeline was turning objects into "[object Object]" when sent as objects).

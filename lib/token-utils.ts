@@ -1,4 +1,5 @@
 import { UIMessage, UIMessagePart } from "ai";
+import type { ModelMessage } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -202,4 +203,100 @@ export function truncateOutput(args: {
   const suffix =
     mode === "read-file" ? FILE_READ_TRUNCATION_MESSAGE : TRUNCATION_MESSAGE;
   return truncateContent(content, suffix);
+}
+
+/**
+ * Count tokens for a single ModelMessage.
+ */
+function countSingleModelMessageTokens(msg: ModelMessage): number {
+  if (typeof msg.content === "string") {
+    return countTokens(msg.content);
+  }
+  let total = 0;
+  if (Array.isArray(msg.content)) {
+    for (const part of msg.content) {
+      if (typeof part === "string") {
+        total += countTokens(part);
+      } else if (typeof part === "object" && part !== null) {
+        if (
+          "text" in part &&
+          typeof (part as { text: unknown }).text === "string"
+        ) {
+          total += countTokens((part as { text: string }).text);
+        } else {
+          total += countTokens(JSON.stringify(part));
+        }
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Returns true if the ModelMessage is a summary injection
+ * (`<context_summary>` or `<step_summary>`).
+ */
+function isSummaryModelMessage(msg: ModelMessage): boolean {
+  if (msg.role !== "user") return false;
+  const textContent = getModelMessageLeadingText(msg);
+  return (
+    textContent.startsWith("<context_summary>") ||
+    textContent.startsWith("<step_summary>")
+  );
+}
+
+function getModelMessageLeadingText(msg: ModelMessage): string {
+  if (typeof msg.content === "string") return msg.content;
+  if (!Array.isArray(msg.content)) return "";
+  for (const part of msg.content) {
+    if (typeof part === "string") return part;
+    if (
+      typeof part === "object" &&
+      part !== null &&
+      "text" in part &&
+      typeof (part as { text: unknown }).text === "string"
+    ) {
+      return (part as { text: string }).text;
+    }
+  }
+  return "";
+}
+
+/**
+ * Count tokens in ModelMessage[] — the actual messages sent to the LLM.
+ */
+export function countModelMessagesTokens(messages: ModelMessage[]): number {
+  let total = 0;
+  for (const msg of messages) {
+    total += countSingleModelMessageTokens(msg);
+  }
+  return total;
+}
+
+/**
+ * Compute context usage breakdown from ModelMessage[] — separating summary
+ * messages (`<context_summary>`, `<step_summary>`) from regular messages.
+ * Use this to get accurate token counts from what is actually sent to the LLM.
+ */
+export function computeModelMessagesUsage(
+  messages: ModelMessage[],
+  systemTokens: number,
+  maxTokens: number,
+): {
+  systemTokens: number;
+  summaryTokens: number;
+  messagesTokens: number;
+  maxTokens: number;
+} {
+  let summaryTokens = 0;
+  let messagesTokens = 0;
+  for (const msg of messages) {
+    const tokens = countSingleModelMessageTokens(msg);
+    if (isSummaryModelMessage(msg)) {
+      summaryTokens += tokens;
+    } else {
+      messagesTokens += tokens;
+    }
+  }
+  return { systemTokens, summaryTokens, messagesTokens, maxTokens };
 }

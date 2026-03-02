@@ -31,6 +31,7 @@ import {
 import { getExtraUsageBalance } from "@/lib/extra-usage";
 import {
   countMessagesTokens,
+  computeModelMessagesUsage,
   getMaxTokensForSubscription,
 } from "@/lib/token-utils";
 import { countTokens } from "gpt-tokenizer";
@@ -44,7 +45,6 @@ import {
   buildProviderOptions,
   isXaiSafetyError,
   isProviderApiError,
-  computeContextUsage,
   writeContextUsage,
   contextUsageEnabled,
   runSummarizationStep,
@@ -451,10 +451,12 @@ export const createChatHandler = (
           const ctxMaxTokens = contextUsageEnabled
             ? getMaxTokensForSubscription(subscription)
             : 0;
+          // Pre-compute initial model messages for accurate context usage
+          const initialModelMessages =
+            await convertToModelMessages(processedMessages);
           let ctxUsage = contextUsageEnabled
-            ? computeContextUsage(
-                truncatedMessages,
-                fileTokens,
+            ? computeModelMessagesUsage(
+                initialModelMessages,
                 ctxSystemTokens,
                 ctxMaxTokens,
               )
@@ -522,11 +524,12 @@ export const createChatHandler = (
             streamText({
               model: trackedProvider.languageModel(modelName),
               system: currentSystemPrompt,
-              messages: await convertToModelMessages(finalMessages),
+              messages: initialModelMessages,
               tools,
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 logPrepareStepMessages(steps.length, "input", messages);
+
                 const result = await (async (): Promise<
                   Record<string, unknown>
                 > => {
@@ -787,12 +790,21 @@ export const createChatHandler = (
                       : {};
                   }
                 })();
-                logPrepareStepMessages(
-                  steps.length,
-                  "output",
+                const outMessages =
                   ((result as { messages?: unknown })
-                    .messages as import("ai").ModelMessage[]) ?? messages,
-                );
+                    .messages as import("ai").ModelMessage[]) ?? messages;
+                logPrepareStepMessages(steps.length, "output", outMessages);
+
+                // Emit context usage based on actual messages sent to the LLM
+                if (contextUsageEnabled) {
+                  ctxUsage = computeModelMessagesUsage(
+                    outMessages,
+                    ctxUsage.systemTokens,
+                    ctxUsage.maxTokens,
+                  );
+                  writeContextUsage(writer, ctxUsage);
+                }
+
                 return result;
               },
               abortSignal: userStopSignal.signal,

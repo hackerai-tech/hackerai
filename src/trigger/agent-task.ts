@@ -42,7 +42,11 @@ import {
   saveStepSummary,
 } from "@/lib/db/actions";
 import { deductUsage } from "@/lib/rate-limit";
-import { getMaxTokensForSubscription } from "@/lib/token-utils";
+import {
+  getMaxTokensForSubscription,
+  computeModelMessagesUsage,
+} from "@/lib/token-utils";
+import { countTokens } from "gpt-tokenizer";
 import { aiStream, metadataStream, type MetadataEvent } from "./streams";
 import type {
   AgentTaskPayload,
@@ -361,14 +365,28 @@ export const agentStreamTask = task({
         }
       };
 
+      // Pre-compute initial model messages and emit context usage before stream starts
+      const initialModelMessages = await convertToModelMessages(finalMessages);
+      const systemTokensCount = countTokens(currentSystemPrompt);
+      const maxTokensLimit = getMaxTokensForSubscription(subscription);
+      metadataWriter.write({
+        type: "data-context-usage",
+        data: computeModelMessagesUsage(
+          initialModelMessages,
+          systemTokensCount,
+          maxTokensLimit,
+        ),
+      });
+
       const createStream = async (modelName: string) =>
         streamText({
           model: trackedProvider.languageModel(modelName),
           system: currentSystemPrompt,
-          messages: await convertToModelMessages(finalMessages),
+          messages: initialModelMessages,
           tools,
           prepareStep: async ({ steps, messages }) => {
             logPrepareStepMessages(steps.length, "input", messages);
+
             const result = await (async (): Promise<
               Record<string, unknown>
             > => {
@@ -605,12 +623,22 @@ export const agentStreamTask = task({
                   : {};
               }
             })();
-            logPrepareStepMessages(
-              steps.length,
-              "output",
+            const outMessages =
               ((result as { messages?: unknown })
-                .messages as import("ai").ModelMessage[]) ?? messages,
+                .messages as import("ai").ModelMessage[]) ?? messages;
+            logPrepareStepMessages(steps.length, "output", outMessages);
+
+            // Emit context usage based on actual messages sent to the LLM
+            const ctxUsage = computeModelMessagesUsage(
+              outMessages,
+              countTokens(currentSystemPrompt),
+              getMaxTokensForSubscription(subscription),
             );
+            metadataWriter.write({
+              type: "data-context-usage",
+              data: ctxUsage,
+            });
+
             return result;
           },
           providerOptions: buildProviderOptions(isReasoningModel, subscription),
