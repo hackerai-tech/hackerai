@@ -1,7 +1,11 @@
 "use node";
 
 import { createTools } from "@/lib/ai/tools";
-import { sendRateLimitWarnings } from "@/lib/api/chat-stream-helpers";
+import {
+  sendRateLimitWarnings,
+  appendSystemReminderToLastUserMessage,
+} from "@/lib/api/chat-stream-helpers";
+import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
@@ -57,6 +61,15 @@ export async function runAgentStream(
       context,
       payload,
     ));
+  }
+
+  // Inject resume context into messages instead of system prompt
+  const resumeContext = getResumeSection(chatFinishReason);
+  if (resumeContext) {
+    context.finalMessages = appendSystemReminderToLastUserMessage(
+      context.finalMessages,
+      resumeContext,
+    );
   }
 
   sendRateLimitWarnings(metadataWriter, {
@@ -138,7 +151,6 @@ export async function runAgentStream(
     selectedModel,
     userCustomization,
     temporary,
-    chatFinishReason,
     sandboxContext,
   );
   const configuredModelId =

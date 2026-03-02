@@ -10,6 +10,7 @@ import {
   smoothStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
+import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
@@ -51,6 +52,7 @@ import {
   writeContextUsage,
   contextUsageEnabled,
   runSummarizationStep,
+  appendSystemReminderToLastUserMessage,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -442,7 +444,6 @@ export const createChatHandler = (
             selectedModel,
             userCustomization,
             temporary,
-            chat?.finish_reason,
             sandboxContext,
           );
 
@@ -473,6 +474,17 @@ export const createChatHandler = (
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
           let finalMessages = processedMessages;
+
+          // Inject resume context into messages instead of system prompt
+          // to keep the system prompt stable for caching
+          const resumeContext = getResumeSection(chat?.finish_reason);
+          if (resumeContext) {
+            finalMessages = appendSystemReminderToLastUserMessage(
+              finalMessages,
+              resumeContext,
+            );
+          }
+
           let hasSummarized = false;
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
@@ -600,7 +612,6 @@ export const createChatHandler = (
                     selectedModel,
                     userCustomization,
                     temporary,
-                    chat?.finish_reason,
                     sandboxContext,
                   );
 
@@ -609,7 +620,14 @@ export const createChatHandler = (
                     system: currentSystemPrompt,
                   };
                 } catch (error) {
-                  console.error("Error in prepareStep:", error);
+                  if (
+                    error instanceof DOMException &&
+                    error.name === "AbortError"
+                  ) {
+                    // Expected when user stops the stream
+                  } else {
+                    console.error("Error in prepareStep:", error);
+                  }
                   return currentSystemPrompt
                     ? { system: currentSystemPrompt }
                     : {};
@@ -619,6 +637,7 @@ export const createChatHandler = (
               providerOptions: buildProviderOptions(
                 shouldEnableReasoning,
                 subscription,
+                userId,
               ),
               experimental_transform: smoothStream({ chunking: "word" }),
               stopWhen: isAgentMode(mode)

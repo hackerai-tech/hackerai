@@ -1,4 +1,3 @@
-import { CommandExitError } from "@e2b/code-interpreter";
 import { randomUUID } from "crypto";
 import type { UIMessageStreamWriter } from "ai";
 import type { AnySandbox } from "@/types";
@@ -18,6 +17,7 @@ import {
 } from "./utils/local-pty-session-manager";
 import type { ConvexSandbox } from "./utils/convex-sandbox";
 import { createTruncatingStreamCallback } from "./utils/stream-truncate";
+import { CommandExitError, isE2BPermanentError } from "./utils/e2b-errors";
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -430,16 +430,10 @@ export function createLocalHandlers(deps: {
           baseDelayMs: 500,
           jitterMs: 50,
           isPermanentError: (err: unknown) => {
-            if (err instanceof CommandExitError) return true;
-            if (err instanceof Error) {
-              if (err.message.includes("signal:")) return true;
-              return (
-                err.name === "NotFoundError" ||
-                err.message.includes("not running anymore") ||
-                err.message.includes("Sandbox not found")
-              );
+            if (err instanceof Error && err.message.includes("signal:")) {
+              return true;
             }
-            return false;
+            return isE2BPermanentError(err);
           },
           logger: () => {},
         },

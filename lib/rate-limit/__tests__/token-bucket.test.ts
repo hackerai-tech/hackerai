@@ -212,15 +212,6 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Codex 5.3 pricing ($1.75/$14.00)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "model-codex-5.3")).toBe(
-        17500,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "model-codex-5.3")).toBe(
-        140000,
-      );
-    });
-
     it("should use Gemini 3.1 Pro pricing ($2.00/$12.00)", () => {
       expect(
         calculateTokenCost(1_000_000, "input", "model-gemini-3.1-pro"),

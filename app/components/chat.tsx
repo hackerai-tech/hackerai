@@ -97,6 +97,7 @@ export const Chat = ({
 
   // Track whether this is an existing chat (prop-driven initially, flips after first completion)
   const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
+  const wasNewChatRef = useRef(!routeChatId);
   const shouldFetchMessages = isExistingChat;
 
   // Refs to avoid stale closures in callbacks
@@ -964,7 +965,8 @@ export const Chat = ({
                             contextUsage={contextUsage}
                             hasSavedSandboxType={
                               !!storedSandboxType ||
-                              (isExistingChat && !chatData)
+                              (isExistingChat && !chatData) ||
+                              wasNewChatRef.current
                             }
                           />
                         </div>
@@ -998,7 +1000,9 @@ export const Chat = ({
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     contextUsage={contextUsage}
                     hasSavedSandboxType={
-                      !!storedSandboxType || (isExistingChat && !chatData)
+                      !!storedSandboxType ||
+                      (isExistingChat && !chatData) ||
+                      wasNewChatRef.current
                     }
                   />
                 )}

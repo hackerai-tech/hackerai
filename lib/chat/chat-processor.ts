@@ -113,6 +113,15 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
       isToolPart && part.state === "result" && part.result !== undefined;
 
     if (isIncomplete || hasWrongFormat) {
+      // If the tool never executed (input-streaming or input-available), remove it entirely.
+      // These tools were interrupted before producing any output, so there's nothing real
+      // to report. Keeping them with fabricated output pollutes the conversation history.
+      // This also prevents "must have at least one content element" errors from providers
+      // like xAI/Grok when the conversation is resumed with empty tool args.
+      if (isIncomplete && part.output == null && part.result == null) {
+        return null; // Mark for removal in second pass
+      }
+
       // Custom tool-xxx format uses state: "output-available" with output property
       // Convert result to output if it exists (legacy data migration)
       const output = part.output ?? part.result;
@@ -126,10 +135,22 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
     return part;
   });
 
-  // Second pass: remove incomplete reasoning and the step-start before it
+  // Second pass: remove incomplete reasoning, removed tool parts, and their preceding step-starts
   const filteredParts: any[] = [];
   for (let i = 0; i < partsWithFixedTools.length; i++) {
     const part = partsWithFixedTools[i];
+
+    // Skip tool parts marked for removal (interrupted before receiving input)
+    if (part === null) {
+      // Remove the step-start that immediately precedes this tool (if any)
+      if (
+        filteredParts.length > 0 &&
+        filteredParts[filteredParts.length - 1].type === "step-start"
+      ) {
+        filteredParts.pop();
+      }
+      continue;
+    }
 
     // Check if this is an incomplete reasoning part
     const isIncompleteReasoning =
@@ -323,6 +344,51 @@ export function limitImageParts(messages: UIMessage[]): UIMessage[] {
   });
 }
 
+/**
+ * Checks if the selected model is an Anthropic model (Claude).
+ * Anthropic models have strict signature validation on thinking blocks.
+ */
+function isAnthropicModel(modelName: ModelName): boolean {
+  return modelName.includes("opus") || modelName.includes("sonnet");
+}
+
+/**
+ * Strips providerMetadata from all parts in all messages.
+ * Anthropic models require valid signatures on thinking blocks, and signatures
+ * from other models (or different Anthropic models) cause "Invalid signature in
+ * thinking block" 400 errors. Stripping providerMetadata removes these signatures.
+ * Only applied for Anthropic models — other providers (e.g., Gemini) need
+ * providerMetadata/thought_signature for tool calling to work.
+ */
+function stripProviderMetadata(messages: UIMessage[]): UIMessage[] {
+  return messages.map((message) => {
+    if (!message.parts) return message;
+
+    let hasChanges = false;
+    const cleanedParts = message.parts.map((part: any) => {
+      if (
+        part.providerMetadata ||
+        part.callProviderMetadata ||
+        part.providerExecuted ||
+        part.providerOptions
+      ) {
+        hasChanges = true;
+        const {
+          providerMetadata,
+          callProviderMetadata,
+          providerExecuted,
+          providerOptions,
+          ...rest
+        } = part;
+        return rest;
+      }
+      return part;
+    });
+
+    return hasChanges ? { ...message, parts: cleanedParts } : message;
+  });
+}
+
 // UI-only part types that should not be sent to AI providers
 const UI_ONLY_PART_TYPES = new Set(["data-summarization"]);
 
@@ -410,13 +476,20 @@ export async function processChatMessages({
     messagesWithFixedTools,
   );
 
-  // Strip originalContent from file edit outputs (large data not needed by model)
-  const cleanedMessages = stripOriginalContentFromMessages(
-    messagesWithoutDuplicates,
-  );
-
-  // Select the appropriate model
+  // Select the appropriate model early so we can make model-aware decisions below
   const selectedModel = selectModel(mode, subscription, modelOverride);
+
+  // Strip providerMetadata for Anthropic models to prevent cross-model signature errors.
+  // Anthropic requires valid signatures on thinking blocks, and signatures from other
+  // models (or different Anthropic models) cause "Invalid signature in thinking block"
+  // 400 errors. Other providers (e.g., Gemini) need providerMetadata for tool calling,
+  // so we only strip it when targeting Anthropic.
+  const sanitizedMessages = isAnthropicModel(selectedModel)
+    ? stripProviderMetadata(messagesWithoutDuplicates)
+    : messagesWithoutDuplicates;
+
+  // Strip originalContent from file edit outputs (large data not needed by model)
+  const cleanedMessages = stripOriginalContentFromMessages(sanitizedMessages);
 
   // Check moderation for the last user message
   const moderationResult = await getModerationResult(

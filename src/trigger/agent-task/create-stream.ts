@@ -92,7 +92,6 @@ export async function createAgentStream(
     selectedModel,
     userCustomization,
     temporary,
-    chatFinishReason,
     userId,
   } = payload;
 
@@ -133,7 +132,6 @@ export async function createAgentStream(
           selectedModel,
           userCustomization,
           temporary,
-          chatFinishReason,
           sandboxContext,
         );
         return {
@@ -141,13 +139,21 @@ export async function createAgentStream(
           system: context.currentSystemPrompt,
         };
       } catch (error) {
-        logger.error("Error in prepareStep", { error });
+        if (error instanceof DOMException && error.name === "AbortError") {
+          // Expected when user stops the stream
+        } else {
+          logger.error("Error in prepareStep", { error });
+        }
         return context.currentSystemPrompt
           ? { system: context.currentSystemPrompt }
           : {};
       }
     },
-    providerOptions: buildProviderOptions(shouldEnableReasoning, subscription),
+    providerOptions: buildProviderOptions(
+      shouldEnableReasoning,
+      subscription,
+      userId,
+    ),
     experimental_transform: smoothStream({ chunking: "word" }),
     stopWhen: [
       stepCountIs(getMaxStepsForUser(mode, subscription)),
