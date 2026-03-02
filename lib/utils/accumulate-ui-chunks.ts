@@ -64,6 +64,15 @@ export function accumulateChunksToMessage(
     switch (chunk.type) {
       case "start":
         if (chunk.messageId != null) id = chunk.messageId;
+        // On retry, the stream contains chunks from previous attempts followed by a
+        // new `start` chunk for the new attempt. Reset all accumulated state so the
+        // UI only shows the latest attempt's content.
+        if (parts.length > 0) {
+          parts.length = 0;
+          for (const k in activeTextParts) delete activeTextParts[k];
+          for (const k in activeReasoningParts) delete activeReasoningParts[k];
+          for (const k in partialToolCalls) delete partialToolCalls[k];
+        }
         break;
 
       case "text-start": {

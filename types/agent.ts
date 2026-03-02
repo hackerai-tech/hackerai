@@ -4,7 +4,7 @@ import type { Geo } from "@vercel/functions";
 import type { TodoManager } from "@/lib/ai/tools/utils/todo-manager";
 import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
-import type { ChatMode } from "./chat";
+import type { ChatMode, Todo } from "./chat";
 import type { ConvexSandbox } from "@/lib/ai/tools/utils/convex-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 
@@ -66,4 +66,6 @@ export interface ToolContext {
   guardrailsConfig?: string;
   /** When set, run_terminal_cmd awaits this for each terminal chunk so the run yields and Trigger can deliver metadata in real time. */
   appendMetadataStream?: AppendMetadataStreamFn;
+  /** Called after every todo_write so callers can persist the latest state (e.g. for retry recovery). */
+  onTodosUpdated?: (todos: Todo[]) => void;
 }

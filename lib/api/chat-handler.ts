@@ -488,7 +488,7 @@ export const createChatHandler = (
           let hasSummarized = false;
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
-          const isReasoningModel = isAgentMode(mode);
+          const shouldEnableReasoning = isAgentMode(mode);
 
           // Track metrics for data collection
           const streamStartTime = Date.now();
@@ -635,7 +635,7 @@ export const createChatHandler = (
               },
               abortSignal: userStopSignal.signal,
               providerOptions: buildProviderOptions(
-                isReasoningModel,
+                shouldEnableReasoning,
                 subscription,
                 userId,
               ),

@@ -9,6 +9,7 @@ interface MemoizedMarkdownProps {
 export const MemoizedMarkdown = memo(({ content }: MemoizedMarkdownProps) => {
   return (
     <Streamdown
+      disallowedElements={["hr"]}
       components={{
         code: CodeHighlight,
         a({ children, href, ...props }) {

@@ -1408,3 +1408,78 @@ export const getPreviewMessages = query({
     }
   },
 });
+
+/**
+ * Atomically save a partial error message and update the chat's todos in a single transaction.
+ * Used by catchError in the agent task to ensure both writes succeed or fail together.
+ */
+export const saveErrorMessageWithTodos = mutation({
+  args: {
+    serviceKey: v.string(),
+    id: v.string(),
+    chatId: v.string(),
+    userId: v.string(),
+    parts: v.array(v.any()),
+    todos: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          content: v.string(),
+          status: v.union(
+            v.literal("pending"),
+            v.literal("in_progress"),
+            v.literal("completed"),
+            v.literal("cancelled"),
+          ),
+          sourceMessageId: v.optional(v.string()),
+        }),
+      ),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    // Save/update the message
+    const existingMessage = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", args.id))
+      .first();
+
+    if (existingMessage) {
+      await ctx.db.patch(existingMessage._id, {
+        parts: args.parts,
+        finish_reason: "error",
+        update_time: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("messages", {
+        id: args.id,
+        chat_id: args.chatId,
+        user_id: args.userId,
+        role: "assistant",
+        parts: args.parts,
+        content: "",
+        finish_reason: "error",
+        update_time: Date.now(),
+      });
+    }
+
+    // Update todos on the chat if provided
+    if (args.todos && args.todos.length > 0) {
+      const chat = await ctx.db
+        .query("chats")
+        .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+        .first();
+
+      if (chat) {
+        await ctx.db.patch(chat._id, {
+          todos: args.todos,
+          update_time: Date.now(),
+        });
+      }
+    }
+
+    return null;
+  },
+});
