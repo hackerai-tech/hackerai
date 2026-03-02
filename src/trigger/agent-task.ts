@@ -352,6 +352,7 @@ export const agentStreamTask = task({
       let streamFinishReason: string | undefined;
       let finalMessages = processedMessages;
       let summarizationCount = 0;
+      let nextSummarizationEventId = 0;
       let stepSummaryText: string | null = stepSummary?.text ?? null;
       let stepSummaryLastToolCallId: string | null =
         stepSummary?.upToToolCallId ?? null;
@@ -461,10 +462,11 @@ export const agentStreamTask = task({
                     ensureSandbox,
                     undefined,
                     lastStepInputTokens,
-                    summarizationCount,
+                    nextSummarizationEventId,
                   );
                   if (needsSummarization) {
-                    const currentSummarizationId = summarizationCount;
+                    const currentEventId = nextSummarizationEventId;
+                    nextSummarizationEventId++;
                     summarizationCount++;
                     finalMessages = summarizedMessages;
                     lastMessageSummary = messageSummaryText ?? undefined;
@@ -492,10 +494,10 @@ export const agentStreamTask = task({
                             stepIndex: steps.length,
                             messageSummary: messageSummaryText ?? undefined,
                             stepSummary: stepResult.stepSummaryText,
-                            summarizationId: currentSummarizationId,
+                            summarizationId: currentEventId,
                           });
                           writeSummarizationEnriched(metadataWriter, {
-                            summarizationId: currentSummarizationId,
+                            summarizationId: currentEventId,
                             messageSummary: messageSummaryText ?? undefined,
                             stepSummary: stepResult.stepSummaryText,
                           });
@@ -522,10 +524,10 @@ export const agentStreamTask = task({
                     summarizationAtSteps.push({
                       stepIndex: steps.length,
                       messageSummary: messageSummaryText ?? undefined,
-                      summarizationId: currentSummarizationId,
+                      summarizationId: currentEventId,
                     });
                     writeSummarizationEnriched(metadataWriter, {
-                      summarizationId: currentSummarizationId,
+                      summarizationId: currentEventId,
                       messageSummary: messageSummaryText ?? undefined,
                     });
 
@@ -558,6 +560,8 @@ export const agentStreamTask = task({
                       abortSignal: abortController.signal,
                     });
                     if (stepResult.summarized) {
+                      const standaloneId = nextSummarizationEventId;
+                      nextSummarizationEventId++;
                       stepSummaryText = stepResult.stepSummaryText;
                       stepSummaryLastToolCallId = stepResult.lastToolCallId;
                       lastSummarizedStepCount =
@@ -566,10 +570,10 @@ export const agentStreamTask = task({
                         stepIndex: steps.length,
                         stepSummary: stepResult.stepSummaryText,
                         messageSummary: lastMessageSummary,
-                        summarizationId: summarizationCount,
+                        summarizationId: standaloneId,
                       });
                       writeSummarizationEnriched(metadataWriter, {
-                        summarizationId: summarizationCount,
+                        summarizationId: standaloneId,
                         stepSummary: stepResult.stepSummaryText,
                         messageSummary: lastMessageSummary,
                       });

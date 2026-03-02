@@ -475,6 +475,7 @@ export const createChatHandler = (
           // Base messages for streamText; prepareStep may return modified messages per-step
           let finalMessages = processedMessages;
           let summarizationCount = 0;
+          let nextSummarizationEventId = 0;
           let stepSummaryText: string | null = stepSummary?.text ?? null;
           let stepSummaryLastToolCallId: string | null =
             stepSummary?.upToToolCallId ?? null;
@@ -586,11 +587,12 @@ export const createChatHandler = (
                         ctxSystemTokens,
                         ctxMaxTokens,
                         providerInputTokens: lastStepInputTokens,
-                        summarizationId: summarizationCount,
+                        summarizationId: nextSummarizationEventId,
                       });
 
                       if (result.needsSummarization) {
-                        const currentSummarizationId = summarizationCount;
+                        const currentEventId = nextSummarizationEventId;
+                        nextSummarizationEventId++;
                         summarizationCount++;
                         finalMessages = result.summarizedMessages;
                         lastMessageSummary = result.summaryText;
@@ -625,10 +627,10 @@ export const createChatHandler = (
                                 stepIndex: steps.length,
                                 messageSummary: result.summaryText,
                                 stepSummary: stepResult.stepSummaryText,
-                                summarizationId: currentSummarizationId,
+                                summarizationId: currentEventId,
                               });
                               writeSummarizationEnriched(writer, {
-                                summarizationId: currentSummarizationId,
+                                summarizationId: currentEventId,
                                 messageSummary: result.summaryText,
                                 stepSummary: stepResult.stepSummaryText,
                               });
@@ -658,10 +660,10 @@ export const createChatHandler = (
                         summarizationAtSteps.push({
                           stepIndex: steps.length,
                           messageSummary: result.summaryText,
-                          summarizationId: currentSummarizationId,
+                          summarizationId: currentEventId,
                         });
                         writeSummarizationEnriched(writer, {
-                          summarizationId: currentSummarizationId,
+                          summarizationId: currentEventId,
                           messageSummary: result.summaryText,
                         });
 
@@ -693,6 +695,8 @@ export const createChatHandler = (
                           abortSignal: userStopSignal.signal,
                         });
                         if (stepResult.summarized) {
+                          const standaloneId = nextSummarizationEventId;
+                          nextSummarizationEventId++;
                           stepSummaryText = stepResult.stepSummaryText;
                           stepSummaryLastToolCallId = stepResult.lastToolCallId;
                           lastSummarizedStepCount =
@@ -701,10 +705,10 @@ export const createChatHandler = (
                             stepIndex: steps.length,
                             stepSummary: stepResult.stepSummaryText,
                             messageSummary: lastMessageSummary,
-                            summarizationId: summarizationCount,
+                            summarizationId: standaloneId,
                           });
                           writeSummarizationEnriched(writer, {
-                            summarizationId: summarizationCount,
+                            summarizationId: standaloneId,
                             stepSummary: stepResult.stepSummaryText,
                             messageSummary: lastMessageSummary,
                           });
