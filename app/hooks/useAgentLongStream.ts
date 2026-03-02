@@ -697,6 +697,8 @@ export function useAgentLongStream(
     if (!triggerRun) return;
     const runIdToCancel = triggerRun.runId;
     const chatIdToCancel = chatId;
+    // Prevent reconnect effect from fetching token for this cancelled run
+    reconnectedForRef.current = `${chatIdToCancel}:${runIdToCancel}`;
     clearActiveTriggerRunIdMutation({ chatId: chatIdToCancel }).catch(() => {});
     setTriggerRun(null);
     setTriggerBaseAndUserMessages([]);
