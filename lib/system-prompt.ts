@@ -324,6 +324,15 @@ The current date is ${currentDateTime}.`;
     sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
   }
 
+  // Instruct the model to treat injected summaries as reference context only
+  sections.push(`<summary_instructions>
+The conversation may contain messages wrapped in <context_summary> or <step_summary> tags. \
+These are compressed recaps of prior conversation history, formatted with structured section headers \
+for your reference. Do NOT adopt their formatting, section headers, or report-style layout in your \
+responses. They exist solely to restore your memory of past context. Continue responding naturally \
+as if you recall the full conversation.
+</summary_instructions>`);
+
   sections.push(getResumeSection(finishReason));
 
   return sections.filter(Boolean).join("\n\n");
