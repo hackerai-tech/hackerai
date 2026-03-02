@@ -247,7 +247,7 @@ describe("refreshNotesInModelMessages", () => {
     expect(mockGetNotes).not.toHaveBeenCalled();
   });
 
-  it("returns messages unchanged when no notes block exists", async () => {
+  it("appends notes when no existing notes block exists (AI SDK strips system-reminder)", async () => {
     const messages = [
       { role: "user", content: [{ type: "text", text: "just a message" }] },
       { role: "assistant", content: [{ type: "text", text: "response" }] },
@@ -255,7 +255,67 @@ describe("refreshNotesInModelMessages", () => {
 
     const result = await refreshNotesInModelMessages(messages, baseOpts);
 
-    // Returns original reference since nothing was replaced
+    // Notes should be appended to the last user message
+    expect(result).not.toBe(messages);
+    const userContent = result[0].content as Array<Record<string, unknown>>;
+    const text = userContent[0].text as string;
+    expect(text).toContain("just a message");
+    expect(text).toContain("<system-reminder>");
+    expect(text).toContain("New Note");
+    expect(text).toContain("<notes>");
+  });
+
+  it("appends notes to string content when no block exists", async () => {
+    const messages = [
+      { role: "user", content: "just a message" },
+      { role: "assistant", content: "response" },
+    ];
+
+    const result = await refreshNotesInModelMessages(messages, baseOpts);
+
+    const updated = result[0].content as string;
+    expect(updated).toContain("just a message");
+    expect(updated).toContain("<system-reminder>");
+    expect(updated).toContain("New Note");
+    // Assistant untouched
+    expect(result[1].content).toBe("response");
+  });
+
+  it("appends notes to the LAST user message in multi-turn conversation", async () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "first message" }] },
+      { role: "assistant", content: [{ type: "text", text: "first reply" }] },
+      { role: "user", content: [{ type: "text", text: "second message" }] },
+      { role: "assistant", content: [{ type: "text", text: "second reply" }] },
+    ];
+
+    const result = await refreshNotesInModelMessages(messages, baseOpts);
+
+    // First user message should NOT have notes
+    const firstUserText = (
+      result[0].content as Array<Record<string, unknown>>
+    )[0].text as string;
+    expect(firstUserText).toBe("first message");
+
+    // Last user message should have notes appended
+    const lastUserText = (
+      result[2].content as Array<Record<string, unknown>>
+    )[0].text as string;
+    expect(lastUserText).toContain("second message");
+    expect(lastUserText).toContain("New Note");
+  });
+
+  it("returns messages unchanged when getNotes returns empty", async () => {
+    mockGetNotes.mockResolvedValue([]);
+
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "just a message" }] },
+      { role: "assistant", content: [{ type: "text", text: "response" }] },
+    ];
+
+    const result = await refreshNotesInModelMessages(messages, baseOpts);
+
+    // No notes to inject, returns original reference
     expect(result).toBe(messages);
   });
 

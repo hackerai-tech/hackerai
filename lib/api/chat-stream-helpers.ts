@@ -409,12 +409,18 @@ export function replaceNotesBlock(
 }
 
 /**
- * Updates the notes system-reminder within model messages (CoreMessage[])
- * from prepareStep. Preserves full conversation history (tool calls, results,
- * assistant messages) — only the notes content is replaced.
+ * Updates the notes in model messages (CoreMessage[]) from prepareStep.
+ * Preserves full conversation history (tool calls, results, assistant messages).
  *
- * Searches backwards for the last user message containing a notes block
- * and replaces its content with the freshly-fetched notes.
+ * The AI SDK does NOT preserve `<system-reminder>` text that was injected into
+ * user messages via `appendSystemReminderToLastUserMessage`. So on subsequent
+ * agentic steps, the notes block will be missing from prepareStep's messages.
+ *
+ * Strategy:
+ * 1. Try to find and replace an existing `<notes>` block (in case the SDK
+ *    does preserve it in some path).
+ * 2. If no block is found, append the notes as a new `<system-reminder>` to
+ *    the last user message — this ensures the model always sees fresh notes.
  */
 export async function refreshNotesInModelMessages(
   messages: Array<Record<string, unknown>>,
@@ -433,10 +439,15 @@ export async function refreshNotesInModelMessages(
   });
   const newNotesContent = generateNotesSection(notes);
 
+  // Nothing to inject if user has no notes
+  if (!newNotesContent) return messages;
+
   logger.warn("Notes refreshed in model messages (prepareStep)", {
     userId: opts.userId,
     noteCount: notes?.length ?? 0,
   });
+
+  const reminder = `<system-reminder>\n${newNotesContent}\n</system-reminder>`;
 
   // Walk backwards to find the user message with the notes block
   const result = [...messages];
@@ -467,6 +478,33 @@ export async function refreshNotesInModelMessages(
     }
   }
 
-  // No existing notes block found — nothing to replace
+  // No existing notes block found (AI SDK strips <system-reminder> from its
+  // internal message state). Append the notes to the last user message.
+  for (let i = result.length - 1; i >= 0; i--) {
+    const msg = result[i];
+    if (msg.role !== "user") continue;
+
+    const content = msg.content;
+
+    if (typeof content === "string") {
+      result[i] = { ...msg, content: `${content}\n\n${reminder}` };
+      return result;
+    } else if (Array.isArray(content)) {
+      const parts = [...(content as Array<Record<string, unknown>>)];
+      const textIdx = parts.findIndex((p) => p.type === "text");
+      if (textIdx >= 0) {
+        const textPart = parts[textIdx];
+        parts[textIdx] = {
+          ...textPart,
+          text: `${textPart.text as string}\n\n${reminder}`,
+        };
+      } else {
+        parts.push({ type: "text", text: reminder });
+      }
+      result[i] = { ...msg, content: parts };
+      return result;
+    }
+  }
+
   return messages;
 }
