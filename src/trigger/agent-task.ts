@@ -99,10 +99,18 @@ function appendMetadata(event: MetadataEvent): Promise<void> {
   return metadataStream.append(JSON.stringify(event));
 }
 
-/** Creates a writer-like object that appends data-* parts to metadataStream */
+/** Creates a writer-like object that appends data-* parts to metadataStream.
+ *  Summarization events are also written to aiStream so the client's
+ *  accumulateChunksToMessage includes them as message parts, enabling
+ *  SummarizationHandler to render the shimmer/badge in real-time. */
 function createMetadataWriter(): UIMessageStreamWriter {
   return {
-    write(part: { type: string; data?: unknown }) {
+    write(part: {
+      type: string;
+      id?: string;
+      data?: unknown;
+      transient?: boolean;
+    }) {
       if (!part.type.startsWith("data-")) return;
       const event = { type: part.type, data: part.data } as MetadataEvent;
       appendMetadata(event).catch((err) =>
@@ -111,6 +119,20 @@ function createMetadataWriter(): UIMessageStreamWriter {
           err,
         }),
       );
+      // Write summarization events to aiStream so they appear as message
+      // parts during streaming (SummarizationHandler renders them inline).
+      // Omit `transient` so the accumulator includes the part.
+      if (part.type === "data-summarization") {
+        aiStream
+          .append({
+            type: part.type,
+            id: part.id,
+            data: part.data,
+          } as unknown as import("ai").UIMessageChunk)
+          .catch((err) =>
+            logger.warn("Failed to append summarization to aiStream", { err }),
+          );
+      }
     },
     merge: () => {
       // No-op: we pipe LLM stream separately to aiStream
