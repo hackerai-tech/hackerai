@@ -439,17 +439,13 @@ export async function refreshNotesInModelMessages(
   });
   const newNotesContent = generateNotesSection(notes);
 
-  // Nothing to inject if user has no notes
-  if (!newNotesContent) return messages;
-
   logger.warn("Notes refreshed in model messages (prepareStep)", {
     userId: opts.userId,
     noteCount: notes?.length ?? 0,
   });
 
-  const reminder = `<system-reminder>\n${newNotesContent}\n</system-reminder>`;
-
-  // Walk backwards to find the user message with the notes block
+  // First pass: try to replace (or remove) an existing notes block.
+  // replaceNotesBlock handles empty newNotesContent by removing the block.
   const result = [...messages];
   for (let i = result.length - 1; i >= 0; i--) {
     const msg = result[i];
@@ -477,6 +473,11 @@ export async function refreshNotesInModelMessages(
       }
     }
   }
+
+  // Nothing to append if user has no notes (and no existing block to remove)
+  if (!newNotesContent) return messages;
+
+  const reminder = `<system-reminder>\n${newNotesContent}\n</system-reminder>`;
 
   // No existing notes block found (AI SDK strips <system-reminder> from its
   // internal message state). Append the notes to the last user message.

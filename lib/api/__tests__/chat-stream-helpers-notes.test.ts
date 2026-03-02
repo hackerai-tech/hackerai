@@ -305,7 +305,7 @@ describe("refreshNotesInModelMessages", () => {
     expect(lastUserText).toContain("New Note");
   });
 
-  it("returns messages unchanged when getNotes returns empty", async () => {
+  it("returns messages unchanged when getNotes returns empty and no block exists", async () => {
     mockGetNotes.mockResolvedValue([]);
 
     const messages = [
@@ -315,8 +315,24 @@ describe("refreshNotesInModelMessages", () => {
 
     const result = await refreshNotesInModelMessages(messages, baseOpts);
 
-    // No notes to inject, returns original reference
+    // No notes to inject and no existing block to remove
     expect(result).toBe(messages);
+  });
+
+  it("removes stale notes block when all notes are deleted", async () => {
+    mockGetNotes.mockResolvedValue([]);
+
+    const userText = `Save a note please\n\n${oldNotesBlock}`;
+    const messages = buildConversationMessages(userText);
+
+    const result = await refreshNotesInModelMessages(messages, baseOpts);
+
+    // Old notes block should be removed
+    const userContent = result[0].content as Array<Record<string, unknown>>;
+    const text = userContent[0].text as string;
+    expect(text).not.toContain("<notes>");
+    expect(text).not.toContain("Old Note");
+    expect(text).toContain("Save a note please");
   });
 
   it("does not mutate the original messages array", async () => {

@@ -597,16 +597,17 @@ export const createChatHandler = (
                     ? steps.at(-1)
                     : undefined;
                   const toolResults =
-                    (lastStep && (lastStep as any).toolResults) || [];
+                    (lastStep &&
+                      (lastStep as { toolResults?: unknown[] }).toolResults) ||
+                    [];
 
                   // Check if any note was created, updated, or deleted
                   const wasNoteModified =
                     Array.isArray(toolResults) &&
-                    toolResults.some(
-                      (r: any) =>
-                        r?.toolName === "create_note" ||
-                        r?.toolName === "update_note" ||
-                        r?.toolName === "delete_note",
+                    toolResults.some((r) =>
+                      ["create_note", "update_note", "delete_note"].includes(
+                        (r as { toolName?: string })?.toolName ?? "",
+                      ),
                     );
 
                   if (!wasNoteModified) {
