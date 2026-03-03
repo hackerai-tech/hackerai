@@ -90,7 +90,10 @@ import {
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import { nextJsAxiomLogger } from "@/lib/axiom/server";
-import { extractErrorDetails } from "@/lib/utils/error-utils";
+import {
+  extractErrorDetails,
+  getUserFriendlyProviderError,
+} from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 function getStreamContext() {
@@ -1231,12 +1234,12 @@ export const createChatHandler = (
         return error.toResponse();
       }
 
-      // Handle unexpected errors
+      // Handle unexpected errors (provider failures, etc.)
       chatLogger?.emitUnexpectedError(error);
 
       const unexpectedError = new ChatSDKError(
-        "offline:chat",
-        error instanceof Error ? error.message : "Unknown error occurred",
+        "bad_request:stream",
+        getUserFriendlyProviderError(error),
       );
       return unexpectedError.toResponse();
     }
