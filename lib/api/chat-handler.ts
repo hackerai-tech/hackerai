@@ -1216,8 +1216,12 @@ export const createChatHandler = (
                 () => sseStream,
               );
             }
-          } catch (_) {
-            // ignore redis errors
+          } catch (error) {
+            // Non-fatal: stream still works without resumability
+            nextJsAxiomLogger.warn("Stream resumption setup failed", {
+              chatId,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
         },
       });

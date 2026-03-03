@@ -261,6 +261,7 @@ export async function getMessagesByChatId({
         let fetchedDesc: UIMessage[] = [];
         let truncatedFromLoop: UIMessage[] | null = null;
         let fileTokensFromLoop: Record<Id<"files">, number> = {};
+        const skipFileTokens = mode === "agent" || mode === "agent-long";
 
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
@@ -284,26 +285,37 @@ export async function getMessagesByChatId({
               ? existingChrono
               : [...existingChrono, ...newMessages];
 
-          const trialResult = await truncateMessagesWithFileTokens(
+          // Incrementally fetch file tokens only for new file IDs not yet cached
+          if (!skipFileTokens) {
+            const allFileIds = extractAllFileIdsFromMessages(candidate);
+            const uncachedIds = allFileIds.filter(
+              (id) => !(id in fileTokensFromLoop),
+            );
+            if (uncachedIds.length > 0) {
+              const newTokens = await getFileTokensByIds(uncachedIds);
+              Object.assign(fileTokensFromLoop, newTokens);
+            }
+          }
+
+          const maxTokens = getMaxTokensForSubscription(subscription);
+          const truncatedMessages = truncateMessagesToTokenLimit(
             candidate,
-            subscription,
-            mode === "agent" || mode === "agent-long", // Skip file tokens for agent modes (files go to sandbox)
+            fileTokensFromLoop,
+            maxTokens,
           );
 
-          const hitBudget = trialResult.messages.length < candidate.length;
+          const hitBudget = truncatedMessages.length < candidate.length;
           const reachedLimit = isDone || pagesFetched >= MAX_PAGES;
 
           if (hitBudget || reachedLimit) {
-            truncatedFromLoop = trialResult.messages;
-            fileTokensFromLoop = trialResult.fileTokens;
+            truncatedFromLoop = truncatedMessages;
             break;
           }
 
           cursor = nextCursor || null;
           if (!cursor) {
             // No more pages
-            truncatedFromLoop = trialResult.messages;
-            fileTokensFromLoop = trialResult.fileTokens;
+            truncatedFromLoop = truncatedMessages;
             break;
           }
         }

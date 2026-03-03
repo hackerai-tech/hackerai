@@ -49,6 +49,18 @@ export class ConvexErrorBoundary extends Component<Props, State> {
     }
   }
 
+  handleRetry = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  handleRefresh = () => {
+    window.location.reload();
+  };
+
+  handleGoHome = () => {
+    window.location.href = "/";
+  };
+
   render() {
     if (this.state.hasError) {
       return (
@@ -59,9 +71,30 @@ export class ConvexErrorBoundary extends Component<Props, State> {
                 <h1 className="text-2xl font-bold text-foreground mb-2">
                   Something went wrong
                 </h1>
-                <p className="text-muted-foreground">
-                  Please try refreshing the page or go back to the home page.
+                <p className="text-muted-foreground mb-6">
+                  An unexpected error occurred. You can try again or start a new
+                  conversation.
                 </p>
+                <div className="flex gap-3 justify-center">
+                  <button
+                    onClick={this.handleRetry}
+                    className="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors text-sm font-medium"
+                  >
+                    Try Again
+                  </button>
+                  <button
+                    onClick={this.handleRefresh}
+                    className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors text-sm font-medium"
+                  >
+                    Refresh Page
+                  </button>
+                  <button
+                    onClick={this.handleGoHome}
+                    className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md hover:bg-secondary/90 transition-colors text-sm font-medium"
+                  >
+                    New Chat
+                  </button>
+                </div>
               </div>
             </div>
           </div>
