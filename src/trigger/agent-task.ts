@@ -671,10 +671,14 @@ export const agentStreamTask = task({
       await triggerAxiomLogger.flush();
 
       // Emit user-friendly error through metadata stream so UI can display it
-      await appendMetadata({
-        type: "data-error",
-        data: { message: getUserFriendlyProviderError(error) },
-      });
+      try {
+        await appendMetadata({
+          type: "data-error",
+          data: { message: getUserFriendlyProviderError(error) },
+        });
+      } catch {
+        // best-effort — don't mask the original error
+      }
 
       throw error;
     }

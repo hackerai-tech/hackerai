@@ -23,7 +23,7 @@ export type ModelName = keyof typeof baseProviders;
 
 export const modelCutoffDates: Record<ModelName, string> = {
   "ask-model": "January 2025",
-  "ask-model-free": "November 2024",
+  "ask-model-free": "January 2025",
   "agent-model": "January 2025",
   "model-opus-4.6": "May 2025",
   "model-sonnet-4.6": "May 2025",
