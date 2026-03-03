@@ -162,7 +162,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
-    return isChatMode(saved) ? saved : "ask";
+    if (!isChatMode(saved)) return "ask";
+    // Agent-Long is hidden for now; normalize to Agent
+    if (saved === "agent-long") return "agent";
+    return saved;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
@@ -172,6 +175,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Persist chat mode preference to localStorage on change
   useEffect(() => {
     writeChatMode(chatMode);
+  }, [chatMode]);
+
+  // Agent-Long is hidden for now; if user has it selected (e.g. from chat data), switch to Agent
+  useEffect(() => {
+    if (chatMode === "agent-long") {
+      setChatMode("agent");
+    }
   }, [chatMode]);
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>

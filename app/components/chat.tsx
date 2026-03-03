@@ -513,7 +513,8 @@ export const Chat = ({
         (chatData as any).default_model_slug ||
         ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
       if (slug === "ask" || slug === "agent" || slug === "agent-long") {
-        setChatMode(slug);
+        // Agent-Long is hidden for now; normalize to Agent
+        setChatMode(slug === "agent-long" ? "agent" : slug);
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
