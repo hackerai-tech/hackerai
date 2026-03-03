@@ -283,6 +283,7 @@ const ModelOptionList = ({
                   and more by{" "}
                   <a
                     href="#pricing"
+                    onClick={() => onClose()}
                     className="text-foreground underline underline-offset-2 hover:text-foreground/80"
                     tabIndex={0}
                   >
