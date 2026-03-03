@@ -382,6 +382,7 @@ export const ChatInput = ({
               </div>
             </DropdownMenuItem>
           )}
+          {/* Agent-Long hidden for now
           {subscription !== "free" || isCheckingProPlan ? (
             <DropdownMenuItem
               onClick={handleAgentLongModeClick}
@@ -425,6 +426,7 @@ export const ChatInput = ({
               </div>
             </DropdownMenuItem>
           )}
+          */}
         </DropdownMenuContent>
       </DropdownMenu>
     </div>

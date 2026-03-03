@@ -353,6 +353,10 @@ export function useAgentLongStream(
           { duration: 5000 },
         );
       }
+      if (event.type === "data-error") {
+        const d = event.data as { message: string };
+        toast.error(d.message);
+      }
       if (event.type === "data-terminal") {
         const d = event.data as { terminal: string; toolCallId: string };
         terminalPartsRef.current.push({

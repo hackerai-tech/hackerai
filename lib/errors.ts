@@ -98,6 +98,9 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
     case "offline:chat":
       return "We're having trouble sending your message. Please check your internet connection and try again.";
 
+    case "bad_request:stream":
+      return "The model provider returned an error.";
+
     case "not_found:document":
       return "The requested document was not found. Please check the document ID and try again.";
     case "forbidden:document":

@@ -17,6 +17,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import type { ChatMode, SelectedModel } from "@/types/chat";
@@ -133,25 +134,75 @@ interface ModelSelectorProps {
   mode: ChatMode;
 }
 
-interface ModelOptionListProps {
-  options: ModelOption[];
-  value: SelectedModel;
-  isFreeUser: boolean;
-  onSelect: (option: ModelOption) => void;
-  onClose: () => void;
+const AutoToggle = ({
+  isAuto,
+  onToggle,
+  mobile = false,
+}: {
+  isAuto: boolean;
+  onToggle: (checked: boolean) => void;
   mobile?: boolean;
-}
+}) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onToggle(!isAuto);
+    }
+  };
+
+  return (
+    <div
+      role="button"
+      onClick={() => onToggle(!isAuto)}
+      onKeyDown={handleKeyDown}
+      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-muted/50 ${
+        mobile ? "py-2.5" : "py-2"
+      }`}
+      aria-label="Toggle auto model selection"
+      tabIndex={0}
+    >
+      <div className="flex-1 min-w-0">
+        <span className="text-sm font-medium text-foreground">Auto</span>
+        {isAuto && (
+          <p className="text-xs text-muted-foreground leading-snug mt-0.5">
+            Balanced quality and speed, recommended for most tasks
+          </p>
+        )}
+      </div>
+      <Switch
+        checked={isAuto}
+        onCheckedChange={onToggle}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        aria-label="Auto model selection"
+        className="shrink-0"
+      />
+    </div>
+  );
+};
 
 const ModelOptionList = ({
   options,
   value,
+  isAuto,
   isFreeUser,
+  onAutoToggle,
   onSelect,
   onClose,
   mobile = false,
-}: ModelOptionListProps) => (
+}: {
+  options: ModelOption[];
+  value: SelectedModel;
+  isAuto: boolean;
+  isFreeUser: boolean;
+  onAutoToggle: (checked: boolean) => void;
+  onSelect: (option: ModelOption) => void;
+  onClose: () => void;
+  mobile?: boolean;
+}) => (
   <div className="flex flex-col gap-px">
-    {isFreeUser && (
+    {isFreeUser ? (
       <>
         <a
           href="#pricing"
@@ -165,76 +216,87 @@ const ModelOptionList = ({
         </a>
         <div className="my-1.5 border-b border-border/50" />
       </>
+    ) : (
+      <AutoToggle isAuto={isAuto} onToggle={onAutoToggle} mobile={mobile} />
     )}
-    {options.map((option) => {
-      const isSelected = value === option.id;
-      const showUpgradeTooltip = isFreeUser && !mobile;
 
-      const modelButton = (
-        <button
-          key={option.id}
-          onClick={() => onSelect(option)}
-          aria-pressed={isSelected}
-          className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
-            mobile ? "py-2.5" : "py-1.5"
-          } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
-        >
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-1.5">
-              <span
-                className={`text-sm transition-colors ${
-                  isSelected
-                    ? "text-accent-foreground"
-                    : "text-muted-foreground group-hover:text-foreground"
-                }`}
+    {(!isAuto || isFreeUser) && (
+      <>
+        {!isFreeUser && <div className="my-1 border-b border-border/50" />}
+        {options.map((option) => {
+          const isSelected = value === option.id;
+          const showUpgradeTooltip = isFreeUser && !mobile;
+
+          const modelButton = (
+            <button
+              key={option.id}
+              onClick={() => onSelect(option)}
+              aria-pressed={isSelected}
+              className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
+                mobile ? "py-2.5" : "py-1.5"
+              } ${isSelected ? "bg-accent" : "hover:bg-muted/50 active:bg-muted/50"}`}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`text-sm transition-colors ${
+                      isSelected
+                        ? "text-accent-foreground"
+                        : "text-muted-foreground group-hover:text-foreground"
+                    }`}
+                  >
+                    {option.label}
+                  </span>
+                  {option.thinking && (
+                    <Brain className="h-3 w-3 text-muted-foreground/60" />
+                  )}
+                  {option.id !== "auto" && (
+                    <CostIndicator modelId={option.id} />
+                  )}
+                </div>
+              </div>
+              {isFreeUser ? (
+                <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
+              ) : isSelected ? (
+                <Check className="h-3.5 w-3.5 shrink-0" />
+              ) : null}
+            </button>
+          );
+
+          if (!showUpgradeTooltip) {
+            return <div key={option.id}>{modelButton}</div>;
+          }
+
+          return (
+            <Tooltip key={option.id}>
+              <TooltipTrigger asChild>{modelButton}</TooltipTrigger>
+              <TooltipContent
+                side="right"
+                sideOffset={12}
+                className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[220px] [&_svg]:!hidden"
               >
-                {option.label}
-              </span>
-              {option.thinking && (
-                <Brain className="h-3 w-3 text-muted-foreground/60" />
-              )}
-              {option.id !== "auto" && <CostIndicator modelId={option.id} />}
-            </div>
-          </div>
-          {isFreeUser ? (
-            <Lock className="h-3.5 w-3.5 shrink-0 text-muted-foreground group-hover:text-foreground transition-colors" />
-          ) : isSelected ? (
-            <Check className="h-3.5 w-3.5 shrink-0" />
-          ) : null}
-        </button>
-      );
-
-      if (!showUpgradeTooltip) {
-        return <div key={option.id}>{modelButton}</div>;
-      }
-
-      return (
-        <Tooltip key={option.id}>
-          <TooltipTrigger asChild>{modelButton}</TooltipTrigger>
-          <TooltipContent
-            side="right"
-            sideOffset={12}
-            className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[220px] [&_svg]:!hidden"
-          >
-            <p className="text-sm font-semibold text-foreground leading-snug">
-              Access the top AI models
-            </p>
-            <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-              Access the latest AI models from OpenAI, Anthropic (Claude) and
-              more by{" "}
-              <a
-                href="#pricing"
-                className="text-foreground underline underline-offset-2 hover:text-foreground/80"
-                tabIndex={0}
-              >
-                upgrading your plan
-              </a>{" "}
-              today
-            </p>
-          </TooltipContent>
-        </Tooltip>
-      );
-    })}
+                <p className="text-sm font-semibold text-foreground leading-snug">
+                  Access the top AI models
+                </p>
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                  Access the latest AI models from OpenAI, Anthropic (Claude)
+                  and more by{" "}
+                  <a
+                    href="#pricing"
+                    onClick={() => onClose()}
+                    className="text-foreground underline underline-offset-2 hover:text-foreground/80"
+                    tabIndex={0}
+                  >
+                    upgrading your plan
+                  </a>{" "}
+                  today
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </>
+    )}
   </div>
 );
 
@@ -243,17 +305,24 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const { subscription } = useGlobalState();
   const isMobile = useIsMobile();
 
+  const isAuto = value === "auto";
   const isFreeUser = subscription === "free";
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
 
-  // Map legacy "auto" value to the actual default model for this mode
-  const effectiveValue =
-    value === "auto" ? getDefaultModelForMode(mode) : value;
-
+  const effectiveValue = isAuto ? getDefaultModelForMode(mode) : value;
   const selected =
     options.find((opt) => opt.id === effectiveValue) ?? options[0];
 
-  const triggerLabel = isFreeUser ? "Model" : selected.label;
+  const triggerLabel = isFreeUser ? "Model" : isAuto ? "Auto" : selected.label;
+
+  const handleAutoToggle = (checked: boolean) => {
+    if (isFreeUser) {
+      window.location.hash = "pricing";
+      setOpen(false);
+      return;
+    }
+    onChange(checked ? "auto" : getDefaultModelForMode(mode));
+  };
 
   const handleModelSelect = (option: ModelOption) => {
     if (isFreeUser) {
@@ -294,7 +363,9 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             <ModelOptionList
               options={options}
               value={effectiveValue}
+              isAuto={isAuto}
               isFreeUser={isFreeUser}
+              onAutoToggle={handleAutoToggle}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
               mobile
@@ -312,7 +383,9 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
         <ModelOptionList
           options={options}
           value={effectiveValue}
+          isAuto={isAuto}
           isFreeUser={isFreeUser}
+          onAutoToggle={handleAutoToggle}
           onSelect={handleModelSelect}
           onClose={() => setOpen(false)}
         />

@@ -51,7 +51,10 @@ import type {
 } from "@/lib/api/prepare-agent-payload";
 import type { UIMessageStreamWriter } from "ai";
 import type { Id } from "@/convex/_generated/dataModel";
-import { extractErrorDetails } from "@/lib/utils/error-utils";
+import {
+  extractErrorDetails,
+  getUserFriendlyProviderError,
+} from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
@@ -666,6 +669,17 @@ export const agentStreamTask = task({
         ...extractErrorDetails(error),
       });
       await triggerAxiomLogger.flush();
+
+      // Emit user-friendly error through metadata stream so UI can display it
+      try {
+        await appendMetadata({
+          type: "data-error",
+          data: { message: getUserFriendlyProviderError(error) },
+        });
+      } catch {
+        // best-effort — don't mask the original error
+      }
+
       throw error;
     }
   },
