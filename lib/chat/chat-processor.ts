@@ -349,7 +349,7 @@ export function limitImageParts(messages: UIMessage[]): UIMessage[] {
  * Anthropic models have strict signature validation on thinking blocks.
  */
 function isAnthropicModel(modelName: ModelName): boolean {
-  return modelName.includes("opus") || modelName.includes("sonnet");
+  return modelName.includes("sonnet");
 }
 
 /**

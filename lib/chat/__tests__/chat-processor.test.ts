@@ -164,7 +164,9 @@ describe("selectModel", () => {
   // Model override for paid users
   describe("model override (paid users)", () => {
     it("should use selected model override for pro users", () => {
-      expect(selectModel("agent", "pro", "opus-4.6")).toBe("model-opus-4.6");
+      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe(
+        "model-sonnet-4.6",
+      );
     });
 
     it("should use selected model override for ultra users", () => {
@@ -174,7 +176,9 @@ describe("selectModel", () => {
     });
 
     it("should use selected model override for team users", () => {
-      expect(selectModel("agent", "team", "opus-4.6")).toBe("model-opus-4.6");
+      expect(selectModel("agent", "team", "sonnet-4.6")).toBe(
+        "model-sonnet-4.6",
+      );
     });
 
     it("should work with all selectable models", () => {
@@ -192,7 +196,7 @@ describe("selectModel", () => {
   // Free user guard
   describe("free user guard", () => {
     it("should ignore model override for free users in agent mode", () => {
-      expect(selectModel("agent", "free", "opus-4.6")).toBe("agent-model");
+      expect(selectModel("agent", "free", "sonnet-4.6")).toBe("agent-model");
     });
 
     it("should ignore model override for free users in ask mode", () => {

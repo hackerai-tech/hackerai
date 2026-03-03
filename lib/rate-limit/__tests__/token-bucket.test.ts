@@ -195,17 +195,6 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Opus 4.6 pricing ($5.00/$25.00)", () => {
-      // 1M input tokens at $5.00 = 50000 points
-      expect(calculateTokenCost(1_000_000, "input", "model-opus-4.6")).toBe(
-        50000,
-      );
-      // 1M output tokens at $25.00 = 250000 points
-      expect(calculateTokenCost(1_000_000, "output", "model-opus-4.6")).toBe(
-        250000,
-      );
-    });
-
     it("should use Sonnet 4.6 pricing ($3.00/$15.00)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-sonnet-4.6")).toBe(
         30000,
@@ -242,27 +231,19 @@ describe("token-bucket", () => {
       );
     });
 
-    it("Opus 4.6 should cost 10x more input than default", () => {
-      const defaultCost = calculateTokenCost(1_000_000, "input");
-      const opusCost = calculateTokenCost(1_000_000, "input", "model-opus-4.6");
-      expect(opusCost / defaultCost).toBe(10); // $5.00 / $0.50
-    });
-
     it("expensive models should deplete budget faster", () => {
       const sessionBudget = getBudgetLimits("pro").session;
       // Typical conversation: 2000 input + 500 output tokens
       const defaultCost =
         calculateTokenCost(2000, "input") + calculateTokenCost(500, "output");
-      const opusCost =
-        calculateTokenCost(2000, "input", "model-opus-4.6") +
-        calculateTokenCost(500, "output", "model-opus-4.6");
+      const sonnetCost =
+        calculateTokenCost(2000, "input", "model-sonnet-4.6") +
+        calculateTokenCost(500, "output", "model-sonnet-4.6");
 
       const defaultConversations = Math.floor(sessionBudget / defaultCost);
-      const opusConversations = Math.floor(sessionBudget / opusCost);
+      const sonnetConversations = Math.floor(sessionBudget / sonnetCost);
 
-      expect(defaultConversations).toBeGreaterThan(opusConversations);
-      // Opus should allow significantly fewer conversations
-      expect(opusConversations).toBeLessThan(defaultConversations / 5);
+      expect(defaultConversations).toBeGreaterThan(sonnetConversations);
     });
   });
 });

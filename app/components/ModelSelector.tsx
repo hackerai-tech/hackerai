@@ -25,7 +25,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 
-type CostTier = "low" | "medium" | "high" | "very-high";
+type CostTier = "low" | "medium" | "high";
 
 const MODEL_COST_TIER: Record<Exclude<SelectedModel, "auto">, CostTier> = {
   "kimi-k2.5": "medium",
@@ -33,7 +33,6 @@ const MODEL_COST_TIER: Record<Exclude<SelectedModel, "auto">, CostTier> = {
   "grok-4.1": "low",
   "gemini-3.1-pro": "high",
   "sonnet-4.6": "high",
-  "opus-4.6": "very-high",
 };
 
 const COST_CONFIG: Record<
@@ -54,11 +53,6 @@ const COST_CONFIG: Record<
     count: 3,
     label: "High cost",
     activeClass: "text-orange-600/80 dark:text-orange-400/80",
-  },
-  "very-high": {
-    count: 3,
-    label: "Very high cost",
-    activeClass: "text-red-600/80 dark:text-red-400/80",
   },
 };
 
@@ -111,7 +105,6 @@ const ASK_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash" },
   { id: "grok-4.1", label: "Grok 4.1" },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6" },
-  { id: "opus-4.6", label: "Claude Opus 4.6" },
 ];
 
 const AGENT_MODEL_OPTIONS: ModelOption[] = [
@@ -120,7 +113,6 @@ const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
   { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", thinking: true },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", thinking: true },
-  { id: "opus-4.6", label: "Claude Opus 4.6", thinking: true },
 ];
 
 const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
