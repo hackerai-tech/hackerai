@@ -10,7 +10,7 @@
     "dev:trigger": "npx trigger.dev@latest dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint app lib types __mocks__",
+    "lint": "eslint app lib types __mocks__ --ext .ts,.tsx,.js,.jsx",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
