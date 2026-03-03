@@ -144,6 +144,7 @@ const AutoToggle = ({
   mobile?: boolean;
 }) => {
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
       onToggle(!isAuto);
@@ -173,6 +174,7 @@ const AutoToggle = ({
         checked={isAuto}
         onCheckedChange={onToggle}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
         aria-label="Auto model selection"
         className="shrink-0"
       />
