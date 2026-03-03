@@ -55,31 +55,32 @@ export const getAgentRateLimitStatus = action({
     const { session: sessionLimit, weekly: weeklyLimit } =
       getBudgetLimits(subscription);
     const agentBudget = getSubscriptionPrice(subscription);
-    const dailyBudgetUsd = agentBudget / 30;
     const weeklyBudgetUsd = (agentBudget * 7) / 30;
+    // Pro users have no daily limit
+    const dailyBudgetUsd = subscription === "pro" ? 0 : agentBudget / 30;
 
-    // Default response for free tier or no limits
-    const emptyResponse = {
-      session: {
-        remaining: 0,
-        limit: 0,
-        used: 0,
-        usagePercentage: 0,
-        resetTime: null,
-      },
-      weekly: {
-        remaining: 0,
-        limit: 0,
-        used: 0,
-        usagePercentage: 0,
-        resetTime: null,
-      },
-      dailyBudgetUsd: 0,
-      weeklyBudgetUsd: 0,
+    const emptySession: {
+      remaining: number;
+      limit: number;
+      used: number;
+      usagePercentage: number;
+      resetTime: string | null;
+    } = {
+      remaining: 0,
+      limit: 0,
+      used: 0,
+      usagePercentage: 0,
+      resetTime: null,
     };
 
+    // Default response for free tier or no limits
     if (subscription === "free" || sessionLimit === 0) {
-      return emptyResponse;
+      return {
+        session: emptySession,
+        weekly: { ...emptySession },
+        dailyBudgetUsd: 0,
+        weeklyBudgetUsd: 0,
+      };
     }
 
     // Check if Redis is configured
@@ -88,13 +89,16 @@ export const getAgentRateLimitStatus = action({
 
     if (!redisUrl || !redisToken) {
       return {
-        session: {
-          remaining: sessionLimit,
-          limit: sessionLimit,
-          used: 0,
-          usagePercentage: 0,
-          resetTime: null,
-        },
+        session:
+          subscription === "pro"
+            ? emptySession
+            : {
+                remaining: sessionLimit,
+                limit: sessionLimit,
+                used: 0,
+                usagePercentage: 0,
+                resetTime: null,
+              },
         weekly: {
           remaining: weeklyLimit,
           limit: weeklyLimit,
@@ -119,18 +123,34 @@ export const getAgentRateLimitStatus = action({
         token: redisToken,
       });
 
-      // Query session limit (token bucket)
-      // Must match prefix and key format from lib/rate-limit/token-bucket.ts
-      const sessionRatelimit = new Ratelimit({
-        redis,
-        limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
-        prefix: "usage:session",
-      });
+      // Skip session query for pro users (no daily limit)
+      let sessionData = emptySession;
+      if (subscription !== "pro") {
+        const sessionRatelimit = new Ratelimit({
+          redis,
+          limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
+          prefix: "usage:session",
+        });
 
-      const sessionKey = `${userId}:${subscription}`;
-      const sessionResult = await sessionRatelimit.limit(sessionKey, {
-        rate: 0,
-      });
+        const sessionKey = `${userId}:${subscription}`;
+        const sessionResult = await sessionRatelimit.limit(sessionKey, {
+          rate: 0,
+        });
+
+        const sessionRemaining = Math.min(
+          Math.max(0, sessionResult.remaining),
+          sessionLimit,
+        );
+        const sessionUsed = sessionLimit - sessionRemaining;
+
+        sessionData = {
+          remaining: sessionRemaining,
+          limit: sessionLimit,
+          used: sessionUsed,
+          usagePercentage: Math.round((sessionUsed / sessionLimit) * 100),
+          resetTime: new Date(sessionResult.reset).toISOString(),
+        };
+      }
 
       // Query weekly limit (token bucket - refills every 7 days)
       // Must match prefix and key format from lib/rate-limit/token-bucket.ts
@@ -145,26 +165,14 @@ export const getAgentRateLimitStatus = action({
 
       // Clamp remaining to [0, limit] to handle edge cases where bucket
       // may have more tokens than expected (e.g., limit changes, fresh bucket)
-      const sessionRemaining = Math.min(
-        Math.max(0, sessionResult.remaining),
-        sessionLimit,
-      );
       const weeklyRemaining = Math.min(
         Math.max(0, weeklyResult.remaining),
         weeklyLimit,
       );
-
-      const sessionUsed = sessionLimit - sessionRemaining;
       const weeklyUsed = weeklyLimit - weeklyRemaining;
 
       return {
-        session: {
-          remaining: sessionRemaining,
-          limit: sessionLimit,
-          used: sessionUsed,
-          usagePercentage: Math.round((sessionUsed / sessionLimit) * 100),
-          resetTime: new Date(sessionResult.reset).toISOString(),
-        },
+        session: sessionData,
         weekly: {
           remaining: weeklyRemaining,
           limit: weeklyLimit,
@@ -178,13 +186,16 @@ export const getAgentRateLimitStatus = action({
     } catch (error) {
       console.error("Failed to get rate limit status:", error);
       return {
-        session: {
-          remaining: sessionLimit,
-          limit: sessionLimit,
-          used: 0,
-          usagePercentage: 0,
-          resetTime: null,
-        },
+        session:
+          subscription === "pro"
+            ? emptySession
+            : {
+                remaining: sessionLimit,
+                limit: sessionLimit,
+                used: 0,
+                usagePercentage: 0,
+                resetTime: null,
+              },
         weekly: {
           remaining: weeklyLimit,
           limit: weeklyLimit,
