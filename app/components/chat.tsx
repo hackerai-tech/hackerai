@@ -532,8 +532,14 @@ export const Chat = ({
     if (!chatData || dataId !== chatId) return;
 
     if (!storedSandboxType) {
-      // Reset to cloud so stale local preference from a previous chat doesn't persist
-      setSandboxPreference("e2b");
+      if (wasNewChatRef.current) {
+        // Chat was just created — keep the user's current sandboxPreference
+        // (it was already sent in the request body). Don't reset to cloud.
+      } else {
+        // Navigated to an existing chat with no stored sandbox type — reset to cloud
+        // so a stale local preference from a previous chat doesn't persist.
+        setSandboxPreference("e2b");
+      }
       hasInitializedSandboxRef.current = true;
       return;
     }
