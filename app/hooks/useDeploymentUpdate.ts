@@ -5,6 +5,7 @@ import { toast } from "sonner";
 
 const BUILD_ID_URL = "/api/build-id";
 const POLL_INTERVAL_MS = 60_000; // 1 minute
+const FETCH_TIMEOUT_MS = 10_000; // 10 seconds
 
 const handleRefresh = () => {
   window.location.reload();
@@ -13,6 +14,8 @@ const handleRefresh = () => {
 export const useDeploymentUpdate = () => {
   const initialBuildIdRef = useRef<string | null>(null);
   const hasShownToastRef = useRef(false);
+  const isFetchingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const showUpdateToast = () => {
     if (hasShownToastRef.current) return;
@@ -39,7 +42,6 @@ export const useDeploymentUpdate = () => {
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // Preview: add ?preview-update-toast to the URL to see the toast
     if (
       new URLSearchParams(window.location.search).has("preview-update-toast")
     ) {
@@ -47,10 +49,19 @@ export const useDeploymentUpdate = () => {
     }
 
     const checkBuildId = async () => {
+      if (isFetchingRef.current || hasShownToastRef.current) return;
+      isFetchingRef.current = true;
+
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+      const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
       try {
         const res = await fetch(BUILD_ID_URL, {
           cache: "no-store",
           headers: { "Cache-Control": "no-cache" },
+          signal: controller.signal,
         });
         if (!res.ok) return;
         const data = (await res.json()) as { buildId: string };
@@ -69,7 +80,10 @@ export const useDeploymentUpdate = () => {
           showUpdateToast();
         }
       } catch {
-        // Ignore fetch errors (e.g. offline, API not ready)
+        // Ignore fetch errors (abort, offline, API not ready)
+      } finally {
+        clearTimeout(timeoutId);
+        isFetchingRef.current = false;
       }
     };
 
@@ -85,6 +99,7 @@ export const useDeploymentUpdate = () => {
 
     return () => {
       clearInterval(interval);
+      abortControllerRef.current?.abort();
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
