@@ -133,6 +133,8 @@ export const Chat = ({
   const hasInitializedModeFromChatRef = useRef(false);
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
+  // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
+  const [sandboxConnectionValid, setSandboxConnectionValid] = useState(true);
   // Track whether model selection has been initialized from chat for this chat id
   const hasInitializedModelRef = useRef(false);
 
@@ -460,6 +462,7 @@ export const Chat = ({
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
     hasInitializedModelRef.current = false;
+    setSandboxConnectionValid(true); // Reset to true until validated
     agentLong.lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
   }, [chatId, agentLong.lastTriggerAssistantIdRef]);
 
@@ -528,10 +531,9 @@ export const Chat = ({
     const dataId = (chatData as any)?.id as string | undefined;
     if (!chatData || dataId !== chatId) return;
 
-    const storedSandboxType = (chatData as any).sandbox_type as
-      | string
-      | undefined;
     if (!storedSandboxType) {
+      // Reset to cloud so stale local preference from a previous chat doesn't persist
+      setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
       return;
     }
@@ -547,9 +549,10 @@ export const Chat = ({
       );
       if (connectionExists) {
         setSandboxPreference(storedSandboxType);
+      } else {
+        // Stale connection — unlock selector so user can pick a current one
+        setSandboxConnectionValid(false);
       }
-      // If connection doesn't exist, keep current preference (from localStorage);
-      // SandboxSelector will show available options
       hasInitializedSandboxRef.current = true;
     }
     // If localConnections is still loading (undefined), wait for next render
@@ -842,6 +845,11 @@ export const Chat = ({
     shouldFetchMessages &&
     !awaitingServerChat;
 
+  const hasSavedSandboxType =
+    (!!storedSandboxType && sandboxConnectionValid) ||
+    (isExistingChat && !chatData) ||
+    wasNewChatRef.current;
+
   return (
     <ConvexErrorBoundary>
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
@@ -960,11 +968,7 @@ export const Chat = ({
                               handleDismissRateLimitWarning
                             }
                             contextUsage={contextUsage}
-                            hasSavedSandboxType={
-                              !!storedSandboxType ||
-                              (isExistingChat && !chatData) ||
-                              wasNewChatRef.current
-                            }
+                            hasSavedSandboxType={hasSavedSandboxType}
                           />
                         </div>
                       )}
@@ -996,11 +1000,7 @@ export const Chat = ({
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     contextUsage={contextUsage}
-                    hasSavedSandboxType={
-                      !!storedSandboxType ||
-                      (isExistingChat && !chatData) ||
-                      wasNewChatRef.current
-                    }
+                    hasSavedSandboxType={hasSavedSandboxType}
                   />
                 )}
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import {
   Check,
@@ -9,6 +9,7 @@ import {
   AlertTriangle,
   ChevronDown,
   Settings,
+  SquareTerminal,
 } from "lucide-react";
 import {
   Popover,
@@ -19,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
 
 interface SandboxSelectorProps {
   value: string;
@@ -26,17 +28,6 @@ interface SandboxSelectorProps {
   disabled?: boolean;
   size?: "sm" | "md";
   readOnly?: boolean;
-}
-
-interface LocalConnection {
-  connectionId: string;
-  name: string;
-  mode: "docker" | "dangerous";
-  containerId?: string;
-  osInfo?: {
-    platform: string;
-  };
-  lastSeen: number;
 }
 
 interface ConnectionOption {
@@ -58,6 +49,7 @@ export function SandboxSelector({
   const [open, setOpen] = useState(false);
 
   const connections = useQuery(api.localSandbox.listConnections);
+  const getToken = useMutation(api.localSandbox.getToken);
 
   const options: ConnectionOption[] = [
     {
@@ -102,10 +94,48 @@ export function SandboxSelector({
   const selectedOption = options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
 
-  // When readOnly and the sandbox is valid (cloud, or local still connected),
-  // hide the selector entirely. Falls through to the full dropdown if local disconnects.
-  if (readOnly && (value === "e2b" || valueMatchesOption)) {
+  // When readOnly and cloud, hide entirely — cloud is the default, no indicator needed.
+  if (readOnly && value === "e2b") {
     return null;
+  }
+
+  // When readOnly and local sandbox is still connected, show a static badge (no popover).
+  if (readOnly && valueMatchesOption) {
+    const handleCopyCommand = async () => {
+      try {
+        const result = await getToken();
+        const dangerousFlag =
+          selectedOption?.mode === "dangerous" ? " --dangerous" : "";
+        const command = `${runCommand} --token ${result.token} --name "${selectedOption?.label || "My Machine"}"${dangerousFlag}${convexUrlFlag}`;
+        await navigator.clipboard.writeText(command);
+        toast.success("Command copied to clipboard");
+      } catch {
+        toast.error("Failed to copy command");
+      }
+    };
+
+    return (
+      <div className="flex items-center w-full sm:w-auto px-3 sm:px-2 h-6">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="scale-[0.80] origin-center">
+            <Icon className="w-5 h-5 shrink-0" />
+          </span>
+          <span className="truncate">{selectedOption?.label}</span>
+        </div>
+        <div className="flex-1" />
+        <div className="flex items-center gap-2 sm:hidden">
+          <button
+            type="button"
+            onClick={handleCopyCommand}
+            className="flex items-center text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <div className="w-3.5 h-3.5 flex items-center justify-center">
+              <SquareTerminal className="w-4 h-4 shrink-0" />
+            </div>
+          </button>
+        </div>
+      </div>
+    );
   }
 
   const buttonClassName =

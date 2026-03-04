@@ -622,15 +622,17 @@ export const ChatInput = ({
           </div>
         </div>
 
-        {/* Sandbox selector below input on mobile for existing chats */}
+        {/* Sandbox selector below input on mobile for existing chats.
+            Skip rendering entirely when readOnly + cloud to avoid empty padding. */}
         {!isNewChat &&
           isMobile &&
           isAgentMode(chatMode) &&
-          !hasSavedSandboxType && (
+          !(hasSavedSandboxType && sandboxPreference === "e2b") && (
             <div className="order-3 flex px-1 pt-2">
               <SandboxSelector
                 value={sandboxPreference}
                 onChange={setSandboxPreference}
+                readOnly={hasSavedSandboxType}
               />
             </div>
           )}
