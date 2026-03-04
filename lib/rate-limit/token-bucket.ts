@@ -469,6 +469,34 @@ const refundBucketTokens = async (
 };
 
 /**
+ * Reset rate limit buckets for a user by deleting their Redis keys.
+ * On next request, Upstash Ratelimit creates fresh buckets at full capacity.
+ * Called when a subscription renews or changes tier.
+ */
+export const resetRateLimitBuckets = async (
+  userId: string,
+  subscription: SubscriptionTier,
+): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const sessionKey = `usage:session:${userId}:${subscription}`;
+  const weeklyKey = `usage:weekly:${userId}:${subscription}`;
+
+  try {
+    await Promise.all([redis.del(sessionKey), redis.del(weeklyKey)]);
+    console.log(
+      `[resetRateLimitBuckets] Reset buckets for user ${userId} tier ${subscription}`,
+    );
+  } catch (error) {
+    console.error(
+      `[resetRateLimitBuckets] Failed to reset buckets for user ${userId}:`,
+      error,
+    );
+  }
+};
+
+/**
  * Refund usage when a request fails after credits were deducted.
  * Refunds both token bucket credits and extra usage balance.
  *

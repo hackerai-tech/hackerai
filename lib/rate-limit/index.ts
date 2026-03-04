@@ -29,6 +29,7 @@ export {
   checkTokenBucketLimit,
   deductUsage,
   refundUsage,
+  resetRateLimitBuckets,
   calculateTokenCost,
   getBudgetLimits,
   getSubscriptionPrice,
