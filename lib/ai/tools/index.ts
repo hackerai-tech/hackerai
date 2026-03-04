@@ -6,7 +6,6 @@ import {
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
-// import { createShell } from "./shell";
 import { createGetTerminalFiles } from "./get-terminal-files";
 import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
@@ -106,7 +105,6 @@ export const createTools = (
 
   // Create all available tools
   const allTools = {
-    // shell: createShell(context),
     run_terminal_cmd: createRunTerminalCmd(context),
     get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),

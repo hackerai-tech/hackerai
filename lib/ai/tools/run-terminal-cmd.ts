@@ -11,6 +11,7 @@ import { terminateProcessReliably } from "./utils/process-termination";
 import { findProcessPid } from "./utils/pid-discovery";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
 import { waitForSandboxReady } from "./utils/sandbox-health";
+import { isE2BSandbox } from "./utils/sandbox-types";
 import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
 import {
   parseGuardrailConfig,
@@ -158,65 +159,69 @@ If you are generating files:
           };
         }
 
-        try {
-          await waitForSandboxReady(sandbox, 5, abortSignal);
-          sandboxManager.resetHealthFailures();
-        } catch (healthError) {
-          // If aborted, don't retry - propagate the abort
-          if (
-            healthError instanceof DOMException &&
-            healthError.name === "AbortError"
-          ) {
-            throw healthError;
-          }
-
-          const exceeded = sandboxManager.recordHealthFailure();
-          if (exceeded) {
-            console.error(
-              "[Terminal Command] Sandbox health check failed too many times, marking unavailable",
-            );
-            return {
-              result: {
-                output: "",
-                exitCode: 1,
-                error:
-                  "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
-              },
-            };
-          }
-
-          // Sandbox health check failed - force recreation by resetting the cached instance
-          console.warn(
-            "[Terminal Command] Sandbox health check failed, recreating sandbox",
-          );
-
-          // Reset cached instance to force ensureSandboxConnection to create a fresh one
-          sandboxManager.setSandbox(null as any);
-          const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
-
-          // Verify the fresh sandbox is ready
+        // Only health-check E2B sandboxes — local sandboxes don't need it
+        // (they relay commands through Convex and have their own connectivity)
+        if (isE2BSandbox(sandbox)) {
           try {
-            await waitForSandboxReady(freshSandbox, 5, abortSignal);
+            await waitForSandboxReady(sandbox, 5, abortSignal);
             sandboxManager.resetHealthFailures();
-          } catch (freshHealthError) {
+          } catch (healthError) {
+            // If aborted, don't retry - propagate the abort
             if (
-              freshHealthError instanceof DOMException &&
-              freshHealthError.name === "AbortError"
+              healthError instanceof DOMException &&
+              healthError.name === "AbortError"
             ) {
-              throw freshHealthError;
+              throw healthError;
             }
-            sandboxManager.recordHealthFailure();
-            return {
-              result: {
-                output: "",
-                exitCode: 1,
-                error:
-                  "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
-              },
-            };
-          }
 
-          return executeCommand(freshSandbox);
+            const exceeded = sandboxManager.recordHealthFailure();
+            if (exceeded) {
+              console.error(
+                "[Terminal Command] Sandbox health check failed too many times, marking unavailable",
+              );
+              return {
+                result: {
+                  output: "",
+                  exitCode: 1,
+                  error:
+                    "Sandbox is unavailable after repeated health check failures. Do NOT retry any terminal or sandbox commands. Inform the user that the sandbox could not be reached and suggest they wait a moment and try again, or delete the sandbox in Settings > Data Controls. If the issue persists, contact HackerAI support.",
+                },
+              };
+            }
+
+            // Sandbox health check failed - force recreation by resetting the cached instance
+            console.warn(
+              "[Terminal Command] Sandbox health check failed, recreating sandbox",
+            );
+
+            // Reset cached instance to force ensureSandboxConnection to create a fresh one
+            sandboxManager.setSandbox(null as any);
+            const { sandbox: freshSandbox } = await sandboxManager.getSandbox();
+
+            // Verify the fresh sandbox is ready
+            try {
+              await waitForSandboxReady(freshSandbox, 5, abortSignal);
+              sandboxManager.resetHealthFailures();
+            } catch (freshHealthError) {
+              if (
+                freshHealthError instanceof DOMException &&
+                freshHealthError.name === "AbortError"
+              ) {
+                throw freshHealthError;
+              }
+              sandboxManager.recordHealthFailure();
+              return {
+                result: {
+                  output: "",
+                  exitCode: 1,
+                  error:
+                    "Sandbox recreation failed. The sandbox environment is not responding. Another attempt may be made but the sandbox will be marked unavailable after repeated failures.",
+                },
+              };
+            }
+
+            return executeCommand(freshSandbox);
+          }
         }
 
         return executeCommand(sandbox);
