@@ -131,6 +131,9 @@ importers:
       '@vercel/functions':
         specifier: ^3.4.3
         version: 3.4.3(@aws-sdk/credential-provider-web-identity@3.609.0(@aws-sdk/client-sts@3.1001.0))
+      '@workflow/ai':
+        specifier: 4.0.1-beta.54
+        version: 4.0.1-beta.54(ai@6.0.111(zod@4.3.6))(workflow@4.1.0-beta.60(@aws-sdk/client-sts@3.1001.0)(@nestjs/common@11.1.15(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.15(@nestjs/common@11.1.15(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))(@opentelemetry/api@1.9.0)(@swc/cli@0.8.0(@swc/core@1.15.3)(chokidar@5.0.0))(@swc/core@1.15.3)(next@16.1.6(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-macros@3.1.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react-router@7.13.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(typescript@5.9.2))
       '@workos-inc/authkit-nextjs':
         specifier: ^2.15.0
         version: 2.15.0(next@16.1.6(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-macros@3.1.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -404,8 +407,26 @@ packages:
   '@adobe/css-tools@4.4.4':
     resolution: {integrity: sha512-Elp+iwUx5rN5+Y8xLt5/GRoG20WGoDCQ/1Fb+1LiGtvwbDavuSk0jhD/eZdckHAuzcDzccnkv+rEjyWfRx18gg==}
 
+  '@ai-sdk/anthropic@3.0.54':
+    resolution: {integrity: sha512-UhSPZ63FsTNO7PQCfxsqJIgkij1sivU3qfXydlSd4ugshpkNhd2v9s78G/40/G5C3pKSRfp/CfaSvivrneQfCg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/gateway@3.0.63':
     resolution: {integrity: sha512-0jwdkN3elC4Q9aT2ALxjXtGGVoye15zYgof6GfvuH1a9QKx9Rj4Wi2vy6SyyLvtSA/lB786dTZgC+cGwe6vzmA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/google@3.0.37':
+    resolution: {integrity: sha512-hZ7nO55+GfQEWJe2B5XRoLNeEubMTuk6OjJJUDS+XCtjKLCd973rRkc62vS86rHw5VuCGITwn3gUZRhSbuX5vw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai-compatible@2.0.33':
+    resolution: {integrity: sha512-HwptqeUS4vtDyjSSjmKCQExjoQMwPVq0C4pHH18i7c+3CQ0QN81HLvz3BdpULo0n/UtdQwTNISRqx3G5miPZhw==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -431,6 +452,12 @@ packages:
     engines: {node: '>=18'}
     peerDependencies:
       react: ^18 || ~19.0.1 || ~19.1.2 || ^19.2.1
+
+  '@ai-sdk/xai@3.0.64':
+    resolution: {integrity: sha512-1brA0N0smiFu2IkpBqJZl1AAtwOOMUD2H662WkMHEulpHFWT28lXevnjM6tlLYyxPWvslUEgg0h8a78Kk7T1rQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
 
   '@alloc/quick-lru@5.2.0':
     resolution: {integrity: sha512-UrcABB+4bUrFABwbluTIBErXwvbsU/V7TZWfmbgJfbkwiBuziS9gxdODUyuiecfdGQ85jglMW6juS3+z5TsKLw==}
@@ -4730,6 +4757,12 @@ packages:
 
   '@vitest/utils@3.2.4':
     resolution: {integrity: sha512-fB2V0JFrQSMsCo9HiSq3Ezpdv4iYaXRG1Sx8edX3MwxfyNn83mKiGzOcH+Fkxt4MHxr3y42fQi1oeAInqgX2QA==}
+
+  '@workflow/ai@4.0.1-beta.54':
+    resolution: {integrity: sha512-vdRc6g22Obpugia6hzskGZ8oUMRSU7mjxFCjK/M2yO3GrLZC+eNiMVMgyn1iNRQmwyA/ngVzeMKV6QyIHV2orQ==}
+    peerDependencies:
+      ai: ^5 || ^6
+      workflow: ^4.1.0-beta.62
 
   '@workflow/astro@4.0.0-beta.34':
     resolution: {integrity: sha512-K/53Op6ierhQk8tHy/C5ze3bRrrMNWDodpXWLlOOEB0nOxhZPR8IVClrHT+Pol0BaH+1rL4IQDLN6behvNHsSQ==}
@@ -9780,12 +9813,33 @@ snapshots:
 
   '@adobe/css-tools@4.4.4': {}
 
+  '@ai-sdk/anthropic@3.0.54(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.17(zod@4.3.6)
+      zod: 4.3.6
+    optional: true
+
   '@ai-sdk/gateway@3.0.63(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
       '@ai-sdk/provider-utils': 4.0.17(zod@4.3.6)
       '@vercel/oidc': 3.1.0
       zod: 4.3.6
+
+  '@ai-sdk/google@3.0.37(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.17(zod@4.3.6)
+      zod: 4.3.6
+    optional: true
+
+  '@ai-sdk/openai-compatible@2.0.33(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.17(zod@4.3.6)
+      zod: 4.3.6
+    optional: true
 
   '@ai-sdk/openai@3.0.39(zod@4.3.6)':
     dependencies:
@@ -9813,6 +9867,14 @@ snapshots:
       throttleit: 2.1.0
     transitivePeerDependencies:
       - zod
+
+  '@ai-sdk/xai@3.0.64(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/openai-compatible': 2.0.33(zod@4.3.6)
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.17(zod@4.3.6)
+      zod: 4.3.6
+    optional: true
 
   '@alloc/quick-lru@5.2.0': {}
 
@@ -14118,6 +14180,19 @@ snapshots:
       loupe: 3.2.1
       tinyrainbow: 2.0.0
 
+  '@workflow/ai@4.0.1-beta.54(ai@6.0.111(zod@4.3.6))(workflow@4.1.0-beta.60(@aws-sdk/client-sts@3.1001.0)(@nestjs/common@11.1.15(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.15(@nestjs/common@11.1.15(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))(@opentelemetry/api@1.9.0)(@swc/cli@0.8.0(@swc/core@1.15.3)(chokidar@5.0.0))(@swc/core@1.15.3)(next@16.1.6(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-macros@3.1.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react-router@7.13.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(typescript@5.9.2))':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      ai: 6.0.111(zod@4.3.6)
+      workflow: 4.1.0-beta.60(@aws-sdk/client-sts@3.1001.0)(@nestjs/common@11.1.15(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.15(@nestjs/common@11.1.15(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))(@opentelemetry/api@1.9.0)(@swc/cli@0.8.0(@swc/core@1.15.3)(chokidar@5.0.0))(@swc/core@1.15.3)(next@16.1.6(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(@playwright/test@1.58.2)(babel-plugin-macros@3.1.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react-router@7.13.0(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(typescript@5.9.2)
+      zod: 4.3.6
+    optionalDependencies:
+      '@ai-sdk/anthropic': 3.0.54(zod@4.3.6)
+      '@ai-sdk/gateway': 3.0.63(zod@4.3.6)
+      '@ai-sdk/google': 3.0.37(zod@4.3.6)
+      '@ai-sdk/openai': 3.0.39(zod@4.3.6)
+      '@ai-sdk/xai': 3.0.64(zod@4.3.6)
+
   '@workflow/astro@4.0.0-beta.34(@aws-sdk/client-sts@3.1001.0)(@opentelemetry/api@1.9.0)':
     dependencies:
       '@swc/core': 1.15.3
@@ -16635,7 +16710,7 @@ snapshots:
       isstream: 0.1.2
       jsonwebtoken: 9.0.3
       mime-types: 2.1.35
-      retry-axios: 2.6.0(axios@1.13.5)
+      retry-axios: 2.6.0(axios@1.13.5(debug@4.4.3))
       tough-cookie: 4.1.4
     transitivePeerDependencies:
       - supports-color
@@ -18835,7 +18910,7 @@ snapshots:
 
   resumable-stream@2.2.10: {}
 
-  retry-axios@2.6.0(axios@1.13.5):
+  retry-axios@2.6.0(axios@1.13.5(debug@4.4.3)):
     dependencies:
       axios: 1.13.5(debug@4.4.3)
 

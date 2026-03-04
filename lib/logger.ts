@@ -449,7 +449,7 @@ export const logger = {
  */
 export function createWideEventBuilder(
   chatId: string,
-  endpoint: ChatApiEndpoint | "/api/agent-workflow",
+  endpoint: ChatApiEndpoint,
 ): WideEventBuilder {
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   return new WideEventBuilder(requestId, chatId, endpoint);

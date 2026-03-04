@@ -81,6 +81,7 @@
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.36.3",
     "@vercel/functions": "^3.4.3",
+    "@workflow/ai": "4.0.1-beta.54",
     "@workos-inc/authkit-nextjs": "^2.15.0",
     "@workos-inc/node": "^8.7.0",
     "ai": "^6.0.111",

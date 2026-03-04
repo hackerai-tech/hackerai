@@ -2,11 +2,13 @@
 
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
+import { WorkflowChatTransport } from "@workflow/ai";
 import {
   useRef,
   useEffect,
   useState,
   useCallback,
+  useMemo,
   type RefObject,
 } from "react";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
@@ -128,6 +130,7 @@ export const Chat = ({
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  const selectedModelRef = useLatestRef(selectedModel);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -156,6 +159,7 @@ export const Chat = ({
     api.chats.getChatByIdFromClient,
     shouldFetchMessages ? { id: chatId } : "skip",
   );
+  const chatDataRef = useLatestRef(chatData);
 
   // Query local sandbox connections only when we need to validate a non-E2B sandbox_type
   const storedSandboxType = (chatData as any)?.sandbox_type as
@@ -195,6 +199,137 @@ export const Chat = ({
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
+  // Ref to track active workflow run ID for cancellation
+  const workflowRunIdRef = useRef<string | null>(null);
+  // Ref for setMessages from useChat (breaks circular dependency with transport)
+  const setMessagesRef = useRef<(msgs: ChatMessage[]) => void>(() => {});
+
+  const isWorkflowAgentEnabled =
+    process.env.NEXT_PUBLIC_USE_WORKFLOW_AGENT === "true";
+
+  // Transport: WorkflowChatTransport for durable agent streams (auto-reconnects
+  // when the 800s function timeout kills the connection), DefaultChatTransport
+  // for standard ask/agent mode.
+  const transport = useMemo(() => {
+    // Shared message preparation logic used by both transports.
+    // Reads body fields from refs since WorkflowChatTransport doesn't pass
+    // ChatRequestOptions.body through to prepareSendMessagesRequest.
+    const prepareSendMessagesRequest = ({
+      id,
+      messages: rawMessages,
+      trigger,
+    }: {
+      id: string;
+      messages: ChatMessage[];
+      trigger: string;
+      [key: string]: unknown;
+    }) => {
+      const {
+        messages: normalizedMessages,
+        lastMessage,
+        hasChanges,
+      } = normalizeMessages(rawMessages as ChatMessage[]);
+      if (hasChanges) {
+        setMessagesRef.current(normalizedMessages);
+      }
+
+      const isTemporaryChat =
+        !isExistingChatRef.current && temporaryChatsEnabledRef.current;
+
+      // Strip URLs from file parts before sending to backend
+      // Backend will fetch fresh URLs using fileId
+      const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
+        return msgs.map((msg) => {
+          if (!msg.parts || msg.parts.length === 0) return msg;
+          const strippedParts = msg.parts.map((part: any) => {
+            if (part.type === "file" && "url" in part) {
+              const { url, ...partWithoutUrl } = part;
+              return partWithoutUrl;
+            }
+            return part;
+          });
+          return { ...msg, parts: strippedParts };
+        });
+      };
+
+      const messagesToSend = isTemporaryChat ? normalizedMessages : lastMessage;
+      const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
+
+      return {
+        body: {
+          chatId: id,
+          messages: messagesWithoutUrls,
+          mode: chatModeRef.current,
+          todos: todosRef.current,
+          temporary: temporaryChatsEnabledRef.current,
+          sandboxPreference: sandboxPreferenceRef.current,
+          selectedModel: selectedModelRef.current,
+          ...(trigger === "regenerate-message" && { regenerate: true }),
+        },
+      };
+    };
+
+    const defaultTransport = new DefaultChatTransport<ChatMessage>({
+      api: "/api/chat",
+      fetch: async (input, init) => {
+        // Route to /api/agent when in agent mode (non-workflow fallback)
+        const url =
+          input === "/api/chat" && chatModeRef.current === "agent"
+            ? "/api/agent"
+            : input;
+        return fetchWithErrorHandlers(url, init);
+      },
+      prepareSendMessagesRequest: prepareSendMessagesRequest as any,
+      prepareReconnectToStreamRequest: ({ api, id, ...rest }) => {
+        return { ...rest, api: `${api}/${id}/stream` };
+      },
+    });
+
+    if (!isWorkflowAgentEnabled) return defaultTransport;
+
+    const workflowTransport = new WorkflowChatTransport<ChatMessage>({
+      api: "/api/agent-workflow",
+      fetch: (input, init) => fetchWithErrorHandlers(input as string, init),
+      prepareSendMessagesRequest: prepareSendMessagesRequest as any,
+      onChatSendMessage: (response) => {
+        workflowRunIdRef.current = response.headers.get("x-workflow-run-id");
+      },
+      onChatEnd: () => {
+        workflowRunIdRef.current = null;
+      },
+      prepareReconnectToStreamRequest: ({ api, ...rest }) => {
+        const activeStreamId =
+          chatDataRef.current?.active_stream_id ?? undefined;
+        if (activeStreamId?.startsWith("wrun_")) {
+          return {
+            ...rest,
+            api: `/api/agent-workflow/${encodeURIComponent(activeStreamId)}/stream`,
+          };
+        }
+        return { ...rest, api };
+      },
+      maxConsecutiveErrors: 10,
+    });
+
+    // Hybrid proxy: delegates to workflow or default based on current mode
+    return {
+      sendMessages: (options: any) => {
+        if (chatModeRef.current === "agent") {
+          return workflowTransport.sendMessages(options);
+        }
+        return defaultTransport.sendMessages(options);
+      },
+      reconnectToStream: (options: any) => {
+        const activeStreamId =
+          chatDataRef.current?.active_stream_id ?? undefined;
+        if (activeStreamId?.startsWith("wrun_")) {
+          return workflowTransport.reconnectToStream(options);
+        }
+        return defaultTransport.reconnectToStream(options);
+      },
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWorkflowAgentEnabled]);
 
   const {
     messages,
@@ -211,68 +346,7 @@ export const Chat = ({
     experimental_throttle: 100,
     generateId: () => uuidv4(),
 
-    transport: new DefaultChatTransport({
-      api: "/api/chat",
-      fetch: async (input, init) => {
-        // Dynamically route to correct API based on current mode
-        const useWorkflowAgent =
-          process.env.NEXT_PUBLIC_USE_WORKFLOW_AGENT === "true";
-        const url =
-          input === "/api/chat" && chatModeRef.current === "agent"
-            ? useWorkflowAgent
-              ? "/api/agent-workflow"
-              : "/api/agent"
-            : input;
-        return fetchWithErrorHandlers(url, init);
-      },
-      prepareSendMessagesRequest: ({ id, messages, body }) => {
-        const {
-          messages: normalizedMessages,
-          lastMessage,
-          hasChanges,
-        } = normalizeMessages(messages as ChatMessage[]);
-        if (hasChanges) {
-          setMessages(normalizedMessages);
-        }
-
-        const isTemporaryChat =
-          !isExistingChatRef.current && temporaryChatsEnabledRef.current;
-
-        // Strip URLs from file parts before sending to backend
-        // This ensures backend always generates fresh URLs (prevents 403 errors from expired URLs)
-        // Backend will fetch URLs using fileId, supporting both S3 and Convex storage
-        const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
-          return msgs.map((msg) => {
-            if (!msg.parts || msg.parts.length === 0) return msg;
-            const strippedParts = msg.parts.map((part: any) => {
-              if (part.type === "file" && "url" in part) {
-                // Remove URL property, keeping all other file metadata
-                const { url, ...partWithoutUrl } = part;
-                return partWithoutUrl;
-              }
-              return part;
-            });
-            return {
-              ...msg,
-              parts: strippedParts,
-            };
-          });
-        };
-
-        const messagesToSend = isTemporaryChat
-          ? normalizedMessages
-          : lastMessage;
-        const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
-
-        return {
-          body: {
-            chatId: id,
-            messages: messagesWithoutUrls,
-            ...body,
-          },
-        };
-      },
-    }),
+    transport,
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
@@ -366,6 +440,8 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
+      // Clear workflow run ID ref on stream completion
+      workflowRunIdRef.current = null;
       // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
@@ -380,11 +456,18 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
+      // Don't clear workflow run ID on error — the workflow may still be running
+      // server-side (e.g., page reload aborts the fetch but the step continues).
+      // The stream reconnection endpoint returns an empty finish stream if the
+      // run is no longer active, which cleanly terminates the reconnect loop.
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
     },
   });
+
+  // Update ref so transport callbacks can access setMessages (breaks circular dependency)
+  setMessagesRef.current = setMessages;
 
   // Agent-long: Trigger.dev streaming via dedicated hook (must be after useChat for messages/setMessages)
   const agentLong = useAgentLongStream({
@@ -784,6 +867,16 @@ export const Chat = ({
         agentLong.cancel();
       } else {
         stop();
+        // Cancel the workflow run server-side if active
+        const runId = workflowRunIdRef.current;
+        if (runId) {
+          workflowRunIdRef.current = null;
+          fetch("/api/agent-workflow/cancel", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ runId }),
+          }).catch(() => {});
+        }
       }
     }, [agentLong.isActive, agentLong.cancel, stop]),
     regenerate: wrappedRegenerate,

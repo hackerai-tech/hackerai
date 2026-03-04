@@ -42,6 +42,7 @@ import {
   deleteTempStreamForBackend,
 } from "@/lib/db/actions";
 import { deductUsage } from "@/lib/rate-limit";
+import { UsageRefundTracker } from "@/lib/rate-limit/refund";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
 import { deserializeRateLimitInfo } from "@/lib/api/rate-limit-serialization";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -52,6 +53,7 @@ import {
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { createCancellationSubscriber } from "@/lib/utils/stream-cancellation";
 import { createChatLogger } from "@/lib/api/chat-logger";
+import { workflowAxiomLogger } from "@/lib/axiom/workflow";
 import PostHogClient from "@/app/posthog";
 import { countTokens } from "gpt-tokenizer";
 import {
@@ -102,6 +104,14 @@ export async function runAgentStep(payload: AgentTaskPayload) {
 
   const rateLimitInfo = deserializeRateLimitInfo(serializedRateLimitInfo);
   const posthog = PostHogClient();
+
+  // Track usage deductions for refund on pre-stream errors
+  const usageRefundTracker = new UsageRefundTracker();
+  usageRefundTracker.setUser(userId, subscription);
+  usageRefundTracker.recordDeductions({
+    pointsDeducted: serializedRateLimitInfo.pointsDeducted,
+    extraUsagePointsDeducted: serializedRateLimitInfo.extraUsagePointsDeducted,
+  } as Parameters<UsageRefundTracker["recordDeductions"]>[0]);
 
   // Initialize chat logger
   const chatLogger = createChatLogger({
@@ -515,7 +525,20 @@ export async function runAgentStep(payload: AgentTaskPayload) {
             onError: async (error) => {
               if (!isXaiSafetyError(error)) {
                 console.error("Provider streaming error:", error);
+
+                workflowAxiomLogger.error("Provider streaming error", {
+                  chatId,
+                  endpoint: "/api/agent-workflow",
+                  mode,
+                  model: selectedModel,
+                  userId,
+                  subscription,
+                  isTemporary: temporary,
+                  ...extractErrorDetails(error),
+                });
               }
+              // Refund credits on streaming errors (idempotent - only refunds once)
+              await usageRefundTracker.refund();
             },
           });
 
@@ -524,9 +547,19 @@ export async function runAgentStep(payload: AgentTaskPayload) {
           result = await createStream(selectedModel);
         } catch (error) {
           if (isProviderApiError(error) && !isRetryWithFallback) {
-            console.warn(
+            workflowAxiomLogger.error(
               "Provider API error, retrying with fallback",
-              extractErrorDetails(error),
+              {
+                chatId,
+                endpoint: "/api/agent-workflow",
+                mode,
+                originalModel: selectedModel,
+                fallbackModel,
+                userId,
+                subscription,
+                isTemporary: temporary,
+                ...extractErrorDetails(error),
+              },
             );
             isRetryWithFallback = true;
             lastStepInputTokens = 0;
@@ -541,6 +574,185 @@ export async function runAgentStep(payload: AgentTaskPayload) {
           result.toUIMessageStream({
             generateMessageId: () => assistantMessageId,
             onFinish: async ({ messages, isAborted }) => {
+              // Check if stream finished with only step-start (incomplete response)
+              const lastAssistantMessage = messages
+                .slice()
+                .reverse()
+                .find((m) => m.role === "assistant");
+              const hasOnlyStepStart =
+                lastAssistantMessage?.parts?.length === 1 &&
+                lastAssistantMessage.parts[0]?.type === "step-start";
+
+              if (hasOnlyStepStart) {
+                workflowAxiomLogger.error(
+                  "Stream finished incomplete - triggering fallback",
+                  {
+                    chatId,
+                    endpoint: "/api/agent-workflow",
+                    mode,
+                    model: selectedModel,
+                    userId,
+                    subscription,
+                    isTemporary: temporary,
+                    messageCount: messages.length,
+                    parts: lastAssistantMessage?.parts,
+                    isRetryWithFallback,
+                    assistantMessageId,
+                  },
+                );
+
+                // Retry with fallback model if not already retrying
+                if (!isRetryWithFallback && !isAborted) {
+                  isRetryWithFallback = true;
+                  lastStepInputTokens = 0;
+                  stoppedDueToTokenExhaustion = false;
+                  const fallbackStartTime = Date.now();
+
+                  const retryResult = await createStream(fallbackModel);
+                  const retryMessageId = generateId();
+
+                  writer.merge(
+                    retryResult.toUIMessageStream({
+                      generateMessageId: () => retryMessageId,
+                      onFinish: async ({
+                        messages: retryMessages,
+                        isAborted: retryAborted,
+                      }) => {
+                        // Cleanup
+                        if (!subscriberStopped) {
+                          await cancellationSubscriber.stop();
+                          subscriberStopped = true;
+                        }
+
+                        chatLogger.setSandbox(sandboxManager.getSandboxInfo());
+                        chatLogger.emitSuccess({
+                          finishReason: streamFinishReason,
+                          wasAborted: !!retryAborted,
+                          wasPreemptiveTimeout: false,
+                          hadSummarization: hasSummarized,
+                        });
+
+                        const generatedTitle = await titlePromise;
+
+                        if (!temporary) {
+                          const mergedTodos = getTodoManager().mergeWith(
+                            baseTodos,
+                            retryMessageId,
+                          );
+
+                          if (
+                            generatedTitle ||
+                            streamFinishReason ||
+                            mergedTodos.length > 0
+                          ) {
+                            await updateChat({
+                              chatId,
+                              title: generatedTitle,
+                              finishReason: streamFinishReason,
+                              todos: mergedTodos,
+                              defaultModelSlug: mode,
+                              sandboxType:
+                                sandboxManager.getEffectivePreference(),
+                              selectedModel: selectedModelOverride,
+                            });
+                          } else {
+                            await prepareForNewStream({ chatId });
+                          }
+
+                          const accumulatedFiles =
+                            getFileAccumulator().getAll();
+                          const newFileIds = accumulatedFiles.map(
+                            (f) => f.fileId,
+                          );
+
+                          for (const msg of retryMessages) {
+                            if (msg.role !== "assistant") continue;
+
+                            const processed =
+                              summarizationParts.length > 0
+                                ? {
+                                    ...msg,
+                                    parts: [
+                                      ...summarizationParts,
+                                      ...(msg.parts || []),
+                                    ],
+                                  }
+                                : msg;
+
+                            // Skip empty messages
+                            if (
+                              (!processed.parts ||
+                                processed.parts.length === 0) &&
+                              newFileIds.length === 0
+                            ) {
+                              continue;
+                            }
+
+                            await saveMessage({
+                              chatId,
+                              userId,
+                              message: processed,
+                              extraFileIds: newFileIds,
+                              usage: streamUsage,
+                              model: responseModel,
+                              generationTimeMs: Date.now() - fallbackStartTime,
+                              finishReason: streamFinishReason,
+                            });
+                          }
+
+                          sendFileMetadataToStream(accumulatedFiles);
+                        } else {
+                          const tempFiles = getFileAccumulator().getAll();
+                          sendFileMetadataToStream(tempFiles);
+                          await deleteTempStreamForBackend({ chatId });
+                        }
+
+                        // Log fallback result
+                        const fallbackAssistantMessage = retryMessages
+                          .slice()
+                          .reverse()
+                          .find((m) => m.role === "assistant");
+                        const fallbackHasContent =
+                          fallbackAssistantMessage?.parts?.some(
+                            (p) =>
+                              p.type === "text" ||
+                              p.type === "tool-invocation" ||
+                              p.type === "reasoning",
+                          ) ?? false;
+
+                        workflowAxiomLogger.info("Fallback completed", {
+                          chatId,
+                          originalModel: selectedModel,
+                          originalAssistantMessageId: assistantMessageId,
+                          fallbackModel,
+                          fallbackAssistantMessageId: retryMessageId,
+                          fallbackDurationMs: Date.now() - fallbackStartTime,
+                          fallbackSuccess: fallbackHasContent,
+                          fallbackWasAborted: retryAborted,
+                          fallbackMessageCount: retryMessages.length,
+                          userId,
+                          subscription,
+                        });
+
+                        // Send updated context usage
+                        if (contextUsageEnabled) {
+                          writeContextUsage(writer, {
+                            ...ctxUsage,
+                            messagesTokens:
+                              ctxUsage.messagesTokens + accumulatedOutputTokens,
+                          });
+                        }
+
+                        await deductAccumulatedUsage();
+                      },
+                      sendReasoning: true,
+                    }),
+                  );
+
+                  return; // Skip normal cleanup - retry handles it
+                }
+              }
+
               // Stop cancellation subscriber
               if (!subscriberStopped) {
                 await cancellationSubscriber.stop();
@@ -550,6 +762,21 @@ export async function runAgentStep(payload: AgentTaskPayload) {
               // Clear finish reason for user-initiated aborts
               if (isAborted) {
                 streamFinishReason = undefined;
+              }
+
+              // On abort, streamText.onFinish may not have fired yet, so streamUsage
+              // could be undefined. Await usage from result to ensure we capture it.
+              let resolvedUsage: Record<string, unknown> | undefined =
+                streamUsage;
+              if (!resolvedUsage && isAborted) {
+                try {
+                  resolvedUsage = (await result.usage) as Record<
+                    string,
+                    unknown
+                  >;
+                } catch {
+                  // Usage unavailable on abort - continue without it
+                }
               }
 
               // Emit wide event
@@ -594,12 +821,33 @@ export async function runAgentStep(payload: AgentTaskPayload) {
                 const accumulatedFiles = getFileAccumulator().getAll();
                 const newFileIds = accumulatedFiles.map((f) => f.fileId);
 
-                // On user-initiated abort with skipSave, skip message persistence
-                // (edit/regenerate/retry — message will be discarded)
+                // Check for incomplete tool calls
+                const hasIncompleteToolCalls = messages.some(
+                  (msg) =>
+                    msg.role === "assistant" &&
+                    msg.parts?.some(
+                      (p: {
+                        type?: string;
+                        state?: string;
+                        toolCallId?: string;
+                      }) =>
+                        p.type?.startsWith("tool-") &&
+                        p.state !== "output-available" &&
+                        p.toolCallId,
+                    ),
+                );
+
+                const hasUsageToRecord = Boolean(resolvedUsage);
+
+                // Skip save when:
+                // 1. skipSave signal received (edit/regenerate/retry)
+                // 2. No files, tools, or usage to record (frontend already saved)
                 if (
                   isAborted &&
-                  cancellationSubscriber.shouldSkipSave() &&
-                  newFileIds.length === 0
+                  (cancellationSubscriber.shouldSkipSave() ||
+                    (newFileIds.length === 0 &&
+                      !hasIncompleteToolCalls &&
+                      !hasUsageToRecord))
                 ) {
                   await deductAccumulatedUsage();
                   return;
@@ -619,6 +867,15 @@ export async function runAgentStep(payload: AgentTaskPayload) {
                         }
                       : message;
 
+                  // Skip saving messages with no parts and no files
+                  if (
+                    (!processedMessage.parts ||
+                      processedMessage.parts.length === 0) &&
+                    newFileIds.length === 0
+                  ) {
+                    continue;
+                  }
+
                   await saveMessage({
                     chatId,
                     userId,
@@ -627,7 +884,7 @@ export async function runAgentStep(payload: AgentTaskPayload) {
                     model: responseModel || configuredModelId,
                     generationTimeMs: Date.now() - streamStartTime,
                     finishReason: streamFinishReason,
-                    usage: streamUsage,
+                    usage: resolvedUsage ?? streamUsage,
                     updateOnly: isAborted ? true : undefined,
                   });
                 }
@@ -659,7 +916,44 @@ export async function runAgentStep(payload: AgentTaskPayload) {
           await cancellationSubscriber.stop();
           subscriberStopped = true;
         }
+
+        // Refund credits (idempotent - safe if already refunded in onError)
+        await usageRefundTracker.refund();
+
+        // Log to Axiom with full context
+        if (!isXaiSafetyError(error)) {
+          workflowAxiomLogger.error("Workflow step fatal error", {
+            chatId,
+            endpoint: "/api/agent-workflow",
+            mode,
+            userId,
+            subscription,
+            isTemporary: temporary,
+            ...extractErrorDetails(error),
+          });
+          await workflowAxiomLogger.flush();
+        }
+
         chatLogger.emitUnexpectedError(error);
+
+        // Write user-friendly error to the stream so the client can display it
+        try {
+          writer.write({
+            type: "error",
+            errorText: getUserFriendlyProviderError(error),
+          });
+        } catch {
+          // Stream may already be closed
+        }
+
+        // Clear active_stream_id so the chat isn't left "locked" with an
+        // orphaned wrun_* ID that prevents new streams from starting.
+        try {
+          await prepareForNewStream({ chatId });
+        } catch {
+          // Best-effort cleanup — don't mask the original error
+        }
+
         throw error;
       }
     },
