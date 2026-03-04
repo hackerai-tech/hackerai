@@ -68,11 +68,6 @@ export const getBudgetLimits = (
 
   const weekly = Math.round((monthlyPoints * 7) / 30); // Weekly budget
 
-  // Pro users have no daily limit — session matches weekly so it's never the bottleneck
-  if (subscription === "pro") {
-    return { session: weekly, weekly };
-  }
-
   return {
     session: Math.round(monthlyPoints / 30), // Daily budget
     weekly,

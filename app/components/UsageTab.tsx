@@ -138,33 +138,29 @@ const UsageTab = () => {
 
       {tokenUsage ? (
         <div className="space-y-6">
-          {/* Agent Mode Session - hidden for pro users (no daily limit) */}
-          {subscription !== "pro" && (
-            <>
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <div className="font-medium text-sm">Current session</div>
-                    <div className="text-xs text-muted-foreground">
-                      {formatSessionResetTime(tokenUsage.session.resetTime)}
-                    </div>
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    {tokenUsage.session.usagePercentage}% used
-                  </div>
-                </div>
-                <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
-                  <div
-                    className={`h-full transition-all duration-500 ${getUsageColorClass(tokenUsage.session.usagePercentage)}`}
-                    style={{ width: `${tokenUsage.session.usagePercentage}%` }}
-                  />
+          {/* Agent Mode Session */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-medium text-sm">Current session</div>
+                <div className="text-xs text-muted-foreground">
+                  {formatSessionResetTime(tokenUsage.session.resetTime)}
                 </div>
               </div>
+              <div className="text-sm text-muted-foreground">
+                {tokenUsage.session.usagePercentage}% used
+              </div>
+            </div>
+            <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className={`h-full transition-all duration-500 ${getUsageColorClass(tokenUsage.session.usagePercentage)}`}
+                style={{ width: `${tokenUsage.session.usagePercentage}%` }}
+              />
+            </div>
+          </div>
 
-              {/* Divider */}
-              <div className="border-t" />
-            </>
-          )}
+          {/* Divider */}
+          <div className="border-t" />
 
           {/* Agent Mode Weekly */}
           <div className="space-y-2">

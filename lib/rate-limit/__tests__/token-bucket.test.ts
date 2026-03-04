@@ -75,14 +75,12 @@ describe("token-bucket", () => {
       expect(limits.weekly).toBe(0);
     });
 
-    it("should calculate pro tier limits correctly (no daily limit)", () => {
+    it("should calculate pro tier limits correctly", () => {
       const limits = getBudgetLimits("pro");
       const monthlyPoints = PRICING.pro.monthly * POINTS_PER_DOLLAR;
-      const weekly = Math.round((monthlyPoints * 7) / 30);
 
-      // Pro users have no daily limit — session matches weekly
-      expect(limits.session).toBe(weekly);
-      expect(limits.weekly).toBe(weekly);
+      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
+      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
     });
 
     it("should calculate ultra tier limits correctly (using monthly price)", () => {
@@ -113,17 +111,14 @@ describe("token-bucket", () => {
       );
     });
 
-    it("weekly limit should be ~7x session limit for non-pro tiers", () => {
+    it("weekly limit should be ~7x session limit for all paid tiers", () => {
+      const proLimits = getBudgetLimits("pro");
       const ultraLimits = getBudgetLimits("ultra");
       const teamLimits = getBudgetLimits("team");
 
+      expect(proLimits.weekly / proLimits.session).toBeCloseTo(7, 1);
       expect(ultraLimits.weekly / ultraLimits.session).toBeCloseTo(7, 1);
       expect(teamLimits.weekly / teamLimits.session).toBeCloseTo(7, 1);
-    });
-
-    it("pro tier session should equal weekly (no daily limit)", () => {
-      const proLimits = getBudgetLimits("pro");
-      expect(proLimits.session).toBe(proLimits.weekly);
     });
   });
 

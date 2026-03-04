@@ -56,8 +56,7 @@ export const getAgentRateLimitStatus = action({
       getBudgetLimits(subscription);
     const agentBudget = getSubscriptionPrice(subscription);
     const weeklyBudgetUsd = (agentBudget * 7) / 30;
-    // Pro users have no daily limit
-    const dailyBudgetUsd = subscription === "pro" ? 0 : agentBudget / 30;
+    const dailyBudgetUsd = agentBudget / 30;
 
     const emptySession: {
       remaining: number;
@@ -89,16 +88,13 @@ export const getAgentRateLimitStatus = action({
 
     if (!redisUrl || !redisToken) {
       return {
-        session:
-          subscription === "pro"
-            ? emptySession
-            : {
-                remaining: sessionLimit,
-                limit: sessionLimit,
-                used: 0,
-                usagePercentage: 0,
-                resetTime: null,
-              },
+        session: {
+          remaining: sessionLimit,
+          limit: sessionLimit,
+          used: 0,
+          usagePercentage: 0,
+          resetTime: null,
+        },
         weekly: {
           remaining: weeklyLimit,
           limit: weeklyLimit,
@@ -123,34 +119,30 @@ export const getAgentRateLimitStatus = action({
         token: redisToken,
       });
 
-      // Skip session query for pro users (no daily limit)
-      let sessionData = emptySession;
-      if (subscription !== "pro") {
-        const sessionRatelimit = new Ratelimit({
-          redis,
-          limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
-          prefix: "usage:session",
-        });
+      const sessionRatelimit = new Ratelimit({
+        redis,
+        limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
+        prefix: "usage:session",
+      });
 
-        const sessionKey = `${userId}:${subscription}`;
-        const sessionResult = await sessionRatelimit.limit(sessionKey, {
-          rate: 0,
-        });
+      const sessionKey = `${userId}:${subscription}`;
+      const sessionResult = await sessionRatelimit.limit(sessionKey, {
+        rate: 0,
+      });
 
-        const sessionRemaining = Math.min(
-          Math.max(0, sessionResult.remaining),
-          sessionLimit,
-        );
-        const sessionUsed = sessionLimit - sessionRemaining;
+      const sessionRemaining = Math.min(
+        Math.max(0, sessionResult.remaining),
+        sessionLimit,
+      );
+      const sessionUsed = sessionLimit - sessionRemaining;
 
-        sessionData = {
-          remaining: sessionRemaining,
-          limit: sessionLimit,
-          used: sessionUsed,
-          usagePercentage: Math.round((sessionUsed / sessionLimit) * 100),
-          resetTime: new Date(sessionResult.reset).toISOString(),
-        };
-      }
+      const sessionData = {
+        remaining: sessionRemaining,
+        limit: sessionLimit,
+        used: sessionUsed,
+        usagePercentage: Math.round((sessionUsed / sessionLimit) * 100),
+        resetTime: new Date(sessionResult.reset).toISOString(),
+      };
 
       // Query weekly limit (token bucket - refills every 7 days)
       // Must match prefix and key format from lib/rate-limit/token-bucket.ts
@@ -186,16 +178,13 @@ export const getAgentRateLimitStatus = action({
     } catch (error) {
       console.error("Failed to get rate limit status:", error);
       return {
-        session:
-          subscription === "pro"
-            ? emptySession
-            : {
-                remaining: sessionLimit,
-                limit: sessionLimit,
-                used: 0,
-                usagePercentage: 0,
-                resetTime: null,
-              },
+        session: {
+          remaining: sessionLimit,
+          limit: sessionLimit,
+          used: 0,
+          usagePercentage: 0,
+          resetTime: null,
+        },
         weekly: {
           remaining: weeklyLimit,
           limit: weeklyLimit,
