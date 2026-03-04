@@ -21,6 +21,43 @@ const dollarsToPoints = (dollars: number): number =>
 const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
 
 // =============================================================================
+// Webhook Idempotency
+// =============================================================================
+
+/**
+ * Check-and-mark a webhook event as processed (idempotency guard).
+ * Returns { alreadyProcessed: true } if the event was already recorded.
+ */
+export const checkAndMarkWebhook = mutation({
+  args: {
+    serviceKey: v.string(),
+    eventId: v.string(),
+  },
+  returns: v.object({
+    alreadyProcessed: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const existing = await ctx.db
+      .query("processed_webhooks")
+      .withIndex("by_event_id", (q) => q.eq("event_id", args.eventId))
+      .first();
+
+    if (existing) {
+      return { alreadyProcessed: true };
+    }
+
+    await ctx.db.insert("processed_webhooks", {
+      event_id: args.eventId,
+      processed_at: Date.now(),
+    });
+
+    return { alreadyProcessed: false };
+  },
+});
+
+// =============================================================================
 // Balance Management (Mutations)
 // =============================================================================
 

@@ -1,0 +1,281 @@
+import { NextRequest, NextResponse } from "next/server";
+import { stripe } from "@/app/api/stripe";
+import { workos } from "@/app/api/workos";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@/convex/_generated/api";
+import Stripe from "stripe";
+import { resetRateLimitBuckets } from "@/lib/rate-limit";
+import type { SubscriptionTier } from "@/types";
+
+const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+// =============================================================================
+// Tier Resolution
+// =============================================================================
+
+/** Map Stripe price lookup key to subscription tier. */
+function planLookupKeyToTier(lookupKey: string): SubscriptionTier | null {
+  if (lookupKey.startsWith("ultra")) return "ultra";
+  if (lookupKey.startsWith("pro-plus")) return "pro-plus";
+  if (lookupKey.startsWith("team")) return "team";
+  if (lookupKey.startsWith("pro")) return "pro";
+  return null;
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/** Resolve WorkOS user ID from a Stripe customer ID. */
+async function resolveUserIdFromCustomer(
+  customerId: string,
+): Promise<string | null> {
+  try {
+    const customerData = await stripe.customers.retrieve(customerId);
+    if (customerData.deleted) return null;
+
+    const customer = customerData as Stripe.Customer;
+    const orgId = customer.metadata?.workOSOrganizationId;
+    if (!orgId) {
+      console.error(
+        `[Subscription Webhook] Customer ${customerId} missing workOSOrganizationId metadata`,
+      );
+      return null;
+    }
+
+    const memberships = await workos.userManagement.listOrganizationMemberships(
+      {
+        organizationId: orgId,
+        statuses: ["active"],
+      },
+    );
+
+    if (!memberships.data || memberships.data.length === 0) {
+      console.error(
+        `[Subscription Webhook] No active memberships for org ${orgId}`,
+      );
+      return null;
+    }
+
+    return memberships.data[0].userId;
+  } catch (error) {
+    console.error(
+      `[Subscription Webhook] Failed to resolve user for customer ${customerId}:`,
+      error,
+    );
+    return null;
+  }
+}
+
+/** Resolve subscription tier from a Stripe subscription ID. */
+async function resolveTierFromSubscription(
+  subscriptionId: string,
+): Promise<SubscriptionTier | null> {
+  try {
+    const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ["items.data.price"],
+    });
+
+    const lookupKey = subscription.items?.data[0]?.price?.lookup_key ?? null;
+
+    if (!lookupKey) {
+      console.error(
+        `[Subscription Webhook] Subscription ${subscriptionId} has no price lookup_key`,
+      );
+      return null;
+    }
+
+    return planLookupKeyToTier(lookupKey);
+  } catch (error) {
+    console.error(
+      `[Subscription Webhook] Failed to retrieve subscription ${subscriptionId}:`,
+      error,
+    );
+    return null;
+  }
+}
+
+// =============================================================================
+// Event Handlers
+// =============================================================================
+
+/** Handle invoice.paid — reset rate limit buckets on subscription payment. */
+async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
+  // In Stripe API 2026-02-25, subscription lives under invoice.parent.subscription_details
+  const subDetails = invoice.parent?.subscription_details;
+  const subscriptionId = subDetails
+    ? typeof subDetails.subscription === "string"
+      ? subDetails.subscription
+      : subDetails.subscription?.id
+    : null;
+
+  // Only process subscription invoices (not one-time payments)
+  if (!subscriptionId) return;
+
+  const customerId =
+    typeof invoice.customer === "string"
+      ? invoice.customer
+      : invoice.customer?.id;
+
+  if (!customerId) {
+    console.error(
+      "[Subscription Webhook] invoice.paid missing customer ID:",
+      invoice.id,
+    );
+    return;
+  }
+
+  const [userId, tier] = await Promise.all([
+    resolveUserIdFromCustomer(customerId),
+    resolveTierFromSubscription(subscriptionId),
+  ]);
+
+  if (!userId || !tier) {
+    console.error(
+      `[Subscription Webhook] Could not resolve userId (${userId}) or tier (${tier}) for invoice ${invoice.id}`,
+    );
+    return;
+  }
+
+  console.log(
+    `[Subscription Webhook] invoice.paid: resetting ${tier} buckets for user ${userId}`,
+  );
+  await resetRateLimitBuckets(userId, tier);
+}
+
+/** Handle customer.subscription.updated — reset old tier's buckets on plan change. */
+async function handleSubscriptionUpdated(
+  subscription: Stripe.Subscription,
+  previousAttributes: Partial<Stripe.Subscription> | undefined,
+): Promise<void> {
+  // Only act if the subscription items actually changed (plan change)
+  const previousItems = (previousAttributes as any)?.items;
+  if (!previousItems) return;
+
+  const currentLookupKey =
+    subscription.items?.data[0]?.price?.lookup_key ?? null;
+  const currentTier = currentLookupKey
+    ? planLookupKeyToTier(currentLookupKey)
+    : null;
+
+  const prevLookupKey = previousItems?.data?.[0]?.price?.lookup_key ?? null;
+  const previousTier = prevLookupKey
+    ? planLookupKeyToTier(prevLookupKey)
+    : null;
+
+  // If tiers are the same, invoice.paid will handle the reset
+  if (currentTier === previousTier) return;
+
+  const customerId =
+    typeof subscription.customer === "string"
+      ? subscription.customer
+      : subscription.customer?.id;
+
+  if (!customerId) return;
+
+  const userId = await resolveUserIdFromCustomer(customerId);
+  if (!userId) {
+    console.error(
+      `[Subscription Webhook] subscription.updated: could not resolve user for customer ${customerId}`,
+    );
+    return;
+  }
+
+  console.log(
+    `[Subscription Webhook] subscription.updated: tier change ${previousTier} → ${currentTier} for user ${userId}`,
+  );
+
+  // Reset old tier's buckets (new tier gets fresh keys automatically)
+  if (previousTier) {
+    await resetRateLimitBuckets(userId, previousTier);
+  }
+}
+
+// =============================================================================
+// Webhook Endpoint
+// =============================================================================
+
+/**
+ * POST /api/subscription/webhook
+ * Handles Stripe subscription lifecycle events to reset rate limit buckets.
+ *
+ * Configure in Stripe Dashboard:
+ * - Endpoint URL: https://your-domain.com/api/subscription/webhook
+ * - Events: invoice.paid, customer.subscription.updated
+ */
+export async function POST(req: NextRequest) {
+  const body = await req.text();
+  const signature = req.headers.get("stripe-signature");
+
+  if (!signature) {
+    console.error("[Subscription Webhook] Missing stripe-signature header");
+    return NextResponse.json(
+      { error: "Missing stripe-signature header" },
+      { status: 400 },
+    );
+  }
+
+  const webhookSecret = process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    console.error(
+      "[Subscription Webhook] STRIPE_SUBSCRIPTION_WEBHOOK_SECRET is not configured",
+    );
+    return NextResponse.json(
+      { error: "Webhook secret not configured" },
+      { status: 500 },
+    );
+  }
+
+  let event: Stripe.Event;
+
+  try {
+    event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
+  } catch (err) {
+    console.error("[Subscription Webhook] Signature verification failed:", err);
+    return NextResponse.json(
+      { error: "Webhook signature verification failed" },
+      { status: 400 },
+    );
+  }
+
+  // Idempotency check
+  try {
+    const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      eventId: event.id,
+    });
+
+    if (result.alreadyProcessed) {
+      console.log(
+        `[Subscription Webhook] Event ${event.id} already processed, skipping`,
+      );
+      return NextResponse.json({ received: true });
+    }
+  } catch (error) {
+    console.error("[Subscription Webhook] Idempotency check failed:", error);
+    // Return 500 so Stripe retries
+    return NextResponse.json(
+      { error: "Failed to check idempotency" },
+      { status: 500 },
+    );
+  }
+
+  // Handle events
+  switch (event.type) {
+    case "invoice.paid": {
+      await handleInvoicePaid(event.data.object as Stripe.Invoice);
+      break;
+    }
+    case "customer.subscription.updated": {
+      await handleSubscriptionUpdated(
+        event.data.object as Stripe.Subscription,
+        event.data.previous_attributes as
+          | Partial<Stripe.Subscription>
+          | undefined,
+      );
+      break;
+    }
+  }
+
+  return NextResponse.json({ received: true });
+}
