@@ -356,12 +356,25 @@ Commands run inside the Docker container with network access.`;
           }
         }
       } else {
-        // Generate a unique delimiter to avoid content collision
-        const delimiter = `HACKERAI_EOF_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
         const escapedPath = ConvexSandbox.escapePath(path);
-        const command = isBinary
-          ? `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`
-          : `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
+        // Windows (PowerShell) doesn't support heredocs (<<'EOF') and chokes
+        // on special characters like [ ] ' $. Use base64 for those hosts.
+        // Docker containers and Unix dangerous-mode hosts use cat heredoc
+        // (more efficient — no ~33% base64 inflation or arg length limits).
+        const isWindows =
+          this.connectionInfo.mode === "dangerous" &&
+          this.connectionInfo.osInfo?.platform === "win32";
+
+        let command: string;
+        if (isBinary || isWindows) {
+          const b64 = isBinary
+            ? contentStr
+            : Buffer.from(contentStr).toString("base64");
+          command = `printf '%s' "${b64}" | base64 -d > ${escapedPath}`;
+        } else {
+          const delimiter = `HACKERAI_EOF_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+          command = `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
+        }
 
         const result = await this.commands.run(command, {
           displayName: `Writing: ${fileName}`,
