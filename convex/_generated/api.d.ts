@@ -1,4 +1,4 @@
-/* eslint-disable */
+ 
 /**
  * Generated `api` utility.
  *
@@ -9,6 +9,7 @@
  */
 
 import type * as aggregateVersions from "../aggregateVersions.js";
+import type * as appVersion from "../appVersion.js";
 import type * as chatStreams from "../chatStreams.js";
 import type * as chats from "../chats.js";
 import type * as constants from "../constants.js";
@@ -43,6 +44,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   aggregateVersions: typeof aggregateVersions;
+  appVersion: typeof appVersion;
   chatStreams: typeof chatStreams;
   chats: typeof chats;
   constants: typeof constants;
