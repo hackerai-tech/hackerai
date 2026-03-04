@@ -15,7 +15,11 @@ export const maxDuration = 800;
  * terminate cleanly — a 204 (no body) would be treated as an error and retried.
  */
 function emptyFinishResponse() {
-  const stream = createUIMessageStream({ execute: () => {} });
+  const stream = createUIMessageStream({
+    execute: ({ writer }) => {
+      writer.write({ type: "finish", finishReason: "stop" });
+    },
+  });
   return new Response(stream.pipeThrough(new JsonToSseTransformStream()), {
     status: 200,
   });

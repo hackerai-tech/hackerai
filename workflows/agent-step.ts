@@ -959,17 +959,9 @@ export async function runAgentStep(payload: AgentTaskPayload) {
     },
   });
 
-  // Pipe the UIMessageStream output to the Workflow's writable stream
-  const reader = uiStream.getReader();
-  const wWriter = writable.getWriter();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      await wWriter.write(value);
-    }
-  } finally {
-    reader.releaseLock();
-    wWriter.releaseLock();
-  }
+  // Pipe the UIMessageStream output to the Workflow's writable stream.
+  // pipeTo() closes the writable when the readable ends (signals "no more data"),
+  // which closes the Workflow's readable side and lets WorkflowChatTransport
+  // exit its read loop and transition useChat to "ready".
+  await uiStream.pipeTo(writable);
 }
