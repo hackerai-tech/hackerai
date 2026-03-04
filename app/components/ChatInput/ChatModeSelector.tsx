@@ -5,8 +5,6 @@ import { DropdownMenu } from "@/components/ui/dropdown-menu";
 import { ModeSelectorTrigger, ModeSelectorContent } from "./ModeSelectorMenu";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
-import { SandboxSelector } from "@/app/components/SandboxSelector";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { toast } from "sonner";
 import { AgentUpgradeDialog } from "./AgentUpgradeDialog";
 
@@ -21,8 +19,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     subscription,
     isCheckingProPlan,
     temporaryChatsEnabled,
-    sandboxPreference,
-    setSandboxPreference,
   } = useGlobalState();
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
 
@@ -75,13 +71,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
             temporaryChatsEnabled={temporaryChatsEnabled}
           />
         </DropdownMenu>
-
-        {isAgentMode(chatMode) && (
-          <SandboxSelector
-            value={sandboxPreference}
-            onChange={setSandboxPreference}
-          />
-        )}
       </div>
 
       <AgentUpgradeDialog
