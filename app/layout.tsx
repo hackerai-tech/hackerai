@@ -9,6 +9,7 @@ import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { TodoBlockProvider } from "./contexts/TodoBlockContext";
 import { PostHogProvider } from "./providers";
 import { DataStreamProvider } from "./components/DataStreamProvider";
+import { DeploymentUpdateNotifier } from "./components/DeploymentUpdateNotifier";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -100,6 +101,7 @@ export default function RootLayout({
             <TooltipProvider>
               {children}
               <Toaster />
+              <DeploymentUpdateNotifier />
             </TooltipProvider>
           </TodoBlockProvider>
         </DataStreamProvider>
