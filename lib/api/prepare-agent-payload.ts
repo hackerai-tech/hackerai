@@ -28,30 +28,18 @@ import type {
   SandboxPreference,
   ExtraUsageConfig,
   SubscriptionTier,
-  RateLimitInfo,
   SelectedModel,
 } from "@/types";
 import { isSelectedModel } from "@/types";
 import type { UserCustomization } from "@/types/user";
 import type { SandboxFile } from "@/lib/utils/sandbox-file-utils";
+import {
+  serializeRateLimitInfo,
+  type SerializableRateLimitInfo,
+} from "./rate-limit-serialization";
 
-/** Serializable rate limit info for Trigger.dev payload (Date -> ISO string) */
-export type SerializableRateLimitInfo = Omit<
-  RateLimitInfo,
-  "resetTime" | "session" | "weekly"
-> & {
-  resetTime: string;
-  session?: {
-    remaining: number;
-    limit: number;
-    resetTime: string;
-  };
-  weekly?: {
-    remaining: number;
-    limit: number;
-    resetTime: string;
-  };
-};
+// Re-export for consumers that import from this module
+export type { SerializableRateLimitInfo } from "./rate-limit-serialization";
 
 export type AgentTaskPayload = {
   chatId: string;
@@ -82,43 +70,19 @@ export type AgentTaskPayload = {
   fileImageCount: number;
 };
 
-function serializeRateLimitInfo(
-  info: RateLimitInfo,
-): SerializableRateLimitInfo {
-  return {
-    ...info,
-    resetTime:
-      typeof info.resetTime === "string"
-        ? info.resetTime
-        : info.resetTime.toISOString(),
-    session: info.session
-      ? {
-          ...info.session,
-          resetTime:
-            typeof info.session.resetTime === "string"
-              ? info.session.resetTime
-              : info.session.resetTime.toISOString(),
-        }
-      : undefined,
-    weekly: info.weekly
-      ? {
-          ...info.weekly,
-          resetTime:
-            typeof info.weekly.resetTime === "string"
-              ? info.weekly.resetTime
-              : info.weekly.resetTime.toISOString(),
-        }
-      : undefined,
-  };
-}
+/** Accepted agent modes for payload preparation */
+type AgentPayloadMode = "agent" | "agent-long";
 
 /**
- * Runs all pre-stream validation and setup for agent-long mode, then returns
- * a serializable payload for the Trigger.dev agent-stream task.
- * Call this from POST /api/agent-long only when mode === "agent-long".
+ * Runs all pre-stream validation and setup for agent modes, then returns
+ * a serializable payload for Trigger.dev or Vercel Workflow execution.
+ *
+ * @param req - The incoming Next.js request
+ * @param allowedMode - Which agent mode this route accepts
  */
 export async function prepareAgentPayload(
   req: NextRequest,
+  allowedMode: AgentPayloadMode = "agent-long",
 ): Promise<AgentTaskPayload> {
   let parsedBody: {
     messages: UIMessage[];
@@ -156,10 +120,10 @@ export async function prepareAgentPayload(
       ? rawSelectedModel
       : undefined;
 
-  if (mode !== "agent-long") {
+  if (mode !== allowedMode) {
     throw new ChatSDKError(
       "bad_request:api",
-      "prepareAgentPayload is only for agent-long mode",
+      `This route only accepts ${allowedMode} mode`,
     );
   }
 
@@ -169,7 +133,7 @@ export async function prepareAgentPayload(
   if (subscription === "free") {
     throw new ChatSDKError(
       "forbidden:chat",
-      "Agent-Long mode is only available for Pro users. Please upgrade to access this feature.",
+      "Agent mode is only available for Pro users. Please upgrade to access this feature.",
     );
   }
 
