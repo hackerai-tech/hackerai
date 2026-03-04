@@ -9,6 +9,13 @@
 
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 
+/** All API endpoints that handle chat/agent requests */
+export type ChatApiEndpoint =
+  | "/api/chat"
+  | "/api/agent"
+  | "/api/agent-long"
+  | "/api/agent-workflow";
+
 /**
  * Wide event structure for chat/agent API requests
  */
@@ -21,7 +28,7 @@ export interface ChatWideEvent {
 
   // Service context
   service: "chat-handler" | "agent-task";
-  endpoint: "/api/chat" | "/api/agent" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
   version: string;
   region?: string;
 
@@ -122,11 +129,7 @@ export class WideEventBuilder {
   private toolCalls: Array<{ name: string; sandbox_type?: string }> = [];
   private streamStartTime?: number;
 
-  constructor(
-    requestId: string,
-    chatId: string,
-    endpoint: "/api/chat" | "/api/agent" | "/api/agent-long",
-  ) {
+  constructor(requestId: string, chatId: string, endpoint: ChatApiEndpoint) {
     this.event = {
       timestamp: new Date().toISOString(),
       request_id: requestId,
@@ -446,7 +449,7 @@ export const logger = {
  */
 export function createWideEventBuilder(
   chatId: string,
-  endpoint: "/api/chat" | "/api/agent" | "/api/agent-long",
+  endpoint: ChatApiEndpoint | "/api/agent-workflow",
 ): WideEventBuilder {
   const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   return new WideEventBuilder(requestId, chatId, endpoint);

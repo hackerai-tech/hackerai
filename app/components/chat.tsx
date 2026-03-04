@@ -215,9 +215,13 @@ export const Chat = ({
       api: "/api/chat",
       fetch: async (input, init) => {
         // Dynamically route to correct API based on current mode
+        const useWorkflowAgent =
+          process.env.NEXT_PUBLIC_USE_WORKFLOW_AGENT === "true";
         const url =
           input === "/api/chat" && chatModeRef.current === "agent"
-            ? "/api/agent"
+            ? useWorkflowAgent
+              ? "/api/agent-workflow"
+              : "/api/agent"
             : input;
         return fetchWithErrorHandlers(url, init);
       },
