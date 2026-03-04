@@ -27,11 +27,13 @@ const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
 /**
  * Check-and-mark a webhook event as processed (idempotency guard).
  * Returns { alreadyProcessed: true } if the event was already recorded.
+ * Pass checkOnly: true to only check without marking (mark after successful processing).
  */
 export const checkAndMarkWebhook = mutation({
   args: {
     serviceKey: v.string(),
     eventId: v.string(),
+    checkOnly: v.optional(v.boolean()),
   },
   returns: v.object({
     alreadyProcessed: v.boolean(),
@@ -48,10 +50,12 @@ export const checkAndMarkWebhook = mutation({
       return { alreadyProcessed: true };
     }
 
-    await ctx.db.insert("processed_webhooks", {
-      event_id: args.eventId,
-      processed_at: Date.now(),
-    });
+    if (!args.checkOnly) {
+      await ctx.db.insert("processed_webhooks", {
+        event_id: args.eventId,
+        processed_at: Date.now(),
+      });
+    }
 
     return { alreadyProcessed: false };
   },
