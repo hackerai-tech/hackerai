@@ -6,7 +6,6 @@ import { ChatSDKError } from "@/lib/errors";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { getUserFriendlyProviderError } from "@/lib/utils/error-utils";
 import { startStream } from "@/lib/db/actions";
-import PostHogClient from "@/app/posthog";
 import type { NextRequest } from "next/server";
 
 // Only needs to cover the start() call and pre-processing, not the full agent execution.
@@ -25,19 +24,6 @@ export async function POST(req: NextRequest) {
     // Persist workflow run ID (wrun_*) as active_stream_id so the client's
     // WorkflowChatTransport can reconnect via /api/agent-workflow/[id]/stream.
     await startStream({ chatId: payload.chatId, streamId: run.runId });
-
-    const posthog = PostHogClient();
-    if (posthog) {
-      posthog.capture({
-        distinctId: payload.userId,
-        event: "hackerai-agent-workflow",
-        properties: {
-          regenerate: payload.regenerate,
-          ...(payload.subscription && { subscription: payload.subscription }),
-        },
-      });
-      await posthog.flush();
-    }
 
     return createUIMessageStreamResponse({
       stream: run.readable,
