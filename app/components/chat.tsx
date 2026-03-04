@@ -206,9 +206,6 @@ export const Chat = ({
   // Ref for setMessages from useChat (breaks circular dependency with transport)
   const setMessagesRef = useRef<(msgs: ChatMessage[]) => void>(() => {});
 
-  const isWorkflowAgentEnabled =
-    process.env.NEXT_PUBLIC_USE_WORKFLOW_AGENT === "true";
-
   // Transport: WorkflowChatTransport for durable agent streams (auto-reconnects
   // when the 800s function timeout kills the connection), DefaultChatTransport
   // for standard ask/agent mode.
@@ -287,8 +284,6 @@ export const Chat = ({
       },
     });
 
-    if (!isWorkflowAgentEnabled) return defaultTransport;
-
     const workflowTransport = new WorkflowChatTransport<ChatMessage>({
       api: "/api/agent-workflow",
       fetch: (input, init) => fetchWithErrorHandlers(input as string, init),
@@ -331,7 +326,7 @@ export const Chat = ({
       },
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isWorkflowAgentEnabled]);
+  }, []);
 
   const {
     messages,
