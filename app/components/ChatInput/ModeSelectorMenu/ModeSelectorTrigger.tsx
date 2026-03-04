@@ -2,15 +2,14 @@
 
 import { Button } from "@/components/ui/button";
 import { DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { MessageSquare, Infinity, Timer, ChevronDown } from "lucide-react";
+import { MessageSquare, Infinity, ChevronDown } from "lucide-react";
 import type { ChatMode } from "@/types/chat";
 
 const MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
   ask: "bg-muted hover:bg-muted/50",
   agent:
     "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20",
-  "agent-long":
-    "bg-amber-500/10 text-amber-700 hover:bg-amber-500/20 dark:bg-amber-400/10 dark:text-amber-400 dark:hover:bg-amber-400/20",
+  "agent-long": "bg-muted hover:bg-muted/50",
 };
 
 const baseClasses =
@@ -21,23 +20,19 @@ export interface ModeSelectorTriggerProps {
 }
 
 export function ModeSelectorTrigger({ chatMode }: ModeSelectorTriggerProps) {
+  const displayMode = chatMode === "agent-long" ? "agent" : chatMode;
   return (
     <DropdownMenuTrigger asChild>
       <Button
         variant="ghost"
         size="sm"
         data-testid="mode-selector"
-        className={`${baseClasses} ${MODE_VARIANT_CLASSES[chatMode]}`}
+        className={`${baseClasses} ${MODE_VARIANT_CLASSES[displayMode]}`}
       >
-        {chatMode === "agent" ? (
+        {displayMode === "agent" ? (
           <>
             <Infinity className="w-3 h-3 mr-1" />
             Agent
-          </>
-        ) : chatMode === "agent-long" ? (
-          <>
-            <Timer className="w-3 h-3 mr-1" />
-            Agent-Long
           </>
         ) : (
           <>

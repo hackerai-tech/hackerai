@@ -36,20 +36,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     }
   };
 
-  const handleAgentLongModeClick = () => {
-    if (temporaryChatsEnabled) {
-      toast.info("Agent-Long mode requires chat history", {
-        description: "Turn off temporary chat to use Agent-Long mode.",
-      });
-      return;
-    }
-    if (subscription !== "free") {
-      setChatMode("agent-long");
-    } else {
-      setAgentUpgradeDialogOpen(true);
-    }
-  };
-
   const handleUpgradeClick = () => {
     setAgentUpgradeDialogOpen(false);
     redirectToPricing();
@@ -65,7 +51,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
           <ModeSelectorContent
             setChatMode={setChatMode}
             onAgentModeClick={handleAgentModeClick}
-            onAgentLongModeClick={handleAgentLongModeClick}
             subscription={subscription}
             isCheckingProPlan={isCheckingProPlan}
             temporaryChatsEnabled={temporaryChatsEnabled}

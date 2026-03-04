@@ -38,8 +38,6 @@ import {
   writeSelectedModelForMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
-
 interface GlobalStateType {
   // Input state
   input: string;
@@ -164,7 +162,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
-    // Agent-Long is hidden for now; normalize to Agent
     if (saved === "agent-long") return "agent";
     return saved;
   });
@@ -178,12 +175,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     writeChatMode(chatMode);
   }, [chatMode]);
 
-  // Agent-Long is hidden for now; if user has it selected (e.g. from chat data), switch to Agent
-  useEffect(() => {
-    if (chatMode === "agent-long") {
-      setChatMode("agent");
-    }
-  }, [chatMode]);
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
     chatSidebarStorage.get(isMobile ?? false),
@@ -204,9 +195,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
   const setSubscriptionWithNormalize = useCallback((tier: SubscriptionTier) => {
     setSubscription(tier);
-    setChatMode((prev) =>
-      tier === "free" && isAgentMode(prev) ? "ask" : prev,
-    );
   }, []);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
@@ -325,10 +313,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []); // Empty dependency array = runs once on mount
 
   // Derive subscription tier from current token entitlements
-  // Prefer normalized entitlements ("pro-plan", "ultra-plan"); fall back to monthly/yearly keys for backward compatibility
+  // When user is still loading, set subscription without normalizing chatMode (avoids resetting mode before auth resolves)
   useEffect(() => {
     if (!user) {
-      setSubscriptionWithNormalize("free");
+      setSubscription("free");
       return;
     }
 
@@ -431,9 +419,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       // Only update state if it differs from URL to avoid infinite loops
       if (temporaryChatsEnabled !== urlTemporaryEnabled) {
         setTemporaryChatsEnabled(urlTemporaryEnabled);
-        setChatMode((prev) =>
-          urlTemporaryEnabled && isAgentMode(prev) ? "ask" : prev,
-        );
       }
     };
 
@@ -639,7 +624,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Custom setter for temporary chats that also updates URL
   const setTemporaryChatsEnabledWithUrl = useCallback((enabled: boolean) => {
     setTemporaryChatsEnabled(enabled);
-    setChatMode((prev) => (enabled && isAgentMode(prev) ? "ask" : prev));
 
     if (typeof window !== "undefined") {
       const url = new URL(window.location.href);
