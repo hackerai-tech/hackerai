@@ -107,7 +107,8 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 function getStreamContext() {
   try {
     return createResumableStreamContext({ waitUntil: after });
-  } catch (_) {
+  } catch (error) {
+    console.log("[StreamContext] Failed to create resumable stream context:", error instanceof Error ? error.message : String(error));
     return null;
   }
 }
@@ -526,7 +527,7 @@ export const createChatHandler = (
                 upToToolCallId = existingStepSummary.up_to_tool_call_id;
               }
             } catch (error) {
-              console.error("[StepSummary] Failed to load from DB:", error);
+              console.log("[StepSummary] Failed to load from DB:", error instanceof Error ? error.message : String(error));
             }
           }
 
@@ -628,7 +629,7 @@ export const createChatHandler = (
                         stepSummaryText = null;
                         upToToolCallId = null;
                         clearStepSummary({ chatId }).catch((err) =>
-                          console.error("[StepSummary] Failed to clear:", err),
+                          console.log("[StepSummary] Failed to clear:", err instanceof Error ? err.message : String(err)),
                         );
                       }
                       return {
@@ -693,7 +694,7 @@ export const createChatHandler = (
                   ) {
                     // Expected when user stops the stream
                   } else {
-                    console.error("Error in prepareStep:", error);
+                    console.log("[PrepareStep] Error:", error instanceof Error ? error.message : String(error));
                   }
                   return currentSystemPrompt
                     ? { system: currentSystemPrompt }
@@ -1142,8 +1143,8 @@ export const createChatHandler = (
                         string,
                         unknown
                       >;
-                    } catch {
-                      // Usage unavailable on abort - continue without it
+                    } catch (error) {
+                      console.log("[Usage] Unavailable on abort:", error instanceof Error ? error.message : String(error));
                     }
                   }
 

@@ -426,22 +426,28 @@ export async function runStepSummarizationCheck(options: {
         cutoffToolCallId,
       );
 
+      if (writer && !abortSignal?.aborted) {
+        writeStepSummarizationCompleted(writer);
+      }
+
       return {
         needsSummarization: true,
         messages: injectedMessages as ModelMessage[],
         summaryText,
         upToToolCallId: cutoffToolCallId,
       };
-    } finally {
+    } catch (innerError) {
       if (writer && !abortSignal?.aborted) {
+        console.log("[StepSummarization] Failed, clearing UI indicator");
         writeStepSummarizationCompleted(writer);
       }
+      throw innerError;
     }
   } catch (error) {
     if (abortSignal?.aborted) {
       throw error;
     }
-    console.error("[StepSummarization] Failed:", error);
+    console.log("[StepSummarization] Failed:", error instanceof Error ? error.message : String(error));
     return {
       needsSummarization: false,
       messages,
