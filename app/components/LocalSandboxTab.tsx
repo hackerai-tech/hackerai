@@ -162,19 +162,15 @@ const LocalSandboxTab = () => {
                   <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">{conn.name}</div>
+                  <div className="font-medium text-sm">
+                    {conn.osInfo?.hostname || conn.name}
+                  </div>
                   <div className="text-xs text-muted-foreground truncate">
                     {conn.mode === "docker"
                       ? `Docker: ${conn.containerId?.slice(0, 12) || "unknown"}`
                       : `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`}
                   </div>
                 </div>
-                {conn.mode === "dangerous" && (
-                  <span className="flex items-center gap-1 text-xs text-yellow-600 dark:text-yellow-400 bg-yellow-100 dark:bg-yellow-900/30 px-2 py-0.5 rounded-full">
-                    <AlertTriangle className="h-3 w-3" />
-                    Dangerous
-                  </span>
-                )}
               </div>
             ))}
           </div>
