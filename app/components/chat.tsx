@@ -720,7 +720,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const hasSavedSandboxType =
     (!!storedSandboxType && sandboxConnectionValid) ||
     (isExistingChat && !chatData) ||
-    wasNewChatRef.current;
+    (wasNewChatRef.current && hasMessages);
 
   return (
     <ConvexErrorBoundary>

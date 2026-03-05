@@ -166,13 +166,10 @@ export const ChatInput = ({
           onChange={handleFileUploadEvent}
         />
 
-        {/* Sandbox selector for new chats: above input on mobile, below on desktop.
-            Always reserve space (min-h-9) to prevent layout shift when switching modes.
-            On main, the centered ChatInput unmounts when hasMessages becomes true (showChatLayout),
-            so the new-chat selector naturally disappears. Here we replicate that by hiding once
-            messages exist. */}
-        {isNewChat && !temporaryChatsEnabled && !hasMessages && (
-          <div className="order-1 sm:order-2 flex px-1 pb-2 sm:pt-2 sm:pb-0 min-h-9">
+        {/* Sandbox selector for new chats on mobile: shown above input.
+            On desktop, it's inside the toolbar like existing chats. */}
+        {isNewChat && !temporaryChatsEnabled && !hasMessages && isMobile && (
+          <div className="order-1 flex px-1 pb-2 min-h-9">
             {isAgentMode(chatMode) && (
               <SandboxSelector
                 value={sandboxPreference}
@@ -203,7 +200,6 @@ export const ChatInput = ({
             chatMode={chatMode}
             contextUsage={contextUsage}
             showContextIndicator={showContextIndicator}
-            isNewChat={isNewChat}
             isMobile={isMobile}
             hasSavedSandboxType={hasSavedSandboxType}
           />

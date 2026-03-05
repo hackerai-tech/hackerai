@@ -19,7 +19,6 @@ export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
   contextUsage?: ContextUsageData;
   showContextIndicator?: boolean;
-  isNewChat?: boolean;
   isMobile?: boolean;
   hasSavedSandboxType?: boolean;
 }
@@ -28,7 +27,6 @@ export function ChatInputToolbar({
   onAttachClick,
   contextUsage,
   showContextIndicator = false,
-  isNewChat = false,
   isMobile = false,
   hasSavedSandboxType = false,
   chatMode,
@@ -47,7 +45,7 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      {!isNewChat && !isMobile && isAgentMode(chatMode) && (
+      {!isMobile && isAgentMode(chatMode) && (
         <SandboxSelector
           value={sandboxPreference}
           onChange={setSandboxPreference}
