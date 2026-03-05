@@ -46,18 +46,6 @@ export async function setupMocks(
         }),
       });
     });
-
-    // Agent-Long mode: Trigger.dev (returns runId + token)
-    await page.route("**/api/agent-long", async (route: Route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          runId: "mock-run-id",
-          publicAccessToken: "mock-public-access-token",
-        }),
-      });
-    });
   }
 
   // Note: WorkOS and Convex are used with real test data

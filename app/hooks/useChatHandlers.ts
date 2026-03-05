@@ -24,7 +24,6 @@ interface UseChatHandlersProps {
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
   isExistingChat: boolean;
-  activateChatLocally: () => void;
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
@@ -39,7 +38,6 @@ export const useChatHandlers = ({
   regenerate,
   setMessages,
   isExistingChat,
-  activateChatLocally,
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
@@ -230,7 +228,6 @@ export const useChatHandlers = ({
       }
       if (!isExistingChat && !temporaryChatsEnabledRef.current) {
         window.history.replaceState({}, "", `/c/${chatId}`);
-        activateChatLocally();
       }
 
       try {
