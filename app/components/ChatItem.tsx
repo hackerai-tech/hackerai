@@ -144,8 +144,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
 
       // If we're deleting the currently active chat, navigate to home
       if (isCurrentlyActive) {
-        router.push("/");
         initializeNewChat();
+        router.push("/");
       }
     } catch (error: any) {
       // Extract error message
@@ -163,8 +163,8 @@ const ChatItem: React.FC<ChatItemProps> = ({
         // Even if chat not found in DB, still clean up draft
         removeDraft(id);
         if (isCurrentlyActive) {
-          router.push("/");
           initializeNewChat();
+          router.push("/");
         }
       } else {
         console.error("Failed to delete chat:", error);

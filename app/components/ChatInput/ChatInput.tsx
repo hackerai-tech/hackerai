@@ -18,7 +18,6 @@ import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
 import type { ContextUsageData } from "../ContextUsageIndicator";
-import { SandboxSelector } from "../SandboxSelector";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface ChatInputProps {
@@ -127,8 +126,8 @@ export const ChatInput = ({
   };
 
   return (
-    <div className={`relative px-4 ${isCentered ? "" : "pb-3"}`}>
-      <div className="mx-auto w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
+    <div className={`relative px-4 min-w-0 ${isCentered ? "" : "pb-3"}`}>
+      <div className="mx-auto w-full max-w-full min-w-0 sm:max-w-[768px] sm:min-w-[390px] flex flex-col flex-1">
         {rateLimitWarning && onDismissRateLimitWarning && (
           <RateLimitWarning
             data={rateLimitWarning}
@@ -166,21 +165,8 @@ export const ChatInput = ({
           onChange={handleFileUploadEvent}
         />
 
-        {/* Sandbox selector for new chats: above input on mobile, below on desktop.
-            Always reserve space (min-h-9) to prevent layout shift when switching modes. */}
-        {isNewChat && !temporaryChatsEnabled && (
-          <div className="order-1 sm:order-2 flex px-1 pb-2 sm:pt-2 sm:pb-0 min-h-9">
-            {isAgentMode(chatMode) && (
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-              />
-            )}
-          </div>
-        )}
-
         <div
-          className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border focus-within:ring-2 focus-within:ring-ring/20 ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
+          className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border focus-within:ring-2 focus-within:ring-ring/20 ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
         >
           <ChatInputTextarea
             draftId={draftId}
@@ -205,21 +191,6 @@ export const ChatInput = ({
             hasSavedSandboxType={hasSavedSandboxType}
           />
         </div>
-
-        {/* Sandbox selector below input on mobile for existing chats.
-            Skip rendering entirely when readOnly + cloud to avoid empty padding. */}
-        {!isNewChat &&
-          isMobile &&
-          isAgentMode(chatMode) &&
-          !(hasSavedSandboxType && sandboxPreference === "e2b") && (
-            <div className="order-3 flex px-1 pt-2">
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                readOnly={hasSavedSandboxType}
-              />
-            </div>
-          )}
 
         {onScrollToBottom && (
           <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">
