@@ -21,6 +21,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-grok-4.1": { input: 0.2, output: 0.5 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
   "model-kimi-k2.5": { input: 0.6, output: 3.0 },
+  "model-gpt-5.4": { input: 2.5, output: 15.0 },
 };
 
 const getModelPricing = (modelName?: string) =>

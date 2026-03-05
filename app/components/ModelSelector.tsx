@@ -33,6 +33,7 @@ const MODEL_COST_TIER: Record<Exclude<SelectedModel, "auto">, CostTier> = {
   "grok-4.1": "low",
   "gemini-3.1-pro": "high",
   "sonnet-4.6": "high",
+  "gpt-5.4": "high",
 };
 
 const COST_CONFIG: Record<
@@ -104,6 +105,7 @@ interface ModelOption {
 const ASK_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash" },
   { id: "grok-4.1", label: "Grok 4.1" },
+  { id: "gpt-5.4", label: "GPT-5.4" },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6" },
 ];
 
@@ -112,6 +114,7 @@ const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash", thinking: true },
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
   { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", thinking: true },
+  { id: "gpt-5.4", label: "GPT-5.4", thinking: true },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", thinking: true },
 ];
 
