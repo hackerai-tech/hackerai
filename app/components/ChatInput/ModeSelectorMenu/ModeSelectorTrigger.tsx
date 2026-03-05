@@ -31,13 +31,13 @@ export function ModeSelectorTrigger({ chatMode }: ModeSelectorTriggerProps) {
       >
         {displayMode === "agent" ? (
           <>
-            <Infinity className="w-3 h-3 mr-1" />
-            Agent
+            <Infinity className="w-3 h-3 md:mr-1" />
+            <span className="hidden md:inline">Agent</span>
           </>
         ) : (
           <>
-            <MessageSquare className="w-3 h-3 mr-1" />
-            Ask
+            <MessageSquare className="w-3 h-3 md:mr-1" />
+            <span className="hidden md:inline">Ask</span>
           </>
         )}
         <ChevronDown className="w-3 h-3 ml-1" />
