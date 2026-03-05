@@ -42,40 +42,34 @@ export function ChatInputToolbar({
   } = useGlobalState();
 
   return (
-    <div className="px-3 flex flex-col min-[560px]:flex-row gap-2 min-w-0">
-      {/* Attachment + Agent */}
-      <div className="flex gap-2 items-center shrink-0">
-        <div className="shrink-0">
-          <AttachmentButton onAttachClick={onAttachClick} />
-        </div>
-        <ChatModeSelector />
+    <div className="px-3 flex gap-2 items-center min-w-0">
+      <div className="shrink-0">
+        <AttachmentButton onAttachClick={onAttachClick} />
       </div>
-      {/* Cloud + Auto + Submit: second row on narrow, inline on wide */}
-      <div className="flex gap-2 items-center flex-1 min-w-0">
-        {isAgentMode(chatMode) && (
-          <SandboxSelector
-            value={sandboxPreference}
-            onChange={setSandboxPreference}
-            readOnly={hasSavedSandboxType && !isNewChat}
-          />
-        )}
-        <ModelSelector
-          value={selectedModel}
-          onChange={setSelectedModel}
-          mode={chatMode}
+      <ChatModeSelector />
+      {!isNewChat && !isMobile && isAgentMode(chatMode) && (
+        <SandboxSelector
+          value={sandboxPreference}
+          onChange={setSandboxPreference}
+          readOnly={hasSavedSandboxType}
         />
-        {showContextIndicator && contextUsage && (
-          <div className="shrink-0">
-            <ContextUsageIndicator {...contextUsage} />
-          </div>
-        )}
-        <div className="ml-auto shrink-0">
-          <SubmitStopButton
-            {...submitStopProps}
-            chatMode={chatMode}
-            showContextIndicator={showContextIndicator}
-          />
+      )}
+      <ModelSelector
+        value={selectedModel}
+        onChange={setSelectedModel}
+        mode={chatMode}
+      />
+      {showContextIndicator && contextUsage && (
+        <div className="shrink-0">
+          <ContextUsageIndicator {...contextUsage} />
         </div>
+      )}
+      <div className="ml-auto shrink-0">
+        <SubmitStopButton
+          {...submitStopProps}
+          chatMode={chatMode}
+          showContextIndicator={showContextIndicator}
+        />
       </div>
     </div>
   );
