@@ -140,6 +140,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (routeChatId) {
       setChatId(routeChatId);
       setIsExistingChat(true);
+    } else {
+      // Navigated to "/" (new chat) — reset to fresh state
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      wasNewChatRef.current = true;
     }
   }, [routeChatId]);
 
@@ -386,6 +391,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const reset = () => {
       setMessages([]);
       setChatId(uuidv4());
+      setIsExistingChat(false);
+      wasNewChatRef.current = true;
       setTodos([]);
       setAwaitingServerChat(false);
       setUploadStatus(null);
