@@ -505,6 +505,8 @@ export const Chat = ({
       })();
 
       setTodos(nextTodos);
+    } else {
+      setTodos([]);
     }
     // Server has responded for this chat id; stop suppressing not-found state
     setAwaitingServerChat(false);
