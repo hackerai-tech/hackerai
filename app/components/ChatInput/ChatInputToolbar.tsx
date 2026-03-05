@@ -45,11 +45,10 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      {!isMobile && isAgentMode(chatMode) && (
+      {!isMobile && !hasSavedSandboxType && isAgentMode(chatMode) && (
         <SandboxSelector
           value={sandboxPreference}
           onChange={setSandboxPreference}
-          readOnly={hasSavedSandboxType}
         />
       )}
       <ModelSelector
