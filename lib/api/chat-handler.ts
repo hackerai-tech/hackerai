@@ -52,10 +52,18 @@ import {
   writeContextUsage,
   contextUsageEnabled,
   runSummarizationStep,
+  runStepSummarizationCheck,
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
   refreshNotesInModelMessages,
 } from "@/lib/api/chat-stream-helpers";
+import { injectStepSummary } from "@/lib/chat/summarization/step-summary";
+import {
+  saveStepSummary as persistStepSummary,
+  getStepSummary as loadStepSummary,
+  clearStepSummary,
+} from "@/lib/db/actions";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
 import {
@@ -506,6 +514,22 @@ export const createChatHandler = (
           );
 
           let hasSummarized = false;
+          let stepSummaryText: string | null = null;
+          let upToToolCallId: string | null = null;
+
+          // Load existing step summary from DB for reconnect/resume
+          if (!temporary && chatId) {
+            try {
+              const existingStepSummary = await loadStepSummary({ chatId });
+              if (existingStepSummary) {
+                stepSummaryText = existingStepSummary.step_summary_text;
+                upToToolCallId = existingStepSummary.up_to_tool_call_id;
+              }
+            } catch (error) {
+              console.error("[StepSummary] Failed to load from DB:", error);
+            }
+          }
+
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
@@ -557,8 +581,19 @@ export const createChatHandler = (
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
-                  // Run summarization check on every step (non-temporary chats only)
-                  // but only summarize once
+                  // 1. Re-inject existing step summary on every step
+                  // (SDK rebuilds messages from internal state each call,
+                  //  so our previous injection is lost)
+                  let currentMessages = messages;
+                  if (stepSummaryText && upToToolCallId) {
+                    currentMessages = injectStepSummary(
+                      messages as any,
+                      stepSummaryText,
+                      upToToolCallId,
+                    ) as typeof messages;
+                  }
+
+                  // 2. Main summary (existing, once per stream)
                   if (!temporary && !hasSummarized) {
                     const result = await runSummarizationStep({
                       messages: finalMessages,
@@ -588,6 +623,14 @@ export const createChatHandler = (
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
                       }
+                      // Main summary absorbs step summary — clear it
+                      if (stepSummaryText && chatId) {
+                        stepSummaryText = null;
+                        upToToolCallId = null;
+                        clearStepSummary({ chatId }).catch((err) =>
+                          console.error("[StepSummary] Failed to clear:", err),
+                        );
+                      }
                       return {
                         messages: await convertToModelMessages(
                           result.summarizedMessages,
@@ -596,6 +639,26 @@ export const createChatHandler = (
                     }
                   }
 
+                  // 3. Step summary check (after main summary exists)
+                  if (!temporary && hasSummarized) {
+                    const stepResult = await runStepSummarizationCheck({
+                      messages: currentMessages as any,
+                      languageModel: trackedProvider.languageModel(modelName),
+                      existingSummary: stepSummaryText,
+                      lastStepInputTokens,
+                      maxTokens: getMaxTokensForSubscription(subscription),
+                      thresholdPercentage: SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                      abortSignal: userStopSignal.signal,
+                    });
+
+                    if (stepResult.needsSummarization) {
+                      stepSummaryText = stepResult.summaryText;
+                      upToToolCallId = stepResult.upToToolCallId;
+                      currentMessages = stepResult.messages as typeof messages;
+                    }
+                  }
+
+                  // 4. Notes refresh (existing logic)
                   const lastStep = Array.isArray(steps)
                     ? steps.at(-1)
                     : undefined;
@@ -604,7 +667,6 @@ export const createChatHandler = (
                       (lastStep as { toolResults?: unknown[] }).toolResults) ||
                     [];
 
-                  // Check if any note was created, updated, or deleted
                   const wasNoteModified =
                     Array.isArray(toolResults) &&
                     toolResults.some((r) =>
@@ -614,13 +676,11 @@ export const createChatHandler = (
                     );
 
                   if (!wasNoteModified) {
-                    return { messages };
+                    return { messages: currentMessages };
                   }
 
-                  // Update the notes block within the existing messages,
-                  // preserving the full conversation history (tool calls/results)
                   const updatedMessages = await refreshNotesInModelMessages(
-                    messages as Array<Record<string, unknown>>,
+                    currentMessages as Array<Record<string, unknown>>,
                     noteInjectionOpts,
                   );
 
@@ -1145,6 +1205,19 @@ export const createChatHandler = (
                     });
                   }
                   logStep("save_messages", stepStart);
+
+                  // Persist step summary if one was created during this stream
+                  if (stepSummaryText && upToToolCallId && chatId) {
+                    try {
+                      await persistStepSummary({
+                        chatId,
+                        stepSummaryText,
+                        upToToolCallId,
+                      });
+                    } catch (error) {
+                      console.error("[StepSummary] Failed to persist:", error);
+                    }
+                  }
 
                   // Send file metadata via stream for resumable stream clients
                   // Uses accumulated metadata directly - no DB query needed!

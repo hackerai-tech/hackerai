@@ -17,6 +17,15 @@ import {
 import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
+import {
+  injectStepSummary,
+  generateStepSummaryText,
+  getSecondToLastToolCallId,
+  countCompletedToolSteps,
+  isStepSummaryMessage,
+  extractStepsToSummarize,
+  MIN_STEPS_TO_SUMMARIZE,
+} from "@/lib/chat/summarization/step-summary";
 
 /**
  * Check if messages contain file attachments
@@ -291,6 +300,141 @@ export async function runSummarizationStep(options: {
   }
 
   return { needsSummarization: true, summarizedMessages, contextUsage };
+}
+
+// ModelMessage type for step summarization (matches AI SDK internal format)
+type ModelMessage = {
+  role: string;
+  content: string | Array<{ type: string; [key: string]: unknown }>;
+};
+
+export interface StepSummarizationState {
+  stepSummaryText: string | null;
+  upToToolCallId: string | null;
+}
+
+export interface StepSummarizationCheckResult {
+  needsSummarization: boolean;
+  messages: ModelMessage[];
+  summaryText: string | null;
+  upToToolCallId: string | null;
+}
+
+/**
+ * Check if step summarization is needed and perform it.
+ * This runs on every prepareStep call AFTER main summary has been created.
+ *
+ * It checks if the current messages (after re-injecting any existing step summary)
+ * exceed the token threshold. If so, it generates a new step summary that compresses
+ * completed tool steps.
+ */
+export async function runStepSummarizationCheck(options: {
+  messages: ModelMessage[];
+  languageModel: LanguageModel;
+  existingSummary: string | null;
+  lastStepInputTokens: number;
+  maxTokens: number;
+  thresholdPercentage: number;
+  abortSignal?: AbortSignal;
+}): Promise<StepSummarizationCheckResult> {
+  const {
+    messages,
+    languageModel,
+    existingSummary,
+    lastStepInputTokens,
+    maxTokens,
+    thresholdPercentage,
+    abortSignal,
+  } = options;
+
+  const threshold = Math.floor(maxTokens * thresholdPercentage);
+
+  // Use provider-reported tokens if available (most accurate)
+  if (lastStepInputTokens <= threshold) {
+    return {
+      needsSummarization: false,
+      messages,
+      summaryText: existingSummary,
+      upToToolCallId: null,
+    };
+  }
+
+  // Need enough completed steps to make summarization worthwhile
+  // Filter out existing step summary messages for counting
+  const nonSummaryMessages = messages.filter(
+    (m) => !isStepSummaryMessage(m as any),
+  );
+  const completedSteps = countCompletedToolSteps(nonSummaryMessages as any);
+
+  if (completedSteps < MIN_STEPS_TO_SUMMARIZE) {
+    return {
+      needsSummarization: false,
+      messages,
+      summaryText: existingSummary,
+      upToToolCallId: null,
+    };
+  }
+
+  // Get cutoff: second-to-last toolCallId (keep last step raw)
+  const cutoffToolCallId = getSecondToLastToolCallId(nonSummaryMessages as any);
+  if (!cutoffToolCallId) {
+    return {
+      needsSummarization: false,
+      messages,
+      summaryText: existingSummary,
+      upToToolCallId: null,
+    };
+  }
+
+  try {
+    // Extract steps to summarize for the LLM
+    const stepsToSummarize = extractStepsToSummarize(
+      nonSummaryMessages as any,
+      cutoffToolCallId,
+    );
+
+    if (stepsToSummarize.length === 0) {
+      return {
+        needsSummarization: false,
+        messages,
+        summaryText: existingSummary,
+        upToToolCallId: null,
+      };
+    }
+
+    // Generate step summary
+    const summaryText = await generateStepSummaryText(
+      stepsToSummarize as any,
+      languageModel,
+      existingSummary ?? undefined,
+      abortSignal,
+    );
+
+    // Inject summary into messages
+    const injectedMessages = injectStepSummary(
+      nonSummaryMessages as any,
+      summaryText,
+      cutoffToolCallId,
+    );
+
+    return {
+      needsSummarization: true,
+      messages: injectedMessages as ModelMessage[],
+      summaryText,
+      upToToolCallId: cutoffToolCallId,
+    };
+  } catch (error) {
+    if (abortSignal?.aborted) {
+      throw error;
+    }
+    console.error("[StepSummarization] Failed:", error);
+    return {
+      needsSummarization: false,
+      messages,
+      summaryText: existingSummary,
+      upToToolCallId: null,
+    };
+  }
 }
 
 /**

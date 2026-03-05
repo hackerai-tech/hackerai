@@ -30,6 +30,7 @@ export default defineSchema({
     ),
     branched_from_chat_id: v.optional(v.string()),
     latest_summary_id: v.optional(v.id("chat_summaries")),
+    latest_step_summary_id: v.optional(v.id("step_summaries")),
     update_time: v.number(),
     // Sharing fields
     share_id: v.optional(v.string()),
@@ -59,6 +60,12 @@ export default defineSchema({
         }),
       ),
     ),
+  }).index("by_chat_id", ["chat_id"]),
+
+  step_summaries: defineTable({
+    chat_id: v.string(),
+    step_summary_text: v.string(),
+    up_to_tool_call_id: v.string(),
   }).index("by_chat_id", ["chat_id"]),
 
   messages: defineTable({

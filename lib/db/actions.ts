@@ -742,6 +742,54 @@ export async function getLatestSummary({ chatId }: { chatId: string }) {
   }
 }
 
+export async function saveStepSummary({
+  chatId,
+  stepSummaryText,
+  upToToolCallId,
+}: {
+  chatId: string;
+  stepSummaryText: string;
+  upToToolCallId: string;
+}) {
+  try {
+    await convex.mutation(api.chats.saveStepSummary, {
+      serviceKey,
+      chatId,
+      stepSummaryText,
+      upToToolCallId,
+    });
+  } catch (error) {
+    console.error("[DB Actions] Failed to save step summary", {
+      chatId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function getStepSummary({ chatId }: { chatId: string }) {
+  try {
+    const stepSummary = await convex.query(api.chats.getStepSummary, {
+      serviceKey,
+      chatId,
+    });
+    return stepSummary;
+  } catch (error) {
+    console.error("[DB Actions] Failed to get step summary:", error);
+    return null;
+  }
+}
+
+export async function clearStepSummary({ chatId }: { chatId: string }) {
+  try {
+    await convex.mutation(api.chats.clearStepSummary, {
+      serviceKey,
+      chatId,
+    });
+  } catch (error) {
+    console.error("[DB Actions] Failed to clear step summary:", error);
+  }
+}
+
 // ============================================================================
 // Notes Actions
 // ============================================================================

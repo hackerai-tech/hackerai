@@ -617,6 +617,34 @@ export const deleteChat = mutation({
         }
       }
 
+      // Delete step summaries for this chat
+      if (chat.latest_step_summary_id) {
+        try {
+          await ctx.db.delete(chat.latest_step_summary_id);
+        } catch (error) {
+          console.error(
+            `Failed to delete step summary ${chat.latest_step_summary_id}:`,
+            error,
+          );
+        }
+      }
+
+      const stepSummaries = await ctx.db
+        .query("step_summaries")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
+        .collect();
+
+      for (const stepSummary of stepSummaries) {
+        try {
+          await ctx.db.delete(stepSummary._id);
+        } catch (error) {
+          console.error(
+            `Failed to delete step summary ${stepSummary._id}:`,
+            error,
+          );
+        }
+      }
+
       // Delete the chat itself
       await ctx.db.delete(chat._id);
 
@@ -812,6 +840,34 @@ export const deleteAllChats = mutation({
           }
         }
 
+        // Delete step summaries for this chat
+        if (chat.latest_step_summary_id) {
+          try {
+            await ctx.db.delete(chat.latest_step_summary_id);
+          } catch (error) {
+            console.error(
+              `Failed to delete step summary ${chat.latest_step_summary_id}:`,
+              error,
+            );
+          }
+        }
+
+        const stepSummaries = await ctx.db
+          .query("step_summaries")
+          .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+          .collect();
+
+        for (const stepSummary of stepSummaries) {
+          try {
+            await ctx.db.delete(stepSummary._id);
+          } catch (error) {
+            console.error(
+              `Failed to delete step summary ${stepSummary._id}:`,
+              error,
+            );
+          }
+        }
+
         // Delete the chat itself
         await ctx.db.delete(chat._id);
       }
@@ -905,6 +961,33 @@ export const deleteAllChatsForUser = mutation({
           await ctx.db.delete(summary._id);
         } catch (error) {
           console.error(`Failed to delete summary ${summary._id}:`, error);
+        }
+      }
+
+      // Delete step summaries for this chat
+      if (chat.latest_step_summary_id) {
+        try {
+          await ctx.db.delete(chat.latest_step_summary_id);
+        } catch (error) {
+          console.error(
+            `Failed to delete step summary ${chat.latest_step_summary_id}:`,
+            error,
+          );
+        }
+      }
+
+      const stepSummaries = await ctx.db
+        .query("step_summaries")
+        .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+        .collect();
+      for (const stepSummary of stepSummaries) {
+        try {
+          await ctx.db.delete(stepSummary._id);
+        } catch (error) {
+          console.error(
+            `Failed to delete step summary ${stepSummary._id}:`,
+            error,
+          );
         }
       }
 
@@ -1037,5 +1120,130 @@ export const getLatestSummaryForBackend = query({
       console.error("Failed to get latest summary:", error);
       return null;
     }
+  },
+});
+
+/**
+ * Save step summary for a chat (upsert - replaces existing if present)
+ */
+export const saveStepSummary = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+    stepSummaryText: v.string(),
+    upToToolCallId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+
+    // Delete existing step summary if present
+    if (chat.latest_step_summary_id) {
+      try {
+        await ctx.db.delete(chat.latest_step_summary_id);
+      } catch (error) {
+        // Continue - old step summary cleanup is not critical
+      }
+    }
+
+    const stepSummaryId = await ctx.db.insert("step_summaries", {
+      chat_id: args.chatId,
+      step_summary_text: args.stepSummaryText,
+      up_to_tool_call_id: args.upToToolCallId,
+    });
+
+    await ctx.db.patch(chat._id, {
+      latest_step_summary_id: stepSummaryId,
+      update_time: Date.now(),
+    });
+
+    return null;
+  },
+});
+
+/**
+ * Get step summary for a chat (backend only)
+ */
+export const getStepSummary = query({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      step_summary_text: v.string(),
+      up_to_tool_call_id: v.string(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat || !chat.latest_step_summary_id) {
+      return null;
+    }
+
+    const stepSummary = await ctx.db.get(chat.latest_step_summary_id);
+    if (!stepSummary) {
+      return null;
+    }
+
+    return {
+      step_summary_text: stepSummary.step_summary_text,
+      up_to_tool_call_id: stepSummary.up_to_tool_call_id,
+    };
+  },
+});
+
+/**
+ * Clear step summary for a chat (called when main summary absorbs it)
+ */
+export const clearStepSummary = mutation({
+  args: {
+    serviceKey: v.string(),
+    chatId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.chatId))
+      .first();
+
+    if (!chat || !chat.latest_step_summary_id) {
+      return null;
+    }
+
+    try {
+      await ctx.db.delete(chat.latest_step_summary_id);
+    } catch (error) {
+      // Continue - cleanup is not critical
+    }
+
+    await ctx.db.patch(chat._id, {
+      latest_step_summary_id: undefined,
+      update_time: Date.now(),
+    });
+
+    return null;
   },
 });

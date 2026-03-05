@@ -14,6 +14,12 @@ global.TextDecoder = TextDecoder;
 global.ReadableStream = ReadableStream;
 global.TransformStream = TransformStream;
 
+// Polyfill structuredClone for AI SDK (not available in jsdom)
+if (typeof global.structuredClone === "undefined") {
+  const { deserialize, serialize } = require("v8");
+  global.structuredClone = (val) => deserialize(serialize(val));
+}
+
 // Mock window.matchMedia
 Object.defineProperty(window, "matchMedia", {
   writable: true,

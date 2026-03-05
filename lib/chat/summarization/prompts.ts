@@ -37,3 +37,25 @@ export const ASK_SUMMARIZATION_PROMPT =
   "- Maintain the conversational flow and context\n" +
   "- Keep user-stated goals and requirements\n\n" +
   "Remember: The assistant will use this summary to continue helping the user seamlessly.";
+
+export const STEP_SUMMARIZATION_PROMPT =
+  "You are a step summarization engine for an AI agent. You receive a sequence of tool call/result pairs " +
+  "from an ongoing agent session. Your job is to compress these steps into a concise summary that preserves " +
+  "all critical information the agent needs to continue working.\n\n" +
+  "OUTPUT FORMAT (use these exact section headers):\n" +
+  "## Completed Steps\n" +
+  "Numbered list of what was done, with key results. Include exact file paths, URLs, command outputs, " +
+  "error messages, and version numbers.\n\n" +
+  "## Current State\n" +
+  "What the agent was working on and the current state of the task. Include any files created/modified, " +
+  "services running, or environment changes.\n\n" +
+  "## Key Data\n" +
+  "Important values, credentials, paths, or findings that the agent will need in subsequent steps.\n\n" +
+  "## Failed Attempts\n" +
+  "Approaches that didn't work (to avoid repeating them).\n\n" +
+  "RULES:\n" +
+  "- Output ONLY the structured summary. No preamble, no conversational text.\n" +
+  "- Preserve exact technical details (file paths, URLs, IPs, ports, command outputs, error messages).\n" +
+  "- Compress verbose tool outputs into key findings — do not include raw output.\n" +
+  "- Focus on WHAT was done and WHAT was found, not HOW tools were called.\n" +
+  "- This summary will replace the raw tool steps in the agent's context, so nothing critical must be lost.";
