@@ -10,7 +10,10 @@ import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 import { terminateProcessReliably } from "./utils/process-termination";
 import { findProcessPid } from "./utils/pid-discovery";
 import { retryWithBackoff } from "./utils/retry-with-backoff";
-import { waitForSandboxReady } from "./utils/sandbox-health";
+import {
+  waitForSandboxReady,
+  getSandboxDiagnostics,
+} from "./utils/sandbox-health";
 import { isE2BSandbox } from "./utils/sandbox-types";
 import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
 import {
@@ -189,10 +192,14 @@ If you are generating files:
               };
             }
 
-            // Sandbox health check failed - force recreation by resetting the cached instance
-            console.warn(
-              "[Terminal Command] Sandbox health check failed, recreating sandbox",
+            // Sandbox health check failed - log diagnostics and wait briefly before recreating
+            const diagnostics = await getSandboxDiagnostics(sandbox).catch(
+              () => "diagnostics unavailable",
             );
+            console.warn(
+              `[Terminal Command] Sandbox health check failed (${diagnostics}), waiting before recreating sandbox`,
+            );
+            await new Promise((resolve) => setTimeout(resolve, 2000));
 
             // Reset cached instance to force ensureSandboxConnection to create a fresh one
             sandboxManager.setSandbox(null as any);
