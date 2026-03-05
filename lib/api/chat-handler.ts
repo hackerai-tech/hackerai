@@ -50,6 +50,7 @@ import {
   isProviderApiError,
   computeContextUsage,
   writeContextUsage,
+  buildStepContextUsage,
   contextUsageEnabled,
   runSummarizationStep,
   runStepSummarizationCheck,
@@ -108,7 +109,10 @@ function getStreamContext() {
   try {
     return createResumableStreamContext({ waitUntil: after });
   } catch (error) {
-    console.log("[StreamContext] Failed to create resumable stream context:", error instanceof Error ? error.message : String(error));
+    console.log(
+      "[StreamContext] Failed to create resumable stream context:",
+      error instanceof Error ? error.message : String(error),
+    );
     return null;
   }
 }
@@ -527,7 +531,10 @@ export const createChatHandler = (
                 upToToolCallId = existingStepSummary.up_to_tool_call_id;
               }
             } catch (error) {
-              console.log("[StepSummary] Failed to load from DB:", error instanceof Error ? error.message : String(error));
+              console.log(
+                "[StepSummary] Failed to load from DB:",
+                error instanceof Error ? error.message : String(error),
+              );
             }
           }
 
@@ -623,13 +630,17 @@ export const createChatHandler = (
                       );
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
+                        writeContextUsage(writer, ctxUsage);
                       }
                       // Main summary absorbs step summary — clear it
                       if (stepSummaryText && chatId) {
                         stepSummaryText = null;
                         upToToolCallId = null;
                         clearStepSummary({ chatId }).catch((err) =>
-                          console.log("[StepSummary] Failed to clear:", err instanceof Error ? err.message : String(err)),
+                          console.log(
+                            "[StepSummary] Failed to clear:",
+                            err instanceof Error ? err.message : String(err),
+                          ),
                         );
                       }
                       return {
@@ -657,6 +668,11 @@ export const createChatHandler = (
                       stepSummaryText = stepResult.summaryText;
                       upToToolCallId = stepResult.upToToolCallId;
                       currentMessages = stepResult.messages as typeof messages;
+
+                      // Emit context usage hint after step summarization — corrected by next onStepFinish
+                      if (contextUsageEnabled) {
+                        writeContextUsage(writer, ctxUsage);
+                      }
                     }
                   }
 
@@ -694,7 +710,10 @@ export const createChatHandler = (
                   ) {
                     // Expected when user stops the stream
                   } else {
-                    console.log("[PrepareStep] Error:", error instanceof Error ? error.message : String(error));
+                    console.log(
+                      "[PrepareStep] Error:",
+                      error instanceof Error ? error.message : String(error),
+                    );
                   }
                   return currentSystemPrompt
                     ? { system: currentSystemPrompt }
@@ -751,6 +770,18 @@ export const createChatHandler = (
                     ?.cost;
                   if (stepCost) {
                     accumulatedProviderCost += stepCost;
+                  }
+
+                  // Emit updated context usage after each step
+                  if (contextUsageEnabled) {
+                    writeContextUsage(
+                      writer,
+                      buildStepContextUsage(
+                        ctxUsage,
+                        lastStepInputTokens,
+                        accumulatedOutputTokens,
+                      ),
+                    );
                   }
                 }
               },
@@ -1144,7 +1175,10 @@ export const createChatHandler = (
                         unknown
                       >;
                     } catch (error) {
-                      console.log("[Usage] Unavailable on abort:", error instanceof Error ? error.message : String(error));
+                      console.log(
+                        "[Usage] Unavailable on abort:",
+                        error instanceof Error ? error.message : String(error),
+                      );
                     }
                   }
 
@@ -1257,11 +1291,14 @@ export const createChatHandler = (
 
                 // Send updated context usage with output tokens included
                 if (contextUsageEnabled) {
-                  writeContextUsage(writer, {
-                    ...ctxUsage,
-                    messagesTokens:
-                      ctxUsage.messagesTokens + accumulatedOutputTokens,
-                  });
+                  writeContextUsage(
+                    writer,
+                    buildStepContextUsage(
+                      ctxUsage,
+                      lastStepInputTokens,
+                      accumulatedOutputTokens,
+                    ),
+                  );
                 }
 
                 // Deduct accumulated usage if not already done

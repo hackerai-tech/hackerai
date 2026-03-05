@@ -248,6 +248,26 @@ export function writeContextUsage(
   writer.write({ type: "data-context-usage", data: usage });
 }
 
+/**
+ * Build an updated ContextUsageData by estimating messagesTokens from
+ * provider-reported input tokens (preferred) or falling back to
+ * base messages + accumulated output tokens.
+ */
+export function buildStepContextUsage(
+  base: ContextUsageData,
+  providerInputTokens: number,
+  accumulatedOutputTokens: number,
+): ContextUsageData {
+  const messagesTokens =
+    providerInputTokens > 0
+      ? Math.max(
+          0,
+          providerInputTokens - base.systemTokens - base.summaryTokens,
+        )
+      : base.messagesTokens + accumulatedOutputTokens;
+  return { ...base, messagesTokens };
+}
+
 export interface SummarizationStepResult {
   needsSummarization: boolean;
   summarizedMessages?: UIMessage[];
@@ -447,7 +467,10 @@ export async function runStepSummarizationCheck(options: {
     if (abortSignal?.aborted) {
       throw error;
     }
-    console.log("[StepSummarization] Failed:", error instanceof Error ? error.message : String(error));
+    console.log(
+      "[StepSummarization] Failed:",
+      error instanceof Error ? error.message : String(error),
+    );
     return {
       needsSummarization: false,
       messages,

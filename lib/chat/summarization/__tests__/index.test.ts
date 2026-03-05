@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 import type { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
 import type { Todo } from "@/types";
-import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "../constants";
+import {
+  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+  MESSAGES_TO_KEEP_UNSUMMARIZED,
+} from "../constants";
 import { MAX_TOKENS_FREE } from "@/lib/token-utils";
 
 const mockGenerateText = jest.fn<() => Promise<any>>();
@@ -151,17 +154,21 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Test summary content");
-    expect(result.cutoffMessageId).toBe("msg-2");
+    const expectedCutoff = `msg-${4 - MESSAGES_TO_KEEP_UNSUMMARIZED}`;
+    expect(result.cutoffMessageId).toBe(expectedCutoff);
 
-    // summary message + last 2 kept messages
-    expect(result.summarizedMessages).toHaveLength(3);
+    expect(result.summarizedMessages).toHaveLength(
+      1 + MESSAGES_TO_KEEP_UNSUMMARIZED,
+    );
     expect(result.summarizedMessages[0].parts[0]).toEqual({
       type: "text",
       text: "<context_summary>\nTest summary content\n</context_summary>",
     });
-    expect(result.summarizedMessages.slice(1)).toEqual(
-      fourMessagesAboveThreshold.slice(-2),
-    );
+    if (MESSAGES_TO_KEEP_UNSUMMARIZED > 0) {
+      expect(result.summarizedMessages.slice(1)).toEqual(
+        fourMessagesAboveThreshold.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED),
+      );
+    }
   });
 
   it("should use agent prompt when mode is agent", async () => {
@@ -199,7 +206,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).toHaveBeenCalledWith({
       chatId: "chat-123",
       summaryText: "Summary",
-      summaryUpToMessageId: "msg-2",
+      summaryUpToMessageId: `msg-${4 - MESSAGES_TO_KEEP_UNSUMMARIZED}`,
     });
   });
 
@@ -431,11 +438,12 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.cutoffMessageId).toBe("real-2");
+    const expectedRealCutoff = `real-${4 - MESSAGES_TO_KEEP_UNSUMMARIZED}`;
+    expect(result.cutoffMessageId).toBe(expectedRealCutoff);
     expect(result.cutoffMessageId).not.toBe("synthetic-uuid-not-in-db");
   });
 
-  it("should skip re-summarization when only summary + 2 real messages", async () => {
+  it("should skip re-summarization when summary + few real messages are not enough to split", async () => {
     const summaryMsg: UIMessage = {
       id: "synthetic-uuid",
       role: "user",
@@ -447,10 +455,11 @@ describe("checkAndSummarizeIfNeeded", () => {
       ],
     };
 
-    const realMessages = [
-      createMessage("real-1", "user"),
-      createMessage("real-2", "assistant"),
-    ];
+    const realMessages = Array.from(
+      { length: MESSAGES_TO_KEEP_UNSUMMARIZED },
+      (_, i) =>
+        createMessage(`real-${i + 1}`, i % 2 === 0 ? "user" : "assistant"),
+    );
 
     const input = [summaryMsg, ...realMessages];
     const result = await checkAndSummarizeIfNeeded(
@@ -462,7 +471,6 @@ describe("checkAndSummarizeIfNeeded", () => {
       "chat-123",
     );
 
-    // Only 2 real messages = not enough to split (MESSAGES_TO_KEEP_UNSUMMARIZED = 2)
     expect(result.needsSummarization).toBe(false);
     expect(result.summarizedMessages).toBe(input);
     expect(mockGenerateText).not.toHaveBeenCalled();
@@ -528,8 +536,11 @@ describe("checkAndSummarizeIfNeeded", () => {
       "chat-123",
     );
 
+    const K = MESSAGES_TO_KEEP_UNSUMMARIZED;
+    const firstCutoff = `msg-${4 - K}`;
+
     expect(result1.needsSummarization).toBe(true);
-    expect(result1.cutoffMessageId).toBe("msg-2");
+    expect(result1.cutoffMessageId).toBe(firstCutoff);
 
     const newMessages = [
       createMessageWithTokens("msg-5", "user", TOKENS_PER_ABOVE_MSG),
@@ -553,12 +564,14 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).toHaveBeenCalledTimes(2);
     expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ summaryUpToMessageId: "msg-2" }),
+      expect.objectContaining({ summaryUpToMessageId: firstCutoff }),
     );
     expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        summaryUpToMessageId: expect.not.stringMatching(/^msg-2$/),
+        summaryUpToMessageId: expect.not.stringMatching(
+          new RegExp(`^${firstCutoff}$`),
+        ),
       }),
     );
 
@@ -566,7 +579,6 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(secondCallArgs.system).toContain("<previous_summary>");
     expect(secondCallArgs.system).toContain("First summary");
 
-    // Verify only messages between cutoffs are sent (not the summary message)
     const secondCallMessages = secondCallArgs.messages as Array<{
       role: string;
       content: string | Array<{ type: string; text: string }>;
@@ -580,13 +592,15 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(hasContextSummary).toBe(false);
 
-    // First call: msg-1, msg-2 converted + 1 summarization prompt
     const firstCallMessages = mockGenerateText.mock.calls[0][0].messages;
-    expect(firstCallMessages).toHaveLength(3);
-    // Second call: msg-3..msg-6 converted + 1 summarization prompt
-    expect(secondCallMessages).toHaveLength(5);
+    const firstCallSummarizedCount = 4 - K;
+    expect(firstCallMessages).toHaveLength(firstCallSummarizedCount + 1);
 
-    expect(result2.summarizedMessages).toHaveLength(3);
+    const realMessagesInSecondInput = K + 4;
+    const secondCallSummarizedCount = realMessagesInSecondInput - K;
+    expect(secondCallMessages).toHaveLength(secondCallSummarizedCount + 1);
+
+    expect(result2.summarizedMessages).toHaveLength(1 + K);
     expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
     expect(extractSummaryText(result2.summarizedMessages[0])).toBe(
       "Second summary",
@@ -606,6 +620,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       createMessageWithTokens("msg-4", "assistant", TOKENS_PER_ABOVE_MSG),
     ];
 
+    const K = MESSAGES_TO_KEEP_UNSUMMARIZED;
+
     const result1 = await checkAndSummarizeIfNeeded(
       round1Messages,
       "free",
@@ -614,7 +630,8 @@ describe("checkAndSummarizeIfNeeded", () => {
       mockWriter,
       "chat-123",
     );
-    expect(result1.cutoffMessageId).toBe("msg-2");
+    const cutoff1 = 4 - K;
+    expect(result1.cutoffMessageId).toBe(`msg-${cutoff1}`);
 
     // Round 2: result1 + msg-5..msg-8
     const round2Input = [
@@ -633,7 +650,10 @@ describe("checkAndSummarizeIfNeeded", () => {
       mockWriter,
       "chat-123",
     );
-    expect(result2.cutoffMessageId).toBe("msg-6");
+    const realCountRound2 = K + 4;
+    const cutoff2Idx = realCountRound2 - K;
+    const cutoff2MsgNum = cutoff1 + cutoff2Idx;
+    expect(result2.cutoffMessageId).toBe(`msg-${cutoff2MsgNum}`);
 
     // Round 3: result2 + msg-9..msg-12
     const round3Input = [
@@ -652,19 +672,20 @@ describe("checkAndSummarizeIfNeeded", () => {
       mockWriter,
       "chat-123",
     );
-    expect(result3.cutoffMessageId).toBe("msg-10");
+    const realCountRound3 = K + 4;
+    const cutoff3Idx = realCountRound3 - K;
+    const cutoff3MsgNum = cutoff2MsgNum + cutoff3Idx;
+    expect(result3.cutoffMessageId).toBe(`msg-${cutoff3MsgNum}`);
 
-    // Collect all message IDs that were passed to generateText across all 3 calls
     const summarizedIds = collectMessageIdsFromGenerateCalls(mockGenerateText);
 
-    // Every message up to the last cutoff (msg-10) must have been summarized
-    for (let i = 1; i <= 10; i++) {
+    for (let i = 1; i <= cutoff3MsgNum; i++) {
       expect(summarizedIds).toContain(`msg-${i}`);
     }
 
-    // Messages after the last cutoff should NOT have been summarized
-    expect(summarizedIds).not.toContain("msg-11");
-    expect(summarizedIds).not.toContain("msg-12");
+    for (let i = cutoff3MsgNum + 1; i <= 12; i++) {
+      expect(summarizedIds).not.toContain(`msg-${i}`);
+    }
   });
 
   it("should handle normal first-time summarization unchanged", async () => {
@@ -680,7 +701,9 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.cutoffMessageId).toBe("msg-2");
+    expect(result.cutoffMessageId).toBe(
+      `msg-${4 - MESSAGES_TO_KEEP_UNSUMMARIZED}`,
+    );
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
         system: expect.not.stringContaining("<previous_summary>"),

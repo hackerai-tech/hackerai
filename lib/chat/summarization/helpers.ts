@@ -65,10 +65,16 @@ export const isAboveTokenThreshold = (
 
 export const splitMessages = (
   uiMessages: UIMessage[],
-): { messagesToSummarize: UIMessage[]; lastMessages: UIMessage[] } => ({
-  messagesToSummarize: uiMessages.slice(0, -MESSAGES_TO_KEEP_UNSUMMARIZED),
-  lastMessages: uiMessages.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED),
-});
+): { messagesToSummarize: UIMessage[]; lastMessages: UIMessage[] } =>
+  MESSAGES_TO_KEEP_UNSUMMARIZED === 0
+    ? { messagesToSummarize: uiMessages, lastMessages: [] }
+    : {
+        messagesToSummarize: uiMessages.slice(
+          0,
+          -MESSAGES_TO_KEEP_UNSUMMARIZED,
+        ),
+        lastMessages: uiMessages.slice(-MESSAGES_TO_KEEP_UNSUMMARIZED),
+      };
 
 export const isSummaryMessage = (message: UIMessage): boolean => {
   if (message.parts.length === 0) return false;
