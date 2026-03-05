@@ -8,7 +8,11 @@ import type { LanguageModel, UIMessage, UIMessageStreamWriter } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
-import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
+import {
+  writeRateLimitWarning,
+  writeStepSummarizationStarted,
+  writeStepSummarizationCompleted,
+} from "@/lib/utils/stream-writer-utils";
 import { countMessagesTokens } from "@/lib/token-utils";
 import {
   checkAndSummarizeIfNeeded,
@@ -336,6 +340,7 @@ export async function runStepSummarizationCheck(options: {
   maxTokens: number;
   thresholdPercentage: number;
   abortSignal?: AbortSignal;
+  writer?: UIMessageStreamWriter;
 }): Promise<StepSummarizationCheckResult> {
   const {
     messages,
@@ -345,6 +350,7 @@ export async function runStepSummarizationCheck(options: {
     maxTokens,
     thresholdPercentage,
     abortSignal,
+    writer,
   } = options;
 
   const threshold = Math.floor(maxTokens * thresholdPercentage);
@@ -402,27 +408,35 @@ export async function runStepSummarizationCheck(options: {
       };
     }
 
-    // Generate step summary
-    const summaryText = await generateStepSummaryText(
-      stepsToSummarize as any,
-      languageModel,
-      existingSummary ?? undefined,
-      abortSignal,
-    );
+    try {
+      if (writer) {
+        writeStepSummarizationStarted(writer);
+      }
 
-    // Inject summary into messages
-    const injectedMessages = injectStepSummary(
-      nonSummaryMessages as any,
-      summaryText,
-      cutoffToolCallId,
-    );
+      const summaryText = await generateStepSummaryText(
+        stepsToSummarize as any,
+        languageModel,
+        existingSummary ?? undefined,
+        abortSignal,
+      );
 
-    return {
-      needsSummarization: true,
-      messages: injectedMessages as ModelMessage[],
-      summaryText,
-      upToToolCallId: cutoffToolCallId,
-    };
+      const injectedMessages = injectStepSummary(
+        nonSummaryMessages as any,
+        summaryText,
+        cutoffToolCallId,
+      );
+
+      return {
+        needsSummarization: true,
+        messages: injectedMessages as ModelMessage[],
+        summaryText,
+        upToToolCallId: cutoffToolCallId,
+      };
+    } finally {
+      if (writer && !abortSignal?.aborted) {
+        writeStepSummarizationCompleted(writer);
+      }
+    }
   } catch (error) {
     if (abortSignal?.aborted) {
       throw error;

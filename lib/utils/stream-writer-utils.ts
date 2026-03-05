@@ -39,7 +39,7 @@ export const writeSummarizationStarted = (
       status: "started",
       message: "Summarizing chat context",
     },
-    transient: true, // Don't persist started state - only show during processing
+    transient: true,
   });
 };
 
@@ -53,6 +53,34 @@ export const writeSummarizationCompleted = (
       status: "completed",
       message: "Chat context summarized",
     },
+  });
+};
+
+export const writeStepSummarizationStarted = (
+  writer: UIMessageStreamWriter,
+): void => {
+  writer.write({
+    type: "data-summarization",
+    id: "summarization-status",
+    data: {
+      status: "started",
+      message: "Compressing tool steps",
+    },
+    transient: true,
+  });
+};
+
+export const writeStepSummarizationCompleted = (
+  writer: UIMessageStreamWriter,
+): void => {
+  writer.write({
+    type: "data-summarization",
+    id: "summarization-status",
+    data: {
+      status: "completed",
+      message: "Tool steps compressed",
+    },
+    transient: true,
   });
 };
 

@@ -649,6 +649,7 @@ export const createChatHandler = (
                       maxTokens: getMaxTokensForSubscription(subscription),
                       thresholdPercentage: SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       abortSignal: userStopSignal.signal,
+                      writer,
                     });
 
                     if (stepResult.needsSummarization) {
