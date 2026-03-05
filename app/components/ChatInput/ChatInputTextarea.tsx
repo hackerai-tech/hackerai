@@ -83,8 +83,7 @@ export function ChatInputTextarea({
     };
     document.addEventListener("paste", handlePaste);
     return () => document.removeEventListener("paste", handlePaste);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handlePasteEvent]);
+  }, [handlePasteEvent, subscription]);
 
   return (
     <div className="overflow-y-auto pl-4 pr-2">
