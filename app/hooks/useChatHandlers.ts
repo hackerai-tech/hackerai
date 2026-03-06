@@ -226,10 +226,10 @@ export const useChatHandlers = ({
         });
         return;
       }
+      // Update URL immediately so user sees /c/[id] as soon as they send (full navigation happens in onFinish)
       if (!isExistingChat && !temporaryChatsEnabledRef.current) {
         window.history.replaceState({}, "", `/c/${chatId}`);
       }
-
       try {
         // Get file objects from uploaded files - URLs are already resolved in global state
         const validFiles = uploadedFiles.filter(

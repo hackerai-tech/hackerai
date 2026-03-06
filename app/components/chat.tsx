@@ -87,19 +87,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setSelectedModel,
   } = useGlobalState();
 
-  // Simple logic: use route chatId if provided, otherwise generate new one
-  const [chatId, setChatId] = useState<string>(() => {
-    return routeChatId || uuidv4();
-  });
+  // Chat id: from URL when on /c/[id], otherwise a stable id for this mount (new chat). No setter needed — we have separate pages so Chat remounts when navigating to "/".
+  const localNewChatIdRef = useRef(uuidv4());
+  const chatId = routeChatId ?? localNewChatIdRef.current;
 
-  // Track whether this is an existing chat (prop-driven initially, flips after first completion)
-  const [isExistingChat, setIsExistingChat] = useState<boolean>(!!routeChatId);
-  const wasNewChatRef = useRef(!routeChatId);
-  const shouldFetchMessages = isExistingChat;
-
-  // Refs to avoid stale closures in callbacks
-  const isExistingChatRef = useLatestRef(isExistingChat);
-  const chatModeRef = useLatestRef(chatMode);
+  // Derive from route: existing chat when we have a chat id in the URL
+  const isExistingChat = !!routeChatId;
 
   // Suppress transient "Chat Not Found" while server creates the chat
   const [awaitingServerChat, setAwaitingServerChat] = useState<boolean>(false);
@@ -136,30 +129,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether model selection has been initialized from chat for this chat id
   const hasInitializedModelRef = useRef(false);
 
-  // Sync local chat state from URL (single source of truth)
-  useEffect(() => {
-    if (routeChatId) {
-      setChatId(routeChatId);
-      setIsExistingChat(true);
-    } else {
-      // Navigated to "/" (new chat) — reset to fresh state
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
-    }
-  }, [routeChatId]);
-
   // Use paginated query to load messages in batches of 14
   const paginatedMessages = usePaginatedQuery(
     api.messages.getMessagesByChatId,
-    shouldFetchMessages ? { chatId } : "skip",
+    isExistingChat ? { chatId } : "skip",
     { initialNumItems: 14 },
   );
 
   // Get chat data to retrieve title when loading existing chat
   const chatData = useQuery(
     api.chats.getChatByIdFromClient,
-    shouldFetchMessages ? { id: chatId } : "skip",
+    isExistingChat ? { id: chatId } : "skip",
   );
 
   // Query local sandbox connections only when we need to validate a non-E2B sandbox_type
@@ -212,9 +192,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       fetch: async (input, init) => {
         // Dynamically route to correct API based on current mode
         const url =
-          input === "/api/chat" && chatModeRef.current === "agent"
-            ? "/api/agent"
-            : input;
+          input === "/api/chat" && chatMode === "agent" ? "/api/agent" : input;
         return fetchWithErrorHandlers(url, init);
       },
       prepareSendMessagesRequest: ({ id, messages, body }) => {
@@ -228,7 +206,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         }
 
         const isTemporaryChat =
-          !isExistingChatRef.current && temporaryChatsEnabledRef.current;
+          !isExistingChat && temporaryChatsEnabledRef.current;
 
         // Strip URLs from file parts before sending to backend
         // This ensures backend always generates fresh URLs (prevents 403 errors from expired URLs)
@@ -359,13 +337,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setUploadStatus(null);
       setSummarizationStatus(null);
       const isTemporaryChat =
-        !isExistingChatRef.current && temporaryChatsEnabledRef.current;
-      if (!isExistingChatRef.current && !isTemporaryChat) {
-        // Update URL without full navigation so this Chat stays mounted and
-        // status can transition to "ready" (stop button → send button).
-        window.history.replaceState({}, "", `/c/${chatId}`);
+        !isExistingChat && temporaryChatsEnabledRef.current;
+      if (!isExistingChat && !isTemporaryChat) {
         removeDraft("new");
-        setIsExistingChat(true);
       }
     },
     onError: (error) => {
@@ -391,9 +365,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     const reset = () => {
       setMessages([]);
-      setChatId(uuidv4());
-      setIsExistingChat(false);
-      wasNewChatRef.current = true;
+      // Don't set chatId here when navigating to "/" — the URL sync effect will set
+      // a new chatId when routeChatId becomes undefined. Otherwise we briefly have
+      // routeChatId=oldId but chatId=newUuid, so we fetch the new id (not in DB) and show "Chat not found".
       setTodos([]);
       setAwaitingServerChat(false);
       setUploadStatus(null);
@@ -404,10 +378,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         systemTokens: 0,
         maxTokens: 0,
       });
+      router.replace("/");
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setTodos]);
+  }, [setChatReset, setMessages, setTodos, router]);
 
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
@@ -420,7 +395,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
     // Only process when we intend to fetch for an existing chat
-    if (!shouldFetchMessages) {
+    if (!isExistingChat) {
       return;
     }
 
@@ -475,7 +450,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, setTodos, shouldFetchMessages, isExistingChat, chatId]);
+  }, [chatData, setTodos, isExistingChat, chatId]);
 
   // Initialize sandbox preference from chat data, validated against available connections.
   // Separate from the main chatData effect so it can re-run when localConnections loads.
@@ -486,14 +461,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (!chatData || dataId !== chatId) return;
 
     if (!storedSandboxType) {
-      if (wasNewChatRef.current) {
-        // Chat was just created — keep the user's current sandboxPreference
-        // (it was already sent in the request body). Don't reset to cloud.
-      } else {
-        // Navigated to an existing chat with no stored sandbox type — reset to cloud
-        // so a stale local preference from a previous chat doesn't persist.
-        setSandboxPreference("e2b");
-      }
+      // No stored sandbox type — reset to cloud so a stale local preference doesn't persist
+      setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
       return;
     }
@@ -573,28 +542,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  const displayStatusForQueue = status;
+  const statusForQueue = status;
 
-  // Keep a ref to the latest messageQueue to avoid stale closures
-  const messageQueueRef = useRef(messageQueue);
+  // Clear queue when leaving this chat (navigate to another or New chat → unmount)
   useEffect(() => {
-    messageQueueRef.current = messageQueue;
-  }, [messageQueue]);
-
-  // Clear queue when switching from Agent to Ask mode
-  useEffect(() => {
-    if (chatMode === "ask" && messageQueueRef.current.length > 0) {
-      clearQueue();
-    }
-  }, [chatMode, clearQueue]);
-
-  // Clear queue when navigating to a different chat
-  useEffect(() => {
-    return () => {
-      if (messageQueueRef.current.length > 0) {
-        clearQueue();
-      }
-    };
+    return () => clearQueue();
   }, [chatId, clearQueue]);
 
   // Document-level drag and drop listeners encapsulated in a hook
@@ -608,7 +560,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
-      displayStatusForQueue === "ready" &&
+      statusForQueue === "ready" &&
       messageQueue.length > 0 &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
@@ -647,7 +599,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setTimeout(() => setIsProcessingQueue(false), 100);
     }
   }, [
-    displayStatusForQueue,
+    statusForQueue,
     messageQueue.length,
     isProcessingQueue,
     chatMode,
@@ -703,9 +655,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   };
 
-  const displayMessages = messages;
-  const displayStatus = status;
-  const hasMessages = displayMessages.length > 0;
+  const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
   // UI-level temporary chat flag
@@ -715,17 +665,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const branchedFromChatId = chatData?.branched_from_chat_id;
   const branchedFromChatTitle = (chatData as any)?.branched_from_title;
 
-  // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user
+  // Check if we tried to load an existing chat but it doesn't exist or doesn't belong to user.
+  // Require chatId === routeChatId so we never show this during the fast "New chat" transition
+  // (reset ran but router hasn't updated yet).
   const isChatNotFound =
     isExistingChat &&
+    chatId === routeChatId &&
     chatData === null &&
-    shouldFetchMessages &&
     !awaitingServerChat;
 
   const hasSavedSandboxType =
     (!!storedSandboxType && sandboxConnectionValid) ||
     (isExistingChat && !chatData) ||
-    (wasNewChatRef.current && hasMessages);
+    (!isExistingChat && hasMessages);
 
   return (
     <ConvexErrorBoundary>
@@ -775,13 +727,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 <Messages
                   scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                   contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                  messages={displayMessages}
+                  messages={messages}
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}
                   onRetry={handleRetry}
                   onEditMessage={handleEditMessage}
                   onBranchMessage={handleBranchMessage}
-                  status={displayStatus}
+                  status={status}
                   error={error || null}
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
@@ -831,7 +783,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onSubmit={handleSubmit}
                             onStop={handleStop}
                             onSendNow={handleSendNow}
-                            status={displayStatus}
+                            status={status}
                             isCentered={true}
                             hasMessages={hasMessages}
                             isAtBottom={isAtBottom}
@@ -866,7 +818,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onSendNow={handleSendNow}
-                    status={displayStatus}
+                    status={status}
                     hasMessages={hasMessages}
                     isAtBottom={isAtBottom}
                     onScrollToBottom={handleScrollToBottom}
@@ -891,10 +843,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               }`}
             >
               {sidebarOpen && (
-                <ComputerSidebar
-                  messages={displayMessages}
-                  status={displayStatus}
-                />
+                <ComputerSidebar messages={messages} status={status} />
               )}
             </div>
           )}
@@ -910,10 +859,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         {isMobile && sidebarOpen && (
           <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
             <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar
-                messages={displayMessages}
-                status={displayStatus}
-              />
+              <ComputerSidebar messages={messages} status={status} />
             </div>
           </div>
         )}

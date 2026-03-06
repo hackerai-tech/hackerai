@@ -424,15 +424,16 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   const selectAskMode = useCallback(() => {
     setChatMode("ask");
+    setMessageQueue([]);
   }, []);
 
   const selectAgentMode = useCallback(() => {
     if (subscription === "free" || temporaryChatsEnabled) {
-      setChatMode("ask");
+      selectAskMode();
     } else {
       setChatMode("agent");
     }
-  }, [subscription, temporaryChatsEnabled]);
+  }, [subscription, temporaryChatsEnabled, selectAskMode]);
 
   // Listen for hash changes to sync team pricing dialog state
   useEffect(() => {
