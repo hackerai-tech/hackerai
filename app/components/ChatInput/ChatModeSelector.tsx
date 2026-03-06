@@ -15,7 +15,8 @@ export interface ChatModeSelectorProps {
 export function ChatModeSelector({ className }: ChatModeSelectorProps) {
   const {
     chatMode,
-    setChatMode,
+    selectAskMode,
+    selectAgentMode,
     subscription,
     isCheckingProPlan,
     temporaryChatsEnabled,
@@ -30,7 +31,7 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       return;
     }
     if (subscription !== "free") {
-      setChatMode("agent");
+      selectAgentMode();
     } else {
       setAgentUpgradeDialogOpen(true);
     }
@@ -49,7 +50,7 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
         <DropdownMenu>
           <ModeSelectorTrigger chatMode={chatMode} />
           <ModeSelectorContent
-            setChatMode={setChatMode}
+            onSelectAskMode={selectAskMode}
             onAgentModeClick={handleAgentModeClick}
             subscription={subscription}
             isCheckingProPlan={isCheckingProPlan}

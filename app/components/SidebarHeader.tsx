@@ -43,7 +43,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
     setChatSidebarOpen,
     closeSidebar,
     initializeNewChat,
-    setTemporaryChatsEnabled,
+    disableTemporaryChats,
   } = useGlobalState();
 
   // Search dialog state
@@ -93,7 +93,7 @@ const SidebarHeaderContentImpl: FC<SidebarHeaderContentImplProps> = ({
 
     // Reset chat state while current Chat is still mounted (so chatResetRef is set)
     initializeNewChat();
-    setTemporaryChatsEnabled(false);
+    disableTemporaryChats();
     router.push("/");
   };
 

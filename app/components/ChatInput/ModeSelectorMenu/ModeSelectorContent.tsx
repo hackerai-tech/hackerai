@@ -2,11 +2,11 @@
 
 import { DropdownMenuContent } from "@/components/ui/dropdown-menu";
 import { MessageSquare, Infinity } from "lucide-react";
-import type { ChatMode, SubscriptionTier } from "@/types/chat";
+import type { SubscriptionTier } from "@/types/chat";
 import { ModeOptionItem } from "./ModeOptionItem";
 
 export interface ModeSelectorContentProps {
-  setChatMode: (mode: ChatMode) => void;
+  onSelectAskMode: () => void;
   onAgentModeClick: () => void;
   subscription: SubscriptionTier;
   isCheckingProPlan: boolean;
@@ -14,7 +14,7 @@ export interface ModeSelectorContentProps {
 }
 
 export function ModeSelectorContent({
-  setChatMode,
+  onSelectAskMode,
   onAgentModeClick,
   subscription,
   isCheckingProPlan,
@@ -28,7 +28,7 @@ export function ModeSelectorContent({
         icon={MessageSquare}
         title="Ask"
         description="Ask your hacking questions"
-        onClick={() => setChatMode("ask")}
+        onClick={onSelectAskMode}
         data-testid="mode-ask"
       />
       <ModeOptionItem
