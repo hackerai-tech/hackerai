@@ -63,7 +63,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const {
     chatMode,
-    setChatMode,
+    selectAskMode,
+    selectAgentMode,
     sidebarOpen,
     chatSidebarOpen,
     setChatSidebarOpen,
@@ -466,7 +467,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         (chatData as any).default_model_slug ||
         ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
       if (slug === "ask" || slug === "agent" || slug === "agent-long") {
-        setChatMode(slug === "agent-long" ? "agent" : slug);
+        if (slug === "ask") {
+          selectAskMode();
+        } else {
+          selectAgentMode();
+        }
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

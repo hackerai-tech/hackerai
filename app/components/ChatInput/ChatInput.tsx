@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
@@ -62,7 +61,6 @@ export const ChatInput = ({
     input,
     setInput,
     chatMode,
-    setChatMode,
     uploadedFiles,
     isUploadingFiles,
     messageQueue,
@@ -71,8 +69,6 @@ export const ChatInput = ({
     setQueueBehavior,
     sandboxPreference,
     setSandboxPreference,
-    subscription,
-    isCheckingProPlan,
     temporaryChatsEnabled,
   } = useGlobalState();
   const isMobile = useIsMobile();
@@ -90,24 +86,6 @@ export const ChatInput = ({
     contextUsage.maxTokens > 0;
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
-
-  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent/agent-long selected
-  useEffect(() => {
-    if (
-      !isCheckingProPlan &&
-      subscription === "free" &&
-      isAgentMode(chatMode)
-    ) {
-      setChatMode("ask");
-    }
-  }, [subscription, isCheckingProPlan, chatMode, setChatMode]);
-
-  // Fallback to 'ask' mode when temporary chats are enabled (agent modes not allowed)
-  useEffect(() => {
-    if (temporaryChatsEnabled && isAgentMode(chatMode)) {
-      setChatMode("ask");
-    }
-  }, [temporaryChatsEnabled, chatMode, setChatMode]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

@@ -64,7 +64,8 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
     closeSidebar,
     setChatSidebarOpen,
     temporaryChatsEnabled,
-    setTemporaryChatsEnabled,
+    enableTemporaryChats,
+    disableTemporaryChats,
   } = useGlobalState();
   const router = useRouter();
   const isMobile = useIsMobile();
@@ -95,7 +96,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
 
     // Reset chat state while current Chat is still mounted (so chatResetRef is set)
     initializeNewChat();
-    setTemporaryChatsEnabled(false);
+    disableTemporaryChats();
     router.push("/");
   };
 
@@ -137,7 +138,9 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                           aria-label="Toggle temporary chats for new chats"
                           aria-pressed={temporaryChatsEnabled}
                           onClick={() =>
-                            setTemporaryChatsEnabled(!temporaryChatsEnabled)
+                            temporaryChatsEnabled
+                              ? disableTemporaryChats()
+                              : enableTemporaryChats()
                           }
                           className="flex items-center gap-2 rounded-full px-3"
                         >
@@ -220,7 +223,9 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                         aria-label="Toggle temporary chats for new chats"
                         aria-pressed={temporaryChatsEnabled}
                         onClick={() =>
-                          setTemporaryChatsEnabled(!temporaryChatsEnabled)
+                          temporaryChatsEnabled
+                            ? disableTemporaryChats()
+                            : enableTemporaryChats()
                         }
                         className="h-7 w-7 rounded-full"
                       >

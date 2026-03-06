@@ -9,6 +9,7 @@ import React, {
   useRef,
   ReactNode,
 } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import type {
   ChatMode,
@@ -38,6 +39,7 @@ import {
   writeSelectedModelForMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 interface GlobalStateType {
   // Input state
   input: string;
@@ -59,9 +61,10 @@ interface GlobalStateType {
   // File upload status tracking
   isUploadingFiles: boolean;
 
-  // Chat mode state
+  // Chat mode state (intent-based: constraints enforced inside)
   chatMode: ChatMode;
-  setChatMode: (mode: ChatMode) => void;
+  selectAskMode: () => void;
+  selectAgentMode: () => void;
 
   // Computer sidebar state (right side)
   sidebarOpen: boolean;
@@ -125,7 +128,8 @@ interface GlobalStateType {
 
   // Temporary chats preference
   temporaryChatsEnabled: boolean;
-  setTemporaryChatsEnabled: (enabled: boolean) => void;
+  enableTemporaryChats: () => void;
+  disableTemporaryChats: () => void;
 
   // Team pricing dialog state
   teamPricingDialogOpen: boolean;
@@ -157,6 +161,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const { user, entitlements } = useAuth();
   const isMobile = useIsMobile();
   const prevIsMobile = useRef(isMobile);
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+  const router = useRouter();
+
+  // Temporary chats: URL is the single source of truth
+  const temporaryChatsEnabled = searchParams.get("temporary-chat") === "true";
   const [input, setInput] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFileState[]>([]);
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
@@ -165,6 +175,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     if (saved === "agent-long") return "agent";
     return saved;
   });
+  // When temporary chats are on, agent is not allowed; expose "ask" so UI and model selection match
+  const effectiveChatMode: ChatMode =
+    temporaryChatsEnabled && isAgentMode(chatMode) ? "ask" : chatMode;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarContent, setSidebarContent] = useState<SidebarContent | null>(
     null,
@@ -195,6 +208,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
   const setSubscriptionWithNormalize = useCallback((tier: SubscriptionTier) => {
     setSubscription(tier);
+    if (tier === "free") {
+      setChatMode((prev) => (isAgentMode(prev) ? "ask" : prev));
+    }
   }, []);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
@@ -210,7 +226,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Queue behavior preference (persisted to localStorage)
   const [queueBehavior, setQueueBehaviorState] = useState<QueueBehavior>(() => {
-    if (typeof window === "undefined") return "queue";
     const saved = localStorage.getItem("queue-behavior");
     if (saved === "queue" || saved === "stop-and-send") {
       return saved;
@@ -221,22 +236,17 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Sandbox preference (persisted to localStorage)
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
-      if (typeof window === "undefined") return "e2b";
       return localStorage.getItem("sandbox-preference") || "e2b";
     });
 
   // Persist queue behavior to localStorage
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("queue-behavior", queueBehavior);
-    }
+    localStorage.setItem("queue-behavior", queueBehavior);
   }, [queueBehavior]);
 
   // Persist sandbox preference to localStorage
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("sandbox-preference", sandboxPreference);
-    }
+    localStorage.setItem("sandbox-preference", sandboxPreference);
   }, [sandboxPreference]);
 
   // Model selection (persisted per-mode to localStorage)
@@ -244,45 +254,37 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     m === "agent" || m === "agent-long" ? "agent" : "ask";
 
   const [selectedModel, setSelectedModelState] = useState<SelectedModel>(() => {
-    const modeKey = getModeKey(chatMode);
+    const modeKey = getModeKey(effectiveChatMode);
     const saved = readSelectedModelForMode(modeKey);
     return isSelectedModel(saved) ? saved : "auto";
   });
 
-  // When chat mode changes, load the saved model preference for that mode
+  // When effective chat mode changes, load the saved model preference for that mode
   const modeJustChanged = useRef(false);
   useEffect(() => {
     modeJustChanged.current = true;
-    const modeKey = getModeKey(chatMode);
+    const modeKey = getModeKey(effectiveChatMode);
     const saved = readSelectedModelForMode(modeKey);
     setSelectedModelState(isSelectedModel(saved) ? saved : "auto");
-  }, [chatMode]);
+  }, [effectiveChatMode]);
 
-  // Persist model selection to localStorage for the current mode
+  // Persist model selection to localStorage for the current effective mode
   useEffect(() => {
     if (modeJustChanged.current) {
       modeJustChanged.current = false;
       return;
     }
-    const modeKey = getModeKey(chatMode);
+    const modeKey = getModeKey(effectiveChatMode);
     writeSelectedModelForMode(modeKey, selectedModel);
-  }, [selectedModel, chatMode]);
+  }, [selectedModel, effectiveChatMode]);
 
-  // Initialize temporary chats from URL parameter
-  const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
-    if (typeof window === "undefined") return false;
-    const urlParams = new URLSearchParams(window.location.search);
-    return urlParams.get("temporary-chat") === "true";
-  });
   // Initialize team pricing dialog from URL hash
   const [teamPricingDialogOpen, setTeamPricingDialogOpen] = useState(() => {
-    if (typeof window === "undefined") return false;
     return window.location.hash === "#team-pricing-seat-selection";
   });
 
   // Initialize team welcome dialog from URL parameter
   const [teamWelcomeDialogOpen, setTeamWelcomeDialogOpen] = useState(() => {
-    if (typeof window === "undefined") return false;
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get("team-welcome") === "true";
   });
@@ -290,7 +292,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Initialize PentestGPT migration confirm dialog from URL parameter
   const [migrateFromPentestgptDialogOpen, setMigrateFromPentestgptDialogOpen] =
     useState(() => {
-      if (typeof window === "undefined") return false;
       const urlParams = new URLSearchParams(window.location.search);
       return urlParams.get("confirm-migrate-pentestgpt") === "true";
     });
@@ -357,8 +358,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         return;
       }
 
-      if (typeof window === "undefined") return;
-
       const url = new URL(window.location.href);
       const shouldRefresh = url.searchParams.get("refresh") === "entitlements";
       if (!shouldRefresh) return;
@@ -388,11 +387,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           );
         } else {
           if (response.status === 401) {
-            if (typeof window !== "undefined") {
-              const { clientLogout } = await import("@/lib/utils/logout");
-              clientLogout();
-              return;
-            }
+            const { clientLogout } = await import("@/lib/utils/logout");
+            clientLogout();
+            return;
           }
           setSubscriptionWithNormalize("free");
         }
@@ -409,31 +406,37 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     refreshFromUrl();
   }, [user, setSubscriptionWithNormalize]);
 
-  // Listen for URL changes to sync temporary chat state
-  useEffect(() => {
-    const handleUrlChange = () => {
-      if (typeof window === "undefined") return;
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlTemporaryEnabled = urlParams.get("temporary-chat") === "true";
+  const enableTemporaryChats = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("temporary-chat", "true");
+    router.replace(
+      `${pathname}${params.toString() ? `?${params.toString()}` : ""}`,
+    );
+  }, [pathname, router, searchParams]);
 
-      // Only update state if it differs from URL to avoid infinite loops
-      if (temporaryChatsEnabled !== urlTemporaryEnabled) {
-        setTemporaryChatsEnabled(urlTemporaryEnabled);
-      }
-    };
+  const disableTemporaryChats = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("temporary-chat");
+    router.replace(
+      params.toString() ? `${pathname}?${params.toString()}` : pathname,
+    );
+  }, [pathname, router, searchParams]);
 
-    // Listen for popstate events (browser back/forward)
-    window.addEventListener("popstate", handleUrlChange);
+  const selectAskMode = useCallback(() => {
+    setChatMode("ask");
+  }, []);
 
-    return () => {
-      window.removeEventListener("popstate", handleUrlChange);
-    };
-  }, [temporaryChatsEnabled]);
+  const selectAgentMode = useCallback(() => {
+    if (subscription === "free" || temporaryChatsEnabled) {
+      setChatMode("ask");
+    } else {
+      setChatMode("agent");
+    }
+  }, [subscription, temporaryChatsEnabled]);
 
   // Listen for hash changes to sync team pricing dialog state
   useEffect(() => {
     const handleHashChange = () => {
-      if (typeof window === "undefined") return;
       const shouldOpen =
         window.location.hash === "#team-pricing-seat-selection";
 
@@ -456,7 +459,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Listen for URL changes to sync team welcome dialog state
   useEffect(() => {
     const handleUrlChange = () => {
-      if (typeof window === "undefined") return;
       const urlParams = new URLSearchParams(window.location.search);
       const shouldOpen = urlParams.get("team-welcome") === "true";
 
@@ -477,7 +479,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Listen for URL changes to sync PentestGPT migration confirm dialog state
   useEffect(() => {
     const handleUrlChange = () => {
-      if (typeof window === "undefined") return;
       const urlParams = new URLSearchParams(window.location.search);
       const shouldOpen = urlParams.get("confirm-migrate-pentestgpt") === "true";
 
@@ -576,14 +577,17 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return nextMessage;
   }, []);
 
-  const initializeChat = useCallback((chatId: string, _fromRoute?: boolean) => {
-    // Don't clear input here - let ChatInput restore draft automatically
-    // setInput("");  // Removed - ChatInput will handle draft restoration
-    setTodos([]);
-    setIsTodoPanelExpanded(false);
-    // Navigating to an existing chat means we're no longer in temporary chat mode
-    setTemporaryChatsEnabled(false);
-  }, []);
+  const initializeChat = useCallback(
+    (chatId: string, _fromRoute?: boolean) => {
+      // Don't clear input here - let ChatInput restore draft automatically
+      // setInput("");  // Removed - ChatInput will handle draft restoration
+      setTodos([]);
+      setIsTodoPanelExpanded(false);
+      // Navigating to an existing chat means we're no longer in temporary chat mode
+      disableTemporaryChats();
+    },
+    [disableTemporaryChats],
+  );
 
   const initializeNewChat = useCallback(() => {
     // Allow chat component to reset its local state immediately
@@ -621,32 +625,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setChatSidebarOpen((prev: boolean) => !prev);
   };
 
-  // Custom setter for temporary chats that also updates URL
-  const setTemporaryChatsEnabledWithUrl = useCallback((enabled: boolean) => {
-    setTemporaryChatsEnabled(enabled);
-
-    if (typeof window !== "undefined") {
-      const url = new URL(window.location.href);
-      if (enabled) {
-        url.searchParams.set("temporary-chat", "true");
-      } else {
-        url.searchParams.delete("temporary-chat");
-      }
-      window.history.replaceState({}, "", url.toString());
-    }
-  }, []);
-
   // Custom setter for team welcome dialog that also updates URL
   const setTeamWelcomeDialogOpenWithUrl = useCallback((open: boolean) => {
     setTeamWelcomeDialogOpen(open);
 
-    if (typeof window !== "undefined") {
+    if (!open) {
       const url = new URL(window.location.href);
-      if (!open) {
-        // Remove the param when dialog is closed
-        url.searchParams.delete("team-welcome");
-        window.history.replaceState({}, "", url.toString());
-      }
+      url.searchParams.delete("team-welcome");
+      window.history.replaceState({}, "", url.toString());
     }
   }, []);
 
@@ -655,15 +641,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     (open: boolean) => {
       setMigrateFromPentestgptDialogOpen(open);
 
-      if (typeof window !== "undefined") {
-        const url = new URL(window.location.href);
-        if (open) {
-          url.searchParams.set("confirm-migrate-pentestgpt", "true");
-        } else {
-          url.searchParams.delete("confirm-migrate-pentestgpt");
-        }
-        window.history.replaceState({}, "", url.toString());
+      const url = new URL(window.location.href);
+      if (open) {
+        url.searchParams.set("confirm-migrate-pentestgpt", "true");
+      } else {
+        url.searchParams.delete("confirm-migrate-pentestgpt");
       }
+      window.history.replaceState({}, "", url.toString());
     },
     [],
   );
@@ -678,8 +662,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     updateUploadedFile,
     getTotalTokens,
     isUploadingFiles,
-    chatMode,
-    setChatMode,
+    chatMode: effectiveChatMode,
+    selectAskMode,
+    selectAgentMode,
     sidebarOpen,
     setSidebarOpen,
     sidebarContent,
@@ -707,7 +692,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     initializeNewChat,
 
     temporaryChatsEnabled,
-    setTemporaryChatsEnabled: setTemporaryChatsEnabledWithUrl,
+    enableTemporaryChats,
+    disableTemporaryChats,
 
     teamPricingDialogOpen,
     setTeamPricingDialogOpen,
