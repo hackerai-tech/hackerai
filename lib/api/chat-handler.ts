@@ -529,6 +529,7 @@ export const createChatHandler = (
               if (existingStepSummary) {
                 stepSummaryText = existingStepSummary.step_summary_text;
                 upToToolCallId = existingStepSummary.up_to_tool_call_id;
+                hasSummarized = true;
               }
             } catch (error) {
               console.log(
@@ -540,6 +541,7 @@ export const createChatHandler = (
 
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
+          let lastStepOutputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
 
           // Track metrics for data collection
@@ -636,12 +638,14 @@ export const createChatHandler = (
                       if (stepSummaryText && chatId) {
                         stepSummaryText = null;
                         upToToolCallId = null;
-                        clearStepSummary({ chatId }).catch((err) =>
+                        try {
+                          await clearStepSummary({ chatId });
+                        } catch (err) {
                           console.log(
                             "[StepSummary] Failed to clear:",
                             err instanceof Error ? err.message : String(err),
-                          ),
-                        );
+                          );
+                        }
                       }
                       return {
                         messages: await convertToModelMessages(
@@ -658,6 +662,7 @@ export const createChatHandler = (
                       languageModel: trackedProvider.languageModel(modelName),
                       existingSummary: stepSummaryText,
                       lastStepInputTokens,
+                      lastStepOutputTokens,
                       maxTokens: getMaxTokensForSubscription(subscription),
                       thresholdPercentage: SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       abortSignal: userStopSignal.signal,
@@ -765,6 +770,7 @@ export const createChatHandler = (
                   accumulatedInputTokens += usage.inputTokens || 0;
                   accumulatedOutputTokens += usage.outputTokens || 0;
                   lastStepInputTokens = usage.inputTokens || 0;
+                  lastStepOutputTokens = usage.outputTokens || 0;
                   // Provider cost when available; deductUsage falls back to token-based calculation
                   const stepCost = (usage as { raw?: { cost?: number } }).raw
                     ?.cost;

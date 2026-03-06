@@ -356,6 +356,7 @@ export async function runStepSummarizationCheck(options: {
   languageModel: LanguageModel;
   existingSummary: string | null;
   lastStepInputTokens: number;
+  lastStepOutputTokens: number;
   maxTokens: number;
   thresholdPercentage: number;
   abortSignal?: AbortSignal;
@@ -366,6 +367,7 @@ export async function runStepSummarizationCheck(options: {
     languageModel,
     existingSummary,
     lastStepInputTokens,
+    lastStepOutputTokens,
     maxTokens,
     thresholdPercentage,
     abortSignal,
@@ -374,8 +376,11 @@ export async function runStepSummarizationCheck(options: {
 
   const threshold = Math.floor(maxTokens * thresholdPercentage);
 
-  // Use provider-reported tokens if available (most accurate)
-  if (lastStepInputTokens <= threshold) {
+  // Estimate current input tokens: previous step's input + its output
+  // (tool results from the previous step are now part of this step's input)
+  const estimatedInputTokens = lastStepInputTokens + lastStepOutputTokens;
+
+  if (estimatedInputTokens <= threshold) {
     return {
       needsSummarization: false,
       messages,

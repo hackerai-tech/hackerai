@@ -89,8 +89,6 @@ export const STEP_SUMMARIZATION_PROMPT =
   "Be specific enough that the agent can avoid repeating the same mistake.\n\n" +
   "RULES:\n" +
   "- Output ONLY the structured summary. No preamble, no conversational text.\n" +
-  "- Preserve exact technical details (file paths, URLs, IPs, ports, command outputs, error messages).\n" +
-  "- Preserve exact command outputs and error messages — these are critical for debugging.\n" +
-  "- Compress verbose tool outputs into key findings — do not include raw output.\n" +
+  "- Preserve exact technical details (file paths, URLs, IPs, ports, command outputs, error messages) — but when tool outputs are verbose, compress them into key findings while ensuring critical error text and diagnostics are preserved.\n" +
   "- Focus on WHAT was done and WHAT was found, not HOW tools were called.\n" +
   "- This summary will replace the raw tool steps in the agent's context, so nothing critical must be lost.";

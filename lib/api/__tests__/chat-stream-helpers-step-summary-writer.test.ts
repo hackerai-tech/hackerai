@@ -140,6 +140,7 @@ function baseOptions(overrides: Record<string, unknown> = {}) {
     languageModel: mockLanguageModel,
     existingSummary: null,
     lastStepInputTokens: 50000,
+    lastStepOutputTokens: 0,
     maxTokens: 60000,
     thresholdPercentage: 0.7,
     abortSignal: undefined,
