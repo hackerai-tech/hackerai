@@ -4,7 +4,12 @@
  * Utility functions extracted from chat-handler to keep it clean and focused.
  */
 
-import type { LanguageModel, UIMessage, UIMessageStreamWriter } from "ai";
+import type {
+  LanguageModel,
+  ModelMessage,
+  UIMessage,
+  UIMessageStreamWriter,
+} from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -326,12 +331,6 @@ export async function runSummarizationStep(options: {
   return { needsSummarization: true, summarizedMessages, contextUsage };
 }
 
-// ModelMessage type for step summarization (matches AI SDK internal format)
-type ModelMessage = {
-  role: string;
-  content: string | Array<{ type: string; [key: string]: unknown }>;
-};
-
 export interface StepSummarizationState {
   stepSummaryText: string | null;
   upToToolCallId: string | null;
@@ -387,10 +386,8 @@ export async function runStepSummarizationCheck(options: {
 
   // Need enough completed steps to make summarization worthwhile
   // Filter out existing step summary messages for counting
-  const nonSummaryMessages = messages.filter(
-    (m) => !isStepSummaryMessage(m as any),
-  );
-  const completedSteps = countCompletedToolSteps(nonSummaryMessages as any);
+  const nonSummaryMessages = messages.filter((m) => !isStepSummaryMessage(m));
+  const completedSteps = countCompletedToolSteps(nonSummaryMessages);
 
   if (completedSteps < MIN_STEPS_TO_SUMMARIZE) {
     return {
@@ -402,7 +399,7 @@ export async function runStepSummarizationCheck(options: {
   }
 
   // Get cutoff: second-to-last toolCallId (keep last step raw)
-  const cutoffToolCallId = getSecondToLastToolCallId(nonSummaryMessages as any);
+  const cutoffToolCallId = getSecondToLastToolCallId(nonSummaryMessages);
   if (!cutoffToolCallId) {
     return {
       needsSummarization: false,
@@ -415,7 +412,7 @@ export async function runStepSummarizationCheck(options: {
   try {
     // Extract steps to summarize for the LLM
     const stepsToSummarize = extractStepsToSummarize(
-      nonSummaryMessages as any,
+      nonSummaryMessages,
       cutoffToolCallId,
     );
 
@@ -434,14 +431,14 @@ export async function runStepSummarizationCheck(options: {
       }
 
       const summaryText = await generateStepSummaryText(
-        stepsToSummarize as any,
+        stepsToSummarize,
         languageModel,
         existingSummary ?? undefined,
         abortSignal,
       );
 
       const injectedMessages = injectStepSummary(
-        nonSummaryMessages as any,
+        nonSummaryMessages,
         summaryText,
         cutoffToolCallId,
       );
@@ -452,7 +449,7 @@ export async function runStepSummarizationCheck(options: {
 
       return {
         needsSummarization: true,
-        messages: injectedMessages as ModelMessage[],
+        messages: injectedMessages,
         summaryText,
         upToToolCallId: cutoffToolCallId,
       };

@@ -595,10 +595,10 @@ export const createChatHandler = (
                   let currentMessages = messages;
                   if (stepSummaryText && upToToolCallId) {
                     currentMessages = injectStepSummary(
-                      messages as any,
+                      messages,
                       stepSummaryText,
                       upToToolCallId,
-                    ) as typeof messages;
+                    );
                   }
 
                   // 2. Main summary (existing, once per stream)
@@ -654,7 +654,7 @@ export const createChatHandler = (
                   // 3. Step summary check (after main summary exists)
                   if (!temporary && hasSummarized) {
                     const stepResult = await runStepSummarizationCheck({
-                      messages: currentMessages as any,
+                      messages: currentMessages,
                       languageModel: trackedProvider.languageModel(modelName),
                       existingSummary: stepSummaryText,
                       lastStepInputTokens,
@@ -667,7 +667,7 @@ export const createChatHandler = (
                     if (stepResult.needsSummarization) {
                       stepSummaryText = stepResult.summaryText;
                       upToToolCallId = stepResult.upToToolCallId;
-                      currentMessages = stepResult.messages as typeof messages;
+                      currentMessages = stepResult.messages;
 
                       // Emit context usage hint after step summarization — corrected by next onStepFinish
                       if (contextUsageEnabled) {

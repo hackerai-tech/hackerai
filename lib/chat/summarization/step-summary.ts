@@ -1,39 +1,12 @@
 import {
   generateText,
   LanguageModel,
-  type ModelMessage as SDKModelMessage,
+  type ModelMessage,
+  type ToolCallPart,
+  type ToolResultPart,
+  type TextPart,
 } from "ai";
 import { STEP_SUMMARIZATION_PROMPT } from "./prompts";
-
-// ModelMessage types - these are what prepareStep receives
-// Using loose types since the AI SDK doesn't export ModelMessage directly
-type ModelMessageRole = "system" | "user" | "assistant" | "tool";
-
-interface ToolCallPart {
-  type: "tool-call";
-  toolCallId: string;
-  toolName: string;
-  args: unknown;
-}
-
-interface ToolResultPart {
-  type: "tool-result";
-  toolCallId: string;
-  toolName: string;
-  result: unknown;
-}
-
-interface TextPart {
-  type: "text";
-  text: string;
-}
-
-type ContentPart = ToolCallPart | ToolResultPart | TextPart | { type: string };
-
-interface ModelMessage {
-  role: ModelMessageRole;
-  content: string | ContentPart[];
-}
 
 const STEP_SUMMARY_TAG = "<step_summary>";
 const STEP_SUMMARY_CLOSE_TAG = "</step_summary>";
@@ -51,9 +24,7 @@ export function findToolResultIndex(
       msg.role === "tool" &&
       Array.isArray(msg.content) &&
       msg.content.some(
-        (part) =>
-          (part as ToolResultPart).type === "tool-result" &&
-          (part as ToolResultPart).toolCallId === toolCallId,
+        (part) => part.type === "tool-result" && part.toolCallId === toolCallId,
       ),
   );
 }
@@ -66,8 +37,8 @@ export function getAllToolCallIds(messages: ModelMessage[]): string[] {
   for (const msg of messages) {
     if (msg.role === "assistant" && Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if ((part as ToolCallPart).type === "tool-call") {
-          ids.push((part as ToolCallPart).toolCallId);
+        if (part.type === "tool-call") {
+          ids.push(part.toolCallId);
         }
       }
     }
@@ -104,11 +75,11 @@ export function countCompletedToolSteps(messages: ModelMessage[]): number {
   for (const msg of messages) {
     if (Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if ((part as ToolCallPart).type === "tool-call") {
-          toolCallIds.add((part as ToolCallPart).toolCallId);
+        if (part.type === "tool-call") {
+          toolCallIds.add(part.toolCallId);
         }
-        if ((part as ToolResultPart).type === "tool-result") {
-          toolResultIds.add((part as ToolResultPart).toolCallId);
+        if (part.type === "tool-result") {
+          toolResultIds.add(part.toolCallId);
         }
       }
     }
@@ -132,10 +103,7 @@ export function isStepSummaryMessage(msg: ModelMessage): boolean {
   }
   if (Array.isArray(msg.content) && msg.content.length > 0) {
     const first = msg.content[0];
-    return (
-      (first as TextPart).type === "text" &&
-      (first as TextPart).text.startsWith(STEP_SUMMARY_TAG)
-    );
+    return first.type === "text" && first.text.startsWith(STEP_SUMMARY_TAG);
   }
   return false;
 }
@@ -183,7 +151,7 @@ export function injectStepSummary(
     (msg) =>
       msg.role === "assistant" &&
       Array.isArray(msg.content) &&
-      msg.content.some((part) => (part as ToolCallPart).type === "tool-call"),
+      msg.content.some((part) => part.type === "tool-call"),
   );
 
   if (firstToolStepIndex < 0 || firstToolStepIndex > cutoffIndex) {
@@ -222,9 +190,9 @@ export async function generateStepSummaryText(
       xai: { store: false },
     },
     messages: [
-      ...(messages.filter((msg) => msg.role !== "system") as SDKModelMessage[]),
+      ...messages.filter((msg) => msg.role !== "system"),
       {
-        role: "user" as const,
+        role: "user",
         content:
           "Summarize the above tool call steps using the structured format specified in your instructions. Output ONLY the step summary.",
       },
@@ -249,7 +217,7 @@ export function extractStepsToSummarize(
     (msg) =>
       msg.role === "assistant" &&
       Array.isArray(msg.content) &&
-      msg.content.some((part) => (part as ToolCallPart).type === "tool-call"),
+      msg.content.some((part) => part.type === "tool-call"),
   );
 
   if (firstToolStepIndex < 0 || firstToolStepIndex > cutoffIndex) return [];

@@ -27,7 +27,7 @@ const createAssistantTextMessage = (text: string) => ({
 const createAssistantToolCallMessage = (
   toolCallId: string,
   toolName: string,
-  args: Record<string, unknown> = {},
+  input: Record<string, unknown> = {},
 ) => ({
   role: "assistant" as const,
   content: [
@@ -35,7 +35,7 @@ const createAssistantToolCallMessage = (
       type: "tool-call" as const,
       toolCallId,
       toolName,
-      args,
+      input,
     },
   ],
 });
@@ -43,7 +43,7 @@ const createAssistantToolCallMessage = (
 const createToolResultMessage = (
   toolCallId: string,
   toolName: string,
-  result: unknown = "success",
+  output: unknown = "success",
 ) => ({
   role: "tool" as const,
   content: [
@@ -51,7 +51,7 @@ const createToolResultMessage = (
       type: "tool-result" as const,
       toolCallId,
       toolName,
-      result,
+      output,
     },
   ],
 });
