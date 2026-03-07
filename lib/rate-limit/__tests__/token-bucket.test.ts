@@ -217,15 +217,6 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Kimi K2.5 pricing ($0.60/$3.00)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k2.5")).toBe(
-        6000,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k2.5")).toBe(
-        30000,
-      );
-    });
-
     it("expensive models should deplete budget faster", () => {
       const sessionBudget = getBudgetLimits("pro").session;
       // Typical conversation: 2000 input + 500 output tokens

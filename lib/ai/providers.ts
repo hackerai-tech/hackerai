@@ -7,15 +7,14 @@ import { openrouter } from "@openrouter/ai-sdk-provider";
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
   "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
-  "agent-model": openrouter("moonshotai/kimi-k2.5"),
+  "agent-model": openrouter("google/gemini-3-flash-preview"),
   "model-sonnet-4.6": openrouter("anthropic/claude-sonnet-4-6"),
   "model-gemini-3.1-pro": openrouter("google/gemini-3.1-pro-preview"),
   "model-grok-4.1": openrouter("x-ai/grok-4.1-fast"),
   "model-gemini-3-flash": openrouter("google/gemini-3-flash-preview"),
-  "model-kimi-k2.5": openrouter("moonshotai/kimi-k2.5"),
   "model-gpt-5.4": openrouter("openai/gpt-5.4"),
-  "fallback-agent-model": openrouter("google/gemini-3-flash-preview"),
-  "fallback-ask-model": openrouter("moonshotai/kimi-k2.5"),
+  "fallback-agent-model": openrouter("x-ai/grok-4.1-fast"),
+  "fallback-ask-model": openrouter("x-ai/grok-4.1-fast"),
   "title-generator-model": openrouter("x-ai/grok-4.1-fast"),
 } as Record<string, any>;
 
@@ -29,7 +28,6 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "model-gemini-3.1-pro": "January 2025",
   "model-grok-4.1": "November 2024",
   "model-gemini-3-flash": "January 2025",
-  "model-kimi-k2.5": "January 2025",
   "model-gpt-5.4": "March 2026",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",

@@ -189,7 +189,7 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
       );
-      expect(selectModel("agent", "pro", "kimi-k2.5")).toBe("model-kimi-k2.5");
+      expect(selectModel("agent", "pro", "gpt-5.4")).toBe("model-gpt-5.4");
     });
   });
 
