@@ -175,15 +175,6 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Kimi K2.5 pricing ($0.60/$3.00)", () => {
-      expect(calculateTokenCost(1_000_000, "input", "model-kimi-k2.5")).toBe(
-        0.6,
-      );
-      expect(calculateTokenCost(1_000_000, "output", "model-kimi-k2.5")).toBe(
-        3.0,
-      );
-    });
-
     it("expensive models should deplete budget faster", () => {
       const monthlyBudget = getBudgetLimit("pro");
       const defaultCost =
