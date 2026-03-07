@@ -6,8 +6,8 @@ import { refundUsage } from "./token-bucket";
  * Ensures refunds only happen once, even if multiple error handlers trigger.
  */
 export class UsageRefundTracker {
-  private pointsDeducted = 0;
-  private extraUsagePointsDeducted = 0;
+  private amountDeducted = 0;
+  private extraUsageAmountDeducted = 0;
   private userId: string | undefined;
   private subscription: SubscriptionTier | undefined;
   private hasRefunded = false;
@@ -21,18 +21,18 @@ export class UsageRefundTracker {
   }
 
   /**
-   * Record deductions from rate limit check.
+   * Record deductions from rate limit check (amounts in dollars).
    */
   recordDeductions(rateLimitInfo: RateLimitInfo): void {
-    this.pointsDeducted = rateLimitInfo.pointsDeducted ?? 0;
-    this.extraUsagePointsDeducted = rateLimitInfo.extraUsagePointsDeducted ?? 0;
+    this.amountDeducted = rateLimitInfo.amountDeducted ?? 0;
+    this.extraUsageAmountDeducted = rateLimitInfo.extraUsageAmountDeducted ?? 0;
   }
 
   /**
    * Check if there are any deductions to refund.
    */
   hasDeductions(): boolean {
-    return this.pointsDeducted > 0 || this.extraUsagePointsDeducted > 0;
+    return this.amountDeducted > 0 || this.extraUsageAmountDeducted > 0;
   }
 
   /**
@@ -52,8 +52,8 @@ export class UsageRefundTracker {
       await refundUsage(
         this.userId,
         this.subscription,
-        this.pointsDeducted,
-        this.extraUsagePointsDeducted,
+        this.amountDeducted,
+        this.extraUsageAmountDeducted,
       );
       this.hasRefunded = true;
     } catch (error) {

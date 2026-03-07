@@ -28,7 +28,7 @@ describe("checkRateLimit", () => {
       remaining: 5000,
       resetTime: new Date(),
       limit: 10000,
-      pointsDeducted: 100,
+      amountDeducted: 100,
     });
 
     mockFormatTimeRemaining.mockReturnValue("5 hours");
@@ -57,6 +57,7 @@ describe("checkRateLimit", () => {
         deductUsage: jest.fn(),
         refundUsage: jest.fn(),
         calculateTokenCost: jest.fn(),
+        getBudgetLimit: jest.fn(),
         getBudgetLimits: jest.fn(),
         getSubscriptionPrice: jest.fn(),
       }));

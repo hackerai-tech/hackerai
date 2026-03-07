@@ -127,17 +127,23 @@ export default defineSchema({
   }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)
-  // Note: Most monetary values stored in POINTS for precision (1 point = $0.0001, matching rate limiting)
-  // This avoids precision loss when deducting sub-cent amounts from balance.
-  // Exception: auto_reload_amount_dollars is stored in dollars since it's used directly for Stripe charges.
+  // New fields store dollars directly. Old _points fields kept for migration.
   extra_usage: defineTable({
     user_id: v.string(),
-    balance_points: v.number(),
-    auto_reload_enabled: v.optional(v.boolean()),
+    // New dollar fields (preferred)
+    balance_dollars: v.optional(v.number()),
+    auto_reload_threshold_dollars: v.optional(v.number()),
+    monthly_cap_dollars: v.optional(v.number()),
+    monthly_spent_dollars: v.optional(v.number()),
+    // Legacy point fields (1 point = $0.0001, 10,000 points per dollar)
+    // Kept for backward compatibility during migration
+    balance_points: v.optional(v.number()),
     auto_reload_threshold_points: v.optional(v.number()),
-    auto_reload_amount_dollars: v.optional(v.number()), // Stored in dollars for Stripe
     monthly_cap_points: v.optional(v.number()),
     monthly_spent_points: v.optional(v.number()),
+    // Shared fields (already in dollars / no unit change)
+    auto_reload_enabled: v.optional(v.boolean()),
+    auto_reload_amount_dollars: v.optional(v.number()),
     monthly_reset_date: v.optional(v.string()),
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),

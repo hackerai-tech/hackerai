@@ -8,38 +8,14 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
 describe("extra-usage", () => {
   // ==========================================================================
-  // pointsToDollars - Pure function
+  // EXTRA_USAGE_MULTIPLIER constant
   // ==========================================================================
-  describe("pointsToDollars", () => {
-    // Import directly for pure function tests
-    const { pointsToDollars, EXTRA_USAGE_MULTIPLIER } =
+  describe("EXTRA_USAGE_MULTIPLIER", () => {
+    const { EXTRA_USAGE_MULTIPLIER } =
       require("../extra-usage") as typeof import("../extra-usage");
 
-    it("should convert points to dollars with 1.1x multiplier", () => {
-      // 10000 points = $1.00 base, * 1.1 = $1.10 (floating point: $1.11)
-      expect(pointsToDollars(10000)).toBe(1.11);
-    });
-
-    it("should round up to nearest cent", () => {
-      // 1 point = $0.0001 base, * 1.1 = $0.00011 → rounds up to $0.01
-      expect(pointsToDollars(1)).toBe(0.01);
-      // 100 points = $0.01 base, * 1.1 = $0.011 → rounds up to $0.02
-      expect(pointsToDollars(100)).toBe(0.02);
-    });
-
-    it("should return 0 for 0 points", () => {
-      expect(pointsToDollars(0)).toBe(0);
-    });
-
-    it("should handle large point values", () => {
-      // 1M points = $100 base, * 1.1 = $110 (floating point: $110.01)
-      expect(pointsToDollars(1_000_000)).toBe(110.01);
-    });
-
-    it("should apply EXTRA_USAGE_MULTIPLIER correctly", () => {
+    it("should be 1.1 (10% markup)", () => {
       expect(EXTRA_USAGE_MULTIPLIER).toBe(1.1);
-      // 50000 points = $5.00 base, * 1.1 = $5.50
-      expect(pointsToDollars(50000)).toBe(5.5);
     });
   });
 
@@ -80,11 +56,9 @@ describe("extra-usage", () => {
 
         mockQuery.mockResolvedValue({
           balanceDollars: 10.5,
-          balancePoints: 100000,
           enabled: true,
           autoReloadEnabled: true,
           autoReloadThresholdDollars: 5,
-          autoReloadThresholdPoints: 50000,
           autoReloadAmountDollars: 20,
         });
 
@@ -92,11 +66,9 @@ describe("extra-usage", () => {
 
         expect(result).toEqual({
           balanceDollars: 10.5,
-          balancePoints: 100000,
           enabled: true,
           autoReloadEnabled: true,
           autoReloadThresholdDollars: 5,
-          autoReloadThresholdPoints: 50000,
           autoReloadAmountDollars: 20,
         });
         expect(mockQuery).toHaveBeenCalled();
@@ -114,7 +86,7 @@ describe("extra-usage", () => {
     });
 
     describe("refundToBalance", () => {
-      it("should return no-op result when pointsToRefund <= 0", async () => {
+      it("should return no-op result when amount <= 0", async () => {
         const { refundToBalance } = getIsolatedModule();
 
         const result = await refundToBalance("user-123", 0);
@@ -127,10 +99,10 @@ describe("extra-usage", () => {
         expect(mockMutation).not.toHaveBeenCalled();
       });
 
-      it("should return no-op result for negative points", async () => {
+      it("should return no-op result for negative amount", async () => {
         const { refundToBalance } = getIsolatedModule();
 
-        const result = await refundToBalance("user-123", -100);
+        const result = await refundToBalance("user-123", -1.0);
 
         expect(result).toEqual({
           success: true,
@@ -140,7 +112,7 @@ describe("extra-usage", () => {
         expect(mockMutation).not.toHaveBeenCalled();
       });
 
-      it("should call Convex mutation for positive points", async () => {
+      it("should call Convex mutation for positive dollar amount", async () => {
         const { refundToBalance } = getIsolatedModule();
 
         mockMutation.mockResolvedValue({
@@ -148,7 +120,7 @@ describe("extra-usage", () => {
           newBalanceDollars: 15.5,
         });
 
-        const result = await refundToBalance("user-123", 5000);
+        const result = await refundToBalance("user-123", 0.5);
 
         expect(result).toEqual({
           success: true,
@@ -162,7 +134,7 @@ describe("extra-usage", () => {
 
         mockMutation.mockRejectedValue(new Error("Convex error"));
 
-        const result = await refundToBalance("user-123", 5000);
+        const result = await refundToBalance("user-123", 0.5);
 
         expect(result).toEqual({
           success: false,
@@ -172,7 +144,7 @@ describe("extra-usage", () => {
     });
 
     describe("deductFromBalance", () => {
-      it("should return no-op result when pointsUsed <= 0", async () => {
+      it("should return no-op result when amount <= 0", async () => {
         const { deductFromBalance } = getIsolatedModule();
 
         const result = await deductFromBalance("user-123", 0);
@@ -187,10 +159,10 @@ describe("extra-usage", () => {
         expect(mockAction).not.toHaveBeenCalled();
       });
 
-      it("should return no-op result for negative points", async () => {
+      it("should return no-op result for negative amount", async () => {
         const { deductFromBalance } = getIsolatedModule();
 
-        const result = await deductFromBalance("user-123", -100);
+        const result = await deductFromBalance("user-123", -1.0);
 
         expect(result).toEqual({
           success: true,
@@ -202,7 +174,7 @@ describe("extra-usage", () => {
         expect(mockAction).not.toHaveBeenCalled();
       });
 
-      it("should call Convex action for positive points", async () => {
+      it("should call Convex action for positive dollar amount", async () => {
         const { deductFromBalance } = getIsolatedModule();
 
         mockAction.mockResolvedValue({
@@ -213,7 +185,7 @@ describe("extra-usage", () => {
           autoReloadTriggered: false,
         });
 
-        const result = await deductFromBalance("user-123", 2000);
+        const result = await deductFromBalance("user-123", 0.2);
 
         expect(result).toEqual({
           success: true,
@@ -241,7 +213,7 @@ describe("extra-usage", () => {
           },
         });
 
-        const result = await deductFromBalance("user-123", 5000);
+        const result = await deductFromBalance("user-123", 0.5);
 
         expect(result.autoReloadTriggered).toBe(true);
         expect(result.autoReloadResult).toEqual({
@@ -260,7 +232,7 @@ describe("extra-usage", () => {
           monthlyCapExceeded: false,
         });
 
-        const result = await deductFromBalance("user-123", 100000);
+        const result = await deductFromBalance("user-123", 10.0);
 
         expect(result.success).toBe(false);
         expect(result.insufficientFunds).toBe(true);
@@ -276,7 +248,7 @@ describe("extra-usage", () => {
           monthlyCapExceeded: true,
         });
 
-        const result = await deductFromBalance("user-123", 10000);
+        const result = await deductFromBalance("user-123", 1.0);
 
         expect(result.success).toBe(false);
         expect(result.monthlyCapExceeded).toBe(true);
@@ -287,7 +259,7 @@ describe("extra-usage", () => {
 
         mockAction.mockRejectedValue(new Error("Convex error"));
 
-        const result = await deductFromBalance("user-123", 5000);
+        const result = await deductFromBalance("user-123", 0.5);
 
         expect(result).toEqual({
           success: false,

@@ -3,15 +3,14 @@
 import { action } from "./_generated/server";
 import { v } from "convex/values";
 import {
-  getBudgetLimits,
+  getBudgetLimit,
   getSubscriptionPrice,
 } from "../lib/rate-limit/token-bucket";
 import type { SubscriptionTier } from "../types";
 
 /**
  * Get the current rate limit status for the authenticated user.
- *
- * Returns both session (5-hour) and weekly limit status.
+ * Returns monthly usage data in dollars.
  */
 export const getAgentRateLimitStatus = action({
   args: {
@@ -24,25 +23,13 @@ export const getAgentRateLimitStatus = action({
     ),
   },
   returns: v.object({
-    session: v.object({
-      remaining: v.number(),
-      limit: v.number(),
-      used: v.number(),
-      usagePercentage: v.number(),
-      resetTime: v.union(v.string(), v.null()),
-    }),
-    weekly: v.object({
-      remaining: v.number(),
-      limit: v.number(),
-      used: v.number(),
-      usagePercentage: v.number(),
-      resetTime: v.union(v.string(), v.null()),
-    }),
-    dailyBudgetUsd: v.number(),
-    weeklyBudgetUsd: v.number(),
+    usedDollars: v.number(),
+    includedDollars: v.number(),
+    remainingDollars: v.number(),
+    usagePercentage: v.number(),
+    resetTime: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args) => {
-    // Authenticate user
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
       throw new Error("Unauthenticated: User must be logged in");
@@ -50,150 +37,77 @@ export const getAgentRateLimitStatus = action({
 
     const userId = identity.subject;
     const subscription = args.subscription as SubscriptionTier;
+    const monthlyBudget = getSubscriptionPrice(subscription);
 
-    // Calculate limits using shared token-bucket logic
-    const { session: sessionLimit, weekly: weeklyLimit } =
-      getBudgetLimits(subscription);
-    const agentBudget = getSubscriptionPrice(subscription);
-    const weeklyBudgetUsd = (agentBudget * 7) / 30;
-    const dailyBudgetUsd = agentBudget / 30;
-
-    const emptySession: {
-      remaining: number;
-      limit: number;
-      used: number;
-      usagePercentage: number;
-      resetTime: string | null;
-    } = {
-      remaining: 0,
-      limit: 0,
-      used: 0,
-      usagePercentage: 0,
-      resetTime: null,
-    };
-
-    // Default response for free tier or no limits
-    if (subscription === "free" || sessionLimit === 0) {
+    if (subscription === "free" || monthlyBudget === 0) {
       return {
-        session: emptySession,
-        weekly: { ...emptySession },
-        dailyBudgetUsd: 0,
-        weeklyBudgetUsd: 0,
+        usedDollars: 0,
+        includedDollars: 0,
+        remainingDollars: 0,
+        usagePercentage: 0,
+        resetTime: null,
       };
     }
 
-    // Check if Redis is configured
     const redisUrl = process.env.UPSTASH_REDIS_REST_URL;
     const redisToken = process.env.UPSTASH_REDIS_REST_TOKEN;
 
     if (!redisUrl || !redisToken) {
       return {
-        session: {
-          remaining: sessionLimit,
-          limit: sessionLimit,
-          used: 0,
-          usagePercentage: 0,
-          resetTime: null,
-        },
-        weekly: {
-          remaining: weeklyLimit,
-          limit: weeklyLimit,
-          used: 0,
-          usagePercentage: 0,
-          resetTime: null,
-        },
-        dailyBudgetUsd,
-        weeklyBudgetUsd,
+        usedDollars: 0,
+        includedDollars: monthlyBudget,
+        remainingDollars: monthlyBudget,
+        usagePercentage: 0,
+        resetTime: null,
       };
     }
 
     try {
-      // Dynamic imports in Convex Node runtime expose modules via .default
       const ratelimitModule = await import("@upstash/ratelimit");
       const Ratelimit = ratelimitModule.default.Ratelimit;
-
       const { Redis } = await import("@upstash/redis");
 
-      const redis = new Redis({
-        url: redisUrl,
-        token: redisToken,
-      });
+      const redis = new Redis({ url: redisUrl, token: redisToken });
 
-      const sessionRatelimit = new Ratelimit({
+      const monthlyLimitMicro = Math.ceil(monthlyBudget * 1_000_000);
+
+      const monthlyRatelimit = new Ratelimit({
         redis,
-        limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
-        prefix: "usage:session",
+        limiter: Ratelimit.tokenBucket(
+          monthlyLimitMicro,
+          "30 d",
+          monthlyLimitMicro,
+        ),
+        prefix: "usage:monthly",
       });
 
-      const sessionKey = `${userId}:${subscription}`;
-      const sessionResult = await sessionRatelimit.limit(sessionKey, {
-        rate: 0,
-      });
+      const key = `${userId}:${subscription}`;
+      const result = await monthlyRatelimit.limit(key, { rate: 0 });
 
-      const sessionRemaining = Math.min(
-        Math.max(0, sessionResult.remaining),
-        sessionLimit,
+      const remainingMicro = Math.min(
+        Math.max(0, result.remaining),
+        monthlyLimitMicro,
       );
-      const sessionUsed = sessionLimit - sessionRemaining;
+      const usedMicro = monthlyLimitMicro - remainingMicro;
 
-      const sessionData = {
-        remaining: sessionRemaining,
-        limit: sessionLimit,
-        used: sessionUsed,
-        usagePercentage: Math.round((sessionUsed / sessionLimit) * 100),
-        resetTime: new Date(sessionResult.reset).toISOString(),
-      };
-
-      // Query weekly limit (token bucket - refills every 7 days)
-      // Must match prefix and key format from lib/rate-limit/token-bucket.ts
-      const weeklyRatelimit = new Ratelimit({
-        redis,
-        limiter: Ratelimit.tokenBucket(weeklyLimit, "7 d", weeklyLimit),
-        prefix: "usage:weekly",
-      });
-
-      const weeklyKey = `${userId}:${subscription}`;
-      const weeklyResult = await weeklyRatelimit.limit(weeklyKey, { rate: 0 });
-
-      // Clamp remaining to [0, limit] to handle edge cases where bucket
-      // may have more tokens than expected (e.g., limit changes, fresh bucket)
-      const weeklyRemaining = Math.min(
-        Math.max(0, weeklyResult.remaining),
-        weeklyLimit,
-      );
-      const weeklyUsed = weeklyLimit - weeklyRemaining;
+      const usedDollars = usedMicro / 1_000_000;
+      const remainingDollars = remainingMicro / 1_000_000;
 
       return {
-        session: sessionData,
-        weekly: {
-          remaining: weeklyRemaining,
-          limit: weeklyLimit,
-          used: weeklyUsed,
-          usagePercentage: Math.round((weeklyUsed / weeklyLimit) * 100),
-          resetTime: new Date(weeklyResult.reset).toISOString(),
-        },
-        dailyBudgetUsd,
-        weeklyBudgetUsd,
+        usedDollars: Math.round(usedDollars * 100) / 100,
+        includedDollars: monthlyBudget,
+        remainingDollars: Math.round(remainingDollars * 100) / 100,
+        usagePercentage: Math.round((usedMicro / monthlyLimitMicro) * 100),
+        resetTime: new Date(result.reset).toISOString(),
       };
     } catch (error) {
       console.error("Failed to get rate limit status:", error);
       return {
-        session: {
-          remaining: sessionLimit,
-          limit: sessionLimit,
-          used: 0,
-          usagePercentage: 0,
-          resetTime: null,
-        },
-        weekly: {
-          remaining: weeklyLimit,
-          limit: weeklyLimit,
-          used: 0,
-          usagePercentage: 0,
-          resetTime: null,
-        },
-        dailyBudgetUsd,
-        weeklyBudgetUsd,
+        usedDollars: 0,
+        includedDollars: monthlyBudget,
+        remainingDollars: monthlyBudget,
+        usagePercentage: 0,
+        resetTime: null,
       };
     }
   },

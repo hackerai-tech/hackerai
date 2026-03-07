@@ -64,25 +64,11 @@ function deserializeRateLimitInfo(info: SerializableRateLimitInfo): {
   remaining: number;
   resetTime: Date;
   limit: number;
-  session?: { remaining: number; limit: number; resetTime: Date };
-  weekly?: { remaining: number; limit: number; resetTime: Date };
-  extraUsagePointsDeducted?: number;
+  extraUsageAmountDeducted?: number;
 } {
   return {
     ...info,
     resetTime: new Date(info.resetTime),
-    session: info.session
-      ? {
-          ...info.session,
-          resetTime: new Date(info.session.resetTime),
-        }
-      : undefined,
-    weekly: info.weekly
-      ? {
-          ...info.weekly,
-          resetTime: new Date(info.weekly.resetTime),
-        }
-      : undefined,
   };
 }
 
@@ -179,22 +165,11 @@ export const agentStreamTask = task({
     );
     chatLogger.setRateLimit(
       {
-        pointsDeducted: serializedRateLimitInfo.pointsDeducted,
-        extraUsagePointsDeducted:
-          serializedRateLimitInfo.extraUsagePointsDeducted,
-        session: serializedRateLimitInfo.session
-          ? {
-              remaining: serializedRateLimitInfo.session.remaining,
-              limit: serializedRateLimitInfo.session.limit,
-            }
-          : undefined,
-        weekly: serializedRateLimitInfo.weekly
-          ? {
-              remaining: serializedRateLimitInfo.weekly.remaining,
-              limit: serializedRateLimitInfo.weekly.limit,
-            }
-          : undefined,
+        amountDeducted: serializedRateLimitInfo.amountDeducted,
+        extraUsageAmountDeducted:
+          serializedRateLimitInfo.extraUsageAmountDeducted,
         remaining: serializedRateLimitInfo.remaining,
+        limit: serializedRateLimitInfo.limit,
         subscription,
       },
       extraUsageConfig ?? undefined,

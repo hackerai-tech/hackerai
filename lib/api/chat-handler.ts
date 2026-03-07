@@ -316,11 +316,10 @@ export const createChatHandler = (
       // Add rate limit and extra usage context to logger
       chatLogger.setRateLimit(
         {
-          pointsDeducted: rateLimitInfo.pointsDeducted,
-          extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
-          session: rateLimitInfo.session,
-          weekly: rateLimitInfo.weekly,
+          amountDeducted: rateLimitInfo.amountDeducted,
+          extraUsageAmountDeducted: rateLimitInfo.extraUsageAmountDeducted,
           remaining: rateLimitInfo.remaining,
+          limit: rateLimitInfo.limit,
           subscription,
         },
         extraUsageConfig,

@@ -446,21 +446,19 @@ export const createBillingPortalSession = action({
 /**
  * Deduct from user's balance with auto-reload support.
  * This is called from the backend rate limit logic.
- *
- * Accepts points directly to avoid precision loss from dollar conversion.
- * (1 point = $0.0001, so sub-cent amounts are preserved)
+ * All amounts in dollars.
  *
  * Flow:
- * 1. Get user's settings and current balance (in points)
+ * 1. Get user's settings and current balance
  * 2. Check if auto-reload is needed (balance below threshold)
  * 3. If needed, charge via Stripe and add credits
- * 4. Deduct the requested points
+ * 4. Deduct the requested amount
  */
 export const deductWithAutoReload = action({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
-    amountPoints: v.number(),
+    amountDollars: v.number(),
   },
   returns: v.object({
     success: v.boolean(),
@@ -482,7 +480,7 @@ export const deductWithAutoReload = action({
       throw new Error("Invalid service key");
     }
 
-    if (args.amountPoints <= 0) {
+    if (args.amountDollars <= 0) {
       return {
         success: true,
         newBalanceDollars: 0,
@@ -492,42 +490,31 @@ export const deductWithAutoReload = action({
       };
     }
 
-    // Get current settings (balance in both dollars and points)
+    // Get current settings
     const settings: {
       balanceDollars: number;
-      balancePoints: number;
       enabled: boolean;
       autoReloadEnabled: boolean;
       autoReloadThresholdDollars?: number;
-      autoReloadThresholdPoints?: number;
       autoReloadAmountDollars?: number;
     } = await ctx.runQuery(api.extraUsage.getExtraUsageBalanceForBackend, {
       serviceKey: args.serviceKey,
       userId: args.userId,
     });
 
-    // Use points for threshold comparison (more precise)
-    const thresholdPoints: number = settings.autoReloadThresholdPoints ?? 0;
+    const thresholdDollars: number = settings.autoReloadThresholdDollars ?? 0;
     const reloadAmount: number = settings.autoReloadAmountDollars ?? 0;
     let autoReloadTriggered = false;
     let autoReloadResult:
       | { success: boolean; chargedAmountDollars?: number; reason?: string }
       | undefined;
 
-    // Check auto-reload conditions individually for debugging
-    // Auto-reload triggers when balance drops to/below threshold, not when balance can't cover request
-    const autoReloadConditions = {
-      auto_reload_enabled: settings.autoReloadEnabled,
-      balance_at_or_below_threshold: settings.balancePoints <= thresholdPoints,
-      reload_amount_configured: reloadAmount > 0,
-    };
-
+    // Auto-reload triggers when balance drops to/below threshold
     const allConditionsMet =
-      autoReloadConditions.auto_reload_enabled &&
-      autoReloadConditions.balance_at_or_below_threshold &&
-      autoReloadConditions.reload_amount_configured;
+      settings.autoReloadEnabled &&
+      settings.balanceDollars <= thresholdDollars &&
+      reloadAmount > 0;
 
-    // Check if auto-reload is needed (compare in points for precision)
     if (allConditionsMet) {
       autoReloadTriggered = true;
 
@@ -572,7 +559,6 @@ export const deductWithAutoReload = action({
             );
 
             if (paymentResult.success) {
-              // Add credits (dollars -> points conversion happens in mutation)
               await ctx.runMutation(api.extraUsage.addCredits, {
                 serviceKey: args.serviceKey,
                 userId: args.userId,
@@ -593,22 +579,21 @@ export const deductWithAutoReload = action({
       }
     }
 
-    // Now deduct from balance using points directly (no precision loss)
+    // Deduct from balance in dollars
     const deductResult: {
       success: boolean;
-      newBalancePoints: number;
       newBalanceDollars: number;
       insufficientFunds: boolean;
       monthlyCapExceeded: boolean;
-    } = await ctx.runMutation(api.extraUsage.deductPoints, {
+    } = await ctx.runMutation(api.extraUsage.deductBalance, {
       serviceKey: args.serviceKey,
       userId: args.userId,
-      amountPoints: args.amountPoints,
+      amountDollars: args.amountDollars,
     });
 
     convexLogger.info("deduct_with_auto_reload", {
       user_id: args.userId,
-      amount_points: args.amountPoints,
+      amount_dollars: args.amountDollars,
       success: deductResult.success,
       new_balance_dollars: deductResult.newBalanceDollars,
       insufficient_funds: deductResult.insufficientFunds,

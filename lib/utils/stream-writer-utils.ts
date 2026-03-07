@@ -81,7 +81,7 @@ export type RateLimitWarningData =
   | {
       // Paid users: token bucket (remaining percentage)
       warningType: "token-bucket";
-      bucketType: "session" | "weekly";
+      bucketType: "session" | "weekly" | "monthly";
       remainingPercent: number;
       resetTime: string;
       subscription: SubscriptionTier;
@@ -89,7 +89,7 @@ export type RateLimitWarningData =
   | {
       // Paid users: extra usage is now being consumed
       warningType: "extra-usage-active";
-      bucketType: "session" | "weekly";
+      bucketType: "session" | "weekly" | "monthly";
       resetTime: string;
       subscription: SubscriptionTier;
     };

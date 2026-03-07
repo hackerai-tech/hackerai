@@ -216,17 +216,18 @@ export type ChatMessage = UIMessage<MessageMetadata> & {
   sourceMessageId?: string;
 };
 
+/** All monetary amounts in dollars. Single monthly budget. */
 export type RateLimitInfo = {
+  /** Remaining budget in microdollars (from Redis) */
   remaining: number;
+  /** When the monthly bucket resets */
   resetTime: Date;
+  /** Total monthly budget in microdollars */
   limit: number;
-  // Token bucket details for paid users (session = daily, weekly = weekly)
-  session?: { remaining: number; limit: number; resetTime: Date };
-  weekly?: { remaining: number; limit: number; resetTime: Date };
-  // Points deducted for potential refund on error (always = estimatedCost)
-  pointsDeducted?: number;
-  // Extra usage points deducted (only set when extra usage balance was used)
-  extraUsagePointsDeducted?: number;
+  /** Dollars deducted from bucket for potential refund on error */
+  amountDeducted?: number;
+  /** Extra usage dollars deducted (only set when extra usage balance was used) */
+  extraUsageAmountDeducted?: number;
 };
 
 export interface ExtraUsageConfig {

@@ -8,7 +8,6 @@
 import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
 describe("token-bucket async functions", () => {
-  // Mock functions we can control
   const mockLimitFn = jest.fn();
   const mockHincrbyFn = jest.fn();
   const mockHsetFn = jest.fn();
@@ -23,7 +22,7 @@ describe("token-bucket async functions", () => {
     mockLimitFn.mockResolvedValue({
       success: true,
       remaining: 10000,
-      reset: Date.now() + 3600000,
+      reset: Date.now() + 2592000000, // 30 days
       limit: 10000,
     });
     mockHincrbyFn.mockResolvedValue(5000);
@@ -44,11 +43,9 @@ describe("token-bucket async functions", () => {
     let isolatedModule: typeof import("../token-bucket");
 
     jest.isolateModules(() => {
-      // Mock dependencies INSIDE isolateModules
       const MockRatelimit = jest.fn().mockImplementation(() => ({
         limit: mockLimitFn,
       }));
-      // Add static method used by the code
       (MockRatelimit as any).tokenBucket = jest.fn().mockReturnValue({});
 
       jest.doMock("@upstash/ratelimit", () => ({
@@ -75,7 +72,6 @@ describe("token-bucket async functions", () => {
         refundToBalance: mockRefundToBalance,
       }));
 
-      // Now require the module with fresh mocks
       isolatedModule = require("../token-bucket");
     });
 
@@ -102,7 +98,7 @@ describe("token-bucket async functions", () => {
       expect(result).toHaveProperty("remaining");
       expect(result).toHaveProperty("resetTime");
       expect(result).toHaveProperty("limit");
-      expect(result.pointsDeducted).toBeDefined();
+      expect(result.amountDeducted).toBeDefined();
       expect(mockLimitFn).toHaveBeenCalled();
     });
 
@@ -112,8 +108,8 @@ describe("token-bucket async functions", () => {
       mockLimitFn.mockResolvedValue({
         success: true,
         remaining: 0,
-        reset: Date.now() + 3600000,
-        limit: 8333,
+        reset: Date.now() + 2592000000,
+        limit: 25_000_000,
       });
 
       try {
@@ -130,8 +126,8 @@ describe("token-bucket async functions", () => {
       mockLimitFn.mockResolvedValue({
         success: true,
         remaining: 0,
-        reset: Date.now() + 3600000,
-        limit: 8333,
+        reset: Date.now() + 2592000000,
+        limit: 25_000_000,
       });
 
       const result = await checkTokenBucketLimit("user-123", "pro", 1000, {
@@ -141,7 +137,7 @@ describe("token-bucket async functions", () => {
       });
 
       expect(mockDeductFromBalance).toHaveBeenCalled();
-      expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
+      expect(result.extraUsageAmountDeducted).toBeGreaterThan(0);
     });
 
     it("should throw insufficient funds error when extra usage fails", async () => {
@@ -150,8 +146,8 @@ describe("token-bucket async functions", () => {
       mockLimitFn.mockResolvedValue({
         success: true,
         remaining: 0,
-        reset: Date.now() + 3600000,
-        limit: 8333,
+        reset: Date.now() + 2592000000,
+        limit: 25_000_000,
       });
 
       mockDeductFromBalance.mockResolvedValue({
@@ -189,8 +185,8 @@ describe("token-bucket async functions", () => {
       mockLimitFn.mockResolvedValue({
         success: true,
         remaining: 0,
-        reset: Date.now() + 3600000,
-        limit: 8333,
+        reset: Date.now() + 2592000000,
+        limit: 25_000_000,
       });
 
       await deductUsage("user-123", "pro", 1000, 1000, 1000, {
@@ -213,48 +209,37 @@ describe("token-bucket async functions", () => {
     it("should refund when provider cost is less than estimated (over-estimation)", async () => {
       const { deductUsage, calculateTokenCost } = getIsolatedModule();
 
-      // Estimate: 10000 input tokens = 50 points
       const estimatedInputTokens = 10000;
       const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
-
-      // Actual provider cost: $0.002 = 20 points (less than 50)
       const providerCostDollars = 0.002;
 
       await deductUsage(
         "user-123",
         "pro",
         estimatedInputTokens,
-        5000, // actual input (ignored when provider cost provided)
-        500, // actual output (ignored when provider cost provided)
+        5000,
+        500,
         undefined,
         providerCostDollars,
       );
 
-      // Should refund the difference (50 - 20 = 30 points)
-      const expectedRefund =
-        estimatedCost - Math.ceil(providerCostDollars * 10000);
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
-        "tokens",
-        expectedRefund,
+      const expectedRefundMicro = Math.ceil(
+        (estimatedCost - providerCostDollars) * 1_000_000,
       );
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:weekly"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
-        expectedRefund,
+        expectedRefundMicro,
       );
-      // Should NOT call limiter to deduct more
       expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
     it("should refund when token-based actual cost is less than estimated", async () => {
       const { deductUsage, calculateTokenCost } = getIsolatedModule();
 
-      // Estimate: 10000 input tokens = 50 points (pre-deducted)
       const estimatedInputTokens = 10000;
       const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
 
-      // Actual: 2000 input + 500 output = 10 + 15 = 25 points
       const actualInputTokens = 2000;
       const actualOutputTokens = 500;
       const actualCost =
@@ -268,27 +253,25 @@ describe("token-bucket async functions", () => {
         actualInputTokens,
         actualOutputTokens,
         undefined,
-        undefined, // no provider cost, use token calculation
+        undefined,
       );
 
-      // Should refund the difference (50 - 25 = 25 points)
-      const expectedRefund = estimatedCost - actualCost;
+      const expectedRefundMicro = Math.ceil(
+        (estimatedCost - actualCost) * 1_000_000,
+      );
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
-        expectedRefund,
+        expectedRefundMicro,
       );
     });
 
     it("should not refund or charge when actual cost equals estimated", async () => {
       const { deductUsage, calculateTokenCost } = getIsolatedModule();
 
-      // Estimate: 1000 input tokens = 5 points
       const estimatedInputTokens = 1000;
       const estimatedCost = calculateTokenCost(estimatedInputTokens, "input");
-
-      // Actual provider cost exactly matches: $0.0005 = 5 points
-      const providerCostDollars = estimatedCost / 10000;
+      const providerCostDollars = estimatedCost;
 
       await deductUsage(
         "user-123",
@@ -300,18 +283,14 @@ describe("token-bucket async functions", () => {
         providerCostDollars,
       );
 
-      // Should neither refund nor charge additional
       expect(mockHincrbyFn).not.toHaveBeenCalled();
       expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
     it("should charge additional when actual cost exceeds estimated", async () => {
-      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+      const { deductUsage } = getIsolatedModule();
 
-      // Estimate: 1000 input tokens = 5 points (pre-deducted)
       const estimatedInputTokens = 1000;
-
-      // Actual provider cost: $0.005 = 50 points (much more than 5)
       const providerCostDollars = 0.005;
 
       await deductUsage(
@@ -324,40 +303,33 @@ describe("token-bucket async functions", () => {
         providerCostDollars,
       );
 
-      // Should NOT refund
       expect(mockHincrbyFn).not.toHaveBeenCalled();
-      // Should charge additional via limiter
       expect(mockLimitFn).toHaveBeenCalled();
     });
   });
 
   describe("refundUsage", () => {
-    it("should refund bucket tokens via Redis hincrby", async () => {
+    it("should refund bucket tokens via Redis hincrby (converted to microdollars)", async () => {
       const { refundUsage } = getIsolatedModule();
 
-      await refundUsage("user-123", "pro", 1000, 0);
+      await refundUsage("user-123", "pro", 1.0, 0);
 
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
-        1000,
-      );
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:weekly"),
-        "tokens",
-        1000,
+        1_000_000,
       );
     });
 
-    it("should refund extra usage balance when provided", async () => {
+    it("should refund extra usage balance when provided (in dollars)", async () => {
       const { refundUsage } = getIsolatedModule();
 
-      await refundUsage("user-123", "pro", 1000, 500);
+      await refundUsage("user-123", "pro", 1.0, 0.5);
 
-      expect(mockRefundToBalance).toHaveBeenCalledWith("user-123", 500);
+      expect(mockRefundToBalance).toHaveBeenCalledWith("user-123", 0.5);
     });
 
-    it("should not refund if no points deducted", async () => {
+    it("should not refund if no amount deducted", async () => {
       const { refundUsage } = getIsolatedModule();
 
       await refundUsage("user-123", "pro", 0, 0);
@@ -367,12 +339,13 @@ describe("token-bucket async functions", () => {
     });
 
     it("should cap refunded tokens at bucket limit", async () => {
-      const { refundUsage, getBudgetLimits } = getIsolatedModule();
-      const { session: sessionLimit } = getBudgetLimits("pro");
+      const { refundUsage, getBudgetLimit } = getIsolatedModule();
+      const monthlyLimit = getBudgetLimit("pro");
+      const monthlyLimitMicro = Math.ceil(monthlyLimit * 1_000_000);
 
-      mockHincrbyFn.mockResolvedValue(sessionLimit + 10000);
+      mockHincrbyFn.mockResolvedValue(monthlyLimitMicro + 1_000_000);
 
-      await refundUsage("user-123", "pro", 50000, 0);
+      await refundUsage("user-123", "pro", 5.0, 0);
 
       expect(mockHsetFn).toHaveBeenCalled();
     });
@@ -387,7 +360,7 @@ describe("token-bucket async functions", () => {
         "pro",
         2000,
       );
-      expect(rateLimitInfo.pointsDeducted).toBeDefined();
+      expect(rateLimitInfo.amountDeducted).toBeDefined();
 
       await deductUsage("user-123", "pro", 2000, 2500, 800);
 
@@ -402,14 +375,15 @@ describe("token-bucket async functions", () => {
         "pro",
         2000,
       );
-      const deducted = rateLimitInfo.pointsDeducted ?? 0;
+      const deducted = rateLimitInfo.amountDeducted ?? 0;
 
       await refundUsage("user-123", "pro", deducted, 0);
 
+      const deductedMicro = Math.ceil(deducted * 1_000_000);
       expect(mockHincrbyFn).toHaveBeenCalledWith(
         expect.any(String),
         "tokens",
-        deducted,
+        deductedMicro,
       );
     });
   });

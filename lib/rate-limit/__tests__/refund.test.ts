@@ -50,8 +50,8 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        pointsDeducted: 100,
-        extraUsagePointsDeducted: 50,
+        amountDeducted: 100,
+        extraUsageAmountDeducted: 50,
       };
 
       tracker.recordDeductions(rateLimitInfo);
@@ -91,7 +91,7 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        pointsDeducted: 100,
+        amountDeducted: 100,
       });
 
       expect(tracker.hasDeductions()).toBe(true);
@@ -105,7 +105,7 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        extraUsagePointsDeducted: 50,
+        extraUsageAmountDeducted: 50,
       });
 
       expect(tracker.hasDeductions()).toBe(true);
@@ -119,8 +119,8 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        pointsDeducted: 0,
-        extraUsagePointsDeducted: 0,
+        amountDeducted: 0,
+        extraUsageAmountDeducted: 0,
       });
 
       expect(tracker.hasDeductions()).toBe(false);
@@ -137,8 +137,8 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        pointsDeducted: 100,
-        extraUsagePointsDeducted: 50,
+        amountDeducted: 100,
+        extraUsageAmountDeducted: 50,
       });
 
       await tracker.refund();
@@ -155,7 +155,7 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        pointsDeducted: 100,
+        amountDeducted: 100,
       });
 
       await tracker.refund();
@@ -184,7 +184,7 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        pointsDeducted: 100,
+        amountDeducted: 100,
       });
 
       await tracker.refund();
@@ -204,7 +204,7 @@ describe("UsageRefundTracker", () => {
         remaining: 5000,
         resetTime: new Date(),
         limit: 10000,
-        pointsDeducted: 100,
+        amountDeducted: 100,
       });
 
       // First attempt fails

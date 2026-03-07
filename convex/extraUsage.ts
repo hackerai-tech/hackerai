@@ -4,23 +4,6 @@ import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
 
 // =============================================================================
-// Currency Conversion Helpers
-// All monetary values are stored in POINTS internally for precision.
-// 1 point = $0.0001 (10,000 points = $1), matching the rate limiting system.
-// This avoids precision loss when deducting sub-cent amounts.
-// =============================================================================
-
-/** Points per dollar (1 point = $0.0001) - must match token-bucket.ts */
-const POINTS_PER_DOLLAR = 10_000;
-
-/** Convert dollars to points (for storage) */
-const dollarsToPoints = (dollars: number): number =>
-  Math.round(dollars * POINTS_PER_DOLLAR);
-
-/** Convert points to dollars (for API response) */
-const pointsToDollars = (points: number): number => points / POINTS_PER_DOLLAR;
-
-// =============================================================================
 // Webhook Idempotency
 // =============================================================================
 
@@ -62,6 +45,96 @@ export const checkAndMarkWebhook = mutation({
 });
 
 // =============================================================================
+// Migration helpers — read new dollar fields, fall back to legacy points / 10,000
+// =============================================================================
+const LEGACY_POINTS_PER_DOLLAR = 10_000;
+
+function readBalanceDollars(
+  settings: { balance_dollars?: number; balance_points?: number } | null,
+): number {
+  if (!settings) return 0;
+  if (
+    settings.balance_dollars !== undefined &&
+    settings.balance_dollars !== null
+  ) {
+    return settings.balance_dollars;
+  }
+  if (
+    settings.balance_points !== undefined &&
+    settings.balance_points !== null
+  ) {
+    return settings.balance_points / LEGACY_POINTS_PER_DOLLAR;
+  }
+  return 0;
+}
+
+function readThresholdDollars(
+  settings: {
+    auto_reload_threshold_dollars?: number;
+    auto_reload_threshold_points?: number;
+  } | null,
+): number | undefined {
+  if (!settings) return undefined;
+  if (
+    settings.auto_reload_threshold_dollars !== undefined &&
+    settings.auto_reload_threshold_dollars !== null
+  ) {
+    return settings.auto_reload_threshold_dollars;
+  }
+  if (
+    settings.auto_reload_threshold_points !== undefined &&
+    settings.auto_reload_threshold_points !== null
+  ) {
+    return settings.auto_reload_threshold_points / LEGACY_POINTS_PER_DOLLAR;
+  }
+  return undefined;
+}
+
+function readMonthlyCapDollars(
+  settings: {
+    monthly_cap_dollars?: number;
+    monthly_cap_points?: number;
+  } | null,
+): number | undefined {
+  if (!settings) return undefined;
+  if (
+    settings.monthly_cap_dollars !== undefined &&
+    settings.monthly_cap_dollars !== null
+  ) {
+    return settings.monthly_cap_dollars;
+  }
+  if (
+    settings.monthly_cap_points !== undefined &&
+    settings.monthly_cap_points !== null
+  ) {
+    return settings.monthly_cap_points / LEGACY_POINTS_PER_DOLLAR;
+  }
+  return undefined;
+}
+
+function readMonthlySpentDollars(
+  settings: {
+    monthly_spent_dollars?: number;
+    monthly_spent_points?: number;
+  } | null,
+): number {
+  if (!settings) return 0;
+  if (
+    settings.monthly_spent_dollars !== undefined &&
+    settings.monthly_spent_dollars !== null
+  ) {
+    return settings.monthly_spent_dollars;
+  }
+  if (
+    settings.monthly_spent_points !== undefined &&
+    settings.monthly_spent_points !== null
+  ) {
+    return settings.monthly_spent_points / LEGACY_POINTS_PER_DOLLAR;
+  }
+  return 0;
+}
+
+// =============================================================================
 // Balance Management (Mutations)
 // =============================================================================
 
@@ -100,27 +173,26 @@ export const addCredits = mutation({
       throw new Error("Invalid amount: must be a positive number");
     }
 
-    const amountPoints = dollarsToPoints(args.amountDollars);
-
     // Get current settings
     const settings = await ctx.db
       .query("extra_usage")
       .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
       .first();
 
-    const currentBalancePoints = settings?.balance_points ?? 0;
-    const newBalancePoints = currentBalancePoints + amountPoints;
+    const currentBalance = readBalanceDollars(settings);
+    const newBalance = currentBalance + args.amountDollars;
 
-    // Update or create settings
+    // Update or create settings (always write to new dollar fields)
     if (settings) {
       await ctx.db.patch(settings._id, {
-        balance_points: newBalancePoints,
+        balance_dollars: newBalance,
+        balance_points: undefined, // clear legacy field
         updated_at: Date.now(),
       });
     } else {
       await ctx.db.insert("extra_usage", {
         user_id: args.userId,
-        balance_points: newBalancePoints,
+        balance_dollars: newBalance,
         updated_at: Date.now(),
       });
     }
@@ -136,33 +208,29 @@ export const addCredits = mutation({
     convexLogger.info("credits_added", {
       user_id: args.userId,
       amount_dollars: args.amountDollars,
-      amount_points: amountPoints,
-      new_balance_points: newBalancePoints,
-      new_balance_dollars: pointsToDollars(newBalancePoints),
+      new_balance_dollars: newBalance,
       idempotency_key: args.idempotencyKey,
     });
 
     return {
-      newBalance: pointsToDollars(newBalancePoints),
+      newBalance,
       alreadyProcessed: false,
     };
   },
 });
 
 /**
- * Deduct points from user balance for usage (points-based API).
- * Accepts points directly, avoiding precision loss from dollar conversion.
- * Used by the rate limiting system which operates in points.
+ * Deduct from user balance for usage.
+ * Accepts dollar amount directly.
  */
-export const deductPoints = mutation({
+export const deductBalance = mutation({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
-    amountPoints: v.number(),
+    amountDollars: v.number(),
   },
   returns: v.object({
     success: v.boolean(),
-    newBalancePoints: v.number(),
     newBalanceDollars: v.number(),
     insufficientFunds: v.boolean(),
     monthlyCapExceeded: v.boolean(),
@@ -177,36 +245,34 @@ export const deductPoints = mutation({
       .first();
 
     if (!settings) {
-      convexLogger.warn("deduct_points_failed", {
+      convexLogger.warn("deduct_balance_failed", {
         user_id: args.userId,
-        amount_points: args.amountPoints,
+        amount_dollars: args.amountDollars,
         reason: "no_settings",
         insufficient_funds: true,
       });
       return {
         success: false,
-        newBalancePoints: 0,
         newBalanceDollars: 0,
         insufficientFunds: true,
         monthlyCapExceeded: false,
       };
     }
 
-    const currentBalancePoints = settings.balance_points ?? 0;
+    const currentBalance = readBalanceDollars(settings);
 
     // Check if user has enough balance
-    if (currentBalancePoints < args.amountPoints) {
-      convexLogger.warn("deduct_points_failed", {
+    if (currentBalance < args.amountDollars) {
+      convexLogger.warn("deduct_balance_failed", {
         user_id: args.userId,
-        amount_points: args.amountPoints,
-        current_balance_points: currentBalancePoints,
+        amount_dollars: args.amountDollars,
+        current_balance_dollars: currentBalance,
         reason: "insufficient_balance",
         insufficient_funds: true,
       });
       return {
         success: false,
-        newBalancePoints: currentBalancePoints,
-        newBalanceDollars: pointsToDollars(currentBalancePoints),
+        newBalanceDollars: currentBalance,
         insufficientFunds: true,
         monthlyCapExceeded: false,
       };
@@ -217,29 +283,28 @@ export const deductPoints = mutation({
     const currentMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 
     // Reset monthly spending if month changed
-    let monthlySpentPoints = settings.monthly_spent_points ?? 0;
+    let monthlySpent = readMonthlySpentDollars(settings);
     const shouldResetMonthly = settings.monthly_reset_date !== currentMonth;
     if (shouldResetMonthly) {
-      monthlySpentPoints = 0;
+      monthlySpent = 0;
     }
 
     // Check monthly spending cap before deducting
-    const monthlyCapPoints = settings.monthly_cap_points;
-    if (monthlyCapPoints !== undefined && monthlyCapPoints !== null) {
-      const newMonthlySpent = monthlySpentPoints + args.amountPoints;
-      if (newMonthlySpent > monthlyCapPoints) {
-        convexLogger.warn("deduct_points_failed", {
+    const monthlyCap = readMonthlyCapDollars(settings);
+    if (monthlyCap !== undefined && monthlyCap !== null) {
+      const newMonthlySpent = monthlySpent + args.amountDollars;
+      if (newMonthlySpent > monthlyCap) {
+        convexLogger.warn("deduct_balance_failed", {
           user_id: args.userId,
-          amount_points: args.amountPoints,
-          monthly_spent_points: monthlySpentPoints,
-          monthly_cap_points: monthlyCapPoints,
+          amount_dollars: args.amountDollars,
+          monthly_spent_dollars: monthlySpent,
+          monthly_cap_dollars: monthlyCap,
           reason: "monthly_cap_exceeded",
           monthly_cap_exceeded: true,
         });
         return {
           success: false,
-          newBalancePoints: currentBalancePoints,
-          newBalanceDollars: pointsToDollars(currentBalancePoints),
+          newBalanceDollars: currentBalance,
           insufficientFunds: true,
           monthlyCapExceeded: true,
         };
@@ -247,30 +312,33 @@ export const deductPoints = mutation({
     }
 
     // Add to monthly spending
-    monthlySpentPoints += args.amountPoints;
+    monthlySpent += args.amountDollars;
 
-    // Deduct balance and update monthly tracking
-    const newBalancePoints = currentBalancePoints - args.amountPoints;
+    // Deduct balance and update monthly tracking (write to new fields, clear legacy)
+    const newBalance = currentBalance - args.amountDollars;
     await ctx.db.patch(settings._id, {
-      balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
+      balance_dollars: newBalance,
+      balance_points: undefined,
+      monthly_spent_dollars: monthlySpent,
+      monthly_spent_points: undefined,
+      monthly_cap_dollars: monthlyCap,
+      monthly_cap_points: undefined,
       monthly_reset_date: currentMonth,
       updated_at: Date.now(),
     });
 
-    convexLogger.info("points_deducted", {
+    convexLogger.info("balance_deducted", {
       user_id: args.userId,
-      amount_points: args.amountPoints,
-      previous_balance_points: currentBalancePoints,
-      new_balance_points: newBalancePoints,
-      monthly_spent_points: monthlySpentPoints,
-      monthly_cap_points: monthlyCapPoints,
+      amount_dollars: args.amountDollars,
+      previous_balance_dollars: currentBalance,
+      new_balance_dollars: newBalance,
+      monthly_spent_dollars: monthlySpent,
+      monthly_cap_dollars: monthlyCap,
     });
 
     return {
       success: true,
-      newBalancePoints,
-      newBalanceDollars: pointsToDollars(newBalancePoints),
+      newBalanceDollars: newBalance,
       insufficientFunds: false,
       monthlyCapExceeded: false,
     };
@@ -278,19 +346,18 @@ export const deductPoints = mutation({
 });
 
 /**
- * Refund points to user balance (for failed requests).
- * This is the reverse of deductPoints - adds points back to the balance.
+ * Refund dollars to user balance (for failed requests).
+ * This is the reverse of deductBalance - adds dollars back to the balance.
  * Does NOT affect monthly spending tracking (refunds don't reduce spent amount).
  */
-export const refundPoints = mutation({
+export const refundBalance = mutation({
   args: {
     serviceKey: v.string(),
     userId: v.string(),
-    amountPoints: v.number(),
+    amountDollars: v.number(),
   },
   returns: v.object({
     success: v.boolean(),
-    newBalancePoints: v.number(),
     newBalanceDollars: v.number(),
     noOp: v.optional(v.boolean()),
   }),
@@ -298,10 +365,9 @@ export const refundPoints = mutation({
     validateServiceKey(args.serviceKey);
 
     // No-op: nothing to refund
-    if (args.amountPoints <= 0) {
+    if (args.amountDollars <= 0) {
       return {
         success: true,
-        newBalancePoints: 0,
         newBalanceDollars: 0,
         noOp: true,
       };
@@ -317,44 +383,43 @@ export const refundPoints = mutation({
       // No settings record means no balance to refund to - create one
       await ctx.db.insert("extra_usage", {
         user_id: args.userId,
-        balance_points: args.amountPoints,
+        balance_dollars: args.amountDollars,
         updated_at: Date.now(),
       });
 
-      convexLogger.info("points_refunded", {
+      convexLogger.info("balance_refunded", {
         user_id: args.userId,
-        amount_points: args.amountPoints,
-        previous_balance_points: 0,
-        new_balance_points: args.amountPoints,
+        amount_dollars: args.amountDollars,
+        previous_balance_dollars: 0,
+        new_balance_dollars: args.amountDollars,
         created_new_record: true,
       });
 
       return {
         success: true,
-        newBalancePoints: args.amountPoints,
-        newBalanceDollars: pointsToDollars(args.amountPoints),
+        newBalanceDollars: args.amountDollars,
       };
     }
 
-    const currentBalancePoints = settings.balance_points ?? 0;
-    const newBalancePoints = currentBalancePoints + args.amountPoints;
+    const currentBalance = readBalanceDollars(settings);
+    const newBalance = currentBalance + args.amountDollars;
 
     await ctx.db.patch(settings._id, {
-      balance_points: newBalancePoints,
+      balance_dollars: newBalance,
+      balance_points: undefined, // clear legacy field
       updated_at: Date.now(),
     });
 
-    convexLogger.info("points_refunded", {
+    convexLogger.info("balance_refunded", {
       user_id: args.userId,
-      amount_points: args.amountPoints,
-      previous_balance_points: currentBalancePoints,
-      new_balance_points: newBalancePoints,
+      amount_dollars: args.amountDollars,
+      previous_balance_dollars: currentBalance,
+      new_balance_dollars: newBalance,
     });
 
     return {
       success: true,
-      newBalancePoints,
-      newBalanceDollars: pointsToDollars(newBalancePoints),
+      newBalanceDollars: newBalance,
     };
   },
 });
@@ -365,7 +430,6 @@ export const refundPoints = mutation({
 
 /**
  * Get user's extra usage balance and settings (for backend).
- * Returns balance in both dollars and points for flexibility.
  */
 export const getExtraUsageBalanceForBackend = query({
   args: {
@@ -374,11 +438,9 @@ export const getExtraUsageBalanceForBackend = query({
   },
   returns: v.object({
     balanceDollars: v.number(),
-    balancePoints: v.number(),
     enabled: v.boolean(),
     autoReloadEnabled: v.boolean(),
     autoReloadThresholdDollars: v.optional(v.number()),
-    autoReloadThresholdPoints: v.optional(v.number()),
     autoReloadAmountDollars: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
@@ -396,18 +458,11 @@ export const getExtraUsageBalanceForBackend = query({
       .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
       .first();
 
-    const balancePoints = settings?.balance_points ?? 0;
-    const thresholdPoints = settings?.auto_reload_threshold_points;
-
     return {
-      balanceDollars: pointsToDollars(balancePoints),
-      balancePoints,
+      balanceDollars: readBalanceDollars(settings),
       enabled: customization?.extra_usage_enabled ?? false,
       autoReloadEnabled: settings?.auto_reload_enabled ?? false,
-      autoReloadThresholdDollars: thresholdPoints
-        ? pointsToDollars(thresholdPoints)
-        : undefined,
-      autoReloadThresholdPoints: thresholdPoints,
+      autoReloadThresholdDollars: readThresholdDollars(settings),
       autoReloadAmountDollars: settings?.auto_reload_amount_dollars,
     };
   },
@@ -415,7 +470,6 @@ export const getExtraUsageBalanceForBackend = query({
 
 /**
  * Get user's extra usage settings (for frontend).
- * Returns all values in dollars (converted from points storage).
  */
 export const getExtraUsageSettings = query({
   args: {},
@@ -446,24 +500,19 @@ export const getExtraUsageSettings = query({
     }
 
     return {
-      balanceDollars: pointsToDollars(settings.balance_points),
+      balanceDollars: readBalanceDollars(settings),
       autoReloadEnabled: settings.auto_reload_enabled ?? false,
-      autoReloadThresholdDollars: settings.auto_reload_threshold_points
-        ? pointsToDollars(settings.auto_reload_threshold_points)
-        : undefined,
+      autoReloadThresholdDollars: readThresholdDollars(settings),
       autoReloadAmountDollars: settings.auto_reload_amount_dollars,
-      monthlyCapDollars: settings.monthly_cap_points
-        ? pointsToDollars(settings.monthly_cap_points)
-        : undefined,
-      monthlySpentDollars: pointsToDollars(settings.monthly_spent_points ?? 0),
+      monthlyCapDollars: readMonthlyCapDollars(settings),
+      monthlySpentDollars: readMonthlySpentDollars(settings),
     };
   },
 });
 
 /**
  * Update extra usage settings (auto-reload config).
- * Accepts dollars for threshold, converts to points for storage.
- * Auto-reload amount stays in dollars (for Stripe charges).
+ * All monetary values in dollars.
  */
 export const updateExtraUsageSettings = mutation({
   args: {
@@ -528,20 +577,16 @@ export const updateExtraUsageSettings = mutation({
       updateData.auto_reload_enabled = args.autoReloadEnabled;
     }
     if (args.autoReloadThresholdDollars !== undefined) {
-      updateData.auto_reload_threshold_points = dollarsToPoints(
-        args.autoReloadThresholdDollars,
-      );
+      updateData.auto_reload_threshold_dollars =
+        args.autoReloadThresholdDollars;
     }
     if (args.autoReloadAmountDollars !== undefined) {
-      // Keep in dollars for Stripe charges
       updateData.auto_reload_amount_dollars = args.autoReloadAmountDollars;
     }
     if (args.monthlyCapDollars !== undefined) {
       // null means unlimited (clear the cap), number sets a specific cap
-      updateData.monthly_cap_points =
-        args.monthlyCapDollars === null
-          ? undefined
-          : dollarsToPoints(args.monthlyCapDollars);
+      updateData.monthly_cap_dollars =
+        args.monthlyCapDollars === null ? undefined : args.monthlyCapDollars;
     }
 
     if (settings) {
@@ -549,7 +594,7 @@ export const updateExtraUsageSettings = mutation({
     } else {
       await ctx.db.insert("extra_usage", {
         user_id: identity.subject,
-        balance_points: 0,
+        balance_dollars: 0,
         ...updateData,
         updated_at: Date.now(),
       });

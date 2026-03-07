@@ -36,21 +36,8 @@ import type { UserCustomization } from "@/types/user";
 import type { SandboxFile } from "@/lib/utils/sandbox-file-utils";
 
 /** Serializable rate limit info for Trigger.dev payload (Date -> ISO string) */
-export type SerializableRateLimitInfo = Omit<
-  RateLimitInfo,
-  "resetTime" | "session" | "weekly"
-> & {
+export type SerializableRateLimitInfo = Omit<RateLimitInfo, "resetTime"> & {
   resetTime: string;
-  session?: {
-    remaining: number;
-    limit: number;
-    resetTime: string;
-  };
-  weekly?: {
-    remaining: number;
-    limit: number;
-    resetTime: string;
-  };
 };
 
 export type AgentTaskPayload = {
@@ -91,24 +78,6 @@ function serializeRateLimitInfo(
       typeof info.resetTime === "string"
         ? info.resetTime
         : info.resetTime.toISOString(),
-    session: info.session
-      ? {
-          ...info.session,
-          resetTime:
-            typeof info.session.resetTime === "string"
-              ? info.session.resetTime
-              : info.session.resetTime.toISOString(),
-        }
-      : undefined,
-    weekly: info.weekly
-      ? {
-          ...info.weekly,
-          resetTime:
-            typeof info.weekly.resetTime === "string"
-              ? info.weekly.resetTime
-              : info.weekly.resetTime.toISOString(),
-        }
-      : undefined,
   };
 }
 

@@ -5,10 +5,9 @@
  *
  * 1. Token Bucket (Paid users - Pro, Pro+, Ultra, Team):
  *    - Used for both Agent and Ask modes (shared budget)
- *    - Points consumed based on token usage costs
- *    - Session bucket: daily budget, refills every 5 hours
- *    - Weekly bucket: weekly budget, refills every 7 days
- *    - Supports extra usage (prepaid balance) when limits exceeded
+ *    - Single monthly budget based on subscription price
+ *    - Costs consumed based on model token pricing (in dollars)
+ *    - Supports extra usage (prepaid balance) when monthly limit exceeded
  *
  * 2. Sliding Window (Free users - Ask mode only):
  *    - Simple request counting within a 5-hour rolling window
@@ -31,6 +30,7 @@ export {
   refundUsage,
   resetRateLimitBuckets,
   calculateTokenCost,
+  getBudgetLimit,
   getBudgetLimits,
   getSubscriptionPrice,
 } from "./token-bucket";
@@ -51,14 +51,7 @@ import { checkFreeUserRateLimit } from "./sliding-window";
  *
  * Routes to the appropriate strategy based on subscription tier:
  * - Free users: Sliding window (simple request counting)
- * - Paid users: Token bucket (cost-based, shared budget for all modes)
- *
- * @param userId - The user's unique identifier
- * @param mode - The chat mode ("agent" or "ask") - used only for agent mode blocking
- * @param subscription - The user's subscription tier
- * @param estimatedInputTokens - Estimated input tokens (for token bucket)
- * @param extraUsageConfig - Optional config for extra usage charging
- * @returns Rate limit info including remaining quota
+ * - Paid users: Token bucket (cost-based, shared monthly budget)
  */
 export const checkRateLimit = async (
   userId: string,
@@ -80,7 +73,7 @@ export const checkRateLimit = async (
     return checkFreeUserRateLimit(userId);
   }
 
-  // Paid users: token bucket (same budget for both modes)
+  // Paid users: token bucket (same monthly budget for both modes)
   return checkTokenBucketLimit(
     userId,
     subscription,

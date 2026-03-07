@@ -3,21 +3,16 @@ import { PRICING } from "@/lib/pricing/features";
 
 import {
   calculateTokenCost,
+  getBudgetLimit,
   getBudgetLimits,
-  POINTS_PER_DOLLAR,
 } from "../token-bucket";
 
 /**
  * Unit tests for token-bucket rate limiting pure functions.
- *
- * Note: The async functions (checkTokenBucketLimit, deductUsage, refundUsage)
- * are difficult to unit test in isolation due to the singleton Redis client pattern
- * and Jest module caching. These functions are better suited for integration tests
- * that can properly initialize and control the Redis/Ratelimit dependencies.
  */
 describe("token-bucket", () => {
   // ==========================================================================
-  // calculateTokenCost - Core pricing logic
+  // calculateTokenCost - Core pricing logic (returns dollars)
   // ==========================================================================
   describe("calculateTokenCost", () => {
     it("should return 0 for zero or negative tokens", () => {
@@ -28,27 +23,21 @@ describe("token-bucket", () => {
     });
 
     it("should calculate input token cost correctly ($0.50/1M tokens)", () => {
-      // 1M input tokens = $0.50 = 5000 points
-      expect(calculateTokenCost(1_000_000, "input")).toBe(5000);
-      // 1K input tokens = $0.0005 = 5 points
-      expect(calculateTokenCost(1000, "input")).toBe(5);
-      // 10M input tokens = $5.00 = 50000 points
-      expect(calculateTokenCost(10_000_000, "input")).toBe(50000);
+      expect(calculateTokenCost(1_000_000, "input")).toBe(0.5);
+      expect(calculateTokenCost(1000, "input")).toBe(0.0005);
+      expect(calculateTokenCost(10_000_000, "input")).toBe(5.0);
     });
 
     it("should calculate output token cost correctly ($3.00/1M tokens)", () => {
-      // 1M output tokens = $3.00 = 30000 points
-      expect(calculateTokenCost(1_000_000, "output")).toBe(30000);
-      // 1K output tokens = $0.003 = 30 points
-      expect(calculateTokenCost(1000, "output")).toBe(30);
-      // 10M output tokens = $30.00 = 300000 points
-      expect(calculateTokenCost(10_000_000, "output")).toBe(300000);
+      expect(calculateTokenCost(1_000_000, "output")).toBe(3.0);
+      expect(calculateTokenCost(1000, "output")).toBe(0.003);
+      expect(calculateTokenCost(10_000_000, "output")).toBe(30.0);
     });
 
-    it("should round up small amounts to at least 1 point", () => {
-      expect(calculateTokenCost(1, "input")).toBe(1);
-      expect(calculateTokenCost(1, "output")).toBe(1);
-      expect(calculateTokenCost(100, "input")).toBe(1);
+    it("should return small fractional dollar amounts for tiny token counts", () => {
+      expect(calculateTokenCost(1, "input")).toBe(0.0000005);
+      expect(calculateTokenCost(1, "output")).toBe(0.000003);
+      expect(calculateTokenCost(100, "input")).toBe(0.00005);
     });
 
     it("output should cost 6x input (ratio of $3.00/$0.50)", () => {
@@ -56,78 +45,53 @@ describe("token-bucket", () => {
       const outputCost = calculateTokenCost(1_000_000, "output");
       expect(outputCost / inputCost).toBe(6);
     });
+  });
 
-    it("should use Math.ceil to always round up", () => {
-      // 10 tokens at $0.50/1M = fractional point → rounds up to 1
-      expect(calculateTokenCost(10, "input")).toBe(1);
-      // 10000 tokens at $0.50/1M = exactly 50 points
-      expect(calculateTokenCost(10000, "input")).toBe(50);
+  // ==========================================================================
+  // getBudgetLimit - Monthly budget per tier (returns dollars)
+  // ==========================================================================
+  describe("getBudgetLimit", () => {
+    it("should return 0 for free tier", () => {
+      expect(getBudgetLimit("free")).toBe(0);
+    });
+
+    it("should return monthly price for pro tier", () => {
+      expect(getBudgetLimit("pro")).toBe(PRICING.pro.monthly);
+    });
+
+    it("should return monthly price for ultra tier", () => {
+      expect(getBudgetLimit("ultra")).toBe(PRICING.ultra.monthly);
+    });
+
+    it("should return monthly price for team tier", () => {
+      expect(getBudgetLimit("team")).toBe(PRICING.team.monthly);
+    });
+
+    it("ultra should have 8x more budget than pro", () => {
+      const expectedRatio = PRICING.ultra.monthly / PRICING.pro.monthly;
+      expect(getBudgetLimit("ultra") / getBudgetLimit("pro")).toBeCloseTo(
+        expectedRatio,
+        1,
+      );
     });
   });
 
   // ==========================================================================
-  // getBudgetLimits - Subscription tier limits
+  // getBudgetLimits - Backward compat (deprecated)
   // ==========================================================================
-  describe("getBudgetLimits", () => {
+  describe("getBudgetLimits (deprecated)", () => {
     it("should return 0 limits for free tier", () => {
       const limits = getBudgetLimits("free");
       expect(limits.session).toBe(0);
       expect(limits.weekly).toBe(0);
     });
 
-    it("should calculate pro tier limits correctly", () => {
+    it("should derive session and weekly from monthly price", () => {
       const limits = getBudgetLimits("pro");
-      const monthlyPoints = PRICING.pro.monthly * POINTS_PER_DOLLAR;
+      const monthlyPrice = PRICING.pro.monthly;
 
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
-    });
-
-    it("should calculate ultra tier limits correctly (using monthly price)", () => {
-      const limits = getBudgetLimits("ultra");
-      const monthlyPoints = PRICING.ultra.monthly * POINTS_PER_DOLLAR;
-
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
-    });
-
-    it("should calculate team tier limits correctly (using monthly price)", () => {
-      const limits = getBudgetLimits("team");
-      const monthlyPoints = PRICING.team.monthly * POINTS_PER_DOLLAR;
-
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
-    });
-
-    it("ultra should have ~8x more weekly limits than pro (price ratio)", () => {
-      const proLimits = getBudgetLimits("pro");
-      const ultraLimits = getBudgetLimits("ultra");
-
-      // Ratio based on monthly prices
-      const expectedRatio = PRICING.ultra.monthly / PRICING.pro.monthly;
-      expect(ultraLimits.weekly / proLimits.weekly).toBeCloseTo(
-        expectedRatio,
-        1,
-      );
-    });
-
-    it("weekly limit should be ~7x session limit for all paid tiers", () => {
-      const proLimits = getBudgetLimits("pro");
-      const ultraLimits = getBudgetLimits("ultra");
-      const teamLimits = getBudgetLimits("team");
-
-      expect(proLimits.weekly / proLimits.session).toBeCloseTo(7, 1);
-      expect(ultraLimits.weekly / ultraLimits.session).toBeCloseTo(7, 1);
-      expect(teamLimits.weekly / teamLimits.session).toBeCloseTo(7, 1);
-    });
-  });
-
-  // ==========================================================================
-  // POINTS_PER_DOLLAR constant
-  // ==========================================================================
-  describe("POINTS_PER_DOLLAR", () => {
-    it("should be 10000 (1 point = $0.0001)", () => {
-      expect(POINTS_PER_DOLLAR).toBe(10_000);
+      expect(limits.session).toBeCloseTo(monthlyPrice / 30, 5);
+      expect(limits.weekly).toBeCloseTo((monthlyPrice * 7) / 30, 5);
     });
   });
 
@@ -135,108 +99,101 @@ describe("token-bucket", () => {
   // Cost calculation integration scenarios
   // ==========================================================================
   describe("cost calculation scenarios", () => {
-    it("typical conversation should cost reasonable points", () => {
-      // Typical: 2000 input tokens, 500 output tokens
-      const inputCost = calculateTokenCost(2000, "input"); // 10 points
-      const outputCost = calculateTokenCost(500, "output"); // 15 points
-      const totalCost = inputCost + outputCost; // 25 points
+    it("typical conversation should cost reasonable dollar amount", () => {
+      const inputCost = calculateTokenCost(2000, "input");
+      const outputCost = calculateTokenCost(500, "output");
+      const totalCost = inputCost + outputCost;
 
-      expect(inputCost).toBe(10);
-      expect(outputCost).toBe(15);
-      expect(totalCost).toBe(25);
+      expect(inputCost).toBe(0.001);
+      expect(outputCost).toBe(0.0015);
+      expect(totalCost).toBe(0.0025);
     });
 
-    it("pro user should afford many typical conversations per session", () => {
-      const sessionBudget = getBudgetLimits("pro").session;
-      const typicalCost = 25; // points per conversation
+    it("pro user should afford many typical conversations per month", () => {
+      const monthlyBudget = getBudgetLimit("pro");
+      const typicalCost = 0.0025;
 
-      const conversationsPerSession = Math.floor(sessionBudget / typicalCost);
-      // With yearly pricing, budget is lower but still allows many conversations
-      expect(conversationsPerSession).toBeGreaterThan(250);
+      const conversationsPerMonth = Math.floor(monthlyBudget / typicalCost);
+      expect(conversationsPerMonth).toBeGreaterThan(5000);
     });
 
     it("long context request should cost proportionally more", () => {
-      const longContextCost = calculateTokenCost(100_000, "input"); // 500 points
-      const shortContextCost = calculateTokenCost(1_000, "input"); // 5 points
+      const longContextCost = calculateTokenCost(100_000, "input");
+      const shortContextCost = calculateTokenCost(1_000, "input");
 
       expect(longContextCost / shortContextCost).toBe(100);
     });
 
     it("heavy output request should be significantly more expensive", () => {
-      // Agent generating lots of code
-      const inputCost = calculateTokenCost(5000, "input"); // 25 points
-      const outputCost = calculateTokenCost(10000, "output"); // 300 points
+      const inputCost = calculateTokenCost(5000, "input");
+      const outputCost = calculateTokenCost(10000, "output");
 
       expect(outputCost).toBeGreaterThan(inputCost * 10);
     });
   });
 
   // ==========================================================================
-  // Per-model pricing - calculateTokenCost with modelName parameter
+  // Per-model pricing
   // ==========================================================================
   describe("per-model pricing", () => {
     it("should use default pricing when no modelName is provided", () => {
-      // Default: $0.50 input, $3.00 output
-      expect(calculateTokenCost(1_000_000, "input")).toBe(5000);
-      expect(calculateTokenCost(1_000_000, "output")).toBe(30000);
+      expect(calculateTokenCost(1_000_000, "input")).toBe(0.5);
+      expect(calculateTokenCost(1_000_000, "output")).toBe(3.0);
     });
 
     it("should use default pricing for unknown model names", () => {
-      expect(calculateTokenCost(1_000_000, "input", "unknown-model")).toBe(
-        5000,
-      );
+      expect(calculateTokenCost(1_000_000, "input", "unknown-model")).toBe(0.5);
       expect(calculateTokenCost(1_000_000, "output", "unknown-model")).toBe(
-        30000,
+        3.0,
       );
     });
 
     it("should use Sonnet 4.6 pricing ($3.00/$15.00)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-sonnet-4.6")).toBe(
-        30000,
+        3.0,
       );
       expect(calculateTokenCost(1_000_000, "output", "model-sonnet-4.6")).toBe(
-        150000,
+        15.0,
       );
     });
 
     it("should use Gemini 3.1 Pro pricing ($2.00/$12.00)", () => {
       expect(
         calculateTokenCost(1_000_000, "input", "model-gemini-3.1-pro"),
-      ).toBe(20000);
+      ).toBe(2.0);
       expect(
         calculateTokenCost(1_000_000, "output", "model-gemini-3.1-pro"),
-      ).toBe(120000);
+      ).toBe(12.0);
     });
 
     it("should use Grok 4.1 pricing ($0.20/$0.50)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-grok-4.1")).toBe(
-        2000,
+        0.2,
       );
       expect(calculateTokenCost(1_000_000, "output", "model-grok-4.1")).toBe(
-        5000,
+        0.5,
       );
     });
 
     it("should use Kimi K2.5 pricing ($0.60/$3.00)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-kimi-k2.5")).toBe(
-        6000,
+        0.6,
       );
       expect(calculateTokenCost(1_000_000, "output", "model-kimi-k2.5")).toBe(
-        30000,
+        3.0,
       );
     });
 
     it("expensive models should deplete budget faster", () => {
-      const sessionBudget = getBudgetLimits("pro").session;
-      // Typical conversation: 2000 input + 500 output tokens
+      const monthlyBudget = getBudgetLimit("pro");
       const defaultCost =
         calculateTokenCost(2000, "input") + calculateTokenCost(500, "output");
       const sonnetCost =
         calculateTokenCost(2000, "input", "model-sonnet-4.6") +
         calculateTokenCost(500, "output", "model-sonnet-4.6");
 
-      const defaultConversations = Math.floor(sessionBudget / defaultCost);
-      const sonnetConversations = Math.floor(sessionBudget / sonnetCost);
+      const defaultConversations = Math.floor(monthlyBudget / defaultCost);
+      const sonnetConversations = Math.floor(monthlyBudget / sonnetCost);
 
       expect(defaultConversations).toBeGreaterThan(sonnetConversations);
     });

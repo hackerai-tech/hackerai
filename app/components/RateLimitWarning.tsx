@@ -14,14 +14,14 @@ export type RateLimitWarningData =
     }
   | {
       warningType: "token-bucket";
-      bucketType: "session" | "weekly";
+      bucketType: "session" | "weekly" | "monthly";
       remainingPercent: number;
       resetTime: Date;
       subscription: SubscriptionTier;
     }
   | {
       warningType: "extra-usage-active";
-      bucketType: "session" | "weekly";
+      bucketType: "session" | "weekly" | "monthly";
       resetTime: Date;
       subscription: SubscriptionTier;
     };
@@ -62,15 +62,13 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   }
 
   if (data.warningType === "extra-usage-active") {
-    const limitType = data.bucketType === "session" ? "session" : "weekly";
-    return `You're now using extra usage credits. Your ${limitType} limit resets ${timeString}.`;
+    return `You're now using extra usage credits. Your included usage resets ${timeString}.`;
   }
 
   // Token bucket warning
-  const limitType = data.bucketType === "session" ? "session" : "weekly";
   return data.remainingPercent === 0
-    ? `You've reached your ${limitType} usage limit. It resets ${timeString}.`
-    : `You have ${data.remainingPercent}% of your ${limitType} usage remaining. It resets ${timeString}.`;
+    ? `You've reached your usage limit. It resets ${timeString}.`
+    : `You have ${data.remainingPercent}% of your usage remaining. It resets ${timeString}.`;
 };
 
 export const RateLimitWarning = ({
