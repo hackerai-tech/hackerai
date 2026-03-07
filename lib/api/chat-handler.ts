@@ -86,6 +86,7 @@ import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
   createSummarizationCompletedPart,
+  writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -1189,7 +1190,14 @@ export const createChatHandler = (
                   });
                 }
 
-                // Deduct accumulated usage if not already done
+                if (
+                  stoppedDueToTokenExhaustion &&
+                  isAgentMode(mode) &&
+                  !temporary
+                ) {
+                  writeAutoContinue(writer);
+                }
+
                 await deductAccumulatedUsage();
               },
               sendReasoning: true,

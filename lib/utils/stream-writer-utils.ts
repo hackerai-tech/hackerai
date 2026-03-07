@@ -105,3 +105,10 @@ export const writeRateLimitWarning = (
     transient: true,
   });
 };
+
+export const writeAutoContinue = (writer: UIMessageStreamWriter): void => {
+  writer.write({
+    type: "data-auto-continue",
+    data: { shouldContinue: true },
+  });
+};
