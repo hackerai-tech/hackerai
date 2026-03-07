@@ -9,6 +9,7 @@
     "dev:convex": "npx convex dev",
     "dev:trigger": "npx trigger.dev@latest dev",
     "build": "next build",
+    "postbuild": "npx tsx scripts/update-app-version.ts",
     "start": "next start",
     "lint": "eslint app lib types __mocks__ --ext .ts,.tsx,.js,.jsx",
     "typecheck": "tsc --noEmit",

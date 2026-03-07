@@ -266,4 +266,12 @@ export default defineSchema({
     event_id: v.string(),
     processed_at: v.number(),
   }).index("by_event_id", ["event_id"]),
+
+  // Single-row table holding the current deployment build id.
+  // Updated by the postbuild script after each Vercel deploy.
+  // Clients subscribe via useQuery for real-time update detection.
+  app_version: defineTable({
+    build_id: v.string(),
+    deployed_at: v.number(),
+  }),
 });
