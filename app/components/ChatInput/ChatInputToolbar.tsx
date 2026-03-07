@@ -37,6 +37,7 @@ export function ChatInputToolbar({
     setSelectedModel,
     sandboxPreference,
     setSandboxPreference,
+    desktopSandboxConnecting,
   } = useGlobalState();
 
   return (
@@ -49,6 +50,7 @@ export function ChatInputToolbar({
         <SandboxSelector
           value={sandboxPreference}
           onChange={setSandboxPreference}
+          desktopConnecting={desktopSandboxConnecting}
         />
       )}
       <ModelSelector

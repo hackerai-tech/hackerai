@@ -38,6 +38,7 @@ import {
   writeSelectedModelForMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
+import { useDesktopSandbox } from "@/app/hooks/useDesktopSandbox";
 interface GlobalStateType {
   // Input state
   input: string;
@@ -108,6 +109,9 @@ interface GlobalStateType {
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
+
+  // Desktop sandbox (Tauri only) — true while "desktop" → real connectionId swap
+  desktopSandboxConnecting: boolean;
 
   // Model selection
   selectedModel: SelectedModel;
@@ -238,6 +242,12 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       localStorage.setItem("sandbox-preference", sandboxPreference);
     }
   }, [sandboxPreference]);
+
+  // Desktop sandbox — auto-connects when preference is "desktop" (Tauri only)
+  const { isConnecting: desktopSandboxConnecting } = useDesktopSandbox({
+    sandboxPreference,
+    setSandboxPreference: setSandboxPreferenceState,
+  });
 
   // Model selection (persisted per-mode to localStorage)
   const getModeKey = (m: ChatMode): "ask" | "agent" =>
@@ -735,6 +745,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference: setSandboxPreferenceState,
+    desktopSandboxConnecting,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

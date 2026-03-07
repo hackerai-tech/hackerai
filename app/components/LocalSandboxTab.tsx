@@ -15,13 +15,9 @@ import {
   Terminal,
   Server,
   ExternalLink,
-  Monitor,
-  Power,
-  PowerOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
-import { useDesktopSandbox } from "@/app/hooks/useDesktopSandbox";
 
 interface LocalConnection {
   connectionId: string;
@@ -93,9 +89,6 @@ const LocalSandboxTab = () => {
   const tokenResult = useMutation(api.localSandbox.getToken);
   const regenerateToken = useMutation(api.localSandbox.regenerateToken);
 
-  // Desktop sandbox hook - only active in Tauri environment
-  const desktopSandbox = useDesktopSandbox();
-
   const handleGetToken = async () => {
     setIsLoadingToken(true);
     try {
@@ -151,95 +144,6 @@ const LocalSandboxTab = () => {
           <ExternalLink className="h-3 w-3" />
         </a>
       </div>
-
-      {/* Desktop Terminal (only shown in Tauri desktop app) */}
-      {desktopSandbox.isAvailable && (
-        <div className="space-y-3">
-          <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Desktop Terminal
-          </h4>
-          <div className="p-3 bg-muted/50 rounded-lg space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="h-8 w-8 rounded-full bg-emerald-500/10 flex items-center justify-center shrink-0">
-                <Monitor className="h-4 w-4 text-emerald-500" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium">
-                  Execute commands directly
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Run terminal commands on this machine without{" "}
-                  <code className="text-[10px] bg-muted px-1 rounded">
-                    @hackerai/local
-                  </code>
-                </div>
-              </div>
-              {desktopSandbox.isConnected ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0 text-red-500 hover:text-red-600 hover:bg-red-500/10"
-                  onClick={async () => {
-                    await desktopSandbox.stop();
-                    toast.success("Desktop terminal disconnected");
-                  }}
-                  disabled={desktopSandbox.isLoading}
-                >
-                  <PowerOff className="h-3.5 w-3.5 mr-1.5" />
-                  Disconnect
-                </Button>
-              ) : (
-                <Button
-                  variant="default"
-                  size="sm"
-                  className="shrink-0"
-                  onClick={async () => {
-                    try {
-                      await desktopSandbox.start();
-                      toast.success("Desktop terminal connected");
-                    } catch {
-                      toast.error(
-                        desktopSandbox.error || "Failed to connect",
-                      );
-                    }
-                  }}
-                  disabled={desktopSandbox.isLoading}
-                >
-                  <Power className="h-3.5 w-3.5 mr-1.5" />
-                  {desktopSandbox.isLoading ? "Connecting..." : "Enable"}
-                </Button>
-              )}
-            </div>
-            {desktopSandbox.isConnected && desktopSandbox.info?.osInfo && (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground border-t pt-2">
-                <div className="relative">
-                  <Circle className="h-2 w-2 fill-green-500 text-green-500" />
-                  <Circle className="h-2 w-2 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
-                </div>
-                <span>
-                  {desktopSandbox.info.osInfo.hostname} &middot;{" "}
-                  {desktopSandbox.info.osInfo.platform}{" "}
-                  {desktopSandbox.info.osInfo.arch}
-                </span>
-              </div>
-            )}
-            {desktopSandbox.error && (
-              <div className="text-xs text-red-500 border-t pt-2">
-                {desktopSandbox.error}
-              </div>
-            )}
-            {desktopSandbox.isConnected && (
-              <div className="flex items-start gap-2 p-2 bg-yellow-500/10 rounded text-xs">
-                <AlertTriangle className="h-3.5 w-3.5 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
-                <span className="text-yellow-700 dark:text-yellow-300">
-                  Commands run directly on this machine without isolation.
-                  Select this connection in the sandbox selector to use it.
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Active Connections */}
       <div className="space-y-3">

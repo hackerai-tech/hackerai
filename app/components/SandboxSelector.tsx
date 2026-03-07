@@ -2,7 +2,15 @@
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Check, Cloud, Laptop, Monitor, ChevronDown, Settings } from "lucide-react";
+import {
+  Check,
+  Cloud,
+  Laptop,
+  Monitor,
+  ChevronDown,
+  Settings,
+  Loader2,
+} from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -12,6 +20,8 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
+import { DESKTOP_SANDBOX_ID } from "@/app/hooks/useDesktopSandbox";
 
 interface SandboxSelectorProps {
   value: string;
@@ -19,6 +29,8 @@ interface SandboxSelectorProps {
   disabled?: boolean;
   size?: "sm" | "md";
   readOnly?: boolean;
+  /** Whether the desktop sandbox is currently connecting (from useDesktopSandbox) */
+  desktopConnecting?: boolean;
 }
 
 interface ConnectionOption {
@@ -36,10 +48,14 @@ export function SandboxSelector({
   disabled = false,
   size = "sm",
   readOnly = false,
+  desktopConnecting = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [isTauri] = useState(() => isTauriEnvironment());
 
   const connections = useQuery(api.localSandbox.listConnections);
+
+  // Build options list
   const options: ConnectionOption[] = [
     {
       id: "e2b",
@@ -47,9 +63,28 @@ export function SandboxSelector({
       icon: Cloud,
       description: "",
     },
-    ...(connections?.map((conn) => {
+  ];
+
+  // In Tauri desktop, add a "Desktop" option
+  // Only show it if there's no active desktop connection already in the list
+  const hasDesktopConnection = connections?.some((c) =>
+    c.name?.startsWith("Desktop ("),
+  );
+
+  if (isTauri && !hasDesktopConnection) {
+    options.push({
+      id: DESKTOP_SANDBOX_ID,
+      label: "Desktop",
+      icon: Monitor,
+      description: "Execute on this machine",
+    });
+  }
+
+  // Add existing connections
+  if (connections) {
+    for (const conn of connections) {
       const isDesktop = conn.name?.startsWith("Desktop (");
-      return {
+      options.push({
         id: conn.connectionId,
         label: conn.osInfo?.hostname || conn.name,
         icon: isDesktop ? Monitor : Laptop,
@@ -59,19 +94,21 @@ export function SandboxSelector({
             ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
             : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
         mode: conn.mode,
-      };
-    }) || []),
-  ];
+      });
+    }
+  }
 
   // Auto-correct stale sandbox preference: if the stored value doesn't match any
   // available option (e.g., local connection was disconnected), reset to "e2b".
   // Skip when readOnly so the selector can fall through to the full dropdown instead.
+  // Also skip the special "desktop" value since it's a transient connecting state.
   const valueMatchesOption = options.some((opt) => opt.id === value);
   useEffect(() => {
     if (
       connections !== undefined &&
       !valueMatchesOption &&
       value !== "e2b" &&
+      value !== DESKTOP_SANDBOX_ID &&
       !readOnly
     ) {
       onChange?.("e2b");
@@ -81,7 +118,16 @@ export function SandboxSelector({
     }
   }, [connections, valueMatchesOption, value, onChange, readOnly]);
 
-  const selectedOption = options.find((opt) => opt.id === value) || options[0];
+  // Resolve the selected option, handling the "desktop" connecting state
+  const selectedOption =
+    value === DESKTOP_SANDBOX_ID
+      ? options.find((opt) => opt.id === DESKTOP_SANDBOX_ID) || {
+          id: DESKTOP_SANDBOX_ID,
+          label: "Desktop",
+          icon: Monitor,
+          description: "Connecting...",
+        }
+      : options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
 
   // When readOnly and cloud, hide entirely — cloud is the default, no indicator needed.
@@ -106,10 +152,19 @@ export function SandboxSelector({
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
 
+  const isDesktopConnecting =
+    desktopConnecting || value === DESKTOP_SANDBOX_ID;
+
   const buttonContent = (
     <>
-      <Icon className={iconClassName} />
-      <span className="truncate">{selectedOption?.label}</span>
+      {isDesktopConnecting ? (
+        <Loader2 className={`${iconClassName} animate-spin`} />
+      ) : (
+        <Icon className={iconClassName} />
+      )}
+      <span className="truncate">
+        {isDesktopConnecting ? "Connecting..." : selectedOption?.label}
+      </span>
       <ChevronDown
         className={
           size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
@@ -137,6 +192,11 @@ export function SandboxSelector({
           </div>
           {options.map((option) => {
             const OptionIcon = option.icon;
+            const isSelected =
+              value === option.id ||
+              // When connecting, highlight the Desktop option
+              (value === DESKTOP_SANDBOX_ID &&
+                option.id === DESKTOP_SANDBOX_ID);
             return (
               <button
                 key={option.id}
@@ -145,7 +205,7 @@ export function SandboxSelector({
                   setOpen(false);
                 }}
                 className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
-                  value === option.id
+                  isSelected
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-muted"
                 }`}
@@ -163,27 +223,29 @@ export function SandboxSelector({
                     </div>
                   )}
                 </div>
-                {value === option.id && <Check className="h-4 w-4 shrink-0" />}
+                {isSelected && <Check className="h-4 w-4 shrink-0" />}
               </button>
             );
           })}
-          {connections && connections.length === 0 && (
-            <div className="px-2 py-2 border-t mt-1 pt-2 space-y-1">
-              <div className="text-xs text-muted-foreground mb-2">
-                No local connections.
+          {connections &&
+            connections.length === 0 &&
+            !isTauri && (
+              <div className="px-2 py-2 border-t mt-1 pt-2 space-y-1">
+                <div className="text-xs text-muted-foreground mb-2">
+                  No local connections.
+                </div>
+                <button
+                  onClick={() => {
+                    setOpen(false);
+                    openSettingsDialog("Local Sandbox");
+                  }}
+                  className="w-full flex items-center gap-2 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
+                >
+                  <Settings className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  <span>Set up in Settings</span>
+                </button>
               </div>
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  openSettingsDialog("Local Sandbox");
-                }}
-                className="w-full flex items-center gap-2 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
-              >
-                <Settings className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span>Set up in Settings</span>
-              </button>
-            </div>
-          )}
+            )}
         </div>
       </PopoverContent>
     </Popover>
