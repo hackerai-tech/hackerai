@@ -5,7 +5,7 @@ import type { ChatStatus, Todo } from "@/types";
 import { useDataStream } from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
 
-const MAX_AUTO_CONTINUES = 5;
+export const MAX_AUTO_CONTINUES = 5;
 
 export interface UseAutoContinueParams {
   status: ChatStatus;
