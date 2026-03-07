@@ -2,7 +2,7 @@
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Check, Cloud, Laptop, ChevronDown, Settings } from "lucide-react";
+import { Check, Cloud, Laptop, Monitor, ChevronDown, Settings } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -47,17 +47,20 @@ export function SandboxSelector({
       icon: Cloud,
       description: "",
     },
-    ...(connections?.map((conn) => ({
-      id: conn.connectionId,
-      label: conn.osInfo?.hostname || conn.name,
-      icon: Laptop,
-      description:
-        conn.mode === "dangerous"
-          ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
-          : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
-
-      mode: conn.mode,
-    })) || []),
+    ...(connections?.map((conn) => {
+      const isDesktop = conn.name?.startsWith("Desktop (");
+      return {
+        id: conn.connectionId,
+        label: conn.osInfo?.hostname || conn.name,
+        icon: isDesktop ? Monitor : Laptop,
+        description: isDesktop
+          ? `Desktop: ${conn.osInfo?.platform || "local"} ${conn.osInfo?.arch || ""}`
+          : conn.mode === "dangerous"
+            ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
+            : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
+        mode: conn.mode,
+      };
+    }) || []),
   ];
 
   // Auto-correct stale sandbox preference: if the stored value doesn't match any

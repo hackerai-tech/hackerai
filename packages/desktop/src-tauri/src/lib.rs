@@ -1,8 +1,13 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
+use tauri::State;
 use tauri_plugin_updater::UpdaterExt;
+use tokio::process::Command as TokioCommand;
 
 const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24 hours
 
@@ -213,9 +218,280 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
     }
 }
 
+// ── Desktop Terminal Execution ──────────────────────────────────────────────
+
+/// Tracks background processes spawned by the desktop sandbox
+struct BackgroundProcesses {
+    pids: Mutex<HashMap<u32, String>>, // pid -> command
+}
+
+#[derive(serde::Serialize)]
+struct CommandOutput {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    pid: Option<u32>,
+    duration_ms: u64,
+}
+
+#[derive(serde::Serialize)]
+struct OsInfo {
+    platform: String,
+    arch: String,
+    release: String,
+    hostname: String,
+}
+
+/// Get the platform shell and flag for executing commands
+fn get_shell() -> (&'static str, &'static str) {
+    if cfg!(target_os = "windows") {
+        ("powershell.exe", "-Command")
+    } else {
+        ("/bin/bash", "-c")
+    }
+}
+
+/// Truncate output using 25% head + 75% tail strategy (matches @hackerai/local)
+fn truncate_output(content: &str, max_size: usize) -> String {
+    if content.len() <= max_size {
+        return content.to_string();
+    }
+
+    let head_size = max_size / 4;
+    let tail_size = max_size - head_size;
+    let marker = "\n\n--- OUTPUT TRUNCATED ---\n\n";
+
+    let head: String = content.chars().take(head_size).collect();
+    let tail: String = content
+        .chars()
+        .rev()
+        .take(tail_size)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+
+    format!("{}{}{}", head, marker, tail)
+}
+
+const MAX_OUTPUT_SIZE: usize = 12288; // ~4096 tokens
+
+/// Execute a shell command and return stdout, stderr, exit code
+#[tauri::command]
+async fn execute_command(
+    command: String,
+    env: Option<HashMap<String, String>>,
+    cwd: Option<String>,
+    timeout_ms: Option<u64>,
+) -> Result<CommandOutput, String> {
+    let (shell, flag) = get_shell();
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
+    let start = std::time::Instant::now();
+
+    let mut cmd = TokioCommand::new(shell);
+    cmd.arg(flag).arg(&command);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    if let Some(ref dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    if let Some(ref vars) = env {
+        for (key, value) in vars {
+            cmd.env(key, value);
+        }
+    }
+
+    let child = cmd.spawn().map_err(|e| format!("Failed to spawn process: {}", e))?;
+    let pid = child.id();
+
+    let result = tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| {
+            // Timeout - try to kill the process
+            if let Some(p) = pid {
+                #[cfg(unix)]
+                {
+                    unsafe { libc::kill(p as i32, libc::SIGTERM); }
+                    // Give it 2s then SIGKILL
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(2));
+                        unsafe { libc::kill(p as i32, libc::SIGKILL); }
+                    });
+                }
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(&["/PID", &p.to_string(), "/F"])
+                        .spawn();
+                }
+            }
+            format!("Command timed out after {}ms", timeout.as_millis())
+        })?
+        .map_err(|e| format!("Command execution failed: {}", e))?;
+
+    let duration = start.elapsed();
+    let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+
+    Ok(CommandOutput {
+        stdout: truncate_output(&stdout, MAX_OUTPUT_SIZE),
+        stderr: truncate_output(&stderr, MAX_OUTPUT_SIZE),
+        exit_code: result.status.code().unwrap_or(-1),
+        pid,
+        duration_ms: duration.as_millis() as u64,
+    })
+}
+
+/// Execute a command in the background, returning the PID
+#[tauri::command]
+async fn execute_command_background(
+    command: String,
+    env: Option<HashMap<String, String>>,
+    cwd: Option<String>,
+    state: State<'_, BackgroundProcesses>,
+) -> Result<CommandOutput, String> {
+    let (shell, flag) = get_shell();
+    let start = std::time::Instant::now();
+
+    let mut cmd = TokioCommand::new(shell);
+    cmd.arg(flag).arg(&command);
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+
+    if let Some(ref dir) = cwd {
+        cmd.current_dir(dir);
+    }
+
+    if let Some(ref vars) = env {
+        for (key, value) in vars {
+            cmd.env(key, value);
+        }
+    }
+
+    let child = cmd.spawn().map_err(|e| format!("Failed to spawn background process: {}", e))?;
+    let pid = child.id();
+
+    if let Some(p) = pid {
+        if let Ok(mut pids) = state.pids.lock() {
+            pids.insert(p, command.clone());
+        }
+    }
+
+    let duration = start.elapsed();
+
+    Ok(CommandOutput {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: 0,
+        pid,
+        duration_ms: duration.as_millis() as u64,
+    })
+}
+
+/// Kill a background process by PID
+#[tauri::command]
+async fn kill_process(
+    pid: u32,
+    state: State<'_, BackgroundProcesses>,
+) -> Result<bool, String> {
+    if let Ok(mut pids) = state.pids.lock() {
+        pids.remove(&pid);
+    }
+
+    #[cfg(unix)]
+    {
+        let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if result != 0 {
+            // Try SIGKILL
+            unsafe { libc::kill(pid as i32, libc::SIGKILL); }
+        }
+        Ok(true)
+    }
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("taskkill")
+            .args(&["/PID", &pid.to_string(), "/F"])
+            .status()
+            .map_err(|e| format!("Failed to kill process: {}", e))?;
+        Ok(status.success())
+    }
+}
+
+/// Get OS information for the desktop environment
+#[tauri::command]
+fn get_os_info() -> OsInfo {
+    OsInfo {
+        platform: std::env::consts::OS.to_string(),
+        arch: std::env::consts::ARCH.to_string(),
+        release: os_release(),
+        hostname: hostname(),
+    }
+}
+
+fn os_release() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string("/proc/version")
+            .unwrap_or_default()
+            .split_whitespace()
+            .nth(2)
+            .unwrap_or("unknown")
+            .to_string()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(&["/C", "ver"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "unknown".to_string())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        "unknown".to_string()
+    }
+}
+
+fn hostname() -> String {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("hostname")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_else(|_| "desktop".to_string())
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "desktop".to_string())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "desktop".to_string()
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(BackgroundProcesses {
+            pids: Mutex::new(HashMap::new()),
+        })
+        .invoke_handler(tauri::generate_handler![
+            execute_command,
+            execute_command_background,
+            kill_process,
+            get_os_info,
+        ])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())

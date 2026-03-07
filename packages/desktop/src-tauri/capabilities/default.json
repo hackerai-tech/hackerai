@@ -23,6 +23,15 @@
     {
       "identifier": "opener:allow-open-path",
       "allow": [{ "path": "$DOWNLOAD/**" }]
+    },
+    "core:default",
+    {
+      "identifier": "core:event:allow-emit",
+      "allow": [{ "event": "desktop-sandbox-*" }]
+    },
+    {
+      "identifier": "core:event:allow-listen",
+      "allow": [{ "event": "desktop-sandbox-*" }]
     }
   ]
 }
