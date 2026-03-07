@@ -96,6 +96,7 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 
 function getStreamContext() {
   try {
@@ -651,6 +652,10 @@ export const createChatHandler = (
                 ? [
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
+                      threshold: Math.floor(
+                        getMaxTokensForSubscription(subscription) *
+                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                      ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: () => hasSummarized,
                       onFired: () => {

@@ -56,6 +56,8 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
+import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
 import PostHogClient from "@/app/posthog";
@@ -465,6 +467,10 @@ export const agentStreamTask = task({
           stopWhen: [
             stepCountIs(getMaxStepsForUser(mode, subscription)),
             tokenExhaustedAfterSummarization({
+              threshold: Math.floor(
+                getMaxTokensForSubscription(subscription) *
+                  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+              ),
               getLastStepInputTokens: () => lastStepInputTokens,
               getHasSummarized: () => hasSummarized,
               onFired: () => {
