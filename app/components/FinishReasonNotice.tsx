@@ -1,4 +1,5 @@
 import { ChatMode } from "@/types/chat";
+import { useDataStream } from "@/app/components/DataStreamProvider";
 
 interface FinishReasonNoticeProps {
   finishReason?: string;
@@ -9,6 +10,20 @@ export const FinishReasonNotice = ({
   finishReason,
   mode,
 }: FinishReasonNoticeProps) => {
+  const MAX_AUTO_CONTINUES = 5;
+  const { isAutoResuming, autoContinueCount } = useDataStream();
+
+  if (isAutoResuming) return null;
+
+  // Suppress for auto-continuable reasons in agent mode when more auto-continues will fire
+  if (
+    mode === "agent" &&
+    autoContinueCount < MAX_AUTO_CONTINUES &&
+    (finishReason === "context-limit" || finishReason === "length")
+  ) {
+    return null;
+  }
+
   if (!finishReason) return null;
 
   const getNoticeContent = () => {

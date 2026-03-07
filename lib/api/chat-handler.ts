@@ -132,6 +132,7 @@ export const createChatHandler = (
         temporary,
         sandboxPreference,
         selectedModel: rawSelectedModel,
+        isAutoContinue,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -141,6 +142,7 @@ export const createChatHandler = (
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
+        isAutoContinue?: boolean;
       } = await req.json();
 
       const selectedModelOverride: SelectedModel | undefined =
@@ -214,6 +216,7 @@ export const createChatHandler = (
           messages: truncatedMessages,
           regenerate,
           chat,
+          isHidden: isAutoContinue ? true : undefined,
         });
       }
 
@@ -1148,6 +1151,10 @@ export const createChatHandler = (
                       usage: resolvedUsage ?? streamUsage,
                       updateOnly:
                         isAborted && !isPreemptiveAbort ? true : undefined,
+                      isHidden:
+                        isAutoContinue && processedMessage.role === "user"
+                          ? true
+                          : undefined,
                     });
                   }
                   logStep("save_messages", stepStart);

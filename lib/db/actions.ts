@@ -65,6 +65,7 @@ export async function saveMessage({
   finishReason,
   usage,
   updateOnly,
+  isHidden,
 }: {
   chatId: string;
   userId: string;
@@ -79,6 +80,7 @@ export async function saveMessage({
   finishReason?: string;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
+  isHidden?: boolean;
 }) {
   try {
     // Fix incomplete tool invocations for assistant messages (from interrupted streams)
@@ -107,6 +109,7 @@ export async function saveMessage({
       finishReason,
       usage,
       updateOnly,
+      isHidden,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");
@@ -119,12 +122,14 @@ export async function handleInitialChatAndUserMessage({
   messages,
   regenerate,
   chat,
+  isHidden,
 }: {
   chatId: string;
   userId: string;
   messages: { id: string; parts: UIMessagePart<any, any>[] }[];
   regenerate?: boolean;
   chat: any; // Chat data from getMessagesByChatId
+  isHidden?: boolean;
 }) {
   if (!chat) {
     // Save new chat and get the document _id
@@ -172,6 +177,7 @@ export async function handleInitialChatAndUserMessage({
         role: "user",
         parts: messages[messages.length - 1].parts,
       },
+      isHidden,
     });
   }
 }
