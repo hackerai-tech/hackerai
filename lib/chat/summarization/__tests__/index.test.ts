@@ -151,17 +151,14 @@ describe("checkAndSummarizeIfNeeded", () => {
 
     expect(result.needsSummarization).toBe(true);
     expect(result.summaryText).toBe("Test summary content");
-    expect(result.cutoffMessageId).toBe("msg-2");
+    expect(result.cutoffMessageId).toBe("msg-4");
 
-    // summary message + last 2 kept messages
-    expect(result.summarizedMessages).toHaveLength(3);
+    // summary message + 0 kept messages = 1 total (just the summary message)
+    expect(result.summarizedMessages).toHaveLength(1);
     expect(result.summarizedMessages[0].parts[0]).toEqual({
       type: "text",
       text: "<context_summary>\nTest summary content\n</context_summary>",
     });
-    expect(result.summarizedMessages.slice(1)).toEqual(
-      fourMessagesAboveThreshold.slice(-2),
-    );
   });
 
   it("should use agent prompt when mode is agent", async () => {
@@ -199,7 +196,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).toHaveBeenCalledWith({
       chatId: "chat-123",
       summaryText: "Summary",
-      summaryUpToMessageId: "msg-2",
+      summaryUpToMessageId: "msg-4",
     });
   });
 
@@ -431,7 +428,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.cutoffMessageId).toBe("real-2");
+    expect(result.cutoffMessageId).toBe("real-4");
     expect(result.cutoffMessageId).not.toBe("synthetic-uuid-not-in-db");
   });
 
@@ -529,7 +526,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result1.needsSummarization).toBe(true);
-    expect(result1.cutoffMessageId).toBe("msg-2");
+    expect(result1.cutoffMessageId).toBe("msg-4");
 
     const newMessages = [
       createMessageWithTokens("msg-5", "user", TOKENS_PER_ABOVE_MSG),
@@ -553,12 +550,12 @@ describe("checkAndSummarizeIfNeeded", () => {
     expect(mockSaveChatSummary).toHaveBeenCalledTimes(2);
     expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
       1,
-      expect.objectContaining({ summaryUpToMessageId: "msg-2" }),
+      expect.objectContaining({ summaryUpToMessageId: "msg-4" }),
     );
     expect(mockSaveChatSummary).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        summaryUpToMessageId: expect.not.stringMatching(/^msg-2$/),
+        summaryUpToMessageId: expect.not.stringMatching(/^msg-4$/),
       }),
     );
 
@@ -580,13 +577,13 @@ describe("checkAndSummarizeIfNeeded", () => {
     });
     expect(hasContextSummary).toBe(false);
 
-    // First call: msg-1, msg-2 converted + 1 summarization prompt
+    // First call: msg-1..msg-4 converted + 1 summarization prompt = 5
     const firstCallMessages = mockGenerateText.mock.calls[0][0].messages;
-    expect(firstCallMessages).toHaveLength(3);
-    // Second call: msg-3..msg-6 converted + 1 summarization prompt
+    expect(firstCallMessages).toHaveLength(5);
+    // Second call: msg-5..msg-8 converted + 1 summarization prompt = 5
     expect(secondCallMessages).toHaveLength(5);
 
-    expect(result2.summarizedMessages).toHaveLength(3);
+    expect(result2.summarizedMessages).toHaveLength(1);
     expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
     expect(extractSummaryText(result2.summarizedMessages[0])).toBe(
       "Second summary",
@@ -614,7 +611,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       mockWriter,
       "chat-123",
     );
-    expect(result1.cutoffMessageId).toBe("msg-2");
+    expect(result1.cutoffMessageId).toBe("msg-4");
 
     // Round 2: result1 + msg-5..msg-8
     const round2Input = [
@@ -633,7 +630,7 @@ describe("checkAndSummarizeIfNeeded", () => {
       mockWriter,
       "chat-123",
     );
-    expect(result2.cutoffMessageId).toBe("msg-6");
+    expect(result2.cutoffMessageId).toBe("msg-8");
 
     // Round 3: result2 + msg-9..msg-12
     const round3Input = [
@@ -652,19 +649,15 @@ describe("checkAndSummarizeIfNeeded", () => {
       mockWriter,
       "chat-123",
     );
-    expect(result3.cutoffMessageId).toBe("msg-10");
+    expect(result3.cutoffMessageId).toBe("msg-12");
 
     // Collect all message IDs that were passed to generateText across all 3 calls
     const summarizedIds = collectMessageIdsFromGenerateCalls(mockGenerateText);
 
-    // Every message up to the last cutoff (msg-10) must have been summarized
-    for (let i = 1; i <= 10; i++) {
+    // Every message up to msg-12 must have been summarized
+    for (let i = 1; i <= 12; i++) {
       expect(summarizedIds).toContain(`msg-${i}`);
     }
-
-    // Messages after the last cutoff should NOT have been summarized
-    expect(summarizedIds).not.toContain("msg-11");
-    expect(summarizedIds).not.toContain("msg-12");
   });
 
   it("should handle normal first-time summarization unchanged", async () => {
@@ -680,7 +673,7 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(result.cutoffMessageId).toBe("msg-2");
+    expect(result.cutoffMessageId).toBe("msg-4");
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
         system: expect.not.stringContaining("<previous_summary>"),
@@ -739,5 +732,35 @@ describe("isSummaryMessage and extractSummaryText", () => {
 
     expect(extractSummaryText(summaryMsg)).toBe("Extracted content here");
     expect(extractSummaryText(normalMsg)).toBeNull();
+  });
+});
+
+describe("splitMessages with MESSAGES_TO_KEEP_UNSUMMARIZED = 0", () => {
+  const { splitMessages } =
+    require("../helpers") as typeof import("../helpers");
+
+  it("should return all messages as messagesToSummarize when constant is 0", () => {
+    const messages: UIMessage[] = [
+      createMessage("msg-1", "user"),
+      createMessage("msg-2", "assistant"),
+      createMessage("msg-3", "user"),
+    ];
+
+    const result = splitMessages(messages);
+    expect(result.messagesToSummarize).toEqual(messages);
+    expect(result.lastMessages).toEqual([]);
+  });
+
+  it("should handle empty array", () => {
+    const result = splitMessages([]);
+    expect(result.messagesToSummarize).toEqual([]);
+    expect(result.lastMessages).toEqual([]);
+  });
+
+  it("should handle single message", () => {
+    const messages: UIMessage[] = [createMessage("msg-1", "user")];
+    const result = splitMessages(messages);
+    expect(result.messagesToSummarize).toEqual(messages);
+    expect(result.lastMessages).toEqual([]);
   });
 });

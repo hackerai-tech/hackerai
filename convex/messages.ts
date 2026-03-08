@@ -189,6 +189,7 @@ export const saveMessage = mutation({
     finishReason: v.optional(v.string()),
     usage: v.optional(v.any()),
     updateOnly: v.optional(v.boolean()),
+    isHidden: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -246,6 +247,9 @@ export const saveMessage = mutation({
         if (args.finishReason && !existingMessage.finish_reason) {
           patch.finish_reason = args.finishReason;
         }
+        if (args.isHidden !== undefined) {
+          patch.is_hidden = args.isHidden;
+        }
 
         // Apply patch if there are changes
         if (Object.keys(patch).length > 0) {
@@ -289,6 +293,7 @@ export const saveMessage = mutation({
         generation_time_ms: args.generationTimeMs,
         finish_reason: args.finishReason,
         usage: args.usage,
+        is_hidden: args.isHidden,
       });
 
       // Mark attached files as linked so purge won't remove them
@@ -424,6 +429,7 @@ export const getMessagesByChatId = query({
       // Step 5: Build enhanced messages using the lookup map
       const enhancedMessages = [];
       for (const message of result.page) {
+        if (message.is_hidden === true) continue;
         // Get feedback if exists
         let feedback = null;
         if (message.role === "assistant" && message.feedback_id) {
@@ -786,11 +792,13 @@ export const getMessagesPageForBackend = query({
       .paginate(args.paginationOpts);
 
     return {
-      page: result.page.map((message) => ({
-        id: message.id,
-        role: message.role,
-        parts: message.parts,
-      })),
+      page: result.page
+        .filter((message) => message.is_hidden !== true)
+        .map((message) => ({
+          id: message.id,
+          role: message.role,
+          parts: message.parts,
+        })),
       isDone: result.isDone,
       continueCursor: result.continueCursor,
     };

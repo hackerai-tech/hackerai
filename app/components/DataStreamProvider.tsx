@@ -8,6 +8,8 @@ interface DataStreamContextValue {
   setDataStream: React.Dispatch<React.SetStateAction<DataUIPart<any>[]>>;
   isAutoResuming: boolean;
   setIsAutoResuming: React.Dispatch<React.SetStateAction<boolean>>;
+  autoContinueCount: number;
+  setAutoContinueCount: React.Dispatch<React.SetStateAction<number>>;
 }
 
 const DataStreamContext = createContext<DataStreamContextValue | null>(null);
@@ -19,6 +21,7 @@ export function DataStreamProvider({
 }) {
   const [dataStream, setDataStream] = useState<DataUIPart<any>[]>([]);
   const [isAutoResuming, setIsAutoResuming] = useState<boolean>(false);
+  const [autoContinueCount, setAutoContinueCount] = useState<number>(0);
 
   const value = useMemo(
     () => ({
@@ -26,8 +29,10 @@ export function DataStreamProvider({
       setDataStream,
       isAutoResuming,
       setIsAutoResuming,
+      autoContinueCount,
+      setAutoContinueCount,
     }),
-    [dataStream, isAutoResuming],
+    [dataStream, isAutoResuming, autoContinueCount],
   );
 
   return (

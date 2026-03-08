@@ -208,7 +208,7 @@ export function computeContextUsage(
       (p: { type?: string; text?: string }) =>
         p.type === "text" &&
         typeof p.text === "string" &&
-        p.text.startsWith("<context_summary>"),
+        p.text.includes("<context_summary>"),
     ),
   );
   const summaryTokens = summaryMsg
