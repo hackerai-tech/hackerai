@@ -79,7 +79,7 @@ export const isSummaryMessage = (message: UIMessage): boolean => {
   if (message.parts.length === 0) return false;
   const firstPart = message.parts[0];
   if (firstPart.type !== "text") return false;
-  return (firstPart as { type: "text"; text: string }).text.startsWith(
+  return (firstPart as { type: "text"; text: string }).text.includes(
     "<context_summary>",
   );
 };
