@@ -373,6 +373,7 @@ export const createChatHandler = (
             getTodoManager,
             getFileAccumulator,
             sandboxManager,
+            getSandboxSessionCost,
           } = createTools(
             userId,
             chatId,
@@ -386,6 +387,11 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
+            undefined, // appendMetadataStream
+            (costDollars: number) => {
+              accumulatedProviderCost += costDollars;
+              chatLogger?.getBuilder().addToolCost(costDollars);
+            },
           );
 
           // Helper to send file metadata via stream for resumable stream clients
@@ -535,6 +541,15 @@ export const createChatHandler = (
           // Helper to deduct accumulated usage (called from multiple exit points)
           const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
+            // Add E2B sandbox session cost (duration-based)
+            const sandboxCost = getSandboxSessionCost();
+            if (sandboxCost > 0) {
+              accumulatedProviderCost += sandboxCost;
+              chatLogger?.getBuilder().addToolCost(sandboxCost);
+              console.log(
+                `[sandbox-cost] E2B session cost: $${sandboxCost.toFixed(6)}`,
+              );
+            }
             if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
               hasDeductedUsage = true;
               await deductUsage(

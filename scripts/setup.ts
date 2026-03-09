@@ -303,11 +303,66 @@ NEXT_PUBLIC_BASE_URL=${envVars.NEXT_PUBLIC_BASE_URL || "http://localhost:3000"}
 async function setupConvex(): Promise<{
   NEXT_PUBLIC_CONVEX_URL: string;
   CONVEX_DEPLOYMENT: string;
+  useLocal: boolean;
 }> {
   console.log(`\n${chalk.bold("Setting up Convex Database")}`);
   console.log(
     "Convex provides the real-time database and authentication backend",
   );
+
+  const deploymentType = await question(
+    "\nUse a local Convex deployment? (y/N): ",
+  );
+  const useLocal = deploymentType.trim().toLowerCase() === "y";
+
+  if (useLocal) {
+    console.log(
+      chalk.cyan(
+        "\nLocal deployment selected. Convex will run on your machine.",
+      ),
+    );
+    console.log(
+      "No Convex account required. Code sync is faster and doesn't count against quotas.",
+    );
+
+    try {
+      console.log(
+        "\nInitializing local Convex deployment (this may take a moment)...",
+      );
+      await execAsync("npx convex dev --local --once");
+      console.log(
+        chalk.green("✓ Local Convex deployment initialized successfully"),
+      );
+
+      // Read Convex variables from the generated .env.local file
+      try {
+        const envContent = await fs.readFile(
+          path.join(process.cwd(), ".env.local"),
+          "utf8",
+        );
+        const convexUrlMatch = envContent.match(
+          /^NEXT_PUBLIC_CONVEX_URL=(.*)$/m,
+        );
+        const deploymentMatch = envContent.match(/^CONVEX_DEPLOYMENT=(.*)$/m);
+        return {
+          NEXT_PUBLIC_CONVEX_URL:
+            convexUrlMatch?.[1] || "http://localhost:3210",
+          CONVEX_DEPLOYMENT: deploymentMatch?.[1] || "",
+          useLocal: true,
+        };
+      } catch {
+        return {
+          NEXT_PUBLIC_CONVEX_URL: "http://localhost:3210",
+          CONVEX_DEPLOYMENT: "",
+          useLocal: true,
+        };
+      }
+    } catch (error) {
+      console.log(chalk.red("✗ Failed to initialize local Convex deployment"));
+      console.log(error);
+      process.exit(1);
+    }
+  }
 
   console.log(`\nFirst, login to Convex: ${chalk.bold("npx convex login")}`);
   await question("Hit enter after you have logged into Convex");
@@ -339,12 +394,17 @@ async function setupConvex(): Promise<{
       return {
         NEXT_PUBLIC_CONVEX_URL: convexUrlMatch?.[1] || "",
         CONVEX_DEPLOYMENT: deploymentMatch?.[1] || "",
+        useLocal: false,
       };
     } catch (error) {
       console.log(
         chalk.yellow("⚠️  Could not read Convex env from generated file"),
       );
-      return { NEXT_PUBLIC_CONVEX_URL: "", CONVEX_DEPLOYMENT: "" };
+      return {
+        NEXT_PUBLIC_CONVEX_URL: "",
+        CONVEX_DEPLOYMENT: "",
+        useLocal: false,
+      };
     }
   } catch (error) {
     console.log(chalk.red("✗ Failed to create Convex project"));
@@ -378,7 +438,8 @@ async function main() {
   await configureWorkOSDashboard();
 
   // Setup Convex database
-  const { NEXT_PUBLIC_CONVEX_URL, CONVEX_DEPLOYMENT } = await setupConvex();
+  const { NEXT_PUBLIC_CONVEX_URL, CONVEX_DEPLOYMENT, useLocal } =
+    await setupConvex();
 
   // Write the complete environment file
   await writeEnvFile({
@@ -396,14 +457,54 @@ async function main() {
     NEXT_PUBLIC_BASE_URL,
   });
 
-  // Configure Convex Dashboard
-  await configureConvexDashboard(WORKOS_CLIENT_ID, CONVEX_SERVICE_ROLE_KEY);
+  if (useLocal) {
+    // For local deployments, set env vars directly on the local backend
+    console.log(
+      `\n${chalk.bold("Setting environment variables on local Convex deployment...")}`,
+    );
+    try {
+      await execAsync(
+        `npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
+      );
+      await execAsync(
+        `npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
+      );
+      console.log(
+        chalk.green("✓ Environment variables set on local Convex deployment"),
+      );
+    } catch {
+      console.log(
+        chalk.yellow(
+          "⚠️  Could not set env vars on local deployment. You can set them manually with:",
+        ),
+      );
+      console.log(
+        `   npx convex env set WORKOS_CLIENT_ID ${WORKOS_CLIENT_ID} --local`,
+      );
+      console.log(
+        `   npx convex env set CONVEX_SERVICE_ROLE_KEY ${CONVEX_SERVICE_ROLE_KEY} --local`,
+      );
+    }
+  } else {
+    // Configure Convex Dashboard for cloud deployments
+    await configureConvexDashboard(WORKOS_CLIENT_ID, CONVEX_SERVICE_ROLE_KEY);
+  }
+
+  const devCommand = useLocal ? "pnpm run dev:local" : "pnpm run dev";
 
   console.log(`\n${chalk.green.bold("🎉 Setup completed successfully!")}`);
   console.log("\nNext steps:");
   console.log(`1. Review your ${chalk.bold(".env.local")} file`);
-  console.log(`2. Start the development server: ${chalk.bold("pnpm run dev")}`);
+  console.log(`2. Start the development server: ${chalk.bold(devCommand)}`);
   console.log(`3. Visit: ${chalk.bold("http://localhost:3000")}`);
+  if (useLocal) {
+    console.log(
+      `\n${chalk.cyan("Note:")} Local Convex deployment runs as a subprocess of the dev command.`,
+    );
+    console.log(
+      "To stop using local deployments, run: npx convex disable-local-deployments",
+    );
+  }
 }
 
 main().catch(console.error);
