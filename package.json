@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "dev": "concurrently \"next dev --turbopack\" \"npx convex dev\"",
+    "dev:local": "concurrently \"next dev --turbopack\" \"npx convex dev --local\"",
     "dev:next": "next dev --turbopack",
     "dev:convex": "npx convex dev",
     "dev:trigger": "npx trigger.dev@latest dev",

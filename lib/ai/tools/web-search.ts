@@ -13,8 +13,11 @@ import {
  * Web search tool using Perplexity Search API
  * Provides ranked web search results with content extraction
  */
+/** Perplexity Search API cost: $5 per 1K requests */
+const WEB_SEARCH_COST_PER_REQUEST = 0.005;
+
 export const createWebSearch = (context: ToolContext) => {
-  const { userLocation } = context;
+  const { userLocation, onToolCost } = context;
 
   return tool({
     description: `Search for information across various sources.
@@ -90,6 +93,9 @@ export const createWebSearch = (context: ToolContext) => {
             `Perplexity API error: ${response.status} - ${errorText}`,
           );
         }
+
+        // Report web search cost ($5 per 1K requests)
+        onToolCost?.(WEB_SEARCH_COST_PER_REQUEST);
 
         const searchResponse: PerplexitySearchResponse = await response.json();
 

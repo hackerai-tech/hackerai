@@ -212,6 +212,7 @@ export const agentStreamTask = task({
         getFileAccumulator,
         sandboxManager,
         ensureSandbox,
+        getSandboxSessionCost,
       } = createTools(
         userId,
         chatId,
@@ -231,6 +232,10 @@ export const agentStreamTask = task({
         (userCustomization as { guardrails_config?: string } | null)
           ?.guardrails_config,
         appendMetadataStream,
+        (costDollars: number) => {
+          usageTracker.providerCost += costDollars;
+          chatLogger.getBuilder().addToolCost(costDollars);
+        },
       );
 
       const sendFileMetadataToStream = (
@@ -353,7 +358,14 @@ export const agentStreamTask = task({
 
       const deductAccumulatedUsage = async () => {
         if (hasDeductedUsage || subscription === "free") return;
+        // Add E2B sandbox session cost (duration-based)
+        const sandboxCost = getSandboxSessionCost();
+        if (sandboxCost > 0) {
+          usageTracker.providerCost += sandboxCost;
+          chatLogger.getBuilder().addToolCost(sandboxCost);
+        }
         if (!usageTracker.hasUsage) return;
+        hasDeductedUsage = true;
         await deductUsage(
           userId,
           subscription,
@@ -364,7 +376,6 @@ export const agentStreamTask = task({
           usageTracker.providerCost > 0 ? usageTracker.providerCost : undefined,
           selectedModel,
         );
-        hasDeductedUsage = true;
         usageTracker.log({
           userId,
           selectedModel,

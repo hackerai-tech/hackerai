@@ -66,4 +66,6 @@ export interface ToolContext {
   guardrailsConfig?: string;
   /** When set, run_terminal_cmd awaits this for each terminal chunk so the run yields and Trigger can deliver metadata in real time. */
   appendMetadataStream?: AppendMetadataStreamFn;
+  /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */
+  onToolCost?: (costDollars: number) => void;
 }
