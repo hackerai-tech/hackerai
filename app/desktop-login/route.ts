@@ -18,9 +18,11 @@ export async function GET(request: Request) {
 
     // Pass dev callback port through OAuth state for dev mode auth
     const devCallbackPort = url.searchParams.get("dev_callback_port");
-    const metadata = devCallbackPort
-      ? { devCallbackPort: parseInt(devCallbackPort, 10) }
-      : undefined;
+    const portNum = devCallbackPort ? parseInt(devCallbackPort, 10) : NaN;
+    const metadata =
+      !isNaN(portNum) && portNum > 0 && portNum <= 65535
+        ? { devCallbackPort: portNum }
+        : undefined;
 
     const state = await createOAuthState(metadata);
     if (!state) {
