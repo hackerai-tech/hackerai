@@ -243,6 +243,10 @@ export const agentStreamTask = task({
         (userCustomization as { guardrails_config?: string } | null)
           ?.guardrails_config,
         appendMetadataStream,
+        (costDollars: number) => {
+          accumulatedProviderCost += costDollars;
+          chatLogger.getBuilder().addToolCost(costDollars);
+        },
       );
 
       const sendFileMetadataToStream = (

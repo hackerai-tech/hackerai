@@ -294,6 +294,16 @@ export class WideEventBuilder {
     return this;
   }
 
+  private additionalToolCost = 0;
+
+  /**
+   * Add external tool cost (in dollars) to be included in total_cost
+   */
+  addToolCost(costDollars: number): this {
+    this.additionalToolCost += costDollars;
+    return this;
+  }
+
   /**
    * Set token usage from model response
    */
@@ -369,13 +379,19 @@ export class WideEventBuilder {
     }
 
     // Use provider cost if available, otherwise calculate from tokens
-    if (this.event.usage && this.event.usage.total_cost === undefined) {
+    if (this.event.usage && !this.event.usage.total_cost) {
       // Fallback: calculate from tokens (pricing: $0.50/M input, $3.00/M output)
       const inputCost =
         ((this.event.usage.input_tokens || 0) / 1_000_000) * 0.5;
       const outputCost =
         ((this.event.usage.output_tokens || 0) / 1_000_000) * 3.0;
       this.event.usage.total_cost = inputCost + outputCost;
+    }
+
+    // Add external tool costs (e.g., web search API)
+    if (this.additionalToolCost > 0 && this.event.usage) {
+      this.event.usage.total_cost =
+        (this.event.usage.total_cost || 0) + this.additionalToolCost;
     }
 
     // Don't include assistant_id for temporary chats

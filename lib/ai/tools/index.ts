@@ -54,6 +54,7 @@ export const createTools = (
   serviceKey?: string,
   guardrailsConfig?: string,
   appendMetadataStream?: AppendMetadataStreamFn,
+  onToolCost?: (costDollars: number) => void,
 ) => {
   let sandbox: AnySandbox | null = null;
 
@@ -101,6 +102,7 @@ export const createTools = (
     isE2BSandbox,
     guardrailsConfig,
     appendMetadataStream,
+    onToolCost,
   };
 
   // Create all available tools

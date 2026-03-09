@@ -386,6 +386,11 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
+            undefined, // appendMetadataStream
+            (costDollars: number) => {
+              accumulatedProviderCost += costDollars;
+              chatLogger?.getBuilder().addToolCost(costDollars);
+            },
           );
 
           // Helper to send file metadata via stream for resumable stream clients
