@@ -105,7 +105,7 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
             <div
               className={`h-full transition-all duration-500 ${getUsageColorClass(tokenUsage.monthly.usagePercentage)}`}
               style={{
-                width: `${tokenUsage.monthly.usagePercentage}%`,
+                width: `${Math.min(100, tokenUsage.monthly.usagePercentage)}%`,
               }}
             />
           </div>
