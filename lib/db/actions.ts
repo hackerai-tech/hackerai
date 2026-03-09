@@ -19,6 +19,8 @@ import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import type { SubscriptionTier, NoteCategory } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
+import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -65,6 +67,7 @@ export async function saveMessage({
   finishReason,
   usage,
   updateOnly,
+  isHidden,
 }: {
   chatId: string;
   userId: string;
@@ -79,6 +82,7 @@ export async function saveMessage({
   finishReason?: string;
   usage?: Record<string, unknown>;
   updateOnly?: boolean;
+  isHidden?: boolean;
 }) {
   try {
     // Fix incomplete tool invocations for assistant messages (from interrupted streams)
@@ -107,6 +111,7 @@ export async function saveMessage({
       finishReason,
       usage,
       updateOnly,
+      isHidden,
     });
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to save message");
@@ -119,12 +124,14 @@ export async function handleInitialChatAndUserMessage({
   messages,
   regenerate,
   chat,
+  isHidden,
 }: {
   chatId: string;
   userId: string;
   messages: { id: string; parts: UIMessagePart<any, any>[] }[];
   regenerate?: boolean;
   chat: any; // Chat data from getMessagesByChatId
+  isHidden?: boolean;
 }) {
   if (!chat) {
     // Save new chat and get the document _id
@@ -172,6 +179,7 @@ export async function handleInitialChatAndUserMessage({
         role: "user",
         parts: messages[messages.length - 1].parts,
       },
+      isHidden,
     });
   }
 }
@@ -343,14 +351,16 @@ export async function getMessagesByChatId({
                 ? truncatedFromLoop.slice(cutoffIndex + 1)
                 : truncatedFromLoop;
 
-            // Create summary message
+            // Create summary message, prepending resume preamble for agent modes
+            const summaryPrefix =
+              mode && isAgentMode(mode) ? AGENT_RESUME_PREAMBLE : "";
             const summaryMessage: UIMessage = {
               id: uuidv4(),
               role: "user",
               parts: [
                 {
                   type: "text",
-                  text: `<context_summary>\n${latestSummary.summary_text}\n</context_summary>`,
+                  text: `${summaryPrefix}<context_summary>\n${latestSummary.summary_text}\n</context_summary>`,
                 },
               ],
             };

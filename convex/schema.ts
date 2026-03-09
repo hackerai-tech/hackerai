@@ -80,6 +80,7 @@ export default defineSchema({
     generation_time_ms: v.optional(v.number()),
     finish_reason: v.optional(v.string()),
     usage: v.optional(v.any()),
+    is_hidden: v.optional(v.boolean()),
   })
     .index("by_message_id", ["id"])
     .index("by_chat_id", ["chat_id"])

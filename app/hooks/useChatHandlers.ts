@@ -28,6 +28,7 @@ interface UseChatHandlersProps {
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
   onStopCallback?: () => void;
+  resetAutoContinueCount?: () => void;
 }
 
 export const useChatHandlers = ({
@@ -42,6 +43,7 @@ export const useChatHandlers = ({
   isSendingNowRef,
   hasManuallyStoppedRef,
   onStopCallback,
+  resetAutoContinueCount,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -144,6 +146,7 @@ export const useChatHandlers = ({
 
     // Reset manual stop flag when user submits a new message
     hasManuallyStoppedRef.current = false;
+    resetAutoContinueCount?.();
 
     // Prevent submission if files are still uploading
     if (isUploadingFiles) {

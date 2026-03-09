@@ -38,6 +38,7 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
+import { useAutoContinue } from "../hooks/useAutoContinue";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
@@ -386,6 +387,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setMessages,
   });
 
+  const { resetAutoContinueCount } = useAutoContinue({
+    status,
+    chatMode,
+    sendMessage,
+    hasManuallyStoppedRef,
+    todos,
+    temporaryChatsEnabled,
+    sandboxPreference,
+    selectedModel,
+  });
+
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
     const reset = () => {
@@ -403,10 +415,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         systemTokens: 0,
         maxTokens: 0,
       });
+      resetAutoContinueCount();
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setTodos]);
+  }, [setChatReset, setMessages, setTodos, resetAutoContinueCount]);
 
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
@@ -676,6 +689,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setUploadStatus(null);
       setSummarizationStatus(null);
     },
+    resetAutoContinueCount,
   });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });

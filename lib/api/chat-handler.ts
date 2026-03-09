@@ -86,6 +86,7 @@ import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
   createSummarizationCompletedPart,
+  writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -95,6 +96,7 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 
 function getStreamContext() {
   try {
@@ -130,6 +132,7 @@ export const createChatHandler = (
         temporary,
         sandboxPreference,
         selectedModel: rawSelectedModel,
+        isAutoContinue,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -139,6 +142,7 @@ export const createChatHandler = (
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
         selectedModel?: string;
+        isAutoContinue?: boolean;
       } = await req.json();
 
       const selectedModelOverride: SelectedModel | undefined =
@@ -212,6 +216,7 @@ export const createChatHandler = (
           messages: truncatedMessages,
           regenerate,
           chat,
+          isHidden: isAutoContinue ? true : undefined,
         });
       }
 
@@ -650,6 +655,10 @@ export const createChatHandler = (
                 ? [
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
+                      threshold: Math.floor(
+                        getMaxTokensForSubscription(subscription) *
+                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                      ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: () => hasSummarized,
                       onFired: () => {
@@ -1142,6 +1151,10 @@ export const createChatHandler = (
                       usage: resolvedUsage ?? streamUsage,
                       updateOnly:
                         isAborted && !isPreemptiveAbort ? true : undefined,
+                      isHidden:
+                        isAutoContinue && processedMessage.role === "user"
+                          ? true
+                          : undefined,
                     });
                   }
                   logStep("save_messages", stepStart);
@@ -1189,7 +1202,14 @@ export const createChatHandler = (
                   });
                 }
 
-                // Deduct accumulated usage if not already done
+                if (
+                  stoppedDueToTokenExhaustion &&
+                  isAgentMode(mode) &&
+                  !temporary
+                ) {
+                  writeAutoContinue(writer);
+                }
+
                 await deductAccumulatedUsage();
               },
               sendReasoning: true,
