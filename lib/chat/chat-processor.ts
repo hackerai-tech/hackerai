@@ -435,9 +435,14 @@ export async function processChatMessages({
   const { messages: messagesWithUrls, sandboxFiles } =
     await processMessageFiles(messagesWithLimitedFiles, mode, uploadBasePath);
 
+  // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.
+  // This must happen BEFORE the empty-content filter because fixing incomplete parts can
+  // remove tool invocations and step-starts, potentially leaving messages with no content.
+  const messagesWithFixedTools = fixIncompleteToolInvocations(messagesWithUrls);
+
   // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini
-  const messagesWithContent = messagesWithUrls.filter((msg) => {
+  const messagesWithContent = messagesWithFixedTools.filter((msg) => {
     if (!msg.parts || msg.parts.length === 0) return false;
 
     // For assistant messages, we need actual content (text or tool parts), not just reasoning/step-start
@@ -466,15 +471,10 @@ export async function processChatMessages({
     });
   });
 
-  // Fix incomplete tool invocations and reasoning (from interrupted streams) before sending to model
-  const messagesWithFixedTools =
-    fixIncompleteToolInvocations(messagesWithContent);
-
   // Remove duplicate tool parts (dynamic-tool duplicates of tool-xxx parts)
   // This prevents "tool call id is duplicated" errors from providers
-  const messagesWithoutDuplicates = removeDuplicateToolParts(
-    messagesWithFixedTools,
-  );
+  const messagesWithoutDuplicates =
+    removeDuplicateToolParts(messagesWithContent);
 
   // Select the appropriate model early so we can make model-aware decisions below
   const selectedModel = selectModel(mode, subscription, modelOverride);
