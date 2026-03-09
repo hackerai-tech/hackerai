@@ -305,21 +305,20 @@ export const deductUsage = async (
     if (costDifference === 0) return;
 
     // Otherwise, we need to charge the additional cost.
-    // Try to deduct the full amount from the bucket atomically.
+    // First, peek at remaining balance to avoid going negative.
     const additionalCost = costDifference;
-    const deductResult = await monthly.limiter.limit(monthly.key, {
-      rate: additionalCost,
-    });
+    const peekResult = await monthly.limiter.limit(monthly.key, { rate: 0 });
+    const available = Math.max(0, peekResult.remaining);
 
-    // If the bucket covered it (remaining >= 0), we're done
-    if (deductResult.remaining >= 0) {
-      return;
+    const fromBucket = Math.min(additionalCost, available);
+    const fromExtraUsage = additionalCost - fromBucket;
+
+    // Deduct only what the bucket can cover
+    if (fromBucket > 0) {
+      await monthly.limiter.limit(monthly.key, { rate: fromBucket });
     }
 
-    // Bucket was insufficient — the overshoot went negative.
-    // Deduct the overflow from extra usage if enabled.
-    const fromExtraUsage = Math.abs(deductResult.remaining);
-
+    // Send overflow to extra usage if enabled
     if (
       fromExtraUsage > 0 &&
       extraUsageConfig?.enabled &&

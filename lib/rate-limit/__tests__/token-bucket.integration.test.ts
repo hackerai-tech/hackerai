@@ -447,20 +447,28 @@ describe("token-bucket async functions", () => {
     });
   });
 
-  describe("deductUsage - split deduction (atomic)", () => {
-    it("should deduct overflow from extra usage when bucket goes negative", async () => {
+  describe("deductUsage - split deduction (peek-then-deduct)", () => {
+    it("should deduct overflow from extra usage when bucket has insufficient balance", async () => {
       const { deductUsage } = getIsolatedModule();
 
-      // Atomic deduction: bucket had 10 remaining, we deduct 45, goes to -35
+      // Peek: bucket has 10 remaining
       mockLimitFn.mockResolvedValueOnce({
         success: true,
-        remaining: -35,
+        remaining: 10,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+      // Deduct fromBucket (10) from bucket
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 0,
         reset: Date.now() + 3600000,
         limit: 250000,
       });
 
       // Estimated 1000 input = 5 points, actual provider cost = $0.005 = 50 points
       // Difference = 50 - 5 = 45 additional needed
+      // Bucket has 10, so fromBucket=10, fromExtraUsage=35
       await deductUsage(
         "user-123",
         "pro",
@@ -471,10 +479,14 @@ describe("token-bucket async functions", () => {
         0.005,
       );
 
-      // Should deduct full additional cost atomically from bucket
+      // Should peek first (rate: 0), then deduct only what bucket can cover (rate: 10)
       expect(mockLimitFn).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ rate: 45 }),
+        expect.objectContaining({ rate: 0 }),
+      );
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 10 }),
       );
       // Should deduct the overflow (35) from extra usage
       expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 35);
@@ -483,10 +495,17 @@ describe("token-bucket async functions", () => {
     it("should not call extra usage when bucket covers the full amount", async () => {
       const { deductUsage } = getIsolatedModule();
 
-      // Bucket had plenty of remaining, deduction succeeds with positive remaining
+      // Peek: bucket has plenty remaining
       mockLimitFn.mockResolvedValueOnce({
         success: true,
         remaining: 100,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+      // Deduct full additional cost (45) from bucket
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 55,
         reset: Date.now() + 3600000,
         limit: 250000,
       });
