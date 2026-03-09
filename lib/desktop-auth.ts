@@ -125,7 +125,13 @@ export async function exchangeDesktopTransferToken(
   return { sealedSession: data.sealedSession };
 }
 
-export async function createOAuthState(): Promise<string | null> {
+export type OAuthStateMetadata = {
+  devCallbackPort?: number;
+};
+
+export async function createOAuthState(
+  metadata?: OAuthStateMetadata,
+): Promise<string | null> {
   const redis = getRedis();
   if (!redis) {
     console.error(
@@ -137,8 +143,10 @@ export async function createOAuthState(): Promise<string | null> {
   const state = generateTransferToken();
   const key = `${OAUTH_STATE_PREFIX}${state}`;
 
+  const value = metadata ? JSON.stringify(metadata) : "1";
+
   try {
-    await redis.set(key, "1", { ex: OAUTH_STATE_TTL_SECONDS });
+    await redis.set(key, value, { ex: OAUTH_STATE_TTL_SECONDS });
   } catch (err) {
     console.error("[Desktop Auth] Failed to store OAuth state in Redis:", err);
     return null;
@@ -149,10 +157,10 @@ export async function createOAuthState(): Promise<string | null> {
 
 export async function verifyAndConsumeOAuthState(
   state: string,
-): Promise<boolean> {
+): Promise<{ valid: boolean; metadata?: OAuthStateMetadata }> {
   if (!TOKEN_FORMAT_REGEX.test(state)) {
     console.warn("[Desktop Auth] Invalid OAuth state format");
-    return false;
+    return { valid: false };
   }
 
   const redis = getRedis();
@@ -160,16 +168,33 @@ export async function verifyAndConsumeOAuthState(
     console.error(
       "[Desktop Auth] Redis not configured, cannot verify OAuth state",
     );
-    return false;
+    return { valid: false };
   }
 
   const key = `${OAUTH_STATE_PREFIX}${state}`;
 
   try {
-    const deleted = await redis.del(key);
-    return deleted === 1;
+    const value = await redis.getdel<string>(key);
+    if (!value) {
+      return { valid: false };
+    }
+
+    if (value === "1") {
+      return { valid: true };
+    }
+
+    try {
+      const metadata =
+        typeof value === "object"
+          ? (value as unknown as OAuthStateMetadata)
+          : (JSON.parse(value) as OAuthStateMetadata);
+      return { valid: true, metadata };
+    } catch {
+      // If we can't parse metadata, state is still valid
+      return { valid: true };
+    }
   } catch (err) {
     console.error("[Desktop Auth] Failed to verify OAuth state:", err);
-    return false;
+    return { valid: false };
   }
 }
