@@ -28,7 +28,6 @@ import { useIsMobile } from "@/hooks/use-mobile";
 type CostTier = "low" | "medium" | "high";
 
 const MODEL_COST_TIER: Record<Exclude<SelectedModel, "auto">, CostTier> = {
-  "kimi-k2.5": "medium",
   "gemini-3-flash": "low",
   "grok-4.1": "low",
   "gemini-3.1-pro": "high",
@@ -110,7 +109,6 @@ const ASK_MODEL_OPTIONS: ModelOption[] = [
 ];
 
 const AGENT_MODEL_OPTIONS: ModelOption[] = [
-  { id: "kimi-k2.5", label: "Kimi K2.5", thinking: true },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", thinking: true },
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
   { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", thinking: true },

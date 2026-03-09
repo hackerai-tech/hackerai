@@ -13,14 +13,13 @@ import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
 // Configuration
 // =============================================================================
 
-/** Model pricing: $/1M tokens per model (default used for ask models + kimi k2.5 agent) */
+/** Model pricing: $/1M tokens per model (default used for ask models + gemini 3 flash agent) */
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-gemini-3.1-pro": { input: 2.0, output: 12.0 },
   "model-grok-4.1": { input: 0.2, output: 0.5 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
-  "model-kimi-k2.5": { input: 0.6, output: 3.0 },
   "model-gpt-5.4": { input: 2.5, output: 15.0 },
 };
 
