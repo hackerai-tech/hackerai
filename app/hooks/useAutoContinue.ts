@@ -109,6 +109,7 @@ export function useAutoContinue({
   const resetAutoContinueCount = useCallback(() => {
     autoContinueCountRef.current = 0;
     pendingAutoContinueRef.current = false;
+    lastProcessedIndexRef.current = 0;
     setAutoContinueCount(0);
   }, [setAutoContinueCount]);
 

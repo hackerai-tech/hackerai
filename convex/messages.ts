@@ -391,11 +391,16 @@ export const getMessagesByChatId = query({
         .order("desc")
         .paginate(args.paginationOpts);
 
+      // Filter hidden messages (e.g. auto-continue rows) from the page.
+      // This is applied post-pagination; hidden messages are rare so page
+      // sizes remain effectively unchanged.
+      const visiblePage = result.page.filter((m) => m.is_hidden !== true);
+
       // OPTIMIZATION: Batch fetch all files and URLs upfront to avoid N+1 queries
 
       // Step 1: Collect all unique file IDs from all messages
       const allFileIds = new Set<Id<"files">>();
-      for (const message of result.page) {
+      for (const message of visiblePage) {
         if (message.file_ids && message.file_ids.length > 0) {
           message.file_ids.forEach((id) => allFileIds.add(id));
         }
@@ -428,8 +433,7 @@ export const getMessagesByChatId = query({
 
       // Step 5: Build enhanced messages using the lookup map
       const enhancedMessages = [];
-      for (const message of result.page) {
-        if (message.is_hidden === true) continue;
+      for (const message of visiblePage) {
         // Get feedback if exists
         let feedback = null;
         if (message.role === "assistant" && message.feedback_id) {
@@ -864,8 +868,15 @@ export const searchMessages = query({
         )
         .collect();
 
+      // Filter out hidden messages from search results
+      const visibleMessageResults = messageResults.filter(
+        (msg) => msg.is_hidden !== true,
+      );
+
       // Create a map to track which chats have message matches
-      const messageChatIds = new Set(messageResults.map((msg) => msg.chat_id));
+      const messageChatIds = new Set(
+        visibleMessageResults.map((msg) => msg.chat_id),
+      );
 
       // Combine and deduplicate results
       const combinedResults: Array<{
@@ -880,7 +891,7 @@ export const searchMessages = query({
       }> = [];
 
       // Add message results
-      for (const msg of messageResults) {
+      for (const msg of visibleMessageResults) {
         const chat = await ctx.db
           .query("chats")
           .withIndex("by_chat_id", (q) => q.eq("id", msg.chat_id))
@@ -1325,8 +1336,9 @@ export const getSharedMessages = query({
 
       // FROZEN CONTENT: Filter messages to only those created/updated before share_date
       // This ensures new messages added after sharing are not visible
+      // Also exclude hidden messages (e.g. auto-continue rows)
       const frozenMessages = messages.filter(
-        (msg) => msg.update_time <= chat.share_date!,
+        (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
       );
 
       // Strip sensitive data and replace files with placeholders
@@ -1399,9 +1411,13 @@ export const getPreviewMessages = query({
         .order("asc")
         .take(10);
 
-      // Get first 4 messages (user and assistant messages only)
+      // Get first 4 visible messages (user and assistant messages only)
       const result = messages
-        .filter((m) => m.role === "user" || m.role === "assistant")
+        .filter(
+          (m) =>
+            m.is_hidden !== true &&
+            (m.role === "user" || m.role === "assistant"),
+        )
         .slice(0, 4)
         .map((m) => ({
           id: m.id,

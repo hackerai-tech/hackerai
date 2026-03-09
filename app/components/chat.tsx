@@ -415,10 +415,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         systemTokens: 0,
         maxTokens: 0,
       });
+      resetAutoContinueCount();
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setTodos]);
+  }, [setChatReset, setMessages, setTodos, resetAutoContinueCount]);
 
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
