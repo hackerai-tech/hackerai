@@ -594,12 +594,12 @@ export const createChatHandler = (
                         createSummarizationCompletedPart(),
                       );
                       if (result.summarizationUsage) {
-                        accumulatedInputTokens +=
+                        usageTracker.inputTokens +=
                           result.summarizationUsage.inputTokens;
-                        accumulatedOutputTokens +=
+                        usageTracker.outputTokens +=
                           result.summarizationUsage.outputTokens;
                         if (result.summarizationUsage.cost) {
-                          accumulatedProviderCost +=
+                          usageTracker.providerCost +=
                             result.summarizationUsage.cost;
                         }
                       }
