@@ -64,6 +64,37 @@ export async function navigateToAuth(
   window.location.href = fallbackPath;
 }
 
+/**
+ * Get the local command execution server info (port + auth token).
+ * Returns null if not in Tauri or server not started.
+ */
+export async function getCmdServerInfo(): Promise<{
+  port: number;
+  token: string;
+  hostname: string;
+  platform: string;
+} | null> {
+  if (!detectTauri()) {
+    return null;
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const info = await invoke<{
+      port: number;
+      token: string;
+      hostname: string;
+      platform: string;
+    }>("get_cmd_server_info");
+    if (info.port > 0 && info.token) {
+      return info;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function openDownloadsFolder(): Promise<boolean> {
   if (!detectTauri()) {
     return false;
@@ -71,9 +102,9 @@ export async function openDownloadsFolder(): Promise<boolean> {
 
   try {
     // Dynamic imports for Tauri plugins - only available in desktop context
-     
+
     const opener = await (import("@tauri-apps/plugin-opener") as Promise<any>);
-     
+
     const path = await (import("@tauri-apps/api/path") as Promise<any>);
     const downloadsPath = await path.downloadDir();
     await opener.openPath(downloadsPath);

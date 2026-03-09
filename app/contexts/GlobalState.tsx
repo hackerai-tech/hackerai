@@ -109,6 +109,14 @@ interface GlobalStateType {
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
 
+  // Tauri command server info (desktop app only)
+  tauriCmdServer: {
+    port: number;
+    token: string;
+    hostname: string;
+    platform: string;
+  } | null;
+
   // Model selection
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
@@ -219,10 +227,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   });
 
   // Sandbox preference (persisted to localStorage)
+  // Default to "tauri" in the desktop app, "e2b" in the browser
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
       if (typeof window === "undefined") return "e2b";
-      return localStorage.getItem("sandbox-preference") || "e2b";
+      const stored = localStorage.getItem("sandbox-preference");
+      if (stored) return stored;
+      // Default to cloud even in desktop app; user can switch to local
+
+      return "e2b";
     });
 
   // Persist queue behavior to localStorage
@@ -231,6 +244,34 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       localStorage.setItem("queue-behavior", queueBehavior);
     }
   }, [queueBehavior]);
+
+  // Tauri command server info (auto-detected for desktop app)
+  const [tauriCmdServer, setTauriCmdServer] = useState<{
+    port: number;
+    token: string;
+    hostname: string;
+    platform: string;
+  } | null>(null);
+
+  // Auto-detect Tauri desktop and set sandbox preference to "tauri"
+  useEffect(() => {
+    async function detectTauri() {
+      try {
+        const { getCmdServerInfo, isTauriEnvironment } =
+          await import("@/app/hooks/useTauri");
+        if (isTauriEnvironment()) {
+          const info = await getCmdServerInfo();
+          if (info) {
+            setTauriCmdServer(info);
+            setSandboxPreferenceState("tauri");
+          }
+        }
+      } catch {
+        // Not in Tauri environment
+      }
+    }
+    detectTauri();
+  }, []);
 
   // Persist sandbox preference to localStorage
   useEffect(() => {
@@ -735,6 +776,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference: setSandboxPreferenceState,
+    tauriCmdServer,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

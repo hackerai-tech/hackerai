@@ -2,7 +2,7 @@
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Check, Cloud, Laptop, ChevronDown, Settings } from "lucide-react";
+import { Check, Cloud, Laptop, ChevronDown, Plus } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 interface SandboxSelectorProps {
   value: string;
@@ -38,6 +39,7 @@ export function SandboxSelector({
   readOnly = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
+  const { tauriCmdServer } = useGlobalState();
 
   const connections = useQuery(api.localSandbox.listConnections);
   const options: ConnectionOption[] = [
@@ -47,17 +49,31 @@ export function SandboxSelector({
       icon: Cloud,
       description: "",
     },
-    ...(connections?.map((conn) => ({
-      id: conn.connectionId,
-      label: conn.osInfo?.hostname || conn.name,
-      icon: Laptop,
-      description:
-        conn.mode === "dangerous"
-          ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
-          : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
-
-      mode: conn.mode,
-    })) || []),
+    // Show local machine option when running in Tauri desktop app
+    ...(tauriCmdServer
+      ? [
+          {
+            id: "tauri",
+            label: tauriCmdServer.hostname,
+            icon: Laptop,
+            description: `Local: ${tauriCmdServer.platform}`,
+            mode: "dangerous" as const,
+          } satisfies ConnectionOption,
+        ]
+      : []),
+    // Only show Convex local connections when not in Tauri desktop app
+    ...(!tauriCmdServer
+      ? connections?.map((conn) => ({
+          id: conn.connectionId,
+          label: conn.osInfo?.hostname || conn.name,
+          icon: Laptop,
+          description:
+            conn.mode === "dangerous"
+              ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
+              : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
+          mode: conn.mode,
+        })) || []
+      : []),
   ];
 
   // Auto-correct stale sandbox preference: if the stored value doesn't match any
@@ -69,6 +85,7 @@ export function SandboxSelector({
       connections !== undefined &&
       !valueMatchesOption &&
       value !== "e2b" &&
+      value !== "tauri" &&
       !readOnly
     ) {
       onChange?.("e2b");
@@ -164,20 +181,20 @@ export function SandboxSelector({
               </button>
             );
           })}
-          {connections && connections.length === 0 && (
-            <div className="px-2 py-2 border-t mt-1 pt-2 space-y-1">
-              <div className="text-xs text-muted-foreground mb-2">
-                No local connections.
+          {!tauriCmdServer && (
+            <div className="border-t mt-1 pt-1">
+              <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                Remote control
               </div>
               <button
                 onClick={() => {
                   setOpen(false);
-                  openSettingsDialog("Local Sandbox");
+                  openSettingsDialog("Remote Control");
                 }}
                 className="w-full flex items-center gap-2 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
               >
-                <Settings className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span>Set up in Settings</span>
+                <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span>Add remote control</span>
               </button>
             </div>
           )}

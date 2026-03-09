@@ -57,6 +57,7 @@ export type AgentTaskPayload = {
   regenerate: boolean;
   temporary: boolean;
   sandboxPreference: SandboxPreference;
+  tauriCmdServer: { port: number; token: string } | null;
   userId: string;
   subscription: SubscriptionTier;
   userLocation: { region?: string; city?: string; country?: string } | null;
@@ -114,6 +115,7 @@ export async function prepareAgentPayload(
     regenerate?: boolean;
     temporary?: boolean;
     sandboxPreference?: SandboxPreference;
+    tauriCmdServer?: { port: number; token: string };
     selectedModel?: string;
   };
 
@@ -134,6 +136,7 @@ export async function prepareAgentPayload(
     regenerate,
     temporary,
     sandboxPreference,
+    tauriCmdServer,
     selectedModel: rawSelectedModel,
   } = parsedBody;
 
@@ -267,6 +270,7 @@ export async function prepareAgentPayload(
     regenerate: !!regenerate,
     temporary: !!temporary,
     sandboxPreference: sandboxPreference ?? "e2b",
+    tauriCmdServer: tauriCmdServer ?? null,
     userId,
     subscription,
     userLocation: userLocation
