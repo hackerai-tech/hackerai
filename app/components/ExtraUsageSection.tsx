@@ -187,10 +187,8 @@ const ExtraUsageSection = () => {
     <>
       <section
         data-testid="extra-usage-section"
-        className="flex flex-col gap-6 border-t pt-6 mt-6"
+        className="flex flex-col gap-6"
       >
-        <h2 className="font-semibold text-base">Extra usage</h2>
-
         {/* Toggle Row */}
         <div className="w-full min-w-0 flex flex-row gap-x-8 gap-y-3 justify-between items-center">
           <div className="w-full min-w-0 flex flex-row gap-4 items-center">

@@ -11,6 +11,7 @@ import {
   Infinity,
   Server,
   ChartNoAxesCombined,
+  Gauge,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 // import { ManageMemoriesDialog } from "@/app/components/ManageMemoriesDialog";
@@ -24,6 +25,7 @@ import { TeamTab } from "@/app/components/TeamTab";
 import { AgentsTab } from "@/app/components/AgentsTab";
 import { LocalSandboxTab } from "@/app/components/LocalSandboxTab";
 import { UsageTab } from "@/app/components/UsageTab";
+import { ExtraUsageSection } from "@/app/components/ExtraUsageSection";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 
@@ -61,6 +63,11 @@ const SettingsDialog = ({
     icon: Server,
   };
   const usageTab = { id: "Usage", label: "Usage", icon: ChartNoAxesCombined };
+  const extraUsageTab = {
+    id: "Extra Usage",
+    label: "Extra Usage",
+    icon: Gauge,
+  };
   const teamTab = { id: "Team", label: "Team", icon: Users };
   const accountTab = { id: "Account", label: "Account", icon: CircleUserRound };
 
@@ -68,17 +75,28 @@ const SettingsDialog = ({
     subscription === "team"
       ? [...baseTabs, agentsTab, localSandboxTab, usageTab, teamTab, accountTab]
       : subscription !== "free"
-        ? [...baseTabs, agentsTab, localSandboxTab, usageTab, accountTab]
+        ? [
+            ...baseTabs,
+            agentsTab,
+            localSandboxTab,
+            usageTab,
+            extraUsageTab,
+            accountTab,
+          ]
         : [...baseTabs, accountTab];
 
-  // Switch to initialTab when dialog opens (closed → open transition)
+  // Switch to initialTab when dialog opens or when initialTab changes while open
+  const [prevInitialTab, setPrevInitialTab] = useState<string | null>(null);
+
   if (
-    open &&
-    !prevOpen &&
     initialTab &&
-    tabs.some((t) => t.id === initialTab)
+    tabs.some((t) => t.id === initialTab) &&
+    ((open && !prevOpen) || (open && initialTab !== prevInitialTab))
   ) {
     setActiveTab(initialTab);
+  }
+  if (initialTab !== prevInitialTab) {
+    setPrevInitialTab(initialTab ?? null);
   }
   if (open !== prevOpen) {
     setPrevOpen(open);
@@ -196,6 +214,12 @@ const SettingsDialog = ({
                 {activeTab === "Local Sandbox" && <LocalSandboxTab />}
 
                 {activeTab === "Usage" && <UsageTab />}
+
+                {activeTab === "Extra Usage" && (
+                  <div className="space-y-2">
+                    <ExtraUsageSection />
+                  </div>
+                )}
 
                 {activeTab === "Team" && <TeamTab />}
 

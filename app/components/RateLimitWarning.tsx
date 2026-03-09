@@ -39,11 +39,20 @@ const formatTimeUntil = (resetTime: Date): string => {
     return "now";
   }
 
-  const hoursUntil = Math.floor(timeDiff / (1000 * 60 * 60));
+  const daysUntil = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
+  const hoursUntil = Math.floor(
+    (timeDiff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60),
+  );
   const minutesUntil = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
 
-  if (hoursUntil === 0 && minutesUntil === 0) {
+  if (daysUntil === 0 && hoursUntil === 0 && minutesUntil === 0) {
     return "in less than a minute";
+  }
+  if (daysUntil >= 1 && hoursUntil === 0) {
+    return `in ${daysUntil} ${daysUntil === 1 ? "day" : "days"}`;
+  }
+  if (daysUntil >= 1) {
+    return `in ${daysUntil}d ${hoursUntil}h`;
   }
   if (hoursUntil === 0) {
     return `in ${minutesUntil} ${minutesUntil === 1 ? "minute" : "minutes"}`;

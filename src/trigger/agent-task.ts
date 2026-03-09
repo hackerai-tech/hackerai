@@ -42,8 +42,13 @@ import {
   prepareForNewStream,
   deleteTempStreamForBackend,
   clearActiveTriggerRunIdFromBackend,
+  logUsageRecord,
 } from "@/lib/db/actions";
-import { deductUsage } from "@/lib/rate-limit";
+import {
+  deductUsage,
+  calculateTokenCost,
+  POINTS_PER_DOLLAR,
+} from "@/lib/rate-limit";
 import { aiStream, metadataStream, type MetadataEvent } from "./streams";
 import type {
   AgentTaskPayload,
@@ -349,6 +354,8 @@ export const agentStreamTask = task({
       let responseModel: string | undefined;
       let accumulatedInputTokens = 0;
       let accumulatedOutputTokens = 0;
+      let accumulatedCacheReadTokens = 0;
+      let accumulatedCacheWriteTokens = 0;
       let accumulatedProviderCost = 0;
       let hasDeductedUsage = false;
 
@@ -366,6 +373,41 @@ export const agentStreamTask = task({
             selectedModel,
           );
           hasDeductedUsage = true;
+
+          const costDollars =
+            accumulatedProviderCost > 0
+              ? accumulatedProviderCost
+              : (calculateTokenCost(
+                  accumulatedInputTokens,
+                  "input",
+                  selectedModel,
+                ) +
+                  calculateTokenCost(
+                    accumulatedOutputTokens,
+                    "output",
+                    selectedModel,
+                  )) /
+                POINTS_PER_DOLLAR;
+
+          const usageType =
+            rateLimitInfo.extraUsagePointsDeducted &&
+            rateLimitInfo.extraUsagePointsDeducted > 0
+              ? ("extra" as const)
+              : ("included" as const);
+
+          logUsageRecord({
+            userId,
+            model:
+              !selectedModelOverride || selectedModelOverride === "auto"
+                ? "auto"
+                : responseModel || configuredModelId || selectedModel,
+            type: usageType,
+            inputTokens: accumulatedInputTokens,
+            outputTokens: accumulatedOutputTokens,
+            cacheReadTokens: accumulatedCacheReadTokens || undefined,
+            cacheWriteTokens: accumulatedCacheWriteTokens || undefined,
+            costDollars,
+          });
         }
       };
 
@@ -490,7 +532,16 @@ export const agentStreamTask = task({
               accumulatedInputTokens += usage.inputTokens || 0;
               accumulatedOutputTokens += usage.outputTokens || 0;
               lastStepInputTokens = usage.inputTokens || 0;
-              const stepCost = (usage as { raw?: { cost?: number } }).raw?.cost;
+              const cacheUsage = usage as {
+                cacheReadInputTokens?: number;
+                cacheCreationInputTokens?: number;
+                raw?: { cost?: number };
+              };
+              accumulatedCacheReadTokens +=
+                cacheUsage.cacheReadInputTokens || 0;
+              accumulatedCacheWriteTokens +=
+                cacheUsage.cacheCreationInputTokens || 0;
+              const stepCost = cacheUsage.raw?.cost;
               if (stepCost) accumulatedProviderCost += stepCost;
             }
           },

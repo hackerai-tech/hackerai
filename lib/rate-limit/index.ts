@@ -32,6 +32,7 @@ export {
   calculateTokenCost,
   getBudgetLimits,
   getSubscriptionPrice,
+  POINTS_PER_DOLLAR,
 } from "./token-bucket";
 
 // Re-export sliding window functions
