@@ -64,8 +64,7 @@ export function sendRateLimitWarnings(
     rateLimitInfo: {
       remaining: number;
       resetTime: Date;
-      session?: { remaining: number; limit: number; resetTime: Date };
-      weekly?: { remaining: number; limit: number; resetTime: Date };
+      monthly?: { remaining: number; limit: number; resetTime: Date };
       extraUsagePointsDeducted?: number;
     };
   },
@@ -83,50 +82,29 @@ export function sendRateLimitWarnings(
         subscription,
       });
     }
-  } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
+  } else if (rateLimitInfo.monthly) {
     // Paid users with extra usage: warn when extra usage is being used
     if (
       rateLimitInfo.extraUsagePointsDeducted &&
       rateLimitInfo.extraUsagePointsDeducted > 0
     ) {
-      const bucketType =
-        rateLimitInfo.session.remaining <= rateLimitInfo.weekly.remaining
-          ? "session"
-          : "weekly";
-      const resetTime =
-        bucketType === "session"
-          ? rateLimitInfo.session.resetTime
-          : rateLimitInfo.weekly.resetTime;
-
       writeRateLimitWarning(writer, {
         warningType: "extra-usage-active",
-        bucketType,
-        resetTime: resetTime.toISOString(),
+        bucketType: "monthly",
+        resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
         subscription,
       });
     } else {
       // Paid users without extra usage: token bucket (remaining percentage at 10%)
-      const sessionPercent =
-        (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) * 100;
-      const weeklyPercent =
-        (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) * 100;
+      const monthlyPercent =
+        (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
 
-      if (sessionPercent <= 10) {
+      if (monthlyPercent <= 10) {
         writeRateLimitWarning(writer, {
           warningType: "token-bucket",
-          bucketType: "session",
-          remainingPercent: Math.round(sessionPercent),
-          resetTime: rateLimitInfo.session.resetTime.toISOString(),
-          subscription,
-        });
-      }
-
-      if (weeklyPercent <= 10) {
-        writeRateLimitWarning(writer, {
-          warningType: "token-bucket",
-          bucketType: "weekly",
-          remainingPercent: Math.round(weeklyPercent),
-          resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
+          bucketType: "monthly",
+          remainingPercent: Math.round(monthlyPercent),
+          resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
           subscription,
         });
       }

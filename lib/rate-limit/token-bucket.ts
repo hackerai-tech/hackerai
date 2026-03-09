@@ -6,7 +6,6 @@ import type {
   ExtraUsageConfig,
 } from "@/types";
 import { createRedisClient, formatTimeRemaining } from "./redis";
-import { PRICING } from "@/lib/pricing/features";
 import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
 
 // =============================================================================
@@ -54,32 +53,30 @@ export const calculateTokenCost = (
 // Budget Limits
 // =============================================================================
 
+/** Monthly credit amounts per tier (1:1 with subscription price) */
+const MONTHLY_CREDITS: Record<string, number> = {
+  free: 0,
+  pro: 250_000, // $25
+  "pro-plus": 600_000, // $60
+  ultra: 2_000_000, // $200
+  team: 400_000, // $40
+};
+
 /**
- * Get budget limits for a subscription tier (shared between agent and ask modes).
- * @returns { session: daily budget, weekly: weekly budget } in points
+ * Get monthly budget limit for a subscription tier (shared between agent and ask modes).
+ * @returns { monthly: monthly budget in points }
  */
 export const getBudgetLimits = (
   subscription: SubscriptionTier,
-): { session: number; weekly: number } => {
-  if (subscription === "free") return { session: 0, weekly: 0 };
-
-  const monthlyPrice = PRICING[subscription]?.monthly ?? 0;
-  const monthlyPoints = monthlyPrice * POINTS_PER_DOLLAR;
-
-  const weekly = Math.round((monthlyPoints * 7) / 30); // Weekly budget
-
-  return {
-    session: Math.round(monthlyPoints / 30), // Daily budget
-    weekly,
-  };
+): { monthly: number } => {
+  return { monthly: MONTHLY_CREDITS[subscription] ?? 0 };
 };
 
-/** Get monthly budget (full subscription price, shared between modes) */
+/** Get monthly budget in dollars (full subscription price, shared between modes) */
 export const getSubscriptionPrice = (
   subscription: SubscriptionTier,
 ): number => {
-  if (subscription === "free") return 0;
-  return PRICING[subscription]?.monthly ?? 0;
+  return (MONTHLY_CREDITS[subscription] ?? 0) / POINTS_PER_DOLLAR;
 };
 
 // =============================================================================
@@ -87,32 +84,23 @@ export const getSubscriptionPrice = (
 // =============================================================================
 
 /**
- * Create rate limiters for a user (shared between agent and ask modes).
+ * Create rate limiter for a user (shared between agent and ask modes).
+ * Single monthly bucket replacing the old session+weekly dual buckets.
  */
-const createRateLimiters = (
+const createRateLimiter = (
   redis: ReturnType<typeof createRedisClient>,
   userId: string,
   subscription: SubscriptionTier,
 ) => {
-  const { session: sessionLimit, weekly: weeklyLimit } =
-    getBudgetLimits(subscription);
+  const { monthly: monthlyLimit } = getBudgetLimits(subscription);
 
   return {
-    sessionLimit,
-    weeklyLimit,
-    session: {
+    monthlyLimit,
+    monthly: {
       limiter: new Ratelimit({
         redis: redis!,
-        limiter: Ratelimit.tokenBucket(sessionLimit, "5 h", sessionLimit),
-        prefix: "usage:session",
-      }),
-      key: `${userId}:${subscription}`,
-    },
-    weekly: {
-      limiter: new Ratelimit({
-        redis: redis!,
-        limiter: Ratelimit.tokenBucket(weeklyLimit, "7 d", weeklyLimit),
-        prefix: "usage:weekly",
+        limiter: Ratelimit.tokenBucket(monthlyLimit, "30 d", monthlyLimit),
+        prefix: "usage:monthly",
       }),
       key: `${userId}:${subscription}`,
     },
@@ -141,109 +129,87 @@ export const checkTokenBucketLimit = async (
   }
 
   try {
-    const { session, weekly, sessionLimit, weeklyLimit } = createRateLimiters(
+    const { monthly, monthlyLimit } = createRateLimiter(
       redis,
       userId,
       subscription,
     );
 
-    if (subscription === "free" || sessionLimit === 0) {
+    if (subscription === "free" || monthlyLimit === 0) {
       throw new ChatSDKError(
         "rate_limit:chat",
         "Agent mode is not available on the free tier. Upgrade to Pro for agent mode access.",
       );
     }
 
-    // const isLongContext = estimatedInputTokens > LONG_CONTEXT_THRESHOLD;
     const estimatedCost = calculateTokenCost(
       estimatedInputTokens,
       "input",
       modelName,
     );
 
-    // Step 1: Check both limits first WITHOUT deducting (rate: 0 peeks at current state)
-    // This prevents the race condition where we deduct from weekly but session fails
-    const [weeklyCheck, sessionCheck] = await Promise.all([
-      weekly.limiter.limit(weekly.key, { rate: 0 }),
-      session.limiter.limit(session.key, { rate: 0 }),
-    ]);
+    const upgradeHint =
+      subscription === "pro"
+        ? " or upgrade to Pro+ or Ultra for higher limits"
+        : subscription === "pro-plus"
+          ? " or upgrade to Ultra for higher limits"
+          : "";
+
+    // Helper to build RateLimitInfo from a limiter result
+    const buildResult = (
+      result: { remaining: number; reset: number },
+      pointsDeducted: number,
+      extraUsagePointsDeducted?: number,
+    ): RateLimitInfo => ({
+      remaining: result.remaining,
+      resetTime: new Date(result.reset),
+      limit: monthlyLimit,
+      monthly: {
+        remaining: result.remaining,
+        limit: monthlyLimit,
+        resetTime: new Date(result.reset),
+      },
+      pointsDeducted,
+      ...(extraUsagePointsDeducted !== undefined && {
+        extraUsagePointsDeducted,
+      }),
+    });
+
+    // Step 1: Check limit WITHOUT deducting (rate: 0 peeks at current state)
+    const monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
 
     // Step 2: Check if we have enough capacity, or if we need extra usage
-    const sessionShortfall = Math.max(
-      0,
-      estimatedCost - sessionCheck.remaining,
-    );
-    const weeklyShortfall = Math.max(0, estimatedCost - weeklyCheck.remaining);
-    const pointsNeeded = Math.max(sessionShortfall, weeklyShortfall);
+    const shortfall = Math.max(0, estimatedCost - monthlyCheck.remaining);
 
     // If we're over limit, try extra usage (prepaid balance)
-    if (pointsNeeded > 0) {
-      // Check if extra usage is enabled and user has balance (or auto-reload can add funds)
+    if (shortfall > 0) {
       if (
         extraUsageConfig?.enabled &&
         (extraUsageConfig.hasBalance || extraUsageConfig.autoReloadEnabled)
       ) {
-        // Deduct from prepaid balance
-        const deductResult = await deductFromBalance(userId, pointsNeeded);
+        const deductResult = await deductFromBalance(userId, shortfall);
 
         if (deductResult.success) {
           // Extra usage covered the shortfall. Deduct only what subscription contributed.
-          // Subscription contribution = cost - extraUsage = min(sessionRemaining, weeklyRemaining)
-          // This keeps both buckets in sync and ensures paid extra usage doesn't drain weekly.
-          const bucketDeduct = estimatedCost - pointsNeeded;
+          const bucketDeduct = estimatedCost - shortfall;
 
-          const [weeklyResult, sessionResult] = await Promise.all([
-            weekly.limiter.limit(weekly.key, { rate: bucketDeduct }),
-            session.limiter.limit(session.key, { rate: bucketDeduct }),
-          ]);
+          const monthlyResult = await monthly.limiter.limit(monthly.key, {
+            rate: bucketDeduct,
+          });
 
-          return {
-            remaining: Math.min(
-              sessionResult.remaining,
-              weeklyResult.remaining,
-            ),
-            resetTime: new Date(
-              Math.min(sessionResult.reset, weeklyResult.reset),
-            ),
-            limit: Math.min(sessionLimit, weeklyLimit),
-            session: {
-              remaining: sessionResult.remaining,
-              limit: sessionLimit,
-              resetTime: new Date(sessionResult.reset),
-            },
-            weekly: {
-              remaining: weeklyResult.remaining,
-              limit: weeklyLimit,
-              resetTime: new Date(weeklyResult.reset),
-            },
-            // Track deductions for potential refund on error
-            pointsDeducted: bucketDeduct,
-            extraUsagePointsDeducted: pointsNeeded,
-          };
+          return buildResult(monthlyResult, bucketDeduct, shortfall);
         }
 
         // Deduction failed - check why
         if (deductResult.insufficientFunds) {
-          const resetTime =
-            sessionShortfall > 0
-              ? formatTimeRemaining(new Date(sessionCheck.reset))
-              : formatTimeRemaining(new Date(weeklyCheck.reset));
-          const limitType = sessionShortfall > 0 ? "session" : "weekly";
+          const resetTime = formatTimeRemaining(new Date(monthlyCheck.reset));
 
-          // Monthly spending cap exceeded - recommend increasing it
           if (deductResult.monthlyCapExceeded) {
-            const msg = `You've hit your monthly extra usage spending limit.\n\nYour ${limitType} limit resets in ${resetTime}. To keep going now, increase your spending limit in Settings.`;
+            const msg = `You've hit your monthly extra usage spending limit.\n\nYour limit resets ${resetTime}. To keep going now, increase your spending limit in Settings.`;
             throw new ChatSDKError("rate_limit:chat", msg);
           }
 
-          // Actually out of balance
-          const upgradeHint =
-            subscription === "pro"
-              ? " or upgrade to Pro+ or Ultra for higher limits"
-              : subscription === "pro-plus"
-                ? " or upgrade to Ultra for higher limits"
-                : "";
-          const msg = `You've hit your usage limit and your extra usage balance is empty.\n\nYour ${limitType} limit resets in ${resetTime}. To keep going now, add credits in Settings${upgradeHint}.`;
+          const msg = `You've hit your usage limit and your extra usage balance is empty.\n\nYour limit resets ${resetTime}. To keep going now, add credits in Settings${upgradeHint}.`;
           throw new ChatSDKError("rate_limit:chat", msg);
         }
 
@@ -251,49 +217,17 @@ export const checkTokenBucketLimit = async (
       }
 
       // No extra usage enabled - throw standard rate limit error
-      const upgradeHint =
-        subscription === "pro"
-          ? " or upgrade to Pro+ or Ultra for higher limits"
-          : subscription === "pro-plus"
-            ? " or upgrade to Ultra for higher limits"
-            : "";
-
-      if (weeklyShortfall > 0) {
-        const resetTime = formatTimeRemaining(new Date(weeklyCheck.reset));
-        const msg = `You've hit your weekly usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`;
-        throw new ChatSDKError("rate_limit:chat", msg);
-      }
-
-      if (sessionShortfall > 0) {
-        const resetTime = formatTimeRemaining(new Date(sessionCheck.reset));
-        const msg = `You've hit your session usage limit.\n\nYour limit resets in ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`;
-        throw new ChatSDKError("rate_limit:chat", msg);
-      }
+      const resetTime = formatTimeRemaining(new Date(monthlyCheck.reset));
+      const msg = `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`;
+      throw new ChatSDKError("rate_limit:chat", msg);
     }
 
-    // Step 3: Both limits have capacity, now deduct from both atomically
-    const [weeklyResult, sessionResult] = await Promise.all([
-      weekly.limiter.limit(weekly.key, { rate: estimatedCost }),
-      session.limiter.limit(session.key, { rate: estimatedCost }),
-    ]);
+    // Step 3: Have capacity, deduct from monthly bucket
+    const monthlyResult = await monthly.limiter.limit(monthly.key, {
+      rate: estimatedCost,
+    });
 
-    return {
-      remaining: Math.min(sessionResult.remaining, weeklyResult.remaining),
-      resetTime: new Date(Math.min(sessionResult.reset, weeklyResult.reset)),
-      limit: Math.min(sessionLimit, weeklyLimit),
-      session: {
-        remaining: sessionResult.remaining,
-        limit: sessionLimit,
-        resetTime: new Date(sessionResult.reset),
-      },
-      weekly: {
-        remaining: weeklyResult.remaining,
-        limit: weeklyLimit,
-        resetTime: new Date(weeklyResult.reset),
-      },
-      // Track deduction for potential refund on error
-      pointsDeducted: estimatedCost,
-    };
+    return buildResult(monthlyResult, estimatedCost);
   } catch (error) {
     if (error instanceof ChatSDKError) throw error;
     throw new ChatSDKError(
@@ -305,8 +239,8 @@ export const checkTokenBucketLimit = async (
 
 /**
  * Deduct additional cost after processing (output + any input difference).
- * If extra usage was used for input (buckets at 0), also deducts output from extra usage.
- * If we over-estimated input cost, refunds the difference back to buckets.
+ * If extra usage was used for input (bucket at 0), also deducts output from extra usage.
+ * If we over-estimated input cost, refunds the difference back to the bucket.
  *
  * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation
  */
@@ -324,12 +258,12 @@ export const deductUsage = async (
   if (!redis) return;
 
   try {
-    const { session, weekly, sessionLimit } = createRateLimiters(
+    const { monthly, monthlyLimit } = createRateLimiter(
       redis,
       userId,
       subscription,
     );
-    if (sessionLimit === 0) return;
+    if (monthlyLimit === 0) return;
 
     // Calculate estimated input cost (already deducted upfront)
     const estimatedInputCost = calculateTokenCost(
@@ -342,10 +276,8 @@ export const deductUsage = async (
     let actualCostPoints: number;
 
     if (providerCostDollars !== undefined && providerCostDollars > 0) {
-      // Use provider's cost directly (more accurate, includes cached token discounts)
       actualCostPoints = Math.ceil(providerCostDollars * POINTS_PER_DOLLAR);
     } else {
-      // Fallback to token-based calculation
       const actualInputCost = calculateTokenCost(
         actualInputTokens,
         "input",
@@ -372,41 +304,21 @@ export const deductUsage = async (
     // If actual cost equals estimate, nothing more to do
     if (costDifference === 0) return;
 
-    // Otherwise, we need to charge the additional cost
+    // Otherwise, we need to charge the additional cost.
+    // First, peek at remaining balance to avoid going negative.
     const additionalCost = costDifference;
+    const peekResult = await monthly.limiter.limit(monthly.key, { rate: 0 });
+    const available = Math.max(0, peekResult.remaining);
 
-    // Check current bucket state to see if we need extra usage
-    const [sessionCheck, weeklyCheck] = await Promise.all([
-      session.limiter.limit(session.key, { rate: 0 }),
-      weekly.limiter.limit(weekly.key, { rate: 0 }),
-    ]);
+    const fromBucket = Math.min(additionalCost, available);
+    const fromExtraUsage = additionalCost - fromBucket;
 
-    const sessionRemaining = sessionCheck.remaining;
-    const weeklyRemaining = weeklyCheck.remaining;
-    const minRemaining = Math.min(sessionRemaining, weeklyRemaining);
-
-    // If buckets have capacity, deduct from them
-    if (minRemaining >= additionalCost) {
-      await Promise.all([
-        session.limiter.limit(session.key, { rate: additionalCost }),
-        weekly.limiter.limit(weekly.key, { rate: additionalCost }),
-      ]);
-      return;
+    // Deduct only what the bucket can cover
+    if (fromBucket > 0) {
+      await monthly.limiter.limit(monthly.key, { rate: fromBucket });
     }
 
-    // Split between buckets and extra usage
-    const fromBuckets = Math.max(0, minRemaining);
-    const fromExtraUsage = additionalCost - fromBuckets;
-
-    // Deduct what we can from buckets
-    if (fromBuckets > 0) {
-      await Promise.all([
-        session.limiter.limit(session.key, { rate: fromBuckets }),
-        weekly.limiter.limit(weekly.key, { rate: fromBuckets }),
-      ]);
-    }
-
-    // Deduct remainder from extra usage if enabled (auto-reload can add funds if balance is $0)
+    // Send overflow to extra usage if enabled
     if (
       fromExtraUsage > 0 &&
       extraUsageConfig?.enabled &&
@@ -420,14 +332,8 @@ export const deductUsage = async (
 };
 
 /**
- * Refund bucket tokens by adding capacity back to the token buckets.
+ * Refund bucket tokens by adding capacity back to the monthly token bucket.
  * Uses direct Redis operations since Upstash Ratelimit doesn't have a native refund method.
- *
- * Upstash Ratelimit stores token bucket data as a hash with:
- * - "tokens" - current token count
- * - "refilledAt" - timestamp when tokens were last refilled
- *
- * We use HINCRBY to atomically add tokens back, capped at the bucket limit.
  */
 const refundBucketTokens = async (
   userId: string,
@@ -439,38 +345,29 @@ const refundBucketTokens = async (
   const redis = createRedisClient();
   if (!redis) return;
 
-  const { session: sessionLimit, weekly: weeklyLimit } =
-    getBudgetLimits(subscription);
+  const { monthly: monthlyLimit } = getBudgetLimits(subscription);
 
-  // Key format matches what Ratelimit uses: {prefix}:{identifier}
-  const sessionKey = `usage:session:${userId}:${subscription}`;
-  const weeklyKey = `usage:weekly:${userId}:${subscription}`;
+  const monthlyKey = `usage:monthly:${userId}:${subscription}`;
 
   try {
-    // Use HINCRBY to atomically add tokens back
-    // The "tokens" field stores the current token count in Upstash Ratelimit
-    const [sessionTokens, weeklyTokens] = await Promise.all([
-      redis.hincrby(sessionKey, "tokens", pointsToRefund),
-      redis.hincrby(weeklyKey, "tokens", pointsToRefund),
-    ]);
+    const monthlyTokens = await redis.hincrby(
+      monthlyKey,
+      "tokens",
+      pointsToRefund,
+    );
 
-    // Cap at limits if we exceeded them (edge case)
-    // This shouldn't normally happen but prevents over-refunding
-    if (sessionTokens > sessionLimit) {
-      await redis.hset(sessionKey, { tokens: sessionLimit });
-    }
-    if (weeklyTokens > weeklyLimit) {
-      await redis.hset(weeklyKey, { tokens: weeklyLimit });
+    // Cap at limit if we exceeded it (edge case)
+    if (monthlyTokens > monthlyLimit) {
+      await redis.hset(monthlyKey, { tokens: monthlyLimit });
     }
   } catch (error) {
-    // Log but don't throw - refund is best-effort
     console.error("Failed to refund bucket tokens:", error);
   }
 };
 
 /**
- * Reset rate limit buckets for a user by deleting their Redis keys.
- * On next request, Upstash Ratelimit creates fresh buckets at full capacity.
+ * Reset rate limit bucket for a user by deleting their Redis key.
+ * On next request, Upstash Ratelimit creates a fresh bucket at full capacity.
  * Called when a subscription renews or changes tier.
  */
 export const resetRateLimitBuckets = async (
@@ -480,17 +377,24 @@ export const resetRateLimitBuckets = async (
   const redis = createRedisClient();
   if (!redis) return;
 
-  const sessionKey = `usage:session:${userId}:${subscription}`;
-  const weeklyKey = `usage:weekly:${userId}:${subscription}`;
+  const monthlyKey = `usage:monthly:${userId}:${subscription}`;
 
   try {
-    await Promise.all([redis.del(sessionKey), redis.del(weeklyKey)]);
+    await redis.del(monthlyKey);
+
+    // Re-seed the Upstash TTL so it aligns with this reset. The limit()
+    // call creates a fresh bucket, and the explicit expire() guarantees
+    // exactly 30 days regardless of any Upstash TTL drift.
+    const { monthly } = createRateLimiter(redis, userId, subscription);
+    await monthly.limiter.limit(monthly.key, { rate: 0 });
+    await redis.expire(monthlyKey, 30 * 24 * 60 * 60);
+
     console.log(
-      `[resetRateLimitBuckets] Reset buckets for user ${userId} tier ${subscription}`,
+      `[resetRateLimitBuckets] Reset bucket for user ${userId} tier ${subscription}`,
     );
   } catch (error) {
     console.error(
-      `[resetRateLimitBuckets] Failed to reset buckets for user ${userId}:`,
+      `[resetRateLimitBuckets] Failed to reset bucket for user ${userId}:`,
       error,
     );
   }
@@ -499,11 +403,6 @@ export const resetRateLimitBuckets = async (
 /**
  * Refund usage when a request fails after credits were deducted.
  * Refunds both token bucket credits and extra usage balance.
- *
- * @param userId - User ID
- * @param subscription - User's subscription tier
- * @param pointsDeducted - Total points deducted (estimatedCost) - refunded to buckets
- * @param extraUsagePointsDeducted - Points deducted from extra usage balance (if any)
  */
 export const refundUsage = async (
   userId: string,
@@ -513,26 +412,22 @@ export const refundUsage = async (
 ): Promise<void> => {
   const refundPromises: Promise<void>[] = [];
 
-  // Refund to buckets (always refund the full amount, capped at limit)
   if (pointsDeducted > 0) {
     refundPromises.push(
       refundBucketTokens(userId, subscription, pointsDeducted),
     );
   }
 
-  // Refund extra usage if any was deducted
   if (extraUsagePointsDeducted > 0) {
     refundPromises.push(
       refundToBalance(userId, extraUsagePointsDeducted).then(() => {}),
     );
   }
 
-  // Run both refunds in parallel
   if (refundPromises.length > 0) {
     try {
       await Promise.all(refundPromises);
     } catch (error) {
-      // Log but don't throw - refund is best-effort
       console.error("Failed to refund usage:", error);
     }
   }

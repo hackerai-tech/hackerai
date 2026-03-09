@@ -42,7 +42,7 @@ export const checkFreeUserRateLimit = async (
       const timeString = formatTimeRemaining(new Date(reset));
       throw new ChatSDKError(
         "rate_limit:chat",
-        `You've reached your rate limit, please try again after ${timeString}.\n\nUpgrade plan for higher usage limits and more features.`,
+        `You've reached your rate limit, please try again ${timeString}.\n\nUpgrade plan for higher usage limits and more features.`,
       );
     }
 

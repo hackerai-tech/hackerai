@@ -262,6 +262,21 @@ export default defineSchema({
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
+  // Per-request usage logs for the usage dashboard
+  usage_logs: defineTable({
+    user_id: v.string(),
+    model: v.string(),
+    type: v.union(v.literal("included"), v.literal("extra")),
+    input_tokens: v.number(),
+    output_tokens: v.number(),
+    cache_read_tokens: v.optional(v.number()),
+    cache_write_tokens: v.optional(v.number()),
+    total_tokens: v.number(),
+    cost_dollars: v.number(),
+  })
+    .index("by_user", ["user_id"])
+    .index("by_user_and_model", ["user_id", "model"]),
+
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({
     event_id: v.string(),

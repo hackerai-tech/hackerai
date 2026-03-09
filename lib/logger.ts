@@ -61,8 +61,7 @@ export interface ChatWideEvent {
   rate_limit?: {
     points_deducted?: number;
     extra_usage_points_deducted?: number;
-    session_remaining_percent?: number;
-    weekly_remaining_percent?: number;
+    monthly_remaining_percent?: number;
     free_remaining?: number;
   };
 
@@ -217,15 +216,13 @@ export class WideEventBuilder {
   setRateLimit(info: {
     pointsDeducted?: number;
     extraUsagePointsDeducted?: number;
-    sessionRemainingPercent?: number;
-    weeklyRemainingPercent?: number;
+    monthlyRemainingPercent?: number;
     freeRemaining?: number;
   }): this {
     this.event.rate_limit = {
       points_deducted: info.pointsDeducted,
       extra_usage_points_deducted: info.extraUsagePointsDeducted,
-      session_remaining_percent: info.sessionRemainingPercent,
-      weekly_remaining_percent: info.weeklyRemainingPercent,
+      monthly_remaining_percent: info.monthlyRemainingPercent,
       free_remaining: info.freeRemaining,
     };
     return this;
