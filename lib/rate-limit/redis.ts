@@ -49,6 +49,9 @@ export const formatTimeRemaining = (resetTime: Date): string => {
   if (hours < 24) {
     const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
     if (hours <= 0) {
+      if (minutes <= 0) {
+        return "in less than a minute";
+      }
       return `in ${minutes} minute${minutes > 1 ? "s" : ""}`;
     }
     return `in ${hours} hour${hours > 1 ? "s" : ""}${minutes > 0 ? ` and ${minutes} minute${minutes > 1 ? "s" : ""}` : ""}`;
