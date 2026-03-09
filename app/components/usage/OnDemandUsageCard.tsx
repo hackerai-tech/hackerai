@@ -19,6 +19,7 @@ const OnDemandUsageCard = ({ subscription }: OnDemandUsageCardProps) => {
   const extraUsageEnabled = userCustomization?.extra_usage_enabled ?? false;
   const monthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
   const monthlySpentDollars = extraUsageSettings?.monthlySpentDollars ?? 0;
+  const balanceDollars = extraUsageSettings?.balanceDollars ?? 0;
 
   const handleOpenExtraUsage = () => {
     openSettingsDialog("Extra Usage");
@@ -30,7 +31,7 @@ const OnDemandUsageCard = ({ subscription }: OnDemandUsageCardProps) => {
         On-Demand Usage
         {subscription === "team" ? " (Team)" : ""}
       </p>
-      {extraUsageEnabled && extraUsageSettings ? (
+      {extraUsageEnabled ? (
         <>
           <div className="flex items-baseline gap-1.5">
             <span className="text-2xl font-semibold tabular-nums">
@@ -48,8 +49,8 @@ const OnDemandUsageCard = ({ subscription }: OnDemandUsageCardProps) => {
             Pay for extra usage beyond your plan limits.
           </p>
           <div className="text-xs text-muted-foreground">
-            ${extraUsageSettings.balanceDollars.toFixed(2)} balance
-            {extraUsageSettings.autoReloadEnabled && (
+            ${balanceDollars.toFixed(2)} balance
+            {extraUsageSettings?.autoReloadEnabled && (
               <span> · Auto-reload on</span>
             )}
           </div>
