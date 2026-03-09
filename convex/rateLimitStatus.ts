@@ -8,6 +8,20 @@ import {
 } from "../lib/rate-limit/token-bucket";
 import type { SubscriptionTier } from "../types";
 
+// Cache dynamic imports to avoid re-importing on every action call
+let _cachedModules: { Ratelimit: any; Redis: any } | null = null;
+async function getCachedModules() {
+  if (!_cachedModules) {
+    const ratelimitModule = await import("@upstash/ratelimit");
+    const redisModule = await import("@upstash/redis");
+    _cachedModules = {
+      Ratelimit: ratelimitModule.default.Ratelimit,
+      Redis: redisModule.Redis,
+    };
+  }
+  return _cachedModules;
+}
+
 /**
  * Get the current rate limit status for the authenticated user.
  *
@@ -87,11 +101,9 @@ export const getAgentRateLimitStatus = action({
     }
 
     try {
-      // Dynamic imports in Convex Node runtime expose modules via .default
-      const ratelimitModule = await import("@upstash/ratelimit");
-      const Ratelimit = ratelimitModule.default.Ratelimit;
-
-      const { Redis } = await import("@upstash/redis");
+      // Dynamic imports in Convex Node runtime expose modules via .default.
+      // Cache at module level to avoid re-importing on every call.
+      const { Ratelimit, Redis } = await getCachedModules();
 
       const redis = new Redis({
         url: redisUrl,

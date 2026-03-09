@@ -5,6 +5,7 @@ import type { RateLimitInfo } from "@/types";
 interface StepUsage {
   inputTokens?: number;
   outputTokens?: number;
+  totalTokens?: number;
   inputTokenDetails?: {
     cacheReadTokens?: number;
     cacheWriteTokens?: number;
@@ -19,6 +20,7 @@ interface StepUsage {
 export class UsageTracker {
   inputTokens = 0;
   outputTokens = 0;
+  totalTokens = 0;
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
@@ -29,6 +31,7 @@ export class UsageTracker {
   accumulateStep(usage: StepUsage) {
     this.inputTokens += usage.inputTokens || 0;
     this.outputTokens += usage.outputTokens || 0;
+    this.totalTokens += usage.totalTokens || 0;
     this.lastStepInputTokens = usage.inputTokens || 0;
     this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
     this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
@@ -108,6 +111,7 @@ export class UsageTracker {
       type: this.resolveUsageType(rateLimitInfo),
       inputTokens: this.inputTokens,
       outputTokens: this.outputTokens,
+      totalTokens: this.totalTokens || this.inputTokens + this.outputTokens,
       cacheReadTokens: this.cacheReadTokens || undefined,
       cacheWriteTokens: this.cacheWriteTokens || undefined,
       costDollars: this.computeCostDollars(selectedModel),

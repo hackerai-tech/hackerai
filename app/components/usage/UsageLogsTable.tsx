@@ -47,7 +47,9 @@ const fmtShort = (d: Date): string =>
   d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
 const formatCost = (dollars: number): string => {
-  return `$${dollars.toFixed(4)}`;
+  if (dollars === 0) return "$0.00";
+  if (dollars < 0.01) return `$${dollars.toFixed(4)}`;
+  return `$${dollars.toFixed(2)}`;
 };
 
 const formatTimestamp = (ms: number): string => {

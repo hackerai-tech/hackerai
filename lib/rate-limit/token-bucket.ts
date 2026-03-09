@@ -304,29 +304,22 @@ export const deductUsage = async (
     // If actual cost equals estimate, nothing more to do
     if (costDifference === 0) return;
 
-    // Otherwise, we need to charge the additional cost
+    // Otherwise, we need to charge the additional cost.
+    // Try to deduct the full amount from the bucket atomically.
     const additionalCost = costDifference;
+    const deductResult = await monthly.limiter.limit(monthly.key, {
+      rate: additionalCost,
+    });
 
-    // Check current bucket state to see if we need extra usage
-    const monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
-    const remaining = monthlyCheck.remaining;
-
-    // If bucket has capacity, deduct from it
-    if (remaining >= additionalCost) {
-      await monthly.limiter.limit(monthly.key, { rate: additionalCost });
+    // If the bucket covered it (remaining >= 0), we're done
+    if (deductResult.remaining >= 0) {
       return;
     }
 
-    // Split between bucket and extra usage
-    const fromBucket = Math.max(0, remaining);
-    const fromExtraUsage = additionalCost - fromBucket;
+    // Bucket was insufficient — the overshoot went negative.
+    // Deduct the overflow from extra usage if enabled.
+    const fromExtraUsage = Math.abs(deductResult.remaining);
 
-    // Deduct what we can from bucket
-    if (fromBucket > 0) {
-      await monthly.limiter.limit(monthly.key, { rate: fromBucket });
-    }
-
-    // Deduct remainder from extra usage if enabled
     if (
       fromExtraUsage > 0 &&
       extraUsageConfig?.enabled &&
@@ -390,11 +383,12 @@ export const resetRateLimitBuckets = async (
   try {
     await redis.del(monthlyKey);
 
-    // Re-seed the Upstash TTL so it aligns with this reset. Without this,
-    // the 30-day TTL can drift from the billing cycle and grant an extra
-    // free reset for both monthly and yearly subscribers.
+    // Re-seed the Upstash TTL so it aligns with this reset. The limit()
+    // call creates a fresh bucket, and the explicit expire() guarantees
+    // exactly 30 days regardless of any Upstash TTL drift.
     const { monthly } = createRateLimiter(redis, userId, subscription);
     await monthly.limiter.limit(monthly.key, { rate: 0 });
+    await redis.expire(monthlyKey, 30 * 24 * 60 * 60);
 
     console.log(
       `[resetRateLimitBuckets] Reset bucket for user ${userId} tier ${subscription}`,

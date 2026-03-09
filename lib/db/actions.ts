@@ -894,6 +894,7 @@ export async function logUsageRecord({
   type,
   inputTokens,
   outputTokens,
+  totalTokens,
   cacheReadTokens,
   cacheWriteTokens,
   costDollars,
@@ -903,6 +904,7 @@ export async function logUsageRecord({
   type: "included" | "extra";
   inputTokens: number;
   outputTokens: number;
+  totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   costDollars: number;
@@ -917,10 +919,18 @@ export async function logUsageRecord({
       output_tokens: outputTokens,
       cache_read_tokens: cacheReadTokens,
       cache_write_tokens: cacheWriteTokens,
-      total_tokens: inputTokens + outputTokens,
+      total_tokens: totalTokens,
       cost_dollars: costDollars,
     });
   } catch (error) {
-    console.error("Failed to log usage record:", error);
+    console.error("Failed to log usage record:", {
+      error,
+      userId,
+      model,
+      type,
+      costDollars,
+      inputTokens,
+      outputTokens,
+    });
   }
 }
