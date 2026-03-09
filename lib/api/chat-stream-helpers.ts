@@ -13,6 +13,7 @@ import { countMessagesTokens } from "@/lib/token-utils";
 import {
   checkAndSummarizeIfNeeded,
   type EnsureSandbox,
+  type SummarizationUsage,
 } from "@/lib/chat/summarization";
 import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
@@ -239,6 +240,7 @@ export interface SummarizationStepResult {
   needsSummarization: boolean;
   summarizedMessages?: UIMessage[];
   contextUsage?: ContextUsageData;
+  summarizationUsage?: SummarizationUsage;
 }
 
 export async function runSummarizationStep(options: {
@@ -257,7 +259,7 @@ export async function runSummarizationStep(options: {
   ctxMaxTokens: number;
   providerInputTokens?: number;
 }): Promise<SummarizationStepResult> {
-  const { needsSummarization, summarizedMessages } =
+  const { needsSummarization, summarizedMessages, summarizationUsage } =
     await checkAndSummarizeIfNeeded(
       options.messages,
       options.subscription,
@@ -290,7 +292,12 @@ export async function runSummarizationStep(options: {
     writeContextUsage(options.writer, contextUsage);
   }
 
-  return { needsSummarization: true, summarizedMessages, contextUsage };
+  return {
+    needsSummarization: true,
+    summarizedMessages,
+    contextUsage,
+    summarizationUsage,
+  };
 }
 
 /**
@@ -374,11 +381,6 @@ export async function injectNotesIntoMessages(
     });
     const notesContent = generateNotesSection(notes);
     if (!notesContent) return messages;
-
-    logger.warn("Notes injected via system-reminder", {
-      userId: opts.userId,
-      noteCount: notes?.length ?? 0,
-    });
 
     return appendSystemReminderToLastUserMessage(messages, notesContent);
   } catch (error) {

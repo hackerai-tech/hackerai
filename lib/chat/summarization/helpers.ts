@@ -22,11 +22,18 @@ import {
   ASK_SUMMARIZATION_PROMPT,
 } from "./prompts";
 
+export interface SummarizationUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cost?: number;
+}
+
 export interface SummarizationResult {
   needsSummarization: boolean;
   summarizedMessages: UIMessage[];
   cutoffMessageId: string | null;
   summaryText: string | null;
+  summarizationUsage?: SummarizationUsage;
 }
 
 export const NO_SUMMARIZATION = (
@@ -99,7 +106,7 @@ export const generateSummaryText = async (
   mode: ChatMode,
   abortSignal?: AbortSignal,
   existingSummaryText?: string,
-): Promise<string> => {
+): Promise<{ text: string; usage: SummarizationUsage }> => {
   const basePrompt = getSummarizationPrompt(mode);
   const system = existingSummaryText
     ? `${basePrompt}\n\nIMPORTANT: You are performing an INCREMENTAL summarization. A previous summary of earlier conversation exists below. Your job is to produce a single, unified summary that merges the previous summary with the NEW messages provided. Do NOT summarize the summary — instead, integrate new information into a comprehensive updated summary.\n\n<previous_summary>\n${existingSummaryText}\n</previous_summary>`
@@ -121,7 +128,15 @@ export const generateSummaryText = async (
       },
     ],
   });
-  return result.text;
+  const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
+  return {
+    text: result.text,
+    usage: {
+      inputTokens: result.usage?.inputTokens ?? 0,
+      outputTokens: result.usage?.outputTokens ?? 0,
+      ...(providerCost ? { cost: providerCost } : undefined),
+    },
+  };
 };
 
 export const buildSummaryMessage = (

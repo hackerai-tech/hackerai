@@ -24,7 +24,7 @@ import {
 import { formatTranscript } from "./transcript-formatter";
 import type { SummarizationResult } from "./helpers";
 
-export type { SummarizationResult } from "./helpers";
+export type { SummarizationResult, SummarizationUsage } from "./helpers";
 
 export type EnsureSandbox = () => Promise<AnySandbox>;
 
@@ -156,11 +156,12 @@ export const checkAndSummarizeIfNeeded = async (
             })
         : Promise.resolve(null);
 
-    const [summaryText, savedPath] = await Promise.all([
+    const [summaryResult, savedPath] = await Promise.all([
       summaryPromise,
       transcriptPromise,
     ]);
 
+    const { text: summaryText, usage: summarizationUsage } = summaryResult;
     let finalSummaryText = summaryText;
     if (savedPath) {
       finalSummaryText += buildTranscriptNotice(savedPath);
@@ -175,6 +176,7 @@ export const checkAndSummarizeIfNeeded = async (
       summarizedMessages: [summaryMessage, ...lastMessages],
       cutoffMessageId,
       summaryText: finalSummaryText,
+      summarizationUsage,
     };
   } catch (error) {
     if (abortSignal?.aborted) {
