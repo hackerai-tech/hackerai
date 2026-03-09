@@ -5,6 +5,14 @@ import { validateServiceKey } from "./lib/utils";
 
 const typeValidator = v.union(v.literal("included"), v.literal("extra"));
 
+const cleanModelName = (model: string): string =>
+  model
+    .replace(/^model-/, "")
+    .replace(/^fallback-/, "")
+    .replace(/-model$/, "")
+    .replace(/^[a-z-]+\//, "")
+    .replace(/-\d{8}$/, "");
+
 /**
  * Insert a usage log record (called from backend after each request).
  */
@@ -74,7 +82,7 @@ export const getUserUsageLogs = query({
       page: results.page.map((log) => ({
         _id: log._id,
         _creationTime: log._creationTime,
-        model: log.model,
+        model: cleanModelName(log.model),
         type: log.type as "included" | "extra",
         input_tokens: log.input_tokens,
         output_tokens: log.output_tokens,

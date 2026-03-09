@@ -11,11 +11,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { RefreshCw, Download, ChevronDown } from "lucide-react";
-import {
-  Tooltip,
-  TooltipTrigger,
-  TooltipContent,
-} from "@/components/ui/tooltip";
+import { TokenBreakdownTooltip } from "@/app/components/usage/TokenBreakdownTooltip";
 import type { DateRange } from "react-day-picker";
 
 type Preset = "1d" | "7d" | "30d" | "custom";
@@ -50,12 +46,6 @@ const endOfDay = (d: Date): Date => {
 const fmtShort = (d: Date): string =>
   d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
-const formatTokenCount = (tokens: number): string => {
-  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
-  return tokens.toString();
-};
-
 const formatCost = (dollars: number): string => {
   return `$${dollars.toFixed(4)}`;
 };
@@ -68,13 +58,6 @@ const formatTimestamp = (ms: number): string => {
     hour: "2-digit",
     minute: "2-digit",
   });
-};
-
-const cleanModelName = (model: string): string => {
-  return model
-    .replace(/^model-/, "")
-    .replace(/^fallback-/, "")
-    .replace(/-model$/, "");
 };
 
 const UsageLogsTable = () => {
@@ -140,7 +123,7 @@ const UsageLogsTable = () => {
     const rows = results.map((log) => [
       new Date(log._creationTime).toISOString(),
       log.type === "included" ? "Included" : "Extra Usage",
-      cleanModelName(log.model),
+      log.model,
       (log.cache_read_tokens ?? 0).toString(),
       (log.cache_write_tokens ?? 0).toString(),
       log.input_tokens.toString(),
@@ -296,64 +279,16 @@ const UsageLogsTable = () => {
                     {log.type === "included" ? "Included" : "Extra"}
                   </td>
                   <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
-                    {cleanModelName(log.model)}
+                    {log.model}
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span
-                          className="cursor-default border-b border-dotted border-muted-foreground/40"
-                          tabIndex={0}
-                          aria-label={`Token breakdown for ${formatTokenCount(log.total_tokens)} tokens`}
-                        >
-                          {formatTokenCount(log.total_tokens)}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent side="left" className="p-0">
-                        <table className="text-xs tabular-nums">
-                          <tbody>
-                            <tr className="border-b border-border/50">
-                              <td className="px-3 py-1.5 text-muted-foreground">
-                                Cache Read
-                              </td>
-                              <td className="px-3 py-1.5 text-right font-medium">
-                                {(log.cache_read_tokens ?? 0).toLocaleString()}
-                              </td>
-                            </tr>
-                            <tr className="border-b border-border/50">
-                              <td className="px-3 py-1.5 text-muted-foreground">
-                                Cache Write
-                              </td>
-                              <td className="px-3 py-1.5 text-right font-medium">
-                                {(log.cache_write_tokens ?? 0).toLocaleString()}
-                              </td>
-                            </tr>
-                            <tr className="border-b border-border/50">
-                              <td className="px-3 py-1.5 text-muted-foreground">
-                                Input
-                              </td>
-                              <td className="px-3 py-1.5 text-right font-medium">
-                                {log.input_tokens.toLocaleString()}
-                              </td>
-                            </tr>
-                            <tr className="border-b border-border/50">
-                              <td className="px-3 py-1.5 text-muted-foreground">
-                                Output
-                              </td>
-                              <td className="px-3 py-1.5 text-right font-medium">
-                                {log.output_tokens.toLocaleString()}
-                              </td>
-                            </tr>
-                            <tr>
-                              <td className="px-3 py-1.5 font-medium">Total</td>
-                              <td className="px-3 py-1.5 text-right font-semibold">
-                                {log.total_tokens.toLocaleString()}
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </TooltipContent>
-                    </Tooltip>
+                    <TokenBreakdownTooltip
+                      totalTokens={log.total_tokens}
+                      inputTokens={log.input_tokens}
+                      outputTokens={log.output_tokens}
+                      cacheReadTokens={log.cache_read_tokens}
+                      cacheWriteTokens={log.cache_write_tokens}
+                    />
                   </td>
                   <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
                     {formatCost(log.cost_dollars)}

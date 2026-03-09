@@ -31,9 +31,8 @@ import {
   checkRateLimit,
   deductUsage,
   UsageRefundTracker,
-  calculateTokenCost,
-  POINTS_PER_DOLLAR,
 } from "@/lib/rate-limit";
+import { UsageTracker } from "@/lib/usage-tracker";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
 import {
   countMessagesTokens,
@@ -70,7 +69,6 @@ import {
   startStream,
   startTempStream,
   deleteTempStreamForBackend,
-  logUsageRecord,
 } from "@/lib/db/actions";
 import {
   createCancellationSubscriber,
@@ -528,67 +526,33 @@ export const createChatHandler = (
           const fallbackModel =
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
 
-          // Accumulated usage across all steps for deduction
-          let accumulatedInputTokens = 0;
-          let accumulatedOutputTokens = 0;
-          let accumulatedCacheReadTokens = 0;
-          let accumulatedCacheWriteTokens = 0;
-          let accumulatedProviderCost = 0;
+          const usageTracker = new UsageTracker();
           let hasDeductedUsage = false;
 
-          // Helper to deduct accumulated usage (called from multiple exit points)
           const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
-            if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
-              hasDeductedUsage = true;
-              await deductUsage(
-                userId,
-                subscription,
-                estimatedInputTokens,
-                accumulatedInputTokens,
-                accumulatedOutputTokens,
-                extraUsageConfig,
-                accumulatedProviderCost > 0
-                  ? accumulatedProviderCost
-                  : undefined,
-                selectedModel,
-              );
-
-              const costDollars =
-                accumulatedProviderCost > 0
-                  ? accumulatedProviderCost
-                  : (calculateTokenCost(
-                      accumulatedInputTokens,
-                      "input",
-                      selectedModel,
-                    ) +
-                      calculateTokenCost(
-                        accumulatedOutputTokens,
-                        "output",
-                        selectedModel,
-                      )) /
-                    POINTS_PER_DOLLAR;
-
-              const usageType =
-                rateLimitInfo.extraUsagePointsDeducted &&
-                rateLimitInfo.extraUsagePointsDeducted > 0
-                  ? ("extra" as const)
-                  : ("included" as const);
-
-              logUsageRecord({
-                userId,
-                model:
-                  !selectedModelOverride || selectedModelOverride === "auto"
-                    ? "auto"
-                    : responseModel || configuredModelId || selectedModel,
-                type: usageType,
-                inputTokens: accumulatedInputTokens,
-                outputTokens: accumulatedOutputTokens,
-                cacheReadTokens: accumulatedCacheReadTokens || undefined,
-                cacheWriteTokens: accumulatedCacheWriteTokens || undefined,
-                costDollars,
-              });
-            }
+            if (!usageTracker.hasUsage) return;
+            hasDeductedUsage = true;
+            await deductUsage(
+              userId,
+              subscription,
+              estimatedInputTokens,
+              usageTracker.inputTokens,
+              usageTracker.outputTokens,
+              extraUsageConfig,
+              usageTracker.providerCost > 0
+                ? usageTracker.providerCost
+                : undefined,
+              selectedModel,
+            );
+            usageTracker.log({
+              userId,
+              selectedModel,
+              selectedModelOverride,
+              responseModel,
+              configuredModelId,
+              rateLimitInfo,
+            });
           };
 
           // Helper to create streamText with a given model (reused for retry)
@@ -728,22 +692,10 @@ export const createChatHandler = (
               },
               onStepFinish: async ({ usage }) => {
                 if (usage) {
-                  accumulatedInputTokens += usage.inputTokens || 0;
-                  accumulatedOutputTokens += usage.outputTokens || 0;
+                  usageTracker.accumulateStep(
+                    usage as Parameters<typeof usageTracker.accumulateStep>[0],
+                  );
                   lastStepInputTokens = usage.inputTokens || 0;
-                  const cacheUsage = usage as {
-                    cacheReadInputTokens?: number;
-                    cacheCreationInputTokens?: number;
-                    raw?: { cost?: number };
-                  };
-                  accumulatedCacheReadTokens +=
-                    cacheUsage.cacheReadInputTokens || 0;
-                  accumulatedCacheWriteTokens +=
-                    cacheUsage.cacheCreationInputTokens || 0;
-                  const stepCost = cacheUsage.raw?.cost;
-                  if (stepCost) {
-                    accumulatedProviderCost += stepCost;
-                  }
                 }
               },
               onFinish: async ({ finishReason, usage, response }) => {
@@ -1243,7 +1195,7 @@ export const createChatHandler = (
                   writeContextUsage(writer, {
                     ...ctxUsage,
                     messagesTokens:
-                      ctxUsage.messagesTokens + accumulatedOutputTokens,
+                      ctxUsage.messagesTokens + usageTracker.outputTokens,
                   });
                 }
 

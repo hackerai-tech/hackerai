@@ -85,7 +85,6 @@ const SettingsDialog = ({
           ]
         : [...baseTabs, accountTab];
 
-  // Switch to initialTab when dialog opens or when initialTab changes while open
   const [prevInitialTab, setPrevInitialTab] = useState<string | null>(null);
 
   if (
