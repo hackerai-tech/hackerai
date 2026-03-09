@@ -16,7 +16,13 @@ export async function GET(request: Request) {
       );
     }
 
-    const state = await createOAuthState();
+    // Pass dev callback port through OAuth state for dev mode auth
+    const devCallbackPort = url.searchParams.get("dev_callback_port");
+    const metadata = devCallbackPort
+      ? { devCallbackPort: parseInt(devCallbackPort, 10) }
+      : undefined;
+
+    const state = await createOAuthState(metadata);
     if (!state) {
       console.error("[Desktop Login] Failed to create OAuth state");
       return NextResponse.redirect(
