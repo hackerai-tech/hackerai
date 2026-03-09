@@ -593,6 +593,16 @@ export const createChatHandler = (
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
                       );
+                      if (result.summarizationUsage) {
+                        accumulatedInputTokens +=
+                          result.summarizationUsage.inputTokens;
+                        accumulatedOutputTokens +=
+                          result.summarizationUsage.outputTokens;
+                        if (result.summarizationUsage.cost) {
+                          accumulatedProviderCost +=
+                            result.summarizationUsage.cost;
+                        }
+                      }
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
                       }
