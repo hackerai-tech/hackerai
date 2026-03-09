@@ -598,6 +598,8 @@ export const createChatHandler = (
                           result.summarizationUsage.inputTokens;
                         usageTracker.outputTokens +=
                           result.summarizationUsage.outputTokens;
+                        usageTracker.summarizationOutputTokens +=
+                          result.summarizationUsage.outputTokens;
                         if (result.summarizationUsage.cost) {
                           usageTracker.providerCost +=
                             result.summarizationUsage.cost;
@@ -1205,7 +1207,7 @@ export const createChatHandler = (
                   writeContextUsage(writer, {
                     ...ctxUsage,
                     messagesTokens:
-                      ctxUsage.messagesTokens + usageTracker.outputTokens,
+                      ctxUsage.messagesTokens + usageTracker.streamOutputTokens,
                   });
                 }
 

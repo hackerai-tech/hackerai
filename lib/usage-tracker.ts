@@ -23,6 +23,8 @@ export class UsageTracker {
   cacheWriteTokens = 0;
   providerCost = 0;
   lastStepInputTokens = 0;
+  /** Output tokens from summarization (not from assistant responses) */
+  summarizationOutputTokens = 0;
 
   accumulateStep(usage: StepUsage) {
     this.inputTokens += usage.inputTokens || 0;
@@ -36,8 +38,15 @@ export class UsageTracker {
     }
   }
 
+  /** Output tokens from the streamed response only (excludes summarization) */
+  get streamOutputTokens(): number {
+    return this.outputTokens - this.summarizationOutputTokens;
+  }
+
   get hasUsage(): boolean {
-    return this.inputTokens > 0 || this.outputTokens > 0;
+    return (
+      this.inputTokens > 0 || this.outputTokens > 0 || this.providerCost > 0
+    );
   }
 
   computeCostDollars(selectedModel: string): number {
