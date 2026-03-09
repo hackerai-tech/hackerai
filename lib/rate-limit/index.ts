@@ -36,7 +36,10 @@ export {
 } from "./token-bucket";
 
 // Re-export sliding window functions
-export { checkFreeUserRateLimit } from "./sliding-window";
+export {
+  checkFreeUserRateLimit,
+  consumeFreeUserRateLimit,
+} from "./sliding-window";
 
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
