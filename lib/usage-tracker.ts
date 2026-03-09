@@ -5,8 +5,10 @@ import type { RateLimitInfo } from "@/types";
 interface StepUsage {
   inputTokens?: number;
   outputTokens?: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
+  inputTokenDetails?: {
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+  };
   raw?: { cost?: number };
 }
 
@@ -26,8 +28,8 @@ export class UsageTracker {
     this.inputTokens += usage.inputTokens || 0;
     this.outputTokens += usage.outputTokens || 0;
     this.lastStepInputTokens = usage.inputTokens || 0;
-    this.cacheReadTokens += usage.cacheReadInputTokens || 0;
-    this.cacheWriteTokens += usage.cacheCreationInputTokens || 0;
+    this.cacheReadTokens += usage.inputTokenDetails?.cacheReadTokens || 0;
+    this.cacheWriteTokens += usage.inputTokenDetails?.cacheWriteTokens || 0;
     const stepCost = usage.raw?.cost;
     if (stepCost) {
       this.providerCost += stepCost;
