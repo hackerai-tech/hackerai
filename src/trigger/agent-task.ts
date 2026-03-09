@@ -224,6 +224,7 @@ export const agentStreamTask = task({
         getFileAccumulator,
         sandboxManager,
         ensureSandbox,
+        getSandboxSessionCost,
       } = createTools(
         userId,
         chatId,
@@ -371,6 +372,12 @@ export const agentStreamTask = task({
 
       const deductAccumulatedUsage = async () => {
         if (hasDeductedUsage || subscription === "free") return;
+        // Add E2B sandbox session cost (duration-based)
+        const sandboxCost = getSandboxSessionCost();
+        if (sandboxCost > 0) {
+          accumulatedProviderCost += sandboxCost;
+          chatLogger.getBuilder().addToolCost(sandboxCost);
+        }
         if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
           await deductUsage(
             userId,

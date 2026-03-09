@@ -57,24 +57,31 @@ export const createTools = (
   onToolCost?: (costDollars: number) => void,
 ) => {
   let sandbox: AnySandbox | null = null;
+  let sandboxFirstUsedAt: number | null = null;
+
+  // E2B sandbox cost: ~$0.05/hour for 4-core 2GB
+  const E2B_COST_PER_MS = 0.05 / (60 * 60 * 1000);
+
+  const trackSandboxUsage = (newSandbox: AnySandbox) => {
+    sandbox = newSandbox;
+    if (!sandboxFirstUsedAt && isE2BSandbox(newSandbox)) {
+      sandboxFirstUsedAt = Date.now();
+    }
+  };
 
   // Use HybridSandboxManager if sandboxPreference and serviceKey are provided
   const sandboxManager =
     sandboxPreference && serviceKey
       ? new HybridSandboxManager(
           userID,
-          (newSandbox) => {
-            sandbox = newSandbox;
-          },
+          trackSandboxUsage,
           sandboxPreference,
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
         )
       : new DefaultSandboxManager(
           userID,
-          (newSandbox) => {
-            sandbox = newSandbox;
-          },
+          trackSandboxUsage,
           isE2BSandbox(sandbox) ? sandbox : null,
         );
 
@@ -156,6 +163,11 @@ export const createTools = (
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;
 
+  const getSandboxSessionCost = (): number => {
+    if (!sandboxFirstUsedAt) return 0;
+    return (Date.now() - sandboxFirstUsedAt) * E2B_COST_PER_MS;
+  };
+
   return {
     tools,
     getSandbox,
@@ -163,6 +175,7 @@ export const createTools = (
     getTodoManager,
     getFileAccumulator,
     sandboxManager,
+    getSandboxSessionCost,
   };
 };
 
