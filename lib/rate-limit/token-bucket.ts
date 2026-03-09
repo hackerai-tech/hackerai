@@ -389,6 +389,13 @@ export const resetRateLimitBuckets = async (
 
   try {
     await redis.del(monthlyKey);
+
+    // Re-seed the Upstash TTL so it aligns with this reset. Without this,
+    // the 30-day TTL can drift from the billing cycle and grant an extra
+    // free reset for both monthly and yearly subscribers.
+    const { monthly } = createRateLimiter(redis, userId, subscription);
+    await monthly.limiter.limit(monthly.key, { rate: 0 });
+
     console.log(
       `[resetRateLimitBuckets] Reset bucket for user ${userId} tier ${subscription}`,
     );
