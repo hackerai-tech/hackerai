@@ -34,11 +34,11 @@ const OnDemandUsageCard = ({ subscription }: OnDemandUsageCardProps) => {
         <>
           <div className="flex items-baseline gap-1.5">
             <span className="text-2xl font-semibold tabular-nums">
-              ${monthlySpentDollars.toFixed(0)}
+              ${monthlySpentDollars.toFixed(2)}
             </span>
             {monthlyCapDollars ? (
               <span className="text-sm text-muted-foreground">
-                / ${monthlyCapDollars.toFixed(0)}
+                / ${monthlyCapDollars.toFixed(2)}
               </span>
             ) : (
               <span className="text-sm text-muted-foreground">/ No limit</span>
