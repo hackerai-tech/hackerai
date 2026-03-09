@@ -323,8 +323,7 @@ export const createChatHandler = (
         {
           pointsDeducted: rateLimitInfo.pointsDeducted,
           extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
-          session: rateLimitInfo.session,
-          weekly: rateLimitInfo.weekly,
+          monthly: rateLimitInfo.monthly,
           remaining: rateLimitInfo.remaining,
           subscription,
         },

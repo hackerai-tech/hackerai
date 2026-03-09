@@ -1,9 +1,9 @@
 import { describe, it, expect } from "@jest/globals";
-import { PRICING } from "@/lib/pricing/features";
 
 import {
   calculateTokenCost,
   getBudgetLimits,
+  getSubscriptionPrice,
   POINTS_PER_DOLLAR,
 } from "../token-bucket";
 
@@ -66,59 +66,92 @@ describe("token-bucket", () => {
   });
 
   // ==========================================================================
-  // getBudgetLimits - Subscription tier limits
+  // getBudgetLimits - Subscription tier limits (monthly credit pool)
   // ==========================================================================
   describe("getBudgetLimits", () => {
-    it("should return 0 limits for free tier", () => {
+    it("should return 0 limit for free tier", () => {
       const limits = getBudgetLimits("free");
-      expect(limits.session).toBe(0);
-      expect(limits.weekly).toBe(0);
+      expect(limits.monthly).toBe(0);
     });
 
-    it("should calculate pro tier limits correctly", () => {
+    it("should return fixed monthly credits for pro tier ($25)", () => {
       const limits = getBudgetLimits("pro");
-      const monthlyPoints = PRICING.pro.monthly * POINTS_PER_DOLLAR;
-
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
+      expect(limits.monthly).toBe(250_000);
     });
 
-    it("should calculate ultra tier limits correctly (using monthly price)", () => {
+    it("should return fixed monthly credits for pro-plus tier ($60)", () => {
+      const limits = getBudgetLimits("pro-plus");
+      expect(limits.monthly).toBe(600_000);
+    });
+
+    it("should return fixed monthly credits for ultra tier ($200)", () => {
       const limits = getBudgetLimits("ultra");
-      const monthlyPoints = PRICING.ultra.monthly * POINTS_PER_DOLLAR;
-
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
+      expect(limits.monthly).toBe(2_000_000);
     });
 
-    it("should calculate team tier limits correctly (using monthly price)", () => {
+    it("should return fixed monthly credits for team tier ($40)", () => {
       const limits = getBudgetLimits("team");
-      const monthlyPoints = PRICING.team.monthly * POINTS_PER_DOLLAR;
-
-      expect(limits.session).toBe(Math.round(monthlyPoints / 30));
-      expect(limits.weekly).toBe(Math.round((monthlyPoints * 7) / 30));
+      expect(limits.monthly).toBe(400_000);
     });
 
-    it("ultra should have ~8x more weekly limits than pro (price ratio)", () => {
+    it("ultra should have 8x more monthly credits than pro", () => {
       const proLimits = getBudgetLimits("pro");
       const ultraLimits = getBudgetLimits("ultra");
 
-      // Ratio based on monthly prices
-      const expectedRatio = PRICING.ultra.monthly / PRICING.pro.monthly;
-      expect(ultraLimits.weekly / proLimits.weekly).toBeCloseTo(
-        expectedRatio,
-        1,
-      );
+      expect(ultraLimits.monthly / proLimits.monthly).toBe(8);
     });
 
-    it("weekly limit should be ~7x session limit for all paid tiers", () => {
+    it("pro-plus should have 2.4x more monthly credits than pro", () => {
       const proLimits = getBudgetLimits("pro");
-      const ultraLimits = getBudgetLimits("ultra");
+      const proPlusLimits = getBudgetLimits("pro-plus");
+
+      expect(proPlusLimits.monthly / proLimits.monthly).toBe(2.4);
+    });
+
+    it("team should have 1.6x more monthly credits than pro", () => {
+      const proLimits = getBudgetLimits("pro");
       const teamLimits = getBudgetLimits("team");
 
-      expect(proLimits.weekly / proLimits.session).toBeCloseTo(7, 1);
-      expect(ultraLimits.weekly / ultraLimits.session).toBeCloseTo(7, 1);
-      expect(teamLimits.weekly / teamLimits.session).toBeCloseTo(7, 1);
+      expect(teamLimits.monthly / proLimits.monthly).toBe(1.6);
+    });
+
+    it("should return 0 for unknown subscription tier", () => {
+      const limits = getBudgetLimits("nonexistent" as any);
+      expect(limits.monthly).toBe(0);
+    });
+  });
+
+  // ==========================================================================
+  // getSubscriptionPrice - Dollar amount from credits
+  // ==========================================================================
+  describe("getSubscriptionPrice", () => {
+    it("should return 0 for free tier", () => {
+      expect(getSubscriptionPrice("free")).toBe(0);
+    });
+
+    it("should return subscription price in dollars for each tier", () => {
+      expect(getSubscriptionPrice("pro")).toBe(25);
+      expect(getSubscriptionPrice("pro-plus")).toBe(60);
+      expect(getSubscriptionPrice("ultra")).toBe(200);
+      expect(getSubscriptionPrice("team")).toBe(40);
+    });
+
+    it("should return 0 for unknown tier", () => {
+      expect(getSubscriptionPrice("nonexistent" as any)).toBe(0);
+    });
+
+    it("should be consistent with getBudgetLimits", () => {
+      for (const tier of [
+        "free",
+        "pro",
+        "pro-plus",
+        "ultra",
+        "team",
+      ] as const) {
+        const dollars = getSubscriptionPrice(tier);
+        const points = getBudgetLimits(tier).monthly;
+        expect(dollars).toBe(points / POINTS_PER_DOLLAR);
+      }
     });
   });
 
@@ -146,13 +179,12 @@ describe("token-bucket", () => {
       expect(totalCost).toBe(25);
     });
 
-    it("pro user should afford many typical conversations per session", () => {
-      const sessionBudget = getBudgetLimits("pro").session;
+    it("pro user should afford many typical conversations per month", () => {
+      const monthlyBudget = getBudgetLimits("pro").monthly;
       const typicalCost = 25; // points per conversation
 
-      const conversationsPerSession = Math.floor(sessionBudget / typicalCost);
-      // With yearly pricing, budget is lower but still allows many conversations
-      expect(conversationsPerSession).toBeGreaterThan(250);
+      const conversationsPerMonth = Math.floor(monthlyBudget / typicalCost);
+      expect(conversationsPerMonth).toBe(10000);
     });
 
     it("long context request should cost proportionally more", () => {
@@ -218,7 +250,7 @@ describe("token-bucket", () => {
     });
 
     it("expensive models should deplete budget faster", () => {
-      const sessionBudget = getBudgetLimits("pro").session;
+      const monthlyBudget = getBudgetLimits("pro").monthly;
       // Typical conversation: 2000 input + 500 output tokens
       const defaultCost =
         calculateTokenCost(2000, "input") + calculateTokenCost(500, "output");
@@ -226,8 +258,8 @@ describe("token-bucket", () => {
         calculateTokenCost(2000, "input", "model-sonnet-4.6") +
         calculateTokenCost(500, "output", "model-sonnet-4.6");
 
-      const defaultConversations = Math.floor(sessionBudget / defaultCost);
-      const sonnetConversations = Math.floor(sessionBudget / sonnetCost);
+      const defaultConversations = Math.floor(monthlyBudget / defaultCost);
+      const sonnetConversations = Math.floor(monthlyBudget / sonnetCost);
 
       expect(defaultConversations).toBeGreaterThan(sonnetConversations);
     });

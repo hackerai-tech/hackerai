@@ -38,15 +38,10 @@ import type { SandboxFile } from "@/lib/utils/sandbox-file-utils";
 /** Serializable rate limit info for Trigger.dev payload (Date -> ISO string) */
 export type SerializableRateLimitInfo = Omit<
   RateLimitInfo,
-  "resetTime" | "session" | "weekly"
+  "resetTime" | "monthly"
 > & {
   resetTime: string;
-  session?: {
-    remaining: number;
-    limit: number;
-    resetTime: string;
-  };
-  weekly?: {
+  monthly?: {
     remaining: number;
     limit: number;
     resetTime: string;
@@ -91,22 +86,13 @@ function serializeRateLimitInfo(
       typeof info.resetTime === "string"
         ? info.resetTime
         : info.resetTime.toISOString(),
-    session: info.session
+    monthly: info.monthly
       ? {
-          ...info.session,
+          ...info.monthly,
           resetTime:
-            typeof info.session.resetTime === "string"
-              ? info.session.resetTime
-              : info.session.resetTime.toISOString(),
-        }
-      : undefined,
-    weekly: info.weekly
-      ? {
-          ...info.weekly,
-          resetTime:
-            typeof info.weekly.resetTime === "string"
-              ? info.weekly.resetTime
-              : info.weekly.resetTime.toISOString(),
+            typeof info.monthly.resetTime === "string"
+              ? info.monthly.resetTime
+              : info.monthly.resetTime.toISOString(),
         }
       : undefined,
   };

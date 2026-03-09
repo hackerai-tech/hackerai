@@ -6,8 +6,7 @@
  * 1. Token Bucket (Paid users - Pro, Pro+, Ultra, Team):
  *    - Used for both Agent and Ask modes (shared budget)
  *    - Points consumed based on token usage costs
- *    - Session bucket: daily budget, refills every 5 hours
- *    - Weekly bucket: weekly budget, refills every 7 days
+ *    - Single monthly bucket: credits = subscription price, refills every 30 days
  *    - Supports extra usage (prepaid balance) when limits exceeded
  *
  * 2. Sliding Window (Free users - Ask mode only):

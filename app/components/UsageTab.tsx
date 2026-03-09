@@ -19,10 +19,8 @@ type UsageLimitStatus = {
 
 // Token usage status type
 type TokenUsageStatus = {
-  session: UsageLimitStatus;
-  weekly: UsageLimitStatus;
-  dailyBudgetUsd: number;
-  weeklyBudgetUsd: number;
+  monthly: UsageLimitStatus;
+  monthlyBudgetUsd: number;
 };
 
 const UsageTab = () => {
@@ -59,8 +57,8 @@ const UsageTab = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscription]);
 
-  // Format reset time for session (hours/minutes)
-  const formatSessionResetTime = (resetTime: string | null): string => {
+  // Format reset time for monthly (date and time)
+  const formatMonthlyResetTime = (resetTime: string | null): string => {
     if (!resetTime) return "Unknown";
     const reset = new Date(resetTime);
     const now = new Date();
@@ -68,33 +66,25 @@ const UsageTab = () => {
 
     if (diffMs <= 0) return "Resetting soon...";
 
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const hours = Math.floor(
+      (diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60),
+    );
 
-    if (hours > 0) {
-      return `Resets in ${hours} hr ${minutes} min`;
+    if (days > 0) {
+      return `Resets in ${days}d ${hours}h`;
     }
-    return `Resets in ${minutes} min`;
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 0) {
+      return `Resets in ${hours}h ${minutes}m`;
+    }
+    return `Resets in ${minutes}m`;
   };
 
-  // Format reset time for weekly (day and time)
-  const formatWeeklyResetTime = (resetTime: string | null): string => {
-    if (!resetTime) return "Unknown";
-    const reset = new Date(resetTime);
-    const now = new Date();
-    const diffMs = reset.getTime() - now.getTime();
-
-    if (diffMs <= 0) return "Resetting soon...";
-
-    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const dayName = days[reset.getDay()];
-    const hours = reset.getHours();
-    const minutes = reset.getMinutes();
-    const ampm = hours >= 12 ? "PM" : "AM";
-    const hour12 = hours % 12 || 12;
-    const timeStr = `${hour12}:${minutes.toString().padStart(2, "0")}${ampm}`;
-
-    return `Resets ${dayName} at ${timeStr}`;
+  // Format points as dollar amount
+  const formatPointsAsDollars = (points: number): string => {
+    const dollars = points / 10_000;
+    return `$${dollars.toFixed(2)}`;
   };
 
   // Get color class based on usage percentage
@@ -138,47 +128,24 @@ const UsageTab = () => {
 
       {tokenUsage ? (
         <div className="space-y-6">
-          {/* Agent Mode Session */}
+          {/* Monthly Usage */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <div>
-                <div className="font-medium text-sm">Current session</div>
+                <div className="font-medium text-sm">Monthly usage</div>
                 <div className="text-xs text-muted-foreground">
-                  {formatSessionResetTime(tokenUsage.session.resetTime)}
+                  {formatMonthlyResetTime(tokenUsage.monthly.resetTime)}
                 </div>
               </div>
               <div className="text-sm text-muted-foreground">
-                {tokenUsage.session.usagePercentage}% used
+                {formatPointsAsDollars(tokenUsage.monthly.used)} /{" "}
+                {formatPointsAsDollars(tokenUsage.monthly.limit)} used
               </div>
             </div>
             <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
               <div
-                className={`h-full transition-all duration-500 ${getUsageColorClass(tokenUsage.session.usagePercentage)}`}
-                style={{ width: `${tokenUsage.session.usagePercentage}%` }}
-              />
-            </div>
-          </div>
-
-          {/* Divider */}
-          <div className="border-t" />
-
-          {/* Agent Mode Weekly */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="font-medium text-sm">Weekly usage</div>
-                <div className="text-xs text-muted-foreground">
-                  {formatWeeklyResetTime(tokenUsage.weekly.resetTime)}
-                </div>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {tokenUsage.weekly.usagePercentage}% used
-              </div>
-            </div>
-            <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className={`h-full transition-all duration-500 ${getUsageColorClass(tokenUsage.weekly.usagePercentage)}`}
-                style={{ width: `${tokenUsage.weekly.usagePercentage}%` }}
+                className={`h-full transition-all duration-500 ${getUsageColorClass(tokenUsage.monthly.usagePercentage)}`}
+                style={{ width: `${tokenUsage.monthly.usagePercentage}%` }}
               />
             </div>
           </div>

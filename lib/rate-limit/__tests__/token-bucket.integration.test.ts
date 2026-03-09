@@ -12,6 +12,7 @@ describe("token-bucket async functions", () => {
   const mockLimitFn = jest.fn();
   const mockHincrbyFn = jest.fn();
   const mockHsetFn = jest.fn();
+  const mockDelFn = jest.fn();
   const mockDeductFromBalance = jest.fn();
   const mockRefundToBalance = jest.fn();
 
@@ -28,6 +29,7 @@ describe("token-bucket async functions", () => {
     });
     mockHincrbyFn.mockResolvedValue(5000);
     mockHsetFn.mockResolvedValue(1);
+    mockDelFn.mockResolvedValue(1);
     mockDeductFromBalance.mockResolvedValue({
       success: true,
       newBalanceDollars: 10,
@@ -59,6 +61,7 @@ describe("token-bucket async functions", () => {
         Redis: jest.fn().mockImplementation(() => ({
           hincrby: mockHincrbyFn,
           hset: mockHsetFn,
+          del: mockDelFn,
         })),
       }));
 
@@ -66,6 +69,7 @@ describe("token-bucket async functions", () => {
         createRedisClient: jest.fn(() => ({
           hincrby: mockHincrbyFn,
           hset: mockHsetFn,
+          del: mockDelFn,
         })),
         formatTimeRemaining: jest.fn(() => "5 hours"),
       }));
@@ -113,7 +117,7 @@ describe("token-bucket async functions", () => {
         success: true,
         remaining: 0,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       try {
@@ -131,7 +135,7 @@ describe("token-bucket async functions", () => {
         success: true,
         remaining: 0,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       const result = await checkTokenBucketLimit("user-123", "pro", 1000, {
@@ -144,6 +148,46 @@ describe("token-bucket async functions", () => {
       expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
     });
 
+    it("should return monthly nested field matching top-level fields", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000);
+
+      expect(result.monthly).toBeDefined();
+      expect(result.monthly!.remaining).toBe(result.remaining);
+      expect(result.monthly!.limit).toBe(result.limit);
+      expect(result.monthly!.resetTime).toEqual(result.resetTime);
+    });
+
+    it("should throw monthly cap exceeded error when extra usage cap hit", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      mockLimitFn.mockResolvedValue({
+        success: true,
+        remaining: 0,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      mockDeductFromBalance.mockResolvedValue({
+        success: false,
+        newBalanceDollars: 0,
+        insufficientFunds: true,
+        monthlyCapExceeded: true,
+      });
+
+      try {
+        await checkTokenBucketLimit("user-123", "pro", 1000, {
+          enabled: true,
+          hasBalance: true,
+          autoReloadEnabled: false,
+        });
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error.cause).toContain("monthly extra usage spending limit");
+      }
+    });
+
     it("should throw insufficient funds error when extra usage fails", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 
@@ -151,7 +195,7 @@ describe("token-bucket async functions", () => {
         success: true,
         remaining: 0,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       mockDeductFromBalance.mockResolvedValue({
@@ -190,7 +234,7 @@ describe("token-bucket async functions", () => {
         success: true,
         remaining: 0,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       await deductUsage("user-123", "pro", 1000, 1000, 1000, {
@@ -234,12 +278,7 @@ describe("token-bucket async functions", () => {
       const expectedRefund =
         estimatedCost - Math.ceil(providerCostDollars * 10000);
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
-        "tokens",
-        expectedRefund,
-      );
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:weekly"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
         expectedRefund,
       );
@@ -274,7 +313,7 @@ describe("token-bucket async functions", () => {
       // Should refund the difference (50 - 25 = 25 points)
       const expectedRefund = estimatedCost - actualCost;
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
         expectedRefund,
       );
@@ -338,12 +377,7 @@ describe("token-bucket async functions", () => {
       await refundUsage("user-123", "pro", 1000, 0);
 
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
-        "tokens",
-        1000,
-      );
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:weekly"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
         1000,
       );
@@ -368,13 +402,80 @@ describe("token-bucket async functions", () => {
 
     it("should cap refunded tokens at bucket limit", async () => {
       const { refundUsage, getBudgetLimits } = getIsolatedModule();
-      const { session: sessionLimit } = getBudgetLimits("pro");
+      const { monthly: monthlyLimit } = getBudgetLimits("pro");
 
-      mockHincrbyFn.mockResolvedValue(sessionLimit + 10000);
+      mockHincrbyFn.mockResolvedValue(monthlyLimit + 10000);
 
       await refundUsage("user-123", "pro", 50000, 0);
 
       expect(mockHsetFn).toHaveBeenCalled();
+    });
+  });
+
+  describe("resetRateLimitBuckets", () => {
+    it("should delete the monthly Redis key", async () => {
+      const { resetRateLimitBuckets } = getIsolatedModule();
+
+      await resetRateLimitBuckets("user-123", "pro");
+
+      expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
+    });
+
+    it("should not throw when Redis delete fails", async () => {
+      const { resetRateLimitBuckets } = getIsolatedModule();
+
+      mockDelFn.mockRejectedValue(new Error("Redis down"));
+      const consoleSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      await expect(
+        resetRateLimitBuckets("user-123", "pro"),
+      ).resolves.toBeUndefined();
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe("deductUsage - split deduction", () => {
+    it("should split cost between bucket and extra usage when bucket partially covers", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      // First call (rate: 0 peek) shows 10 remaining
+      mockLimitFn
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 10,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        })
+        // Second call deducts the 10 from bucket
+        .mockResolvedValueOnce({
+          success: true,
+          remaining: 0,
+          reset: Date.now() + 3600000,
+          limit: 250000,
+        });
+
+      // Estimated 1000 input = 5 points, actual provider cost = $0.005 = 50 points
+      // Difference = 50 - 5 = 45 additional needed, bucket has 10 → 35 from extra usage
+      await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        0.005,
+      );
+
+      // Should deduct 10 from bucket
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 10 }),
+      );
+      // Should deduct 35 from extra usage
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 35);
     });
   });
 

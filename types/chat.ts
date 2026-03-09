@@ -218,9 +218,8 @@ export type RateLimitInfo = {
   remaining: number;
   resetTime: Date;
   limit: number;
-  // Token bucket details for paid users (session = daily, weekly = weekly)
-  session?: { remaining: number; limit: number; resetTime: Date };
-  weekly?: { remaining: number; limit: number; resetTime: Date };
+  // Monthly token bucket details for paid users
+  monthly?: { remaining: number; limit: number; resetTime: Date };
   // Points deducted for potential refund on error (always = estimatedCost)
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)

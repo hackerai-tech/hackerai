@@ -8,7 +8,7 @@ const WARNING_TYPES = [
 ] as const;
 type RawWarningType = (typeof WARNING_TYPES)[number];
 
-const BUCKET_TYPES = ["session", "weekly"] as const;
+const BUCKET_TYPES = ["monthly"] as const;
 type RawBucketType = (typeof BUCKET_TYPES)[number];
 
 function isString(v: unknown): v is string {
