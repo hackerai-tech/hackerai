@@ -26,6 +26,7 @@ import {
 } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
@@ -224,17 +225,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return "queue"; // Default: queue after current message completes
   });
 
-  // Sandbox preference (persisted to localStorage)
-  // Default to "tauri" in the desktop app, "e2b" in the browser
-  const [sandboxPreference, setSandboxPreferenceState] =
-    useState<SandboxPreference>(() => {
-      if (typeof window === "undefined") return "e2b";
-      const stored = localStorage.getItem("sandbox-preference");
-      if (stored) return stored;
-      // Default to cloud even in desktop app; user can switch to local
-
-      return "e2b";
-    });
+  // Tauri detection + sandbox preference (co-located in a custom hook)
+  const { tauriCmdServer, sandboxPreference, setSandboxPreference } =
+    useSandboxPreference();
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -242,47 +235,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       localStorage.setItem("queue-behavior", queueBehavior);
     }
   }, [queueBehavior]);
-
-  // Tauri command server info (auto-detected for desktop app)
-  const [tauriCmdServer, setTauriCmdServer] = useState<{
-    port: number;
-    token: string;
-  } | null>(null);
-
-  // Auto-detect Tauri desktop and set sandbox preference to "tauri"
-  // Only default to "tauri" when there is no saved preference yet
-  useEffect(() => {
-    async function detectTauri() {
-      try {
-        const { getCmdServerInfo, isTauriEnvironment } =
-          await import("@/app/hooks/useTauri");
-        if (isTauriEnvironment()) {
-          const info = await getCmdServerInfo();
-          if (info) {
-            setTauriCmdServer(info);
-            // Only set preference if user hasn't explicitly chosen something else
-            const savedPref =
-              typeof window !== "undefined"
-                ? localStorage.getItem("sandbox-preference")
-                : null;
-            if (!savedPref || savedPref === "tauri") {
-              setSandboxPreferenceState("tauri");
-            }
-          }
-        }
-      } catch {
-        // Not in Tauri environment
-      }
-    }
-    detectTauri();
-  }, []);
-
-  // Persist sandbox preference to localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("sandbox-preference", sandboxPreference);
-    }
-  }, [sandboxPreference]);
 
   // Model selection (persisted per-mode to localStorage)
   const getModeKey = (m: ChatMode): "ask" | "agent" =>
@@ -779,7 +731,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setQueueBehavior: setQueueBehaviorState,
 
     sandboxPreference,
-    setSandboxPreference: setSandboxPreferenceState,
+    setSandboxPreference,
     tauriCmdServer,
 
     selectedModel,
