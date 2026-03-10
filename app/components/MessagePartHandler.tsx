@@ -13,6 +13,7 @@ import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { MatchToolHandler } from "./tools/MatchToolHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
+import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
 
 interface MessagePartHandlerProps {
@@ -23,6 +24,8 @@ interface MessagePartHandlerProps {
   isLastMessage?: boolean;
   /** Pre-computed terminal output by toolCallId (from message level) to avoid per-handler filtering */
   terminalOutputByToolCallId?: Map<string, string>;
+  /** File details from get_terminal_files tool (streamed progressively) */
+  sharedFileDetails?: FileDetails[];
 }
 
 // Memoized user text component - avoids re-renders for unchanged text
@@ -40,6 +43,15 @@ function arePropsEqual(
 
   // Always re-render if isLastMessage changes
   if (prevProps.isLastMessage !== nextProps.isLastMessage) return false;
+
+  // Shared file details change for get_terminal_files during streaming
+  // Must be checked before the part reference check below, because the part
+  // reference may be stable while new file metadata arrives via the stream.
+  if (
+    prevProps.part?.type === "tool-get_terminal_files" &&
+    prevProps.sharedFileDetails !== nextProps.sharedFileDetails
+  )
+    return false;
 
   // Check part reference - if same reference, no changes
   if (prevProps.part === nextProps.part) return true;
@@ -88,6 +100,7 @@ export const MessagePartHandler = memo(function MessagePartHandler({
   status,
   isLastMessage,
   terminalOutputByToolCallId,
+  sharedFileDetails,
 }: MessagePartHandlerProps) {
   // Main switch for different part types
   switch (part.type) {
@@ -164,7 +177,13 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       );
 
     case "tool-get_terminal_files":
-      return <GetTerminalFilesHandler part={part} status={status} />;
+      return (
+        <GetTerminalFilesHandler
+          part={part}
+          status={status}
+          sharedFileDetails={sharedFileDetails}
+        />
+      );
 
     case "tool-todo_write":
       return <TodoToolHandler message={message} part={part} status={status} />;
