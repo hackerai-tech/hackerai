@@ -60,16 +60,14 @@ export function SandboxSelector({
       icon: Cloud,
       description: "",
     },
-    ...(!tauriCmdServer
-      ? connections?.map((conn) => ({
-          id: conn.connectionId,
-          label: conn.osInfo?.hostname || conn.name,
-          shortLabel: "Remote",
-          icon: Laptop,
-          description: "",
-          mode: conn.mode,
-        })) || []
-      : []),
+    ...(connections?.map((conn) => ({
+      id: conn.connectionId,
+      label: conn.osInfo?.hostname || conn.name,
+      shortLabel: "Remote",
+      icon: Laptop,
+      description: "",
+      mode: conn.mode,
+    })) || []),
   ];
 
   // Auto-correct stale sandbox preference
@@ -152,25 +150,21 @@ export function SandboxSelector({
             );
           })}
 
-          {!tauriCmdServer && (
-            <>
-              <div className="border-t mt-1 pt-1">
-                <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                  Remote control
-                </div>
-                <button
-                  onClick={() => {
-                    setOpen(false);
-                    openSettingsDialog("Remote Control");
-                  }}
-                  className="w-full flex items-center gap-2.5 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
-                >
-                  <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  <span className="flex-1">Add remote control</span>
-                </button>
-              </div>
-            </>
-          )}
+          <div className="border-t mt-1 pt-1">
+            <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+              Remote control
+            </div>
+            <button
+              onClick={() => {
+                setOpen(false);
+                openSettingsDialog("Remote Control");
+              }}
+              className="w-full flex items-center gap-2.5 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
+            >
+              <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="flex-1">Add remote control</span>
+            </button>
+          </div>
         </div>
       </PopoverContent>
     </Popover>
