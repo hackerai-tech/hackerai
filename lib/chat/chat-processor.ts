@@ -173,6 +173,37 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
     filteredParts.push(part);
   }
 
+  // Third pass: trim trailing incomplete steps that would become empty model messages.
+  // When a stream is interrupted mid-reasoning (before producing text or tool calls),
+  // the message ends with [step-start, reasoning, ...] but no text/tool content for that step.
+  // convertToModelMessages() splits by step boundaries, creating an assistant model message
+  // with only reasoning content — which Gemini rejects with
+  // "must include at least one parts field" error.
+  let lastStepStartIdx = -1;
+  for (let i = filteredParts.length - 1; i >= 0; i--) {
+    if (filteredParts[i].type === "step-start") {
+      lastStepStartIdx = i;
+      break;
+    }
+  }
+
+  if (lastStepStartIdx >= 0) {
+    const lastStepHasContent = filteredParts
+      .slice(lastStepStartIdx + 1)
+      .some((part: any) => {
+        if (part.type === "text") return !!part.text?.trim();
+        if (part.type?.startsWith("tool-") || part.type === "dynamic-tool")
+          return true;
+        if (part.type === "file") return true;
+        // reasoning and step-start alone are not content for Gemini
+        return false;
+      });
+
+    if (!lastStepHasContent) {
+      return filteredParts.slice(0, lastStepStartIdx);
+    }
+  }
+
   return filteredParts;
 }
 

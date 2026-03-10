@@ -384,4 +384,89 @@ describe("fixIncompleteMessageParts", () => {
     expect(result).toHaveLength(1);
     expect(result[0].errorText).toBe("Something went wrong");
   });
+
+  // Trailing incomplete step trimming (Gemini "must include at least one parts field" fix)
+  it("should trim trailing step with only reasoning (no text/tool content)", () => {
+    const parts = [
+      { type: "step-start" },
+      { type: "reasoning", state: "done", text: "Thinking about step 1..." },
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "output-available",
+        input: { title: "Note" },
+        output: { message: "Created" },
+      },
+      { type: "step-start" },
+      {
+        type: "reasoning",
+        state: "done",
+        text: "Thinking about step 2 but interrupted...",
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    // Should keep first step with content, remove trailing step-start + reasoning
+    expect(result).toHaveLength(3);
+    expect(result[0].type).toBe("step-start");
+    expect(result[1].type).toBe("reasoning");
+    expect(result[2].type).toBe("tool-create_note");
+  });
+
+  it("should not trim trailing step that has text content", () => {
+    const parts = [
+      { type: "step-start" },
+      {
+        type: "tool-create_note",
+        toolCallId: "call_1",
+        state: "output-available",
+        input: { title: "Note" },
+        output: { message: "Created" },
+      },
+      { type: "step-start" },
+      { type: "reasoning", state: "done", text: "Let me explain..." },
+      { type: "text", text: "Here is the result." },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    expect(result).toHaveLength(5);
+  });
+
+  it("should not trim trailing step that has tool content", () => {
+    const parts = [
+      { type: "step-start" },
+      { type: "reasoning", state: "done", text: "Thinking..." },
+      {
+        type: "tool-file",
+        toolCallId: "call_1",
+        state: "output-available",
+        input: { action: "read" },
+        output: { content: "file data" },
+      },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    expect(result).toHaveLength(3);
+  });
+
+  it("should trim single step with only reasoning to empty array", () => {
+    const parts = [
+      { type: "step-start" },
+      { type: "reasoning", state: "done", text: "Just thinking..." },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    expect(result).toHaveLength(0);
+  });
+
+  it("should trim trailing step with multiple reasoning parts but no content", () => {
+    const parts = [
+      { type: "step-start" },
+      { type: "text", text: "I found the issue." },
+      { type: "step-start" },
+      { type: "reasoning", state: "done", text: "First thought..." },
+      { type: "reasoning", state: "done", text: "Second thought..." },
+    ];
+    const result = fixIncompleteMessageParts(parts);
+    // Should keep first step, remove trailing step-start + both reasoning parts
+    expect(result).toHaveLength(2);
+    expect(result[0].type).toBe("step-start");
+    expect(result[1].type).toBe("text");
+  });
 });
