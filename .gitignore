@@ -60,6 +60,3 @@ packages/desktop/node_modules/
 packages/desktop/src-tauri/target/
 
 .trigger
-
-# Convex (auto-generated on dev/deploy)
-convex/_generated/
