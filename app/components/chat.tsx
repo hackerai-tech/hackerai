@@ -473,7 +473,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Disable only for agent-long: resuming hits AI SDK /api/chat, not Trigger.dev, and can block sync
   // Enable when serverMode is undefined (old chats, or before chatData loads) so agent mode can reconnect
   useAutoResume({
-    autoResume,
+    autoResume: autoResume && chatData != null,
     initialMessages: serverMessages,
     resumeStream,
     setMessages,
