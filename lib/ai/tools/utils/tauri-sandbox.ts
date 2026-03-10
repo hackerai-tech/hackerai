@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 
 interface CommandResult {
   stdout: string;
@@ -54,14 +55,7 @@ export class TauriSandbox extends EventEmitter {
   getSandboxContext(): string {
     const platform =
       typeof process !== "undefined" ? process.platform : "unknown";
-    const platformName =
-      platform === "darwin"
-        ? "macOS"
-        : platform === "win32"
-          ? "Windows"
-          : platform === "linux"
-            ? "Linux"
-            : platform;
+    const platformName = getPlatformDisplayName(platform);
 
     return `You are executing commands on the user's local machine via the HackerAI Desktop app (${platformName}).
 Commands run directly on the host OS without Docker isolation. Be careful with:
@@ -240,26 +234,11 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
   }
 
   /**
-   * Escape a path for safe shell usage. Uses POSIX single-quote escaping
-   * on Unix and double-quote escaping on Windows (cmd /C).
-   */
-  private static escapePath(path: string): string {
-    if (typeof process !== "undefined" && process.platform === "win32") {
-      // cmd /C: wrap in double quotes, escape inner double quotes
-      return `"${path.replace(/"/g, '""')}"`;
-    }
-    return `'${path.replace(/'/g, "'\\''")}'`;
-  }
-
-  /**
    * Escape a value for safe inline use in a shell command string.
-   * On Windows uses double-quote wrapping; on POSIX uses single-quote wrapping.
+   * Delegates to the shared cross-platform utility.
    */
-  private static escapeValue(value: string): string {
-    if (typeof process !== "undefined" && process.platform === "win32") {
-      return `"${value.replace(/"/g, '""')}"`;
-    }
-    return `'${value.replace(/'/g, "'\\''")}'`;
+  private static escapeShell(value: string): string {
+    return escapeShellValue(value);
   }
 
   files = {
@@ -304,8 +283,8 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
       // Use the command execution to download via curl/wget
-      const escapedPath = TauriSandbox.escapePath(path);
-      const escapedUrl = TauriSandbox.escapeValue(url);
+      const escapedPath = TauriSandbox.escapeShell(path);
+      const escapedUrl = TauriSandbox.escapeShell(url);
       const result = await this.commands.run(
         `curl -fsSL -o ${escapedPath} ${escapedUrl} || wget -q -O ${escapedPath} ${escapedUrl}`,
         { displayName: `Downloading: ${path.split("/").pop() || "file"}` },
@@ -320,9 +299,9 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const escapedPath = TauriSandbox.escapePath(path);
-      const escapedUrl = TauriSandbox.escapeValue(uploadUrl);
-      const escapedContentType = TauriSandbox.escapeValue(
+      const escapedPath = TauriSandbox.escapeShell(path);
+      const escapedUrl = TauriSandbox.escapeShell(uploadUrl);
+      const escapedContentType = TauriSandbox.escapeShell(
         `Content-Type: ${contentType}`,
       );
       const result = await this.commands.run(

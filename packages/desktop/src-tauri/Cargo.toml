@@ -36,6 +36,9 @@ tokio = { version = "1", features = ["time", "net", "io-util", "process", "sync"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"
 objc2-web-kit = { version = "0.2", features = ["WKWebView", "WKNavigation", "objc2-app-kit"] }

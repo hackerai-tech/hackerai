@@ -1,3 +1,5 @@
+mod platform;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -100,7 +102,13 @@ async fn start_cmd_server() {
         }
     };
 
-    let port = listener.local_addr().unwrap().port();
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(e) => {
+            log::error!("Failed to get command server address: {}", e);
+            return;
+        }
+    };
     CMD_SERVER_PORT.store(port, Ordering::Relaxed);
     log::info!("Command server listening on http://127.0.0.1:{}", port);
 
@@ -268,24 +276,11 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
 async fn handle_execute(body: &str) -> Result<String, String> {
     let req: ExecRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
-    let shell = if cfg!(target_os = "windows") { "cmd" } else { "/bin/sh" };
-    let shell_arg = if cfg!(target_os = "windows") { "/C" } else { "-c" };
-
-    let mut cmd = tokio::process::Command::new(shell);
-    cmd.arg(shell_arg).arg(&req.command);
-
-    if let Some(ref cwd) = req.cwd {
-        cmd.current_dir(cwd);
-    }
-
-    if let Some(ref env) = req.env {
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-    }
-
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    let mut cmd = platform::build_command(
+        &req.command,
+        req.cwd.as_deref(),
+        req.env.as_ref(),
+    );
 
     let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
 
@@ -329,23 +324,11 @@ async fn handle_execute(body: &str) -> Result<String, String> {
 async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -> Result<(), String> {
     let req: ExecRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
-    let shell = if cfg!(target_os = "windows") { "cmd" } else { "/bin/sh" };
-    let shell_arg = if cfg!(target_os = "windows") { "/C" } else { "-c" };
-
-    let mut cmd = tokio::process::Command::new(shell);
-    cmd.arg(shell_arg).arg(&req.command);
-
-    if let Some(ref cwd) = req.cwd {
-        cmd.current_dir(cwd);
-    }
-    if let Some(ref env) = req.env {
-        for (k, v) in env {
-            cmd.env(k, v);
-        }
-    }
-
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
+    let mut cmd = platform::build_command(
+        &req.command,
+        req.cwd.as_deref(),
+        req.env.as_ref(),
+    );
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -422,8 +405,8 @@ async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -
             write_chunk(stream, &line).await;
         }
         Err(_) => {
-            // Timeout — kill the process
-            let _ = child.kill().await;
+            // Timeout — gracefully kill the process
+            platform::graceful_kill(&mut child).await;
             let line = format!(r#"{{"type":"error","message":"Command timed out after {}ms"}}"#, req.timeout_ms);
             write_chunk(stream, &line).await;
         }
@@ -491,9 +474,8 @@ async fn handle_file_list(body: &str) -> Result<String, String> {
     let mut dir = tokio::fs::read_dir(&req.path).await.map_err(|e| format!("ReadDir error: {}", e))?;
 
     while let Some(entry) = dir.next_entry().await.map_err(|e| format!("Entry error: {}", e))? {
-        if let Ok(name) = entry.file_name().into_string() {
-            entries.push(serde_json::json!({ "name": name }));
-        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        entries.push(serde_json::json!({ "name": name }));
     }
 
     serde_json::to_string(&entries).map_err(|e| e.to_string())
@@ -510,7 +492,13 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
         }
     };
 
-    let port = listener.local_addr().unwrap().port();
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(e) => {
+            log::error!("Failed to get dev auth server address: {}", e);
+            return;
+        }
+    };
     DEV_AUTH_PORT.store(port, Ordering::Relaxed);
     log::info!("Dev auth callback server listening on http://localhost:{}", port);
 

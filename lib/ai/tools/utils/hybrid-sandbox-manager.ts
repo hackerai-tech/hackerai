@@ -7,6 +7,7 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { PREINSTALLED_PENTESTING_TOOLS } from "@/lib/system-prompt";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
+import { getPlatformDisplayName } from "./platform-utils";
 
 type SandboxInstance = Sandbox | ConvexSandbox | TauriSandbox;
 
@@ -447,14 +448,7 @@ Available tools depend on what's installed on the host system.
 
     if (mode === "dangerous" && osInfo) {
       const { platform, arch, release, hostname } = osInfo;
-      const platformName =
-        platform === "darwin"
-          ? "macOS"
-          : platform === "win32"
-            ? "Windows"
-            : platform === "linux"
-              ? "Linux"
-              : platform;
+      const platformName = getPlatformDisplayName(platform);
 
       return `<sandbox_environment>
 IMPORTANT: You are connected to a LOCAL machine in DANGEROUS MODE. Commands run directly on the host OS without Docker isolation.
