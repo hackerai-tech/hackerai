@@ -90,6 +90,7 @@ export const checkAndSummarizeIfNeeded = async (
   ensureSandbox?: EnsureSandbox,
   systemPromptTokens: number = 0,
   providerInputTokens: number = 0,
+  chatSystemPrompt: string = "",
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -132,11 +133,12 @@ export const checkAndSummarizeIfNeeded = async (
     // Run summary generation and transcript saving in parallel — they are
     // independent (transcript is formatted from raw messages, not the summary).
     const summaryPromise = generateSummaryText(
-      messagesToSummarize,
+      uiMessages,
       languageModel,
       mode,
+      chatSystemPrompt,
+      !!existingSummaryText,
       abortSignal,
-      existingSummaryText ?? undefined,
     );
 
     // In agent modes, save the full transcript of summarized messages to the sandbox

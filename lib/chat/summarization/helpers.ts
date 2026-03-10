@@ -25,6 +25,8 @@ import {
 export interface SummarizationUsage {
   inputTokens: number;
   outputTokens: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   cost?: number;
 }
 
@@ -104,17 +106,19 @@ export const generateSummaryText = async (
   messagesToSummarize: UIMessage[],
   languageModel: LanguageModel,
   mode: ChatMode,
+  chatSystemPrompt: string,
+  hasExistingSummary: boolean,
   abortSignal?: AbortSignal,
-  existingSummaryText?: string,
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
-  const basePrompt = getSummarizationPrompt(mode);
-  const system = existingSummaryText
-    ? `${basePrompt}\n\nIMPORTANT: You are performing an INCREMENTAL summarization. A previous summary of earlier conversation exists below. Your job is to produce a single, unified summary that merges the previous summary with the NEW messages provided. Do NOT summarize the summary — instead, integrate new information into a comprehensive updated summary.\n\n<previous_summary>\n${existingSummaryText}\n</previous_summary>`
-    : basePrompt;
+  const summarizationPrompt = getSummarizationPrompt(mode);
+
+  const incrementalNote = hasExistingSummary
+    ? `\n\nIMPORTANT: You are performing an INCREMENTAL summarization. The conversation above contains a <context_summary> message with a previous summary of earlier conversation. Produce a single, unified summary that merges the previous summary with the NEW messages that follow it. Do NOT summarize the summary — integrate new information into a comprehensive updated summary.`
+    : "";
 
   const result = await generateText({
     model: languageModel,
-    system,
+    system: chatSystemPrompt,
     abortSignal,
     providerOptions: {
       xai: { store: false },
@@ -123,17 +127,25 @@ export const generateSummaryText = async (
       ...(await convertToModelMessages(messagesToSummarize)),
       {
         role: "user",
-        content:
-          "Summarize the above conversation using the structured format specified in your instructions. Output ONLY the summary — do not continue the conversation or role-play as the assistant.",
+        content: `${summarizationPrompt}${incrementalNote}\n\nSummarize the above conversation using the structured format. Output ONLY the summary — do not continue the conversation or role-play as the assistant.`,
       },
     ],
   });
+  console.info(`[Summarization] Usage: ${JSON.stringify(result.usage)}`);
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
+  const cacheRead = (result.usage as { cacheReadInputTokens?: number })
+    ?.cacheReadInputTokens;
+  const cacheCreation = (result.usage as { cacheCreationInputTokens?: number })
+    ?.cacheCreationInputTokens;
   return {
     text: result.text,
     usage: {
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
+      ...(cacheRead ? { cacheReadInputTokens: cacheRead } : undefined),
+      ...(cacheCreation
+        ? { cacheCreationInputTokens: cacheCreation }
+        : undefined),
       ...(providerCost ? { cost: providerCost } : undefined),
     },
   };

@@ -115,6 +115,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(false);
@@ -131,6 +138,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(false);
@@ -147,6 +161,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(true);
@@ -171,14 +192,29 @@ describe("checkAndSummarizeIfNeeded", () => {
       "agent",
       mockWriter,
       null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(true);
-    expect(mockGenerateText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        system: expect.stringContaining("security agent"),
-      }),
-    );
+    const callArgs = mockGenerateText.mock.calls[0][0];
+    const messages = callArgs.messages as Array<{
+      role: string;
+      content: string;
+    }>;
+    const lastMessage = messages[messages.length - 1];
+    const lastContent =
+      typeof lastMessage.content === "string"
+        ? lastMessage.content
+        : (lastMessage.content as Array<{ text: string }>)
+            .map((p: { text: string }) => p.text)
+            .join("");
+    expect(lastContent).toContain("security agent");
   });
 
   it("should persist summary when chatId is provided", async () => {
@@ -191,6 +227,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(mockSaveChatSummary).toHaveBeenCalledWith({
@@ -210,6 +253,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(mockSaveChatSummary).not.toHaveBeenCalled();
@@ -225,6 +275,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       null,
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(false);
@@ -250,6 +307,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(true);
@@ -282,6 +346,11 @@ describe("checkAndSummarizeIfNeeded", () => {
       null,
       {},
       todos,
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(true);
@@ -331,6 +400,10 @@ describe("checkAndSummarizeIfNeeded", () => {
         {},
         [],
         abortController.signal,
+        undefined,
+        0,
+        0,
+        "test-system-prompt",
       ),
     ).rejects.toThrow(abortError);
 
@@ -365,6 +438,10 @@ describe("checkAndSummarizeIfNeeded", () => {
       {},
       [],
       abortController.signal,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(mockGenerateText).toHaveBeenCalledWith(
@@ -386,6 +463,11 @@ describe("checkAndSummarizeIfNeeded", () => {
       null,
       {},
       [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(true);
@@ -425,6 +507,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "agent",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(true);
@@ -457,6 +546,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     // Only 2 real messages = not enough to split (MESSAGES_TO_KEEP_UNSUMMARIZED = 2)
@@ -493,23 +589,42 @@ describe("checkAndSummarizeIfNeeded", () => {
       "agent",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
-    expect(mockGenerateText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        system: expect.stringContaining("<previous_summary>"),
-      }),
-    );
-    expect(mockGenerateText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        system: expect.stringContaining("Previous summary content"),
-      }),
-    );
-    expect(mockGenerateText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        system: expect.stringContaining("INCREMENTAL summarization"),
-      }),
-    );
+    const callArgs = mockGenerateText.mock.calls[0][0];
+    // System should be the chat system prompt, not the summarization prompt
+    expect(callArgs.system).toBe("test-system-prompt");
+    // The last message should contain incremental instructions
+    const messages = callArgs.messages as Array<{
+      role: string;
+      content: string | Array<{ text: string }>;
+    }>;
+    const lastMessage = messages[messages.length - 1];
+    const lastContent =
+      typeof lastMessage.content === "string"
+        ? lastMessage.content
+        : (lastMessage.content as Array<{ text: string }>)
+            .map((p: { text: string }) => p.text)
+            .join("");
+    expect(lastContent).toContain("INCREMENTAL summarization");
+    // The summary message should be in the messages (not stripped)
+    const hasContextSummary = messages.some((m) => {
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : (m.content as Array<{ text: string }>)
+              .map((p: { text: string }) => p.text)
+              .join("");
+      return text.includes("<context_summary>");
+    });
+    expect(hasContextSummary).toBe(true);
   });
 
   it("should produce 2 summaries when threshold is triggered twice", async () => {
@@ -523,6 +638,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result1.needsSummarization).toBe(true);
@@ -544,6 +666,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result2.needsSummarization).toBe(true);
@@ -560,10 +689,10 @@ describe("checkAndSummarizeIfNeeded", () => {
     );
 
     const secondCallArgs = mockGenerateText.mock.calls[1][0];
-    expect(secondCallArgs.system).toContain("<previous_summary>");
-    expect(secondCallArgs.system).toContain("First summary");
+    // System should be the chat system prompt, not the summarization prompt
+    expect(secondCallArgs.system).toBe("test-system-prompt");
 
-    // Verify only messages between cutoffs are sent (not the summary message)
+    // The summary message should now be in the second call messages (we pass uiMessages which includes it)
     const secondCallMessages = secondCallArgs.messages as Array<{
       role: string;
       content: string | Array<{ type: string; text: string }>;
@@ -575,13 +704,23 @@ describe("checkAndSummarizeIfNeeded", () => {
           : m.content.map((p) => p.text).join("");
       return text.includes("<context_summary>");
     });
-    expect(hasContextSummary).toBe(false);
+    expect(hasContextSummary).toBe(true);
+
+    // The last message of the second call should contain incremental instructions
+    const secondLastMessage = secondCallMessages[secondCallMessages.length - 1];
+    const secondLastContent =
+      typeof secondLastMessage.content === "string"
+        ? secondLastMessage.content
+        : (secondLastMessage.content as Array<{ text: string }>)
+            .map((p: { text: string }) => p.text)
+            .join("");
+    expect(secondLastContent).toContain("INCREMENTAL summarization");
 
     // First call: msg-1..msg-4 converted + 1 summarization prompt = 5
     const firstCallMessages = mockGenerateText.mock.calls[0][0].messages;
     expect(firstCallMessages).toHaveLength(5);
-    // Second call: msg-5..msg-8 converted + 1 summarization prompt = 5
-    expect(secondCallMessages).toHaveLength(5);
+    // Second call: 1 summary message + msg-5..msg-8 converted + 1 summarization prompt = 6
+    expect(secondCallMessages).toHaveLength(6);
 
     expect(result2.summarizedMessages).toHaveLength(1);
     expect(isSummaryMessage(result2.summarizedMessages[0])).toBe(true);
@@ -610,6 +749,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
     expect(result1.cutoffMessageId).toBe("msg-4");
 
@@ -629,6 +775,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
     expect(result2.cutoffMessageId).toBe("msg-8");
 
@@ -648,6 +801,13 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
     expect(result3.cutoffMessageId).toBe("msg-12");
 
@@ -670,15 +830,45 @@ describe("checkAndSummarizeIfNeeded", () => {
       "ask",
       mockWriter,
       "chat-123",
+      {},
+      [],
+      undefined,
+      undefined,
+      0,
+      0,
+      "test-system-prompt",
     );
 
     expect(result.needsSummarization).toBe(true);
     expect(result.cutoffMessageId).toBe("msg-4");
-    expect(mockGenerateText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        system: expect.not.stringContaining("<previous_summary>"),
-      }),
-    );
+
+    const callArgs = mockGenerateText.mock.calls[0][0];
+    // System should be the chat system prompt
+    expect(callArgs.system).toBe("test-system-prompt");
+    // Messages should NOT contain context_summary (first-time = no summary message)
+    const messages = callArgs.messages as Array<{
+      role: string;
+      content: string | Array<{ text: string }>;
+    }>;
+    const hasContextSummary = messages.some((m) => {
+      const text =
+        typeof m.content === "string"
+          ? m.content
+          : (m.content as Array<{ text: string }>)
+              .map((p: { text: string }) => p.text)
+              .join("");
+      return text.includes("<context_summary>");
+    });
+    expect(hasContextSummary).toBe(false);
+    // Last message should contain summarization prompt but NOT "INCREMENTAL"
+    const lastMessage = messages[messages.length - 1];
+    const lastContent =
+      typeof lastMessage.content === "string"
+        ? lastMessage.content
+        : (lastMessage.content as Array<{ text: string }>)
+            .map((p: { text: string }) => p.text)
+            .join("");
+    expect(lastContent).not.toContain("INCREMENTAL");
   });
 });
 
