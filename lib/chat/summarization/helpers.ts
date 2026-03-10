@@ -119,10 +119,26 @@ export const generateSummaryText = async (
     ? `\n\nIMPORTANT: You are performing an INCREMENTAL summarization. The conversation above contains a <context_summary> message with a previous summary of earlier conversation. Produce a single, unified summary that merges the previous summary with the NEW messages that follow it. Do NOT summarize the summary — integrate new information into a comprehensive updated summary.`
     : "";
 
+  // Tools are included solely to match the main streamText prefix for provider
+  // cache-hits. Execute functions are replaced with no-ops so that if the model
+  // attempts a tool call it gets an empty result and continues with text.
+  const nopTools = tools
+    ? Object.fromEntries(
+        Object.entries(tools).map(([name, tool]) => [
+          name,
+          {
+            ...tool,
+            execute: async () =>
+              "Tool calls are not allowed during summarization.",
+          },
+        ]),
+      )
+    : undefined;
+
   const result = await generateText({
     model: languageModel,
     system: chatSystemPrompt,
-    tools,
+    tools: nopTools,
     abortSignal,
     providerOptions: {
       ...providerOptions,
@@ -131,11 +147,12 @@ export const generateSummaryText = async (
     messages: [
       ...(await convertToModelMessages(messagesToSummarize)),
       {
-        role: "user",
+        role: "user" as const,
         content: `${summarizationPrompt}${incrementalNote}\n\nSummarize the above conversation using the structured format. Output ONLY the summary — do not continue the conversation or role-play as the assistant.`,
       },
     ],
   });
+
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
   const details = (
     result.usage as {
