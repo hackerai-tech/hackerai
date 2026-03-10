@@ -2,7 +2,7 @@
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Check, Cloud, Laptop, ChevronDown, Settings } from "lucide-react";
+import { Check, Cloud, Laptop, ChevronDown, Plus } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -12,21 +12,21 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 interface SandboxSelectorProps {
   value: string;
   onChange?: (value: string) => void;
   disabled?: boolean;
   size?: "sm" | "md";
-  readOnly?: boolean;
 }
 
 interface ConnectionOption {
   id: string;
   label: string;
+  shortLabel: string;
   description: string;
   icon: typeof Cloud;
-
   mode?: "docker" | "dangerous";
 }
 
@@ -35,66 +35,59 @@ export function SandboxSelector({
   onChange,
   disabled = false,
   size = "sm",
-  readOnly = false,
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
+  const { tauriCmdServer } = useGlobalState();
 
   const connections = useQuery(api.localSandbox.listConnections);
   const options: ConnectionOption[] = [
+    ...(tauriCmdServer
+      ? [
+          {
+            id: "tauri",
+            label: "Local",
+            shortLabel: "Local",
+            icon: Laptop,
+            description: "",
+            mode: "dangerous" as const,
+          } satisfies ConnectionOption,
+        ]
+      : []),
     {
       id: "e2b",
       label: "Cloud",
+      shortLabel: "Cloud",
       icon: Cloud,
       description: "",
     },
     ...(connections?.map((conn) => ({
       id: conn.connectionId,
       label: conn.osInfo?.hostname || conn.name,
+      shortLabel: "Remote",
       icon: Laptop,
-      description:
-        conn.mode === "dangerous"
-          ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
-          : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
-
+      description: "",
       mode: conn.mode,
     })) || []),
   ];
 
-  // Auto-correct stale sandbox preference: if the stored value doesn't match any
-  // available option (e.g., local connection was disconnected), reset to "e2b".
-  // Skip when readOnly so the selector can fall through to the full dropdown instead.
+  // Auto-correct stale sandbox preference
   const valueMatchesOption = options.some((opt) => opt.id === value);
   useEffect(() => {
     if (
       connections !== undefined &&
       !valueMatchesOption &&
       value !== "e2b" &&
-      !readOnly
+      value !== "tauri"
     ) {
       onChange?.("e2b");
       toast.info("Local sandbox disconnected. Switched to Cloud.", {
         duration: 5000,
       });
     }
-  }, [connections, valueMatchesOption, value, onChange, readOnly]);
+  }, [connections, valueMatchesOption, value, onChange]);
 
   const selectedOption = options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
-
-  // When readOnly and cloud, hide entirely — cloud is the default, no indicator needed.
-  if (readOnly && value === "e2b") {
-    return null;
-  }
-
-  // When readOnly and local sandbox is still connected, show a static badge (no popover).
-  if (readOnly && valueMatchesOption) {
-    return (
-      <div className="flex items-center gap-1.5 px-2 h-5 text-[11px] text-muted-foreground">
-        <Icon className="w-3.5 h-3.5 shrink-0" />
-        <span className="truncate">{selectedOption?.label}</span>
-      </div>
-    );
-  }
 
   const buttonClassName =
     size === "md"
@@ -102,18 +95,6 @@ export function SandboxSelector({
       : "h-7 px-2 gap-1 text-xs font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink";
 
   const iconClassName = size === "md" ? "h-4 w-4 shrink-0" : "h-3 w-3 shrink-0";
-
-  const buttonContent = (
-    <>
-      <Icon className={iconClassName} />
-      <span className="truncate">{selectedOption?.label}</span>
-      <ChevronDown
-        className={
-          size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
-        }
-      />
-    </>
-  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -124,14 +105,17 @@ export function SandboxSelector({
           disabled={disabled}
           className={buttonClassName}
         >
-          {buttonContent}
+          <Icon className={iconClassName} />
+          <span className="truncate">{selectedOption?.shortLabel}</span>
+          <ChevronDown
+            className={
+              size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
+            }
+          />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[280px] p-1" align="start">
+      <PopoverContent className="w-[240px] p-1" align="start">
         <div className="space-y-0.5">
-          <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-            Execution Environment
-          </div>
           {options.map((option) => {
             const OptionIcon = option.icon;
             return (
@@ -149,10 +133,8 @@ export function SandboxSelector({
               >
                 <OptionIcon className="h-4 w-4 shrink-0" />
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-sm font-medium truncate">
-                      {option.label}
-                    </span>
+                  <div className="text-sm font-medium truncate">
+                    {option.label}
                   </div>
                   {option.description && (
                     <div className="text-xs text-muted-foreground truncate">
@@ -164,23 +146,22 @@ export function SandboxSelector({
               </button>
             );
           })}
-          {connections && connections.length === 0 && (
-            <div className="px-2 py-2 border-t mt-1 pt-2 space-y-1">
-              <div className="text-xs text-muted-foreground mb-2">
-                No local connections.
-              </div>
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  openSettingsDialog("Local Sandbox");
-                }}
-                className="w-full flex items-center gap-2 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
-              >
-                <Settings className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span>Set up in Settings</span>
-              </button>
+
+          <div className="border-t mt-1 pt-1">
+            <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
+              Remote control
             </div>
-          )}
+            <button
+              onClick={() => {
+                setOpen(false);
+                openSettingsDialog("Remote Control");
+              }}
+              className="w-full flex items-center gap-2.5 p-2 rounded-md text-left text-sm hover:bg-muted transition-colors"
+            >
+              <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="flex-1">Add remote control</span>
+            </button>
+          </div>
         </div>
       </PopoverContent>
     </Popover>

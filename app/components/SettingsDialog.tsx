@@ -58,8 +58,8 @@ const SettingsDialog = ({
   // Tabs only for paid users (Pro/Ultra/Team)
   const agentsTab = { id: "Agents", label: "Agents", icon: Infinity };
   const localSandboxTab = {
-    id: "Local Sandbox",
-    label: "Local Sandbox",
+    id: "Remote Control",
+    label: "Remote Control",
     icon: Server,
   };
   const usageTab = { id: "Usage", label: "Usage", icon: ChartNoAxesCombined };
@@ -210,7 +210,7 @@ const SettingsDialog = ({
 
                 {activeTab === "Agents" && <AgentsTab />}
 
-                {activeTab === "Local Sandbox" && <LocalSandboxTab />}
+                {activeTab === "Remote Control" && <LocalSandboxTab />}
 
                 {activeTab === "Usage" && <UsageTab />}
 
