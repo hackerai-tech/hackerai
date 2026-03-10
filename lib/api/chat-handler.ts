@@ -599,6 +599,12 @@ export const createChatHandler = (
                       ctxMaxTokens,
                       providerInputTokens: lastStepInputTokens,
                       chatSystemPrompt: currentSystemPrompt,
+                      tools,
+                      providerOptions: buildProviderOptions(
+                        isReasoningModel,
+                        subscription,
+                        userId,
+                      ),
                     });
 
                     if (

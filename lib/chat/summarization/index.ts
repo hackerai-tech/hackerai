@@ -1,6 +1,6 @@
 import "server-only";
 
-import { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
+import { UIMessage, UIMessageStreamWriter, LanguageModel, ToolSet } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
 import {
@@ -91,6 +91,8 @@ export const checkAndSummarizeIfNeeded = async (
   systemPromptTokens: number = 0,
   providerInputTokens: number = 0,
   chatSystemPrompt: string = "",
+  tools?: ToolSet,
+  providerOptions?: Record<string, Record<string, unknown>>,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -138,6 +140,8 @@ export const checkAndSummarizeIfNeeded = async (
       mode,
       chatSystemPrompt,
       !!existingSummaryText,
+      tools,
+      providerOptions,
       abortSignal,
     );
 

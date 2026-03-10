@@ -3,6 +3,7 @@ import {
   generateText,
   convertToModelMessages,
   LanguageModel,
+  ToolSet,
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -25,8 +26,8 @@ import {
 export interface SummarizationUsage {
   inputTokens: number;
   outputTokens: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
   cost?: number;
 }
 
@@ -108,6 +109,8 @@ export const generateSummaryText = async (
   mode: ChatMode,
   chatSystemPrompt: string,
   hasExistingSummary: boolean,
+  tools?: ToolSet,
+  providerOptions?: Record<string, Record<string, unknown>>,
   abortSignal?: AbortSignal,
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
@@ -119,9 +122,11 @@ export const generateSummaryText = async (
   const result = await generateText({
     model: languageModel,
     system: chatSystemPrompt,
+    tools,
     abortSignal,
     providerOptions: {
-      xai: { store: false },
+      ...providerOptions,
+      xai: { ...(providerOptions?.xai ?? {}), store: false },
     },
     messages: [
       ...(await convertToModelMessages(messagesToSummarize)),
@@ -131,20 +136,25 @@ export const generateSummaryText = async (
       },
     ],
   });
-  console.info(`[Summarization] Usage: ${JSON.stringify(result.usage)}`);
   const providerCost = (result.usage as { raw?: { cost?: number } })?.raw?.cost;
-  const cacheRead = (result.usage as { cacheReadInputTokens?: number })
-    ?.cacheReadInputTokens;
-  const cacheCreation = (result.usage as { cacheCreationInputTokens?: number })
-    ?.cacheCreationInputTokens;
+  const details = (
+    result.usage as {
+      inputTokenDetails?: {
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
+      };
+    }
+  )?.inputTokenDetails;
   return {
     text: result.text,
     usage: {
       inputTokens: result.usage?.inputTokens ?? 0,
       outputTokens: result.usage?.outputTokens ?? 0,
-      ...(cacheRead ? { cacheReadInputTokens: cacheRead } : undefined),
-      ...(cacheCreation
-        ? { cacheCreationInputTokens: cacheCreation }
+      ...(details?.cacheReadTokens
+        ? { cacheReadTokens: details.cacheReadTokens }
+        : undefined),
+      ...(details?.cacheWriteTokens
+        ? { cacheWriteTokens: details.cacheWriteTokens }
         : undefined),
       ...(providerCost ? { cost: providerCost } : undefined),
     },
