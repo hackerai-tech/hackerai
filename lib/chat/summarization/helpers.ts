@@ -140,10 +140,8 @@ export const generateSummaryText = async (
     system: chatSystemPrompt,
     tools: nopTools,
     abortSignal,
-    providerOptions: {
-      ...providerOptions,
-      xai: { ...(providerOptions?.xai ?? {}), store: false },
-    },
+     
+    providerOptions: providerOptions as any,
     messages: [
       ...(await convertToModelMessages(messagesToSummarize)),
       {
