@@ -397,6 +397,15 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     if (this.sandboxPreference === "tauri" && this.tauriConnectionInfo) {
+      // Verify the Tauri command server is actually reachable before emitting
+      // desktop prompt context. On hosted/worker deployments, the health check
+      // will fail and we should fall back to the default E2B prompt (null).
+      const sandbox = new TauriSandbox(this.tauriConnectionInfo);
+      const isReachable = await sandbox.healthCheck();
+      if (!isReachable) {
+        return null;
+      }
+
       this.currentConnectionMode = "dangerous";
       this.currentConnectionName = "Desktop";
       return `<sandbox_environment>

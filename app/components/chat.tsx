@@ -512,7 +512,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
     } else if (storedSandboxType === "tauri") {
-      // Only restore "tauri" if the desktop bridge is actually available
+      // Only restore "tauri" if the desktop bridge is actually available.
+      // If tauriCmdServer is still undefined (bridge discovery in progress),
+      // defer — the effect will re-run when tauriCmdServer resolves.
+      if (tauriCmdServer === undefined) return;
       setSandboxPreference(tauriCmdServer ? "tauri" : "e2b");
       hasInitializedSandboxRef.current = true;
     } else if (localConnections !== undefined) {

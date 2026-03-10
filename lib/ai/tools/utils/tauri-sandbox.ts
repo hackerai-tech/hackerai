@@ -239,8 +239,27 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
     return { stdout, stderr, exitCode };
   }
 
+  /**
+   * Escape a path for safe shell usage. Uses POSIX single-quote escaping
+   * on Unix and double-quote escaping on Windows (cmd /C).
+   */
   private static escapePath(path: string): string {
+    if (typeof process !== "undefined" && process.platform === "win32") {
+      // cmd /C: wrap in double quotes, escape inner double quotes
+      return `"${path.replace(/"/g, '""')}"`;
+    }
     return `'${path.replace(/'/g, "'\\''")}'`;
+  }
+
+  /**
+   * Escape a value for safe inline use in a shell command string.
+   * On Windows uses double-quote wrapping; on POSIX uses single-quote wrapping.
+   */
+  private static escapeValue(value: string): string {
+    if (typeof process !== "undefined" && process.platform === "win32") {
+      return `"${value.replace(/"/g, '""')}"`;
+    }
+    return `'${value.replace(/'/g, "'\\''")}'`;
   }
 
   files = {
@@ -286,9 +305,9 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
       // Use the command execution to download via curl/wget
       const escapedPath = TauriSandbox.escapePath(path);
-      const escapedUrl = url.replace(/'/g, "'\\''");
+      const escapedUrl = TauriSandbox.escapeValue(url);
       const result = await this.commands.run(
-        `curl -fsSL -o ${escapedPath} '${escapedUrl}' || wget -q -O ${escapedPath} '${escapedUrl}'`,
+        `curl -fsSL -o ${escapedPath} ${escapedUrl} || wget -q -O ${escapedPath} ${escapedUrl}`,
         { displayName: `Downloading: ${path.split("/").pop() || "file"}` },
       );
       if (result.exitCode !== 0) {
@@ -302,10 +321,12 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       contentType: string,
     ): Promise<void> => {
       const escapedPath = TauriSandbox.escapePath(path);
-      const escapedUrl = uploadUrl.replace(/'/g, "'\\''");
-      const escapedContentType = contentType.replace(/'/g, "'\\''");
+      const escapedUrl = TauriSandbox.escapeValue(uploadUrl);
+      const escapedContentType = TauriSandbox.escapeValue(
+        `Content-Type: ${contentType}`,
+      );
       const result = await this.commands.run(
-        `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @${escapedPath} '${escapedUrl}'`,
+        `curl -fsSL -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`,
         {
           timeoutMs: 120000,
           displayName: `Uploading: ${path.split("/").pop() || "file"}`,

@@ -344,7 +344,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           {isPaidUser && (
             <div>
               <DropdownMenuItem
-                onClick={(e) => {
+                onSelect={(e) => {
                   e.preventDefault();
                   setRateLimitsExpanded(!rateLimitsExpanded);
                 }}
