@@ -598,6 +598,13 @@ export const createChatHandler = (
                       ctxSystemTokens,
                       ctxMaxTokens,
                       providerInputTokens: lastStepInputTokens,
+                      chatSystemPrompt: currentSystemPrompt,
+                      tools,
+                      providerOptions: buildProviderOptions(
+                        isReasoningModel,
+                        subscription,
+                        userId,
+                      ),
                     });
 
                     if (
@@ -615,6 +622,10 @@ export const createChatHandler = (
                           result.summarizationUsage.outputTokens;
                         usageTracker.summarizationOutputTokens +=
                           result.summarizationUsage.outputTokens;
+                        usageTracker.cacheReadTokens +=
+                          result.summarizationUsage.cacheReadTokens || 0;
+                        usageTracker.cacheWriteTokens +=
+                          result.summarizationUsage.cacheWriteTokens || 0;
                         if (result.summarizationUsage.cost) {
                           usageTracker.providerCost +=
                             result.summarizationUsage.cost;

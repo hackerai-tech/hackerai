@@ -4,7 +4,12 @@
  * Utility functions extracted from chat-handler to keep it clean and focused.
  */
 
-import type { LanguageModel, UIMessage, UIMessageStreamWriter } from "ai";
+import type {
+  LanguageModel,
+  UIMessage,
+  UIMessageStreamWriter,
+  ToolSet,
+} from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -236,6 +241,9 @@ export async function runSummarizationStep(options: {
   ctxSystemTokens: number;
   ctxMaxTokens: number;
   providerInputTokens?: number;
+  chatSystemPrompt: string;
+  tools?: ToolSet;
+  providerOptions?: Record<string, Record<string, unknown>>;
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages, summarizationUsage } =
     await checkAndSummarizeIfNeeded(
@@ -251,6 +259,9 @@ export async function runSummarizationStep(options: {
       options.ensureSandbox,
       options.systemPromptTokens,
       options.providerInputTokens ?? 0,
+      options.chatSystemPrompt,
+      options.tools,
+      options.providerOptions,
     );
 
   if (!needsSummarization) {
@@ -287,10 +298,6 @@ export function buildProviderOptions(
   userId?: string,
 ) {
   return {
-    xai: {
-      // Disable storing the conversation in XAI's database
-      store: false,
-    },
     openrouter: {
       ...(isReasoningModel
         ? { reasoning: { enabled: true } }
