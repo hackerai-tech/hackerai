@@ -336,7 +336,14 @@ export function useAgentLongStream(
         };
         setTempChatFileDetails((prev) => {
           const next = new Map(prev);
-          next.set(d.messageId, d.fileDetails);
+          const existing = next.get(d.messageId) || [];
+          const existingIds = new Set(
+            existing.map((f: FileDetails) => f.fileId),
+          );
+          const newFiles = d.fileDetails.filter(
+            (f: FileDetails) => !existingIds.has(f.fileId),
+          );
+          next.set(d.messageId, [...existing, ...newFiles]);
           return next;
         });
       }

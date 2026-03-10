@@ -464,6 +464,19 @@ export function extractSidebarContentFromMessage(
       });
     }
 
+    // Shared files (get_terminal_files)
+    if (part.type === "tool-get_terminal_files") {
+      const requestedPaths: string[] = part.input?.files || [];
+
+      contentList.push({
+        files: [], // File details are managed by the handler via tempChatFileDetails
+        requestedPaths,
+        isExecuting:
+          part.state === "input-available" || part.state === "input-streaming",
+        toolCallId: part.toolCallId || "",
+      });
+    }
+
     // Notes tools
     const notesToolTypes = [
       "tool-create_note",

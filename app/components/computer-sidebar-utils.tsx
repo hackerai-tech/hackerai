@@ -1,10 +1,18 @@
 import React from "react";
-import { Edit, Terminal, Search, FolderSearch, StickyNote } from "lucide-react";
+import {
+  Edit,
+  Terminal,
+  Search,
+  FolderSearch,
+  StickyNote,
+  FileDown,
+} from "lucide-react";
 import {
   isSidebarFile,
   isSidebarTerminal,
   isSidebarWebSearch,
   isSidebarNotes,
+  isSidebarSharedFiles,
   type SidebarContent,
   type NoteCategory,
 } from "@/types/chat";
@@ -134,6 +142,18 @@ export function getActionText(content: SidebarContent): string {
     return completedActionMap[content.action];
   }
 
+  if (isSidebarSharedFiles(content)) {
+    if (content.isExecuting) {
+      const ready = content.files.length;
+      const total = content.requestedPaths.length;
+      return ready > 0
+        ? `Sharing files (${ready}/${total})`
+        : "Preparing files";
+    }
+    const count = content.files.length;
+    return `Shared ${count} file${count !== 1 ? "s" : ""}`;
+  }
+
   return "Unknown action";
 }
 
@@ -149,6 +169,7 @@ export function getSidebarIcon(content: SidebarContent): React.ReactNode {
   if (isSidebarTerminal(content)) return <Terminal className={iconClass} />;
   if (isSidebarWebSearch(content)) return <Search className={iconClass} />;
   if (isSidebarNotes(content)) return <StickyNote className={iconClass} />;
+  if (isSidebarSharedFiles(content)) return <FileDown className={iconClass} />;
   return <Edit className={iconClass} />;
 }
 
@@ -159,6 +180,7 @@ export function getToolName(content: SidebarContent): string {
   if (isSidebarTerminal(content)) return "Terminal";
   if (isSidebarWebSearch(content)) return "Search";
   if (isSidebarNotes(content)) return "Notes";
+  if (isSidebarSharedFiles(content)) return "Downloads";
   return "Tool";
 }
 
@@ -178,6 +200,10 @@ export function getDisplayTarget(content: SidebarContent): string {
       return `${content.totalCount} note${content.totalCount !== 1 ? "s" : ""}`;
     }
     return content.affectedTitle || "";
+  }
+  if (isSidebarSharedFiles(content)) {
+    const count = content.files.length || content.requestedPaths.length;
+    return `${count} file${count !== 1 ? "s" : ""}`;
   }
   return "";
 }

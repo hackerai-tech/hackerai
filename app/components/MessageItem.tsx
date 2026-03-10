@@ -72,6 +72,7 @@ function areMessageItemPropsEqual(
     return false;
   if (prev.summarizationStatus?.status !== next.summarizationStatus?.status)
     return false;
+  if (prev.tempChatFileDetails !== next.tempChatFileDetails) return false;
 
   // Compare message by reference first, then by parts length for streaming
   if (prev.message !== next.message) {
@@ -308,6 +309,7 @@ export const MessageItem = memo(function MessageItem({
                       status={status}
                       isLastMessage={isLastMessage}
                       terminalOutputByToolCallId={terminalOutputByToolCallId}
+                      sharedFileDetails={effectiveFileDetails}
                     />
                   ))
                 )}
@@ -325,6 +327,7 @@ export const MessageItem = memo(function MessageItem({
                     partIndex={partIndex}
                     status={status}
                     terminalOutputByToolCallId={terminalOutputByToolCallId}
+                    sharedFileDetails={effectiveFileDetails}
                   />
                 ))}
               </div>
@@ -332,8 +335,8 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
-        {/* Saved files from tools (shown after message content for assistant) */}
-        {!isUser && savedFiles.length > 0 && (
+        {/* Saved files from tools (shown after streaming completes - during streaming they appear in the sidebar) */}
+        {!isUser && savedFiles.length > 0 && status !== "streaming" && (
           <div className="mt-2 flex flex-wrap items-center gap-2 w-full animate-in fade-in-0 duration-200">
             {savedFiles.length > 2 ? (
               <>

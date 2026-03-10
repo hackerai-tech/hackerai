@@ -299,10 +299,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           fileDetails: FileDetails[];
         };
 
-        // Store in parallel state (outside AI SDK control)
+        // Merge into parallel state (outside AI SDK control)
+        // Uses merge-with-dedup so incremental events (per-file) and
+        // the onFinish batch event both work without duplicates
         setTempChatFileDetails((prev) => {
           const next = new Map(prev);
-          next.set(fileData.messageId, fileData.fileDetails);
+          const existing = next.get(fileData.messageId) || [];
+          const existingIds = new Set(
+            existing.map((f: FileDetails) => f.fileId),
+          );
+          const newFiles = fileData.fileDetails.filter(
+            (f: FileDetails) => !existingIds.has(f.fileId),
+          );
+          next.set(fileData.messageId, [...existing, ...newFiles]);
           return next;
         });
       }

@@ -86,6 +86,27 @@ Usage:
                 s3Key: saved.s3Key,
                 storageId: saved.storageId,
               });
+
+              // Stream file metadata immediately so the client can show the file card
+              // while the rest of the response is still streaming
+              if (context.assistantMessageId) {
+                context.writer.write({
+                  type: "data-file-metadata" as const,
+                  data: {
+                    messageId: context.assistantMessageId,
+                    fileDetails: [
+                      {
+                        fileId: saved.fileId,
+                        name: saved.name,
+                        mediaType: saved.mediaType,
+                        s3Key: saved.s3Key,
+                        storageId: saved.storageId,
+                      },
+                    ],
+                  },
+                });
+              }
+
               providedFiles.push({ path: originalPath });
               fileProcessed = true;
               break; // Success! No need to try other paths
