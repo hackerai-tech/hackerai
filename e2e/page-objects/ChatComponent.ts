@@ -47,10 +47,6 @@ export class ChatComponent {
     return this.page.getByTestId("mode-agent");
   }
 
-  private get agentLongModeOption(): Locator {
-    return this.page.getByTestId("mode-agent-long");
-  }
-
   private get upgradeDialog(): Locator {
     return this.page.getByRole("dialog").filter({ hasText: "Upgrade plan" });
   }
@@ -137,11 +133,6 @@ export class ChatComponent {
   async switchToAgentMode(): Promise<void> {
     await this.modeDropdown.click();
     await this.agentModeOption.click();
-  }
-
-  async switchToAgentLongMode(): Promise<void> {
-    await this.modeDropdown.click();
-    await this.agentLongModeOption.click();
   }
 
   async switchToAskMode(): Promise<void> {
@@ -291,12 +282,11 @@ export class ChatComponent {
 
   async getCurrentMode(): Promise<string> {
     const modeText = await this.modeDropdown.innerText();
-    if (modeText.includes("Agent-Long")) return "agent-long";
     if (modeText.includes("Agent")) return "agent";
     return "ask";
   }
 
-  async expectMode(mode: "ask" | "agent" | "agent-long"): Promise<void> {
+  async expectMode(mode: "ask" | "agent"): Promise<void> {
     const currentMode = await this.getCurrentMode();
     expect(currentMode).toBe(mode);
   }

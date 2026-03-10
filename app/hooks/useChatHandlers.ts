@@ -24,11 +24,11 @@ interface UseChatHandlersProps {
     messages: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[]),
   ) => void;
   isExistingChat: boolean;
-  activateChatLocally: () => void;
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
   onStopCallback?: () => void;
+  resetAutoContinueCount?: () => void;
 }
 
 export const useChatHandlers = ({
@@ -39,11 +39,11 @@ export const useChatHandlers = ({
   regenerate,
   setMessages,
   isExistingChat,
-  activateChatLocally,
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
   onStopCallback,
+  resetAutoContinueCount,
 }: UseChatHandlersProps) => {
   const { setIsAutoResuming } = useDataStream();
   const {
@@ -146,6 +146,7 @@ export const useChatHandlers = ({
 
     // Reset manual stop flag when user submits a new message
     hasManuallyStoppedRef.current = false;
+    resetAutoContinueCount?.();
 
     // Prevent submission if files are still uploading
     if (isUploadingFiles) {
@@ -230,7 +231,6 @@ export const useChatHandlers = ({
       }
       if (!isExistingChat && !temporaryChatsEnabledRef.current) {
         window.history.replaceState({}, "", `/c/${chatId}`);
-        activateChatLocally();
       }
 
       try {

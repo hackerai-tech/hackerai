@@ -44,6 +44,7 @@ import {
   clearActiveTriggerRunIdFromBackend,
 } from "@/lib/db/actions";
 import { deductUsage } from "@/lib/rate-limit";
+import { UsageTracker } from "@/lib/usage-tracker";
 import { aiStream, metadataStream, type MetadataEvent } from "./streams";
 import type {
   AgentTaskPayload,
@@ -56,6 +57,8 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
+import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
 import PostHogClient from "@/app/posthog";
@@ -64,23 +67,16 @@ function deserializeRateLimitInfo(info: SerializableRateLimitInfo): {
   remaining: number;
   resetTime: Date;
   limit: number;
-  session?: { remaining: number; limit: number; resetTime: Date };
-  weekly?: { remaining: number; limit: number; resetTime: Date };
+  monthly?: { remaining: number; limit: number; resetTime: Date };
   extraUsagePointsDeducted?: number;
 } {
   return {
     ...info,
     resetTime: new Date(info.resetTime),
-    session: info.session
+    monthly: info.monthly
       ? {
-          ...info.session,
-          resetTime: new Date(info.session.resetTime),
-        }
-      : undefined,
-    weekly: info.weekly
-      ? {
-          ...info.weekly,
-          resetTime: new Date(info.weekly.resetTime),
+          ...info.monthly,
+          resetTime: new Date(info.monthly.resetTime),
         }
       : undefined,
   };
@@ -182,16 +178,10 @@ export const agentStreamTask = task({
         pointsDeducted: serializedRateLimitInfo.pointsDeducted,
         extraUsagePointsDeducted:
           serializedRateLimitInfo.extraUsagePointsDeducted,
-        session: serializedRateLimitInfo.session
+        monthly: serializedRateLimitInfo.monthly
           ? {
-              remaining: serializedRateLimitInfo.session.remaining,
-              limit: serializedRateLimitInfo.session.limit,
-            }
-          : undefined,
-        weekly: serializedRateLimitInfo.weekly
-          ? {
-              remaining: serializedRateLimitInfo.weekly.remaining,
-              limit: serializedRateLimitInfo.weekly.limit,
+              remaining: serializedRateLimitInfo.monthly.remaining,
+              limit: serializedRateLimitInfo.monthly.limit,
             }
           : undefined,
         remaining: serializedRateLimitInfo.remaining,
@@ -222,6 +212,7 @@ export const agentStreamTask = task({
         getFileAccumulator,
         sandboxManager,
         ensureSandbox,
+        getSandboxSessionCost,
       } = createTools(
         userId,
         chatId,
@@ -241,6 +232,10 @@ export const agentStreamTask = task({
         (userCustomization as { guardrails_config?: string } | null)
           ?.guardrails_config,
         appendMetadataStream,
+        (costDollars: number) => {
+          usageTracker.providerCost += costDollars;
+          chatLogger.getBuilder().addToolCost(costDollars);
+        },
       );
 
       const sendFileMetadataToStream = (
@@ -358,26 +353,37 @@ export const agentStreamTask = task({
         trackedProvider.languageModel(selectedModel).modelId;
       let streamUsage: Record<string, unknown> | undefined;
       let responseModel: string | undefined;
-      let accumulatedInputTokens = 0;
-      let accumulatedOutputTokens = 0;
-      let accumulatedProviderCost = 0;
+      const usageTracker = new UsageTracker();
       let hasDeductedUsage = false;
 
       const deductAccumulatedUsage = async () => {
         if (hasDeductedUsage || subscription === "free") return;
-        if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
-          await deductUsage(
-            userId,
-            subscription,
-            estimatedInputTokens,
-            accumulatedInputTokens,
-            accumulatedOutputTokens,
-            extraUsageConfig ?? undefined,
-            accumulatedProviderCost > 0 ? accumulatedProviderCost : undefined,
-            selectedModel,
-          );
-          hasDeductedUsage = true;
+        // Add E2B sandbox session cost (duration-based)
+        const sandboxCost = getSandboxSessionCost();
+        if (sandboxCost > 0) {
+          usageTracker.providerCost += sandboxCost;
+          chatLogger.getBuilder().addToolCost(sandboxCost);
         }
+        if (!usageTracker.hasUsage) return;
+        hasDeductedUsage = true;
+        await deductUsage(
+          userId,
+          subscription,
+          estimatedInputTokens,
+          usageTracker.inputTokens,
+          usageTracker.outputTokens,
+          extraUsageConfig ?? undefined,
+          usageTracker.providerCost > 0 ? usageTracker.providerCost : undefined,
+          selectedModel,
+        );
+        usageTracker.log({
+          userId,
+          selectedModel,
+          selectedModelOverride,
+          responseModel,
+          configuredModelId,
+          rateLimitInfo,
+        });
       };
 
       const createStream = async (modelName: string) =>
@@ -465,6 +471,10 @@ export const agentStreamTask = task({
           stopWhen: [
             stepCountIs(getMaxStepsForUser(mode, subscription)),
             tokenExhaustedAfterSummarization({
+              threshold: Math.floor(
+                getMaxTokensForSubscription(subscription) *
+                  SUMMARIZATION_THRESHOLD_PERCENTAGE,
+              ),
               getLastStepInputTokens: () => lastStepInputTokens,
               getHasSummarized: () => hasSummarized,
               onFired: () => {
@@ -494,11 +504,10 @@ export const agentStreamTask = task({
           },
           onStepFinish: async ({ usage }) => {
             if (usage) {
-              accumulatedInputTokens += usage.inputTokens || 0;
-              accumulatedOutputTokens += usage.outputTokens || 0;
+              usageTracker.accumulateStep(
+                usage as Parameters<typeof usageTracker.accumulateStep>[0],
+              );
               lastStepInputTokens = usage.inputTokens || 0;
-              const stepCost = (usage as { raw?: { cost?: number } }).raw?.cost;
-              if (stepCost) accumulatedProviderCost += stepCost;
             }
           },
           onFinish: async ({ finishReason, usage, response }) => {

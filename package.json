@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "dev": "concurrently \"next dev --turbopack\" \"npx convex dev\"",
+    "dev:local": "concurrently \"next dev --turbopack\" \"npx convex dev --local\"",
     "dev:next": "next dev --turbopack",
     "dev:convex": "npx convex dev",
     "dev:trigger": "npx trigger.dev@latest dev",
@@ -107,7 +108,9 @@
     "pdfjs-serverless": "^1.1.0",
     "posthog-js": "^1.357.2",
     "posthog-node": "^5.26.2",
+    "radix-ui": "^1.4.3",
     "react": "^19.2.4",
+    "react-day-picker": "^9.14.0",
     "react-dom": "19.2.4",
     "react-hotkeys-hook": "^5.2.4",
     "react-shiki": "^0.9.2",

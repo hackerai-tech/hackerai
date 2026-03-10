@@ -35,6 +35,7 @@ import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 import {
   saveMessage,
   updateChat,
@@ -147,16 +148,10 @@ export async function runAgentStep(payload: AgentTaskPayload) {
       pointsDeducted: serializedRateLimitInfo.pointsDeducted,
       extraUsagePointsDeducted:
         serializedRateLimitInfo.extraUsagePointsDeducted,
-      session: serializedRateLimitInfo.session
+      monthly: serializedRateLimitInfo.monthly
         ? {
-            remaining: serializedRateLimitInfo.session.remaining,
-            limit: serializedRateLimitInfo.session.limit,
-          }
-        : undefined,
-      weekly: serializedRateLimitInfo.weekly
-        ? {
-            remaining: serializedRateLimitInfo.weekly.remaining,
-            limit: serializedRateLimitInfo.weekly.limit,
+            remaining: serializedRateLimitInfo.monthly.remaining,
+            limit: serializedRateLimitInfo.monthly.limit,
           }
         : undefined,
       remaining: serializedRateLimitInfo.remaining,
@@ -401,6 +396,7 @@ export async function runAgentStep(payload: AgentTaskPayload) {
                     ctxSystemTokens,
                     ctxMaxTokens,
                     providerInputTokens: lastStepInputTokens,
+                    chatSystemPrompt: currentSystemPrompt,
                   });
 
                   if (result.needsSummarization && result.summarizedMessages) {
@@ -472,6 +468,10 @@ export async function runAgentStep(payload: AgentTaskPayload) {
               ? [
                   stepCountIs(getMaxStepsForUser(mode, subscription)),
                   tokenExhaustedAfterSummarization({
+                    threshold: Math.floor(
+                      getMaxTokensForSubscription(subscription) *
+                        SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    ),
                     getLastStepInputTokens: () => lastStepInputTokens,
                     getHasSummarized: () => hasSummarized,
                     onFired: () => {

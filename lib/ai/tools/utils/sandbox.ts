@@ -13,7 +13,7 @@ const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000; // 7 minutes auto-pause in
  * Old sandboxes without this version (or with mismatched versions) will be automatically deleted
  * and recreated on next connection attempt.
  */
-const SANDBOX_VERSION = "v7";
+const SANDBOX_VERSION = "v8"; // Bumped: upgraded sandbox CPU (4 cores) and memory (2GB)
 
 /**
  * Ensures a sandbox connection is established and maintained

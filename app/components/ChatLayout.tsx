@@ -29,8 +29,12 @@ export function ChatLayout({ children }: { children: React.ReactNode }) {
   );
 
   const handleOpenSettings = useCallback((tab?: string) => {
-    setSettingsDialogTab(tab ?? null);
-    setSettingsDialogOpen(true);
+    setSettingsDialogTab(null);
+    // Force a fresh state change even if the same tab is requested again
+    queueMicrotask(() => {
+      setSettingsDialogTab(tab ?? null);
+      setSettingsDialogOpen(true);
+    });
   }, []);
 
   useEffect(

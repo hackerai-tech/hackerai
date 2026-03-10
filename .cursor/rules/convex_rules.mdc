@@ -5,19 +5,6 @@ globs: **/*.ts,**/*.tsx,**/*.js,**/*.jsx
 
 # Convex guidelines
 ## Function guidelines
-### New function syntax
-- ALWAYS use the new function syntax for Convex functions. For example:
-```typescript
-import { query } from "./_generated/server";
-import { v } from "convex/values";
-export const f = query({
-    args: {},
-    handler: async (ctx, args) => {
-    // Function body
-    },
-});
-```
-
 ### Http endpoint syntax
 - HTTP endpoints are defined in `convex/http.ts` and require an `httpAction` decorator. For example:
 ```typescript
@@ -89,7 +76,6 @@ Convex Type  | TS/JS type  |  Example Usage         | Validator for argument val
 - Use `query`, `mutation`, and `action` to register public functions. These functions are part of the public API and are exposed to the public Internet. Do NOT use `query`, `mutation`, or `action` to register sensitive internal functions that should be kept private.
 - You CANNOT register a function through the `api` or `internal` objects.
 - ALWAYS include argument validators for all Convex functions. This includes all of `query`, `internalQuery`, `mutation`, `internalMutation`, `action`, and `internalAction`.
-- If the JavaScript implementation of a Convex function doesn't have a return value, it implicitly returns `null`.
 
 ### Function calling
 - Use `ctx.runQuery` to call a query from a query, mutation, or action.
@@ -117,21 +103,14 @@ export const g = query({
 ```
 
 ### Function references
-- Function references are pointers to registered Convex functions.
 - Use the `api` object defined by the framework in `convex/_generated/api.ts` to call public functions registered with `query`, `mutation`, or `action`.
 - Use the `internal` object defined by the framework in `convex/_generated/api.ts` to call internal (or private) functions registered with `internalQuery`, `internalMutation`, or `internalAction`.
 - Convex uses file-based routing, so a public function defined in `convex/example.ts` named `f` has a function reference of `api.example.f`.
 - A private function defined in `convex/example.ts` named `g` has a function reference of `internal.example.g`.
 - Functions can also registered within directories nested within the `convex/` folder. For example, a public function `h` defined in `convex/messages/access.ts` has a function reference of `api.messages.access.h`.
 
-### Api design
-- Convex uses file-based routing, so thoughtfully organize files with public query, mutation, or action functions within the `convex/` directory.
-- Use `query`, `mutation`, and `action` to define public functions.
-- Use `internalQuery`, `internalMutation`, and `internalAction` to define private, internal functions.
-
 ### Pagination
-- Paginated queries are queries that return a list of results in incremental pages.
-- You can define pagination using the following syntax:
+- Define pagination using the following syntax:
 
 ```ts
 import { v } from "convex/values";
@@ -157,10 +136,6 @@ Note: `paginationOpts` is an object with the following properties:
 - continueCursor (a string that represents the cursor to use to fetch the next page of documents)
 
 
-## Validator guidelines
-- `v.bigint()` is deprecated for representing signed 64-bit integers. Use `v.int64()` instead.
-- Use `v.record()` for defining a record type. `v.map()` and `v.set()` are not supported.
-
 ## Schema guidelines
 - Always define your schema in `convex/schema.ts`.
 - Always import the schema definition functions from `convex/server`.
@@ -168,8 +143,42 @@ Note: `paginationOpts` is an object with the following properties:
 - Always include all index fields in the index name. For example, if an index is defined as `["field1", "field2"]`, the index name should be "by_field1_and_field2".
 - Index fields must be queried in the same order they are defined. If you want to be able to query by "field1" then "field2" and by "field2" then "field1", you must create separate indexes.
 
+## Authentication guidelines
+- Convex supports JWT-based authentication through `convex/auth.config.ts`. ALWAYS create this file when using authentication. Without it, `ctx.auth.getUserIdentity()` will always return `null`.
+- Example `convex/auth.config.ts`:
+```typescript
+export default {
+  providers: [
+    {
+      domain: "https://your-auth-provider.com",
+      applicationID: "convex",
+    },
+  ],
+};
+```
+The `domain` must be the issuer URL of the JWT provider. Convex fetches `{domain}/.well-known/openid-configuration` to discover the JWKS endpoint. The `applicationID` is checked against the JWT `aud` (audience) claim.
+- Use `ctx.auth.getUserIdentity()` to get the authenticated user's identity in any query, mutation, or action. This returns `null` if the user is not authenticated, or a `UserIdentity` object with fields like `subject`, `issuer`, `name`, `email`, etc. The `subject` field is the unique user identifier.
+- NEVER accept a `userId` or any user identifier as a function argument for authorization purposes. Always derive the user identity server-side via `ctx.auth.getUserIdentity()`.
+- When using an external auth provider with Convex on the client, use `ConvexProviderWithAuth` instead of `ConvexProvider`:
+```tsx
+import { ConvexProviderWithAuth, ConvexReactClient } from "convex/react";
+
+const convex = new ConvexReactClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
+
+function App({ children }: { children: React.ReactNode }) {
+  return (
+    <ConvexProviderWithAuth client={convex} useAuth={useYourAuthHook}>
+      {children}
+    </ConvexProviderWithAuth>
+  );
+}
+```
+The `useAuth` prop must return `{ isLoading, isAuthenticated, fetchAccessToken }`. Do NOT use plain `ConvexProvider` when authentication is needed — it will not send tokens with requests.
+
 ## Typescript guidelines
 - You can use the helper typescript type `Id` imported from './_generated/dataModel' to get the type of the id for a given table. For example if there is a table called 'users' you can use `Id<'users'>` to get the type of the id for that table.
+- Use `Doc<"tableName">` from `./_generated/dataModel` to get the full document type for a table.
+- Use `QueryCtx`, `MutationCtx`, `ActionCtx` from `./_generated/server` for typing function contexts. NEVER use `any` for ctx parameters — always use the proper context type.
 - If you need to define a `Record` make sure that you correctly provide the type of the key and value in the type. For example a validator `v.record(v.id('users'), v.string())` would have the type `Record<Id<'users'>, string>`. Below is an example of using `Record` with an `Id` type in a query:
 ```ts
 import { query } from "./_generated/server";
@@ -191,9 +200,6 @@ export const exampleQuery = query({
 });
 ```
 - Be strict with types, particularly around id's of documents. For example, if a function takes in an id for a document in the 'users' table, take in `Id<'users'>` rather than `string`.
-- Always use `as const` for string literals in discriminated union types.
-- When using the `Array` type, make sure to always define your arrays as `const array: Array<T> = [...];`
-- When using the `Record` type, make sure to always define your records as `const record: Record<KeyType, ValueType> = {...};`
 
 ## Full text search guidelines
 - A query for "10 messages in channel '#general' that best match the query 'hello hi' in their body" would look like:
@@ -267,7 +273,6 @@ export default crons;
 
 
 ## File storage guidelines
-- Convex includes file storage for large files like images, videos, and PDFs.
 - The `ctx.storage.getUrl()` method returns a signed URL for a given file. It returns `null` if the file doesn't exist.
 - Do NOT use the deprecated `ctx.storage.getMetadata` call for loading a file's metadata.
 

@@ -3,15 +3,10 @@ import type { RateLimitInfo } from "@/types";
 /** Serializable rate limit info (Date -> ISO string) for cross-boundary payloads */
 export type SerializableRateLimitInfo = Omit<
   RateLimitInfo,
-  "resetTime" | "session" | "weekly"
+  "resetTime" | "monthly"
 > & {
   resetTime: string;
-  session?: {
-    remaining: number;
-    limit: number;
-    resetTime: string;
-  };
-  weekly?: {
+  monthly?: {
     remaining: number;
     limit: number;
     resetTime: string;
@@ -27,22 +22,13 @@ export function serializeRateLimitInfo(
       typeof info.resetTime === "string"
         ? info.resetTime
         : info.resetTime.toISOString(),
-    session: info.session
+    monthly: info.monthly
       ? {
-          ...info.session,
+          ...info.monthly,
           resetTime:
-            typeof info.session.resetTime === "string"
-              ? info.session.resetTime
-              : info.session.resetTime.toISOString(),
-        }
-      : undefined,
-    weekly: info.weekly
-      ? {
-          ...info.weekly,
-          resetTime:
-            typeof info.weekly.resetTime === "string"
-              ? info.weekly.resetTime
-              : info.weekly.resetTime.toISOString(),
+            typeof info.monthly.resetTime === "string"
+              ? info.monthly.resetTime
+              : info.monthly.resetTime.toISOString(),
         }
       : undefined,
   };
@@ -52,23 +38,16 @@ export function deserializeRateLimitInfo(info: SerializableRateLimitInfo): {
   remaining: number;
   resetTime: Date;
   limit: number;
-  session?: { remaining: number; limit: number; resetTime: Date };
-  weekly?: { remaining: number; limit: number; resetTime: Date };
+  monthly?: { remaining: number; limit: number; resetTime: Date };
   extraUsagePointsDeducted?: number;
 } {
   return {
     ...info,
     resetTime: new Date(info.resetTime),
-    session: info.session
+    monthly: info.monthly
       ? {
-          ...info.session,
-          resetTime: new Date(info.session.resetTime),
-        }
-      : undefined,
-    weekly: info.weekly
-      ? {
-          ...info.weekly,
-          resetTime: new Date(info.weekly.resetTime),
+          ...info.monthly,
+          resetTime: new Date(info.monthly.resetTime),
         }
       : undefined,
   };

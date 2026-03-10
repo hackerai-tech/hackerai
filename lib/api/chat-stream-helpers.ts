@@ -4,7 +4,12 @@
  * Utility functions extracted from chat-handler to keep it clean and focused.
  */
 
-import type { LanguageModel, UIMessage, UIMessageStreamWriter } from "ai";
+import type {
+  LanguageModel,
+  UIMessage,
+  UIMessageStreamWriter,
+  ToolSet,
+} from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
@@ -13,6 +18,7 @@ import { countMessagesTokens } from "@/lib/token-utils";
 import {
   checkAndSummarizeIfNeeded,
   type EnsureSandbox,
+  type SummarizationUsage,
 } from "@/lib/chat/summarization";
 import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
@@ -63,8 +69,7 @@ export function sendRateLimitWarnings(
     rateLimitInfo: {
       remaining: number;
       resetTime: Date;
-      session?: { remaining: number; limit: number; resetTime: Date };
-      weekly?: { remaining: number; limit: number; resetTime: Date };
+      monthly?: { remaining: number; limit: number; resetTime: Date };
       extraUsagePointsDeducted?: number;
     };
   },
@@ -82,50 +87,29 @@ export function sendRateLimitWarnings(
         subscription,
       });
     }
-  } else if (rateLimitInfo.session && rateLimitInfo.weekly) {
+  } else if (rateLimitInfo.monthly) {
     // Paid users with extra usage: warn when extra usage is being used
     if (
       rateLimitInfo.extraUsagePointsDeducted &&
       rateLimitInfo.extraUsagePointsDeducted > 0
     ) {
-      const bucketType =
-        rateLimitInfo.session.remaining <= rateLimitInfo.weekly.remaining
-          ? "session"
-          : "weekly";
-      const resetTime =
-        bucketType === "session"
-          ? rateLimitInfo.session.resetTime
-          : rateLimitInfo.weekly.resetTime;
-
       writeRateLimitWarning(writer, {
         warningType: "extra-usage-active",
-        bucketType,
-        resetTime: resetTime.toISOString(),
+        bucketType: "monthly",
+        resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
         subscription,
       });
     } else {
       // Paid users without extra usage: token bucket (remaining percentage at 10%)
-      const sessionPercent =
-        (rateLimitInfo.session.remaining / rateLimitInfo.session.limit) * 100;
-      const weeklyPercent =
-        (rateLimitInfo.weekly.remaining / rateLimitInfo.weekly.limit) * 100;
+      const monthlyPercent =
+        (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
 
-      if (sessionPercent <= 10) {
+      if (monthlyPercent <= 10) {
         writeRateLimitWarning(writer, {
           warningType: "token-bucket",
-          bucketType: "session",
-          remainingPercent: Math.round(sessionPercent),
-          resetTime: rateLimitInfo.session.resetTime.toISOString(),
-          subscription,
-        });
-      }
-
-      if (weeklyPercent <= 10) {
-        writeRateLimitWarning(writer, {
-          warningType: "token-bucket",
-          bucketType: "weekly",
-          remainingPercent: Math.round(weeklyPercent),
-          resetTime: rateLimitInfo.weekly.resetTime.toISOString(),
+          bucketType: "monthly",
+          remainingPercent: Math.round(monthlyPercent),
+          resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
           subscription,
         });
       }
@@ -208,7 +192,7 @@ export function computeContextUsage(
       (p: { type?: string; text?: string }) =>
         p.type === "text" &&
         typeof p.text === "string" &&
-        p.text.startsWith("<context_summary>"),
+        p.text.includes("<context_summary>"),
     ),
   );
   const summaryTokens = summaryMsg
@@ -239,6 +223,7 @@ export interface SummarizationStepResult {
   needsSummarization: boolean;
   summarizedMessages?: UIMessage[];
   contextUsage?: ContextUsageData;
+  summarizationUsage?: SummarizationUsage;
 }
 
 export async function runSummarizationStep(options: {
@@ -256,8 +241,11 @@ export async function runSummarizationStep(options: {
   ctxSystemTokens: number;
   ctxMaxTokens: number;
   providerInputTokens?: number;
+  chatSystemPrompt: string;
+  tools?: ToolSet;
+  providerOptions?: Record<string, Record<string, unknown>>;
 }): Promise<SummarizationStepResult> {
-  const { needsSummarization, summarizedMessages } =
+  const { needsSummarization, summarizedMessages, summarizationUsage } =
     await checkAndSummarizeIfNeeded(
       options.messages,
       options.subscription,
@@ -271,6 +259,9 @@ export async function runSummarizationStep(options: {
       options.ensureSandbox,
       options.systemPromptTokens,
       options.providerInputTokens ?? 0,
+      options.chatSystemPrompt,
+      options.tools,
+      options.providerOptions,
     );
 
   if (!needsSummarization) {
@@ -290,7 +281,12 @@ export async function runSummarizationStep(options: {
     writeContextUsage(options.writer, contextUsage);
   }
 
-  return { needsSummarization: true, summarizedMessages, contextUsage };
+  return {
+    needsSummarization: true,
+    summarizedMessages,
+    contextUsage,
+    summarizationUsage,
+  };
 }
 
 /**
@@ -302,10 +298,6 @@ export function buildProviderOptions(
   userId?: string,
 ) {
   return {
-    xai: {
-      // Disable storing the conversation in XAI's database
-      store: false,
-    },
     openrouter: {
       ...(isReasoningModel
         ? { reasoning: { enabled: true } }
@@ -374,11 +366,6 @@ export async function injectNotesIntoMessages(
     });
     const notesContent = generateNotesSection(notes);
     if (!notesContent) return messages;
-
-    logger.warn("Notes injected via system-reminder", {
-      userId: opts.userId,
-      noteCount: notes?.length ?? 0,
-    });
 
     return appendSystemReminderToLastUserMessage(messages, notesContent);
   } catch (error) {

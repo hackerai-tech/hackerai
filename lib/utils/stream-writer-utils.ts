@@ -81,7 +81,7 @@ export type RateLimitWarningData =
   | {
       // Paid users: token bucket (remaining percentage)
       warningType: "token-bucket";
-      bucketType: "session" | "weekly";
+      bucketType: "monthly";
       remainingPercent: number;
       resetTime: string;
       subscription: SubscriptionTier;
@@ -89,7 +89,7 @@ export type RateLimitWarningData =
   | {
       // Paid users: extra usage is now being consumed
       warningType: "extra-usage-active";
-      bucketType: "session" | "weekly";
+      bucketType: "monthly";
       resetTime: string;
       subscription: SubscriptionTier;
     };
@@ -103,5 +103,12 @@ export const writeRateLimitWarning = (
     type: "data-rate-limit-warning",
     data,
     transient: true,
+  });
+};
+
+export const writeAutoContinue = (writer: UIMessageStreamWriter): void => {
+  writer.write({
+    type: "data-auto-continue",
+    data: { shouldContinue: true },
   });
 };

@@ -1,16 +1,8 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
+import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import {
-  Check,
-  Cloud,
-  Laptop,
-  AlertTriangle,
-  ChevronDown,
-  Settings,
-  SquareTerminal,
-} from "lucide-react";
+import { Check, Cloud, Laptop, ChevronDown, Settings } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -20,7 +12,6 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-import { runCommand, convexUrlFlag } from "@/lib/utils/sandbox-command";
 
 interface SandboxSelectorProps {
   value: string;
@@ -35,7 +26,7 @@ interface ConnectionOption {
   label: string;
   description: string;
   icon: typeof Cloud;
-  warning: string | null;
+
   mode?: "docker" | "dangerous";
 }
 
@@ -49,26 +40,22 @@ export function SandboxSelector({
   const [open, setOpen] = useState(false);
 
   const connections = useQuery(api.localSandbox.listConnections);
-  const getToken = useMutation(api.localSandbox.getToken);
-
   const options: ConnectionOption[] = [
     {
       id: "e2b",
       label: "Cloud",
       icon: Cloud,
       description: "",
-      warning: null,
     },
     ...(connections?.map((conn) => ({
       id: conn.connectionId,
-      label: conn.name,
+      label: conn.osInfo?.hostname || conn.name,
       icon: Laptop,
       description:
         conn.mode === "dangerous"
           ? `Dangerous: ${conn.osInfo?.platform || "unknown"}`
           : `Docker: ${conn.containerId?.slice(0, 8) || "unknown"}`,
-      warning:
-        conn.mode === "dangerous" ? "Direct OS access - no isolation" : null,
+
       mode: conn.mode,
     })) || []),
   ];
@@ -101,39 +88,10 @@ export function SandboxSelector({
 
   // When readOnly and local sandbox is still connected, show a static badge (no popover).
   if (readOnly && valueMatchesOption) {
-    const handleCopyCommand = async () => {
-      try {
-        const result = await getToken();
-        const dangerousFlag =
-          selectedOption?.mode === "dangerous" ? " --dangerous" : "";
-        const command = `${runCommand} --token ${result.token} --name "${selectedOption?.label || "My Machine"}"${dangerousFlag}${convexUrlFlag}`;
-        await navigator.clipboard.writeText(command);
-        toast.success("Command copied to clipboard");
-      } catch {
-        toast.error("Failed to copy command");
-      }
-    };
-
     return (
-      <div className="flex items-center w-full sm:w-auto px-3 sm:px-2 h-6">
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <span className="scale-[0.80] origin-center">
-            <Icon className="w-5 h-5 shrink-0" />
-          </span>
-          <span className="truncate">{selectedOption?.label}</span>
-        </div>
-        <div className="flex-1" />
-        <div className="flex items-center gap-2 sm:hidden">
-          <button
-            type="button"
-            onClick={handleCopyCommand}
-            className="flex items-center text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <div className="w-3.5 h-3.5 flex items-center justify-center">
-              <SquareTerminal className="w-4 h-4 shrink-0" />
-            </div>
-          </button>
-        </div>
+      <div className="flex items-center gap-1.5 px-2 h-5 text-[11px] text-muted-foreground">
+        <Icon className="w-3.5 h-3.5 shrink-0" />
+        <span className="truncate">{selectedOption?.label}</span>
       </div>
     );
   }
@@ -149,15 +107,6 @@ export function SandboxSelector({
     <>
       <Icon className={iconClassName} />
       <span className="truncate">{selectedOption?.label}</span>
-      {selectedOption?.mode === "dangerous" && (
-        <AlertTriangle
-          className={
-            size === "md"
-              ? "h-4 w-4 text-yellow-500 shrink-0"
-              : "h-3 w-3 text-yellow-500 shrink-0"
-          }
-        />
-      )}
       <ChevronDown
         className={
           size === "md" ? "h-4 w-4 ml-1 shrink-0" : "h-3 w-3 ml-1 shrink-0"
@@ -204,18 +153,10 @@ export function SandboxSelector({
                     <span className="text-sm font-medium truncate">
                       {option.label}
                     </span>
-                    {option.mode === "dangerous" && (
-                      <AlertTriangle className="h-3 w-3 text-yellow-500 shrink-0" />
-                    )}
                   </div>
                   {option.description && (
                     <div className="text-xs text-muted-foreground truncate">
                       {option.description}
-                    </div>
-                  )}
-                  {option.warning && (
-                    <div className="text-xs text-yellow-600 dark:text-yellow-400 mt-0.5">
-                      {option.warning}
                     </div>
                   )}
                 </div>
