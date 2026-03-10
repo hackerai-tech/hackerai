@@ -250,6 +250,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   } | null>(null);
 
   // Auto-detect Tauri desktop and set sandbox preference to "tauri"
+  // Only default to "tauri" when there is no saved preference yet
   useEffect(() => {
     async function detectTauri() {
       try {
@@ -259,7 +260,14 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
           const info = await getCmdServerInfo();
           if (info) {
             setTauriCmdServer(info);
-            setSandboxPreferenceState("tauri");
+            // Only set preference if user hasn't explicitly chosen something else
+            const savedPref =
+              typeof window !== "undefined"
+                ? localStorage.getItem("sandbox-preference")
+                : null;
+            if (!savedPref || savedPref === "tauri") {
+              setSandboxPreferenceState("tauri");
+            }
           }
         }
       } catch {

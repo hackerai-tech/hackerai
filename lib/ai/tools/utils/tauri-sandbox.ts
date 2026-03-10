@@ -200,6 +200,42 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       }
     }
 
+    // Flush any remaining buffered data after EOF
+    const remaining = buffer.trim();
+    if (remaining) {
+      try {
+        const chunk = JSON.parse(remaining) as {
+          type: "stdout" | "stderr" | "exit" | "error";
+          data?: string;
+          exit_code?: number;
+          message?: string;
+        };
+        switch (chunk.type) {
+          case "stdout":
+            if (chunk.data) {
+              stdout += chunk.data;
+              opts?.onStdout?.(chunk.data);
+            }
+            break;
+          case "stderr":
+            if (chunk.data) {
+              stderr += chunk.data;
+              opts?.onStderr?.(chunk.data);
+            }
+            break;
+          case "exit":
+            exitCode = chunk.exit_code ?? -1;
+            break;
+          case "error":
+            stderr += chunk.message || "Unknown error";
+            opts?.onStderr?.(chunk.message || "Unknown error");
+            break;
+        }
+      } catch {
+        // Skip malformed data
+      }
+    }
+
     return { stdout, stderr, exitCode };
   }
 
@@ -291,6 +327,14 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Get the host address for a given port.
+   * For Tauri desktop, services run on the user's local machine.
+   */
+  getHost(port: number): string {
+    return `localhost:${port}`;
   }
 
   async close(): Promise<void> {

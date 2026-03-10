@@ -184,10 +184,10 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   getSandboxInfo(): { type: SandboxType; name?: string } | null {
-    if (this.sandboxPreference === "e2b") {
+    if (this.sandboxPreference === "e2b" || (!this.isLocal && !this.isTauri)) {
       return { type: "e2b" };
     }
-    if (this.sandboxPreference === "tauri" || this.isTauri) {
+    if (this.isTauri) {
       return { type: "desktop", name: "Desktop" };
     }
     const type: SandboxType =
@@ -199,10 +199,10 @@ export class HybridSandboxManager implements SandboxManager {
     if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
       return undefined;
     }
-    if (this.sandboxPreference === "e2b") {
+    if (this.sandboxPreference === "e2b" || (!this.isLocal && !this.isTauri)) {
       return "e2b";
     }
-    if (this.sandboxPreference === "tauri" || this.isTauri) {
+    if (this.isTauri) {
       return "desktop";
     }
     // Local sandbox — use cached mode to distinguish docker vs dangerous
@@ -314,13 +314,31 @@ export class HybridSandboxManager implements SandboxManager {
     return this.getE2BSandbox();
   }
 
-  private async getTauriSandbox(): Promise<{ sandbox: TauriSandbox }> {
+  private async getTauriSandbox(): Promise<{ sandbox: SandboxInstance }> {
     if (this.isTauri && this.sandbox && this.sandbox instanceof TauriSandbox) {
       return { sandbox: this.sandbox };
     }
 
     await this.closeCurrentSandbox();
     const sandbox = new TauriSandbox(this.tauriConnectionInfo!);
+
+    // Verify the Tauri command server is actually reachable.
+    // On hosted/worker deployments, 127.0.0.1:{port} points to the server's
+    // own localhost, not the user's desktop — health check will fail.
+    const isReachable = await sandbox.healthCheck();
+    if (!isReachable) {
+      console.warn(
+        `[${this.userID}] Tauri command server not reachable, falling back to E2B`,
+      );
+      this.pendingFallbackInfo = {
+        occurred: true,
+        reason: "connection_unavailable",
+        requestedPreference: "tauri",
+        actualSandbox: "e2b",
+        actualSandboxName: "Cloud",
+      };
+      return this.getE2BSandbox();
+    }
 
     this.sandbox = sandbox;
     this.isTauri = true;
