@@ -1,17 +1,22 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAction } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import {
   LogOut,
   Sparkle,
   LifeBuoy,
   Github,
   ChevronRight,
+  ChevronDown,
   Settings,
-  Settings2,
   CircleUserRound,
+  CircleDollarSign,
   Download,
+  ExternalLink,
+  RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -33,7 +38,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
 import { clientLogout } from "@/lib/utils/logout";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
@@ -93,8 +97,43 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { isCheckingProPlan, subscription } = useGlobalState();
-  const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
+  const [rateLimitsExpanded, setRateLimitsExpanded] = useState(false);
+  const [tokenUsage, setTokenUsage] = useState<{
+    monthly: {
+      remaining: number;
+      limit: number;
+      used: number;
+      usagePercentage: number;
+      resetTime: string | null;
+    };
+    monthlyBudgetUsd: number;
+  } | null>(null);
+  const [isLoadingUsage, setIsLoadingUsage] = useState(false);
   const isMobile = useIsMobile();
+  const isPaidUser = subscription !== "free";
+
+  const getAgentRateLimitStatus = useAction(
+    api.rateLimitStatus.getAgentRateLimitStatus,
+  );
+
+  const fetchTokenUsage = useCallback(async () => {
+    if (!isPaidUser) return;
+    setIsLoadingUsage(true);
+    try {
+      const status = await getAgentRateLimitStatus({ subscription });
+      setTokenUsage(status);
+    } catch {
+      // silently fail
+    } finally {
+      setIsLoadingUsage(false);
+    }
+  }, [subscription, isPaidUser, getAgentRateLimitStatus]);
+
+  useEffect(() => {
+    if (rateLimitsExpanded && !tokenUsage && !isLoadingUsage) {
+      fetchTokenUsage();
+    }
+  }, [rateLimitsExpanded, tokenUsage, isLoadingUsage, fetchTokenUsage]);
 
   if (!user) return null;
 
@@ -284,13 +323,91 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             </DropdownMenuItem>
           )}
 
-          <DropdownMenuItem
-            onClick={() => setShowCustomizeDialog(true)}
-            className="py-2.5"
-          >
-            <Settings2 className="mr-2.5 h-5 w-5 text-foreground" />
-            <span>Personalization</span>
-          </DropdownMenuItem>
+          {isPaidUser && (
+            <div>
+              <DropdownMenuItem
+                onClick={(e) => {
+                  e.preventDefault();
+                  setRateLimitsExpanded(!rateLimitsExpanded);
+                }}
+                className="py-2.5"
+              >
+                <CircleDollarSign className="mr-2.5 h-5 w-5 text-foreground" />
+                <span className="flex-1">Usage</span>
+                {rateLimitsExpanded ? (
+                  <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" />
+                )}
+              </DropdownMenuItem>
+              {rateLimitsExpanded && (
+                <div className="px-3 pb-2 space-y-2">
+                  {isLoadingUsage ? (
+                    <div className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      <span>Loading...</span>
+                    </div>
+                  ) : tokenUsage ? (
+                    <>
+                      <div className="px-2 pt-1">
+                        <div className="flex items-baseline justify-between text-sm">
+                          <span className="text-muted-foreground">Monthly</span>
+                          <span className="tabular-nums text-muted-foreground">
+                            {100 - tokenUsage.monthly.usagePercentage}%
+                            remaining
+                          </span>
+                        </div>
+                        <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted mt-1.5">
+                          <div
+                            className={`h-full transition-all duration-500 ${
+                              tokenUsage.monthly.usagePercentage >= 90
+                                ? "bg-red-500"
+                                : tokenUsage.monthly.usagePercentage >= 70
+                                  ? "bg-orange-500"
+                                  : "bg-blue-500"
+                            }`}
+                            style={{
+                              width: `${Math.min(100, tokenUsage.monthly.usagePercentage)}%`,
+                            }}
+                          />
+                        </div>
+                        <div className="flex items-baseline justify-between mt-1 text-xs text-muted-foreground">
+                          <span>
+                            ${(tokenUsage.monthly.used / 10_000).toFixed(2)} / $
+                            {(tokenUsage.monthly.limit / 10_000).toFixed(2)}
+                          </span>
+                          {tokenUsage.monthly.resetTime && (
+                            <span>
+                              Resets{" "}
+                              {new Date(
+                                tokenUsage.monthly.resetTime,
+                              ).toLocaleDateString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                              })}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="px-2 py-1.5 text-sm text-muted-foreground">
+                      Unable to load usage
+                    </div>
+                  )}
+                  {subscription === "pro" && (
+                    <button
+                      onClick={() => redirectToPricing()}
+                      className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-left text-sm hover:bg-muted transition-colors"
+                    >
+                      <span className="flex-1">Upgrade plan</span>
+                      <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           <DropdownMenuItem
             data-testid="settings-button"
@@ -351,12 +468,6 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-
-      {/* Customize HackerAI Dialog */}
-      <CustomizeHackerAIDialog
-        open={showCustomizeDialog}
-        onOpenChange={setShowCustomizeDialog}
-      />
     </div>
   );
 };

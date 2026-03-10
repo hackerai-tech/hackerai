@@ -37,7 +37,6 @@ interface ChatInputProps {
   rateLimitWarning?: RateLimitWarningData;
   onDismissRateLimitWarning?: () => void;
   contextUsage?: ContextUsageData;
-  hasSavedSandboxType?: boolean;
 }
 
 export const ChatInput = ({
@@ -56,7 +55,6 @@ export const ChatInput = ({
   rateLimitWarning,
   onDismissRateLimitWarning,
   contextUsage,
-  hasSavedSandboxType = false,
 }: ChatInputProps) => {
   const {
     input,
@@ -200,26 +198,20 @@ export const ChatInput = ({
             chatMode={chatMode}
             contextUsage={contextUsage}
             showContextIndicator={showContextIndicator}
-            isMobile={isMobile}
-            hasSavedSandboxType={hasSavedSandboxType}
           />
         </div>
 
-        {/* ReadOnly sandbox indicator below input (both mobile & desktop).
-            Non-readOnly selector below input on mobile only for existing chats.
-            Skip rendering entirely when readOnly + cloud to avoid empty padding. */}
-        {!isNewChat &&
-          isAgentMode(chatMode) &&
-          !(hasSavedSandboxType && sandboxPreference === "e2b") &&
-          (hasSavedSandboxType || isMobile) && (
-            <div className="order-3 flex px-1 pt-2">
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-                readOnly={hasSavedSandboxType}
-              />
-            </div>
-          )}
+        {/* Sandbox selector below input — always editable.
+            Desktop: always shown for agent mode (empty chat & during messages).
+            Mobile: shown for existing chats only (new chats use above-input placement). */}
+        {isAgentMode(chatMode) && (!isMobile || !isNewChat) && (
+          <div className="order-3 flex px-1 pt-2">
+            <SandboxSelector
+              value={sandboxPreference}
+              onChange={setSandboxPreference}
+            />
+          </div>
+        )}
 
         {onScrollToBottom && (
           <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">

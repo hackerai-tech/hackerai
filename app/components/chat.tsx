@@ -132,7 +132,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
-  const [sandboxConnectionValid, setSandboxConnectionValid] = useState(true);
   // Track whether model selection has been initialized from chat for this chat id
   const hasInitializedModelRef = useRef(false);
 
@@ -169,6 +168,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const needsConnectionValidation =
     !!storedSandboxType &&
     storedSandboxType !== "e2b" &&
+    storedSandboxType !== "tauri" &&
     !hasInitializedSandboxRef.current;
   const localConnections = useQuery(
     api.localSandbox.listConnections,
@@ -426,7 +426,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
     hasInitializedModelRef.current = false;
-    setSandboxConnectionValid(true); // Reset to true until validated
   }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
@@ -508,8 +507,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       return;
     }
 
-    if (storedSandboxType === "e2b") {
-      // E2B is always valid
+    if (storedSandboxType === "e2b" || storedSandboxType === "tauri") {
+      // E2B and Tauri are always valid (not Convex connections)
       setSandboxPreference(storedSandboxType);
       hasInitializedSandboxRef.current = true;
     } else if (localConnections !== undefined) {
@@ -520,8 +519,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (connectionExists) {
         setSandboxPreference(storedSandboxType);
       } else {
-        // Stale connection — unlock selector so user can pick a current one
-        setSandboxConnectionValid(false);
+        // Stale connection — fall back to cloud
+        setSandboxPreference("e2b");
       }
       hasInitializedSandboxRef.current = true;
     }
@@ -733,11 +732,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldFetchMessages &&
     !awaitingServerChat;
 
-  const hasSavedSandboxType =
-    (!!storedSandboxType && sandboxConnectionValid) ||
-    (isExistingChat && !chatData) ||
-    (wasNewChatRef.current && hasMessages);
-
   return (
     <ConvexErrorBoundary>
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
@@ -856,7 +850,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                               handleDismissRateLimitWarning
                             }
                             contextUsage={contextUsage}
-                            hasSavedSandboxType={hasSavedSandboxType}
                           />
                         </div>
                       )}
@@ -888,7 +881,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     contextUsage={contextUsage}
-                    hasSavedSandboxType={hasSavedSandboxType}
                   />
                 )}
             </div>
