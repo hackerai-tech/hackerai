@@ -37,7 +37,10 @@ export const GetTerminalFilesHandler = ({
   sharedFileDetails,
 }: GetTerminalFilesHandlerProps) => {
   const { toolCallId, state, input, output } = part;
-  const requestedPaths = input?.files || [];
+
+  // Memoize requestedPaths to prevent unstable references from triggering
+  // infinite re-render loops via useToolSidebar's updateSidebarContent effect.
+  const requestedPaths = useMemo(() => input?.files || [], [input?.files]);
 
   const getFileNames = (paths: string[]) => {
     return paths.map((path) => path.split("/").pop() || path).join(", ");

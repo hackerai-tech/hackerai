@@ -44,6 +44,15 @@ function arePropsEqual(
   // Always re-render if isLastMessage changes
   if (prevProps.isLastMessage !== nextProps.isLastMessage) return false;
 
+  // Shared file details change for get_terminal_files during streaming
+  // Must be checked before the part reference check below, because the part
+  // reference may be stable while new file metadata arrives via the stream.
+  if (
+    prevProps.part?.type === "tool-get_terminal_files" &&
+    prevProps.sharedFileDetails !== nextProps.sharedFileDetails
+  )
+    return false;
+
   // Check part reference - if same reference, no changes
   if (prevProps.part === nextProps.part) return true;
 
@@ -59,12 +68,6 @@ function arePropsEqual(
     prevProps.part?.type?.startsWith("tool-") ||
     prevProps.part?.type?.startsWith("data-")
   ) {
-    // Shared file details change for get_terminal_files during streaming
-    if (
-      prevProps.part.type === "tool-get_terminal_files" &&
-      prevProps.sharedFileDetails !== nextProps.sharedFileDetails
-    )
-      return false;
     return (
       prevProps.part.state === nextProps.part.state &&
       prevProps.part.toolCallId === nextProps.part.toolCallId &&
