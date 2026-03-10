@@ -19,7 +19,15 @@
       "updater:default",
       "deep-link:default",
       "opener:default",
-      { "identifier": "opener:allow-open-path", "allow": [{ "path": "**" }] }
+      {
+        "identifier": "opener:allow-open-path",
+        "allow": [
+          { "path": "$HOME/**" },
+          { "path": "$DOWNLOAD/**" },
+          { "path": "/tmp/hackerai-upload/**" },
+          { "path": "/tmp/hackerai/**" }
+        ]
+      }
     ]
   }
 }

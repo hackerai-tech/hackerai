@@ -68,6 +68,9 @@ export class HybridSandboxManager implements SandboxManager {
   private tauriConnectionInfo: TauriConnectionInfo | null;
   private isTauri = false;
 
+  /** Guard to prevent concurrent getTauriSandbox() calls from racing */
+  private tauriInitPromise: Promise<{ sandbox: SandboxInstance }> | null = null;
+
   constructor(
     private userID: string,
     private setSandboxCallback: (sandbox: SandboxInstance) => void,
@@ -257,38 +260,16 @@ export class HybridSandboxManager implements SandboxManager {
         this.currentConnectionId !== preferredConnection.connectionId ||
         !this.sandbox
       ) {
-        await this.closeCurrentSandbox();
-        this.sandbox = new ConvexSandbox(
-          this.userID,
-          this.convexUrl,
-          preferredConnection,
-          this.serviceKey,
-        );
-        this.isLocal = true;
-        this.currentConnectionId = preferredConnection.connectionId;
-        this.currentConnectionMode = preferredConnection.mode;
-        this.currentConnectionName = preferredConnection.name;
-        this.setSandboxCallback(this.sandbox);
+        await this.useConvexConnection(preferredConnection);
       }
 
-      return { sandbox: this.sandbox };
+      return { sandbox: this.sandbox! };
     }
 
     // If preferred connection not available, check if any connection is available
     if (connections.length > 0) {
       const firstAvailable = connections[0];
-      await this.closeCurrentSandbox();
-      this.sandbox = new ConvexSandbox(
-        this.userID,
-        this.convexUrl,
-        firstAvailable,
-        this.serviceKey,
-      );
-      this.isLocal = true;
-      this.currentConnectionId = firstAvailable.connectionId;
-      this.currentConnectionMode = firstAvailable.mode;
-      this.currentConnectionName = firstAvailable.name;
-      this.setSandboxCallback(this.sandbox);
+      await this.useConvexConnection(firstAvailable);
 
       // Record fallback info for notification
       this.pendingFallbackInfo = {
@@ -299,7 +280,7 @@ export class HybridSandboxManager implements SandboxManager {
         actualSandboxName: firstAvailable.name,
       };
 
-      return { sandbox: this.sandbox };
+      return { sandbox: this.sandbox! };
     }
 
     // Fall back to E2B if no local connections available
@@ -320,6 +301,20 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox };
     }
 
+    // Prevent concurrent health checks from racing
+    if (this.tauriInitPromise) {
+      return this.tauriInitPromise;
+    }
+
+    this.tauriInitPromise = this.initTauriSandbox();
+    try {
+      return await this.tauriInitPromise;
+    } finally {
+      this.tauriInitPromise = null;
+    }
+  }
+
+  private async initTauriSandbox(): Promise<{ sandbox: SandboxInstance }> {
     await this.closeCurrentSandbox();
     const sandbox = new TauriSandbox(this.tauriConnectionInfo!);
 
@@ -350,6 +345,25 @@ export class HybridSandboxManager implements SandboxManager {
     this.setSandboxCallback(sandbox);
 
     return { sandbox };
+  }
+
+  /**
+   * Create and wire up a ConvexSandbox for the given connection.
+   */
+  private async useConvexConnection(connection: ConnectionInfo): Promise<void> {
+    await this.closeCurrentSandbox();
+    this.sandbox = new ConvexSandbox(
+      this.userID,
+      this.convexUrl,
+      connection,
+      this.serviceKey,
+    );
+    this.isLocal = true;
+    this.isTauri = false;
+    this.currentConnectionId = connection.connectionId;
+    this.currentConnectionMode = connection.mode;
+    this.currentConnectionName = connection.name;
+    this.setSandboxCallback(this.sandbox);
   }
 
   private async getE2BSandbox(): Promise<{ sandbox: Sandbox }> {

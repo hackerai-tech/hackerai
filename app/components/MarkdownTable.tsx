@@ -1,12 +1,7 @@
 import type { ReactNode } from "react";
 import { useRef, useState } from "react";
 import { Download, Copy, Check } from "lucide-react";
-import { toast } from "sonner";
-import {
-  isTauriEnvironment,
-  saveFileToLocal,
-  revealFileInDir,
-} from "@/app/hooks/useTauri";
+import { downloadFile } from "@/lib/utils/file-download";
 
 function extractTableData(tableEl: HTMLTableElement): string[][] {
   const rows: string[][] = [];
@@ -89,42 +84,14 @@ export function MarkdownTable({
     }
   };
 
-  const handleDownload = async () => {
+  const handleDownload = () => {
     const data = getTableData();
     if (!data) return;
-    const csv = toCSV(data);
-    const filename = "table.csv";
-
-    if (isTauriEnvironment()) {
-      const filePath = await saveFileToLocal(filename, csv);
-      if (filePath) {
-        toast.success(`Saved ${filename}`, {
-          action: {
-            label: "Show in Finder",
-            onClick: () => revealFileInDir(filePath),
-          },
-        });
-      } else {
-        toast.error("Failed to save file");
-      }
-      return;
-    }
-
-    // Web: standard download
-    try {
-      const blob = new Blob([csv], { type: "text/csv" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast.success("Table downloaded");
-    } catch {
-      toast.error("Failed to download table");
-    }
+    downloadFile({
+      filename: "table.csv",
+      content: toCSV(data),
+      mimeType: "text/csv",
+    });
   };
 
   return (

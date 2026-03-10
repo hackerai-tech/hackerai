@@ -136,12 +136,15 @@ async fn start_cmd_server() {
     }
 }
 
+/// Maximum allowed header size (256KB). Requests with headers exceeding this are rejected.
+const MAX_HEADER_SIZE: usize = 256 * 1024;
+
 /// Parse an HTTP request from the stream, returning (method, path, headers, body)
 async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(String, String, HashMap<String, String>, String), String> {
     let mut buf = vec![0u8; 64 * 1024]; // 64KB initial buffer
     let mut total_read = 0;
 
-    // Read headers first
+    // Read headers first (with size cap to prevent OOM)
     loop {
         let n = stream.read(&mut buf[total_read..]).await.map_err(|e| e.to_string())?;
         if n == 0 {
@@ -155,9 +158,18 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
             break;
         }
 
-        // Grow buffer if needed
+        // Reject oversized headers
+        if total_read > MAX_HEADER_SIZE {
+            return Err("Request headers too large".into());
+        }
+
+        // Grow buffer if needed (up to the cap)
         if total_read >= buf.len() {
-            buf.resize(buf.len() * 2, 0);
+            let new_size = (buf.len() * 2).min(MAX_HEADER_SIZE + 1);
+            if new_size <= buf.len() {
+                return Err("Request headers too large".into());
+            }
+            buf.resize(new_size, 0);
         }
     }
 
@@ -333,13 +345,12 @@ async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!(r#"{{"type":"error","message":"Failed to spawn: {}"}}"#, e.to_string().replace('"', "\\\""));
+            let err_body = format!(r#"{{"error":"Failed to spawn: {}"}}"#, e.to_string().replace('"', "\\\""));
             let resp = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n"
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                err_body.len(), err_body
             );
             let _ = stream.write_all(resp.as_bytes()).await;
-            write_chunk(stream, &msg).await;
-            write_chunk(stream, "").await; // terminal chunk
             return Ok(());
         }
     };

@@ -13,6 +13,124 @@ interface TauriSandboxConfig {
   token: string;
 }
 
+/** Shape of a single NDJSON streaming chunk from the Tauri command server */
+interface StreamChunk {
+  type: "stdout" | "stderr" | "exit" | "error";
+  data?: string;
+  exit_code?: number;
+  message?: string;
+}
+
+/**
+ * Allowed base directories for file operations.
+ * All file paths must resolve under one of these prefixes.
+ */
+const ALLOWED_FILE_ROOTS = ["/tmp/hackerai-upload", "/tmp/hackerai"];
+
+/**
+ * Validate that a resolved file path is within allowed directories.
+ * Prevents path traversal attacks (e.g. ../../etc/passwd).
+ */
+export function validateFilePath(filePath: string): void {
+  // Normalize: resolve .. and . segments
+  const segments = filePath.split("/");
+  const resolved: string[] = [];
+  for (const seg of segments) {
+    if (seg === "..") {
+      resolved.pop();
+    } else if (seg !== "." && seg !== "") {
+      resolved.push(seg);
+    }
+  }
+  const normalizedPath = "/" + resolved.join("/");
+
+  const isAllowed = ALLOWED_FILE_ROOTS.some(
+    (root) => normalizedPath === root || normalizedPath.startsWith(root + "/"),
+  );
+
+  if (!isAllowed) {
+    throw new Error(
+      `File path not allowed: "${filePath}". Must be under one of: ${ALLOWED_FILE_ROOTS.join(", ")}`,
+    );
+  }
+}
+
+/**
+ * Validate that a URL is safe for download (block SSRF to internal networks).
+ */
+export function validateDownloadUrl(url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(`Invalid download URL: "${url}"`);
+  }
+
+  // Only allow http/https
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `Download URL must use http or https protocol, got: ${parsed.protocol}`,
+    );
+  }
+
+  // Block common internal/metadata IPs
+  const hostname = parsed.hostname;
+  const blockedPatterns = [
+    /^127\./,
+    /^10\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^192\.168\./,
+    /^169\.254\./,
+    /^0\./,
+    /^localhost$/i,
+    /^\[::1?\]$/,
+    /^metadata\.google\.internal$/i,
+  ];
+
+  for (const pattern of blockedPatterns) {
+    if (pattern.test(hostname)) {
+      throw new Error(
+        `Download URL blocked: "${hostname}" resolves to an internal address`,
+      );
+    }
+  }
+}
+
+/**
+ * Process a single NDJSON streaming chunk, returning accumulated output.
+ */
+function processStreamChunk(
+  chunk: StreamChunk,
+  opts?: {
+    onStdout?: (data: string) => void;
+    onStderr?: (data: string) => void;
+  },
+): { stdout: string; stderr: string; exitCode?: number } {
+  switch (chunk.type) {
+    case "stdout":
+      if (chunk.data) {
+        opts?.onStdout?.(chunk.data);
+        return { stdout: chunk.data, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    case "stderr":
+      if (chunk.data) {
+        opts?.onStderr?.(chunk.data);
+        return { stdout: "", stderr: chunk.data };
+      }
+      return { stdout: "", stderr: "" };
+    case "exit":
+      return { stdout: "", stderr: "", exitCode: chunk.exit_code ?? -1 };
+    case "error": {
+      const msg = chunk.message || "Unknown error";
+      opts?.onStderr?.(msg);
+      return { stdout: "", stderr: msg };
+    }
+    default:
+      return { stdout: "", stderr: "" };
+  }
+}
+
 /**
  * Tauri-based sandbox that executes commands directly on the local machine
  * via the Tauri desktop app's built-in HTTP command server.
@@ -161,34 +279,11 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
         if (!trimmed) continue;
 
         try {
-          const chunk = JSON.parse(trimmed) as {
-            type: "stdout" | "stderr" | "exit" | "error";
-            data?: string;
-            exit_code?: number;
-            message?: string;
-          };
-
-          switch (chunk.type) {
-            case "stdout":
-              if (chunk.data) {
-                stdout += chunk.data;
-                opts?.onStdout?.(chunk.data);
-              }
-              break;
-            case "stderr":
-              if (chunk.data) {
-                stderr += chunk.data;
-                opts?.onStderr?.(chunk.data);
-              }
-              break;
-            case "exit":
-              exitCode = chunk.exit_code ?? -1;
-              break;
-            case "error":
-              stderr += chunk.message || "Unknown error";
-              opts?.onStderr?.(chunk.message || "Unknown error");
-              break;
-          }
+          const chunk = JSON.parse(trimmed) as StreamChunk;
+          const result = processStreamChunk(chunk, opts);
+          stdout += result.stdout;
+          stderr += result.stderr;
+          if (result.exitCode !== undefined) exitCode = result.exitCode;
         } catch {
           // Skip malformed lines
         }
@@ -199,33 +294,11 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
     const remaining = buffer.trim();
     if (remaining) {
       try {
-        const chunk = JSON.parse(remaining) as {
-          type: "stdout" | "stderr" | "exit" | "error";
-          data?: string;
-          exit_code?: number;
-          message?: string;
-        };
-        switch (chunk.type) {
-          case "stdout":
-            if (chunk.data) {
-              stdout += chunk.data;
-              opts?.onStdout?.(chunk.data);
-            }
-            break;
-          case "stderr":
-            if (chunk.data) {
-              stderr += chunk.data;
-              opts?.onStderr?.(chunk.data);
-            }
-            break;
-          case "exit":
-            exitCode = chunk.exit_code ?? -1;
-            break;
-          case "error":
-            stderr += chunk.message || "Unknown error";
-            opts?.onStderr?.(chunk.message || "Unknown error");
-            break;
-        }
+        const chunk = JSON.parse(remaining) as StreamChunk;
+        const result = processStreamChunk(chunk, opts);
+        stdout += result.stdout;
+        stderr += result.stderr;
+        if (result.exitCode !== undefined) exitCode = result.exitCode;
       } catch {
         // Skip malformed data
       }
@@ -247,6 +320,7 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       path: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
+      validateFilePath(path);
       let contentStr: string;
       let isBase64 = false;
 
@@ -268,6 +342,7 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
     },
 
     read: async (path: string): Promise<string> => {
+      validateFilePath(path);
       const result = await this.request<{ content: string }>("/files/read", {
         path,
       });
@@ -275,14 +350,21 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
     },
 
     remove: async (path: string): Promise<void> => {
+      validateFilePath(path);
       await this.request("/files/remove", { path });
     },
 
-    list: async (path: string = "/"): Promise<{ name: string }[]> => {
+    list: async (
+      path: string = "/tmp/hackerai-upload",
+    ): Promise<{ name: string }[]> => {
+      validateFilePath(path);
       return this.request<{ name: string }[]>("/files/list", { path });
     },
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
+      validateFilePath(path);
+      validateDownloadUrl(url);
+
       // Ensure parent directory exists (e.g. /tmp/hackerai-upload)
       const dir = path.substring(0, path.lastIndexOf("/"));
       if (dir) {
@@ -308,6 +390,7 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
+      validateFilePath(path);
       const escapedPath = TauriSandbox.escapeShell(path);
       const escapedUrl = TauriSandbox.escapeShell(uploadUrl);
       const escapedContentType = TauriSandbox.escapeShell(
