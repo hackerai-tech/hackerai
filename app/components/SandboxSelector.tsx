@@ -45,7 +45,7 @@ export function SandboxSelector({
       ? [
           {
             id: "tauri",
-            label: "Local sandbox",
+            label: "Local",
             shortLabel: "Local",
             icon: Laptop,
             description: "",
@@ -55,7 +55,7 @@ export function SandboxSelector({
       : []),
     {
       id: "e2b",
-      label: "Cloud sandbox",
+      label: "Cloud",
       shortLabel: "Cloud",
       icon: Cloud,
       description: "",
@@ -116,9 +116,6 @@ export function SandboxSelector({
       </PopoverTrigger>
       <PopoverContent className="w-[240px] p-1" align="start">
         <div className="space-y-0.5">
-          <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-            Continue in
-          </div>
           {options.map((option) => {
             const OptionIcon = option.icon;
             return (
