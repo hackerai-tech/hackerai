@@ -109,6 +109,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     monthlyBudgetUsd: number;
   } | null>(null);
   const [isLoadingUsage, setIsLoadingUsage] = useState(false);
+  const [usageFetchFailed, setUsageFetchFailed] = useState(false);
   const isMobile = useIsMobile();
   const isPaidUser = subscription !== "free";
 
@@ -122,18 +123,35 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
     try {
       const status = await getAgentRateLimitStatus({ subscription });
       setTokenUsage(status);
+      setUsageFetchFailed(false);
     } catch {
-      // silently fail
+      setUsageFetchFailed(true);
     } finally {
       setIsLoadingUsage(false);
     }
   }, [subscription, isPaidUser, getAgentRateLimitStatus]);
 
+  // Reset error state when subscription changes so it can retry
   useEffect(() => {
-    if (rateLimitsExpanded && !tokenUsage && !isLoadingUsage) {
+    setUsageFetchFailed(false);
+  }, [subscription]);
+
+  useEffect(() => {
+    if (
+      rateLimitsExpanded &&
+      !tokenUsage &&
+      !isLoadingUsage &&
+      !usageFetchFailed
+    ) {
       fetchTokenUsage();
     }
-  }, [rateLimitsExpanded, tokenUsage, isLoadingUsage, fetchTokenUsage]);
+  }, [
+    rateLimitsExpanded,
+    tokenUsage,
+    isLoadingUsage,
+    usageFetchFailed,
+    fetchTokenUsage,
+  ]);
 
   if (!user) return null;
 
