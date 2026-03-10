@@ -91,19 +91,17 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       stderr: string;
       exitCode: number;
     }> => {
+      // Use streaming endpoint when callbacks are provided
+      if (opts?.onStdout || opts?.onStderr) {
+        return this.executeStreaming(command, opts);
+      }
+
       const result = await this.request<CommandResult>("/execute", {
         command,
         cwd: opts?.cwd,
         env: opts?.envVars,
         timeout_ms: opts?.timeoutMs ?? 30000,
       });
-
-      if (opts?.onStdout && result.stdout) {
-        opts.onStdout(result.stdout);
-      }
-      if (opts?.onStderr && result.stderr) {
-        opts.onStderr(result.stderr);
-      }
 
       return {
         stdout: result.stdout || "",
@@ -112,6 +110,98 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       };
     },
   };
+
+  private async executeStreaming(
+    command: string,
+    opts?: {
+      envVars?: Record<string, string>;
+      cwd?: string;
+      timeoutMs?: number;
+      onStdout?: (data: string) => void;
+      onStderr?: (data: string) => void;
+    },
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+    const response = await fetch(`${this.baseUrl}/execute/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${this.token}`,
+      },
+      body: JSON.stringify({
+        command,
+        cwd: opts?.cwd,
+        env: opts?.envVars,
+        timeout_ms: opts?.timeoutMs ?? 30000,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(
+        `Tauri command server error (${response.status}): ${text}`,
+      );
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new Error("No response body for streaming execute");
+    }
+
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let stdout = "";
+    let stderr = "";
+    let exitCode = -1;
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        try {
+          const chunk = JSON.parse(trimmed) as {
+            type: "stdout" | "stderr" | "exit" | "error";
+            data?: string;
+            exit_code?: number;
+            message?: string;
+          };
+
+          switch (chunk.type) {
+            case "stdout":
+              if (chunk.data) {
+                stdout += chunk.data;
+                opts?.onStdout?.(chunk.data);
+              }
+              break;
+            case "stderr":
+              if (chunk.data) {
+                stderr += chunk.data;
+                opts?.onStderr?.(chunk.data);
+              }
+              break;
+            case "exit":
+              exitCode = chunk.exit_code ?? -1;
+              break;
+            case "error":
+              stderr += chunk.message || "Unknown error";
+              opts?.onStderr?.(chunk.message || "Unknown error");
+              break;
+          }
+        } catch {
+          // Skip malformed lines
+        }
+      }
+    }
+
+    return { stdout, stderr, exitCode };
+  }
 
   private static escapePath(path: string): string {
     return `'${path.replace(/'/g, "'\\''")}'`;

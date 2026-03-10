@@ -255,6 +255,11 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
         return Ok(());
     }
 
+    // Streaming execute gets special handling (writes directly to stream)
+    if path == "/execute/stream" {
+        return handle_execute_stream(&body, &mut stream).await;
+    }
+
     let result = match path.as_str() {
         "/execute" => handle_execute(&body).await,
         "/files/read" => handle_file_read(&body).await,
@@ -332,6 +337,132 @@ async fn handle_execute(body: &str) -> Result<String, String> {
     };
 
     serde_json::to_string(&resp).map_err(|e| format!("Serialize error: {}", e))
+}
+
+/// Streaming execute: sends NDJSON lines as stdout/stderr arrive, then a final
+/// line with exit_code. Each line is one of:
+///   {"type":"stdout","data":"..."}
+///   {"type":"stderr","data":"..."}
+///   {"type":"exit","exit_code":0}
+///   {"type":"error","message":"..."}
+async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -> Result<(), String> {
+    let req: ExecRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let shell = if cfg!(target_os = "windows") { "cmd" } else { "/bin/sh" };
+    let shell_arg = if cfg!(target_os = "windows") { "/C" } else { "-c" };
+
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.arg(shell_arg).arg(&req.command);
+
+    if let Some(ref cwd) = req.cwd {
+        cmd.current_dir(cwd);
+    }
+    if let Some(ref env) = req.env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = format!(r#"{{"type":"error","message":"Failed to spawn: {}"}}"#, e.to_string().replace('"', "\\\""));
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n"
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            write_chunk(stream, &msg).await;
+            write_chunk(stream, "").await; // terminal chunk
+            return Ok(());
+        }
+    };
+
+    // Send chunked response headers
+    let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n";
+    stream.write_all(headers.as_bytes()).await.map_err(|e| e.to_string())?;
+
+    let timeout = Duration::from_millis(req.timeout_ms);
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+
+    let result = tokio::time::timeout(timeout, async {
+        let mut stdout_buf = [0u8; 4096];
+        let mut stderr_buf = [0u8; 4096];
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        loop {
+            if stdout_done && stderr_done {
+                break;
+            }
+
+            tokio::select! {
+                result = stdout.read(&mut stdout_buf), if !stdout_done => {
+                    match result {
+                        Ok(0) => stdout_done = true,
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&stdout_buf[..n]);
+                            let escaped = serde_json::to_string(&text).unwrap_or_default();
+                            let line = format!(r#"{{"type":"stdout","data":{}}}"#, escaped);
+                            write_chunk(stream, &line).await;
+                        }
+                        Err(_) => stdout_done = true,
+                    }
+                }
+                result = stderr.read(&mut stderr_buf), if !stderr_done => {
+                    match result {
+                        Ok(0) => stderr_done = true,
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&stderr_buf[..n]);
+                            let escaped = serde_json::to_string(&text).unwrap_or_default();
+                            let line = format!(r#"{{"type":"stderr","data":{}}}"#, escaped);
+                            write_chunk(stream, &line).await;
+                        }
+                        Err(_) => stderr_done = true,
+                    }
+                }
+            }
+        }
+
+        // Wait for process to exit
+        child.wait().await
+    }).await;
+
+    match result {
+        Ok(Ok(status)) => {
+            let line = format!(r#"{{"type":"exit","exit_code":{}}}"#, status.code().unwrap_or(-1));
+            write_chunk(stream, &line).await;
+        }
+        Ok(Err(e)) => {
+            let line = format!(r#"{{"type":"error","message":"Process error: {}"}}"#, e.to_string().replace('"', "\\\""));
+            write_chunk(stream, &line).await;
+        }
+        Err(_) => {
+            // Timeout — kill the process
+            let _ = child.kill().await;
+            let line = format!(r#"{{"type":"error","message":"Command timed out after {}ms"}}"#, req.timeout_ms);
+            write_chunk(stream, &line).await;
+        }
+    }
+
+    // Terminal chunk
+    write_chunk(stream, "").await;
+    Ok(())
+}
+
+/// Write a single HTTP chunked-transfer chunk
+async fn write_chunk(stream: &mut tokio::net::TcpStream, data: &str) {
+    let payload = if data.is_empty() {
+        "0\r\n\r\n".to_string()
+    } else {
+        let line = format!("{}\n", data);
+        format!("{:x}\r\n{}\r\n", line.len(), line)
+    };
+    let _ = stream.write_all(payload.as_bytes()).await;
+    let _ = stream.flush().await;
 }
 
 async fn handle_file_read(body: &str) -> Result<String, String> {
