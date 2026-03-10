@@ -1,10 +1,11 @@
 import { EventEmitter } from "events";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 
+/** Matches the Rust ExecResponse (serde default = snake_case) */
 interface CommandResult {
   stdout: string;
   stderr: string;
-  exitCode: number;
+  exit_code: number;
 }
 
 interface TauriSandboxConfig {
@@ -100,7 +101,7 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       return {
         stdout: result.stdout || "",
         stderr: result.stderr || "",
-        exitCode: result.exitCode ?? -1,
+        exitCode: result.exit_code ?? -1,
       };
     },
   };
@@ -282,6 +283,14 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
     },
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
+      // Ensure parent directory exists (e.g. /tmp/hackerai-upload)
+      const dir = path.substring(0, path.lastIndexOf("/"));
+      if (dir) {
+        await this.commands.run(`mkdir -p ${TauriSandbox.escapeShell(dir)}`, {
+          displayName: "",
+        });
+      }
+
       // Use the command execution to download via curl/wget
       const escapedPath = TauriSandbox.escapeShell(path);
       const escapedUrl = TauriSandbox.escapeShell(url);

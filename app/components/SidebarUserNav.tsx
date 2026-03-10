@@ -386,7 +386,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
                             <span>
                               {new Date(
                                 tokenUsage.monthly.resetTime,
-                              ).toLocaleDateString("en-US", {
+                              ).toLocaleDateString(undefined, {
                                 month: "short",
                                 day: "numeric",
                               })}
