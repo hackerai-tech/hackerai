@@ -6,6 +6,11 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { toast } from "sonner";
+import {
+  isTauriEnvironment,
+  revealFileInDir,
+  saveFileToLocal,
+} from "@/app/hooks/useTauri";
 
 interface CodeActionButtonsProps {
   content: string;
@@ -51,6 +56,22 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
   const handleDownload = async () => {
     const defaultFilename = filename || `code.${language || "txt"}`;
 
+    // Tauri: save via command server (anchor downloads don't work in WebView)
+    if (isTauriEnvironment()) {
+      const filePath = await saveFileToLocal(defaultFilename, content);
+      if (filePath) {
+        toast.success(`Saved ${defaultFilename}`, {
+          action: {
+            label: "Show in Finder",
+            onClick: () => revealFileInDir(filePath),
+          },
+        });
+      } else {
+        toast.error("Failed to save file");
+      }
+      return;
+    }
+
     try {
       // Try to use the File System Access API for native save dialog
       if ("showSaveFilePicker" in window) {
@@ -90,11 +111,7 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast.success(
-        variant === "sidebar"
-          ? "File downloaded successfully"
-          : "File downloaded successfully",
-      );
+      toast.success("File downloaded successfully");
     } catch (error) {
       // Don't show toast for user-cancelled operations
       if (error instanceof DOMException && error.name === "AbortError") {

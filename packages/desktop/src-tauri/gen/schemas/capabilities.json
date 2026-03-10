@@ -19,10 +19,7 @@
       "updater:default",
       "deep-link:default",
       "opener:default",
-      {
-        "identifier": "opener:allow-open-path",
-        "allow": [{ "path": "$DOWNLOAD/**" }]
-      }
+      { "identifier": "opener:allow-open-path", "allow": [{ "path": "**" }] }
     ]
   }
 }

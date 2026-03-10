@@ -118,7 +118,10 @@ export const createTools = (
   // Create all available tools
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
-    get_terminal_files: createGetTerminalFiles(context),
+    // Tauri desktop: files are already on the user's machine, no need to upload to S3
+    ...(sandboxPreference !== "tauri" && {
+      get_terminal_files: createGetTerminalFiles(context),
+    }),
     file: createFile(context),
     match: createMatch(context),
     todo_write: createTodoWrite(context),

@@ -9,6 +9,11 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { toast } from "sonner";
+import {
+  isTauriEnvironment,
+  revealFileInDir,
+  saveFileToLocal,
+} from "@/app/hooks/useTauri";
 
 interface ComputerCodeBlockProps {
   children: ReactNode;
@@ -44,6 +49,22 @@ export const ComputerCodeBlock = ({
 
   const handleDownload = async () => {
     const defaultFilename = `code.${language || "txt"}`;
+
+    // Tauri: save via command server (anchor downloads don't work in WebView)
+    if (isTauriEnvironment()) {
+      const filePath = await saveFileToLocal(defaultFilename, codeContent);
+      if (filePath) {
+        toast.success(`Saved ${defaultFilename}`, {
+          action: {
+            label: "Show in Finder",
+            onClick: () => revealFileInDir(filePath),
+          },
+        });
+      } else {
+        toast.error("Failed to save file");
+      }
+      return;
+    }
 
     try {
       // Try to use the File System Access API for native save dialog

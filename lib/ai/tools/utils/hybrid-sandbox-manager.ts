@@ -416,6 +416,14 @@ System Environment:
 - Mode: Direct execution (Tauri Desktop)
 - User attachments: /tmp/hackerai-upload
 
+File References: When referencing files in your response:
+- Use markdown links (not inline code) for clickable file paths
+- Each reference should have a standalone absolute filesystem path
+- Labels may be short, e.g. [output.txt](/path/to/output.txt)
+- URL-encode spaces in the path, e.g. [my file.txt](/Users/name/My%20Folder/my%20file.txt)
+- The get_terminal_files tool is NOT available in desktop mode — do not attempt to use it
+- Files you create or modify are already on the user's local filesystem
+
 Security Warning:
 - File system operations affect the host directly
 - Network operations use the host network
