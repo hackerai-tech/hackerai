@@ -298,10 +298,6 @@ export function buildProviderOptions(
   userId?: string,
 ) {
   return {
-    xai: {
-      // Disable storing the conversation in XAI's database
-      store: false,
-    },
     openrouter: {
       ...(isReasoningModel
         ? { reasoning: { enabled: true } }
