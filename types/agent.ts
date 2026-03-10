@@ -15,7 +15,7 @@ export type AnySandbox = Sandbox | ConvexSandbox | TauriSandbox;
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
 
-export type SandboxType = "e2b" | "local" | "local-sandbox";
+export type SandboxType = "e2b" | "local" | "local-sandbox" | "desktop";
 
 export interface SandboxInfo {
   type: SandboxType;

@@ -188,7 +188,7 @@ export class HybridSandboxManager implements SandboxManager {
       return { type: "e2b" };
     }
     if (this.sandboxPreference === "tauri" || this.isTauri) {
-      return { type: "local", name: "Desktop" };
+      return { type: "desktop", name: "Desktop" };
     }
     const type: SandboxType =
       this.currentConnectionMode === "docker" ? "local-sandbox" : "local";
@@ -203,7 +203,7 @@ export class HybridSandboxManager implements SandboxManager {
       return "e2b";
     }
     if (this.sandboxPreference === "tauri" || this.isTauri) {
-      return "local";
+      return "desktop";
     }
     // Local sandbox — use cached mode to distinguish docker vs dangerous
     if (this.currentConnectionMode === "docker") {
