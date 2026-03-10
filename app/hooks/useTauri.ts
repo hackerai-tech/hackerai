@@ -71,8 +71,6 @@ export async function navigateToAuth(
 export async function getCmdServerInfo(): Promise<{
   port: number;
   token: string;
-  hostname: string;
-  platform: string;
 } | null> {
   if (!detectTauri()) {
     return null;
@@ -83,8 +81,6 @@ export async function getCmdServerInfo(): Promise<{
     const info = await invoke<{
       port: number;
       token: string;
-      hostname: string;
-      platform: string;
     }>("get_cmd_server_info");
     if (info.port > 0 && info.token) {
       return info;

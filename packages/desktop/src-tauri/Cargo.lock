@@ -1536,7 +1536,6 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "env_logger",
- "hostname",
  "log",
  "objc2 0.5.2",
  "objc2-web-kit 0.2.2",
@@ -1598,17 +1597,6 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
-name = "hostname"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
-dependencies = [
- "cfg-if",
- "libc",
- "windows-link 0.2.1",
-]
 
 [[package]]
 name = "html5ever"

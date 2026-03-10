@@ -28,26 +28,9 @@ fn get_dev_auth_port() -> u16 {
 /// Get the command server port, session token, and OS info
 #[tauri::command]
 fn get_cmd_server_info() -> CmdServerInfo {
-    let hostname = hostname::get()
-        .ok()
-        .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "Desktop".to_string());
-
-    let platform = if cfg!(target_os = "macos") {
-        "macOS"
-    } else if cfg!(target_os = "windows") {
-        "Windows"
-    } else if cfg!(target_os = "linux") {
-        "Linux"
-    } else {
-        "Unknown"
-    };
-
     CmdServerInfo {
         port: CMD_SERVER_PORT.load(Ordering::Relaxed),
         token: CMD_SERVER_TOKEN.get().cloned().unwrap_or_default(),
-        hostname,
-        platform: platform.to_string(),
     }
 }
 
@@ -55,8 +38,6 @@ fn get_cmd_server_info() -> CmdServerInfo {
 struct CmdServerInfo {
     port: u16,
     token: String,
-    hostname: String,
-    platform: String,
 }
 
 // ── Command Execution Server ──────────────────────────────────────────

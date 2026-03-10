@@ -113,8 +113,6 @@ interface GlobalStateType {
   tauriCmdServer: {
     port: number;
     token: string;
-    hostname: string;
-    platform: string;
   } | null;
 
   // Model selection
@@ -249,8 +247,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [tauriCmdServer, setTauriCmdServer] = useState<{
     port: number;
     token: string;
-    hostname: string;
-    platform: string;
   } | null>(null);
 
   // Auto-detect Tauri desktop and set sandbox preference to "tauri"

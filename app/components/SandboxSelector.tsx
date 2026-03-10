@@ -54,9 +54,9 @@ export function SandboxSelector({
       ? [
           {
             id: "tauri",
-            label: tauriCmdServer.hostname,
+            label: "Local",
             icon: Laptop,
-            description: `Local: ${tauriCmdServer.platform}`,
+            description: "",
             mode: "dangerous" as const,
           } satisfies ConnectionOption,
         ]
