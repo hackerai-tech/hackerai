@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "../hooks/usePricingDialog";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 // Discriminated union for warning data
@@ -90,21 +91,7 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
 };
 
-const getSeverityStyles = (data: RateLimitWarningData): string => {
-  if (data.warningType !== "token-bucket" || !data.severity) {
-    return "bg-input-chat border-black/8 dark:border-border";
-  }
-  switch (data.severity) {
-    case "critical":
-      return "bg-red-500/10 border-red-500/20 dark:bg-red-500/15 dark:border-red-500/25";
-    case "warning":
-      return "bg-orange-500/10 border-orange-500/20 dark:bg-orange-500/15 dark:border-orange-500/25";
-    case "info":
-      return "bg-blue-500/10 border-blue-500/20 dark:bg-blue-500/15 dark:border-blue-500/25";
-    default:
-      return "bg-input-chat border-black/8 dark:border-border";
-  }
-};
+const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
 
 export const RateLimitWarning = ({
   data,
@@ -115,21 +102,34 @@ export const RateLimitWarning = ({
   const showUpgrade =
     data.warningType !== "extra-usage-active" &&
     (data.subscription === "free" ||
-      (data.warningType === "token-bucket" && data.subscription === "pro"));
+      data.subscription === "pro" ||
+      data.subscription === "pro-plus");
+  const showAddCredits =
+    data.warningType !== "extra-usage-active" && data.subscription !== "free";
 
   return (
     <div
       data-testid="rate-limit-warning"
-      className={`mb-2 px-3 py-2.5 border rounded-lg flex items-center justify-between gap-2 ${getSeverityStyles(data)}`}
+      className={`mb-2 px-3 py-2.5 border rounded-[22px] flex items-center justify-between gap-2 ${WARNING_STYLES}`}
     >
       <div className="flex-1 flex items-center gap-2 flex-wrap">
-        <span className="text-foreground">{message}</span>
+        <span className="text-foreground text-sm">{message}</span>
+        {showAddCredits && (
+          <Button
+            onClick={() => openSettingsDialog("Extra Usage")}
+            size="sm"
+            variant="outline"
+            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
+          >
+            Add credits
+          </Button>
+        )}
         {showUpgrade && (
           <Button
             onClick={redirectToPricing}
             size="sm"
-            variant="default"
-            className="h-7 px-3 text-xs font-medium"
+            variant="outline"
+            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
           >
             Upgrade plan
           </Button>
