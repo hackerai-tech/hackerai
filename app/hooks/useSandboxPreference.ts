@@ -23,11 +23,17 @@ export function useSandboxPreference(): SandboxPreferenceState {
     useState<SandboxPreference>(() => {
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
-      if (stored) return stored as SandboxPreference;
+      // "tauri" is no longer a valid sandbox preference (local execution
+      // doesn't work in production Tauri builds). Treat it as unset.
+      if (stored && stored !== "tauri") return stored as SandboxPreference;
       return "e2b";
     });
 
-  // Single effect: detect Tauri and, if present, initialise both values together
+  // Detect Tauri environment for features that use the local command server
+  // directly from the frontend (e.g. saveFileToLocal, revealFileInDir).
+  // NOTE: We no longer set sandboxPreference to "tauri" — local command
+  // execution via the server-side sandbox doesn't work in production Tauri
+  // builds because the remote API can't reach 127.0.0.1 on the user's machine.
   useEffect(() => {
     let cancelled = false;
 
@@ -42,14 +48,16 @@ export function useSandboxPreference(): SandboxPreferenceState {
 
         setTauriCmdServer(info);
 
+        // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
+        // In production Tauri builds, the remote API server cannot reach 127.0.0.1 on the user's machine.
         // Only default to "tauri" when the user hasn't explicitly chosen yet
-        const savedPref =
-          typeof window !== "undefined"
-            ? localStorage.getItem("sandbox-preference")
-            : null;
-        if (!savedPref || savedPref === "tauri") {
-          setSandboxPreferenceState("tauri");
-        }
+        // const savedPref =
+        //   typeof window !== "undefined"
+        //     ? localStorage.getItem("sandbox-preference")
+        //     : null;
+        // if (!savedPref || savedPref === "tauri") {
+        //   setSandboxPreferenceState("tauri");
+        // }
       } catch {
         // Not in Tauri environment — leave defaults
       }

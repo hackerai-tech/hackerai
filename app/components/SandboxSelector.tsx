@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-import { useGlobalState } from "@/app/contexts/GlobalState";
+// TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
+// import { useGlobalState } from "@/app/contexts/GlobalState";
 
 interface SandboxSelectorProps {
   value: string;
@@ -37,22 +38,26 @@ export function SandboxSelector({
   size = "sm",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
-  const { tauriCmdServer } = useGlobalState();
+  // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
+  // const { tauriCmdServer } = useGlobalState();
 
   const connections = useQuery(api.localSandbox.listConnections);
   const options: ConnectionOption[] = [
-    ...(tauriCmdServer
-      ? [
-          {
-            id: "tauri",
-            label: "Local",
-            shortLabel: "Local",
-            icon: Laptop,
-            description: "",
-            mode: "dangerous" as const,
-          } satisfies ConnectionOption,
-        ]
-      : []),
+    // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
+    // Disabled because in production Tauri builds, the remote API server cannot reach
+    // the local command server at 127.0.0.1 on the user's machine.
+    // ...(tauriCmdServer
+    //   ? [
+    //       {
+    //         id: "tauri",
+    //         label: "Local",
+    //         shortLabel: "Local",
+    //         icon: Laptop,
+    //         description: "",
+    //         mode: "dangerous" as const,
+    //       } satisfies ConnectionOption,
+    //     ]
+    //   : []),
     {
       id: "e2b",
       label: "Cloud",
