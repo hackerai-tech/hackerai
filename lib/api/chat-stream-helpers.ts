@@ -101,20 +101,14 @@ export function sendRateLimitWarnings(
         subscription,
       });
     } else {
-      // Paid users without extra usage: tiered warnings at 50%, 25%, 10%, 5%
+      // Paid users without extra usage: warn at 80% and 95%
       const monthlyPercent =
         (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
       const usedPercent = 100 - monthlyPercent;
 
-      if (usedPercent >= 50) {
-        const severity: "info" | "warning" | "critical" =
-          usedPercent >= 95
-            ? "critical"
-            : usedPercent >= 90
-              ? "critical"
-              : usedPercent >= 75
-                ? "warning"
-                : "info";
+      if (usedPercent >= 80) {
+        const severity: "info" | "warning" =
+          usedPercent >= 95 ? "warning" : "info";
 
         const usedDollars =
           (rateLimitInfo.monthly.limit - rateLimitInfo.monthly.remaining) /

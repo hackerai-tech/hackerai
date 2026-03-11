@@ -28,9 +28,8 @@ const TOKEN_BUCKET_WARNING_KEY_PREFIX = "tokenBucketWarningShownAt_";
 
 /** Dedup interval per severity: show each tier at most once per this many hours */
 const SEVERITY_DEDUP_HOURS: Record<string, number> = {
-  info: 24,
-  warning: 12,
-  critical: 0, // always show critical
+  info: 168, // 80% warning: once per week (effectively once per billing cycle)
+  warning: 0, // 95% warning: always show
 };
 
 /**
@@ -124,9 +123,7 @@ export function parseRateLimitWarning(
   }
 
   const severity =
-    rawData.severity === "info" ||
-    rawData.severity === "warning" ||
-    rawData.severity === "critical"
+    rawData.severity === "info" || rawData.severity === "warning"
       ? rawData.severity
       : undefined;
   const usedDollars = isNumber(rawData.usedDollars)

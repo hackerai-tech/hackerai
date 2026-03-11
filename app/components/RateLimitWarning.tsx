@@ -19,7 +19,7 @@ export type RateLimitWarningData =
       remainingPercent: number;
       resetTime: Date;
       subscription: SubscriptionTier;
-      severity?: "info" | "warning" | "critical";
+      severity?: "info" | "warning";
       usedDollars?: number;
       limitDollars?: number;
     }
