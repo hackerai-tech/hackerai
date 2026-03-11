@@ -7,7 +7,7 @@ import { openrouter } from "@openrouter/ai-sdk-provider";
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
   "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
-  "agent-model": openrouter("google/gemini-3-flash-preview"),
+  "agent-model": openrouter("moonshotai/kimi-k2.5"),
   "model-sonnet-4.6": openrouter("anthropic/claude-sonnet-4-6"),
   "model-gemini-3.1-pro": openrouter("google/gemini-3.1-pro-preview"),
   "model-grok-4.1": openrouter("x-ai/grok-4.1-fast"),
@@ -23,7 +23,7 @@ export type ModelName = keyof typeof baseProviders;
 export const modelCutoffDates: Record<ModelName, string> = {
   "ask-model": "January 2025",
   "ask-model-free": "November 2024",
-  "agent-model": "January 2025",
+  "agent-model": "March 2025",
   "model-sonnet-4.6": "May 2025",
   "model-gemini-3.1-pro": "January 2025",
   "model-grok-4.1": "November 2024",
