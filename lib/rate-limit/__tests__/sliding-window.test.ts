@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
 describe("sliding-window", () => {
   const mockLimitFn = jest.fn();
+  const mockGetRemainingFn = jest.fn();
   const mockCreateRedisClient = jest.fn();
   const mockFormatTimeRemaining = jest.fn();
 
@@ -14,10 +15,14 @@ describe("sliding-window", () => {
     jest.resetModules();
     jest.clearAllMocks();
 
-    // Default mock responses
+    // Default mock responses (check uses getRemaining; consume uses limit)
     mockLimitFn.mockResolvedValue({
       success: true,
       remaining: 5,
+      reset: Date.now() + 3600000,
+    });
+    mockGetRemainingFn.mockResolvedValue({
+      remaining: 6,
       reset: Date.now() + 3600000,
     });
 
@@ -30,6 +35,7 @@ describe("sliding-window", () => {
     jest.isolateModules(() => {
       const MockRatelimit = jest.fn().mockImplementation(() => ({
         limit: mockLimitFn,
+        getRemaining: mockGetRemainingFn,
       }));
       (MockRatelimit as any).slidingWindow = jest.fn().mockReturnValue({});
 
@@ -69,7 +75,7 @@ describe("sliding-window", () => {
 
       const result = await checkFreeUserRateLimit("user-123");
 
-      expect(mockLimitFn).toHaveBeenCalled();
+      expect(mockGetRemainingFn).toHaveBeenCalled();
       expect(result.remaining).toBe(5);
     });
 
@@ -77,8 +83,7 @@ describe("sliding-window", () => {
       const { checkFreeUserRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({});
-      mockLimitFn.mockResolvedValue({
-        success: false,
+      mockGetRemainingFn.mockResolvedValue({
         remaining: 0,
         reset: Date.now() + 3600000,
       });
@@ -96,8 +101,7 @@ describe("sliding-window", () => {
       const { checkFreeUserRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({});
-      mockLimitFn.mockResolvedValue({
-        success: false,
+      mockGetRemainingFn.mockResolvedValue({
         remaining: 0,
         reset: Date.now() + 3600000,
       });
@@ -115,7 +119,9 @@ describe("sliding-window", () => {
       const { checkFreeUserRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({});
-      mockLimitFn.mockRejectedValue(new Error("Redis connection failed"));
+      mockGetRemainingFn.mockRejectedValue(
+        new Error("Redis connection failed"),
+      );
 
       try {
         await checkFreeUserRateLimit("user-123");

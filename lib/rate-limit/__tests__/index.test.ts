@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 
 describe("checkRateLimit", () => {
   const mockLimitFn = jest.fn();
+  const mockGetRemainingFn = jest.fn();
   const mockCheckTokenBucketLimit = jest.fn();
   const mockCreateRedisClient = jest.fn();
   const mockFormatTimeRemaining = jest.fn();
@@ -17,10 +18,14 @@ describe("checkRateLimit", () => {
     jest.resetModules();
     jest.clearAllMocks();
 
-    // Default mock responses
+    // Default mock responses (free user check uses getRemaining)
     mockLimitFn.mockResolvedValue({
       success: true,
       remaining: 5,
+      reset: Date.now() + 3600000,
+    });
+    mockGetRemainingFn.mockResolvedValue({
+      remaining: 6,
       reset: Date.now() + 3600000,
     });
 
@@ -40,6 +45,7 @@ describe("checkRateLimit", () => {
     jest.isolateModules(() => {
       const MockRatelimit = jest.fn().mockImplementation(() => ({
         limit: mockLimitFn,
+        getRemaining: mockGetRemainingFn,
       }));
       (MockRatelimit as any).slidingWindow = jest.fn().mockReturnValue({});
 
@@ -89,7 +95,7 @@ describe("checkRateLimit", () => {
 
       const result = await checkRateLimit("user-123", "ask", "free", 0);
 
-      expect(mockLimitFn).toHaveBeenCalled();
+      expect(mockGetRemainingFn).toHaveBeenCalled();
       expect(mockCheckTokenBucketLimit).not.toHaveBeenCalled();
       expect(result.remaining).toBe(5);
     });
@@ -111,8 +117,7 @@ describe("checkRateLimit", () => {
       const { checkRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({});
-      mockLimitFn.mockResolvedValue({
-        success: false,
+      mockGetRemainingFn.mockResolvedValue({
         remaining: 0,
         reset: Date.now() + 3600000,
       });
