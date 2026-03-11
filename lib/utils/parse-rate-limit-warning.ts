@@ -24,6 +24,14 @@ export interface ParseRateLimitWarningOptions {
 }
 
 const EXTRA_USAGE_STORAGE_KEY_PREFIX = "extraUsageWarningShownUntil_";
+const TOKEN_BUCKET_WARNING_KEY_PREFIX = "tokenBucketWarningShownAt_";
+
+/** Dedup interval per severity: show each tier at most once per this many hours */
+const SEVERITY_DEDUP_HOURS: Record<string, number> = {
+  info: 24,
+  warning: 12,
+  critical: 0, // always show critical
+};
 
 /**
  * Parses raw stream/event data for a rate-limit warning into a typed
@@ -114,11 +122,44 @@ export function parseRateLimitWarning(
   ) {
     return null;
   }
+
+  const severity =
+    rawData.severity === "info" ||
+    rawData.severity === "warning" ||
+    rawData.severity === "critical"
+      ? rawData.severity
+      : undefined;
+  const usedDollars = isNumber(rawData.usedDollars)
+    ? rawData.usedDollars
+    : undefined;
+  const limitDollars = isNumber(rawData.limitDollars)
+    ? rawData.limitDollars
+    : undefined;
+
+  // Dedup by severity tier — don't spam users with info-level warnings
+  if (severity && typeof window !== "undefined" && window.localStorage) {
+    const dedupHours = SEVERITY_DEDUP_HOURS[severity] ?? 0;
+    if (dedupHours > 0) {
+      const storageKey = `${TOKEN_BUCKET_WARNING_KEY_PREFIX}${severity}`;
+      const lastShown = localStorage.getItem(storageKey);
+      if (lastShown) {
+        const elapsed = Date.now() - Number(lastShown);
+        if (elapsed < dedupHours * 60 * 60 * 1000) {
+          return null;
+        }
+      }
+      localStorage.setItem(storageKey, String(Date.now()));
+    }
+  }
+
   return {
     warningType: "token-bucket",
     bucketType,
     remainingPercent,
     resetTime,
     subscription,
+    ...(severity && { severity }),
+    ...(usedDollars !== undefined && { usedDollars }),
+    ...(limitDollars !== undefined && { limitDollars }),
   };
 }

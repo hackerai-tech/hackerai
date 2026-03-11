@@ -14,6 +14,7 @@ import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
+import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
 import { countMessagesTokens } from "@/lib/token-utils";
 import {
   checkAndSummarizeIfNeeded,
@@ -100,17 +101,35 @@ export function sendRateLimitWarnings(
         subscription,
       });
     } else {
-      // Paid users without extra usage: token bucket (remaining percentage at 10%)
+      // Paid users without extra usage: tiered warnings at 50%, 25%, 10%, 5%
       const monthlyPercent =
         (rateLimitInfo.monthly.remaining / rateLimitInfo.monthly.limit) * 100;
+      const usedPercent = 100 - monthlyPercent;
 
-      if (monthlyPercent <= 10) {
+      if (usedPercent >= 50) {
+        const severity: "info" | "warning" | "critical" =
+          usedPercent >= 95
+            ? "critical"
+            : usedPercent >= 90
+              ? "critical"
+              : usedPercent >= 75
+                ? "warning"
+                : "info";
+
+        const usedDollars =
+          (rateLimitInfo.monthly.limit - rateLimitInfo.monthly.remaining) /
+          POINTS_PER_DOLLAR;
+        const limitDollars = rateLimitInfo.monthly.limit / POINTS_PER_DOLLAR;
+
         writeRateLimitWarning(writer, {
           warningType: "token-bucket",
           bucketType: "monthly",
           remainingPercent: Math.round(monthlyPercent),
           resetTime: rateLimitInfo.monthly.resetTime.toISOString(),
           subscription,
+          severity,
+          usedDollars: Math.round(usedDollars * 100) / 100,
+          limitDollars: Math.round(limitDollars * 100) / 100,
         });
       }
     }

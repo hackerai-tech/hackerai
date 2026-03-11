@@ -50,6 +50,43 @@ export const logUsage = mutation({
 });
 
 /**
+ * Daily usage cost aggregates for the last N days (default 7).
+ * Used for projected exhaustion date calculation.
+ */
+export const getDailyUsageSummary = query({
+  args: {
+    days: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthenticated");
+    }
+    const userId = identity.subject;
+    const days = args.days ?? 7;
+    const startDate = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const logs = await ctx.db
+      .query("usage_logs")
+      .withIndex("by_user", (q) =>
+        q.eq("user_id", userId).gte("_creationTime", startDate),
+      )
+      .collect();
+
+    // Aggregate by day (UTC)
+    const dailyMap = new Map<string, number>();
+    for (const log of logs) {
+      const day = new Date(log._creationTime).toISOString().slice(0, 10);
+      dailyMap.set(day, (dailyMap.get(day) ?? 0) + log.cost_dollars);
+    }
+
+    return Array.from(dailyMap.entries())
+      .map(([date, costDollars]) => ({ date, costDollars }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  },
+});
+
+/**
  * Paginated usage logs for the authenticated user within a date range.
  * Uses Convex cursor-based pagination via usePaginatedQuery on the client.
  */

@@ -18,6 +18,9 @@ export type RateLimitWarningData =
       remainingPercent: number;
       resetTime: Date;
       subscription: SubscriptionTier;
+      severity?: "info" | "warning" | "critical";
+      usedDollars?: number;
+      limitDollars?: number;
     }
   | {
       warningType: "extra-usage-active";
@@ -74,10 +77,33 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `You're now using extra usage credits. Your monthly limit resets ${timeString}.`;
   }
 
-  // Token bucket warning
-  return data.remainingPercent === 0
-    ? `You've reached your monthly usage limit. It resets ${timeString}.`
-    : `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
+  // Token bucket warning — show dollar amounts when available
+  if (data.remainingPercent === 0) {
+    return `You've reached your monthly usage limit. It resets ${timeString}.`;
+  }
+
+  const usedPercent = 100 - data.remainingPercent;
+  if (data.usedDollars !== undefined && data.limitDollars !== undefined) {
+    return `You've used $${data.usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). Resets ${timeString}.`;
+  }
+
+  return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
+};
+
+const getSeverityStyles = (data: RateLimitWarningData): string => {
+  if (data.warningType !== "token-bucket" || !data.severity) {
+    return "bg-input-chat border-black/8 dark:border-border";
+  }
+  switch (data.severity) {
+    case "critical":
+      return "bg-red-500/10 border-red-500/20 dark:bg-red-500/15 dark:border-red-500/25";
+    case "warning":
+      return "bg-orange-500/10 border-orange-500/20 dark:bg-orange-500/15 dark:border-orange-500/25";
+    case "info":
+      return "bg-blue-500/10 border-blue-500/20 dark:bg-blue-500/15 dark:border-blue-500/25";
+    default:
+      return "bg-input-chat border-black/8 dark:border-border";
+  }
 };
 
 export const RateLimitWarning = ({
@@ -94,7 +120,7 @@ export const RateLimitWarning = ({
   return (
     <div
       data-testid="rate-limit-warning"
-      className="mb-2 px-3 py-2.5 bg-input-chat border border-black/8 dark:border-border rounded-lg flex items-center justify-between gap-2"
+      className={`mb-2 px-3 py-2.5 border rounded-lg flex items-center justify-between gap-2 ${getSeverityStyles(data)}`}
     >
       <div className="flex-1 flex items-center gap-2 flex-wrap">
         <span className="text-foreground">{message}</span>

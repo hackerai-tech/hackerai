@@ -206,11 +206,17 @@ export const checkTokenBucketLimit = async (
 
           if (deductResult.monthlyCapExceeded) {
             const msg = `You've hit your monthly extra usage spending limit.\n\nYour limit resets ${resetTime}. To keep going now, increase your spending limit in Settings.`;
-            throw new ChatSDKError("rate_limit:chat", msg);
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+            });
           }
 
           const msg = `You've hit your usage limit and your extra usage balance is empty.\n\nYour limit resets ${resetTime}. To keep going now, add credits in Settings${upgradeHint}.`;
-          throw new ChatSDKError("rate_limit:chat", msg);
+          throw new ChatSDKError("rate_limit:chat", msg, {
+            resetTimestamp: monthlyCheck.reset,
+            subscription,
+          });
         }
 
         // Fall through to standard rate limit error
@@ -219,7 +225,10 @@ export const checkTokenBucketLimit = async (
       // No extra usage enabled - throw standard rate limit error
       const resetTime = formatTimeRemaining(new Date(monthlyCheck.reset));
       const msg = `You've hit your monthly usage limit.\n\nYour limit resets ${resetTime}. To keep going now, add extra usage credits in Settings${upgradeHint}.`;
-      throw new ChatSDKError("rate_limit:chat", msg);
+      throw new ChatSDKError("rate_limit:chat", msg, {
+        resetTimestamp: monthlyCheck.reset,
+        subscription,
+      });
     }
 
     // Step 3: Have capacity, deduct from monthly bucket
