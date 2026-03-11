@@ -126,12 +126,14 @@ export function parseRateLimitWarning(
     rawData.severity === "info" || rawData.severity === "warning"
       ? rawData.severity
       : undefined;
-  const usedDollars = isNumber(rawData.usedDollars)
-    ? rawData.usedDollars
-    : undefined;
-  const limitDollars = isNumber(rawData.limitDollars)
-    ? rawData.limitDollars
-    : undefined;
+  const usedDollars =
+    isNumber(rawData.usedDollars) && rawData.usedDollars >= 0
+      ? rawData.usedDollars
+      : undefined;
+  const limitDollars =
+    isNumber(rawData.limitDollars) && rawData.limitDollars >= 0
+      ? rawData.limitDollars
+      : undefined;
 
   // Dedup by severity tier — don't spam users with info-level warnings
   if (severity && typeof window !== "undefined" && window.localStorage) {
