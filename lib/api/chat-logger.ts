@@ -8,6 +8,7 @@
 import {
   createWideEventBuilder,
   logger,
+  type ChatApiEndpoint,
   type ChatWideEvent,
   type WideEventBuilder,
 } from "@/lib/logger";
@@ -16,7 +17,7 @@ import type { ChatSDKError } from "@/lib/errors";
 
 export interface ChatLoggerConfig {
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent" | "/api/agent-long";
+  endpoint: ChatApiEndpoint;
 }
 
 export interface RequestDetails {

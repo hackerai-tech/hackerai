@@ -27,6 +27,7 @@ interface UseChatHandlersProps {
   status: ChatStatus;
   isSendingNowRef: RefObject<boolean>;
   hasManuallyStoppedRef: RefObject<boolean>;
+  workflowRunIdRef: RefObject<string | null>;
   onStopCallback?: () => void;
   resetAutoContinueCount?: () => void;
 }
@@ -42,6 +43,7 @@ export const useChatHandlers = ({
   status,
   isSendingNowRef,
   hasManuallyStoppedRef,
+  workflowRunIdRef,
   onStopCallback,
   resetAutoContinueCount,
 }: UseChatHandlersProps) => {
@@ -94,8 +96,14 @@ export const useChatHandlers = ({
   const stopActiveStream = async (options?: {
     skipSave?: boolean;
   }): Promise<ChatMessage[]> => {
-    // Stop the stream immediately (client-side abort)
-    stop();
+    // Stop the stream immediately (client-side abort).
+    // Wrapped in try/catch because aborting the body stream can throw
+    // "BodyStreamBuffer was aborted" when the transport is mid-read.
+    try {
+      stop();
+    } catch {
+      // Expected when the transport's stream is still being consumed
+    }
 
     // Early return if no messages to process
     if (messages.length === 0) return messages;
@@ -124,6 +132,17 @@ export const useChatHandlers = ({
             })
           : Promise.resolve();
 
+      // Cancel the workflow run directly so the transport's reconnect loop
+      // sees status !== "running" and stops retrying immediately.
+      const workflowCancelPromise = workflowRunIdRef.current
+        ? fetch("/api/agent-workflow/cancel", {
+            method: "POST",
+            body: JSON.stringify({ runId: workflowRunIdRef.current }),
+          }).catch((error) => {
+            console.error("Failed to cancel workflow run:", error);
+          })
+        : Promise.resolve();
+
       await Promise.all([
         cancelStreamMutation({
           chatId,
@@ -131,6 +150,7 @@ export const useChatHandlers = ({
         }).catch((error) => {
           console.error("Failed to cancel stream:", error);
         }),
+        workflowCancelPromise,
         savePromise,
       ]);
     } else {
