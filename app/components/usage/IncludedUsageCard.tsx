@@ -1,15 +1,16 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { useAction } from "convex/react";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { useAction, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { RefreshCw, Info } from "lucide-react";
+import { RefreshCw, Info, TrendingDown } from "lucide-react";
 import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
 import type { SubscriptionTier } from "@/types";
+import { calculateUsageProjection } from "@/lib/usage-projection";
 
 type UsageLimitStatus = {
   remaining: number;
@@ -24,8 +25,10 @@ type TokenUsageStatus = {
   monthlyBudgetUsd: number;
 };
 
+const POINTS_PER_DOLLAR = 10_000;
+
 const formatPointsAsDollars = (points: number): string => {
-  const dollars = points / 10_000;
+  const dollars = points / POINTS_PER_DOLLAR;
   return `$${dollars.toFixed(2)}`;
 };
 
@@ -55,6 +58,13 @@ const getUsageColorClass = (percentage: number): string => {
   return "bg-blue-500";
 };
 
+const formatProjectionDate = (date: Date): string => {
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+};
+
 interface IncludedUsageCardProps {
   subscription: SubscriptionTier;
 }
@@ -65,6 +75,11 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
 
   const getAgentRateLimitStatus = useAction(
     api.rateLimitStatus.getAgentRateLimitStatus,
+  );
+
+  const dailyUsage = useQuery(
+    api.usageLogs.getDailyUsageSummary,
+    subscription !== "free" ? { days: 7 } : "skip",
   );
 
   const fetchTokenUsage = useCallback(async () => {
@@ -87,6 +102,15 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
   useEffect(() => {
     fetchTokenUsage();
   }, [fetchTokenUsage]);
+
+  const projection = useMemo(() => {
+    if (!tokenUsage || !dailyUsage || !tokenUsage.monthly.resetTime) {
+      return null;
+    }
+    const remainingDollars = tokenUsage.monthly.remaining / POINTS_PER_DOLLAR;
+    const resetTime = new Date(tokenUsage.monthly.resetTime);
+    return calculateUsageProjection(remainingDollars, resetTime, dailyUsage);
+  }, [tokenUsage, dailyUsage]);
 
   return (
     <div className="rounded-lg border bg-card p-4 space-y-3">
@@ -129,6 +153,25 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
               </Tooltip>
             )}
           </div>
+          {projection?.projectedExhaustionDate && (
+            <div className="flex items-center gap-1.5 text-xs text-orange-600 dark:text-orange-400">
+              <TrendingDown className="h-3 w-3 flex-shrink-0" />
+              <span>
+                At this pace, runs out ~
+                {formatProjectionDate(projection.projectedExhaustionDate)}
+                {projection.daysRemaining !== null && (
+                  <>
+                    {" "}
+                    (
+                    {projection.daysRemaining <= 1
+                      ? "less than a day"
+                      : `~${Math.round(projection.daysRemaining)} days`}
+                    )
+                  </>
+                )}
+              </span>
+            </div>
+          )}
         </>
       ) : isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground py-3">

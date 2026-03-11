@@ -85,6 +85,9 @@ export type RateLimitWarningData =
       remainingPercent: number;
       resetTime: string;
       subscription: SubscriptionTier;
+      severity?: "info" | "warning";
+      usedDollars?: number;
+      limitDollars?: number;
     }
   | {
       // Paid users: extra usage is now being consumed
