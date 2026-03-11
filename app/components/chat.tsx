@@ -777,6 +777,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     status,
     isSendingNowRef,
     hasManuallyStoppedRef,
+    workflowRunIdRef,
     onStopCallback: () => {
       setUploadStatus(null);
       setSummarizationStatus(null);
