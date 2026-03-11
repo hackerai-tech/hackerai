@@ -328,6 +328,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           actualSandboxName?: string;
         };
 
+        // Skip fallback notifications for Tauri — the server-side health check
+        // hits its own localhost, not the user's desktop, so it consistently
+        // reports false disconnects. The frontend already validated Tauri availability.
+        if (fallbackData.requestedPreference === "tauri") {
+          return;
+        }
+
         // Update sandbox preference to match actual sandbox used
         setSandboxPreference(fallbackData.actualSandbox);
 

@@ -318,23 +318,10 @@ export class HybridSandboxManager implements SandboxManager {
     await this.closeCurrentSandbox();
     const sandbox = new TauriSandbox(this.tauriConnectionInfo!);
 
-    // Verify the Tauri command server is actually reachable.
-    // On hosted/worker deployments, 127.0.0.1:{port} points to the server's
-    // own localhost, not the user's desktop — health check will fail.
-    const isReachable = await sandbox.healthCheck();
-    if (!isReachable) {
-      console.warn(
-        `[${this.userID}] Tauri command server not reachable, falling back to E2B`,
-      );
-      this.pendingFallbackInfo = {
-        occurred: true,
-        reason: "connection_unavailable",
-        requestedPreference: "tauri",
-        actualSandbox: "e2b",
-        actualSandboxName: "Cloud",
-      };
-      return this.getE2BSandbox();
-    }
+    // Skip health check — the frontend already validated Tauri availability
+    // before setting the preference. The health check hits 127.0.0.1 on the
+    // server's own localhost, not the user's desktop, so it will always fail
+    // on hosted/worker deployments.
 
     this.sandbox = sandbox;
     this.isTauri = true;
