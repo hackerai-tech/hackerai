@@ -105,7 +105,7 @@ export const RateLimitWarning = ({
       data.subscription === "pro" ||
       data.subscription === "pro-plus");
   const showAddCredits =
-    data.warningType !== "extra-usage-active" && data.subscription !== "free";
+    data.warningType === "token-bucket" && data.subscription !== "free";
 
   return (
     <div

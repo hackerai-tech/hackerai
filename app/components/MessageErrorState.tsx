@@ -17,10 +17,12 @@ const formatCountdown = (ms: number): string => {
   const days = Math.floor(totalSeconds / 86400);
   const hours = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
 
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
-  return `${minutes}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
 };
 
 export const MessageErrorState = ({
@@ -42,8 +44,11 @@ export const MessageErrorState = ({
     const update = () =>
       setTimeRemaining(Math.max(0, resetTimestamp - Date.now()));
     update();
-    const interval = setInterval(update, 60_000);
-    return () => clearInterval(interval);
+    const interval = setInterval(update, 1_000);
+    return () => {
+      clearInterval(interval);
+      setTimeRemaining(0);
+    };
   }, [resetTimestamp]);
 
   // Extract error message - check for cause first, then message
