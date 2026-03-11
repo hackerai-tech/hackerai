@@ -150,3 +150,7 @@ export async function runAgentStep(payload: AgentTaskPayload) {
   // exit its read loop and transition useChat to "ready".
   await uiStream.pipeTo(writable);
 }
+
+// Disable retries — the agent loop is not idempotent (DB writes, tool calls).
+// Retrying restarts from scratch, wasting compute and duplicating side effects.
+runAgentStep.maxRetries = 0;
