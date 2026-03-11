@@ -318,10 +318,14 @@ export class HybridSandboxManager implements SandboxManager {
     await this.closeCurrentSandbox();
     const sandbox = new TauriSandbox(this.tauriConnectionInfo!);
 
-    // Skip health check — the frontend already validated Tauri availability
-    // before setting the preference. The health check hits 127.0.0.1 on the
-    // server's own localhost, not the user's desktop, so it will always fail
-    // on hosted/worker deployments.
+    // Verify the Tauri command server is reachable. If not, throw instead
+    // of falling back to E2B — the error surfaces in the tool output.
+    const isReachable = await sandbox.healthCheck();
+    if (!isReachable) {
+      throw new Error(
+        "Tauri desktop command server is not reachable. Make sure the HackerAI Desktop app is running.",
+      );
+    }
 
     this.sandbox = sandbox;
     this.isTauri = true;
