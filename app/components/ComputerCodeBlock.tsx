@@ -8,7 +8,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@/components/ui/tooltip";
-import { toast } from "sonner";
+import { downloadFile } from "@/lib/utils/file-download";
 
 interface ComputerCodeBlockProps {
   children: ReactNode;
@@ -42,51 +42,11 @@ export const ComputerCodeBlock = ({
     }
   };
 
-  const handleDownload = async () => {
-    const defaultFilename = `code.${language || "txt"}`;
-
-    try {
-      // Try to use the File System Access API for native save dialog
-      if ("showSaveFilePicker" in window) {
-        const fileHandle = await (
-          window as Window & {
-            showSaveFilePicker: (options: {
-              suggestedName: string;
-            }) => Promise<FileSystemFileHandle>;
-          }
-        ).showSaveFilePicker({
-          suggestedName: defaultFilename,
-        });
-
-        const writable = await fileHandle.createWritable();
-        await writable.write(codeContent);
-        await writable.close();
-        toast.success("File saved successfully");
-        return;
-      }
-    } catch {
-      toast.error("Failed to save file");
-      return;
-    }
-
-    // Fallback to traditional download
-    try {
-      const blob = new Blob([codeContent], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = defaultFilename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast.success("File downloaded successfully");
-    } catch (error) {
-      toast.error("Failed to download file", {
-        description:
-          error instanceof Error ? error.message : "Unknown error occurred",
-      });
-    }
+  const handleDownload = () => {
+    downloadFile({
+      filename: `code.${language || "txt"}`,
+      content: codeContent,
+    });
   };
 
   const handleToggleWrap = () => {

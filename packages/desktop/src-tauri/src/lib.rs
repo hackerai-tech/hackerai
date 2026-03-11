@@ -1,7 +1,11 @@
+mod platform;
+
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tauri_plugin_updater::UpdaterExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,10 +15,481 @@ const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60); // 24
 /// Port for the local dev auth callback server (0 = not started)
 static DEV_AUTH_PORT: AtomicU16 = AtomicU16::new(0);
 
+/// Port for the command execution server (0 = not started)
+static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
+
+/// Session token for authenticating command server requests
+static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 /// Get the dev auth callback port (0 if not running in dev mode)
 #[tauri::command]
 fn get_dev_auth_port() -> u16 {
     DEV_AUTH_PORT.load(Ordering::Relaxed)
+}
+
+/// Get the command server port, session token, and OS info
+#[tauri::command]
+fn get_cmd_server_info() -> CmdServerInfo {
+    CmdServerInfo {
+        port: CMD_SERVER_PORT.load(Ordering::Relaxed),
+        token: CMD_SERVER_TOKEN.get().cloned().unwrap_or_default(),
+    }
+}
+
+#[derive(Serialize)]
+struct CmdServerInfo {
+    port: u16,
+    token: String,
+}
+
+// ── Command Execution Server ──────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ExecRequest {
+    command: String,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    #[serde(default = "default_timeout")]
+    timeout_ms: u64,
+}
+
+fn default_timeout() -> u64 {
+    30000
+}
+
+#[derive(Serialize)]
+struct ExecResponse {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+}
+
+#[derive(Deserialize)]
+struct FileReadRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct FileWriteRequest {
+    path: String,
+    content: String,
+    #[serde(default)]
+    is_base64: bool,
+}
+
+#[derive(Deserialize)]
+struct FileRemoveRequest {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct FileListRequest {
+    path: String,
+}
+
+/// Start the local command execution HTTP server.
+/// Binds to 127.0.0.1 only and requires a session token for all requests.
+async fn start_cmd_server() {
+    // Generate a random session token
+    let token = uuid::Uuid::new_v4().to_string();
+    let _ = CMD_SERVER_TOKEN.set(token.clone());
+
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!("Failed to start command server: {}", e);
+            return;
+        }
+    };
+
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(e) => {
+            log::error!("Failed to get command server address: {}", e);
+            return;
+        }
+    };
+    CMD_SERVER_PORT.store(port, Ordering::Relaxed);
+    log::info!("Command server listening on http://127.0.0.1:{}", port);
+
+    loop {
+        let (stream, addr) = match listener.accept().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                log::warn!("Command server accept error: {}", e);
+                continue;
+            }
+        };
+
+        // Only accept connections from localhost
+        if !addr.ip().is_loopback() {
+            log::warn!("Rejected non-loopback connection from {}", addr);
+            continue;
+        }
+
+        let token = token.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_cmd_request(stream, &token).await {
+                log::warn!("Command server request error: {}", e);
+            }
+        });
+    }
+}
+
+/// Maximum allowed header size (256KB). Requests with headers exceeding this are rejected.
+const MAX_HEADER_SIZE: usize = 256 * 1024;
+
+/// Parse an HTTP request from the stream, returning (method, path, headers, body)
+async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(String, String, HashMap<String, String>, String), String> {
+    let mut buf = vec![0u8; 64 * 1024]; // 64KB initial buffer
+    let mut total_read = 0;
+
+    // Read headers first (with size cap to prevent OOM)
+    loop {
+        let n = stream.read(&mut buf[total_read..]).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("Connection closed".into());
+        }
+        total_read += n;
+
+        // Check if we have the full headers
+        let request_so_far = String::from_utf8_lossy(&buf[..total_read]);
+        if request_so_far.contains("\r\n\r\n") {
+            break;
+        }
+
+        // Reject oversized headers
+        if total_read > MAX_HEADER_SIZE {
+            return Err("Request headers too large".into());
+        }
+
+        // Grow buffer if needed (up to the cap)
+        if total_read >= buf.len() {
+            let new_size = (buf.len() * 2).min(MAX_HEADER_SIZE + 1);
+            if new_size <= buf.len() {
+                return Err("Request headers too large".into());
+            }
+            buf.resize(new_size, 0);
+        }
+    }
+
+    let request = String::from_utf8_lossy(&buf[..total_read]).to_string();
+    let header_end = request.find("\r\n\r\n").ok_or("No header end")?;
+    let header_section = &request[..header_end];
+    let body_start_idx = header_end + 4;
+
+    // Parse request line
+    let first_line = header_section.lines().next().ok_or("Empty request")?;
+    let parts: Vec<&str> = first_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return Err("Invalid request line".into());
+    }
+    let method = parts[0].to_string();
+    let path = parts[1].to_string();
+
+    // Parse headers
+    let mut headers = HashMap::new();
+    for line in header_section.lines().skip(1) {
+        if let Some((key, value)) = line.split_once(':') {
+            headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+        }
+    }
+
+    // Read body based on content-length
+    let content_length: usize = headers.get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+
+    let body_bytes_read = total_read - body_start_idx;
+    let mut body_buf = buf[body_start_idx..total_read].to_vec();
+
+    // Read remaining body if needed
+    if body_bytes_read < content_length {
+        let remaining = content_length - body_bytes_read;
+        let mut remaining_buf = vec![0u8; remaining];
+        let mut read_so_far = 0;
+        while read_so_far < remaining {
+            let n = stream.read(&mut remaining_buf[read_so_far..]).await.map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            read_so_far += n;
+        }
+        body_buf.extend_from_slice(&remaining_buf[..read_so_far]);
+    }
+
+    let body = String::from_utf8_lossy(&body_buf[..content_length.min(body_buf.len())]).to_string();
+
+    Ok((method, path, headers, body))
+}
+
+async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &str) -> Result<(), String> {
+    let (method, path, headers, body) = parse_http_request(&mut stream).await?;
+
+    // CORS preflight
+    if method == "OPTIONS" {
+        let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
+        stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Validate auth token
+    let auth_header = headers.get("authorization").cloned().unwrap_or_default();
+    let provided_token = auth_header.strip_prefix("Bearer ").unwrap_or("");
+    if provided_token != expected_token {
+        let body = r#"{"error":"unauthorized"}"#;
+        let response = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    if method != "POST" {
+        let body = r#"{"error":"method not allowed"}"#;
+        let response = format!(
+            "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Streaming execute gets special handling (writes directly to stream)
+    if path == "/execute/stream" {
+        return handle_execute_stream(&body, &mut stream).await;
+    }
+
+    let result = match path.as_str() {
+        "/execute" => handle_execute(&body).await,
+        "/files/read" => handle_file_read(&body).await,
+        "/files/write" => handle_file_write(&body).await,
+        "/files/remove" => handle_file_remove(&body).await,
+        "/files/list" => handle_file_list(&body).await,
+        "/health" => Ok(r#"{"status":"ok"}"#.to_string()),
+        _ => Err("not found".to_string()),
+    };
+
+    let (status, resp_body) = match result {
+        Ok(json) => ("200 OK", json),
+        Err(e) if e == "not found" => ("404 Not Found", format!(r#"{{"error":"not found"}}"#)),
+        Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{}"}}"#, e.replace('"', "\\\""))),
+    };
+
+    let response = format!(
+        "HTTP/1.1 {}\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+        status, resp_body.len(), resp_body
+    );
+    stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn handle_execute(body: &str) -> Result<String, String> {
+    let req: ExecRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let mut cmd = platform::build_command(
+        &req.command,
+        req.cwd.as_deref(),
+        req.env.as_ref(),
+    );
+
+    let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
+
+    let timeout = Duration::from_millis(req.timeout_ms);
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("Process error: {}", e)),
+        Err(_) => return Err(format!("Command timed out after {}ms", req.timeout_ms)),
+    };
+
+    // Truncate output to 1MB to prevent huge responses
+    const MAX_OUTPUT: usize = 1024 * 1024;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_str = if stdout.len() > MAX_OUTPUT {
+        format!("{}... [truncated, {} total bytes]", &stdout[..MAX_OUTPUT], stdout.len())
+    } else {
+        stdout.to_string()
+    };
+    let stderr_str = if stderr.len() > MAX_OUTPUT {
+        format!("{}... [truncated, {} total bytes]", &stderr[..MAX_OUTPUT], stderr.len())
+    } else {
+        stderr.to_string()
+    };
+
+    let resp = ExecResponse {
+        stdout: stdout_str,
+        stderr: stderr_str,
+        exit_code: output.status.code().unwrap_or(-1),
+    };
+
+    serde_json::to_string(&resp).map_err(|e| format!("Serialize error: {}", e))
+}
+
+/// Streaming execute: sends NDJSON lines as stdout/stderr arrive, then a final
+/// line with exit_code. Each line is one of:
+///   {"type":"stdout","data":"..."}
+///   {"type":"stderr","data":"..."}
+///   {"type":"exit","exit_code":0}
+///   {"type":"error","message":"..."}
+async fn handle_execute_stream(body: &str, stream: &mut tokio::net::TcpStream) -> Result<(), String> {
+    let req: ExecRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let mut cmd = platform::build_command(
+        &req.command,
+        req.cwd.as_deref(),
+        req.env.as_ref(),
+    );
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let err_body = format!(r#"{{"error":"Failed to spawn: {}"}}"#, e.to_string().replace('"', "\\\""));
+            let resp = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+                err_body.len(), err_body
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+            return Ok(());
+        }
+    };
+
+    // Send chunked response headers
+    let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nAccess-Control-Allow-Origin: *\r\nTransfer-Encoding: chunked\r\n\r\n";
+    stream.write_all(headers.as_bytes()).await.map_err(|e| e.to_string())?;
+
+    let timeout = Duration::from_millis(req.timeout_ms);
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+
+    let result = tokio::time::timeout(timeout, async {
+        let mut stdout_buf = [0u8; 4096];
+        let mut stderr_buf = [0u8; 4096];
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        loop {
+            if stdout_done && stderr_done {
+                break;
+            }
+
+            tokio::select! {
+                result = stdout.read(&mut stdout_buf), if !stdout_done => {
+                    match result {
+                        Ok(0) => stdout_done = true,
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&stdout_buf[..n]);
+                            let escaped = serde_json::to_string(&text).unwrap_or_default();
+                            let line = format!(r#"{{"type":"stdout","data":{}}}"#, escaped);
+                            write_chunk(stream, &line).await;
+                        }
+                        Err(_) => stdout_done = true,
+                    }
+                }
+                result = stderr.read(&mut stderr_buf), if !stderr_done => {
+                    match result {
+                        Ok(0) => stderr_done = true,
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&stderr_buf[..n]);
+                            let escaped = serde_json::to_string(&text).unwrap_or_default();
+                            let line = format!(r#"{{"type":"stderr","data":{}}}"#, escaped);
+                            write_chunk(stream, &line).await;
+                        }
+                        Err(_) => stderr_done = true,
+                    }
+                }
+            }
+        }
+
+        // Wait for process to exit
+        child.wait().await
+    }).await;
+
+    match result {
+        Ok(Ok(status)) => {
+            let line = format!(r#"{{"type":"exit","exit_code":{}}}"#, status.code().unwrap_or(-1));
+            write_chunk(stream, &line).await;
+        }
+        Ok(Err(e)) => {
+            let line = format!(r#"{{"type":"error","message":"Process error: {}"}}"#, e.to_string().replace('"', "\\\""));
+            write_chunk(stream, &line).await;
+        }
+        Err(_) => {
+            // Timeout — gracefully kill the process
+            platform::graceful_kill(&mut child).await;
+            let line = format!(r#"{{"type":"error","message":"Command timed out after {}ms"}}"#, req.timeout_ms);
+            write_chunk(stream, &line).await;
+        }
+    }
+
+    // Terminal chunk
+    write_chunk(stream, "").await;
+    Ok(())
+}
+
+/// Write a single HTTP chunked-transfer chunk
+async fn write_chunk(stream: &mut tokio::net::TcpStream, data: &str) {
+    let payload = if data.is_empty() {
+        "0\r\n\r\n".to_string()
+    } else {
+        let line = format!("{}\n", data);
+        format!("{:x}\r\n{}\r\n", line.len(), line)
+    };
+    let _ = stream.write_all(payload.as_bytes()).await;
+    let _ = stream.flush().await;
+}
+
+async fn handle_file_read(body: &str) -> Result<String, String> {
+    let req: FileReadRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let content = tokio::fs::read_to_string(&req.path).await.map_err(|e| format!("Read error: {}", e))?;
+    serde_json::to_string(&serde_json::json!({ "content": content })).map_err(|e| e.to_string())
+}
+
+async fn handle_file_write(body: &str) -> Result<String, String> {
+    let req: FileWriteRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    // Ensure parent directory exists
+    if let Some(parent) = std::path::Path::new(&req.path).parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| format!("Mkdir error: {}", e))?;
+    }
+
+    if req.is_base64 {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&req.content)
+            .map_err(|e| format!("Base64 decode error: {}", e))?;
+        tokio::fs::write(&req.path, bytes).await.map_err(|e| format!("Write error: {}", e))?;
+    } else {
+        tokio::fs::write(&req.path, &req.content).await.map_err(|e| format!("Write error: {}", e))?;
+    }
+
+    Ok(r#"{"ok":true}"#.to_string())
+}
+
+async fn handle_file_remove(body: &str) -> Result<String, String> {
+    let req: FileRemoveRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let path = std::path::Path::new(&req.path);
+
+    if path.is_dir() {
+        tokio::fs::remove_dir_all(path).await.map_err(|e| format!("Remove error: {}", e))?;
+    } else {
+        tokio::fs::remove_file(path).await.map_err(|e| format!("Remove error: {}", e))?;
+    }
+
+    Ok(r#"{"ok":true}"#.to_string())
+}
+
+async fn handle_file_list(body: &str) -> Result<String, String> {
+    let req: FileListRequest = serde_json::from_str(body).map_err(|e| format!("Invalid JSON: {}", e))?;
+    let mut entries = Vec::new();
+    let mut dir = tokio::fs::read_dir(&req.path).await.map_err(|e| format!("ReadDir error: {}", e))?;
+
+    while let Some(entry) = dir.next_entry().await.map_err(|e| format!("Entry error: {}", e))? {
+        let name = entry.file_name().to_string_lossy().to_string();
+        entries.push(serde_json::json!({ "name": name }));
+    }
+
+    serde_json::to_string(&entries).map_err(|e| e.to_string())
 }
 
 /// Start a local HTTP server for dev mode auth callbacks.
@@ -28,7 +503,13 @@ async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
         }
     };
 
-    let port = listener.local_addr().unwrap().port();
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(e) => {
+            log::error!("Failed to get dev auth server address: {}", e);
+            return;
+        }
+    };
     DEV_AUTH_PORT.store(port, Ordering::Relaxed);
     log::info!("Dev auth callback server listening on http://localhost:{}", port);
 
@@ -336,7 +817,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port])
+        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -393,6 +874,9 @@ pub fn run() {
                 let dev_handle = app.handle().clone();
                 tauri::async_runtime::spawn(start_dev_auth_server(dev_handle));
             }
+
+            // Start command execution server (always, for local terminal commands)
+            tauri::async_runtime::spawn(start_cmd_server());
 
             // Check for updates on every launch
             let handle = app.handle().clone();

@@ -152,16 +152,30 @@ export interface SidebarNotes {
   };
 }
 
+export interface SidebarSharedFiles {
+  files: Array<{
+    name: string;
+    mediaType?: string;
+    fileId?: string;
+    s3Key?: string;
+    storageId?: string;
+  }>;
+  requestedPaths: string[];
+  isExecuting: boolean;
+  toolCallId: string;
+}
+
 export type SidebarContent =
   | SidebarFile
   | SidebarTerminal
   | SidebarWebSearch
-  | SidebarNotes;
+  | SidebarNotes
+  | SidebarSharedFiles;
 
 export const isSidebarFile = (
   content: SidebarContent,
 ): content is SidebarFile => {
-  return "path" in content;
+  return "path" in content && !("requestedPaths" in content);
 };
 
 export const isSidebarTerminal = (
@@ -180,6 +194,12 @@ export const isSidebarNotes = (
   content: SidebarContent,
 ): content is SidebarNotes => {
   return "notes" in content && "action" in content;
+};
+
+export const isSidebarSharedFiles = (
+  content: SidebarContent,
+): content is SidebarSharedFiles => {
+  return "requestedPaths" in content;
 };
 
 export interface Todo {

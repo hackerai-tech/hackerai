@@ -1,17 +1,22 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { useAction, useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import {
   LogOut,
   Sparkle,
   LifeBuoy,
   Github,
   ChevronRight,
+  ChevronDown,
   Settings,
-  Settings2,
   CircleUserRound,
+  Gauge,
   Download,
+  ExternalLink,
+  RefreshCw,
 } from "lucide-react";
 import Link from "next/link";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -33,7 +38,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { CustomizeHackerAIDialog } from "./CustomizeHackerAIDialog";
 import { clientLogout } from "@/lib/utils/logout";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 
@@ -93,8 +97,70 @@ const UpgradeBanner = ({ isCollapsed }: { isCollapsed: boolean }) => {
 const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const { user } = useAuth();
   const { isCheckingProPlan, subscription } = useGlobalState();
-  const [showCustomizeDialog, setShowCustomizeDialog] = useState(false);
+  const [rateLimitsExpanded, setRateLimitsExpanded] = useState(false);
+  const [tokenUsage, setTokenUsage] = useState<{
+    monthly: {
+      remaining: number;
+      limit: number;
+      used: number;
+      usagePercentage: number;
+      resetTime: string | null;
+    };
+    monthlyBudgetUsd: number;
+  } | null>(null);
+  const [isLoadingUsage, setIsLoadingUsage] = useState(false);
+  const [usageFetchFailed, setUsageFetchFailed] = useState(false);
   const isMobile = useIsMobile();
+  const isPaidUser = subscription !== "free";
+
+  const getAgentRateLimitStatus = useAction(
+    api.rateLimitStatus.getAgentRateLimitStatus,
+  );
+
+  const extraUsageSettings = useQuery(api.extraUsage.getExtraUsageSettings);
+  const userCustomization = useQuery(
+    api.userCustomization.getUserCustomization,
+  );
+  const extraUsageEnabled = userCustomization?.extra_usage_enabled ?? false;
+  const extraUsageMonthlySpentDollars =
+    extraUsageSettings?.monthlySpentDollars ?? 0;
+  const extraUsageMonthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
+
+  const fetchTokenUsage = useCallback(async () => {
+    if (!isPaidUser) return;
+    setIsLoadingUsage(true);
+    try {
+      const status = await getAgentRateLimitStatus({ subscription });
+      setTokenUsage(status);
+      setUsageFetchFailed(false);
+    } catch {
+      setUsageFetchFailed(true);
+    } finally {
+      setIsLoadingUsage(false);
+    }
+  }, [subscription, isPaidUser, getAgentRateLimitStatus]);
+
+  // Reset error state when subscription changes so it can retry
+  useEffect(() => {
+    setUsageFetchFailed(false);
+  }, [subscription]);
+
+  useEffect(() => {
+    if (
+      rateLimitsExpanded &&
+      !tokenUsage &&
+      !isLoadingUsage &&
+      !usageFetchFailed
+    ) {
+      fetchTokenUsage();
+    }
+  }, [
+    rateLimitsExpanded,
+    tokenUsage,
+    isLoadingUsage,
+    usageFetchFailed,
+    fetchTokenUsage,
+  ]);
 
   if (!user) return null;
 
@@ -254,17 +320,17 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
         </DropdownMenuTrigger>
 
         <DropdownMenuContent
-          className="w-[calc(100%-12px)] rounded-2xl py-1.5"
-          align="start"
+          className="w-[calc(var(--radix-dropdown-menu-trigger-width)-12px)] min-w-[240px] rounded-2xl py-1.5"
+          align="center"
           side="top"
-          sideOffset={8}
+          sideOffset={0}
         >
-          <DropdownMenuLabel className="font-normal py-2.5">
-            <div className="flex items-center space-x-2.5">
-              <CircleUserRound className="h-5 w-5 text-muted-foreground flex-shrink-0" />
+          <DropdownMenuLabel className="font-normal py-1.5">
+            <div className="flex items-center space-x-2">
+              <CircleUserRound className="h-4 w-4 text-muted-foreground flex-shrink-0" />
               <p
                 data-testid="user-email"
-                className="leading-none text-muted-foreground truncate min-w-0"
+                className="leading-none text-muted-foreground truncate min-w-0 text-sm"
               >
                 {user.email}
               </p>
@@ -277,34 +343,107 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             <DropdownMenuItem
               data-testid="upgrade-menu-item"
               onClick={redirectToPricing}
-              className="py-2.5"
+              className="py-1.5"
             >
-              <Sparkle className="mr-2.5 h-5 w-5 text-foreground" />
+              <Sparkle className="mr-2 h-4 w-4 text-foreground" />
               <span>Upgrade Plan</span>
             </DropdownMenuItem>
           )}
 
-          <DropdownMenuItem
-            onClick={() => setShowCustomizeDialog(true)}
-            className="py-2.5"
-          >
-            <Settings2 className="mr-2.5 h-5 w-5 text-foreground" />
-            <span>Personalization</span>
-          </DropdownMenuItem>
+          {isPaidUser && (
+            <div>
+              <DropdownMenuItem
+                onSelect={(e) => {
+                  e.preventDefault();
+                  setRateLimitsExpanded(!rateLimitsExpanded);
+                }}
+                className="py-1.5"
+              >
+                <Gauge className="mr-2 h-4 w-4 text-foreground" />
+                <span className="flex-1">Usage</span>
+                {rateLimitsExpanded ? (
+                  <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="ml-auto h-4 w-4 text-muted-foreground" />
+                )}
+              </DropdownMenuItem>
+              {rateLimitsExpanded && (
+                <div className="px-3 pb-2 space-y-0.5">
+                  {isLoadingUsage ? (
+                    <div className="flex items-center gap-2 py-1.5 text-sm text-muted-foreground">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      <span>Loading...</span>
+                    </div>
+                  ) : tokenUsage ? (
+                    <>
+                      <div className="flex items-center justify-between py-1.5 text-sm">
+                        <span className="text-muted-foreground">Monthly</span>
+                        <div className="flex items-center gap-3 tabular-nums text-muted-foreground">
+                          <span>
+                            {tokenUsage.monthly.usagePercentage}% used
+                          </span>
+                          {tokenUsage.monthly.resetTime && (
+                            <span>
+                              {new Date(
+                                tokenUsage.monthly.resetTime,
+                              ).toLocaleDateString(undefined, {
+                                month: "short",
+                                day: "numeric",
+                              })}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      {extraUsageEnabled && (
+                        <div className="flex items-center justify-between py-1.5 text-sm">
+                          <span className="text-muted-foreground">
+                            Extra usage
+                          </span>
+                          <div className="flex items-center gap-3 tabular-nums text-muted-foreground">
+                            <span>
+                              ${extraUsageMonthlySpentDollars.toFixed(2)}
+                            </span>
+                            <span>
+                              {extraUsageMonthlyCapDollars
+                                ? `/ $${extraUsageMonthlyCapDollars.toFixed(2)}`
+                                : "No limit"}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="py-1.5 text-sm text-muted-foreground">
+                      Unable to load usage
+                    </div>
+                  )}
+                  <button
+                    onClick={() => openSettingsDialog("Extra Usage")}
+                    className="-mx-3 px-3 w-[calc(100%+1.5rem)] flex items-center gap-2.5 py-1.5 rounded-md text-left text-sm hover:bg-muted transition-colors"
+                    aria-label="Open extra usage settings"
+                    tabIndex={0}
+                  >
+                    <span className="flex-1">Extra usage</span>
+                    <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
           <DropdownMenuItem
             data-testid="settings-button"
             onClick={() => openSettingsDialog()}
-            className="py-2.5"
+            className="py-1.5"
           >
-            <Settings className="mr-2.5 h-5 w-5 text-foreground" />
+            <Settings className="mr-2 h-4 w-4 text-foreground" />
             <span>Settings</span>
           </DropdownMenuItem>
 
           {!isMobile && (
-            <DropdownMenuItem asChild className="py-2.5">
+            <DropdownMenuItem asChild className="py-1.5">
               <Link href="/download">
-                <Download className="mr-2.5 h-5 w-5 text-foreground" />
+                <Download className="mr-2 h-4 w-4 text-foreground" />
                 <span>Download App</span>
               </Link>
             </DropdownMenuItem>
@@ -314,10 +453,10 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <DropdownMenuItem className="gap-4 cursor-pointer py-2.5">
-                <LifeBuoy className="h-5 w-5 text-foreground" />
+              <DropdownMenuItem className="gap-4 cursor-pointer py-1.5">
+                <LifeBuoy className="h-4 w-4 text-foreground" />
                 <span>Help</span>
-                <ChevronRight className="ml-auto h-5 w-5" />
+                <ChevronRight className="ml-auto h-4 w-4" />
               </DropdownMenuItem>
             </DropdownMenuTrigger>
             <DropdownMenuContent
@@ -326,16 +465,16 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
               sideOffset={isMobile ? 8 : 4}
               className="rounded-2xl"
             >
-              <DropdownMenuItem onClick={handleHelpCenter} className="py-2.5">
-                <LifeBuoy className="mr-2.5 h-5 w-5 text-foreground" />
+              <DropdownMenuItem onClick={handleHelpCenter} className="py-1.5">
+                <LifeBuoy className="mr-2 h-4 w-4 text-foreground" />
                 <span>Help Center</span>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleGitHub} className="py-2.5">
-                <Github className="mr-2.5 h-5 w-5 text-foreground" />
+              <DropdownMenuItem onClick={handleGitHub} className="py-1.5">
+                <Github className="mr-2 h-4 w-4 text-foreground" />
                 <span>Source Code</span>
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleXCom} className="py-2.5">
-                <XIcon className="mr-2.5 h-5 w-5 text-foreground" />
+              <DropdownMenuItem onClick={handleXCom} className="py-1.5">
+                <XIcon className="mr-2 h-4 w-4 text-foreground" />
                 <span>Social</span>
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -344,19 +483,13 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
           <DropdownMenuItem
             data-testid="logout-button"
             onClick={handleLogOut}
-            className="py-2.5"
+            className="py-1.5"
           >
-            <LogOut className="mr-2.5 h-5 w-5 text-foreground" />
+            <LogOut className="mr-2 h-4 w-4 text-foreground" />
             <span>Log out</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-
-      {/* Customize HackerAI Dialog */}
-      <CustomizeHackerAIDialog
-        open={showCustomizeDialog}
-        onOpenChange={setShowCustomizeDialog}
-      />
     </div>
   );
 };

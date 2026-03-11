@@ -120,6 +120,9 @@ export interface AgentStreamConfig {
   sandboxFiles?: SandboxFile[];
   chatFinishReason?: string;
 
+  // Tauri desktop integration
+  tauriCmdServer?: { port: number; token: string } | null;
+
   // Platform-specific
   logger: StreamLogger;
   chatLogger: ChatLogger;
@@ -167,6 +170,7 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
     fileTokens,
     sandboxFiles,
     chatFinishReason,
+    tauriCmdServer,
     logger,
     chatLogger,
     usageRefundTracker,
@@ -231,6 +235,7 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
           usageTracker.providerCost += costDollars;
           chatLogger?.getBuilder().addToolCost(costDollars);
         },
+        tauriCmdServer ?? null,
       );
 
       const sendFileMetadataToStream = (

@@ -26,6 +26,7 @@ import {
 } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
@@ -108,6 +109,12 @@ interface GlobalStateType {
   // Sandbox preference (for Agent mode)
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
+
+  // Tauri command server info (desktop app only)
+  tauriCmdServer: {
+    port: number;
+    token: string;
+  } | null;
 
   // Model selection
   selectedModel: SelectedModel;
@@ -218,12 +225,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return "queue"; // Default: queue after current message completes
   });
 
-  // Sandbox preference (persisted to localStorage)
-  const [sandboxPreference, setSandboxPreferenceState] =
-    useState<SandboxPreference>(() => {
-      if (typeof window === "undefined") return "e2b";
-      return localStorage.getItem("sandbox-preference") || "e2b";
-    });
+  // Tauri detection + sandbox preference (co-located in a custom hook)
+  const { tauriCmdServer, sandboxPreference, setSandboxPreference } =
+    useSandboxPreference();
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -231,13 +235,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       localStorage.setItem("queue-behavior", queueBehavior);
     }
   }, [queueBehavior]);
-
-  // Persist sandbox preference to localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("sandbox-preference", sandboxPreference);
-    }
-  }, [sandboxPreference]);
 
   // Model selection (persisted per-mode to localStorage)
   const getModeKey = (m: ChatMode): "ask" | "agent" =>
@@ -734,7 +731,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setQueueBehavior: setQueueBehaviorState,
 
     sandboxPreference,
-    setSandboxPreference: setSandboxPreferenceState,
+    setSandboxPreference,
+    tauriCmdServer,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

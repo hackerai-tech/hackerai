@@ -84,6 +84,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
+    tauriCmdServer,
     selectedModel,
     setSelectedModel,
   } = useGlobalState();
@@ -134,7 +135,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
-  const [sandboxConnectionValid, setSandboxConnectionValid] = useState(true);
   // Track whether model selection has been initialized from chat for this chat id
   const hasInitializedModelRef = useRef(false);
 
@@ -172,6 +172,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const needsConnectionValidation =
     !!storedSandboxType &&
     storedSandboxType !== "e2b" &&
+    storedSandboxType !== "tauri" &&
     !hasInitializedSandboxRef.current;
   const localConnections = useQuery(
     api.localSandbox.listConnections,
@@ -370,10 +371,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           fileDetails: FileDetails[];
         };
 
-        // Store in parallel state (outside AI SDK control)
+        // Merge into parallel state (outside AI SDK control)
+        // Uses merge-with-dedup so incremental events (per-file) and
+        // the onFinish batch event both work without duplicates
         setTempChatFileDetails((prev) => {
           const next = new Map(prev);
-          next.set(fileData.messageId, fileData.fileDetails);
+          const existing = next.get(fileData.messageId) || [];
+          const existingIds = new Set(
+            existing.map((f: FileDetails) => f.fileId),
+          );
+          const newFiles = fileData.fileDetails.filter(
+            (f: FileDetails) => !existingIds.has(f.fileId),
+          );
+          next.set(fileData.messageId, [...existing, ...newFiles]);
           return next;
         });
       }
@@ -518,7 +528,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
     hasInitializedModelRef.current = false;
-    setSandboxConnectionValid(true); // Reset to true until validated
   }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
@@ -601,8 +610,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
 
     if (storedSandboxType === "e2b") {
-      // E2B is always valid
-      setSandboxPreference(storedSandboxType);
+      setSandboxPreference("e2b");
+      hasInitializedSandboxRef.current = true;
+    } else if (storedSandboxType === "tauri") {
+      // Only restore "tauri" if the desktop bridge is actually available.
+      // If tauriCmdServer is still undefined (bridge discovery in progress),
+      // defer — the effect will re-run when tauriCmdServer resolves.
+      if (tauriCmdServer === undefined) return;
+      setSandboxPreference(tauriCmdServer ? "tauri" : "e2b");
       hasInitializedSandboxRef.current = true;
     } else if (localConnections !== undefined) {
       // For local connectionIds, validate the connection still exists
@@ -612,14 +627,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (connectionExists) {
         setSandboxPreference(storedSandboxType);
       } else {
-        // Stale connection — unlock selector so user can pick a current one
-        setSandboxConnectionValid(false);
+        // Stale connection — fall back to cloud
+        setSandboxPreference("e2b");
       }
       hasInitializedSandboxRef.current = true;
     }
     // If localConnections is still loading (undefined), wait for next render
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, localConnections, isExistingChat, chatId]);
+  }, [chatData, localConnections, isExistingChat, chatId, tauriCmdServer]);
 
   // Initialize model selection from chat data (simpler than sandbox — no connection validation needed)
   useEffect(() => {
@@ -826,11 +841,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     shouldFetchMessages &&
     !awaitingServerChat;
 
-  const hasSavedSandboxType =
-    (!!storedSandboxType && sandboxConnectionValid) ||
-    (isExistingChat && !chatData) ||
-    (wasNewChatRef.current && hasMessages);
-
   return (
     <ConvexErrorBoundary>
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
@@ -949,7 +959,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                               handleDismissRateLimitWarning
                             }
                             contextUsage={contextUsage}
-                            hasSavedSandboxType={hasSavedSandboxType}
                           />
                         </div>
                       )}
@@ -981,7 +990,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     contextUsage={contextUsage}
-                    hasSavedSandboxType={hasSavedSandboxType}
                   />
                 )}
             </div>

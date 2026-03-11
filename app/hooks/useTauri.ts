@@ -1,5 +1,7 @@
 "use client";
 
+import { toast } from "sonner";
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
@@ -62,6 +64,115 @@ export async function navigateToAuth(
     }
   }
   window.location.href = fallbackPath;
+}
+
+/**
+ * Get the local command execution server info (port + auth token).
+ * Returns null if not in Tauri or server not started.
+ */
+export async function getCmdServerInfo(): Promise<{
+  port: number;
+  token: string;
+} | null> {
+  if (!detectTauri()) {
+    return null;
+  }
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const info = await invoke<{
+      port: number;
+      token: string;
+    }>("get_cmd_server_info");
+    if (info.port > 0 && info.token) {
+      return info;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reveal a file or folder in the OS file manager (Finder/Explorer).
+ */
+export async function revealFileInDir(path: string): Promise<boolean> {
+  if (!detectTauri()) {
+    return false;
+  }
+
+  try {
+    const opener = await import("@tauri-apps/plugin-opener");
+    await opener.revealItemInDir(path);
+    return true;
+  } catch (err) {
+    console.error("[Tauri] Failed to reveal file:", path, err);
+    toast.error("File not found", { description: path });
+    return false;
+  }
+}
+
+/**
+ * Save file content to disk via command server.
+ * Tries Downloads folder first, falls back to current working directory.
+ * Returns the full path of the saved file, or null if both attempts fail.
+ */
+export async function saveFileToLocal(
+  filename: string,
+  content: string,
+): Promise<string | null> {
+  const info = await getCmdServerInfo();
+  if (!info) return null;
+
+  const escaped = filename.replace(/'/g, "'\\''");
+
+  const writeToDir = async (dir: string) => {
+    const targetPath = `${dir}/${escaped}`;
+    const res = await fetch(`http://127.0.0.1:${info.port}/execute`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${info.token}`,
+      },
+      body: JSON.stringify({
+        command: `cat > '${targetPath}' << 'HACKERAI_EOF'\n${content}\nHACKERAI_EOF`,
+        timeout_ms: 5000,
+      }),
+    });
+    if (!res.ok) throw new Error("Request failed");
+    const result = await res.json();
+    if (result.exit_code !== 0) throw new Error("Write failed");
+    return `${dir}/${filename}`;
+  };
+
+  // Try Downloads folder first
+  try {
+    const pathMod = await import("@tauri-apps/api/path");
+    const downloadsDir = (await pathMod.downloadDir()).replace(/\/+$/, "");
+    return await writeToDir(downloadsDir);
+  } catch {
+    // Fall back to current directory
+  }
+
+  try {
+    const cwdRes = await fetch(`http://127.0.0.1:${info.port}/execute`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${info.token}`,
+      },
+      body: JSON.stringify({ command: "pwd", timeout_ms: 3000 }),
+    });
+    if (cwdRes.ok) {
+      const cwdResult = await cwdRes.json();
+      const cwd = cwdResult.stdout?.trim();
+      if (cwd) return await writeToDir(cwd);
+    }
+  } catch {
+    // Both failed
+  }
+
+  return null;
 }
 
 export async function openDownloadsFolder(): Promise<boolean> {

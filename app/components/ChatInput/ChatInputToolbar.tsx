@@ -3,7 +3,6 @@
 import { AttachmentButton } from "@/app/components/AttachmentButton";
 import { ChatModeSelector } from "./ChatModeSelector";
 import { ModelSelector } from "@/app/components/ModelSelector";
-import { SandboxSelector } from "@/app/components/SandboxSelector";
 import {
   SubmitStopButton,
   type SubmitStopButtonProps,
@@ -13,31 +12,21 @@ import {
   type ContextUsageData,
 } from "@/app/components/ContextUsageIndicator";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
   contextUsage?: ContextUsageData;
   showContextIndicator?: boolean;
-  isMobile?: boolean;
-  hasSavedSandboxType?: boolean;
 }
 
 export function ChatInputToolbar({
   onAttachClick,
   contextUsage,
   showContextIndicator = false,
-  isMobile = false,
-  hasSavedSandboxType = false,
   chatMode,
   ...submitStopProps
 }: ChatInputToolbarProps) {
-  const {
-    selectedModel,
-    setSelectedModel,
-    sandboxPreference,
-    setSandboxPreference,
-  } = useGlobalState();
+  const { selectedModel, setSelectedModel } = useGlobalState();
 
   return (
     <div className="px-3 flex gap-2 items-center min-w-0">
@@ -45,12 +34,6 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      {!isMobile && !hasSavedSandboxType && isAgentMode(chatMode) && (
-        <SandboxSelector
-          value={sandboxPreference}
-          onChange={setSandboxPreference}
-        />
-      )}
       <ModelSelector
         value={selectedModel}
         onChange={setSelectedModel}
