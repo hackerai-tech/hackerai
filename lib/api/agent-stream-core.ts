@@ -547,6 +547,19 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               }
             }
           },
+          experimental_onToolCallFinish: async ({
+            toolCall,
+            durationMs,
+            success,
+          }) => {
+            logger.info("Tool call finished", {
+              chatId,
+              endpoint,
+              toolName: toolCall?.toolName,
+              durationMs,
+              success,
+            });
+          },
           onStepFinish: async ({ usage }) => {
             if (usage) {
               usageTracker.accumulateStep(

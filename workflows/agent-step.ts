@@ -1,4 +1,4 @@
-import { getWritable } from "workflow";
+import { getWritable, getStepMetadata } from "workflow";
 import { createUIMessageStream, type UIMessageChunk } from "ai";
 import { createAgentStreamExecute } from "@/lib/api/agent-stream-core";
 import { deserializeRateLimitInfo } from "@/lib/api/rate-limit-serialization";
@@ -16,6 +16,14 @@ import { workflowAxiomLogger } from "@/lib/axiom/workflow";
  */
 export async function runAgentStep(payload: AgentTaskPayload) {
   "use step";
+
+  const { attempt, stepId } = getStepMetadata();
+  workflowAxiomLogger.info("Workflow step started", {
+    chatId: payload.chatId,
+    stepId,
+    attempt,
+    isRetry: attempt > 1,
+  });
 
   const {
     chatId,
