@@ -35,12 +35,13 @@ export const getMaxStepsForUser = (
 export function selectModel(
   mode: ChatMode,
   subscription: SubscriptionTier,
-  selectedModel?: SelectedModel,
+  _selectedModel?: SelectedModel,
 ): ModelName {
-  // User-selected model override (paid users only)
-  if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
-    return `model-${selectedModel}` as ModelName;
-  }
+  // Model selector is currently hidden — always use auto defaults.
+  // TODO: restore user-selected model override when model selector is re-enabled
+  // if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
+  //   return `model-${selectedModel}` as ModelName;
+  // }
 
   // Default models by mode
   if (isAgentMode(mode)) {

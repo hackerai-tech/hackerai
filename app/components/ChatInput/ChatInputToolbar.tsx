@@ -2,7 +2,7 @@
 
 import { AttachmentButton } from "@/app/components/AttachmentButton";
 import { ChatModeSelector } from "./ChatModeSelector";
-import { ModelSelector } from "@/app/components/ModelSelector";
+// import { ModelSelector } from "@/app/components/ModelSelector";
 import {
   SubmitStopButton,
   type SubmitStopButtonProps,
@@ -11,7 +11,6 @@ import {
   ContextUsageIndicator,
   type ContextUsageData,
 } from "@/app/components/ContextUsageIndicator";
-import { useGlobalState } from "@/app/contexts/GlobalState";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
@@ -26,19 +25,17 @@ export function ChatInputToolbar({
   chatMode,
   ...submitStopProps
 }: ChatInputToolbarProps) {
-  const { selectedModel, setSelectedModel } = useGlobalState();
-
   return (
     <div className="px-3 flex gap-2 items-center min-w-0">
       <div className="shrink-0">
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      <ModelSelector
+      {/* <ModelSelector
         value={selectedModel}
         onChange={setSelectedModel}
         mode={chatMode}
-      />
+      /> */}
       {showContextIndicator && contextUsage && (
         <div className="shrink-0">
           <ContextUsageIndicator {...contextUsage} />

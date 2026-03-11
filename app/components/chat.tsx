@@ -29,7 +29,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
-import { isSelectedModel } from "@/types";
+// import { isSelectedModel } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
@@ -85,7 +85,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setSandboxPreference,
     tauriCmdServer,
     selectedModel,
-    setSelectedModel,
+    // setSelectedModel,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -133,8 +133,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
-  // Track whether model selection has been initialized from chat for this chat id
-  const hasInitializedModelRef = useRef(false);
+  // TODO: restore when model selector is re-enabled
+  // const hasInitializedModelRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -442,7 +442,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
-    hasInitializedModelRef.current = false;
+    // hasInitializedModelRef.current = false;
   }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
@@ -551,21 +551,18 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, localConnections, isExistingChat, chatId, tauriCmdServer]);
 
-  // Initialize model selection from chat data (simpler than sandbox — no connection validation needed)
-  useEffect(() => {
-    if (hasInitializedModelRef.current || !isExistingChat) return;
-
-    const dataId = (chatData as any)?.id as string | undefined;
-    if (!chatData || dataId !== chatId) return;
-
-    const savedModel = (chatData as any).selected_model as string | undefined;
-    hasInitializedModelRef.current = true;
-
-    if (savedModel && isSelectedModel(savedModel)) {
-      setSelectedModel(savedModel);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, isExistingChat, chatId]);
+  // TODO: restore when model selector is re-enabled
+  // Initialize model selection from chat data
+  // useEffect(() => {
+  //   if (hasInitializedModelRef.current || !isExistingChat) return;
+  //   const dataId = (chatData as any)?.id as string | undefined;
+  //   if (!chatData || dataId !== chatId) return;
+  //   const savedModel = (chatData as any).selected_model as string | undefined;
+  //   hasInitializedModelRef.current = true;
+  //   if (savedModel && isSelectedModel(savedModel)) {
+  //     setSelectedModel(savedModel);
+  //   }
+  // }, [chatData, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {

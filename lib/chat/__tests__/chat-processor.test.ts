@@ -161,35 +161,26 @@ describe("selectModel", () => {
     });
   });
 
-  // Model override for paid users
-  describe("model override (paid users)", () => {
-    it("should use selected model override for pro users", () => {
-      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe(
-        "model-sonnet-4.6",
-      );
+  // Model override for paid users — currently disabled (model selector hidden, always uses auto)
+  // TODO: restore when model selector is re-enabled
+  describe("model override ignored (model selector hidden)", () => {
+    it("should ignore selected model override and use default for agent mode", () => {
+      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe("agent-model");
     });
 
-    it("should use selected model override for ultra users", () => {
-      expect(selectModel("ask", "ultra", "sonnet-4.6")).toBe(
-        "model-sonnet-4.6",
-      );
+    it("should ignore selected model override and use default for ask mode", () => {
+      expect(selectModel("ask", "ultra", "sonnet-4.6")).toBe("ask-model");
     });
 
-    it("should use selected model override for team users", () => {
-      expect(selectModel("agent", "team", "sonnet-4.6")).toBe(
-        "model-sonnet-4.6",
-      );
+    it("should ignore selected model override for team users", () => {
+      expect(selectModel("agent", "team", "sonnet-4.6")).toBe("agent-model");
     });
 
-    it("should work with all selectable models", () => {
-      expect(selectModel("agent", "pro", "gemini-3.1-pro")).toBe(
-        "model-gemini-3.1-pro",
-      );
-      expect(selectModel("agent", "pro", "grok-4.1")).toBe("model-grok-4.1");
-      expect(selectModel("agent", "pro", "gemini-3-flash")).toBe(
-        "model-gemini-3-flash",
-      );
-      expect(selectModel("agent", "pro", "gpt-5.4")).toBe("model-gpt-5.4");
+    it("should ignore all selectable models and use defaults", () => {
+      expect(selectModel("agent", "pro", "gemini-3.1-pro")).toBe("agent-model");
+      expect(selectModel("agent", "pro", "grok-4.1")).toBe("agent-model");
+      expect(selectModel("agent", "pro", "gemini-3-flash")).toBe("agent-model");
+      expect(selectModel("agent", "pro", "gpt-5.4")).toBe("agent-model");
     });
   });
 
