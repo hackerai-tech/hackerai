@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { stripe } from "@/app/api/stripe";
-import { workos } from "@/app/api/workos";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
@@ -11,8 +10,8 @@ const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 // Helpers
 // =============================================================================
 
-/** Cancel all Stripe subscriptions for a customer and delete the customer. */
-async function cancelAndDeleteCustomer(customerId: string): Promise<void> {
+/** Cancel all active Stripe subscriptions for a customer. */
+async function cancelAllSubscriptions(customerId: string): Promise<void> {
   const subs = await stripe.subscriptions.list({
     customer: customerId,
     status: "all",
@@ -29,12 +28,57 @@ async function cancelAndDeleteCustomer(customerId: string): Promise<void> {
       );
     }
   }
+}
 
+/** Detach all payment methods from a customer to prevent future charges. */
+async function detachAllPaymentMethods(customerId: string): Promise<void> {
+  const paymentMethods = await stripe.paymentMethods.list({
+    customer: customerId,
+    limit: 100,
+  });
+
+  for (const pm of paymentMethods.data) {
+    try {
+      await stripe.paymentMethods.detach(pm.id);
+    } catch (err) {
+      console.warn(
+        `[Fraud Webhook] Failed to detach payment method ${pm.id}:`,
+        err,
+      );
+    }
+  }
+}
+
+/** Mark the Stripe customer as blocked via metadata. */
+async function markCustomerBlocked(
+  customerId: string,
+  reason: string,
+): Promise<void> {
   try {
-    await stripe.customers.del(customerId);
+    await stripe.customers.update(customerId, {
+      metadata: {
+        blocked: "true",
+        blocked_at: new Date().toISOString(),
+        blocked_reason: reason,
+      },
+    });
   } catch (err) {
     console.warn(
-      `[Fraud Webhook] Failed to delete Stripe customer ${customerId}:`,
+      `[Fraud Webhook] Failed to mark customer ${customerId} as blocked:`,
+      err,
+    );
+  }
+}
+
+/** Report a charge as fraudulent — feeds Stripe Radar's ML models. */
+async function reportChargeFraudulent(chargeId: string): Promise<void> {
+  try {
+    await stripe.charges.update(chargeId, {
+      fraud_details: { user_report: "fraudulent" },
+    });
+  } catch (err) {
+    console.warn(
+      `[Fraud Webhook] Failed to report charge ${chargeId} as fraudulent:`,
       err,
     );
   }
@@ -48,84 +92,31 @@ function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
 }
 
 /**
- * Block a fraudulent user: cancel Stripe subscription, delete Stripe customer,
- * delete WorkOS organization and user account.
+ * Block a fraudulent user without deleting anything.
+ *
+ * - Cancel all subscriptions (stops billing)
+ * - Detach all payment methods (prevents future charges)
+ * - Mark customer as blocked (metadata flag for app-layer checks)
+ * - Report charge as fraudulent (feeds Radar ML)
+ *
+ * The Stripe customer and WorkOS account are preserved for:
+ * - Dispute evidence (up to 120 days later)
+ * - Pattern analysis (identifying fraud rings)
+ * - Radar block list data (card fingerprints, email)
  */
-async function blockFraudulentUser(customerId: string): Promise<void> {
-  // Get WorkOS org from Stripe customer metadata
-  let orgId: string | null = null;
-  try {
-    const customerData = await stripe.customers.retrieve(customerId);
-    if (!customerData.deleted) {
-      orgId = (customerData as Stripe.Customer).metadata?.workOSOrganizationId;
-    }
-  } catch (err) {
-    console.warn(
-      `[Fraud Webhook] Failed to retrieve customer ${customerId}:`,
-      err,
-    );
-  }
+async function blockFraudulentUser(
+  customerId: string,
+  chargeId: string,
+  reason: string,
+): Promise<void> {
+  await cancelAllSubscriptions(customerId);
+  await detachAllPaymentMethods(customerId);
+  await markCustomerBlocked(customerId, reason);
+  await reportChargeFraudulent(chargeId);
 
-  // Cancel subscriptions and delete Stripe customer
-  await cancelAndDeleteCustomer(customerId);
-
-  if (!orgId) {
-    console.warn(
-      `[Fraud Webhook] No WorkOS org found for customer ${customerId}, skipping user block`,
-    );
-    return;
-  }
-
-  // Resolve all user IDs from the organization, then delete org and users
-  try {
-    const memberships = await workos.userManagement.listOrganizationMemberships(
-      {
-        organizationId: orgId,
-        statuses: ["active"],
-      },
-    );
-
-    const userIds = memberships.data?.map((m) => m.userId) ?? [];
-
-    // Delete the organization (removes all memberships)
-    try {
-      await workos.organizations.deleteOrganization(orgId);
-      console.log(`[Fraud Webhook] Deleted WorkOS organization ${orgId}`);
-    } catch (orgErr) {
-      console.warn(
-        `[Fraud Webhook] Failed to delete org ${orgId}, removing memberships instead:`,
-        orgErr,
-      );
-      for (const m of memberships.data ?? []) {
-        try {
-          await workos.userManagement.deleteOrganizationMembership(m.id);
-        } catch (memErr) {
-          console.warn(
-            `[Fraud Webhook] Failed to delete membership ${m.id}:`,
-            memErr,
-          );
-        }
-      }
-    }
-
-    // Delete each user account to fully block them
-    for (const userId of userIds) {
-      try {
-        await workos.userManagement.deleteUser(userId);
-        console.log(`[Fraud Webhook] Deleted WorkOS user ${userId}`);
-      } catch (userErr) {
-        console.warn(
-          `[Fraud Webhook] Failed to delete user ${userId}:`,
-          userErr,
-        );
-      }
-    }
-  } catch (err) {
-    console.error(
-      `[Fraud Webhook] Failed to resolve/block users for org ${orgId}:`,
-      err,
-    );
-  }
+  console.log(
+    `[Fraud Webhook] Blocked customer ${customerId}: subscriptions cancelled, payment methods detached, marked as blocked (${reason})`,
+  );
 }
 
 // =============================================================================
@@ -175,9 +166,10 @@ async function handleEarlyFraudWarning(
 
   // Block the user
   if (customerId) {
-    await blockFraudulentUser(customerId);
-    console.log(
-      `[Fraud Webhook] Blocked user for customer ${customerId} (early fraud warning)`,
+    await blockFraudulentUser(
+      customerId,
+      chargeId,
+      `early_fraud_warning:${warning.fraud_type}`,
     );
   }
 }
@@ -185,14 +177,17 @@ async function handleEarlyFraudWarning(
 /**
  * Handle charge.dispute.created
  *
- * Cancel subscription, delete Stripe customer, and block the user.
+ * Fraudulent disputes: block the user (cancel subs, detach cards, flag).
+ * Non-fraudulent disputes (unrecognized, duplicate, etc.): cancel subscription
+ * only — the customer may be legitimate and confused.
  */
 async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
   const chargeId =
     typeof dispute.charge === "string" ? dispute.charge : dispute.charge?.id;
+  const isFraudulent = dispute.reason === "fraudulent";
 
   console.log(
-    `[Fraud Webhook] Dispute created: ${dispute.id}, reason: ${dispute.reason}, amount: $${(dispute.amount / 100).toFixed(2)}, charge: ${chargeId}`,
+    `[Fraud Webhook] Dispute created: ${dispute.id}, reason: ${dispute.reason}, fraudulent: ${isFraudulent}, amount: $${(dispute.amount / 100).toFixed(2)}, charge: ${chargeId}`,
   );
 
   if (!chargeId) return;
@@ -207,11 +202,20 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
     return;
   }
 
-  // Block the user
-  await blockFraudulentUser(customerId);
-  console.log(
-    `[Fraud Webhook] Blocked user for customer ${customerId} (dispute ${dispute.id})`,
-  );
+  if (isFraudulent) {
+    // Stolen card — block fully but preserve everything for evidence
+    await blockFraudulentUser(
+      customerId,
+      chargeId,
+      `dispute_fraudulent:${dispute.id}`,
+    );
+  } else {
+    // Legitimate customer confused about the charge — just stop billing
+    await cancelAllSubscriptions(customerId);
+    console.log(
+      `[Fraud Webhook] Cancelled subscriptions for customer ${customerId} (non-fraudulent dispute ${dispute.id}, reason: ${dispute.reason})`,
+    );
+  }
 }
 
 // =============================================================================

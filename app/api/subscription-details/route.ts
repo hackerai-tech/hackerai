@@ -49,6 +49,14 @@ export const POST = async (req: NextRequest) => {
       );
     }
 
+    // Reject blocked customers (flagged by fraud webhook)
+    if (matchingCustomer.metadata.blocked === "true") {
+      return NextResponse.json(
+        { error: "This account has been suspended due to a payment dispute" },
+        { status: 403 },
+      );
+    }
+
     // Get target price
     const targetPrices = await stripe.prices.list({
       lookup_keys: [targetPlan || "pro-monthly-plan"],
