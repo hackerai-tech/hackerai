@@ -32,6 +32,9 @@ async function main(url: string, key: string, id: string) {
 }
 
 main(convexUrl, serviceKey, buildId).catch((err) => {
-  console.error("[update-app-version] Failed to update app version:", err);
-  process.exit(1);
+  console.warn(
+    "[update-app-version] Failed to update app version (non-fatal):",
+    err,
+  );
+  process.exit(0);
 });
