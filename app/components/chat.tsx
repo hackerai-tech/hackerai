@@ -378,8 +378,12 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
-      if (error instanceof ChatSDKError && error.type !== "rate_limit") {
-        toast.error(error.message);
+      if (error instanceof ChatSDKError) {
+        if (error.type !== "rate_limit") {
+          toast.error(error.message);
+        }
+      } else {
+        toast.error("Something went wrong. Please refresh and try again.");
       }
     },
   });
