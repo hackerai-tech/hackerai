@@ -416,6 +416,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           if (!response.ok) {
             const errText = await response.text().catch(() => "");
             addToolOutput({
+              tool: "run_terminal_cmd",
               toolCallId: toolCall.toolCallId,
               output: {
                 result: {
@@ -438,6 +439,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             [result.stdout, result.stderr].filter(Boolean).join("\n") || "";
 
           addToolOutput({
+            tool: "run_terminal_cmd",
             toolCallId: toolCall.toolCallId,
             output: {
               result: {
@@ -453,6 +455,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           const message =
             err instanceof Error ? err.message : String(err);
           addToolOutput({
+            tool: "run_terminal_cmd",
             toolCallId: toolCall.toolCallId,
             output: {
               result: {
