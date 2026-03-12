@@ -236,9 +236,21 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
-    // If preference is Tauri desktop, use direct local execution
-    if (this.sandboxPreference === "tauri" && this.tauriConnectionInfo) {
-      return this.getTauriSandbox();
+    // In Tauri browser relay mode, the primary tool (run_terminal_cmd) is
+    // handled client-side. If other tools call getSandbox(), try to use
+    // Tauri directly (works in dev/desktop) or fall back to E2B.
+    if (this.sandboxPreference === "tauri") {
+      if (this.tauriConnectionInfo) {
+        try {
+          return await this.getTauriSandbox();
+        } catch {
+          // Server can't reach Tauri (browser relay mode on Vercel).
+          // Fall through to E2B for non-terminal tools.
+          return this.getE2BSandbox();
+        }
+      }
+      // No Tauri connection info — fall back to E2B
+      return this.getE2BSandbox();
     }
 
     // If preference is E2B, always use E2B
@@ -402,23 +414,18 @@ export class HybridSandboxManager implements SandboxManager {
       return null;
     }
 
-    if (this.sandboxPreference === "tauri" && this.tauriConnectionInfo) {
-      // Verify the Tauri command server is actually reachable before emitting
-      // desktop prompt context. On hosted/worker deployments, the health check
-      // will fail and we should fall back to the default E2B prompt (null).
-      const sandbox = new TauriSandbox(this.tauriConnectionInfo);
-      const isReachable = await sandbox.healthCheck();
-      if (!isReachable) {
-        return null;
-      }
-
+    if (this.sandboxPreference === "tauri") {
+      // In browser relay mode, the server can't reach the Tauri desktop app
+      // directly (it's on the user's machine, not on Vercel). Skip the health
+      // check — the browser handles connectivity to Tauri's local HTTP server.
+      // We always emit the desktop context so the AI knows it's running locally.
       this.currentConnectionMode = "dangerous";
       this.currentConnectionName = "Desktop";
       return `<sandbox_environment>
 IMPORTANT: You are connected to the user's LOCAL machine via the HackerAI Desktop app. Commands run directly on the host OS.
 
 System Environment:
-- Mode: Direct execution (Tauri Desktop)
+- Mode: Direct execution (Tauri Desktop, browser relay)
 - User attachments: /tmp/hackerai-upload
 
 File References: When referencing files in your response:

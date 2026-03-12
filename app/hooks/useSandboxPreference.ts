@@ -23,17 +23,13 @@ export function useSandboxPreference(): SandboxPreferenceState {
     useState<SandboxPreference>(() => {
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
-      // "tauri" is no longer a valid sandbox preference (local execution
-      // doesn't work in production Tauri builds). Treat it as unset.
-      if (stored && stored !== "tauri") return stored as SandboxPreference;
+      if (stored) return stored as SandboxPreference;
       return "e2b";
     });
 
-  // Detect Tauri environment for features that use the local command server
-  // directly from the frontend (e.g. saveFileToLocal, revealFileInDir).
-  // NOTE: We no longer set sandboxPreference to "tauri" — local command
-  // execution via the server-side sandbox doesn't work in production Tauri
-  // builds because the remote API can't reach 127.0.0.1 on the user's machine.
+  // Detect Tauri environment and auto-select "tauri" sandbox preference.
+  // Commands are executed client-side: the browser relays tool calls to the
+  // Tauri desktop app's local HTTP command server (browser relay mode).
   useEffect(() => {
     let cancelled = false;
 
@@ -48,16 +44,14 @@ export function useSandboxPreference(): SandboxPreferenceState {
 
         setTauriCmdServer(info);
 
-        // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
-        // In production Tauri builds, the remote API server cannot reach 127.0.0.1 on the user's machine.
-        // Only default to "tauri" when the user hasn't explicitly chosen yet
-        // const savedPref =
-        //   typeof window !== "undefined"
-        //     ? localStorage.getItem("sandbox-preference")
-        //     : null;
-        // if (!savedPref || savedPref === "tauri") {
-        //   setSandboxPreferenceState("tauri");
-        // }
+        // Default to "tauri" when the user hasn't explicitly chosen a different sandbox
+        const savedPref =
+          typeof window !== "undefined"
+            ? localStorage.getItem("sandbox-preference")
+            : null;
+        if (!savedPref || savedPref === "tauri") {
+          setSandboxPreferenceState("tauri");
+        }
       } catch {
         // Not in Tauri environment — leave defaults
       }

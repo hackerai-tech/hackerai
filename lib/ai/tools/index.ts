@@ -7,6 +7,7 @@ import {
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
+import { createRunTerminalCmdClientSide } from "./run-terminal-cmd-client";
 import { createGetTerminalFiles } from "./get-terminal-files";
 import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
@@ -116,8 +117,16 @@ export const createTools = (
   };
 
   // Create all available tools
+  // When sandboxPreference is "tauri", use client-side tool execution.
+  // The Vercel server can't reach localhost on the user's machine, so the browser
+  // acts as a relay — intercepting tool calls and forwarding them to the Tauri
+  // desktop app's local HTTP command server.
+  const isTauriBrowserRelay = sandboxPreference === "tauri";
+
   const allTools = {
-    run_terminal_cmd: createRunTerminalCmd(context),
+    run_terminal_cmd: isTauriBrowserRelay
+      ? createRunTerminalCmdClientSide()
+      : createRunTerminalCmd(context),
     // Tauri desktop: files are already on the user's machine, no need to upload to S3
     ...(sandboxPreference !== "tauri" && {
       get_terminal_files: createGetTerminalFiles(context),

@@ -1,7 +1,10 @@
 "use client";
 
 import { useChat } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import {
+  DefaultChatTransport,
+  lastAssistantMessageIsCompleteWithToolCalls,
+} from "ai";
 import {
   useRef,
   useEffect,
@@ -127,6 +130,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const todosRef = useLatestRef(todos);
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
+  // Use ref for Tauri command server info in onToolCall callback
+  const tauriCmdServerRef = useLatestRef(tauriCmdServer);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -202,6 +207,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     error,
     regenerate,
     resumeStream,
+    addToolOutput,
   } = useChat({
     id: chatId,
     messages: serverMessages,
@@ -266,6 +272,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         };
       },
     }),
+
+    // Enable auto-submission when client-side tool results are available.
+    // This is needed for Tauri browser relay mode: when the browser executes
+    // a command locally via the Tauri desktop app, the result is added via
+    // addToolOutput, and this option triggers the next server request automatically.
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
@@ -346,7 +358,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         toast.info(message, { duration: 5000 });
       }
     },
-    onToolCall: ({ toolCall }) => {
+    onToolCall: async ({ toolCall }) => {
       if (toolCall.toolName === "todo_write" && toolCall.input) {
         const todoInput = toolCall.input as { merge?: boolean; todos: Todo[] };
         if (!todoInput.todos) return;
@@ -367,6 +379,89 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         } else {
           // Partial update: merge
           mergeTodos(todoInput.todos);
+        }
+      }
+
+      // Tauri browser relay: execute commands locally via the desktop app's
+      // HTTP command server. The tool has no server-side `execute`, so the
+      // browser handles it here and provides the result via addToolOutput.
+      if (
+        toolCall.toolName === "run_terminal_cmd" &&
+        sandboxPreferenceRef.current === "tauri" &&
+        tauriCmdServerRef.current
+      ) {
+        const { port, token } = tauriCmdServerRef.current;
+        const input = toolCall.args as {
+          command: string;
+          is_background: boolean;
+          timeout?: number;
+        };
+
+        try {
+          const response = await fetch(
+            `http://127.0.0.1:${port}/execute`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                command: input.command,
+                timeout_ms: (input.timeout ?? 60) * 1000,
+              }),
+            },
+          );
+
+          if (!response.ok) {
+            const errText = await response.text().catch(() => "");
+            addToolOutput({
+              toolCallId: toolCall.toolCallId,
+              output: {
+                result: {
+                  output: "",
+                  exitCode: 1,
+                  error: `Desktop app error (${response.status}): ${errText}`,
+                },
+              },
+            });
+            return;
+          }
+
+          const result = (await response.json()) as {
+            stdout: string;
+            stderr: string;
+            exit_code: number;
+          };
+
+          const output =
+            [result.stdout, result.stderr].filter(Boolean).join("\n") || "";
+
+          addToolOutput({
+            toolCallId: toolCall.toolCallId,
+            output: {
+              result: {
+                output,
+                exitCode: result.exit_code,
+                ...(result.exit_code !== 0 && result.stderr
+                  ? { error: result.stderr }
+                  : {}),
+              },
+            },
+          });
+        } catch (err) {
+          const message =
+            err instanceof Error ? err.message : String(err);
+          addToolOutput({
+            toolCallId: toolCall.toolCallId,
+            output: {
+              result: {
+                output: "",
+                exitCode: 1,
+                error: `Failed to reach HackerAI Desktop app: ${message}. Make sure the desktop app is running.`,
+              },
+            },
+          });
         }
       }
     },
