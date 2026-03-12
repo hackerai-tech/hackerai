@@ -550,6 +550,14 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                         getStartTime: () => streamStartTime,
                         onFired: () => {
                           stoppedDueToTimeBudget = true;
+                          logger.info(
+                            "Workflow time budget exceeded, checkpointing",
+                            {
+                              chatId,
+                              elapsedMs: Date.now() - streamStartTime,
+                              budgetMs: timeBudgetMs,
+                            },
+                          );
                         },
                       }),
                     ]
@@ -601,6 +609,14 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               streamFinishReason = "timeout";
             } else if (stoppedDueToTimeBudget) {
               streamFinishReason = WORKFLOW_CHECKPOINT_FINISH_REASON;
+              logger.info(
+                "Stream finishing due to workflow checkpoint (time budget)",
+                {
+                  chatId,
+                  userId,
+                  mode,
+                },
+              );
             } else if (stoppedDueToTokenExhaustion) {
               streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
             } else {
