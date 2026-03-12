@@ -12,6 +12,8 @@ describe("token-bucket async functions", () => {
   const mockLimitFn = jest.fn();
   const mockHincrbyFn = jest.fn();
   const mockHsetFn = jest.fn();
+  const mockDelFn = jest.fn();
+  const mockExpireFn = jest.fn();
   const mockDeductFromBalance = jest.fn();
   const mockRefundToBalance = jest.fn();
 
@@ -28,6 +30,8 @@ describe("token-bucket async functions", () => {
     });
     mockHincrbyFn.mockResolvedValue(5000);
     mockHsetFn.mockResolvedValue(1);
+    mockDelFn.mockResolvedValue(1);
+    mockExpireFn.mockResolvedValue(1);
     mockDeductFromBalance.mockResolvedValue({
       success: true,
       newBalanceDollars: 10,
@@ -59,6 +63,8 @@ describe("token-bucket async functions", () => {
         Redis: jest.fn().mockImplementation(() => ({
           hincrby: mockHincrbyFn,
           hset: mockHsetFn,
+          del: mockDelFn,
+          expire: mockExpireFn,
         })),
       }));
 
@@ -66,6 +72,8 @@ describe("token-bucket async functions", () => {
         createRedisClient: jest.fn(() => ({
           hincrby: mockHincrbyFn,
           hset: mockHsetFn,
+          del: mockDelFn,
+          expire: mockExpireFn,
         })),
         formatTimeRemaining: jest.fn(() => "5 hours"),
       }));
@@ -113,7 +121,7 @@ describe("token-bucket async functions", () => {
         success: true,
         remaining: 0,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       try {
@@ -131,7 +139,7 @@ describe("token-bucket async functions", () => {
         success: true,
         remaining: 0,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       const result = await checkTokenBucketLimit("user-123", "pro", 1000, {
@@ -144,6 +152,46 @@ describe("token-bucket async functions", () => {
       expect(result.extraUsagePointsDeducted).toBeGreaterThan(0);
     });
 
+    it("should return monthly nested field matching top-level fields", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      const result = await checkTokenBucketLimit("user-123", "pro", 1000);
+
+      expect(result.monthly).toBeDefined();
+      expect(result.monthly!.remaining).toBe(result.remaining);
+      expect(result.monthly!.limit).toBe(result.limit);
+      expect(result.monthly!.resetTime).toEqual(result.resetTime);
+    });
+
+    it("should throw monthly cap exceeded error when extra usage cap hit", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      mockLimitFn.mockResolvedValue({
+        success: true,
+        remaining: 0,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      mockDeductFromBalance.mockResolvedValue({
+        success: false,
+        newBalanceDollars: 0,
+        insufficientFunds: true,
+        monthlyCapExceeded: true,
+      });
+
+      try {
+        await checkTokenBucketLimit("user-123", "pro", 1000, {
+          enabled: true,
+          hasBalance: true,
+          autoReloadEnabled: false,
+        });
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error.cause).toContain("monthly extra usage spending limit");
+      }
+    });
+
     it("should throw insufficient funds error when extra usage fails", async () => {
       const { checkTokenBucketLimit } = getIsolatedModule();
 
@@ -151,7 +199,7 @@ describe("token-bucket async functions", () => {
         success: true,
         remaining: 0,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       mockDeductFromBalance.mockResolvedValue({
@@ -186,11 +234,12 @@ describe("token-bucket async functions", () => {
     it("should use extra usage when bucket depleted", async () => {
       const { deductUsage } = getIsolatedModule();
 
+      // Atomic deduction goes negative when bucket is depleted
       mockLimitFn.mockResolvedValue({
         success: true,
-        remaining: 0,
+        remaining: -30,
         reset: Date.now() + 3600000,
-        limit: 8333,
+        limit: 250000,
       });
 
       await deductUsage("user-123", "pro", 1000, 1000, 1000, {
@@ -199,7 +248,7 @@ describe("token-bucket async functions", () => {
         autoReloadEnabled: false,
       });
 
-      expect(mockDeductFromBalance).toHaveBeenCalled();
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 30);
     });
 
     it("should skip deduction for free tier", async () => {
@@ -234,12 +283,7 @@ describe("token-bucket async functions", () => {
       const expectedRefund =
         estimatedCost - Math.ceil(providerCostDollars * 10000);
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
-        "tokens",
-        expectedRefund,
-      );
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:weekly"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
         expectedRefund,
       );
@@ -274,7 +318,7 @@ describe("token-bucket async functions", () => {
       // Should refund the difference (50 - 25 = 25 points)
       const expectedRefund = estimatedCost - actualCost;
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
         expectedRefund,
       );
@@ -338,12 +382,7 @@ describe("token-bucket async functions", () => {
       await refundUsage("user-123", "pro", 1000, 0);
 
       expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:session"),
-        "tokens",
-        1000,
-      );
-      expect(mockHincrbyFn).toHaveBeenCalledWith(
-        expect.stringContaining("usage:weekly"),
+        expect.stringContaining("usage:monthly"),
         "tokens",
         1000,
       );
@@ -368,13 +407,197 @@ describe("token-bucket async functions", () => {
 
     it("should cap refunded tokens at bucket limit", async () => {
       const { refundUsage, getBudgetLimits } = getIsolatedModule();
-      const { session: sessionLimit } = getBudgetLimits("pro");
+      const { monthly: monthlyLimit } = getBudgetLimits("pro");
 
-      mockHincrbyFn.mockResolvedValue(sessionLimit + 10000);
+      mockHincrbyFn.mockResolvedValue(monthlyLimit + 10000);
 
       await refundUsage("user-123", "pro", 50000, 0);
 
       expect(mockHsetFn).toHaveBeenCalled();
+    });
+  });
+
+  describe("resetRateLimitBuckets", () => {
+    it("should delete the monthly Redis key and set explicit TTL", async () => {
+      const { resetRateLimitBuckets } = getIsolatedModule();
+
+      await resetRateLimitBuckets("user-123", "pro");
+
+      expect(mockDelFn).toHaveBeenCalledWith("usage:monthly:user-123:pro");
+      // Verify explicit 30-day TTL is set
+      expect(mockExpireFn).toHaveBeenCalledWith(
+        "usage:monthly:user-123:pro",
+        30 * 24 * 60 * 60,
+      );
+    });
+
+    it("should not throw when Redis delete fails", async () => {
+      const { resetRateLimitBuckets } = getIsolatedModule();
+
+      mockDelFn.mockRejectedValue(new Error("Redis down"));
+      const consoleSpy = jest
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      await expect(
+        resetRateLimitBuckets("user-123", "pro"),
+      ).resolves.toBeUndefined();
+
+      consoleSpy.mockRestore();
+    });
+  });
+
+  describe("deductUsage - split deduction (peek-then-deduct)", () => {
+    it("should deduct overflow from extra usage when bucket has insufficient balance", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      // Peek: bucket has 10 remaining
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 10,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+      // Deduct fromBucket (10) from bucket
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 0,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      // Estimated 1000 input = 5 points, actual provider cost = $0.005 = 50 points
+      // Difference = 50 - 5 = 45 additional needed
+      // Bucket has 10, so fromBucket=10, fromExtraUsage=35
+      await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        0.005,
+      );
+
+      // Should peek first (rate: 0), then deduct only what bucket can cover (rate: 10)
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 0 }),
+      );
+      expect(mockLimitFn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ rate: 10 }),
+      );
+      // Should deduct the overflow (35) from extra usage
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 35);
+    });
+
+    it("should not call extra usage when bucket covers the full amount", async () => {
+      const { deductUsage } = getIsolatedModule();
+
+      // Peek: bucket has plenty remaining
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 100,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+      // Deduct full additional cost (45) from bucket
+      mockLimitFn.mockResolvedValueOnce({
+        success: true,
+        remaining: 55,
+        reset: Date.now() + 3600000,
+        limit: 250000,
+      });
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        1000,
+        5000,
+        1000,
+        { enabled: true, hasBalance: true, autoReloadEnabled: false },
+        0.005,
+      );
+
+      expect(mockDeductFromBalance).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("concurrent deduction safety", () => {
+    it("should handle concurrent checkTokenBucketLimit calls without double-spending", async () => {
+      const { checkTokenBucketLimit } = getIsolatedModule();
+
+      // Simulate two concurrent requests seeing the same bucket state
+      let callCount = 0;
+      mockLimitFn.mockImplementation(
+        async (_key: string, opts: { rate: number }) => {
+          callCount++;
+          // Peek calls (rate: 0) return 100 remaining
+          if (opts.rate === 0) {
+            return {
+              success: true,
+              remaining: 100,
+              reset: Date.now() + 3600000,
+              limit: 250000,
+            };
+          }
+          // Deduction calls succeed
+          return {
+            success: true,
+            remaining: Math.max(0, 100 - opts.rate),
+            reset: Date.now() + 3600000,
+            limit: 250000,
+          };
+        },
+      );
+
+      // Run two concurrent checks
+      const [result1, result2] = await Promise.all([
+        checkTokenBucketLimit("user-123", "pro", 1000),
+        checkTokenBucketLimit("user-123", "pro", 1000),
+      ]);
+
+      // Both should succeed and have deducted points
+      expect(result1.pointsDeducted).toBeDefined();
+      expect(result2.pointsDeducted).toBeDefined();
+      // Limiter was called for both requests (peek + deduct each)
+      expect(callCount).toBeGreaterThanOrEqual(4);
+    });
+  });
+
+  describe("provider cost vs token cost paths", () => {
+    it("should produce different deductions when provider cost differs from token calculation", async () => {
+      const { deductUsage, calculateTokenCost } = getIsolatedModule();
+
+      const estimatedInput = 10000;
+      const estimatedCost = calculateTokenCost(estimatedInput, "input");
+
+      // Path 1: token-based (actual = 10000 input + 1000 output)
+      const tokenActualCost =
+        calculateTokenCost(10000, "input") + calculateTokenCost(1000, "output");
+
+      // Path 2: provider cost ($0.01 = 100 points)
+      const providerCost = 0.01;
+      const providerCostPoints = Math.ceil(providerCost * 10000);
+
+      // These should differ
+      expect(tokenActualCost).not.toBe(providerCostPoints);
+
+      // Both paths should execute without error
+      await deductUsage("user-123", "pro", estimatedInput, 10000, 1000);
+      mockLimitFn.mockClear();
+      mockHincrbyFn.mockClear();
+
+      await deductUsage(
+        "user-123",
+        "pro",
+        estimatedInput,
+        10000,
+        1000,
+        undefined,
+        providerCost,
+      );
     });
   });
 

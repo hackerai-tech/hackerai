@@ -17,10 +17,13 @@ import {
   isSidebarTerminal,
   isSidebarWebSearch,
   isSidebarNotes,
+  isSidebarSharedFiles,
   type SidebarContent,
   type ChatStatus,
   type NoteCategory,
 } from "@/types/chat";
+import type { Id } from "@/convex/_generated/dataModel";
+import { FilePartRenderer } from "./FilePartRenderer";
 import {
   getCategoryColor,
   getLanguageFromPath,
@@ -171,6 +174,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const isTerminal = isSidebarTerminal(sidebarContent);
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
+  const isSharedFiles = isSidebarSharedFiles(sidebarContent);
 
   // Use resolved versions for display metadata so streaming updates are reflected
   const displayContent =
@@ -271,6 +275,10 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Notes
                     </div>
+                  ) : isSharedFiles ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Shared Files
+                    </div>
                   ) : isFile && resolvedFile?.action === "searching" ? (
                     <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                       Search Results
@@ -283,7 +291,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                 </div>
 
                 {/* Action buttons - far right */}
-                {!isWebSearch && !isNotes && (
+                {!isWebSearch && !isNotes && !isSharedFiles && (
                   <CodeActionButtons
                     content={
                       isFile && resolvedFile
@@ -415,6 +423,45 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                                     </div>
                                   )}
                                 </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      {isSharedFiles && (
+                        <div className="flex-1 min-h-0 h-full overflow-y-auto">
+                          <div className="flex flex-col gap-2 px-4 py-3">
+                            {sidebarContent.isExecuting &&
+                            sidebarContent.files.length === 0 ? (
+                              <div className="flex items-center justify-center py-8">
+                                <div className="text-muted-foreground text-sm">
+                                  Preparing files...
+                                </div>
+                              </div>
+                            ) : sidebarContent.files.length === 0 ? (
+                              <div className="flex items-center justify-center py-8">
+                                <div className="text-muted-foreground text-sm">
+                                  No files shared
+                                </div>
+                              </div>
+                            ) : (
+                              sidebarContent.files.map((file, index) => (
+                                <FilePartRenderer
+                                  key={file.fileId || `file-${index}`}
+                                  part={{
+                                    fileId: file.fileId as
+                                      | Id<"files">
+                                      | undefined,
+                                    s3Key: file.s3Key,
+                                    storageId: file.storageId,
+                                    name: file.name,
+                                    filename: file.name,
+                                    mediaType: file.mediaType,
+                                  }}
+                                  partIndex={index}
+                                  messageId={sidebarContent.toolCallId}
+                                  totalFileParts={sidebarContent.files.length}
+                                />
                               ))
                             )}
                           </div>

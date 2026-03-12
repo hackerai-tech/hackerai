@@ -32,6 +32,7 @@ import {
   deductUsage,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
+import { UsageTracker } from "@/lib/usage-tracker";
 import { getExtraUsageBalance } from "@/lib/extra-usage";
 import {
   countMessagesTokens,
@@ -86,6 +87,7 @@ import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
   createSummarizationCompletedPart,
+  writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
 import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
@@ -95,6 +97,7 @@ import {
   getUserFriendlyProviderError,
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 
 function getStreamContext() {
   try {
@@ -129,7 +132,9 @@ export const createChatHandler = (
         regenerate,
         temporary,
         sandboxPreference,
+        tauriCmdServer,
         selectedModel: rawSelectedModel,
+        isAutoContinue,
       }: {
         messages: UIMessage[];
         mode: ChatMode;
@@ -138,7 +143,9 @@ export const createChatHandler = (
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
+        tauriCmdServer?: { port: number; token: string };
         selectedModel?: string;
+        isAutoContinue?: boolean;
       } = await req.json();
 
       const selectedModelOverride: SelectedModel | undefined =
@@ -212,6 +219,7 @@ export const createChatHandler = (
           messages: truncatedMessages,
           regenerate,
           chat,
+          isHidden: isAutoContinue ? true : undefined,
         });
       }
 
@@ -318,8 +326,7 @@ export const createChatHandler = (
         {
           pointsDeducted: rateLimitInfo.pointsDeducted,
           extraUsagePointsDeducted: rateLimitInfo.extraUsagePointsDeducted,
-          session: rateLimitInfo.session,
-          weekly: rateLimitInfo.weekly,
+          monthly: rateLimitInfo.monthly,
           remaining: rateLimitInfo.remaining,
           subscription,
         },
@@ -368,6 +375,7 @@ export const createChatHandler = (
             getTodoManager,
             getFileAccumulator,
             sandboxManager,
+            getSandboxSessionCost,
           } = createTools(
             userId,
             chatId,
@@ -381,6 +389,12 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
+            undefined, // appendMetadataStream
+            (costDollars: number) => {
+              usageTracker.providerCost += costDollars;
+              chatLogger?.getBuilder().addToolCost(costDollars);
+            },
+            tauriCmdServer,
           );
 
           // Helper to send file metadata via stream for resumable stream clients
@@ -521,30 +535,42 @@ export const createChatHandler = (
           const fallbackModel =
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
 
-          // Accumulated usage across all steps for deduction
-          let accumulatedInputTokens = 0;
-          let accumulatedOutputTokens = 0;
-          let accumulatedProviderCost = 0;
+          const usageTracker = new UsageTracker();
           let hasDeductedUsage = false;
 
-          // Helper to deduct accumulated usage (called from multiple exit points)
           const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
-            if (accumulatedInputTokens > 0 || accumulatedOutputTokens > 0) {
-              hasDeductedUsage = true;
-              await deductUsage(
-                userId,
-                subscription,
-                estimatedInputTokens,
-                accumulatedInputTokens,
-                accumulatedOutputTokens,
-                extraUsageConfig,
-                accumulatedProviderCost > 0
-                  ? accumulatedProviderCost
-                  : undefined,
-                selectedModel,
+            // Add E2B sandbox session cost (duration-based)
+            const sandboxCost = getSandboxSessionCost();
+            if (sandboxCost > 0) {
+              usageTracker.providerCost += sandboxCost;
+              chatLogger?.getBuilder().addToolCost(sandboxCost);
+              console.log(
+                `[sandbox-cost] E2B session cost: $${sandboxCost.toFixed(6)}`,
               );
             }
+            if (!usageTracker.hasUsage) return;
+            hasDeductedUsage = true;
+            await deductUsage(
+              userId,
+              subscription,
+              estimatedInputTokens,
+              usageTracker.inputTokens,
+              usageTracker.outputTokens,
+              extraUsageConfig,
+              usageTracker.providerCost > 0
+                ? usageTracker.providerCost
+                : undefined,
+              selectedModel,
+            );
+            usageTracker.log({
+              userId,
+              selectedModel,
+              selectedModelOverride,
+              responseModel,
+              configuredModelId,
+              rateLimitInfo,
+            });
           };
 
           // Helper to create streamText with a given model (reused for retry)
@@ -575,6 +601,13 @@ export const createChatHandler = (
                       ctxSystemTokens,
                       ctxMaxTokens,
                       providerInputTokens: lastStepInputTokens,
+                      chatSystemPrompt: currentSystemPrompt,
+                      tools,
+                      providerOptions: buildProviderOptions(
+                        isReasoningModel,
+                        subscription,
+                        userId,
+                      ),
                     });
 
                     if (
@@ -585,6 +618,22 @@ export const createChatHandler = (
                       summarizationParts.push(
                         createSummarizationCompletedPart(),
                       );
+                      if (result.summarizationUsage) {
+                        usageTracker.inputTokens +=
+                          result.summarizationUsage.inputTokens;
+                        usageTracker.outputTokens +=
+                          result.summarizationUsage.outputTokens;
+                        usageTracker.summarizationOutputTokens +=
+                          result.summarizationUsage.outputTokens;
+                        usageTracker.cacheReadTokens +=
+                          result.summarizationUsage.cacheReadTokens || 0;
+                        usageTracker.cacheWriteTokens +=
+                          result.summarizationUsage.cacheWriteTokens || 0;
+                        if (result.summarizationUsage.cost) {
+                          usageTracker.providerCost +=
+                            result.summarizationUsage.cost;
+                        }
+                      }
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
                       }
@@ -650,6 +699,10 @@ export const createChatHandler = (
                 ? [
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
+                      threshold: Math.floor(
+                        getMaxTokensForSubscription(subscription) *
+                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                      ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: () => hasSummarized,
                       onFired: () => {
@@ -679,17 +732,11 @@ export const createChatHandler = (
                 }
               },
               onStepFinish: async ({ usage }) => {
-                // Accumulate usage from each step (deduction happens in UI stream's onFinish)
                 if (usage) {
-                  accumulatedInputTokens += usage.inputTokens || 0;
-                  accumulatedOutputTokens += usage.outputTokens || 0;
+                  usageTracker.accumulateStep(
+                    usage as Parameters<typeof usageTracker.accumulateStep>[0],
+                  );
                   lastStepInputTokens = usage.inputTokens || 0;
-                  // Provider cost when available; deductUsage falls back to token-based calculation
-                  const stepCost = (usage as { raw?: { cost?: number } }).raw
-                    ?.cost;
-                  if (stepCost) {
-                    accumulatedProviderCost += stepCost;
-                  }
                 }
               },
               onFinish: async ({ finishReason, usage, response }) => {
@@ -1142,6 +1189,10 @@ export const createChatHandler = (
                       usage: resolvedUsage ?? streamUsage,
                       updateOnly:
                         isAborted && !isPreemptiveAbort ? true : undefined,
+                      isHidden:
+                        isAutoContinue && processedMessage.role === "user"
+                          ? true
+                          : undefined,
                     });
                   }
                   logStep("save_messages", stepStart);
@@ -1185,11 +1236,18 @@ export const createChatHandler = (
                   writeContextUsage(writer, {
                     ...ctxUsage,
                     messagesTokens:
-                      ctxUsage.messagesTokens + accumulatedOutputTokens,
+                      ctxUsage.messagesTokens + usageTracker.streamOutputTokens,
                   });
                 }
 
-                // Deduct accumulated usage if not already done
+                if (
+                  stoppedDueToTokenExhaustion &&
+                  isAgentMode(mode) &&
+                  !temporary
+                ) {
+                  writeAutoContinue(writer);
+                }
+
                 await deductAccumulatedUsage();
               },
               sendReasoning: true,

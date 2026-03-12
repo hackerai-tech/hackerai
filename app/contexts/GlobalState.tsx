@@ -18,7 +18,8 @@ import type {
   QueueBehavior,
   SandboxPreference,
 } from "@/types/chat";
-import { isChatMode, isSelectedModel } from "@/types/chat";
+// import { isSelectedModel } from "@/types/chat";
+import { isChatMode } from "@/types/chat";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/utils/todo-utils";
 import type { UploadedFileState } from "@/types/file";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { SubscriptionTier } from "@/types";
@@ -34,11 +36,10 @@ import { toast } from "sonner";
 import {
   readChatMode,
   writeChatMode,
-  readSelectedModelForMode,
-  writeSelectedModelForMode,
+  // readSelectedModelForMode,
+  // writeSelectedModelForMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
-
 interface GlobalStateType {
   // Input state
   input: string;
@@ -110,6 +111,12 @@ interface GlobalStateType {
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
 
+  // Tauri command server info (desktop app only)
+  tauriCmdServer: {
+    port: number;
+    token: string;
+  } | null;
+
   // Model selection
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
@@ -163,7 +170,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
-    // Agent-Long is hidden for now; normalize to Agent
     if (saved === "agent-long") return "agent";
     return saved;
   });
@@ -177,12 +183,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     writeChatMode(chatMode);
   }, [chatMode]);
 
-  // Agent-Long is hidden for now; if user has it selected (e.g. from chat data), switch to Agent
-  useEffect(() => {
-    if (chatMode === "agent-long") {
-      setChatMode("agent");
-    }
-  }, [chatMode]);
   // Initialize chat sidebar state
   const [chatSidebarOpen, setChatSidebarOpen] = useState(() =>
     chatSidebarStorage.get(isMobile ?? false),
@@ -201,6 +201,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     [],
   );
   const [subscription, setSubscription] = useState<SubscriptionTier>("free");
+  const setSubscriptionWithNormalize = useCallback((tier: SubscriptionTier) => {
+    setSubscription(tier);
+  }, []);
   const [isCheckingProPlan, setIsCheckingProPlan] = useState(false);
   const chatResetRef = useRef<(() => void) | null>(null);
 
@@ -223,12 +226,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return "queue"; // Default: queue after current message completes
   });
 
-  // Sandbox preference (persisted to localStorage)
-  const [sandboxPreference, setSandboxPreferenceState] =
-    useState<SandboxPreference>(() => {
-      if (typeof window === "undefined") return "e2b";
-      return localStorage.getItem("sandbox-preference") || "e2b";
-    });
+  // Tauri detection + sandbox preference (co-located in a custom hook)
+  const { tauriCmdServer, sandboxPreference, setSandboxPreference } =
+    useSandboxPreference();
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -237,41 +237,19 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [queueBehavior]);
 
-  // Persist sandbox preference to localStorage
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      localStorage.setItem("sandbox-preference", sandboxPreference);
-    }
-  }, [sandboxPreference]);
-
-  // Model selection (persisted per-mode to localStorage)
-  const getModeKey = (m: ChatMode): "ask" | "agent" =>
-    m === "agent" || m === "agent-long" ? "agent" : "ask";
-
-  const [selectedModel, setSelectedModelState] = useState<SelectedModel>(() => {
-    const modeKey = getModeKey(chatMode);
-    const saved = readSelectedModelForMode(modeKey);
-    return isSelectedModel(saved) ? saved : "auto";
-  });
-
-  // When chat mode changes, load the saved model preference for that mode
-  const modeJustChanged = useRef(false);
-  useEffect(() => {
-    modeJustChanged.current = true;
-    const modeKey = getModeKey(chatMode);
-    const saved = readSelectedModelForMode(modeKey);
-    setSelectedModelState(isSelectedModel(saved) ? saved : "auto");
-  }, [chatMode]);
-
-  // Persist model selection to localStorage for the current mode
-  useEffect(() => {
-    if (modeJustChanged.current) {
-      modeJustChanged.current = false;
-      return;
-    }
-    const modeKey = getModeKey(chatMode);
-    writeSelectedModelForMode(modeKey, selectedModel);
-  }, [selectedModel, chatMode]);
+  // Model selection — currently forced to "auto" while model selector is hidden.
+  // TODO: restore localStorage persistence and mode-change syncing when re-enabled
+  // const getModeKey = (m: ChatMode): "ask" | "agent" =>
+  //   m === "agent" || m === "agent-long" ? "agent" : "ask";
+  // const [selectedModel, setSelectedModelState] = useState<SelectedModel>(() => {
+  //   const modeKey = getModeKey(chatMode);
+  //   const saved = readSelectedModelForMode(modeKey);
+  //   return isSelectedModel(saved) ? saved : "auto";
+  // });
+  // useEffect(() => { ... load saved model on mode change ... }, [chatMode]);
+  // useEffect(() => { ... persist model to localStorage ... }, [selectedModel, chatMode]);
+  const [selectedModel, setSelectedModelState] =
+    useState<SelectedModel>("auto");
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -318,7 +296,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, []); // Empty dependency array = runs once on mount
 
   // Derive subscription tier from current token entitlements
-  // Prefer normalized entitlements ("pro-plan", "ultra-plan"); fall back to monthly/yearly keys for backward compatibility
+  // When user is still loading, set subscription without normalizing chatMode (avoids resetting mode before auth resolves)
   useEffect(() => {
     if (!user) {
       setSubscription("free");
@@ -339,7 +317,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
         entitlements.includes("pro-plan") ||
         entitlements.includes("pro-monthly-plan") ||
         entitlements.includes("pro-yearly-plan");
-      setSubscription(
+      setSubscriptionWithNormalize(
         hasUltra
           ? "ultra"
           : hasTeam
@@ -351,13 +329,13 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
                 : "free",
       );
     }
-  }, [user, entitlements]);
+  }, [user, entitlements, setSubscriptionWithNormalize]);
 
   // Refresh entitlements only when explicitly requested via URL param
   useEffect(() => {
     const refreshFromUrl = async () => {
       if (!user) {
-        setSubscription("free");
+        setSubscriptionWithNormalize("free");
         setIsCheckingProPlan(false);
         return;
       }
@@ -399,10 +377,10 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
               return;
             }
           }
-          setSubscription("free");
+          setSubscriptionWithNormalize("free");
         }
       } catch {
-        setSubscription("free");
+        setSubscriptionWithNormalize("free");
       } finally {
         setIsCheckingProPlan(false);
         // Remove the refresh param to avoid repeated refreshes
@@ -412,7 +390,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     };
 
     refreshFromUrl();
-  }, [user]);
+  }, [user, setSubscriptionWithNormalize]);
 
   // Listen for URL changes to sync temporary chat state
   useEffect(() => {
@@ -739,7 +717,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     setQueueBehavior: setQueueBehaviorState,
 
     sandboxPreference,
-    setSandboxPreference: setSandboxPreferenceState,
+    setSandboxPreference,
+    tauriCmdServer,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

@@ -464,6 +464,29 @@ export function extractSidebarContentFromMessage(
       });
     }
 
+    // Shared files (get_terminal_files)
+    if (part.type === "tool-get_terminal_files") {
+      const requestedPaths: string[] = part.input?.files || [];
+
+      // Seed from persisted message.fileDetails so sidebar shows files after reload
+      const persistedFiles = (message.fileDetails as any[] | undefined) || [];
+      const files = persistedFiles.map((f: any) => ({
+        name: f.name || "",
+        mediaType: f.mediaType,
+        fileId: f.fileId,
+        s3Key: f.s3Key,
+        storageId: f.storageId,
+      }));
+
+      contentList.push({
+        files,
+        requestedPaths,
+        isExecuting:
+          part.state === "input-available" || part.state === "input-streaming",
+        toolCallId: part.toolCallId || "",
+      });
+    }
+
     // Notes tools
     const notesToolTypes = [
       "tool-create_note",

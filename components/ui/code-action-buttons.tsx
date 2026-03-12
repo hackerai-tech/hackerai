@@ -6,6 +6,7 @@ import {
   TooltipContent,
 } from "@/components/ui/tooltip";
 import { toast } from "sonner";
+import { downloadFile } from "@/lib/utils/file-download";
 
 interface CodeActionButtonsProps {
   content: string;
@@ -48,63 +49,11 @@ export const CodeActionButtons: React.FC<CodeActionButtonsProps> = ({
     }
   };
 
-  const handleDownload = async () => {
-    const defaultFilename = filename || `code.${language || "txt"}`;
-
-    try {
-      // Try to use the File System Access API for native save dialog
-      if ("showSaveFilePicker" in window) {
-        const fileHandle = await (
-          window as Window & {
-            showSaveFilePicker: (options: {
-              suggestedName: string;
-            }) => Promise<FileSystemFileHandle>;
-          }
-        ).showSaveFilePicker({
-          suggestedName: defaultFilename,
-        });
-
-        const writable = await fileHandle.createWritable();
-        await writable.write(content);
-        await writable.close();
-        toast.success("File saved successfully");
-        return;
-      }
-    } catch (err) {
-      // Don't show toast for user-cancelled save dialogs
-      if (err instanceof DOMException && err.name === "AbortError") {
-        return;
-      }
-      toast.error("Failed to save file");
-      return;
-    }
-
-    // Fallback to traditional download
-    try {
-      const blob = new Blob([content], { type: "text/plain" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = defaultFilename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      toast.success(
-        variant === "sidebar"
-          ? "File downloaded successfully"
-          : "File downloaded successfully",
-      );
-    } catch (error) {
-      // Don't show toast for user-cancelled operations
-      if (error instanceof DOMException && error.name === "AbortError") {
-        return;
-      }
-      toast.error("Failed to download file", {
-        description:
-          error instanceof Error ? error.message : "Unknown error occurred",
-      });
-    }
+  const handleDownload = () => {
+    downloadFile({
+      filename: filename || `code.${language || "txt"}`,
+      content,
+    });
   };
 
   const getButtonClasses = () => {

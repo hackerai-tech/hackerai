@@ -3,7 +3,7 @@ import type { SandboxInfo, SandboxManager, SandboxType } from "@/types";
 import { ensureSandboxConnection } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 
-const MAX_SANDBOX_HEALTH_FAILURES = 3;
+const MAX_SANDBOX_HEALTH_FAILURES = 5;
 
 export class DefaultSandboxManager implements SandboxManager {
   private sandbox: Sandbox | null = null;

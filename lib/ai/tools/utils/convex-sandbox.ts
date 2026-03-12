@@ -1,6 +1,7 @@
 import { EventEmitter } from "events";
 import { ConvexHttpClient, ConvexClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { getPlatformDisplayName } from "./platform-utils";
 
 interface CommandResult {
   stdout: string;
@@ -62,14 +63,7 @@ export class ConvexSandbox extends EventEmitter {
 
     if (mode === "dangerous" && osInfo) {
       const { platform, arch, release, hostname } = osInfo;
-      const platformName =
-        platform === "darwin"
-          ? "macOS"
-          : platform === "win32"
-            ? "Windows"
-            : platform === "linux"
-              ? "Linux"
-              : platform;
+      const platformName = getPlatformDisplayName(platform);
 
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:

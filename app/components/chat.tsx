@@ -28,29 +28,27 @@ import { normalizeMessages } from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Todo, ChatMessage } from "@/types";
-import { isSelectedModel } from "@/types";
+import type { Todo, ChatMessage, ChatMode } from "@/types";
+// import { isSelectedModel } from "@/types";
+import type { Id } from "@/convex/_generated/dataModel";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { useRouter } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
+import { useAutoContinue } from "../hooks/useAutoContinue";
 import { useLatestRef } from "../hooks/useLatestRef";
 import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
-import { useAgentLongStream } from "../hooks/useAgentLongStream";
 import Loading from "@/components/ui/loading";
 
-export const Chat = ({
-  chatId: routeChatId,
-  autoResume,
-}: {
-  chatId?: string;
-  autoResume: boolean;
-}) => {
+export const Chat = ({ autoResume }: { autoResume: boolean }) => {
+  const params = useParams();
+  const routeChatId = params?.id as string | undefined;
+  const router = useRouter();
   const isMobile = useIsMobile();
   const { setDataStream, setIsAutoResuming } = useDataStream();
   const [uploadStatus, setUploadStatus] = useState<{
@@ -85,8 +83,9 @@ export const Chat = ({
     todos,
     sandboxPreference,
     setSandboxPreference,
+    tauriCmdServer,
     selectedModel,
-    setSelectedModel,
+    // setSelectedModel,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -134,15 +133,19 @@ export const Chat = ({
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
-  const [sandboxConnectionValid, setSandboxConnectionValid] = useState(true);
-  // Track whether model selection has been initialized from chat for this chat id
-  const hasInitializedModelRef = useRef(false);
+  // TODO: restore when model selector is re-enabled
+  // const hasInitializedModelRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
     if (routeChatId) {
       setChatId(routeChatId);
       setIsExistingChat(true);
+    } else {
+      // Navigated to "/" (new chat) — reset to fresh state
+      setChatId(uuidv4());
+      setIsExistingChat(false);
+      wasNewChatRef.current = true;
     }
   }, [routeChatId]);
 
@@ -166,6 +169,7 @@ export const Chat = ({
   const needsConnectionValidation =
     !!storedSandboxType &&
     storedSandboxType !== "e2b" &&
+    storedSandboxType !== "tauri" &&
     !hasInitializedSandboxRef.current;
   const localConnections = useQuery(
     api.localSandbox.listConnections,
@@ -175,15 +179,8 @@ export const Chat = ({
   // Derive title from Convex (single source of truth)
   const chatTitle = chatData?.title ?? null;
 
-  // Convert paginated Convex messages to UI format for useChat
-  // Messages come from server in descending order (newest first from pagination)
-  // We need to reverse them to show chronological order (oldest first)
-  const initialMessages: ChatMessage[] =
-    paginatedMessages.results && paginatedMessages.results.length > 0
-      ? convertToUIMessages([...paginatedMessages.results].reverse())
-      : [];
-
-  // Same as sync effect: Convex-backed messages for agent-long reconnect/backfill so refresh shows history
+  // Convert paginated Convex messages to UI format for useChat and useAutoResume
+  // Messages come from server in descending order (newest first from pagination); reverse for chronological order
   const serverMessages: ChatMessage[] =
     paginatedMessages.results && paginatedMessages.results.length > 0
       ? convertToUIMessages([...paginatedMessages.results].reverse())
@@ -191,8 +188,6 @@ export const Chat = ({
 
   // State to prevent double-processing of queue
   const [isProcessingQueue, setIsProcessingQueue] = useState(false);
-  // Re-trigger sync effect after skip window expires (agent-long recovery)
-  const [syncTrigger, setSyncTrigger] = useState(0);
   // Ref to track when "Send Now" is actively processing to prevent auto-processing interference
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
@@ -209,7 +204,7 @@ export const Chat = ({
     resumeStream,
   } = useChat({
     id: chatId,
-    messages: initialMessages,
+    messages: serverMessages,
     experimental_throttle: 100,
     generateId: () => uuidv4(),
 
@@ -304,10 +299,19 @@ export const Chat = ({
           fileDetails: FileDetails[];
         };
 
-        // Store in parallel state (outside AI SDK control)
+        // Merge into parallel state (outside AI SDK control)
+        // Uses merge-with-dedup so incremental events (per-file) and
+        // the onFinish batch event both work without duplicates
         setTempChatFileDetails((prev) => {
           const next = new Map(prev);
-          next.set(fileData.messageId, fileData.fileDetails);
+          const existing = next.get(fileData.messageId) || [];
+          const existingIds = new Set(
+            existing.map((f: FileDetails) => f.fileId),
+          );
+          const newFiles = fileData.fileDetails.filter(
+            (f: FileDetails) => !existingIds.has(f.fileId),
+          );
+          next.set(fileData.messageId, [...existing, ...newFiles]);
           return next;
         });
       }
@@ -323,6 +327,13 @@ export const Chat = ({
           actualSandbox: string;
           actualSandboxName?: string;
         };
+
+        // Skip fallback notifications for Tauri — the server-side health check
+        // hits its own localhost, not the user's desktop, so it consistently
+        // reports false disconnects. The frontend already validated Tauri availability.
+        if (fallbackData.requestedPreference === "tauri") {
+          return;
+        }
 
         // Update sandbox preference to match actual sandbox used
         setSandboxPreference(fallbackData.actualSandbox);
@@ -364,13 +375,14 @@ export const Chat = ({
       setAwaitingServerChat(false);
       setUploadStatus(null);
       setSummarizationStatus(null);
-      // For new chats, flip the state so it becomes an existing chat
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
       if (!isExistingChatRef.current && !isTemporaryChat) {
-        setIsExistingChat(true);
-        // Clear the "new" draft when transitioning from new chat to existing chat
+        // Update URL without full navigation so this Chat stays mounted and
+        // status can transition to "ready" (stop button → send button).
+        window.history.replaceState({}, "", `/c/${chatId}`);
         removeDraft("new");
+        setIsExistingChat(true);
       }
     },
     onError: (error) => {
@@ -388,63 +400,32 @@ export const Chat = ({
     },
   });
 
-  // Agent-long: Trigger.dev streaming via dedicated hook (must be after useChat for messages/setMessages)
-  const agentLong = useAgentLongStream({
-    chatId,
-    enabled: chatMode === "agent-long",
-    reconnectRunId:
-      chatMode === "agent-long" && chatData?.id === chatId
-        ? ((chatData as { active_trigger_run_id?: string })
-            .active_trigger_run_id ?? null)
-        : null,
-    messages,
-    serverMessages,
-    todos,
-    sandboxPreference,
-    setUploadStatus,
-    setSummarizationStatus,
-    setRateLimitWarning,
-    setTempChatFileDetails,
-    setSandboxPreference,
-    setDataStream: setDataStream as React.Dispatch<
-      React.SetStateAction<unknown[]>
-    >,
-    setIsAutoResuming,
-    setAwaitingServerChat,
-    setMessages,
-    setIsExistingChat,
-    hasUserDismissedWarningRef,
-    isExistingChatRef,
-    onRunComplete: () => {
-      removeDraft("new");
-      window.history.replaceState({}, "", `/c/${chatId}`);
-    },
-  });
-
-  // Derive serverMode from chatData to gate useAutoResume (prevents firing before we know chat type)
-  // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
-  const serverMode =
-    chatData?.id === chatId
-      ? (chatData?.default_model_slug as string | undefined) ||
-        (chatData?.active_trigger_run_id ? "agent-long" : undefined)
-      : undefined;
-
-  // Auto-resume controlled by prop; default to true when a specific chat id is present, false on "/"
-  // Disable only for agent-long: resuming hits AI SDK /api/chat, not Trigger.dev, and can block sync
-  // Enable when serverMode is undefined (old chats, or before chatData loads) so agent mode can reconnect
+  // Auto-resume: reconnect to resumable stream on refresh (e.g. /api/chat/[id]/stream)
   useAutoResume({
-    autoResume: autoResume && serverMode !== "agent-long",
-    initialMessages,
+    autoResume,
+    initialMessages: serverMessages,
     resumeStream,
     setMessages,
+  });
+
+  const { resetAutoContinueCount } = useAutoContinue({
+    status,
+    chatMode,
+    sendMessage,
+    hasManuallyStoppedRef,
+    todos,
+    temporaryChatsEnabled,
+    sandboxPreference,
+    selectedModel,
   });
 
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
     const reset = () => {
       setMessages([]);
-      setIsExistingChat(false);
       setChatId(uuidv4());
+      setIsExistingChat(false);
+      wasNewChatRef.current = true;
       setTodos([]);
       setAwaitingServerChat(false);
       setUploadStatus(null);
@@ -455,20 +436,18 @@ export const Chat = ({
         systemTokens: 0,
         maxTokens: 0,
       });
-      agentLong.reset();
+      resetAutoContinueCount();
     };
     setChatReset(reset);
     return () => setChatReset(null);
-  }, [setChatReset, setMessages, setTodos, agentLong.reset]);
+  }, [setChatReset, setMessages, setTodos, resetAutoContinueCount]);
 
   // Reset the one-time initializer when chat changes (must come before chatData effect to handle cached data)
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
-    hasInitializedModelRef.current = false;
-    setSandboxConnectionValid(true); // Reset to true until validated
-    agentLong.lastTriggerAssistantIdRef.current = null; // Clear trigger tracking when switching chats
-  }, [chatId, agentLong.lastTriggerAssistantIdRef]);
+    // hasInitializedModelRef.current = false;
+  }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
   useEffect(() => {
@@ -509,18 +488,19 @@ export const Chat = ({
       })();
 
       setTodos(nextTodos);
+    } else {
+      setTodos([]);
     }
     // Server has responded for this chat id; stop suppressing not-found state
     setAwaitingServerChat(false);
     // Initialize mode from server once per chat id (only for existing chats)
     if (!hasInitializedModeFromChatRef.current && isExistingChat) {
       hasInitializedModeFromChatRef.current = true;
-      // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
+      // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id (legacy DB)
       const slug =
         (chatData as any).default_model_slug ||
         ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
       if (slug === "ask" || slug === "agent" || slug === "agent-long") {
-        // Agent-Long is hidden for now; normalize to Agent
         setChatMode(slug === "agent-long" ? "agent" : slug);
       }
     }
@@ -549,8 +529,14 @@ export const Chat = ({
     }
 
     if (storedSandboxType === "e2b") {
-      // E2B is always valid
-      setSandboxPreference(storedSandboxType);
+      setSandboxPreference("e2b");
+      hasInitializedSandboxRef.current = true;
+    } else if (storedSandboxType === "tauri") {
+      // Only restore "tauri" if the desktop bridge is actually available.
+      // If tauriCmdServer is still undefined (bridge discovery in progress),
+      // defer — the effect will re-run when tauriCmdServer resolves.
+      if (tauriCmdServer === undefined) return;
+      setSandboxPreference(tauriCmdServer ? "tauri" : "e2b");
       hasInitializedSandboxRef.current = true;
     } else if (localConnections !== undefined) {
       // For local connectionIds, validate the connection still exists
@@ -560,93 +546,45 @@ export const Chat = ({
       if (connectionExists) {
         setSandboxPreference(storedSandboxType);
       } else {
-        // Stale connection — unlock selector so user can pick a current one
-        setSandboxConnectionValid(false);
+        // Stale connection — fall back to cloud
+        setSandboxPreference("e2b");
       }
       hasInitializedSandboxRef.current = true;
     }
     // If localConnections is still loading (undefined), wait for next render
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, localConnections, isExistingChat, chatId]);
+  }, [chatData, localConnections, isExistingChat, chatId, tauriCmdServer]);
 
-  // Initialize model selection from chat data (simpler than sandbox — no connection validation needed)
-  useEffect(() => {
-    if (hasInitializedModelRef.current || !isExistingChat) return;
-
-    const dataId = (chatData as any)?.id as string | undefined;
-    if (!chatData || dataId !== chatId) return;
-
-    const savedModel = (chatData as any).selected_model as string | undefined;
-    hasInitializedModelRef.current = true;
-
-    if (savedModel && isSelectedModel(savedModel)) {
-      setSelectedModel(savedModel);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, isExistingChat, chatId]);
+  // TODO: restore when model selector is re-enabled
+  // Initialize model selection from chat data
+  // useEffect(() => {
+  //   if (hasInitializedModelRef.current || !isExistingChat) return;
+  //   const dataId = (chatData as any)?.id as string | undefined;
+  //   if (!chatData || dataId !== chatId) return;
+  //   const savedModel = (chatData as any).selected_model as string | undefined;
+  //   hasInitializedModelRef.current = true;
+  //   if (savedModel && isSelectedModel(savedModel)) {
+  //     setSelectedModel(savedModel);
+  //   }
+  // }, [chatData, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages
   useEffect(() => {
-    // Skip sync while streaming (messages come from streaming state, not Convex)
-    if (agentLong.isActive) {
-      return;
-    }
-    // Also skip if useChat is streaming (for temporary chats or fallback path)
     if (status === "streaming") {
       return;
-    }
-
-    if (Date.now() < agentLong.skipPaginatedSyncUntilRef.current) {
-      // Schedule a re-sync after skip window so messages load when timer expires
-      const remaining =
-        agentLong.skipPaginatedSyncUntilRef.current - Date.now();
-      const timer = setTimeout(
-        () => setSyncTrigger((t) => t + 1),
-        remaining + 50,
-      );
-      return () => clearTimeout(timer);
     }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
       return;
     }
 
-    // Messages come from server in descending order, reverse for chronological display
     const uiMessages = convertToUIMessages(
       [...paginatedMessages.results].reverse(),
     );
 
-    // Simple sync: always use server messages for existing chats
-    // BUT: If we just completed a Trigger.dev run, verify the assistant message exists in Convex
-    // before overwriting (prevents race condition where Convex hasn't propagated the new message yet)
     if (isExistingChat) {
-      const lastTriggerId = agentLong.lastTriggerAssistantIdRef.current;
-      if (lastTriggerId) {
-        // Check if Convex has the assistant message from the trigger run
-        const hasAssistantMessage = uiMessages.some(
-          (msg) => msg.id === lastTriggerId,
-        );
-        if (hasAssistantMessage) {
-          // Convex has caught up, safe to sync
-          setMessages(uiMessages);
-          agentLong.lastTriggerAssistantIdRef.current = null; // Clear the ref
-        }
-        // If Convex doesn't have it yet, skip this sync and wait for next update
-      } else {
-        // No pending trigger completion, safe to sync normally
-        setMessages(uiMessages);
-      }
+      setMessages(uiMessages);
     }
-  }, [
-    paginatedMessages.results,
-    setMessages,
-    isExistingChat,
-    chatId,
-    agentLong.isActive,
-    agentLong.skipPaginatedSyncUntilRef,
-    agentLong.lastTriggerAssistantIdRef,
-    status,
-    syncTrigger,
-  ]);
+  }, [paginatedMessages.results, setMessages, isExistingChat, chatId, status]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -668,7 +606,7 @@ export const Chat = ({
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  const displayStatusForQueue = agentLong.isActive ? agentLong.status : status;
+  const displayStatusForQueue = status;
 
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useRef(messageQueue);
@@ -700,32 +638,7 @@ export const Chat = ({
     handleDrop,
   });
 
-  const wrappedSendMessage = useCallback(
-    (payload: unknown, opts?: { body?: Record<string, unknown> }) => {
-      if (chatMode === "agent-long") {
-        agentLong.submit(
-          payload as Parameters<typeof agentLong.submit>[0],
-          opts,
-        );
-        return;
-      }
-      sendMessage(payload as Parameters<typeof sendMessage>[0], opts);
-    },
-    [chatMode, agentLong.submit, sendMessage],
-  );
-
-  const wrappedRegenerate = useCallback(
-    (opts?: { body?: Record<string, unknown> }) => {
-      if (chatMode === "agent-long") {
-        agentLong.regenerate(opts);
-        return;
-      }
-      regenerate(opts);
-    },
-    [chatMode, agentLong.regenerate, regenerate],
-  );
-
-  // Automatic queue processing - send next queued message when ready (wrappedSendMessage routes agent-long to hook)
+  // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
       displayStatusForQueue === "ready" &&
@@ -733,14 +646,14 @@ export const Chat = ({
       !isProcessingQueue &&
       !isSendingNowRef.current &&
       !hasManuallyStoppedRef.current &&
-      (chatMode === "agent" || chatMode === "agent-long") &&
+      chatMode === "agent" &&
       queueBehavior === "queue"
     ) {
       setIsProcessingQueue(true);
       const nextMessage = dequeueNext();
 
       if (nextMessage) {
-        wrappedSendMessage(
+        sendMessage(
           {
             text: nextMessage.text,
             files: nextMessage.files
@@ -772,7 +685,7 @@ export const Chat = ({
     isProcessingQueue,
     chatMode,
     dequeueNext,
-    wrappedSendMessage,
+    sendMessage,
     queueBehavior,
   ]);
 
@@ -786,29 +699,20 @@ export const Chat = ({
     handleSendNow,
   } = useChatHandlers({
     chatId,
-    messages: agentLong.isActive ? agentLong.displayMessages : messages,
-    sendMessage: wrappedSendMessage,
-    stop: useCallback(() => {
-      if (agentLong.isActive) {
-        agentLong.cancel();
-      } else {
-        stop();
-      }
-    }, [agentLong.isActive, agentLong.cancel, stop]),
-    regenerate: wrappedRegenerate,
+    messages,
+    sendMessage,
+    stop,
+    regenerate,
     setMessages,
     isExistingChat,
-    activateChatLocally: () => {
-      setIsExistingChat(true);
-      setAwaitingServerChat(true);
-    },
-    status: agentLong.isActive ? agentLong.status : status,
+    status,
     isSendingNowRef,
     hasManuallyStoppedRef,
     onStopCallback: () => {
       setUploadStatus(null);
       setSummarizationStatus(null);
     },
+    resetAutoContinueCount,
   });
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });
@@ -822,7 +726,6 @@ export const Chat = ({
   // Branch chat handler
   const branchChatMutation = useMutation(api.messages.branchChat);
 
-  const router = useRouter();
   const handleBranchMessage = async (messageId: string) => {
     try {
       const newChatId = await branchChatMutation({ messageId });
@@ -834,10 +737,8 @@ export const Chat = ({
     }
   };
 
-  const displayMessages = agentLong.isActive
-    ? agentLong.displayMessages
-    : messages;
-  const displayStatus = agentLong.isActive ? agentLong.status : status;
+  const displayMessages = messages;
+  const displayStatus = status;
   const hasMessages = displayMessages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
@@ -854,11 +755,6 @@ export const Chat = ({
     chatData === null &&
     shouldFetchMessages &&
     !awaitingServerChat;
-
-  const hasSavedSandboxType =
-    (!!storedSandboxType && sandboxConnectionValid) ||
-    (isExistingChat && !chatData) ||
-    wasNewChatRef.current;
 
   return (
     <ConvexErrorBoundary>
@@ -978,7 +874,6 @@ export const Chat = ({
                               handleDismissRateLimitWarning
                             }
                             contextUsage={contextUsage}
-                            hasSavedSandboxType={hasSavedSandboxType}
                           />
                         </div>
                       )}
@@ -1010,7 +905,6 @@ export const Chat = ({
                     }
                     onDismissRateLimitWarning={handleDismissRateLimitWarning}
                     contextUsage={contextUsage}
-                    hasSavedSandboxType={hasSavedSandboxType}
                   />
                 )}
             </div>

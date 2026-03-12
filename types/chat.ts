@@ -15,17 +15,17 @@ export type SelectedModel =
   | "auto"
   | "sonnet-4.6"
   | "gemini-3.1-pro"
-  | "kimi-k2.5"
   | "grok-4.1"
-  | "gemini-3-flash";
+  | "gemini-3-flash"
+  | "gpt-5.4";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
   "sonnet-4.6",
   "gemini-3.1-pro",
-  "kimi-k2.5",
   "grok-4.1",
   "gemini-3-flash",
+  "gpt-5.4",
 ];
 
 export function isSelectedModel(value: string | null): value is SelectedModel {
@@ -152,16 +152,30 @@ export interface SidebarNotes {
   };
 }
 
+export interface SidebarSharedFiles {
+  files: Array<{
+    name: string;
+    mediaType?: string;
+    fileId?: string;
+    s3Key?: string;
+    storageId?: string;
+  }>;
+  requestedPaths: string[];
+  isExecuting: boolean;
+  toolCallId: string;
+}
+
 export type SidebarContent =
   | SidebarFile
   | SidebarTerminal
   | SidebarWebSearch
-  | SidebarNotes;
+  | SidebarNotes
+  | SidebarSharedFiles;
 
 export const isSidebarFile = (
   content: SidebarContent,
 ): content is SidebarFile => {
-  return "path" in content;
+  return "path" in content && !("requestedPaths" in content);
 };
 
 export const isSidebarTerminal = (
@@ -180,6 +194,12 @@ export const isSidebarNotes = (
   content: SidebarContent,
 ): content is SidebarNotes => {
   return "notes" in content && "action" in content;
+};
+
+export const isSidebarSharedFiles = (
+  content: SidebarContent,
+): content is SidebarSharedFiles => {
+  return "requestedPaths" in content;
 };
 
 export interface Todo {
@@ -218,9 +238,8 @@ export type RateLimitInfo = {
   remaining: number;
   resetTime: Date;
   limit: number;
-  // Token bucket details for paid users (session = daily, weekly = weekly)
-  session?: { remaining: number; limit: number; resetTime: Date };
-  weekly?: { remaining: number; limit: number; resetTime: Date };
+  // Monthly token bucket details for paid users
+  monthly?: { remaining: number; limit: number; resetTime: Date };
   // Points deducted for potential refund on error (always = estimatedCost)
   pointsDeducted?: number;
   // Extra usage points deducted (only set when extra usage balance was used)

@@ -47,7 +47,8 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const isValidState = await verifyAndConsumeOAuthState(state);
+  const { valid: isValidState, metadata: stateMetadata } =
+    await verifyAndConsumeOAuthState(state);
   if (!isValidState) {
     console.warn("[Desktop Auth] Invalid or expired OAuth state");
     return new Response(
@@ -104,6 +105,16 @@ export async function GET(request: NextRequest) {
     }
 
     const origin = url.origin;
+
+    // In dev mode, redirect to local HTTP server instead of deep link
+    if (stateMetadata?.devCallbackPort) {
+      const devCallbackUrl = `http://localhost:${stateMetadata.devCallbackPort}/auth-callback?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}`;
+      return new Response(renderSuccessPage(devCallbackUrl), {
+        status: 200,
+        headers: noStoreHeaders,
+      });
+    }
+
     const deepLinkUrl = `hackerai://auth?token=${encodeURIComponent(transferToken)}&origin=${encodeURIComponent(origin)}`;
     return new Response(renderSuccessPage(deepLinkUrl), {
       status: 200,

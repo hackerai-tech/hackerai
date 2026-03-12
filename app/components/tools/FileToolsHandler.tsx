@@ -1,11 +1,23 @@
 import { useMemo } from "react";
 import { UIMessage } from "@ai-sdk/react";
 import ToolBlock from "@/components/ui/tool-block";
-import { FilePlus, FileText, FilePen, FileMinus } from "lucide-react";
+import {
+  FilePlus,
+  FileText,
+  FilePen,
+  FileMinus,
+  FolderOpen,
+} from "lucide-react";
 import type { ChatStatus } from "@/types";
 import type { SidebarFile } from "@/types/chat";
 import { isSidebarFile } from "@/types/chat";
 import { useToolSidebar } from "../../hooks/useToolSidebar";
+import { isTauriEnvironment, revealFileInDir } from "@/app/hooks/useTauri";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+} from "@/components/ui/tooltip";
 
 interface DiffDataPart {
   type: "data-diff";
@@ -16,6 +28,24 @@ interface DiffDataPart {
     modifiedContent: string;
   };
 }
+
+const OpenFileButton = ({ filePath }: { filePath: string }) => {
+  if (!isTauriEnvironment()) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          className="inline-flex items-center justify-center h-[36px] w-[36px] rounded-[15px] border border-border bg-muted/20 hover:bg-muted/40 transition-colors cursor-pointer text-muted-foreground hover:text-foreground"
+          onClick={() => revealFileInDir(filePath)}
+          aria-label="Reveal in Finder"
+        >
+          <FolderOpen className="h-4 w-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="top">Reveal in Finder</TooltipContent>
+    </Tooltip>
+  );
+};
 
 interface FileToolsHandlerProps {
   message: UIMessage;
@@ -217,15 +247,18 @@ export const FileToolsHandler = ({
         if (!readInput) return null;
 
         return (
-          <ToolBlock
-            key={toolCallId}
-            icon={<FileText />}
-            action="Read"
-            target={`${readInput.target_file}${getFileRange()}`}
-            isClickable={isClickable}
-            onClick={handleOpenInSidebar}
-            onKeyDown={handleKeyDown}
-          />
+          <div className="flex items-center gap-1">
+            <ToolBlock
+              key={toolCallId}
+              icon={<FileText />}
+              action="Read"
+              target={`${readInput.target_file}${getFileRange()}`}
+              isClickable={isClickable}
+              onClick={handleOpenInSidebar}
+              onKeyDown={handleKeyDown}
+            />
+            <OpenFileButton filePath={readInput.target_file} />
+          </div>
         );
       }
       default:
@@ -276,15 +309,18 @@ export const FileToolsHandler = ({
       case "output-available":
         if (!writeInput) return null;
         return (
-          <ToolBlock
-            key={toolCallId}
-            icon={<FilePlus />}
-            action="Successfully wrote"
-            target={writeInput.file_path}
-            isClickable={isClickable}
-            onClick={handleOpenInSidebar}
-            onKeyDown={handleKeyDown}
-          />
+          <div className="flex items-center gap-1">
+            <ToolBlock
+              key={toolCallId}
+              icon={<FilePlus />}
+              action="Successfully wrote"
+              target={writeInput.file_path}
+              isClickable={isClickable}
+              onClick={handleOpenInSidebar}
+              onKeyDown={handleKeyDown}
+            />
+            <OpenFileButton filePath={writeInput.file_path} />
+          </div>
         );
       default:
         return null;
@@ -376,15 +412,18 @@ export const FileToolsHandler = ({
           searchReplaceOutput.result.includes("Successfully made");
 
         return (
-          <ToolBlock
-            key={toolCallId}
-            icon={<FilePen />}
-            action={isSuccess ? "Successfully edited" : "Failed to edit"}
-            target={searchReplaceInput.file_path}
-            isClickable={isClickable}
-            onClick={handleOpenInSidebar}
-            onKeyDown={handleKeyDown}
-          />
+          <div className="flex items-center gap-1">
+            <ToolBlock
+              key={toolCallId}
+              icon={<FilePen />}
+              action={isSuccess ? "Successfully edited" : "Failed to edit"}
+              target={searchReplaceInput.file_path}
+              isClickable={isClickable}
+              onClick={handleOpenInSidebar}
+              onKeyDown={handleKeyDown}
+            />
+            <OpenFileButton filePath={searchReplaceInput.file_path} />
+          </div>
         );
       }
       default:
@@ -437,16 +476,19 @@ export const FileToolsHandler = ({
         );
 
         return (
-          <ToolBlock
-            key={toolCallId}
-            icon={<FilePen />}
-            action={
-              isSuccess
-                ? `Successfully applied ${multiEditInput.edits.length} edits`
-                : "Failed to apply edits"
-            }
-            target={multiEditInput.file_path}
-          />
+          <div className="flex items-center gap-1">
+            <ToolBlock
+              key={toolCallId}
+              icon={<FilePen />}
+              action={
+                isSuccess
+                  ? `Successfully applied ${multiEditInput.edits.length} edits`
+                  : "Failed to apply edits"
+              }
+              target={multiEditInput.file_path}
+            />
+            <OpenFileButton filePath={multiEditInput.file_path} />
+          </div>
         );
       }
       default:

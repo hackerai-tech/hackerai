@@ -38,22 +38,31 @@ export const createRedisClient = (): Redis | null => {
 export const formatTimeRemaining = (resetTime: Date): string => {
   const now = new Date();
   const timeDiff = resetTime.getTime() - now.getTime();
-  const hours = Math.floor(timeDiff / (1000 * 60 * 60));
-  const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
 
-  if (hours <= 0 && minutes <= 0) {
+  if (timeDiff <= 0) {
     return "less than a minute";
   }
 
-  let timeString = "";
-  if (hours > 0) {
-    timeString = `${hours} hour${hours > 1 ? "s" : ""}`;
-    if (minutes > 0) {
-      timeString += ` and ${minutes} minute${minutes > 1 ? "s" : ""}`;
+  const hours = Math.floor(timeDiff / (1000 * 60 * 60));
+
+  // For short durations (< 24h), show relative time with "in" prefix
+  if (hours < 24) {
+    const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours <= 0) {
+      if (minutes <= 0) {
+        return "in less than a minute";
+      }
+      return `in ${minutes} minute${minutes > 1 ? "s" : ""}`;
     }
-  } else {
-    timeString = `${minutes} minute${minutes > 1 ? "s" : ""}`;
+    return `in ${hours} hour${hours > 1 ? "s" : ""}${minutes > 0 ? ` and ${minutes} minute${minutes > 1 ? "s" : ""}` : ""}`;
   }
 
-  return timeString;
+  // For longer durations, show the reset date and time with "on" prefix
+  return `on ${resetTime.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  })}`;
 };

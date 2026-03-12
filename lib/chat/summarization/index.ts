@@ -1,6 +1,6 @@
 import "server-only";
 
-import { UIMessage, UIMessageStreamWriter, LanguageModel } from "ai";
+import { UIMessage, UIMessageStreamWriter, LanguageModel, ToolSet } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
 import {
@@ -24,7 +24,7 @@ import {
 import { formatTranscript } from "./transcript-formatter";
 import type { SummarizationResult } from "./helpers";
 
-export type { SummarizationResult } from "./helpers";
+export type { SummarizationResult, SummarizationUsage } from "./helpers";
 
 export type EnsureSandbox = () => Promise<AnySandbox>;
 
@@ -90,6 +90,9 @@ export const checkAndSummarizeIfNeeded = async (
   ensureSandbox?: EnsureSandbox,
   systemPromptTokens: number = 0,
   providerInputTokens: number = 0,
+  chatSystemPrompt: string = "",
+  tools?: ToolSet,
+  providerOptions?: Record<string, Record<string, unknown>>,
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -132,11 +135,14 @@ export const checkAndSummarizeIfNeeded = async (
     // Run summary generation and transcript saving in parallel — they are
     // independent (transcript is formatted from raw messages, not the summary).
     const summaryPromise = generateSummaryText(
-      messagesToSummarize,
+      uiMessages,
       languageModel,
       mode,
+      chatSystemPrompt,
+      !!existingSummaryText,
+      tools,
+      providerOptions,
       abortSignal,
-      existingSummaryText ?? undefined,
     );
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
@@ -156,11 +162,12 @@ export const checkAndSummarizeIfNeeded = async (
             })
         : Promise.resolve(null);
 
-    const [summaryText, savedPath] = await Promise.all([
+    const [summaryResult, savedPath] = await Promise.all([
       summaryPromise,
       transcriptPromise,
     ]);
 
+    const { text: summaryText, usage: summarizationUsage } = summaryResult;
     let finalSummaryText = summaryText;
     if (savedPath) {
       finalSummaryText += buildTranscriptNotice(savedPath);
@@ -175,6 +182,7 @@ export const checkAndSummarizeIfNeeded = async (
       summarizedMessages: [summaryMessage, ...lastMessages],
       cutoffMessageId,
       summaryText: finalSummaryText,
+      summarizationUsage,
     };
   } catch (error) {
     if (abortSignal?.aborted) {

@@ -46,8 +46,7 @@ export interface ChatContext {
 export interface RateLimitContext {
   pointsDeducted?: number;
   extraUsagePointsDeducted?: number;
-  session?: { remaining: number; limit: number };
-  weekly?: { remaining: number; limit: number };
+  monthly?: { remaining: number; limit: number };
   remaining?: number;
   subscription: string;
 }
@@ -99,13 +98,10 @@ export function createChatLogger(config: ChatLoggerConfig) {
       builder.setRateLimit({
         pointsDeducted: context.pointsDeducted,
         extraUsagePointsDeducted: context.extraUsagePointsDeducted,
-        sessionRemainingPercent: context.session
+        monthlyRemainingPercent: context.monthly
           ? Math.round(
-              (context.session.remaining / context.session.limit) * 100,
+              (context.monthly.remaining / context.monthly.limit) * 100,
             )
-          : undefined,
-        weeklyRemainingPercent: context.weekly
-          ? Math.round((context.weekly.remaining / context.weekly.limit) * 100)
           : undefined,
         freeRemaining:
           context.subscription === "free" ? context.remaining : undefined,

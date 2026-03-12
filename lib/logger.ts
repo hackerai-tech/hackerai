@@ -61,8 +61,7 @@ export interface ChatWideEvent {
   rate_limit?: {
     points_deducted?: number;
     extra_usage_points_deducted?: number;
-    session_remaining_percent?: number;
-    weekly_remaining_percent?: number;
+    monthly_remaining_percent?: number;
     free_remaining?: number;
   };
 
@@ -94,7 +93,7 @@ export interface ChatWideEvent {
 
   // Sandbox execution
   sandbox?: {
-    type: "e2b" | "local" | "local-sandbox";
+    type: "e2b" | "local" | "local-sandbox" | "desktop";
     name?: string;
   };
 
@@ -217,15 +216,13 @@ export class WideEventBuilder {
   setRateLimit(info: {
     pointsDeducted?: number;
     extraUsagePointsDeducted?: number;
-    sessionRemainingPercent?: number;
-    weeklyRemainingPercent?: number;
+    monthlyRemainingPercent?: number;
     freeRemaining?: number;
   }): this {
     this.event.rate_limit = {
       points_deducted: info.pointsDeducted,
       extra_usage_points_deducted: info.extraUsagePointsDeducted,
-      session_remaining_percent: info.sessionRemainingPercent,
-      weekly_remaining_percent: info.weeklyRemainingPercent,
+      monthly_remaining_percent: info.monthlyRemainingPercent,
       free_remaining: info.freeRemaining,
     };
     return this;
@@ -291,6 +288,16 @@ export class WideEventBuilder {
       was_preemptive_timeout: result.wasPreemptiveTimeout,
       had_summarization: result.hadSummarization,
     };
+    return this;
+  }
+
+  private additionalToolCost = 0;
+
+  /**
+   * Add external tool cost (in dollars) to be included in total_cost
+   */
+  addToolCost(costDollars: number): this {
+    this.additionalToolCost += costDollars;
     return this;
   }
 
@@ -369,13 +376,19 @@ export class WideEventBuilder {
     }
 
     // Use provider cost if available, otherwise calculate from tokens
-    if (this.event.usage && this.event.usage.total_cost === undefined) {
+    if (this.event.usage && !this.event.usage.total_cost) {
       // Fallback: calculate from tokens (pricing: $0.50/M input, $3.00/M output)
       const inputCost =
         ((this.event.usage.input_tokens || 0) / 1_000_000) * 0.5;
       const outputCost =
         ((this.event.usage.output_tokens || 0) / 1_000_000) * 3.0;
       this.event.usage.total_cost = inputCost + outputCost;
+    }
+
+    // Add external tool costs (e.g., web search API)
+    if (this.additionalToolCost > 0 && this.event.usage) {
+      this.event.usage.total_cost =
+        (this.event.usage.total_cost || 0) + this.additionalToolCost;
     }
 
     // Don't include assistant_id for temporary chats

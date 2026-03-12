@@ -3,6 +3,7 @@ import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
   type SandboxPreference,
+  type TauriConnectionInfo,
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
@@ -54,26 +55,36 @@ export const createTools = (
   serviceKey?: string,
   guardrailsConfig?: string,
   appendMetadataStream?: AppendMetadataStreamFn,
+  onToolCost?: (costDollars: number) => void,
+  tauriConnectionInfo?: TauriConnectionInfo | null,
 ) => {
   let sandbox: AnySandbox | null = null;
+  let sandboxFirstUsedAt: number | null = null;
+
+  // E2B sandbox cost: ~$0.05/hour for 4-core 2GB
+  const E2B_COST_PER_MS = 0.05 / (60 * 60 * 1000);
+
+  const trackSandboxUsage = (newSandbox: AnySandbox) => {
+    sandbox = newSandbox;
+    if (!sandboxFirstUsedAt && isE2BSandbox(newSandbox)) {
+      sandboxFirstUsedAt = Date.now();
+    }
+  };
 
   // Use HybridSandboxManager if sandboxPreference and serviceKey are provided
   const sandboxManager =
     sandboxPreference && serviceKey
       ? new HybridSandboxManager(
           userID,
-          (newSandbox) => {
-            sandbox = newSandbox;
-          },
+          trackSandboxUsage,
           sandboxPreference,
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
+          tauriConnectionInfo,
         )
       : new DefaultSandboxManager(
           userID,
-          (newSandbox) => {
-            sandbox = newSandbox;
-          },
+          trackSandboxUsage,
           isE2BSandbox(sandbox) ? sandbox : null,
         );
 
@@ -101,12 +112,16 @@ export const createTools = (
     isE2BSandbox,
     guardrailsConfig,
     appendMetadataStream,
+    onToolCost,
   };
 
   // Create all available tools
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
-    get_terminal_files: createGetTerminalFiles(context),
+    // Tauri desktop: files are already on the user's machine, no need to upload to S3
+    ...(sandboxPreference !== "tauri" && {
+      get_terminal_files: createGetTerminalFiles(context),
+    }),
     file: createFile(context),
     match: createMatch(context),
     todo_write: createTodoWrite(context),
@@ -154,6 +169,11 @@ export const createTools = (
   const getTodoManager = () => todoManager;
   const getFileAccumulator = () => fileAccumulator;
 
+  const getSandboxSessionCost = (): number => {
+    if (!sandboxFirstUsedAt) return 0;
+    return (Date.now() - sandboxFirstUsedAt) * E2B_COST_PER_MS;
+  };
+
   return {
     tools,
     getSandbox,
@@ -161,6 +181,7 @@ export const createTools = (
     getTodoManager,
     getFileAccumulator,
     sandboxManager,
+    getSandboxSessionCost,
   };
 };
 

@@ -35,12 +35,13 @@ export const getMaxStepsForUser = (
 export function selectModel(
   mode: ChatMode,
   subscription: SubscriptionTier,
-  selectedModel?: SelectedModel,
+  _selectedModel?: SelectedModel,
 ): ModelName {
-  // User-selected model override (paid users only)
-  if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
-    return `model-${selectedModel}` as ModelName;
-  }
+  // Model selector is currently hidden — always use auto defaults.
+  // TODO: restore user-selected model override when model selector is re-enabled
+  // if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
+  //   return `model-${selectedModel}` as ModelName;
+  // }
 
   // Default models by mode
   if (isAgentMode(mode)) {
@@ -171,6 +172,37 @@ export function fixIncompleteMessageParts(parts: any[]): any[] {
     }
 
     filteredParts.push(part);
+  }
+
+  // Third pass: trim trailing incomplete steps that would become empty model messages.
+  // When a stream is interrupted mid-reasoning (before producing text or tool calls),
+  // the message ends with [step-start, reasoning, ...] but no text/tool content for that step.
+  // convertToModelMessages() splits by step boundaries, creating an assistant model message
+  // with only reasoning content — which Gemini rejects with
+  // "must include at least one parts field" error.
+  let lastStepStartIdx = -1;
+  for (let i = filteredParts.length - 1; i >= 0; i--) {
+    if (filteredParts[i].type === "step-start") {
+      lastStepStartIdx = i;
+      break;
+    }
+  }
+
+  if (lastStepStartIdx >= 0) {
+    const lastStepHasContent = filteredParts
+      .slice(lastStepStartIdx + 1)
+      .some((part: any) => {
+        if (part.type === "text") return !!part.text?.trim();
+        if (part.type?.startsWith("tool-") || part.type === "dynamic-tool")
+          return true;
+        if (part.type === "file") return true;
+        // reasoning and step-start alone are not content for Gemini
+        return false;
+      });
+
+    if (!lastStepHasContent) {
+      return filteredParts.slice(0, lastStepStartIdx);
+    }
   }
 
   return filteredParts;
@@ -435,9 +467,14 @@ export async function processChatMessages({
   const { messages: messagesWithUrls, sandboxFiles } =
     await processMessageFiles(messagesWithLimitedFiles, mode, uploadBasePath);
 
+  // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.
+  // This must happen BEFORE the empty-content filter because fixing incomplete parts can
+  // remove tool invocations and step-starts, potentially leaving messages with no content.
+  const messagesWithFixedTools = fixIncompleteToolInvocations(messagesWithUrls);
+
   // Filter out messages with empty parts or parts without meaningful content
   // This prevents "must include at least one parts field" errors from providers like Gemini
-  const messagesWithContent = messagesWithUrls.filter((msg) => {
+  const messagesWithContent = messagesWithFixedTools.filter((msg) => {
     if (!msg.parts || msg.parts.length === 0) return false;
 
     // For assistant messages, we need actual content (text or tool parts), not just reasoning/step-start
@@ -466,15 +503,10 @@ export async function processChatMessages({
     });
   });
 
-  // Fix incomplete tool invocations and reasoning (from interrupted streams) before sending to model
-  const messagesWithFixedTools =
-    fixIncompleteToolInvocations(messagesWithContent);
-
   // Remove duplicate tool parts (dynamic-tool duplicates of tool-xxx parts)
   // This prevents "tool call id is duplicated" errors from providers
-  const messagesWithoutDuplicates = removeDuplicateToolParts(
-    messagesWithFixedTools,
-  );
+  const messagesWithoutDuplicates =
+    removeDuplicateToolParts(messagesWithContent);
 
   // Select the appropriate model early so we can make model-aware decisions below
   const selectedModel = selectModel(mode, subscription, modelOverride);
