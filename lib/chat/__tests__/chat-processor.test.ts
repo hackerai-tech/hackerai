@@ -161,22 +161,43 @@ describe("selectModel", () => {
     });
   });
 
-  // Model override for paid users — currently disabled (model selector hidden, always uses auto)
-  // TODO: restore when model selector is re-enabled
-  describe("model override ignored (model selector hidden)", () => {
-    it("should ignore selected model override and use default for agent mode", () => {
+  // Model override — enabled for Ask mode (paid users only), always ignored for Agent mode
+  describe("model override for ask mode (paid users)", () => {
+    it("should use selected model override for ask mode", () => {
+      expect(selectModel("ask", "ultra", "sonnet-4.6")).toBe(
+        "model-sonnet-4.6",
+      );
+    });
+
+    it("should use selected model override for team users in ask mode", () => {
+      expect(selectModel("ask", "team", "sonnet-4.6")).toBe("model-sonnet-4.6");
+    });
+
+    it("should apply all selectable models in ask mode", () => {
+      expect(selectModel("ask", "pro", "gemini-3.1-pro")).toBe(
+        "model-gemini-3.1-pro",
+      );
+      expect(selectModel("ask", "pro", "grok-4.1")).toBe("model-grok-4.1");
+      expect(selectModel("ask", "pro", "gemini-3-flash")).toBe(
+        "model-gemini-3-flash",
+      );
+      expect(selectModel("ask", "pro", "gpt-5.4")).toBe("model-gpt-5.4");
+    });
+  });
+
+  // Agent mode always ignores model override
+  describe("model override ignored for agent mode", () => {
+    it("should ignore selected model override for agent mode", () => {
       expect(selectModel("agent", "pro", "sonnet-4.6")).toBe("agent-model");
     });
 
-    it("should ignore selected model override and use default for ask mode", () => {
-      expect(selectModel("ask", "ultra", "sonnet-4.6")).toBe("ask-model");
+    it("should ignore selected model override for agent-long mode", () => {
+      expect(selectModel("agent-long", "pro", "sonnet-4.6")).toBe(
+        "agent-model",
+      );
     });
 
-    it("should ignore selected model override for team users", () => {
-      expect(selectModel("agent", "team", "sonnet-4.6")).toBe("agent-model");
-    });
-
-    it("should ignore all selectable models and use defaults", () => {
+    it("should ignore all selectable models in agent mode", () => {
       expect(selectModel("agent", "pro", "gemini-3.1-pro")).toBe("agent-model");
       expect(selectModel("agent", "pro", "grok-4.1")).toBe("agent-model");
       expect(selectModel("agent", "pro", "gemini-3-flash")).toBe("agent-model");

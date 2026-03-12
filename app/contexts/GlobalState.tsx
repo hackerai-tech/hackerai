@@ -18,7 +18,7 @@ import type {
   QueueBehavior,
   SandboxPreference,
 } from "@/types/chat";
-// import { isSelectedModel } from "@/types/chat";
+import { isSelectedModel } from "@/types/chat";
 import { isChatMode } from "@/types/chat";
 import type { Todo } from "@/types";
 import {
@@ -36,8 +36,8 @@ import { toast } from "sonner";
 import {
   readChatMode,
   writeChatMode,
-  // readSelectedModelForMode,
-  // writeSelectedModelForMode,
+  readSelectedModelForMode,
+  writeSelectedModelForMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
 interface GlobalStateType {
@@ -237,19 +237,39 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [queueBehavior]);
 
-  // Model selection — currently forced to "auto" while model selector is hidden.
-  // TODO: restore localStorage persistence and mode-change syncing when re-enabled
-  // const getModeKey = (m: ChatMode): "ask" | "agent" =>
-  //   m === "agent" || m === "agent-long" ? "agent" : "ask";
-  // const [selectedModel, setSelectedModelState] = useState<SelectedModel>(() => {
-  //   const modeKey = getModeKey(chatMode);
-  //   const saved = readSelectedModelForMode(modeKey);
-  //   return isSelectedModel(saved) ? saved : "auto";
-  // });
-  // useEffect(() => { ... load saved model on mode change ... }, [chatMode]);
-  // useEffect(() => { ... persist model to localStorage ... }, [selectedModel, chatMode]);
-  const [selectedModel, setSelectedModelState] =
-    useState<SelectedModel>("auto");
+  // Model selection — only enabled for Ask mode. Agent mode always uses "auto".
+  const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
+    const saved = readSelectedModelForMode("ask");
+    return isSelectedModel(saved) ? saved : "auto";
+  });
+
+  // When switching to agent mode, force "auto". When switching to ask, restore saved preference.
+  useEffect(() => {
+    if (chatMode === "agent" || chatMode === "agent-long") {
+      setSelectedModelRaw("auto");
+    } else {
+      const saved = readSelectedModelForMode("ask");
+      if (isSelectedModel(saved)) {
+        setSelectedModelRaw(saved);
+      }
+    }
+  }, [chatMode]);
+
+  // Persist ask mode model preference to localStorage
+  useEffect(() => {
+    if (chatMode === "ask") {
+      writeSelectedModelForMode("ask", selectedModel);
+    }
+  }, [selectedModel, chatMode]);
+
+  // Wrap setter to prevent model changes in agent mode
+  const setSelectedModelState = useCallback(
+    (model: SelectedModel) => {
+      if (chatMode === "agent" || chatMode === "agent-long") return;
+      setSelectedModelRaw(model);
+    },
+    [chatMode],
+  );
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
