@@ -20,13 +20,19 @@ type PollOptions = {
   pollIntervalMs?: number;
 };
 
-type ApiEndpoint = "/api/chat" | "/api/agent" | "/api/chat/[id]/stream";
+type ApiEndpoint =
+  | "/api/chat"
+  | "/api/agent"
+  | "/api/chat/[id]/stream"
+  | "/api/agent-workflow";
 
 type PreemptiveTimeoutOptions = {
   chatId: string;
   endpoint: ApiEndpoint;
   abortController: AbortController;
   safetyBuffer?: number;
+  maxDurationOverride?: number;
+  logger?: { info(message: string, meta: Record<string, unknown>): void };
 };
 
 type CancellationSubscriberResult = {
@@ -215,20 +221,25 @@ export const createPreemptiveTimeout = ({
   endpoint,
   abortController,
   safetyBuffer = 30,
+  maxDurationOverride,
+  logger: customLogger,
 }: PreemptiveTimeoutOptions) => {
   // Use endpoint-specific max duration based on Vercel function limits
-  const maxDuration = endpoint === "/api/chat" ? 180 : 800;
+  const maxDuration =
+    maxDurationOverride ?? (endpoint === "/api/chat" ? 180 : 800);
   const maxStreamTime = (maxDuration - safetyBuffer) * 1000;
   const startTime = Date.now();
 
   let isPreemptive = false;
   let triggerTime: number | null = null;
 
+  const log = customLogger ?? nextJsAxiomLogger;
+
   const timeoutId = setTimeout(() => {
     triggerTime = Date.now();
     isPreemptive = true;
 
-    nextJsAxiomLogger.info("Preemptive timeout triggered", {
+    log.info("Preemptive timeout triggered", {
       chatId,
       endpoint,
       maxDuration,

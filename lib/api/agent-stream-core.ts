@@ -79,7 +79,7 @@ interface StreamLogger {
   flush(): Promise<void>;
 }
 
-/** Optional preemptive timeout (only used by non-workflow handler) */
+/** Optional preemptive timeout for graceful shutdown before hard function limits */
 interface PreemptiveTimeout {
   isPreemptive(): boolean;
   clear(): void;

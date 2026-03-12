@@ -6,13 +6,17 @@ import { UsageRefundTracker } from "@/lib/rate-limit/refund";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { workflowAxiomLogger } from "@/lib/axiom/workflow";
+import { createPreemptiveTimeout } from "@/lib/utils/stream-cancellation";
 
 /**
  * Workflow step that runs the full agent loop.
  * Uses the shared createAgentStreamExecute() core, piping output
  * through the Workflow's writable stream.
  *
- * No preemptive timeout is needed since Workflow supports up to 1 hour execution.
+ * Each workflow step runs as a serverless function bounded by the maxDuration
+ * configured in vercel.json (800s). A preemptive timeout aborts the stream
+ * gracefully ~30s before the hard limit so results are saved and the client
+ * receives a proper "timeout" finish reason instead of a raw failure.
  */
 export async function runAgentStep(payload: AgentTaskPayload) {
   "use step";
@@ -111,6 +115,17 @@ export async function runAgentStep(payload: AgentTaskPayload) {
 
   const userStopSignal = new AbortController();
 
+  // Each workflow step is a serverless function with maxDuration: 800s (vercel.json).
+  // Create a preemptive timeout that aborts gracefully ~30s before the hard limit,
+  // ensuring results are saved and the client receives a "timeout" finish reason.
+  const preemptiveTimeout = createPreemptiveTimeout({
+    chatId,
+    endpoint: "/api/agent-workflow",
+    abortController: userStopSignal,
+    maxDurationOverride: 800,
+    logger: workflowAxiomLogger,
+  });
+
   // Get the Workflow's writable stream for piping output to the client
   const writable = getWritable<UIMessageChunk>();
 
@@ -147,7 +162,7 @@ export async function runAgentStep(payload: AgentTaskPayload) {
     chatLogger,
     usageRefundTracker,
     abortController: userStopSignal,
-    // No preemptiveTimeout — workflow supports up to 1 hour
+    preemptiveTimeout,
   });
 
   const uiStream = createUIMessageStream({ execute });
