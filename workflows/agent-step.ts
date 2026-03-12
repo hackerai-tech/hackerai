@@ -1,6 +1,9 @@
 import { getWritable, getStepMetadata } from "workflow";
 import { createUIMessageStream, type UIMessageChunk } from "ai";
-import { createAgentStreamExecute } from "@/lib/api/agent-stream-core";
+import {
+  createAgentStreamExecute,
+  type AgentStepResult,
+} from "@/lib/api/agent-stream-core";
 import { deserializeRateLimitInfo } from "@/lib/api/rate-limit-serialization";
 import { UsageRefundTracker } from "@/lib/rate-limit/refund";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
@@ -14,7 +17,9 @@ import { workflowAxiomLogger } from "@/lib/axiom/workflow";
  *
  * No preemptive timeout is needed since Workflow supports up to 1 hour execution.
  */
-export async function runAgentStep(payload: AgentTaskPayload) {
+export async function runAgentStep(
+  payload: AgentTaskPayload,
+): Promise<AgentStepResult> {
   "use step";
 
   const { attempt, stepId } = getStepMetadata();
@@ -114,7 +119,7 @@ export async function runAgentStep(payload: AgentTaskPayload) {
   // Get the Workflow's writable stream for piping output to the client
   const writable = getWritable<UIMessageChunk>();
 
-  const execute = createAgentStreamExecute({
+  const { execute, getStepResult } = createAgentStreamExecute({
     chatId,
     userId,
     subscription,
@@ -148,6 +153,7 @@ export async function runAgentStep(payload: AgentTaskPayload) {
     usageRefundTracker,
     abortController: userStopSignal,
     // No preemptiveTimeout — workflow supports up to 1 hour
+    timeBudgetMs: 750_000, // 750s budget, 50s buffer for onFinish cleanup
   });
 
   const uiStream = createUIMessageStream({ execute });
@@ -157,6 +163,8 @@ export async function runAgentStep(payload: AgentTaskPayload) {
   // which closes the Workflow's readable side and lets WorkflowChatTransport
   // exit its read loop and transition useChat to "ready".
   await uiStream.pipeTo(writable);
+
+  return await getStepResult();
 }
 
 // Disable retries — the agent loop is not idempotent (DB writes, tool calls).

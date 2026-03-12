@@ -296,7 +296,7 @@ export const createChatHandler = (
       // Start stream timing
       chatLogger.startStream();
 
-      const execute = createAgentStreamExecute({
+      const { execute } = createAgentStreamExecute({
         chatId,
         userId,
         subscription,

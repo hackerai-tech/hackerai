@@ -37,6 +37,8 @@ import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
+  timeBudgetExceeded,
+  WORKFLOW_CHECKPOINT_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
 import {
@@ -131,6 +133,14 @@ export interface AgentStreamConfig {
 
   // Optional (only non-workflow)
   preemptiveTimeout?: PreemptiveTimeout;
+
+  // Optional (only workflow)
+  timeBudgetMs?: number;
+}
+
+export interface AgentStepResult {
+  finishReason: string;
+  messagesSnapshot?: UIMessage[];
 }
 
 /**
@@ -176,7 +186,15 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
     usageRefundTracker,
     abortController: userStopSignal,
     preemptiveTimeout,
+    timeBudgetMs,
   } = config;
+
+  let stoppedDueToTimeBudget = false;
+
+  let resolveStepResult: ((result: AgentStepResult) => void) | undefined;
+  const stepResultPromise = new Promise<AgentStepResult>((resolve) => {
+    resolveStepResult = resolve;
+  });
 
   // Set up cancellation: Redis pub/sub subscriber + AbortController
   let subscriberStopped = false;
@@ -525,6 +543,17 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                     stoppedDueToTokenExhaustion = true;
                   },
                 }),
+                ...(timeBudgetMs
+                  ? [
+                      timeBudgetExceeded({
+                        budgetMs: timeBudgetMs,
+                        getStartTime: () => streamStartTime,
+                        onFired: () => {
+                          stoppedDueToTimeBudget = true;
+                        },
+                      }),
+                    ]
+                  : []),
               ]
             : stepCountIs(getMaxStepsForUser(mode, subscription)),
           onChunk: async (chunk) => {
@@ -570,6 +599,8 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
           onFinish: async ({ finishReason, usage, response }) => {
             if (preemptiveTimeout?.isPreemptive()) {
               streamFinishReason = "timeout";
+            } else if (stoppedDueToTimeBudget) {
+              streamFinishReason = WORKFLOW_CHECKPOINT_FINISH_REASON;
             } else if (stoppedDueToTokenExhaustion) {
               streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
             } else {
@@ -795,6 +826,9 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                       }
 
                       await deductAccumulatedUsage();
+                      resolveStepResult?.({
+                        finishReason: streamFinishReason ?? "stop",
+                      });
                     },
                     sendReasoning: true,
                   }),
@@ -1046,6 +1080,10 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
             }
 
             await deductAccumulatedUsage();
+            resolveStepResult?.({
+              finishReason: streamFinishReason ?? "stop",
+              messagesSnapshot: stoppedDueToTimeBudget ? messages : undefined,
+            });
           },
           sendReasoning: true,
         }),
@@ -1093,9 +1131,10 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
         // Best-effort cleanup — don't mask the original error
       }
 
+      resolveStepResult?.({ finishReason: "error" });
       throw error;
     }
   };
 
-  return execute;
+  return { execute, getStepResult: () => stepResultPromise };
 }
