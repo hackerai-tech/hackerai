@@ -68,10 +68,11 @@ const UpgradeConfirmationDialog: React.FC<UpgradeConfirmationDialogProps> = ({
           }),
         });
 
+        const previewData = await previewRes.json().catch(() => ({}));
         if (!previewRes.ok) {
-          throw new Error("Failed to calculate upgrade preview");
+          setError(previewData.error || "Failed to calculate upgrade preview");
+          return;
         }
-        const previewData = await previewRes.json();
 
         setDetails({
           paymentMethod: previewData.paymentMethod,

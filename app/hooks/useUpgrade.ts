@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import { toast } from "sonner";
 
 export const useUpgrade = () => {
   const { user } = useAuth();
   const [upgradeLoading, setUpgradeLoading] = useState(false);
-  const [upgradeError, setUpgradeError] = useState("");
 
   const handleUpgrade = async (
     planKey?:
@@ -28,12 +28,11 @@ export const useUpgrade = () => {
     }
 
     if (!user) {
-      setUpgradeError("Please sign in to upgrade");
+      toast.error("Please sign in to upgrade");
       return;
     }
 
     setUpgradeLoading(true);
-    setUpgradeError("");
 
     try {
       const requestBody: { plan: string; quantity?: number } = {
@@ -55,12 +54,16 @@ export const useUpgrade = () => {
           body: JSON.stringify(requestBody),
         });
 
+        const data = await res.json().catch(() => ({}));
+
         if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`HTTP ${res.status}: ${text}`);
+          toast.error(
+            data.error || `Something went wrong (HTTP ${res.status})`,
+          );
+          return;
         }
 
-        const { error, url } = await res.json();
+        const { error, url } = data;
 
         if (url) {
           window.location.href = url;
@@ -68,9 +71,9 @@ export const useUpgrade = () => {
         }
 
         if (error) {
-          setUpgradeError(`Error: ${error}`);
+          toast.error(`Error: ${error}`);
         } else {
-          setUpgradeError("Unknown error creating checkout session");
+          toast.error("Unknown error creating checkout session");
         }
       } else {
         // For existing subscribers, use immediate subscription update
@@ -87,12 +90,14 @@ export const useUpgrade = () => {
           }),
         });
 
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`HTTP ${res.status}: ${text}`);
-        }
+        const result = await res.json().catch(() => ({}));
 
-        const result = await res.json();
+        if (!res.ok) {
+          toast.error(
+            result.error || `Something went wrong (HTTP ${res.status})`,
+          );
+          return;
+        }
 
         if (result.success) {
           // Subscription updated successfully, refresh to show new plan
@@ -104,17 +109,17 @@ export const useUpgrade = () => {
           // Payment failed, redirect to invoice payment page
           window.location.href = result.invoiceUrl;
         } else if (result.error) {
-          setUpgradeError(`Error: ${result.error}`);
+          toast.error(`Error: ${result.error}`);
         } else {
-          setUpgradeError("Unknown error updating subscription");
+          toast.error("Unknown error updating subscription");
         }
       }
     } catch (err) {
       // Surface real error messages when err is an Error
       if (err instanceof Error) {
-        setUpgradeError(err.message);
+        toast.error(err.message);
       } else {
-        setUpgradeError("An unexpected error occurred");
+        toast.error("An unexpected error occurred");
       }
     } finally {
       setUpgradeLoading(false);
@@ -123,8 +128,6 @@ export const useUpgrade = () => {
 
   return {
     upgradeLoading,
-    upgradeError,
     handleUpgrade,
-    setUpgradeError,
   };
 };
