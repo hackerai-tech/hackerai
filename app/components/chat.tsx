@@ -391,7 +391,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         tauriCmdServerRef.current
       ) {
         const { port, token } = tauriCmdServerRef.current;
-        const input = toolCall.args as {
+        const input = toolCall.input as {
           command: string;
           is_background: boolean;
           timeout?: number;
