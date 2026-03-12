@@ -49,25 +49,20 @@ async function detachAllPaymentMethods(customerId: string): Promise<void> {
   }
 }
 
-/** Mark the Stripe customer as blocked via metadata. */
+/** Mark the Stripe customer as blocked via metadata. Throws on failure
+ *  so the webhook returns 500 and Stripe retries — without this flag the
+ *  subscribe/upgrade routes cannot enforce the block. */
 async function markCustomerBlocked(
   customerId: string,
   reason: string,
 ): Promise<void> {
-  try {
-    await stripe.customers.update(customerId, {
-      metadata: {
-        blocked: "true",
-        blocked_at: new Date().toISOString(),
-        blocked_reason: reason,
-      },
-    });
-  } catch (err) {
-    console.warn(
-      `[Fraud Webhook] Failed to mark customer ${customerId} as blocked:`,
-      err,
-    );
-  }
+  await stripe.customers.update(customerId, {
+    metadata: {
+      blocked: "true",
+      blocked_at: new Date().toISOString(),
+      blocked_reason: reason,
+    },
+  });
 }
 
 /** Report a charge as fraudulent — feeds Stripe Radar's ML models. */
@@ -265,12 +260,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Idempotency check
+  // Atomic idempotency claim — marks the event immediately to prevent
+  // concurrent deliveries from both passing the check (TOCTOU race).
+  // Stripe operations below are idempotent, so duplicate runs are safe
+  // if the claim write succeeds but processing partially fails.
   try {
     const result = await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
       serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
       eventId: event.id,
-      checkOnly: true,
     });
 
     if (result.alreadyProcessed) {
@@ -299,19 +296,6 @@ export async function POST(req: NextRequest) {
       await handleDisputeCreated(event.data.object as Stripe.Dispute);
       break;
     }
-  }
-
-  // Mark as processed
-  try {
-    await convex.mutation(api.extraUsage.checkAndMarkWebhook, {
-      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
-      eventId: event.id,
-    });
-  } catch (error) {
-    console.error(
-      `[Fraud Webhook] Failed to mark event ${event.id} as processed:`,
-      error,
-    );
   }
 
   return NextResponse.json({ received: true });
