@@ -45,6 +45,8 @@ export async function GET(
 
     // Check if the run is still active
     const status = await run.status;
+    console.log(`[workflow-reconnect] runId=${runId} status=${status}`);
+
     if (status !== "running") {
       // Run completed — return an empty stream with a finish event so
       // WorkflowChatTransport's reconnect loop terminates cleanly.
@@ -57,11 +59,14 @@ export async function GET(
       ? Math.max(0, parseInt(startIndexParam, 10) || 0)
       : undefined;
 
+    console.log(
+      `[workflow-reconnect] resuming stream from startIndex=${startIndex}`,
+    );
     const stream = run.getReadable({ startIndex });
 
     return createUIMessageStreamResponse({ stream });
   } catch (error) {
-    console.error("Failed to reconnect to workflow stream:", error);
+    console.error("[workflow-reconnect] Failed to reconnect:", error);
     // Return an empty finish stream so the transport doesn't retry endlessly
     return emptyFinishResponse();
   }

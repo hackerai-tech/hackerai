@@ -8,8 +8,10 @@ import { getUserFriendlyProviderError } from "@/lib/utils/error-utils";
 import { startStream } from "@/lib/db/actions";
 import type { NextRequest } from "next/server";
 
-// Only needs to cover the start() call and pre-processing, not the full agent execution.
-// The actual agent runs inside the Workflow step (up to 1 hour).
+// Covers start() + startStream() + initial streaming. The actual agent
+// execution runs inside Workflow steps (up to 1 hour). If this function
+// times out, WorkflowChatTransport automatically reconnects to the stream
+// via GET /api/agent-workflow/[id]/stream using the persisted active_stream_id.
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
