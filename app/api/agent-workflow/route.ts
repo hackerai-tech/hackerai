@@ -8,11 +8,12 @@ import { getUserFriendlyProviderError } from "@/lib/utils/error-utils";
 import { startStream } from "@/lib/db/actions";
 import type { NextRequest } from "next/server";
 
-// Covers start() + startStream() + initial streaming. The actual agent
-// execution runs inside Workflow steps (up to 1 hour). If this function
-// times out, WorkflowChatTransport automatically reconnects to the stream
-// via GET /api/agent-workflow/[id]/stream using the persisted active_stream_id.
-export const maxDuration = 60;
+// This route streams workflow output via run.readable for its entire lifetime.
+// Set to 800s (Vercel Pro max) to avoid reconnection for most agent runs.
+// The reconnect path (GET /api/agent-workflow/[id]/stream) handles runs that
+// exceed 800s, but delivers buffered chunks as a burst rather than streaming,
+// so we maximize the initial connection window to preserve smooth streaming UX.
+export const maxDuration = 800;
 
 export async function POST(req: NextRequest) {
   let chatId: string | undefined;
