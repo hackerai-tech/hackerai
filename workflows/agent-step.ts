@@ -1,4 +1,4 @@
-import { getWritable, getStepMetadata } from "workflow";
+import { getStepMetadata } from "workflow";
 import { createUIMessageStream, type UIMessageChunk } from "ai";
 import {
   createAgentStreamExecute,
@@ -19,6 +19,7 @@ import { workflowAxiomLogger } from "@/lib/axiom/workflow";
  */
 export async function runAgentStep(
   payload: AgentTaskPayload,
+  writable: WritableStream<UIMessageChunk>,
 ): Promise<AgentStepResult> {
   "use step";
 
@@ -116,9 +117,6 @@ export async function runAgentStep(
 
   const userStopSignal = new AbortController();
 
-  // Get the Workflow's writable stream for piping output to the client
-  const writable = getWritable<UIMessageChunk>();
-
   const { execute, getStepResult } = createAgentStreamExecute({
     chatId,
     userId,
@@ -159,10 +157,10 @@ export async function runAgentStep(
   const uiStream = createUIMessageStream({ execute });
 
   // Pipe the UIMessageStream output to the Workflow's writable stream.
-  // pipeTo() closes the writable when the readable ends (signals "no more data"),
-  // which closes the Workflow's readable side and lets WorkflowChatTransport
-  // exit its read loop and transition useChat to "ready".
-  await uiStream.pipeTo(writable);
+  // preventClose keeps the writable open so the workflow can continue
+  // piping from subsequent steps after a time-budget checkpoint.
+  // The workflow closes the writable after the loop exits.
+  await uiStream.pipeTo(writable, { preventClose: true });
 
   return await getStepResult();
 }

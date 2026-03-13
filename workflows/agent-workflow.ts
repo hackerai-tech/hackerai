@@ -1,5 +1,6 @@
+import { getWritable } from "workflow";
+import { generateId, type UIMessageChunk } from "ai";
 import { runAgentStep } from "./agent-step";
-import { generateId } from "ai";
 import { WORKFLOW_CHECKPOINT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
 
@@ -13,15 +14,21 @@ const MAX_CONTINUATIONS = 50;
  * If the agent loop hits the 750s time budget, the step returns a
  * "workflow-checkpoint" finish reason and the workflow loops to continue
  * in a fresh step with the same session context.
+ *
+ * The writable stream is obtained at the workflow level and passed into each
+ * step. Steps pipe into it with preventClose so the stream stays open across
+ * continuations. The writable is only closed here after the loop exits.
  */
 export async function agentWorkflow(input: AgentTaskPayload) {
   "use workflow";
+
+  const writable = getWritable<UIMessageChunk>();
 
   let payload = input;
   let continuations = 0;
 
   while (continuations < MAX_CONTINUATIONS) {
-    const result = await runAgentStep(payload);
+    const result = await runAgentStep(payload, writable);
 
     if (result.finishReason !== WORKFLOW_CHECKPOINT_FINISH_REASON) break;
     if (!result.messagesSnapshot?.length) break;
@@ -38,4 +45,6 @@ export async function agentWorkflow(input: AgentTaskPayload) {
       hasSandboxFiles: false,
     };
   }
+
+  await writable.close();
 }
