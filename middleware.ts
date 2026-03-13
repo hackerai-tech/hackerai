@@ -1,5 +1,6 @@
 import { authkit } from "@workos-inc/authkit-nextjs";
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
+import { isRateLimitError } from "@/lib/api/response";
 
 const UNAUTHENTICATED_PATHS = new Set([
   "/",
@@ -67,15 +68,43 @@ export default async function middleware(
     }
   }
 
+  let refreshHitRateLimit = false;
+  const hadSessionCookie = request.cookies.has("wos-session");
+
   const { session, headers, authorizationUrl } = await authkit(request, {
     redirectUri: getRedirectUri(),
     eagerAuth: true,
+    onSessionRefreshError: ({ error }) => {
+      if (isRateLimitError(error)) {
+        refreshHitRateLimit = true;
+        console.warn(
+          "[Auth Middleware] WorkOS rate limit hit during session refresh",
+        );
+      }
+    },
   });
 
   const requestHeaders = buildRequestHeaders(request, headers);
   const responseHeaders = buildResponseHeaders(headers);
 
   if (session.user || isUnauthenticatedPath(pathname)) {
+    return NextResponse.next({
+      request: { headers: requestHeaders },
+      headers: responseHeaders,
+    });
+  }
+
+  // If rate-limited (not a real session expiry), don't redirect to login
+  if (hadSessionCookie && refreshHitRateLimit) {
+    if (!isBrowserRequest(request)) {
+      const rateLimitHeaders = new Headers(responseHeaders);
+      rateLimitHeaders.set("Retry-After", "5");
+      return NextResponse.json(
+        { code: "rate_limited", message: "Please retry shortly." },
+        { status: 503, headers: rateLimitHeaders },
+      );
+    }
+    // For browser requests, let through rather than forcing a confusing login redirect
     return NextResponse.next({
       request: { headers: requestHeaders },
       headers: responseHeaders,
