@@ -10,7 +10,6 @@ import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
-import { MatchToolHandler } from "./tools/MatchToolHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
@@ -210,9 +209,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return (
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
       );
-
-    case "tool-match":
-      return <MatchToolHandler part={part} status={status} />;
 
     default:
       return null;

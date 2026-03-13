@@ -156,14 +156,6 @@ ${agentSpecificNote}
 Bias towards not asking the user for help if you can find the answer yourself.
 </maximize_context_understanding>
 
-<tool_usage_policy>
-Use specialized search tools instead of terminal commands for file operations:
-- File search by name/pattern: Use the match tool with glob action (NOT find/ls in terminal)
-- Content search in files: Use the match tool with grep action (NOT grep/rg in terminal)
-- Read files: Use the file tool (NOT cat/head/tail in terminal)
-Reserve the terminal tool exclusively for system commands and operations that require shell execution.
-</tool_usage_policy>
-
 Do what has been asked; nothing more, nothing less.
 NEVER create files unless they're absolutely necessary for achieving your goal.
 ALWAYS prefer editing an existing file to creating a new one.

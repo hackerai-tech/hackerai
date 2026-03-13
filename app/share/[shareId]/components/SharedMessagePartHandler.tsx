@@ -12,7 +12,6 @@ import {
   FileIcon,
   ListTodo,
   NotebookPen,
-  FolderSearch,
   FileDown,
   ExternalLink,
   Globe,
@@ -138,11 +137,6 @@ export const SharedMessagePartHandler = ({
   // Open URL
   if (part.type === "tool-open_url") {
     return renderOpenUrlTool(part, idx);
-  }
-
-  // Match tool (glob/grep)
-  if (part.type === "tool-match") {
-    return renderMatchTool(part, idx, openSidebar);
   }
 
   // Get terminal files
@@ -479,84 +473,6 @@ function renderOpenUrlTool(part: MessagePart, idx: number) {
         icon={<ExternalLink aria-hidden="true" />}
         action="Opened URL"
         target={urlInput?.url}
-      />
-    );
-  }
-  return null;
-}
-
-// Match tool renderer (glob/grep)
-function renderMatchTool(
-  part: MessagePart,
-  idx: number,
-  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
-) {
-  const matchInput = part.input as {
-    action?: "glob" | "grep";
-    scope?: string;
-    regex?: string;
-  };
-  const matchOutput = part.output as { output?: string };
-  const isGlob = matchInput?.action === "glob";
-
-  const getTarget = () => {
-    if (!matchInput?.scope) return undefined;
-    if (!isGlob && matchInput.regex) {
-      return `"${matchInput.regex}" in ${matchInput.scope}`;
-    }
-    return matchInput.scope;
-  };
-
-  const getResultLabel = (outputText: string) => {
-    if (outputText.startsWith("Found ")) {
-      const match = outputText.match(/^Found (\d+) (file|match)/);
-      if (match) {
-        const count = parseInt(match[1], 10);
-        const type = match[2];
-        if (type === "file") {
-          return `Found ${count} file${count === 1 ? "" : "s"}`;
-        }
-        return `Found ${count} match${count === 1 ? "" : "es"}`;
-      }
-    }
-    if (outputText.startsWith("No files found")) return "No files found";
-    if (outputText.startsWith("No matches found")) return "No matches found";
-    if (outputText.startsWith("Search timed out")) return "Search timed out";
-    if (
-      outputText.startsWith("Error:") ||
-      outputText.startsWith("Search failed")
-    )
-      return "Search failed";
-    return "Search complete";
-  };
-
-  if (part.state === "output-available") {
-    const outputText = matchOutput?.output || "";
-
-    const handleOpenInSidebar = () => {
-      openSidebar({
-        path: matchInput?.scope || "",
-        content: outputText || "No results",
-        action: "searching",
-      });
-    };
-
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        handleOpenInSidebar();
-      }
-    };
-
-    return (
-      <ToolBlock
-        key={idx}
-        icon={<FolderSearch aria-hidden="true" />}
-        action={getResultLabel(outputText)}
-        target={getTarget()}
-        isClickable={true}
-        onClick={handleOpenInSidebar}
-        onKeyDown={handleKeyDown}
       />
     );
   }

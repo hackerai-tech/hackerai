@@ -19,7 +19,10 @@ import {
   createUpdateNote,
   createDeleteNote,
 } from "./notes";
-import { createMatch } from "./match";
+// match tool removed — usage analytics showed it wasn't being used enough to justify
+// the added complexity. Codex doesn't provide grep/glob tools either, and for simplicity
+// and effectiveness the agent should use run_terminal_cmd with rg instead.
+// import { createMatch } from "./match";
 import type { UIMessageStreamWriter } from "ai";
 import type {
   ChatMode,
@@ -123,7 +126,6 @@ export const createTools = (
       get_terminal_files: createGetTerminalFiles(context),
     }),
     file: createFile(context),
-    match: createMatch(context),
     todo_write: createTodoWrite(context),
     // ...(!isTemporary &&
     //   memoryEnabled && { update_memory: createUpdateMemory(context) }),
