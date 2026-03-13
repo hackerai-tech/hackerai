@@ -156,11 +156,22 @@ export async function runAgentStep(
 
   const uiStream = createUIMessageStream({ execute });
 
-  // Pipe the UIMessageStream output to the Workflow's writable stream.
+  // Strip the "finish" chunk from the UIMessageStream so the client doesn't
+  // see it mid-workflow. The workflow sends a single finish event after all
+  // steps complete. Without this, WorkflowChatTransport would interpret the
+  // per-step finish as "chat is done" and stop listening.
+  const stripFinish = new TransformStream<UIMessageChunk, UIMessageChunk>({
+    transform(chunk, controller) {
+      if ("type" in chunk && chunk.type === "finish") return;
+      controller.enqueue(chunk);
+    },
+  });
+
   // preventClose keeps the writable open so the workflow can continue
   // piping from subsequent steps after a time-budget checkpoint.
-  // The workflow closes the writable after the loop exits.
-  await uiStream.pipeTo(writable, { preventClose: true });
+  await uiStream
+    .pipeThrough(stripFinish)
+    .pipeTo(writable, { preventClose: true });
 
   return await getStepResult();
 }

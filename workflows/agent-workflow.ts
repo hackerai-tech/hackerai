@@ -46,5 +46,9 @@ export async function agentWorkflow(input: AgentTaskPayload) {
     };
   }
 
+  // Send the finish event that steps intentionally strip, then close.
+  const writer = writable.getWriter();
+  await writer.write({ type: "finish", finishReason: "stop" });
+  writer.releaseLock();
   await writable.close();
 }
