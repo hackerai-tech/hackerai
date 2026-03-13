@@ -166,7 +166,3 @@ export async function runAgentStep(
 
   return await getStepResult();
 }
-
-// Disable retries — the agent loop is not idempotent (DB writes, tool calls).
-// Retrying restarts from scratch, wasting compute and duplicating side effects.
-runAgentStep.maxRetries = 0;
