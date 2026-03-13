@@ -16,7 +16,6 @@ export type SelectedModel =
   | "sonnet-4.6"
   | "gemini-3.1-pro"
   | "grok-4.1"
-  | "grok-4.2-beta"
   | "gemini-3-flash"
   | "gpt-5.4";
 
@@ -25,7 +24,6 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "sonnet-4.6",
   "gemini-3.1-pro",
   "grok-4.1",
-  "grok-4.2-beta",
   "gemini-3-flash",
   "gpt-5.4",
 ];

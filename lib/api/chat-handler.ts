@@ -98,6 +98,10 @@ import {
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
+import {
+  pruneToolOutputs,
+  pruneModelMessages,
+} from "@/lib/chat/compaction/prune-tool-outputs";
 
 function getStreamContext() {
   try {
@@ -583,6 +587,12 @@ export const createChatHandler = (
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
+                  // Prune old tool outputs to stay within rolling token budget
+                  const pruneResult = pruneToolOutputs(finalMessages);
+                  if (pruneResult.prunedCount > 0) {
+                    finalMessages = pruneResult.messages;
+                  }
+
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
@@ -645,6 +655,16 @@ export const createChatHandler = (
                     }
                   }
 
+                  // Prune old tool-result outputs in model-level messages
+                  // (these accumulate during the agentic loop, up to 100 tool calls)
+                  let currentMessages = messages as Array<
+                    Record<string, unknown>
+                  >;
+                  const modelPrune = pruneModelMessages(currentMessages);
+                  if (modelPrune.prunedCount > 0) {
+                    currentMessages = modelPrune.messages;
+                  }
+
                   const lastStep = Array.isArray(steps)
                     ? steps.at(-1)
                     : undefined;
@@ -663,13 +683,13 @@ export const createChatHandler = (
                     );
 
                   if (!wasNoteModified) {
-                    return { messages };
+                    return { messages: currentMessages as typeof messages };
                   }
 
                   // Update the notes block within the existing messages,
                   // preserving the full conversation history (tool calls/results)
                   const updatedMessages = await refreshNotesInModelMessages(
-                    messages as Array<Record<string, unknown>>,
+                    currentMessages,
                     noteInjectionOpts,
                   );
 

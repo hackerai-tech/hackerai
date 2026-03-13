@@ -730,7 +730,14 @@ export async function saveChatSummary({
   } catch (error) {
     console.error("[DB Actions] Failed to save chat summary", {
       chatId,
+      summaryUpToMessageId,
+      summaryTextLength: summaryText.length,
+      summaryTextSizeKB: Math.round(
+        Buffer.byteLength(summaryText, "utf-8") / 1024,
+      ),
       error: error instanceof Error ? error.message : String(error),
+      errorType: error instanceof Error ? error.constructor.name : typeof error,
+      stack: error instanceof Error ? error.stack : undefined,
     });
     throw new ChatSDKError(
       "bad_request:database",
