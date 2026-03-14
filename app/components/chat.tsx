@@ -572,11 +572,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Sync Convex real-time data with useChat messages.
   // Uses statusRef (not status state) so this effect only fires when
   // paginatedMessages.results actually changes — not on status transitions.
-  // This prevents the flicker on stream stop: when status flips to "ready",
-  // the stale DB data would overwrite the freshly-normalized local messages
-  // before saveAssistantMessage propagates back through the reactive query.
+  // Guards against BOTH "streaming" and "submitted" statuses to prevent
+  // Convex real-time updates from overwriting useChat's in-flight state.
+  // Without the "submitted" guard, a race condition occurs in production:
+  // Convex receives the user message (via handleInitialChatAndUserMessage)
+  // and pushes a subscription update before the first streaming chunk arrives,
+  // resetting useChat's messages and causing an empty AI response.
   useEffect(() => {
-    if (statusRef.current === "streaming") {
+    if (
+      statusRef.current === "streaming" ||
+      statusRef.current === "submitted"
+    ) {
       return;
     }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
