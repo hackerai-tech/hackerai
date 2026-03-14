@@ -33,6 +33,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "centrifuge": "^5.0.0",
     "convex": "^1.29.2"
   },
   "devDependencies": {

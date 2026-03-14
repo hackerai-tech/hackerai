@@ -1,6 +1,6 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxManager, SandboxType } from "@/types";
-import { ConvexSandbox } from "./convex-sandbox";
+import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
 import { TauriSandbox } from "./tauri-sandbox";
 import { ensureSandboxConnection } from "./sandbox";
 import { ConvexHttpClient } from "convex/browser";
@@ -9,7 +9,7 @@ import { PREINSTALLED_PENTESTING_TOOLS } from "@/lib/system-prompt";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 
-type SandboxInstance = Sandbox | ConvexSandbox | TauriSandbox;
+type SandboxInstance = Sandbox | CentrifugoSandbox | TauriSandbox;
 
 export type SandboxPreference = "e2b" | "tauri" | string; // "e2b", "tauri", or connectionId
 
@@ -42,7 +42,7 @@ interface ConnectionInfo {
 
 /**
  * Hybrid sandbox manager that automatically switches between
- * local Convex sandbox and E2B cloud sandbox based on user preference
+ * local Centrifugo sandbox and E2B cloud sandbox based on user preference
  * and connection availability.
  *
  * Supports:
@@ -143,18 +143,18 @@ export class HybridSandboxManager implements SandboxManager {
     if (this.sandbox instanceof TauriSandbox) {
       return this.sandbox.getOsContext();
     }
-    if (this.sandbox instanceof ConvexSandbox) {
+    if (this.sandbox instanceof CentrifugoSandbox) {
       return this.sandbox.getOsContext();
     }
     return null;
   }
 
   /**
-   * Close current sandbox if it's a ConvexSandbox (to prevent WebSocket leaks)
+   * Close current sandbox if it's a CentrifugoSandbox (to prevent WebSocket leaks)
    */
   private async closeCurrentSandbox(): Promise<void> {
     if (
-      this.sandbox instanceof ConvexSandbox ||
+      this.sandbox instanceof CentrifugoSandbox ||
       this.sandbox instanceof TauriSandbox
     ) {
       await this.sandbox.close().catch((err) => {
@@ -260,7 +260,7 @@ export class HybridSandboxManager implements SandboxManager {
         this.currentConnectionId !== preferredConnection.connectionId ||
         !this.sandbox
       ) {
-        await this.useConvexConnection(preferredConnection);
+        await this.useCentrifugoConnection(preferredConnection);
       }
 
       return { sandbox: this.sandbox! };
@@ -269,7 +269,7 @@ export class HybridSandboxManager implements SandboxManager {
     // If preferred connection not available, check if any connection is available
     if (connections.length > 0) {
       const firstAvailable = connections[0];
-      await this.useConvexConnection(firstAvailable);
+      await this.useCentrifugoConnection(firstAvailable);
 
       // Record fallback info for notification
       this.pendingFallbackInfo = {
@@ -339,15 +339,22 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Create and wire up a ConvexSandbox for the given connection.
+   * Create and wire up a CentrifugoSandbox for the given connection.
    */
-  private async useConvexConnection(connection: ConnectionInfo): Promise<void> {
+  private async useCentrifugoConnection(
+    connection: ConnectionInfo,
+  ): Promise<void> {
     await this.closeCurrentSandbox();
-    this.sandbox = new ConvexSandbox(
+    const centrifugoConfig: CentrifugoConfig = {
+      apiUrl: process.env.CENTRIFUGO_API_URL!,
+      apiKey: process.env.CENTRIFUGO_API_KEY!,
+      wsUrl: process.env.CENTRIFUGO_WS_URL!,
+      tokenSecret: process.env.CENTRIFUGO_TOKEN_SECRET!,
+    };
+    this.sandbox = new CentrifugoSandbox(
       this.userID,
-      this.convexUrl,
       connection,
-      this.serviceKey,
+      centrifugoConfig,
     );
     this.isLocal = true;
     this.isTauri = false;
@@ -389,7 +396,7 @@ export class HybridSandboxManager implements SandboxManager {
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
     this.isTauri = sandbox instanceof TauriSandbox;
-    this.isLocal = sandbox instanceof ConvexSandbox || this.isTauri;
+    this.isLocal = sandbox instanceof CentrifugoSandbox || this.isTauri;
     this.setSandboxCallback(sandbox);
   }
 

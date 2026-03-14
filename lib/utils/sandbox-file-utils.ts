@@ -85,14 +85,14 @@ export const collectSandboxFiles = (
 
 /**
  * Downloads a file from URL to sandbox path
- * Works with both E2B and ConvexSandbox
+ * Works with both E2B and CentrifugoSandbox
  */
 const downloadFileToSandbox = async (
   sandbox: any,
   url: string,
   localPath: string,
 ): Promise<void> => {
-  // ConvexSandbox has downloadFromUrl method
+  // CentrifugoSandbox has downloadFromUrl method
   if (sandbox.files?.downloadFromUrl) {
     return sandbox.files.downloadFromUrl(url, localPath);
   }

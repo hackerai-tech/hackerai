@@ -36,8 +36,8 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 
 /**
- * Check if a sandbox instance is an E2B Sandbox (vs local ConvexSandbox)
- * E2B Sandbox has jupyterUrl property, ConvexSandbox does not
+ * Check if a sandbox instance is an E2B Sandbox (vs local CentrifugoSandbox)
+ * E2B Sandbox has jupyterUrl property, CentrifugoSandbox does not
  */
 export const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
   return s !== null && "jupyterUrl" in s;

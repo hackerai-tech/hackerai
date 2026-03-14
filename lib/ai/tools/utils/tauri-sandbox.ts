@@ -135,7 +135,7 @@ function processStreamChunk(
  * Tauri-based sandbox that executes commands directly on the local machine
  * via the Tauri desktop app's built-in HTTP command server.
  *
- * Replaces ConvexSandbox for desktop app users — commands go directly
+ * Replaces CentrifugoSandbox for desktop app users — commands go directly
  * to localhost instead of round-tripping through Convex cloud.
  */
 export class TauriSandbox extends EventEmitter {

@@ -1,0 +1,16 @@
+{
+  "allowed_origins": ["https://hackerai.co", "http://localhost:3000"],
+  "namespaces": [
+    {
+      "name": "sandbox",
+      "allow_subscribe_for_client": true,
+      "allow_publish_for_subscriber": true,
+      "presence": true,
+      "join_leave": true,
+      "history_size": 0,
+      "history_ttl": "0s"
+    }
+  ],
+  "uni_sse": true,
+  "uni_http_stream": true
+}

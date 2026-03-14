@@ -69,7 +69,7 @@ export async function uploadSandboxFileToConvex(args: {
   const mediaType = DEFAULT_MEDIA_TYPE;
   const name = fullPath.split("/").pop() || "file";
 
-  // For ConvexSandbox, always upload directly from sandbox to S3
+  // For CentrifugoSandbox, always upload directly from sandbox to S3
   // This avoids data corruption and size limits when piping through Convex commands
   if (!isE2BSandbox(sandbox) && sandbox.files?.uploadToUrl) {
     const { uploadUrl, s3Key } = await generateS3UploadUrl(

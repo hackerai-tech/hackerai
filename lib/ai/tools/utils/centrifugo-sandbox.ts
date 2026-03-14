@@ -1,6 +1,12 @@
 import { EventEmitter } from "events";
-import { ConvexHttpClient, ConvexClient } from "convex/browser";
-import { api } from "@/convex/_generated/api";
+import { Centrifuge, type Subscription } from "centrifuge";
+import { publishCommand } from "@/lib/centrifugo/client";
+import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
+import {
+  sandboxChannel,
+  type SandboxMessage,
+  type CommandMessage,
+} from "@/lib/centrifugo/types";
 import { getPlatformDisplayName } from "./platform-utils";
 
 interface CommandResult {
@@ -8,13 +14,6 @@ interface CommandResult {
   stderr: string;
   exitCode: number;
   pid?: number;
-}
-
-interface SignedSession {
-  userId: string;
-  connectionId: string;
-  expiresAt: number;
-  signature: string;
 }
 
 interface OsInfo {
@@ -32,27 +31,27 @@ interface ConnectionInfo {
   containerId?: string;
 }
 
+export interface CentrifugoConfig {
+  apiUrl: string;
+  apiKey: string;
+  wsUrl: string;
+  tokenSecret: string;
+}
+
 /**
- * Convex-based sandbox that implements E2B-compatible interface
- * Uses Convex real-time subscriptions for command execution
+ * Centrifugo-based sandbox that implements E2B-compatible interface.
+ * Uses Centrifugo pub/sub for real-time command streaming,
+ * replacing the Convex-based relay.
  */
-export class ConvexSandbox extends EventEmitter {
-  private convex: ConvexHttpClient;
-  private realtimeClient: ConvexClient;
-  private connectionInfo: ConnectionInfo;
-  // Track active subscriptions for cleanup on close
-  private activeSubscriptions: Set<() => void> = new Set();
+export class CentrifugoSandbox extends EventEmitter {
+  private activeClients: Centrifuge[] = [];
 
   constructor(
     private userId: string,
-    convexUrl: string,
-    connectionInfo: ConnectionInfo,
-    private serviceKey: string,
+    private connectionInfo: ConnectionInfo,
+    private config: CentrifugoConfig,
   ) {
     super();
-    this.convex = new ConvexHttpClient(convexUrl);
-    this.realtimeClient = new ConvexClient(convexUrl);
-    this.connectionInfo = connectionInfo;
   }
 
   /**
@@ -88,7 +87,6 @@ Commands run inside the Docker container with network access.`;
     return this.getSandboxContext();
   }
 
-  // E2B-compatible interface: commands.run()
   commands = {
     run: async (
       command: string,
@@ -99,7 +97,6 @@ Commands run inside the Docker container with network access.`;
         background?: boolean;
         onStdout?: (data: string) => void;
         onStderr?: (data: string) => void;
-        // Display name for CLI output (empty string = hide, undefined = show command)
         displayName?: string;
       },
     ): Promise<{
@@ -110,84 +107,51 @@ Commands run inside the Docker container with network access.`;
     }> => {
       const commandId = crypto.randomUUID();
       const timeout = opts?.timeoutMs ?? 30000;
+      const channel = sandboxChannel(this.userId);
 
-      // Enqueue command in Convex and get signed session for result subscription
-      const enqueueResult = await this.convex.mutation(
-        api.localSandbox.enqueueCommand,
-        {
-          serviceKey: this.serviceKey,
-          userId: this.userId,
-          connectionId: this.connectionInfo.connectionId,
-          commandId,
-          command,
-          env: opts?.envVars,
-          cwd: opts?.cwd,
-          timeout,
-          background: opts?.background,
-          displayName: opts?.displayName,
-        },
-      );
+      // Generate short-lived JWT for this subscription (30s + command timeout)
+      const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
+      const token = generateCentrifugoToken(this.userId, tokenExpSeconds);
 
-      if (!enqueueResult.session) {
-        throw new Error("Failed to get session for command subscription");
-      }
+      // Create a centrifuge client for this command
+      const client = new Centrifuge(this.config.wsUrl, {
+        token,
+      });
+      this.activeClients.push(client);
 
-      // Wait for result with timeout, using signed session for secure subscription
-      const result = await this.waitForResult(
-        commandId,
-        timeout,
-        enqueueResult.session,
-      );
+      const result = await new Promise<CommandResult>((resolve, reject) => {
+        let stdout = "";
+        let stderr = "";
+        let settled = false;
+        let timeoutId: NodeJS.Timeout | undefined;
+        let subscription: Subscription | undefined;
 
-      // Stream output if handlers provided (not applicable for background)
-      if (!opts?.background) {
-        if (opts?.onStdout && result.stdout) {
-          opts.onStdout(result.stdout);
-        }
-        if (opts?.onStderr && result.stderr) {
-          opts.onStderr(result.stderr);
-        }
-      }
+        const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
-      // Output is already truncated by the local sandbox before submission
-      return {
-        stdout: result.stdout || "",
-        stderr: result.stderr || "",
-        exitCode: result.exitCode ?? -1, // -1 indicates unknown exit status
-        pid: result.pid,
-      };
-    },
-  };
+        const cleanup = () => {
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = undefined;
+          }
+          if (subscription) {
+            try {
+              subscription.unsubscribe();
+              subscription.removeAllListeners();
+            } catch {
+              // Ignore errors during cleanup
+            }
+          }
+          try {
+            client.disconnect();
+          } catch {
+            // Ignore errors during disconnect
+          }
+          const idx = this.activeClients.indexOf(client);
+          if (idx !== -1) {
+            this.activeClients.splice(idx, 1);
+          }
+        };
 
-  private async waitForResult(
-    commandId: string,
-    timeout: number,
-    session: SignedSession,
-  ): Promise<CommandResult> {
-    const maxWaitTime = timeout + 5000; // Add 5s buffer for network
-
-    let timeoutId: NodeJS.Timeout | undefined;
-    let unsubscribe: (() => void) | undefined;
-    let settled = false;
-
-    const cleanup = () => {
-      if (timeoutId) {
-        clearTimeout(timeoutId);
-        timeoutId = undefined;
-      }
-      if (unsubscribe) {
-        this.activeSubscriptions.delete(unsubscribe);
-        try {
-          unsubscribe();
-        } catch {
-          // Ignore errors during unsubscribe (client may already be closed)
-        }
-        unsubscribe = undefined;
-      }
-    };
-
-    try {
-      return await new Promise<CommandResult>((resolve, reject) => {
         // Set up timeout
         timeoutId = setTimeout(() => {
           if (!settled) {
@@ -197,69 +161,113 @@ Commands run inside the Docker container with network access.`;
           }
         }, maxWaitTime);
 
-        // Subscribe to result using real-time client with signed session
-        unsubscribe = this.realtimeClient.onUpdate(
-          api.localSandbox.subscribeToResult,
-          { commandId, session },
-          (result) => {
-            if (settled) return; // Ignore updates after settlement
+        // Subscribe to the sandbox channel
+        subscription = client.newSubscription(channel);
 
-            // Handle session auth errors
-            if (result?.authError) {
+        subscription.on("publication", (ctx) => {
+          if (settled) return;
+
+          const message = ctx.data as SandboxMessage;
+          if (message.commandId !== commandId) return;
+
+          switch (message.type) {
+            case "stdout":
+              stdout += message.data;
+              opts?.onStdout?.(message.data);
+              break;
+            case "stderr":
+              stderr += message.data;
+              opts?.onStderr?.(message.data);
+              break;
+            case "exit":
+              settled = true;
+              cleanup();
+              resolve({
+                stdout,
+                stderr,
+                exitCode: message.exitCode,
+                pid: message.pid,
+              });
+              break;
+            case "error":
+              settled = true;
+              cleanup();
+              resolve({
+                stdout,
+                stderr: stderr + message.message,
+                exitCode: -1,
+              });
+              break;
+          }
+        });
+
+        subscription.on("error", (ctx) => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            reject(
+              new Error(
+                `Centrifugo subscription error: ${ctx.error?.message ?? "unknown"}`,
+              ),
+            );
+          }
+        });
+
+        // Wait for subscription to be fully established before publishing command.
+        // "subscribed" fires after the server confirms the subscription,
+        // ensuring we receive messages published to the channel.
+        subscription.on("subscribed", () => {
+          const commandMessage: CommandMessage = {
+            type: "command",
+            commandId,
+            command,
+            env: opts?.envVars,
+            cwd: opts?.cwd,
+            timeout,
+            background: opts?.background,
+            displayName: opts?.displayName,
+          };
+
+          publishCommand(channel, commandMessage).catch((err: unknown) => {
+            if (!settled) {
               settled = true;
               cleanup();
               reject(
                 new Error(
-                  "Session expired or invalid - command result unavailable",
+                  `Failed to publish command: ${err instanceof Error ? err.message : String(err)}`,
                 ),
               );
-              return;
             }
+          });
+        });
 
-            if (result?.found) {
-              settled = true;
-              cleanup();
+        subscription.subscribe();
+        client.connect();
 
-              // Delete result after read to reduce storage (fire and forget)
-              this.convex
-                .mutation(api.localSandbox.deleteResult, {
-                  serviceKey: this.serviceKey,
-                  userId: this.userId,
-                  commandId,
-                })
-                .catch((error) => {
-                  console.warn(
-                    `Failed to delete command result ${commandId}: ${error instanceof Error ? error.message : String(error)}`,
-                  );
-                });
-
-              resolve({
-                stdout: result.stdout ?? "",
-                stderr: result.stderr ?? "",
-                exitCode: result.exitCode ?? -1,
-                pid: result.pid,
-              });
-            }
-          },
-        );
-
-        // Track subscription for cleanup on close()
-        this.activeSubscriptions.add(unsubscribe);
+        client.on("error", (ctx) => {
+          if (!settled) {
+            settled = true;
+            cleanup();
+            reject(
+              new Error(
+                `Centrifugo client error: ${ctx.error?.message ?? "unknown"}`,
+              ),
+            );
+          }
+        });
       });
-    } finally {
-      // Ensure cleanup even if promise is externally rejected or cancelled
-      cleanup();
-    }
-  }
 
-  // E2B-compatible interface: files operations
-  // Max chunk size ~500KB base64 to stay under Convex's 1MB limit
-  private static readonly MAX_CHUNK_SIZE = 500 * 1024;
+      return result;
+    },
+  };
 
   // Escape paths for shell using single quotes (prevents $(), backticks, etc.)
   private static escapePath(path: string): string {
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
+
+  // Max chunk size ~500KB base64 to stay under size limits
+  private static readonly MAX_CHUNK_SIZE = 500 * 1024;
 
   // Cache for detected HTTP client (curl or wget)
   private httpClient: "curl" | "wget" | null = null;
@@ -267,13 +275,10 @@ Commands run inside the Docker container with network access.`;
   /**
    * Detect available HTTP client (curl or wget).
    * Alpine Linux uses wget by default, most other distros have curl.
-   * Note: We check stdout instead of exitCode for reliability through Convex relay.
    */
   private async detectHttpClient(): Promise<"curl" | "wget"> {
     if (this.httpClient) return this.httpClient;
 
-    // Check for curl first (more common)
-    // Use stdout check - exitCode may not propagate correctly through Convex relay
     const curlCheck = await this.commands.run("command -v curl || true", {
       displayName: "",
     });
@@ -282,7 +287,6 @@ Commands run inside the Docker container with network access.`;
       return "curl";
     }
 
-    // Fall back to wget
     const wgetCheck = await this.commands.run("command -v wget || true", {
       displayName: "",
     });
@@ -291,7 +295,6 @@ Commands run inside the Docker container with network access.`;
       return "wget";
     }
 
-    // Default to curl and let it fail with a clear error
     this.httpClient = "curl";
     return "curl";
   }
@@ -306,9 +309,10 @@ Commands run inside the Docker container with network access.`;
       // Ensure parent directory exists
       const dir = path.substring(0, path.lastIndexOf("/"));
       if (dir) {
-        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
-          displayName: "", // Hide internal mkdir
-        });
+        await this.commands.run(
+          `mkdir -p ${CentrifugoSandbox.escapePath(dir)}`,
+          { displayName: "" },
+        );
       }
 
       let contentStr: string;
@@ -324,25 +328,23 @@ Commands run inside the Docker container with network access.`;
         isBinary = true;
       }
 
-      if (isBinary && contentStr.length > ConvexSandbox.MAX_CHUNK_SIZE) {
-        // Chunk large binary files to stay under Convex size limits
+      if (isBinary && contentStr.length > CentrifugoSandbox.MAX_CHUNK_SIZE) {
         const chunks: string[] = [];
         for (
           let i = 0;
           i < contentStr.length;
-          i += ConvexSandbox.MAX_CHUNK_SIZE
+          i += CentrifugoSandbox.MAX_CHUNK_SIZE
         ) {
-          chunks.push(contentStr.slice(i, i + ConvexSandbox.MAX_CHUNK_SIZE));
+          chunks.push(
+            contentStr.slice(i, i + CentrifugoSandbox.MAX_CHUNK_SIZE),
+          );
         }
 
-        // First chunk creates the file, subsequent chunks append
-        const escapedPath = ConvexSandbox.escapePath(path);
+        const escapedPath = CentrifugoSandbox.escapePath(path);
         for (let i = 0; i < chunks.length; i++) {
           const operator = i === 0 ? ">" : ">>";
-          // Use printf to avoid echo interpretation issues
           const result = await this.commands.run(
             `printf '%s' "${chunks[i]}" | base64 -d ${operator} ${escapedPath}`,
-            // Show progress for first chunk only
             { displayName: i === 0 ? `Writing: ${fileName}` : "" },
           );
           if (result.exitCode !== 0) {
@@ -350,11 +352,7 @@ Commands run inside the Docker container with network access.`;
           }
         }
       } else {
-        const escapedPath = ConvexSandbox.escapePath(path);
-        // Windows (PowerShell) doesn't support heredocs (<<'EOF') and chokes
-        // on special characters like [ ] ' $. Use base64 for those hosts.
-        // Docker containers and Unix dangerous-mode hosts use cat heredoc
-        // (more efficient — no ~33% base64 inflation or arg length limits).
+        const escapedPath = CentrifugoSandbox.escapePath(path);
         const isWindows =
           this.connectionInfo.mode === "dangerous" &&
           this.connectionInfo.osInfo?.platform === "win32";
@@ -382,7 +380,7 @@ Commands run inside the Docker container with network access.`;
     read: async (path: string): Promise<string> => {
       const fileName = path.split("/").pop() || "file";
       const result = await this.commands.run(
-        `cat ${ConvexSandbox.escapePath(path)}`,
+        `cat ${CentrifugoSandbox.escapePath(path)}`,
         { displayName: `Reading: ${fileName}` },
       );
       if (result.exitCode !== 0) {
@@ -394,7 +392,7 @@ Commands run inside the Docker container with network access.`;
     remove: async (path: string): Promise<void> => {
       const fileName = path.split("/").pop() || "file";
       const result = await this.commands.run(
-        `rm -rf ${ConvexSandbox.escapePath(path)}`,
+        `rm -rf ${CentrifugoSandbox.escapePath(path)}`,
         { displayName: `Removing: ${fileName}` },
       );
       if (result.exitCode !== 0) {
@@ -405,7 +403,7 @@ Commands run inside the Docker container with network access.`;
     list: async (path: string = "/"): Promise<{ name: string }[]> => {
       const dirName = path.split("/").pop() || path;
       const result = await this.commands.run(
-        `find ${ConvexSandbox.escapePath(path)} -maxdepth 1 -type f 2>/dev/null || true`,
+        `find ${CentrifugoSandbox.escapePath(path)} -maxdepth 1 -type f 2>/dev/null || true`,
         { displayName: `Listing: ${dirName}` },
       );
       if (result.exitCode !== 0) return [];
@@ -417,20 +415,19 @@ Commands run inside the Docker container with network access.`;
     },
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
-      // Ensure parent directory exists
       const dir = path.substring(0, path.lastIndexOf("/"));
       if (dir) {
-        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
-          displayName: "", // Hide internal mkdir
-        });
+        await this.commands.run(
+          `mkdir -p ${CentrifugoSandbox.escapePath(dir)}`,
+          { displayName: "" },
+        );
       }
 
       const httpClient = await this.detectHttpClient();
       const escapedUrl = url.replace(/'/g, "'\\''");
       const fileName = path.split("/").pop() || "file";
-      const escapedPath = ConvexSandbox.escapePath(path);
+      const escapedPath = CentrifugoSandbox.escapePath(path);
 
-      // Use curl or wget depending on what's available
       const command =
         httpClient === "curl"
           ? `curl -fsSL -o ${escapedPath} '${escapedUrl}'`
@@ -451,9 +448,6 @@ Commands run inside the Docker container with network access.`;
     ): Promise<void> => {
       const httpClient = await this.detectHttpClient();
 
-      // BusyBox wget (common on Alpine) doesn't support --method=PUT or --body-file
-      // Check for this and provide a clear error message to the AI
-      // Note: BusyBox wget doesn't support --version, but outputs "BusyBox" in usage text
       if (httpClient === "wget") {
         const versionCheck = await this.commands.run("wget 2>&1 | head -1", {
           displayName: "",
@@ -468,17 +462,16 @@ Commands run inside the Docker container with network access.`;
 
       const escapedUrl = uploadUrl.replace(/'/g, "'\\''");
       const escapedContentType = contentType.replace(/'/g, "'\\''");
-      const escapedPath = ConvexSandbox.escapePath(path);
+      const escapedPath = CentrifugoSandbox.escapePath(path);
       const fileName = path.split("/").pop() || "file";
 
-      // Use curl or wget depending on what's available
       const command =
         httpClient === "curl"
           ? `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @${escapedPath} '${escapedUrl}'`
           : `wget -q --method=PUT --header='Content-Type: ${escapedContentType}' --body-file=${escapedPath} -O - '${escapedUrl}'`;
 
       const result = await this.commands.run(command, {
-        timeoutMs: 120000, // 2 minutes for large files
+        timeoutMs: 120000,
         displayName: `Uploading: ${fileName}`,
       });
       if (result.exitCode !== 0) {
@@ -487,19 +480,19 @@ Commands run inside the Docker container with network access.`;
     },
   };
 
-  // E2B-compatible interface: close()
+  getHost(): string {
+    return "";
+  }
+
   async close(): Promise<void> {
-    // Clean up any active subscriptions first
-    for (const unsubscribe of this.activeSubscriptions) {
+    for (const client of this.activeClients) {
       try {
-        unsubscribe();
+        client.disconnect();
       } catch {
         // Ignore errors during cleanup
       }
     }
-    this.activeSubscriptions.clear();
-
-    await this.realtimeClient.close();
+    this.activeClients = [];
     this.emit("close");
   }
 }

@@ -24,8 +24,8 @@ const createMockE2BSandbox = () => ({
   commands: { run: jest.fn() },
 });
 
-// Mock ConvexSandbox (no jupyterUrl property)
-const createMockConvexSandbox = () => ({
+// Mock CentrifugoSandbox (no jupyterUrl property)
+const createMockCentrifugoSandbox = () => ({
   commands: { run: jest.fn() },
 });
 
@@ -41,10 +41,10 @@ describe("Sandbox Capabilities for Network Tools", () => {
       expect(options.timeoutMs).toBe(MAX_COMMAND_EXECUTION_TIME);
     });
 
-    it("should NOT include user:root for ConvexSandbox (uses Docker capabilities)", () => {
-      const convexSandbox = createMockConvexSandbox();
+    it("should NOT include user:root for CentrifugoSandbox (uses Docker capabilities)", () => {
+      const centrifugoSandbox = createMockCentrifugoSandbox();
 
-      const options = buildSandboxCommandOptions(convexSandbox as any);
+      const options = buildSandboxCommandOptions(centrifugoSandbox as any);
 
       expect(options).not.toHaveProperty("user");
       expect(options).not.toHaveProperty("cwd");
@@ -52,11 +52,11 @@ describe("Sandbox Capabilities for Network Tools", () => {
     });
 
     it("should include handlers when provided", () => {
-      const convexSandbox = createMockConvexSandbox();
+      const centrifugoSandbox = createMockCentrifugoSandbox();
       const onStdout = jest.fn();
       const onStderr = jest.fn();
 
-      const options = buildSandboxCommandOptions(convexSandbox as any, {
+      const options = buildSandboxCommandOptions(centrifugoSandbox as any, {
         onStdout,
         onStderr,
       });
@@ -69,10 +69,10 @@ describe("Sandbox Capabilities for Network Tools", () => {
   describe("Sandbox Type Detection", () => {
     it("should correctly identify E2B sandbox by jupyterUrl property", () => {
       const e2bSandbox = createMockE2BSandbox();
-      const convexSandbox = createMockConvexSandbox();
+      const centrifugoSandbox = createMockCentrifugoSandbox();
 
       expect(isE2BSandbox(e2bSandbox as any)).toBe(true);
-      expect(isE2BSandbox(convexSandbox as any)).toBe(false);
+      expect(isE2BSandbox(centrifugoSandbox as any)).toBe(false);
       expect(isE2BSandbox(null)).toBe(false);
     });
   });

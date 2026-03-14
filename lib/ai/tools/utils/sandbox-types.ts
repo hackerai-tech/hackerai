@@ -1,5 +1,5 @@
 import type { Sandbox } from "@e2b/code-interpreter";
-import type { ConvexSandbox } from "./convex-sandbox";
+import type { CentrifugoSandbox } from "./centrifugo-sandbox";
 import type { TauriSandbox } from "./tauri-sandbox";
 import type { AnySandbox } from "@/types";
 
@@ -11,11 +11,11 @@ export function isE2BSandbox(sandbox: AnySandbox | null): sandbox is Sandbox {
 }
 
 /**
- * Type guard to check if a sandbox is a ConvexSandbox
+ * Type guard to check if a sandbox is a CentrifugoSandbox
  */
-export function isConvexSandbox(
+export function isCentrifugoSandbox(
   sandbox: AnySandbox | null,
-): sandbox is ConvexSandbox {
+): sandbox is CentrifugoSandbox {
   return (
     sandbox !== null && !("jupyterUrl" in sandbox) && !isTauriSandbox(sandbox)
   );
@@ -31,7 +31,7 @@ export function isTauriSandbox(
 }
 
 /**
- * Common sandbox interface that both E2B and ConvexSandbox implement
+ * Common sandbox interface that both E2B and CentrifugoSandbox implement
  */
 export interface CommonSandboxInterface {
   commands: {
