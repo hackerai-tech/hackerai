@@ -52,18 +52,12 @@ Transcript location:
    - Images/files: [Image] and [File: filename]`;
 
 /**
- * Maximum size (in bytes) for each chunk when writing transcripts.
- * Kept well under typical OS ARG_MAX (~2MB) to avoid E2BIG errors
- * after base64 inflation (~33%).
- */
-const TRANSCRIPT_CHUNK_SIZE = 256_000; // ~256KB raw → ~341KB base64, safe for all OS ARG_MAX limits
-
-/**
  * Writes a plain-text transcript of the summarized messages to the sandbox.
  * E2B (cloud) persists to ~/agent-transcripts/, local Docker to /tmp/agent-transcripts/.
  *
- * Large transcripts are written in chunks using base64-encoded shell commands
- * piped through stdin to avoid E2BIG errors from exceeding OS argument limits.
+ * Content is written as a Buffer (not a string) so that ConvexSandbox's binary
+ * chunking path is used, avoiding the shell argument size limits that occur when
+ * large strings are embedded in heredoc commands.
  *
  * Returns the file path if saved, or null on failure.
  */
@@ -81,25 +75,15 @@ const saveTranscriptToSandbox = async (
     await sandbox.commands.run(`mkdir -p ${dir}`, { timeoutMs: 5000 });
 
     const content = formatTranscript(messages);
-
-    if (content.length <= TRANSCRIPT_CHUNK_SIZE) {
+    if (isE2BSandbox(sandbox)) {
+      // E2B uploads via HTTP — no shell argument limits, string is fine
       await sandbox.files.write(path, content);
     } else {
-      // Write in chunks using base64 piped through stdin to avoid E2BIG.
-      // Each chunk is base64-encoded and decoded on the sandbox side,
-      // keeping the command argument size well under OS limits.
-      for (let i = 0; i < content.length; i += TRANSCRIPT_CHUNK_SIZE) {
-        const chunk = content.slice(i, i + TRANSCRIPT_CHUNK_SIZE);
-        const b64 = Buffer.from(chunk).toString("base64");
-        const operator = i === 0 ? ">" : ">>";
-        const result = await sandbox.commands.run(
-          `printf '%s' "${b64}" | base64 -d ${operator} ${path}`,
-          { timeoutMs: 30_000 },
-        );
-        if (result.exitCode !== 0) {
-          throw new Error(`Failed to write transcript chunk: ${result.stderr}`);
-        }
-      }
+      // ConvexSandbox/TauriSandbox: pass as ArrayBuffer to trigger binary
+      // chunking in ConvexSandbox, avoiding shell argument size limits that
+      // occur when large strings are embedded in heredoc commands.
+      const buf = new TextEncoder().encode(content);
+      await sandbox.files.write(path, buf.buffer as ArrayBuffer);
     }
 
     return path;
