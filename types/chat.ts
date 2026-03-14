@@ -16,8 +16,7 @@ export type SelectedModel =
   | "sonnet-4.6"
   | "gemini-3.1-pro"
   | "grok-4.1"
-  | "gemini-3-flash"
-  | "gpt-5.4";
+  | "gemini-3-flash";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
@@ -25,7 +24,6 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "gemini-3.1-pro",
   "grok-4.1",
   "gemini-3-flash",
-  "gpt-5.4",
 ];
 
 export function isSelectedModel(value: string | null): value is SelectedModel {

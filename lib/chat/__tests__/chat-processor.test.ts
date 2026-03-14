@@ -181,7 +181,6 @@ describe("selectModel", () => {
       expect(selectModel("ask", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
       );
-      expect(selectModel("ask", "pro", "gpt-5.4")).toBe("model-gpt-5.4");
     });
   });
 
@@ -201,7 +200,6 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro", "gemini-3.1-pro")).toBe("agent-model");
       expect(selectModel("agent", "pro", "grok-4.1")).toBe("agent-model");
       expect(selectModel("agent", "pro", "gemini-3-flash")).toBe("agent-model");
-      expect(selectModel("agent", "pro", "gpt-5.4")).toBe("agent-model");
     });
   });
 
