@@ -1278,6 +1278,9 @@ export const createChatHandler = (
 
       return createUIMessageStreamResponse({
         stream,
+        headers: {
+          "Transfer-Encoding": "chunked",
+        },
         async consumeSseStream({ stream: sseStream }) {
           // Temporary chats do not support resumption
           if (temporary) {
