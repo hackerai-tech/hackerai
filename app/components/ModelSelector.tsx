@@ -25,18 +25,18 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 
-type CostTier = "low" | "medium" | "high";
+type CostTier = "low" | "medium" | "high" | "very-high";
 
 const MODEL_COST_TIER: Record<Exclude<SelectedModel, "auto">, CostTier> = {
   "gemini-3-flash": "low",
   "grok-4.1": "low",
-  "gemini-3.1-pro": "high",
   "sonnet-4.6": "high",
+  "opus-4.6": "very-high",
 };
 
 const COST_CONFIG: Record<
   CostTier,
-  { count: number; label: string; activeClass: string }
+  { count: number; label: string; activeClass: string; suffix?: string }
 > = {
   low: {
     count: 1,
@@ -52,6 +52,12 @@ const COST_CONFIG: Record<
     count: 3,
     label: "High cost",
     activeClass: "text-orange-600/80 dark:text-orange-400/80",
+  },
+  "very-high": {
+    count: 3,
+    label: "Very high cost",
+    activeClass: "text-red-600/80 dark:text-red-400/80",
+    suffix: "+",
   },
 };
 
@@ -85,6 +91,11 @@ function CostIndicator({
               $
             </span>
           ))}
+          {config.suffix && (
+            <span aria-hidden="true" className={config.activeClass}>
+              {config.suffix}
+            </span>
+          )}
         </span>
       </TooltipTrigger>
       <TooltipContent side="right" sideOffset={4} className="text-xs px-2 py-1">
@@ -104,13 +115,14 @@ const ASK_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash" },
   { id: "grok-4.1", label: "Grok 4.1" },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6" },
+  { id: "opus-4.6", label: "Claude Opus 4.6" },
 ];
 
 const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash", thinking: true },
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
-  { id: "gemini-3.1-pro", label: "Gemini 3.1 Pro", thinking: true },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", thinking: true },
+  { id: "opus-4.6", label: "Claude Opus 4.6", thinking: true },
 ];
 
 const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {

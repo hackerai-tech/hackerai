@@ -16,9 +16,9 @@ import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
-  "model-gemini-3.1-pro": { input: 2.0, output: 12.0 },
   "model-grok-4.1": { input: 0.2, output: 0.5 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
+  "model-opus-4.6": { input: 5.0, output: 25.0 },
 };
 
 const getModelPricing = (modelName?: string) =>

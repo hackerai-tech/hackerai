@@ -231,15 +231,6 @@ describe("token-bucket", () => {
       );
     });
 
-    it("should use Gemini 3.1 Pro pricing ($2.00/$12.00)", () => {
-      expect(
-        calculateTokenCost(1_000_000, "input", "model-gemini-3.1-pro"),
-      ).toBe(20000);
-      expect(
-        calculateTokenCost(1_000_000, "output", "model-gemini-3.1-pro"),
-      ).toBe(120000);
-    });
-
     it("should use Grok 4.1 pricing ($0.20/$0.50)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-grok-4.1")).toBe(
         2000,

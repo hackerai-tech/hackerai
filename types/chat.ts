@@ -14,16 +14,16 @@ export function isChatMode(value: string | null): value is ChatMode {
 export type SelectedModel =
   | "auto"
   | "sonnet-4.6"
-  | "gemini-3.1-pro"
   | "grok-4.1"
-  | "gemini-3-flash";
+  | "gemini-3-flash"
+  | "opus-4.6";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
   "sonnet-4.6",
-  "gemini-3.1-pro",
   "grok-4.1",
   "gemini-3-flash",
+  "opus-4.6",
 ];
 
 export function isSelectedModel(value: string | null): value is SelectedModel {

@@ -174,9 +174,6 @@ describe("selectModel", () => {
     });
 
     it("should apply all selectable models in ask mode", () => {
-      expect(selectModel("ask", "pro", "gemini-3.1-pro")).toBe(
-        "model-gemini-3.1-pro",
-      );
       expect(selectModel("ask", "pro", "grok-4.1")).toBe("model-grok-4.1");
       expect(selectModel("ask", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
@@ -197,7 +194,6 @@ describe("selectModel", () => {
     });
 
     it("should ignore all selectable models in agent mode", () => {
-      expect(selectModel("agent", "pro", "gemini-3.1-pro")).toBe("agent-model");
       expect(selectModel("agent", "pro", "grok-4.1")).toBe("agent-model");
       expect(selectModel("agent", "pro", "gemini-3-flash")).toBe("agent-model");
     });
