@@ -147,30 +147,54 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
   const { tier, subscription } = resolved;
   const billingReason = (invoice as any).billing_reason as string | undefined;
 
-  // Mid-cycle upgrade: prorate credits based on remaining time in the cycle
+  // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
+  // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms
+  // a real tier change). Other subscription_update reasons (quantity changes,
+  // billing anchor changes) fall through to the full reset path.
   if (billingReason === "subscription_update") {
-    console.log(
-      `[Subscription Webhook] invoice.paid (upgrade): prorating ${tier} buckets for ${userIds.length} user(s)`,
+    // Check each user for a tier-change stash; collect those that have one
+    const stashResults = await Promise.all(
+      userIds.map(async (uid) => ({
+        uid,
+        stash: await popOldBucketRemaining(uid),
+      })),
     );
 
-    const periodStart = (subscription as any).current_period_start as number;
-    const periodEnd = (subscription as any).current_period_end as number;
-    const now = Math.floor(Date.now() / 1000);
-    const totalDuration = periodEnd - periodStart;
-    const remaining = periodEnd - now;
+    const tierChangeUsers = stashResults.filter((r) => r.stash !== null);
 
-    const proratedRatio = Math.max(
-      0,
-      Math.min(1, totalDuration > 0 ? remaining / totalDuration : 1),
-    );
+    if (tierChangeUsers.length > 0) {
+      console.log(
+        `[Subscription Webhook] invoice.paid (upgrade): prorating ${tier} buckets for ${tierChangeUsers.length} user(s)`,
+      );
 
-    await Promise.all(
-      userIds.map(async (uid) => {
-        const { consumed } = await popOldBucketRemaining(uid);
-        await initProratedBucket(uid, tier, proratedRatio, consumed);
-      }),
-    );
-    return;
+      const periodStart = (subscription as any).current_period_start as number;
+      const periodEnd = (subscription as any).current_period_end as number;
+      const now = Math.floor(Date.now() / 1000);
+      const totalDuration = periodEnd - periodStart;
+      const remaining = periodEnd - now;
+
+      const proratedRatio = Math.max(
+        0,
+        Math.min(1, totalDuration > 0 ? remaining / totalDuration : 1),
+      );
+
+      await Promise.all(
+        tierChangeUsers.map(({ uid, stash }) =>
+          initProratedBucket(uid, tier, proratedRatio, stash!.consumed),
+        ),
+      );
+
+      // Any users without a stash (shouldn't happen, but safe fallback)
+      const nonTierChangeUsers = stashResults.filter((r) => r.stash === null);
+      if (nonTierChangeUsers.length > 0) {
+        await Promise.all(
+          nonTierChangeUsers.map(({ uid }) => resetRateLimitBuckets(uid, tier)),
+        );
+      }
+
+      return;
+    }
+    // No stash found for any user — not a tier change, fall through to full reset
   }
 
   // Regular renewal or new subscription: full credits

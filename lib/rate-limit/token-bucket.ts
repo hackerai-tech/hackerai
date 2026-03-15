@@ -426,14 +426,15 @@ export const stashOldBucketRemaining = async (
 
 /**
  * Pop the stashed carry-over data for a user. Returns remaining and consumed
- * credits from the old tier. Returns { remaining: 0, consumed: 0 } if the
- * key has expired or was never set (safe fallback).
+ * credits from the old tier, or null if no stash exists (no tier change
+ * happened). The null case is used by the webhook to distinguish real tier
+ * changes from other subscription updates (e.g. quantity changes).
  */
 export const popOldBucketRemaining = async (
   userId: string,
-): Promise<{ remaining: number; consumed: number }> => {
+): Promise<{ remaining: number; consumed: number } | null> => {
   const redis = createRedisClient();
-  if (!redis) return { remaining: 0, consumed: 0 };
+  if (!redis) return null;
 
   const stashKey = `upgrade:carryover:${userId}`;
 
@@ -442,7 +443,7 @@ export const popOldBucketRemaining = async (
     if (raw !== null) {
       await redis.del(stashKey);
     }
-    if (!raw) return { remaining: 0, consumed: 0 };
+    if (!raw) return null;
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     return {
       remaining: Math.max(0, parsed.remaining ?? 0),
@@ -450,7 +451,7 @@ export const popOldBucketRemaining = async (
     };
   } catch (error) {
     console.error(`[popOldBucketRemaining] Failed for user ${userId}:`, error);
-    return { remaining: 0, consumed: 0 };
+    return null;
   }
 };
 
