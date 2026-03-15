@@ -9,6 +9,7 @@ import {
   stashOldBucketRemaining,
   popOldBucketRemaining,
   initProratedBucket,
+  clearOrgRemovedUsage,
 } from "@/lib/rate-limit";
 import type { SubscriptionTier } from "@/types";
 
@@ -31,21 +32,21 @@ function planLookupKeyToTier(lookupKey: string): SubscriptionTier | null {
 // Helpers
 // =============================================================================
 
-/** Resolve all active WorkOS user IDs from a Stripe customer ID. */
+/** Resolve all active WorkOS user IDs and org ID from a Stripe customer ID. */
 async function resolveUserIdsFromCustomer(
   customerId: string,
-): Promise<string[]> {
+): Promise<{ userIds: string[]; orgId: string | null }> {
   try {
     const customerData = await stripe.customers.retrieve(customerId);
-    if (customerData.deleted) return [];
+    if (customerData.deleted) return { userIds: [], orgId: null };
 
     const customer = customerData as Stripe.Customer;
-    const orgId = customer.metadata?.workOSOrganizationId;
+    const orgId = customer.metadata?.workOSOrganizationId ?? null;
     if (!orgId) {
       console.error(
         `[Subscription Webhook] Customer ${customerId} missing workOSOrganizationId metadata`,
       );
-      return [];
+      return { userIds: [], orgId: null };
     }
 
     const memberships = await workos.userManagement.listOrganizationMemberships(
@@ -59,16 +60,16 @@ async function resolveUserIdsFromCustomer(
       console.error(
         `[Subscription Webhook] No active memberships for org ${orgId}`,
       );
-      return [];
+      return { userIds: [], orgId };
     }
 
-    return memberships.data.map((m) => m.userId);
+    return { userIds: memberships.data.map((m) => m.userId), orgId };
   } catch (error) {
     console.error(
       `[Subscription Webhook] Failed to resolve users for customer ${customerId}:`,
       error,
     );
-    return [];
+    return { userIds: [], orgId: null };
   }
 }
 
@@ -132,10 +133,12 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     return;
   }
 
-  const [userIds, resolved] = await Promise.all([
+  const [customerResult, resolved] = await Promise.all([
     resolveUserIdsFromCustomer(customerId),
     resolveSubscription(subscriptionId),
   ]);
+
+  const { userIds, orgId } = customerResult;
 
   if (userIds.length === 0 || !resolved) {
     console.error(
@@ -202,6 +205,11 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     `[Subscription Webhook] invoice.paid (${billingReason ?? "unknown"}): resetting ${tier} buckets for ${userIds.length} user(s)`,
   );
   await Promise.all(userIds.map((uid) => resetRateLimitBuckets(uid, tier)));
+
+  // Clear team seat rotation debt on renewal (fresh cycle)
+  if (tier === "team" && orgId) {
+    await clearOrgRemovedUsage(orgId);
+  }
 }
 
 /** Handle customer.subscription.updated — reset old tier's buckets on plan change. */
@@ -234,7 +242,7 @@ async function handleSubscriptionUpdated(
 
   if (!customerId) return;
 
-  const userIds = await resolveUserIdsFromCustomer(customerId);
+  const { userIds } = await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) {
     console.error(
       `[Subscription Webhook] subscription.updated: could not resolve users for customer ${customerId}`,

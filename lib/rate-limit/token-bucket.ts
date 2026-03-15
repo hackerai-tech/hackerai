@@ -27,6 +27,9 @@ const getModelPricing = (modelName?: string) =>
 /** Points per dollar (1 point = $0.0001) */
 export const POINTS_PER_DOLLAR = 10_000;
 
+/** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
+const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+
 // =============================================================================
 // Cost Calculation
 // =============================================================================
@@ -121,6 +124,7 @@ export const checkTokenBucketLimit = async (
   estimatedInputTokens: number = 0,
   extraUsageConfig?: ExtraUsageConfig,
   modelName?: string,
+  organizationId?: string,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
@@ -132,6 +136,12 @@ export const checkTokenBucketLimit = async (
   }
 
   try {
+    // For team users: detect new bucket so we can apply seat debt after creation
+    const isNewTeamBucket =
+      subscription === "team" &&
+      organizationId &&
+      !(await redis.exists(monthlyBucketKey(userId, "team")));
+
     const { monthly, monthlyLimit } = createRateLimiter(
       redis,
       userId,
@@ -180,6 +190,11 @@ export const checkTokenBucketLimit = async (
 
     // Step 1: Check limit WITHOUT deducting (rate: 0 peeks at current state)
     const monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
+
+    // Step 1.5: For new team members, apply seat debt from removed members
+    if (isNewTeamBucket) {
+      await applyTeamSeatDebt(userId, organizationId!);
+    }
 
     // Step 2: Check if we have enough capacity, or if we need extra usage
     const shortfall = Math.max(0, estimatedCost - monthlyCheck.remaining);
@@ -519,9 +534,124 @@ export const initProratedBucket = async (
     }
 
     // Align TTL to 30 days from now
-    await redis.expire(monthlyKey, 30 * 24 * 60 * 60);
+    await redis.expire(monthlyKey, THIRTY_DAYS_SECONDS);
   } catch (error) {
     console.error(`[initProratedBucket] Failed for user ${userId}:`, error);
+  }
+};
+
+// =============================================================================
+// Team Seat Rotation Protection
+// =============================================================================
+
+const TEAM_CREDITS = MONTHLY_CREDITS["team"] ?? 0;
+
+/** Redis key for accumulated removed-member usage per org. */
+const orgRemovedUsageKey = (orgId: string) => `team:removed_usage:${orgId}`;
+
+/** Redis key to ensure seat debt is applied only once per user per cycle. */
+const debtAppliedKey = (orgId: string, userId: string) =>
+  `team:debt_applied:${orgId}:${userId}`;
+
+/**
+ * Get how many points a team member has consumed from their bucket.
+ * Returns 0 if no bucket exists.
+ */
+export const getTeamMemberConsumed = async (
+  userId: string,
+): Promise<number> => {
+  const redis = createRedisClient();
+  if (!redis) return 0;
+
+  try {
+    const tokens = await redis.hget<number>(
+      monthlyBucketKey(userId, "team"),
+      "tokens",
+    );
+    return Math.max(0, TEAM_CREDITS - (tokens ?? TEAM_CREDITS));
+  } catch (error) {
+    console.error(`[getTeamMemberConsumed] Failed for user ${userId}:`, error);
+    return 0;
+  }
+};
+
+/**
+ * Add a removed member's consumed credits to the org-level counter.
+ * Called when a team member is removed so the next new member inherits the debt.
+ */
+export const addOrgRemovedUsage = async (
+  orgId: string,
+  points: number,
+): Promise<void> => {
+  if (points <= 0) return;
+
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const key = orgRemovedUsageKey(orgId);
+
+  try {
+    await redis.incrby(key, points);
+    // Ensure TTL is set (idempotent — only sets if no TTL exists)
+    const ttl = await redis.ttl(key);
+    if (ttl < 0) {
+      await redis.expire(key, THIRTY_DAYS_SECONDS);
+    }
+  } catch (error) {
+    console.error(`[addOrgRemovedUsage] Failed for org ${orgId}:`, error);
+  }
+};
+
+/**
+ * Clear the org-level removed-member usage counter.
+ * Called on subscription renewal to start a fresh cycle.
+ */
+export const clearOrgRemovedUsage = async (orgId: string): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  try {
+    await redis.del(orgRemovedUsageKey(orgId));
+  } catch (error) {
+    console.error(`[clearOrgRemovedUsage] Failed for org ${orgId}:`, error);
+  }
+};
+
+/**
+ * Apply seat debt to a new team member's bucket on first use.
+ * Burns up to one seat's worth (400k points) from their bucket, debiting the
+ * org counter by the same amount. Uses a flag key to ensure idempotency.
+ */
+export const applyTeamSeatDebt = async (
+  userId: string,
+  orgId: string,
+): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const flagKey = debtAppliedKey(orgId, userId);
+
+  try {
+    // Check if debt was already applied to this user
+    const alreadyApplied = await redis.exists(flagKey);
+    if (alreadyApplied) return;
+
+    const debt = await redis.get<number>(orgRemovedUsageKey(orgId));
+    if (!debt || debt <= 0) return;
+
+    const debit = Math.min(debt, TEAM_CREDITS);
+
+    // Burn from the user's bucket
+    const { monthly } = createRateLimiter(redis, userId, "team");
+    await monthly.limiter.limit(monthly.key, { rate: debit });
+
+    // Decrement org counter
+    await redis.decrby(orgRemovedUsageKey(orgId), debit);
+
+    // Mark as applied so we don't double-debit
+    await redis.set(flagKey, 1, { ex: THIRTY_DAYS_SECONDS });
+  } catch (error) {
+    console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
   }
 };
 

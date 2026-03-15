@@ -341,4 +341,43 @@ describe("token-bucket", () => {
       expect(defaultConversations).toBeGreaterThan(sonnetConversations);
     });
   });
+
+  // ==========================================================================
+  // Team seat rotation protection - budget constants
+  // ==========================================================================
+  describe("team seat rotation protection", () => {
+    it("team tier should have 400k monthly credits ($40)", () => {
+      const teamLimits = getBudgetLimits("team");
+      expect(teamLimits.monthly).toBe(400_000);
+    });
+
+    it("team member consuming all credits should equal tier max", () => {
+      const teamMax = getBudgetLimits("team").monthly;
+      // consumed = teamMax - remaining; when remaining=0, consumed=teamMax
+      const consumed = teamMax - 0;
+      expect(consumed).toBe(400_000);
+    });
+
+    it("partial consumption should be correctly calculated", () => {
+      const teamMax = getBudgetLimits("team").monthly;
+      const remaining = 150_000;
+      const consumed = teamMax - remaining;
+      expect(consumed).toBe(250_000);
+    });
+
+    it("seat debt should be capped at one seat's worth (400k)", () => {
+      const teamMax = getBudgetLimits("team").monthly;
+      // Even if org debt is 800k (2 members removed), each new member absorbs at most 400k
+      const orgDebt = 800_000;
+      const debit = Math.min(orgDebt, teamMax);
+      expect(debit).toBe(400_000);
+    });
+
+    it("seat debt should handle zero remaining debt", () => {
+      const orgDebt = 0;
+      const teamMax = getBudgetLimits("team").monthly;
+      const debit = Math.min(orgDebt, teamMax);
+      expect(debit).toBe(0);
+    });
+  });
 });

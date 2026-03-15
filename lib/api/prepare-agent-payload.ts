@@ -176,7 +176,7 @@ export async function prepareAgentPayload(
     );
   }
 
-  const { userId, subscription } = await getUserIDAndPro(req);
+  const { userId, subscription, organizationId } = await getUserIDAndPro(req);
   const userLocation = geolocation(req);
 
   if (subscription === "free") {
@@ -273,6 +273,7 @@ export async function prepareAgentPayload(
     estimatedInputTokens,
     extraUsageConfig,
     selectedModel,
+    organizationId,
   );
 
   const assistantMessageId = uuidv4();
