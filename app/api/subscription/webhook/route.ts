@@ -73,9 +73,7 @@ async function resolveUserIdsFromCustomer(
 }
 
 /** Resolve subscription tier and object from a Stripe subscription ID. */
-async function resolveSubscription(
-  subscriptionId: string,
-): Promise<{
+async function resolveSubscription(subscriptionId: string): Promise<{
   tier: SubscriptionTier;
   subscription: Stripe.Subscription;
 } | null> {
@@ -160,6 +158,7 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const totalDuration = periodEnd - periodStart;
     const remaining = periodEnd - now;
+
     const proratedRatio = Math.max(
       0,
       Math.min(1, totalDuration > 0 ? remaining / totalDuration : 1),
@@ -167,8 +166,8 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
     await Promise.all(
       userIds.map(async (uid) => {
-        const carryOver = await popOldBucketRemaining(uid);
-        await initProratedBucket(uid, tier, proratedRatio, carryOver);
+        const { consumed } = await popOldBucketRemaining(uid);
+        await initProratedBucket(uid, tier, proratedRatio, consumed);
       }),
     );
     return;

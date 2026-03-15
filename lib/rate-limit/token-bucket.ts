@@ -406,14 +406,16 @@ export const stashOldBucketRemaining = async (
 
   const monthlyKey = monthlyBucketKey(userId, oldTier);
   const stashKey = `upgrade:carryover:${userId}`;
+  const oldTierMax = MONTHLY_CREDITS[oldTier] ?? 0;
 
   try {
     const tokens = await redis.hget<number>(monthlyKey, "tokens");
     const remaining = Math.max(0, tokens ?? 0);
-    await redis.set(stashKey, remaining, { ex: 300 }); // 5-minute TTL
-    console.log(
-      `[stashOldBucketRemaining] Stashed ${remaining} points for user ${userId} (old tier: ${oldTier})`,
-    );
+    const consumed = Math.max(0, oldTierMax - remaining);
+    // Stash both remaining and consumed so proration can deduct old-tier usage
+    await redis.set(stashKey, JSON.stringify({ remaining, consumed }), {
+      ex: 300,
+    }); // 5-minute TTL
   } catch (error) {
     console.error(
       `[stashOldBucketRemaining] Failed for user ${userId}:`,
@@ -423,57 +425,71 @@ export const stashOldBucketRemaining = async (
 };
 
 /**
- * Pop the stashed carry-over credits for a user. Returns 0 if the key
- * has expired or was never set (safe fallback).
+ * Pop the stashed carry-over data for a user. Returns remaining and consumed
+ * credits from the old tier. Returns { remaining: 0, consumed: 0 } if the
+ * key has expired or was never set (safe fallback).
  */
 export const popOldBucketRemaining = async (
   userId: string,
-): Promise<number> => {
+): Promise<{ remaining: number; consumed: number }> => {
   const redis = createRedisClient();
-  if (!redis) return 0;
+  if (!redis) return { remaining: 0, consumed: 0 };
 
   const stashKey = `upgrade:carryover:${userId}`;
 
   try {
-    const value = await redis.get<number>(stashKey);
-    if (value !== null) {
+    const raw = await redis.get<string>(stashKey);
+    if (raw !== null) {
       await redis.del(stashKey);
     }
-    return Math.max(0, value ?? 0);
+    if (!raw) return { remaining: 0, consumed: 0 };
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return {
+      remaining: Math.max(0, parsed.remaining ?? 0),
+      consumed: Math.max(0, parsed.consumed ?? 0),
+    };
   } catch (error) {
     console.error(`[popOldBucketRemaining] Failed for user ${userId}:`, error);
-    return 0;
+    return { remaining: 0, consumed: 0 };
   }
 };
 
 /**
  * Calculate prorated credits for a mid-cycle upgrade (pure function).
  *
- *   proratedCredits = floor(tierMax * proratedRatio)
- *   totalCredits    = min(proratedCredits + carryOver, tierMax)
+ *   proratedCredits = floor(tierMax * proratedRatio) - consumed
+ *   totalCredits    = max(0, proratedCredits)
+ *
+ * Subtracting consumed ensures a user who burns all old-tier credits
+ * then upgrades doesn't get a near-full new-tier bucket for the same cycle.
  */
 export const calculateProratedCredits = (
   tierMax: number,
   proratedRatio: number,
-  carryOverCredits: number = 0,
+  consumedCredits: number = 0,
 ): { proratedCredits: number; totalCredits: number; burnAmount: number } => {
-  const proratedCredits = Math.floor(tierMax * proratedRatio);
-  const totalCredits = Math.min(
-    proratedCredits + Math.max(0, carryOverCredits),
-    tierMax,
-  );
-  return { proratedCredits, totalCredits, burnAmount: tierMax - totalCredits };
+  const rawProrated = Math.floor(tierMax * proratedRatio);
+  const consumed = Math.max(0, consumedCredits);
+  const totalCredits = Math.max(0, Math.min(rawProrated - consumed, tierMax));
+  return {
+    proratedCredits: rawProrated,
+    totalCredits,
+    burnAmount: tierMax - totalCredits,
+  };
 };
 
 /**
  * Initialize a prorated token bucket for a mid-cycle upgrade.
  * Works by creating a full-capacity bucket then "burning" the excess.
+ *
+ * @param consumedCredits - Credits already consumed from the old tier this cycle.
+ *   Deducted from the prorated allocation so users can't "double-dip".
  */
 export const initProratedBucket = async (
   userId: string,
   newTier: SubscriptionTier,
   proratedRatio: number,
-  carryOverCredits: number = 0,
+  consumedCredits: number = 0,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -481,8 +497,11 @@ export const initProratedBucket = async (
   const newTierMax = MONTHLY_CREDITS[newTier] ?? 0;
   if (newTierMax === 0) return;
 
-  const { proratedCredits, totalCredits, burnAmount } =
-    calculateProratedCredits(newTierMax, proratedRatio, carryOverCredits);
+  const { burnAmount } = calculateProratedCredits(
+    newTierMax,
+    proratedRatio,
+    consumedCredits,
+  );
   const monthlyKey = monthlyBucketKey(userId, newTier);
 
   try {
@@ -500,12 +519,6 @@ export const initProratedBucket = async (
 
     // Align TTL to 30 days from now
     await redis.expire(monthlyKey, 30 * 24 * 60 * 60);
-
-    console.log(
-      `[initProratedBucket] User ${userId} tier ${newTier}: ` +
-        `ratio=${proratedRatio.toFixed(3)}, prorated=${proratedCredits}, ` +
-        `carryOver=${carryOverCredits}, total=${totalCredits}, burned=${burnAmount}`,
-    );
   } catch (error) {
     console.error(`[initProratedBucket] Failed for user ${userId}:`, error);
   }
