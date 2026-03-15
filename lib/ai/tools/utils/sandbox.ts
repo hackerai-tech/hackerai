@@ -3,7 +3,7 @@ import type { SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
-const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000; // 15 minutes connection timeout
+const BASH_SANDBOX_RESUME_TIMEOUT = 60 * 1000; // 60 seconds for resuming paused sandbox
 const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000; // 7 minutes auto-pause inactivity timeout
 
 /**
@@ -77,7 +77,7 @@ export const ensureSandboxConnection = async (
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
         const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-          timeoutMs: BASH_SANDBOX_TIMEOUT,
+          timeoutMs: BASH_SANDBOX_RESUME_TIMEOUT,
         });
         setSandbox(sandbox);
         return { sandbox };
@@ -104,6 +104,15 @@ export const ensureSandboxConnection = async (
             `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
             e,
           );
+          // Kill the broken sandbox so Sandbox.list() doesn't keep finding it
+          try {
+            await Sandbox.kill(existingSandbox.sandboxId);
+          } catch (killError) {
+            console.warn(
+              `[${userID}] Failed to clean up broken sandbox:`,
+              killError,
+            );
+          }
         }
       }
     }
