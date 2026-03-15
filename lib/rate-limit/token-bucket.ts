@@ -137,6 +137,11 @@ export const checkTokenBucketLimit = async (
 
   try {
     // For team users: detect new bucket so we can apply seat debt after creation
+    if (subscription === "team" && !organizationId) {
+      console.warn(
+        `[checkTokenBucketLimit] Team user ${userId} missing organizationId — seat debt enforcement skipped`,
+      );
+    }
     const isNewTeamBucket =
       subscription === "team" &&
       organizationId &&
@@ -664,8 +669,16 @@ export const applyTeamSeatDebt = async (
     }
 
     // Burn the claimed debt from the user's bucket
-    const { monthly } = createRateLimiter(redis, userId, "team");
-    await monthly.limiter.limit(monthly.key, { rate: debit });
+    try {
+      const { monthly } = createRateLimiter(redis, userId, "team");
+      await monthly.limiter.limit(monthly.key, { rate: debit });
+    } catch (burnError) {
+      // Bucket burn failed — restore the debt we claimed so it's not lost
+      await redis.incrby(key, debit);
+      // Clear the flag so a retry can re-attempt
+      await redis.del(flagKey);
+      throw burnError;
+    }
   } catch (error) {
     console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
   }
