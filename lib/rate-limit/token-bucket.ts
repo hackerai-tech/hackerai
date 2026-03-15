@@ -641,17 +641,31 @@ export const applyTeamSeatDebt = async (
     });
     if (!claimed) return;
 
-    const debt = await redis.get<number>(orgRemovedUsageKey(orgId));
-    if (!debt || debt <= 0) return;
+    // Atomically claim up to one seat's worth of debt.
+    // decrby is atomic, so concurrent new members can't claim the same debt.
+    const key = orgRemovedUsageKey(orgId);
+    const afterDecr = await redis.decrby(key, TEAM_CREDITS);
+    // afterDecr = oldDebt - TEAM_CREDITS
+    // If afterDecr >= 0: we claimed a full TEAM_CREDITS of debt
+    // If afterDecr < 0: debt was less than TEAM_CREDITS, refund the excess
+    // If afterDecr <= -TEAM_CREDITS: there was no debt at all
+    const overclaim = Math.max(0, -afterDecr);
+    const debit = TEAM_CREDITS - overclaim;
 
-    const debit = Math.min(debt, TEAM_CREDITS);
+    if (debit <= 0) {
+      // No debt existed — restore counter and skip
+      await redis.incrby(key, TEAM_CREDITS);
+      return;
+    }
 
-    // Burn from the user's bucket
+    // Restore any excess we claimed beyond actual debt
+    if (overclaim > 0) {
+      await redis.incrby(key, overclaim);
+    }
+
+    // Burn the claimed debt from the user's bucket
     const { monthly } = createRateLimiter(redis, userId, "team");
     await monthly.limiter.limit(monthly.key, { rate: debit });
-
-    // Decrement org counter
-    await redis.decrby(orgRemovedUsageKey(orgId), debit);
   } catch (error) {
     console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
   }
