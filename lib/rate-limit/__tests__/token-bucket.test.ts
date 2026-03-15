@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 
 import {
   calculateTokenCost,
+  calculateProratedCredits,
   getBudgetLimits,
   getSubscriptionPrice,
   POINTS_PER_DOLLAR,
@@ -200,6 +201,74 @@ describe("token-bucket", () => {
       const outputCost = calculateTokenCost(10000, "output"); // 300 points
 
       expect(outputCost).toBeGreaterThan(inputCost * 10);
+    });
+  });
+
+  // ==========================================================================
+  // Proration calculation logic
+  // ==========================================================================
+  describe("calculateProratedCredits", () => {
+    // Tier maxes for reference: pro=250k, pro-plus=600k, ultra=2M, team=400k
+
+    it("should give 50% credits at 50% ratio with no carry-over", () => {
+      const result = calculateProratedCredits(2_000_000, 0.5, 0);
+      expect(result.proratedCredits).toBe(1_000_000);
+      expect(result.totalCredits).toBe(1_000_000);
+      expect(result.burnAmount).toBe(1_000_000);
+    });
+
+    it("should add carry-over credits to prorated amount", () => {
+      // Pro → Ultra at day 15/30, 150k unused Pro credits
+      const result = calculateProratedCredits(2_000_000, 0.5, 150_000);
+      expect(result.proratedCredits).toBe(1_000_000);
+      expect(result.totalCredits).toBe(1_150_000);
+      expect(result.burnAmount).toBe(850_000);
+    });
+
+    it("should cap total credits at tier max", () => {
+      // Ratio near 1.0 with large carry-over should cap
+      const result = calculateProratedCredits(250_000, 0.95, 200_000);
+      expect(result.totalCredits).toBe(250_000); // capped at pro max
+      expect(result.burnAmount).toBe(0);
+    });
+
+    it("should give full credits at ratio 1.0", () => {
+      const result = calculateProratedCredits(2_000_000, 1.0, 0);
+      expect(result.totalCredits).toBe(2_000_000);
+      expect(result.burnAmount).toBe(0);
+    });
+
+    it("should give only carry-over credits at ratio 0.0", () => {
+      const result = calculateProratedCredits(2_000_000, 0.0, 50_000);
+      expect(result.proratedCredits).toBe(0);
+      expect(result.totalCredits).toBe(50_000);
+      expect(result.burnAmount).toBe(1_950_000);
+    });
+
+    it("should give 0 credits at ratio 0.0 with no carry-over", () => {
+      const result = calculateProratedCredits(2_000_000, 0.0, 0);
+      expect(result.totalCredits).toBe(0);
+      expect(result.burnAmount).toBe(2_000_000);
+    });
+
+    it("should handle negative carry-over as 0", () => {
+      const result = calculateProratedCredits(250_000, 0.5, -100);
+      expect(result.totalCredits).toBe(125_000); // just prorated, no carry-over
+    });
+
+    it("should return 0 for zero tier max", () => {
+      const result = calculateProratedCredits(0, 0.5, 100_000);
+      expect(result.totalCredits).toBe(0);
+    });
+
+    it("Pro→Pro+ at 1/3 remaining should give correct credits", () => {
+      // Day 20 of 30 → 10 days remaining → ratio = 1/3
+      const result = calculateProratedCredits(600_000, 1 / 3, 80_000);
+      // prorated = floor(600k * 0.333) = 200_000
+      expect(result.proratedCredits).toBe(200_000);
+      // total = 200k + 80k = 280k
+      expect(result.totalCredits).toBe(280_000);
+      expect(result.burnAmount).toBe(320_000);
     });
   });
 
