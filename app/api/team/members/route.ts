@@ -241,15 +241,17 @@ export const DELETE = async (req: NextRequest) => {
         }
       }
 
-      // Snapshot removed member's consumed credits to org counter
-      // so the next new member inherits the "used seat" debt
+      // Snapshot consumed credits before deletion (bucket is still accessible)
       const consumed = await getTeamMemberConsumed(membershipToDelete.userId);
+
+      // Delete the membership first — only record debt if deletion succeeds
+      await workos.userManagement.deleteOrganizationMembership(membershipId);
+
+      // Record removed member's consumed credits to org counter
+      // so the next new member inherits the "used seat" debt
       if (consumed > 0) {
         await addOrgRemovedUsage(organizationId, consumed);
       }
-
-      // Delete the membership
-      await workos.userManagement.deleteOrganizationMembership(membershipId);
     } catch (error) {
       // If membership not found, it might be an invitation
       isInvitation = true;

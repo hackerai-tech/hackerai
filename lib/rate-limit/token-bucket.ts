@@ -189,11 +189,13 @@ export const checkTokenBucketLimit = async (
     });
 
     // Step 1: Check limit WITHOUT deducting (rate: 0 peeks at current state)
-    const monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
+    let monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
 
     // Step 1.5: For new team members, apply seat debt from removed members
     if (isNewTeamBucket) {
       await applyTeamSeatDebt(userId, organizationId!);
+      // Re-peek after debt burn to get accurate remaining
+      monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
     }
 
     // Step 2: Check if we have enough capacity, or if we need extra usage
@@ -632,9 +634,12 @@ export const applyTeamSeatDebt = async (
   const flagKey = debtAppliedKey(orgId, userId);
 
   try {
-    // Check if debt was already applied to this user
-    const alreadyApplied = await redis.exists(flagKey);
-    if (alreadyApplied) return;
+    // Atomically claim the flag — if SET NX returns null, another request already claimed it
+    const claimed = await redis.set(flagKey, 1, {
+      ex: THIRTY_DAYS_SECONDS,
+      nx: true,
+    });
+    if (!claimed) return;
 
     const debt = await redis.get<number>(orgRemovedUsageKey(orgId));
     if (!debt || debt <= 0) return;
@@ -647,9 +652,6 @@ export const applyTeamSeatDebt = async (
 
     // Decrement org counter
     await redis.decrby(orgRemovedUsageKey(orgId), debit);
-
-    // Mark as applied so we don't double-debit
-    await redis.set(flagKey, 1, { ex: THIRTY_DAYS_SECONDS });
   } catch (error) {
     console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
   }
