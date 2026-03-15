@@ -153,7 +153,7 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
               </Tooltip>
             )}
           </div>
-          {projection?.projectedExhaustionDate && (
+          {projection?.projectedExhaustionDate ? (
             <div className="flex items-center gap-1.5 text-xs text-orange-600 dark:text-orange-400">
               <TrendingDown className="h-3 w-3 flex-shrink-0" />
               <span>
@@ -171,7 +171,7 @@ const IncludedUsageCard = ({ subscription }: IncludedUsageCardProps) => {
                 )}
               </span>
             </div>
-          )}
+          ) : null}
         </>
       ) : isLoading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground py-3">

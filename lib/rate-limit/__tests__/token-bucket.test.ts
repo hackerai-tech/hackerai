@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 
 import {
   calculateTokenCost,
+  calculateProratedCredits,
   getBudgetLimits,
   getSubscriptionPrice,
   POINTS_PER_DOLLAR,
@@ -200,6 +201,91 @@ describe("token-bucket", () => {
       const outputCost = calculateTokenCost(10000, "output"); // 300 points
 
       expect(outputCost).toBeGreaterThan(inputCost * 10);
+    });
+  });
+
+  // ==========================================================================
+  // Proration calculation logic
+  // ==========================================================================
+  describe("calculateProratedCredits", () => {
+    // Tier maxes for reference: pro=250k, pro-plus=600k, ultra=2M, team=400k
+    // Third param is consumedCredits (deducted from prorated allocation)
+
+    it("should give 50% credits at 50% ratio with no consumption", () => {
+      const result = calculateProratedCredits(2_000_000, 0.5, 0);
+      expect(result.proratedCredits).toBe(1_000_000);
+      expect(result.totalCredits).toBe(1_000_000);
+      expect(result.burnAmount).toBe(1_000_000);
+    });
+
+    it("should deduct consumed credits from prorated amount", () => {
+      // Pro → Ultra at day 15/30, user consumed 100k of Pro credits
+      const result = calculateProratedCredits(2_000_000, 0.5, 100_000);
+      expect(result.proratedCredits).toBe(1_000_000);
+      // total = 1M - 100k consumed = 900k
+      expect(result.totalCredits).toBe(900_000);
+      expect(result.burnAmount).toBe(1_100_000);
+    });
+
+    it("should not go below 0 when consumed exceeds prorated", () => {
+      // User burned all 250k Pro credits, upgrades to Ultra at day 25/30
+      // prorated = floor(2M * 5/30) = 333_333
+      // consumed = 250_000 → 333_333 - 250_000 = 83_333
+      const result = calculateProratedCredits(2_000_000, 5 / 30, 250_000);
+      expect(result.totalCredits).toBe(83_333);
+
+      // Edge: consumed > prorated → floor to 0
+      const result2 = calculateProratedCredits(2_000_000, 0.1, 250_000);
+      // prorated = 200k, consumed = 250k → 0
+      expect(result2.totalCredits).toBe(0);
+    });
+
+    it("should cap total credits at tier max", () => {
+      const result = calculateProratedCredits(250_000, 0.95, 0);
+      expect(result.totalCredits).toBeLessThanOrEqual(250_000);
+    });
+
+    it("should give full credits at ratio 1.0 with no consumption", () => {
+      const result = calculateProratedCredits(2_000_000, 1.0, 0);
+      expect(result.totalCredits).toBe(2_000_000);
+      expect(result.burnAmount).toBe(0);
+    });
+
+    it("should give 0 at ratio 0.0 with no consumption", () => {
+      const result = calculateProratedCredits(2_000_000, 0.0, 0);
+      expect(result.totalCredits).toBe(0);
+      expect(result.burnAmount).toBe(2_000_000);
+    });
+
+    it("should handle negative consumed as 0", () => {
+      const result = calculateProratedCredits(250_000, 0.5, -100);
+      expect(result.totalCredits).toBe(125_000); // just prorated, no deduction
+    });
+
+    it("should return 0 for zero tier max", () => {
+      const result = calculateProratedCredits(0, 0.5, 100_000);
+      expect(result.totalCredits).toBe(0);
+    });
+
+    it("user burns all Pro credits day 1, upgrades to Ultra", () => {
+      // Day 1 of 30 → ratio ≈ 29/30 = 0.967
+      // Consumed all 250k Pro credits
+      const result = calculateProratedCredits(2_000_000, 29 / 30, 250_000);
+      // prorated = floor(2M * 29/30) = 1_933_333
+      expect(result.proratedCredits).toBe(1_933_333);
+      // total = 1_933_333 - 250_000 = 1_683_333
+      expect(result.totalCredits).toBe(1_683_333);
+    });
+
+    it("Pro→Pro+ at 1/3 remaining, 170k consumed", () => {
+      // Day 20 of 30 → 10 days remaining → ratio = 1/3
+      // User consumed 170k of 250k Pro credits
+      const result = calculateProratedCredits(600_000, 1 / 3, 170_000);
+      // prorated = floor(600k * 0.333) = 200_000
+      expect(result.proratedCredits).toBe(200_000);
+      // total = 200k - 170k = 30k
+      expect(result.totalCredits).toBe(30_000);
+      expect(result.burnAmount).toBe(570_000);
     });
   });
 

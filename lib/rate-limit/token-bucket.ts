@@ -82,6 +82,10 @@ export const getSubscriptionPrice = (
 // Rate Limiting
 // =============================================================================
 
+/** Build the Redis key used by the monthly token bucket. */
+const monthlyBucketKey = (userId: string, tier: SubscriptionTier) =>
+  `usage:monthly:${userId}:${tier}`;
+
 /**
  * Create rate limiter for a user (shared between agent and ask modes).
  * Single monthly bucket replacing the old session+weekly dual buckets.
@@ -354,8 +358,7 @@ const refundBucketTokens = async (
   if (!redis) return;
 
   const { monthly: monthlyLimit } = getBudgetLimits(subscription);
-
-  const monthlyKey = `usage:monthly:${userId}:${subscription}`;
+  const monthlyKey = monthlyBucketKey(userId, subscription);
 
   try {
     const monthlyTokens = await redis.hincrby(
@@ -382,31 +385,149 @@ export const resetRateLimitBuckets = async (
   userId: string,
   subscription: SubscriptionTier,
 ): Promise<void> => {
+  await initProratedBucket(userId, subscription, 1.0, 0);
+};
+
+// =============================================================================
+// Upgrade Proration
+// =============================================================================
+
+/**
+ * Stash the old bucket's remaining tokens in a temporary Redis key before
+ * deleting the bucket on tier change. The `invoice.paid` handler picks this
+ * up to carry over unused credits into the prorated new-tier bucket.
+ */
+export const stashOldBucketRemaining = async (
+  userId: string,
+  oldTier: SubscriptionTier,
+): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
 
-  const monthlyKey = `usage:monthly:${userId}:${subscription}`;
+  const monthlyKey = monthlyBucketKey(userId, oldTier);
+  const stashKey = `upgrade:carryover:${userId}`;
+  const oldTierMax = MONTHLY_CREDITS[oldTier] ?? 0;
 
   try {
-    await redis.del(monthlyKey);
-
-    // Re-seed the Upstash TTL so it aligns with this reset. The limit()
-    // call creates a fresh bucket, and the explicit expire() guarantees
-    // exactly 30 days regardless of any Upstash TTL drift.
-    const { monthly } = createRateLimiter(redis, userId, subscription);
-    await monthly.limiter.limit(monthly.key, { rate: 0 });
-    await redis.expire(monthlyKey, 30 * 24 * 60 * 60);
-
-    console.log(
-      `[resetRateLimitBuckets] Reset bucket for user ${userId} tier ${subscription}`,
-    );
+    const tokens = await redis.hget<number>(monthlyKey, "tokens");
+    const remaining = Math.max(0, tokens ?? 0);
+    const consumed = Math.max(0, oldTierMax - remaining);
+    // Stash both remaining and consumed so proration can deduct old-tier usage
+    await redis.set(stashKey, JSON.stringify({ remaining, consumed }), {
+      ex: 300,
+    }); // 5-minute TTL
   } catch (error) {
     console.error(
-      `[resetRateLimitBuckets] Failed to reset bucket for user ${userId}:`,
+      `[stashOldBucketRemaining] Failed for user ${userId}:`,
       error,
     );
   }
 };
+
+/**
+ * Pop the stashed carry-over data for a user. Returns remaining and consumed
+ * credits from the old tier, or null if no stash exists (no tier change
+ * happened). The null case is used by the webhook to distinguish real tier
+ * changes from other subscription updates (e.g. quantity changes).
+ */
+export const popOldBucketRemaining = async (
+  userId: string,
+): Promise<{ remaining: number; consumed: number } | null> => {
+  const redis = createRedisClient();
+  if (!redis) return null;
+
+  const stashKey = `upgrade:carryover:${userId}`;
+
+  try {
+    const raw = await redis.get<string>(stashKey);
+    if (raw !== null) {
+      await redis.del(stashKey);
+    }
+    if (!raw) return null;
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return {
+      remaining: Math.max(0, parsed.remaining ?? 0),
+      consumed: Math.max(0, parsed.consumed ?? 0),
+    };
+  } catch (error) {
+    console.error(`[popOldBucketRemaining] Failed for user ${userId}:`, error);
+    return null;
+  }
+};
+
+/**
+ * Calculate prorated credits for a mid-cycle upgrade (pure function).
+ *
+ *   proratedCredits = floor(tierMax * proratedRatio) - consumed
+ *   totalCredits    = max(0, proratedCredits)
+ *
+ * Subtracting consumed ensures a user who burns all old-tier credits
+ * then upgrades doesn't get a near-full new-tier bucket for the same cycle.
+ */
+export const calculateProratedCredits = (
+  tierMax: number,
+  proratedRatio: number,
+  consumedCredits: number = 0,
+): { proratedCredits: number; totalCredits: number; burnAmount: number } => {
+  const rawProrated = Math.floor(tierMax * proratedRatio);
+  const consumed = Math.max(0, consumedCredits);
+  const totalCredits = Math.max(0, Math.min(rawProrated - consumed, tierMax));
+  return {
+    proratedCredits: rawProrated,
+    totalCredits,
+    burnAmount: tierMax - totalCredits,
+  };
+};
+
+/**
+ * Initialize a prorated token bucket for a mid-cycle upgrade.
+ * Works by creating a full-capacity bucket then "burning" the excess.
+ *
+ * @param consumedCredits - Credits already consumed from the old tier this cycle.
+ *   Deducted from the prorated allocation so users can't "double-dip".
+ */
+export const initProratedBucket = async (
+  userId: string,
+  newTier: SubscriptionTier,
+  proratedRatio: number,
+  consumedCredits: number = 0,
+): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const newTierMax = MONTHLY_CREDITS[newTier] ?? 0;
+  if (newTierMax === 0) return;
+
+  const { burnAmount } = calculateProratedCredits(
+    newTierMax,
+    proratedRatio,
+    consumedCredits,
+  );
+  const monthlyKey = monthlyBucketKey(userId, newTier);
+
+  try {
+    // Delete any existing bucket for the new tier
+    await redis.del(monthlyKey);
+
+    // Create fresh bucket at full capacity
+    const { monthly } = createRateLimiter(redis, userId, newTier);
+    await monthly.limiter.limit(monthly.key, { rate: 0 });
+
+    // Burn excess to bring bucket down to prorated level
+    if (burnAmount > 0) {
+      await monthly.limiter.limit(monthly.key, { rate: burnAmount });
+    }
+
+    // Align TTL to 30 days from now
+    await redis.expire(monthlyKey, 30 * 24 * 60 * 60);
+  } catch (error) {
+    console.error(`[initProratedBucket] Failed for user ${userId}:`, error);
+  }
+};
+
+// =============================================================================
+// Refund
+// =============================================================================
 
 /**
  * Refund usage when a request fails after credits were deducted.

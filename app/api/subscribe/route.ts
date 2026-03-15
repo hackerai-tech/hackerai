@@ -166,15 +166,6 @@ export const POST = async (req: NextRequest) => {
 
     const cancelUrl = new URL(baseUrl);
 
-    // Determine statement descriptor suffix based on plan
-    const planSuffix = subscriptionLevel.startsWith("team")
-      ? "TEAM"
-      : subscriptionLevel.startsWith("ultra")
-        ? "ULTRA"
-        : subscriptionLevel.startsWith("pro-plus")
-          ? "PRO PLUS"
-          : "PRO";
-
     const session = await stripe.checkout.sessions.create({
       customer: customer.id,
       billing_address_collection: "auto",
@@ -187,9 +178,6 @@ export const POST = async (req: NextRequest) => {
       mode: "subscription",
       success_url: successUrl.toString(),
       cancel_url: cancelUrl.toString(),
-      subscription_data: {
-        description: `HackerAI ${planSuffix} Plan`,
-      },
       custom_text: {
         submit: {
           message:
