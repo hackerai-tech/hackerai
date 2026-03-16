@@ -672,6 +672,7 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
 
       writer.merge(
         result.toUIMessageStream({
+          originalMessages: processedMessages,
           generateMessageId: () => assistantMessageId,
           onFinish: async ({ messages, isAborted }) => {
             // Check if stream finished with only step-start (incomplete response)
