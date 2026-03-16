@@ -190,6 +190,8 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
   } = config;
 
   let stoppedDueToTimeBudget = false;
+  let budgetAbortFired = false;
+  let budgetAbortTimeoutId: ReturnType<typeof setTimeout> | undefined;
 
   let resolveStepResult: ((result: AgentStepResult) => void) | undefined;
   const stepResultPromise = new Promise<AgentStepResult>((resolve) => {
@@ -381,6 +383,20 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
       const isReasoningModel = isAgentMode(mode);
       const streamStartTime = Date.now();
       streamStartTimeRef = streamStartTime;
+
+      if (timeBudgetMs) {
+        budgetAbortTimeoutId = setTimeout(() => {
+          budgetAbortFired = true;
+          stoppedDueToTimeBudget = true;
+          logger.info("Workflow budget abort timeout fired", {
+            chatId,
+            elapsedMs: Date.now() - streamStartTime,
+            budgetMs: timeBudgetMs,
+          });
+          userStopSignal.abort();
+        }, timeBudgetMs);
+      }
+
       const configuredModelId =
         trackedProvider.languageModel(selectedModel).modelId;
 
@@ -615,6 +631,10 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
             }
           },
           onFinish: async ({ finishReason, usage, response }) => {
+            if (budgetAbortTimeoutId) {
+              clearTimeout(budgetAbortTimeoutId);
+              budgetAbortTimeoutId = undefined;
+            }
             if (preemptiveTimeout?.isPreemptive()) {
               streamFinishReason = "timeout";
             } else if (stoppedDueToTimeBudget) {
@@ -867,21 +887,24 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
 
             const isPreemptiveAbort =
               preemptiveTimeout?.isPreemptive() ?? false;
+            const isBudgetAbort = budgetAbortFired;
+            const isSystemAbort = isPreemptiveAbort || isBudgetAbort;
             const onFinishStartTime = Date.now();
             const triggerTime = preemptiveTimeout?.getTriggerTime();
 
-            // Helper to log step timing during preemptive timeout
+            // Helper to log step timing during system aborts (preemptive or budget)
             const logStep = (step: string, stepStartTime: number) => {
-              if (isPreemptiveAbort) {
+              if (isSystemAbort) {
                 const stepDuration = Date.now() - stepStartTime;
                 const totalElapsed =
                   Date.now() - (triggerTime || onFinishStartTime);
-                logger.info("Preemptive timeout cleanup step", {
+                logger.info("System abort cleanup step", {
                   chatId,
                   step,
                   stepDurationMs: stepDuration,
                   totalElapsedSinceTriggerMs: totalElapsed,
                   endpoint,
+                  abortType: isPreemptiveAbort ? "preemptive" : "budget",
                 });
               }
             };
@@ -898,9 +921,22 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               });
             }
 
-            // Clear pre-emptive timeout
+            if (isBudgetAbort) {
+              logger.info("Budget abort onFinish started", {
+                chatId,
+                endpoint,
+                elapsedMs: Date.now() - streamStartTime,
+                messageCount: messages.length,
+              });
+            }
+
+            // Clear pre-emptive timeout and budget abort timeout
             let stepStart = Date.now();
             preemptiveTimeout?.clear();
+            if (budgetAbortTimeoutId) {
+              clearTimeout(budgetAbortTimeoutId);
+              budgetAbortTimeoutId = undefined;
+            }
             logStep("clear_timeout", stepStart);
 
             // Stop cancellation subscriber
@@ -911,9 +947,13 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
             }
             logStep("stop_cancellation_subscriber", stepStart);
 
-            // Clear finish reason for user-initiated aborts (not pre-emptive timeouts)
-            if (isAborted && !isPreemptiveAbort) {
+            // Clear finish reason for user-initiated aborts (not system aborts)
+            if (isAborted && !isSystemAbort) {
               streamFinishReason = undefined;
+            }
+            // If budget abort fired and streamText.onFinish didn't set the reason, set it now
+            if (isBudgetAbort && !streamFinishReason) {
+              streamFinishReason = WORKFLOW_CHECKPOINT_FINISH_REASON;
             }
 
             // Emit wide event
@@ -1008,7 +1048,7 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               // 2. No files, tools, or usage to record (frontend already saved)
               if (
                 isAborted &&
-                !isPreemptiveAbort &&
+                !isSystemAbort &&
                 (cancellationSubscriber.shouldSkipSave() ||
                   (newFileIds.length === 0 &&
                     !hasIncompleteToolCalls &&
@@ -1052,8 +1092,7 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                   generationTimeMs: Date.now() - streamStartTime,
                   finishReason: streamFinishReason,
                   usage: resolvedUsage ?? streamUsage,
-                  updateOnly:
-                    isAborted && !isPreemptiveAbort ? true : undefined,
+                  updateOnly: isAborted && !isSystemAbort ? true : undefined,
                   isHidden:
                     isAutoContinue && processedMessage.role === "user"
                       ? true
@@ -1089,6 +1128,16 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               await logger.flush();
             }
 
+            if (isBudgetAbort) {
+              const totalDuration = Date.now() - onFinishStartTime;
+              logger.info("Budget abort onFinish completed", {
+                chatId,
+                endpoint,
+                totalOnFinishDurationMs: totalDuration,
+              });
+              await logger.flush();
+            }
+
             // Send updated context usage with output tokens
             if (contextUsageEnabled) {
               writeContextUsage(writer, {
@@ -1116,6 +1165,10 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
         }),
       );
     } catch (error) {
+      if (budgetAbortTimeoutId) {
+        clearTimeout(budgetAbortTimeoutId);
+        budgetAbortTimeoutId = undefined;
+      }
       // Clean up cancellation subscriber on error
       if (cancellationSubscriber && !subscriberStopped) {
         await cancellationSubscriber.stop();

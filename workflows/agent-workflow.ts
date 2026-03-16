@@ -3,6 +3,7 @@ import { generateId, type UIMessageChunk } from "ai";
 import { runAgentStep, closeWorkflowStream } from "./agent-step";
 import { WORKFLOW_CHECKPOINT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
+import { workflowAxiomLogger } from "@/lib/axiom/workflow";
 
 const MAX_CONTINUATIONS = 50;
 
@@ -34,6 +35,13 @@ export async function agentWorkflow(input: AgentTaskPayload) {
     if (!result.messagesSnapshot?.length) break;
 
     continuations++;
+
+    workflowAxiomLogger.info("Workflow continuing from checkpoint", {
+      chatId: input.chatId,
+      continuation: continuations,
+      snapshotMessageCount: result.messagesSnapshot.length,
+    });
+
     payload = {
       ...input,
       messages: result.messagesSnapshot,
