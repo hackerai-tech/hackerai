@@ -2,6 +2,7 @@ import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { DatabaseReader } from "./_generated/server";
+import { SignJWT } from "jose";
 
 // ============================================================================
 // TOKEN MANAGEMENT
@@ -17,57 +18,18 @@ function generateToken(): string {
 // CENTRIFUGO JWT GENERATION
 // ============================================================================
 
-function base64urlEncode(data: Uint8Array): string {
-  const binString = Array.from(data, (byte) => String.fromCodePoint(byte)).join(
-    "",
-  );
-  return btoa(binString)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
 async function generateCentrifugoToken(userId: string): Promise<string> {
   const secret = process.env.CENTRIFUGO_TOKEN_SECRET;
   if (!secret) {
     throw new Error("CENTRIFUGO_TOKEN_SECRET environment variable not set");
   }
 
-  const encoder = new TextEncoder();
+  const encodedSecret = new TextEncoder().encode(secret);
 
-  const header = base64urlEncode(
-    encoder.encode(JSON.stringify({ typ: "JWT", alg: "HS256" })),
-  );
-
-  const now = Math.floor(Date.now() / 1000);
-  const payload = base64urlEncode(
-    encoder.encode(
-      JSON.stringify({
-        sub: userId,
-        exp: now + 86400,
-      }),
-    ),
-  );
-
-  const signingInput = `${header}.${payload}`;
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(signingInput),
-  );
-
-  const sig = base64urlEncode(new Uint8Array(signature));
-
-  return `${signingInput}.${sig}`;
+  return new SignJWT({ sub: userId })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setExpirationTime("24h")
+    .sign(encodedSecret);
 }
 
 // ============================================================================
@@ -321,6 +283,30 @@ export const disconnect = mutation({
       await ctx.db.patch(connection._id, {
         status: "disconnected",
       });
+    }
+
+    return { success: true };
+  },
+});
+
+export const disconnectByBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+  }),
+  handler: async (ctx, { serviceKey, connectionId }) => {
+    validateServiceKey(serviceKey);
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (connection && connection.status === "connected") {
+      await ctx.db.patch(connection._id, { status: "disconnected" });
     }
 
     return { success: true };

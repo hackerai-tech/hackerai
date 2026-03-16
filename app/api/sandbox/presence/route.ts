@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getUserID } from "@/lib/auth/get-user-id";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@/convex/_generated/api";
 
 interface CentrifugoPresenceClient {
   client: string;
@@ -15,10 +17,12 @@ interface CentrifugoPresenceResponse {
 
 export async function GET(request: NextRequest) {
   const userId = await getUserID(request);
-  const channel = `sandbox:${userId}`;
+  const channel = `sandbox:user#${userId}`;
 
   const apiUrl = process.env.CENTRIFUGO_API_URL;
   const apiKey = process.env.CENTRIFUGO_API_KEY;
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
 
   if (!apiUrl || !apiKey) {
     return NextResponse.json(
@@ -27,7 +31,8 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const response = await fetch(`${apiUrl}/api/presence`, {
+  // Fetch Centrifugo presence (who's actually online)
+  const presenceResponse = await fetch(`${apiUrl}/api/presence`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -36,21 +41,49 @@ export async function GET(request: NextRequest) {
     body: JSON.stringify({ channel }),
   });
 
-  if (!response.ok) {
-    return NextResponse.json(
-      { error: "Failed to query presence" },
-      { status: 502 },
-    );
+  const onlineUserIds = new Set<string>();
+  if (presenceResponse.ok) {
+    const data: CentrifugoPresenceResponse = await presenceResponse.json();
+    const presence = data?.result?.presence ?? {};
+    for (const client of Object.values(presence)) {
+      onlineUserIds.add(client.user);
+    }
   }
 
-  const data: CentrifugoPresenceResponse = await response.json();
+  // Fetch connection metadata from Convex
+  if (!convexUrl || !serviceKey) {
+    return NextResponse.json({
+      connections: [],
+      onlineCount: onlineUserIds.size,
+    });
+  }
 
-  const presence = data?.result?.presence ?? {};
-  const connectedClients = Object.keys(presence);
+  const convex = new ConvexHttpClient(convexUrl);
+  const connections = await convex.query(
+    api.localSandbox.listConnectionsForBackend,
+    { serviceKey, userId },
+  );
+
+  // Mark each connection with live presence status
+  const enriched = connections.map((conn) => ({
+    ...conn,
+    online: onlineUserIds.has(userId),
+  }));
+
+  // Disconnect stale connections in Convex (connected in DB but not in presence)
+  if (!onlineUserIds.has(userId) && connections.length > 0) {
+    for (const conn of connections) {
+      convex
+        .mutation(api.localSandbox.disconnectByBackend, {
+          serviceKey,
+          connectionId: conn.connectionId,
+        })
+        .catch(() => {});
+    }
+  }
 
   return NextResponse.json({
-    channel,
-    clients: connectedClients,
-    count: connectedClients.length,
+    connections: enriched,
+    onlineCount: onlineUserIds.size,
   });
 }

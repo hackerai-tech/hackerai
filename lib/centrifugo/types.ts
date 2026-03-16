@@ -42,5 +42,5 @@ export type SandboxMessage =
   | ErrorMessage;
 
 export function sandboxChannel(userId: string): string {
-  return `sandbox:${userId}`;
+  return `sandbox:user#${userId}`;
 }

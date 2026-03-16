@@ -111,7 +111,7 @@ Commands run inside the Docker container with network access.`;
 
       // Generate short-lived JWT for this subscription (30s + command timeout)
       const tokenExpSeconds = Math.ceil(timeout / 1000) + 30;
-      const token = generateCentrifugoToken(this.userId, tokenExpSeconds);
+      const token = await generateCentrifugoToken(this.userId, tokenExpSeconds);
 
       // Create a centrifuge client for this command
       const client = new Centrifuge(this.config.wsUrl, {

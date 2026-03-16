@@ -99,6 +99,7 @@
     "gpt-tokenizer": "^3.4.0",
     "iron-session": "^8.0.4",
     "isbinaryfile": "^6.0.0",
+    "jose": "^6.2.1",
     "jszip": "^3.10.1",
     "langchain": "^1.2.30",
     "lucide-react": "^0.577.0",

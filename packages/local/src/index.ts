@@ -495,7 +495,7 @@ class LocalSandboxClient {
       },
     });
 
-    const channel = `sandbox:${this.userId}`;
+    const channel = `sandbox:user#${this.userId}`;
     this.subscription = this.centrifuge.newSubscription(channel);
 
     this.subscription.on("publication", (ctx: PublicationContext) => {

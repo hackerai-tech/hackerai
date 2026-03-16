@@ -3,7 +3,7 @@
   "namespaces": [
     {
       "name": "sandbox",
-      "allow_subscribe_for_client": true,
+      "allow_user_limited_channels": true,
       "allow_publish_for_subscriber": true,
       "presence": true,
       "join_leave": true,
