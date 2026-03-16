@@ -982,30 +982,45 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               );
               logStep("merge_todos", stepStart);
 
-              const shouldPersist = regenerate
-                ? true
-                : Boolean(
-                    generatedTitle ||
-                    streamFinishReason ||
-                    mergedTodos.length > 0,
-                  );
-
-              if (shouldPersist) {
-                stepStart = Date.now();
-                await updateChat({
-                  chatId,
-                  title: generatedTitle,
-                  finishReason: streamFinishReason,
-                  todos: mergedTodos,
-                  defaultModelSlug: mode,
-                  sandboxType: sandboxManager.getEffectivePreference(),
-                  selectedModel: selectedModelOverride,
-                });
-                logStep("update_chat", stepStart);
+              // Skip updateChat during workflow checkpoints — it clears
+              // active_stream_id which kills the client's ability to
+              // reconnect. The stream isn't actually finished yet.
+              if (stoppedDueToTimeBudget) {
+                // Only persist title if generated (don't touch stream state)
+                if (generatedTitle) {
+                  stepStart = Date.now();
+                  await updateChat({
+                    chatId,
+                    title: generatedTitle,
+                  });
+                  logStep("update_chat_title_only", stepStart);
+                }
               } else {
-                stepStart = Date.now();
-                await prepareForNewStream({ chatId });
-                logStep("prepare_for_new_stream", stepStart);
+                const shouldPersist = regenerate
+                  ? true
+                  : Boolean(
+                      generatedTitle ||
+                      streamFinishReason ||
+                      mergedTodos.length > 0,
+                    );
+
+                if (shouldPersist) {
+                  stepStart = Date.now();
+                  await updateChat({
+                    chatId,
+                    title: generatedTitle,
+                    finishReason: streamFinishReason,
+                    todos: mergedTodos,
+                    defaultModelSlug: mode,
+                    sandboxType: sandboxManager.getEffectivePreference(),
+                    selectedModel: selectedModelOverride,
+                  });
+                  logStep("update_chat", stepStart);
+                } else {
+                  stepStart = Date.now();
+                  await prepareForNewStream({ chatId });
+                  logStep("prepare_for_new_stream", stepStart);
+                }
               }
 
               stepStart = Date.now();
