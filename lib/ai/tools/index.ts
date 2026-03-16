@@ -57,6 +57,7 @@ export const createTools = (
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
   tauriConnectionInfo?: TauriConnectionInfo | null,
+  getTimeRemaining?: () => number | null,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -113,6 +114,7 @@ export const createTools = (
     guardrailsConfig,
     appendMetadataStream,
     onToolCost,
+    getTimeRemaining,
   };
 
   // Create all available tools

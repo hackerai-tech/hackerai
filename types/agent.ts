@@ -69,4 +69,6 @@ export interface ToolContext {
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */
   onToolCost?: (costDollars: number) => void;
+  /** Returns ms remaining in the workflow step time budget, or null if no budget (non-workflow). */
+  getTimeRemaining?: () => number | null;
 }

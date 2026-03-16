@@ -24,10 +24,17 @@ import {
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
+const TOOL_PREEMPT_BUFFER_MS = 120_000; // Return 120s before budget expires
+const MIN_EXECUTION_TIME_MS = 30_000; // Don't start if <30s remaining
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer, backgroundProcessTracker, guardrailsConfig } =
-    context;
+  const {
+    sandboxManager,
+    writer,
+    backgroundProcessTracker,
+    guardrailsConfig,
+    getTimeRemaining,
+  } = context;
 
   // Parse user guardrail configuration and get effective guardrails
   const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
@@ -117,10 +124,28 @@ If you are generating files:
     ) => {
       // Calculate effective stream timeout (capped at MAX_TIMEOUT_SECONDS)
       // This controls how long we wait for output, not how long the command runs
-      const effectiveStreamTimeout = Math.min(
+      const userTimeoutSeconds = Math.min(
         timeout ?? DEFAULT_STREAM_TIMEOUT_SECONDS,
         MAX_TIMEOUT_SECONDS,
       );
+
+      // If running in a workflow with a time budget, cap the timeout
+      // so the tool returns before the budget expires
+      const timeRemainingMs = getTimeRemaining?.() ?? null;
+      let effectiveStreamTimeout = userTimeoutSeconds;
+      let isBudgetPreempt = false;
+
+      if (timeRemainingMs !== null && !is_background) {
+        const budgetTimeoutSeconds = Math.max(
+          0,
+          (timeRemainingMs - TOOL_PREEMPT_BUFFER_MS) / 1000,
+        );
+        if (budgetTimeoutSeconds < userTimeoutSeconds) {
+          effectiveStreamTimeout = budgetTimeoutSeconds;
+          isBudgetPreempt = true;
+        }
+      }
+
       // Check guardrails before executing the command
       const guardrailResult = checkCommandGuardrails(
         command,
@@ -132,6 +157,22 @@ If you are generating files:
             output: "",
             exitCode: 1,
             error: `Command blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This command pattern has been blocked for safety. If you believe this is a false positive, the user can adjust guardrail settings.`,
+          },
+        };
+      }
+
+      // If the workflow step is about to expire, don't start the command —
+      // let stopWhen checkpoint and resume in a fresh step
+      if (
+        timeRemainingMs !== null &&
+        !is_background &&
+        timeRemainingMs - TOOL_PREEMPT_BUFFER_MS < MIN_EXECUTION_TIME_MS
+      ) {
+        return {
+          result: {
+            output: "",
+            exitCode: null,
+            error: `Insufficient time remaining (${Math.round(timeRemainingMs / 1000)}s) to safely execute this command. The workflow will checkpoint and continue in a new step — retry this command there.`,
           },
         };
       }
@@ -337,30 +378,79 @@ If you are generating files:
                     processId = (execution as any).pid;
                   }
 
-                  // For foreground commands on stream timeout, try to discover PID for user reference
-                  // DO NOT kill the process - it may still be working and saving to files
-                  // The process has its own MAX_COMMAND_EXECUTION_TIME timeout via commonOptions
-                  if (!processId && !is_background) {
-                    processId = await findProcessPid(sandboxInstance, command);
-                  }
+                  if (isBudgetPreempt) {
+                    // Budget preemption: actively kill the process so stopWhen
+                    // can evaluate and checkpoint before Vercel kills the step
+                    console.log(
+                      `[TIME BUDGET] run_terminal_cmd preempted — killing process (PID: ${processId ?? "unknown"}, command: "${command.slice(0, 80)}")`,
+                    );
 
-                  await createTerminalWriter(
-                    TIMEOUT_MESSAGE(
-                      effectiveStreamTimeout,
-                      processId ?? undefined,
-                    ),
-                  );
+                    if (!processId) {
+                      processId = await findProcessPid(
+                        sandboxInstance,
+                        command,
+                      );
+                    }
 
-                  resolved = true;
-                  const result = handler
-                    ? handler.getResult(processId ?? undefined)
-                    : { output: "" };
-                  if (handler) {
-                    handler.cleanup();
+                    try {
+                      if ((execution && execution.kill) || processId) {
+                        await terminateProcessReliably(
+                          sandboxInstance,
+                          execution,
+                          processId,
+                        );
+                      }
+                    } catch (error) {
+                      console.error(
+                        "[TIME BUDGET] Error killing process:",
+                        error,
+                      );
+                    }
+
+                    resolved = true;
+                    const result = handler
+                      ? handler.getResult(processId ?? undefined)
+                      : { output: "" };
+                    if (handler) {
+                      handler.cleanup();
+                    }
+
+                    const budgetSuffix =
+                      "\n\n[TIME BUDGET] Command terminated early — workflow step is running out of time. The workflow will checkpoint and continue in a new step.";
+                    resolve({
+                      result: {
+                        output: (result.output || "") + budgetSuffix,
+                        exitCode: null,
+                      },
+                    });
+                  } else {
+                    // Normal timeout: don't kill the process — it may still be
+                    // working and saving to files. Report PID for reference.
+                    if (!processId && !is_background) {
+                      processId = await findProcessPid(
+                        sandboxInstance,
+                        command,
+                      );
+                    }
+
+                    await createTerminalWriter(
+                      TIMEOUT_MESSAGE(
+                        effectiveStreamTimeout,
+                        processId ?? undefined,
+                      ),
+                    );
+
+                    resolved = true;
+                    const result = handler
+                      ? handler.getResult(processId ?? undefined)
+                      : { output: "" };
+                    if (handler) {
+                      handler.cleanup();
+                    }
+                    resolve({
+                      result: { output: result.output, exitCode: null },
+                    });
                   }
-                  resolve({
-                    result: { output: result.output, exitCode: null },
-                  });
                 },
               },
             );

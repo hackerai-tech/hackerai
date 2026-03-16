@@ -227,6 +227,14 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
         rateLimitInfo,
       });
 
+      // Create the time-remaining closure for tool preemption.
+      // streamStartTime is set later but getTimeRemaining is only called during
+      // tool execution, which happens after streamStartTime is initialized.
+      let streamStartTimeRef = 0;
+      const getTimeRemaining = timeBudgetMs
+        ? () => Math.max(0, timeBudgetMs - (Date.now() - streamStartTimeRef))
+        : undefined;
+
       const {
         tools,
         ensureSandbox,
@@ -254,6 +262,7 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
           chatLogger?.getBuilder().addToolCost(costDollars);
         },
         tauriCmdServer ?? null,
+        getTimeRemaining,
       );
 
       const sendFileMetadataToStream = (
@@ -371,6 +380,7 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
       let stoppedDueToTokenExhaustion = false;
       const isReasoningModel = isAgentMode(mode);
       const streamStartTime = Date.now();
+      streamStartTimeRef = streamStartTime;
       const configuredModelId =
         trackedProvider.languageModel(selectedModel).modelId;
 
