@@ -174,9 +174,13 @@ export async function runAgentStep(
 
   // preventClose keeps the writable open so the workflow can continue
   // piping from subsequent steps after a time-budget checkpoint.
+  // preventAbort stops the budget abort from killing the writable so
+  // the next step can still pipe to it. The .catch() prevents the
+  // pipeTo rejection (from the aborted source) from crashing the step.
   await uiStream
     .pipeThrough(stripFinish)
-    .pipeTo(writable, { preventClose: true });
+    .pipeTo(writable, { preventClose: true, preventAbort: true })
+    .catch(() => {});
 
   const result = await getStepResult();
 
