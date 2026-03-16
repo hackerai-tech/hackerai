@@ -33,7 +33,10 @@ import {
 } from "@/lib/utils/stream-writer-utils";
 import { uploadSandboxFiles } from "@/lib/utils/sandbox-file-utils";
 import { createTrackedProvider } from "@/lib/ai/providers";
-import { getMaxStepsForUser } from "@/lib/chat/chat-processor";
+import {
+  getMaxStepsForUser,
+  fixIncompleteMessageParts,
+} from "@/lib/chat/chat-processor";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
@@ -1156,9 +1159,24 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
             }
 
             await deductAccumulatedUsage();
+
+            // Fix incomplete tool calls in the snapshot so the next step
+            // doesn't receive orphaned tool_call parts without tool_result.
+            // This happens when the budget abort fires mid-tool-execution.
+            const messagesSnapshot = stoppedDueToTimeBudget
+              ? messages.map((msg) =>
+                  msg.role === "assistant" && msg.parts
+                    ? {
+                        ...msg,
+                        parts: fixIncompleteMessageParts(msg.parts),
+                      }
+                    : msg,
+                )
+              : undefined;
+
             resolveStepResult?.({
               finishReason: streamFinishReason ?? "stop",
-              messagesSnapshot: stoppedDueToTimeBudget ? messages : undefined,
+              messagesSnapshot,
             });
           },
           sendReasoning: true,
