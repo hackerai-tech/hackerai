@@ -25,11 +25,15 @@ export async function runAgentStep(
   "use step";
 
   const { attempt, stepId } = getStepMetadata();
+  const isContinuation =
+    payload.chatFinishReason === WORKFLOW_CHECKPOINT_FINISH_REASON;
   workflowAxiomLogger.info("Workflow step started", {
     chatId: payload.chatId,
     stepId,
     attempt,
     isRetry: attempt > 1,
+    isContinuation,
+    messageCount: isContinuation ? payload.messages.length : undefined,
   });
 
   const {
