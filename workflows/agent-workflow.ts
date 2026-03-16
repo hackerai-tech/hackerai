@@ -1,6 +1,6 @@
 import { getWritable } from "workflow";
 import { generateId, type UIMessageChunk } from "ai";
-import { runAgentStep } from "./agent-step";
+import { runAgentStep, closeWorkflowStream } from "./agent-step";
 import { WORKFLOW_CHECKPOINT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
 
@@ -17,7 +17,7 @@ const MAX_CONTINUATIONS = 50;
  *
  * The writable stream is obtained at the workflow level and passed into each
  * step. Steps pipe into it with preventClose so the stream stays open across
- * continuations. The writable is only closed here after the loop exits.
+ * continuations. The final step closes the stream when it finishes.
  */
 export async function agentWorkflow(input: AgentTaskPayload) {
   "use workflow";
@@ -46,9 +46,9 @@ export async function agentWorkflow(input: AgentTaskPayload) {
     };
   }
 
-  // Send the finish event that steps intentionally strip, then close.
-  const writer = writable.getWriter();
-  await writer.write({ type: "finish", finishReason: "stop" });
-  writer.releaseLock();
-  await writable.close();
+  // Safety net: if the loop exited because MAX_CONTINUATIONS was reached,
+  // the last step was a checkpoint and left the stream open. Close it.
+  if (continuations >= MAX_CONTINUATIONS) {
+    await closeWorkflowStream(writable);
+  }
 }

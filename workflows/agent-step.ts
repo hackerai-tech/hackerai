@@ -4,6 +4,7 @@ import {
   createAgentStreamExecute,
   type AgentStepResult,
 } from "@/lib/api/agent-stream-core";
+import { WORKFLOW_CHECKPOINT_FINISH_REASON } from "@/lib/chat/stop-conditions";
 import { deserializeRateLimitInfo } from "@/lib/api/rate-limit-serialization";
 import { UsageRefundTracker } from "@/lib/rate-limit/refund";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
@@ -173,5 +174,40 @@ export async function runAgentStep(
     .pipeThrough(stripFinish)
     .pipeTo(writable, { preventClose: true });
 
-  return await getStepResult();
+  const result = await getStepResult();
+
+  // Close the stream unless this is a checkpoint that can actually continue
+  // (has a messages snapshot for the next step). This must happen here
+  // (inside "use step") because the workflow orchestrator can't call
+  // WritableStream methods like getWriter()/close().
+  const canContinue =
+    result.finishReason === WORKFLOW_CHECKPOINT_FINISH_REASON &&
+    (result.messagesSnapshot?.length ?? 0) > 0;
+
+  if (!canContinue) {
+    const writer = writable.getWriter();
+    await writer.write({ type: "finish", finishReason: "stop" });
+    writer.releaseLock();
+    await writable.close();
+  }
+
+  return result;
 }
+
+/**
+ * Closes the workflow writable stream. Called by the workflow orchestrator
+ * when the continuation loop exits without the final step having closed it
+ * (e.g. MAX_CONTINUATIONS reached). Must be a step function because
+ * WritableStream methods aren't available in "use workflow" context.
+ */
+export async function closeWorkflowStream(
+  writable: WritableStream<UIMessageChunk>,
+) {
+  "use step";
+  const writer = writable.getWriter();
+  await writer.write({ type: "finish", finishReason: "stop" });
+  writer.releaseLock();
+  await writable.close();
+}
+
+closeWorkflowStream.maxRetries = 0;
