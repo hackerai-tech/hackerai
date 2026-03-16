@@ -412,9 +412,18 @@ export async function getMessagesByChatId({
   let allMessages: UIMessage[];
 
   if (regenerate && !isTemporary) {
-    // For regeneration and not temporary chat, don't add new messages to avoid duplication
-    // The backend query already excluded the last message being regenerated
+    // Don't append new messages — use existing history up to the last user message
     allMessages = existingMessages;
+    // Defensively strip trailing assistant messages.
+    // The client should have deleted the last assistant message before
+    // calling regenerate, but if that hasn't propagated yet we must
+    // ensure the conversation ends with a user message.
+    while (
+      allMessages.length > 0 &&
+      allMessages[allMessages.length - 1].role === "assistant"
+    ) {
+      allMessages = allMessages.slice(0, -1);
+    }
   } else {
     // For normal chat, merge existing messages with the new user message
     allMessages = [...existingMessages, ...newMessages];
