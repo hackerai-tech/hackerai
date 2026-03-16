@@ -29,6 +29,7 @@ import { isSelectedModel } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
 import {
   checkRateLimit,
+  consumeFreeUserRateLimit,
   deductUsage,
   UsageRefundTracker,
 } from "@/lib/rate-limit";
@@ -543,6 +544,7 @@ export const createChatHandler = (
 
           const usageTracker = new UsageTracker();
           let hasDeductedUsage = false;
+          let hasConsumedFreeRateLimit = false;
 
           const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
@@ -577,6 +579,18 @@ export const createChatHandler = (
               configuredModelId,
               rateLimitInfo,
             });
+          };
+
+          // Consume free user sliding-window rate limit once on success (only for ask + free)
+          const consumeFreeRateLimitIfApplicable = async () => {
+            if (
+              hasConsumedFreeRateLimit ||
+              mode !== "ask" ||
+              subscription !== "free"
+            )
+              return;
+            hasConsumedFreeRateLimit = true;
+            await consumeFreeUserRateLimit(userId);
           };
 
           // Helper to create streamText with a given model (reused for retry)
@@ -1001,6 +1015,7 @@ export const createChatHandler = (
 
                           // Deduct accumulated usage (includes both original + retry streams)
                           await deductAccumulatedUsage();
+                          await consumeFreeRateLimitIfApplicable();
                         },
                         sendReasoning: true,
                       }),
@@ -1272,6 +1287,7 @@ export const createChatHandler = (
                 }
 
                 await deductAccumulatedUsage();
+                await consumeFreeRateLimitIfApplicable();
               },
               sendReasoning: true,
             }),
