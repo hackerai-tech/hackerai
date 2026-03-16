@@ -982,20 +982,11 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               );
               logStep("merge_todos", stepStart);
 
-              // Skip updateChat during workflow checkpoints — it clears
-              // active_stream_id which kills the client's ability to
-              // reconnect. The stream isn't actually finished yet.
-              if (stoppedDueToTimeBudget) {
-                // Only persist title if generated (don't touch stream state)
-                if (generatedTitle) {
-                  stepStart = Date.now();
-                  await updateChat({
-                    chatId,
-                    title: generatedTitle,
-                  });
-                  logStep("update_chat_title_only", stepStart);
-                }
-              } else {
+              // Skip updateChat entirely during workflow checkpoints —
+              // it always clears active_stream_id which kills the
+              // client connection. Title/todos will be saved when the
+              // workflow finishes (final step calls updateChat normally).
+              if (!stoppedDueToTimeBudget) {
                 const shouldPersist = regenerate
                   ? true
                   : Boolean(
