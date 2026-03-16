@@ -139,6 +139,7 @@ describe("checkRateLimit", () => {
         1000,
         undefined,
         undefined,
+        undefined,
       );
       expect(result.remaining).toBe(5000);
     });
@@ -152,6 +153,7 @@ describe("checkRateLimit", () => {
         "user-123",
         "pro",
         1000,
+        undefined,
         undefined,
         undefined,
       );
@@ -173,6 +175,7 @@ describe("checkRateLimit", () => {
         2000,
         { enabled: true, hasBalance: true, autoReloadEnabled: false },
         undefined,
+        undefined,
       );
     });
 
@@ -185,6 +188,7 @@ describe("checkRateLimit", () => {
         "user-123",
         "team",
         500,
+        undefined,
         undefined,
         undefined,
       );
@@ -205,12 +209,14 @@ describe("checkRateLimit", () => {
         1000,
         undefined,
         undefined,
+        undefined,
       );
       expect(mockCheckTokenBucketLimit).toHaveBeenNthCalledWith(
         2,
         "user-123",
         "pro",
         1000,
+        undefined,
         undefined,
         undefined,
       );

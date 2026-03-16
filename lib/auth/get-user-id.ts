@@ -43,6 +43,7 @@ export const getUserIDAndPro = async (
 ): Promise<{
   userId: string;
   subscription: SubscriptionTier;
+  organizationId?: string;
 }> => {
   try {
     const { authkit } = await import("@workos-inc/authkit-nextjs");
@@ -85,7 +86,11 @@ export const getUserIDAndPro = async (
       subscription = "pro";
     }
 
-    return { userId: session.user.id, subscription };
+    return {
+      userId: session.user.id,
+      subscription,
+      organizationId: (session as any).organizationId as string | undefined,
+    };
   } catch (error) {
     if (error instanceof ChatSDKError) {
       throw error;

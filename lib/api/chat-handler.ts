@@ -173,7 +173,8 @@ export const createChatHandler = (
         isRegenerate: !!regenerate,
       });
 
-      const { userId, subscription } = await getUserIDAndPro(req);
+      const { userId, subscription, organizationId } =
+        await getUserIDAndPro(req);
       usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
 
@@ -320,6 +321,7 @@ export const createChatHandler = (
           estimatedInputTokens,
           extraUsageConfig,
           selectedModel,
+          organizationId,
         ));
 
       // Track deductions for potential refund on error

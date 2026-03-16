@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { workos } from "../../workos";
 import { stripe } from "../../stripe";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { getTeamMemberConsumed, addOrgRemovedUsage } from "@/lib/rate-limit";
 
 export const GET = async (req: NextRequest) => {
   try {
@@ -240,8 +241,17 @@ export const DELETE = async (req: NextRequest) => {
         }
       }
 
-      // Delete the membership
+      // Snapshot consumed credits before deletion (bucket is still accessible)
+      const consumed = await getTeamMemberConsumed(membershipToDelete.userId);
+
+      // Delete the membership first — only record debt if deletion succeeds
       await workos.userManagement.deleteOrganizationMembership(membershipId);
+
+      // Record removed member's consumed credits to org counter
+      // so the next new member inherits the "used seat" debt
+      if (consumed > 0) {
+        await addOrgRemovedUsage(organizationId, consumed);
+      }
     } catch (error) {
       // If membership not found, it might be an invitation
       isInvitation = true;
