@@ -152,7 +152,7 @@ export async function runAgentStep(
     usageRefundTracker,
     abortController: userStopSignal,
     // No preemptiveTimeout — workflow supports up to 1 hour
-    timeBudgetMs: 750_000, // 750s budget, 50s buffer for onFinish cleanup
+    timeBudgetMs: 400_000, // 400s budget for testing preemption (prod: 750_000)
   });
 
   const uiStream = createUIMessageStream({ execute });
