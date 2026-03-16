@@ -583,6 +583,7 @@ export const createChatHandler = (
           const createStream = async (modelName: string) =>
             streamText({
               model: trackedProvider.languageModel(modelName),
+              maxOutputTokens: 32000,
               system: currentSystemPrompt,
               messages: await convertToModelMessages(finalMessages),
               tools,
