@@ -1,4 +1,4 @@
-import { getStepMetadata } from "workflow";
+import { getStepMetadata, getWritable } from "workflow";
 import { createUIMessageStream, type UIMessageChunk } from "ai";
 import {
   createAgentStreamExecute,
@@ -20,9 +20,14 @@ import { workflowAxiomLogger } from "@/lib/axiom/workflow";
  */
 export async function runAgentStep(
   payload: AgentTaskPayload,
-  writable: WritableStream<UIMessageChunk>,
 ): Promise<AgentStepResult> {
   "use step";
+
+  // Each step calls getWritable() to get a writable connected to the
+  // current execution context's buffer. Passing the writable from the
+  // workflow doesn't work across step boundaries because durable
+  // execution re-runs the workflow function between steps.
+  const writable = getWritable<UIMessageChunk>();
 
   const { attempt, stepId } = getStepMetadata();
   const isContinuation =
@@ -214,10 +219,9 @@ export async function runAgentStep(
  * (e.g. MAX_CONTINUATIONS reached). Must be a step function because
  * WritableStream methods aren't available in "use workflow" context.
  */
-export async function closeWorkflowStream(
-  writable: WritableStream<UIMessageChunk>,
-) {
+export async function closeWorkflowStream() {
   "use step";
+  const writable = getWritable<UIMessageChunk>();
   const writer = writable.getWriter();
   await writer.write({ type: "finish", finishReason: "stop" });
   writer.releaseLock();
