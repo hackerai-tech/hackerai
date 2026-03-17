@@ -2,7 +2,7 @@
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Check, Cloud, Laptop, ChevronDown, Plus } from "lucide-react";
+import { Check, Cloud, Laptop, Monitor, ChevronDown, Plus } from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -12,8 +12,6 @@ import { Button } from "@/components/ui/button";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
-// TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
-// import { useGlobalState } from "@/app/contexts/GlobalState";
 
 interface SandboxSelectorProps {
   value: string;
@@ -38,26 +36,9 @@ export function SandboxSelector({
   size = "sm",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
-  // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
-  // const { tauriCmdServer } = useGlobalState();
 
   const connections = useQuery(api.localSandbox.listConnections);
   const options: ConnectionOption[] = [
-    // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
-    // Disabled because in production Tauri builds, the remote API server cannot reach
-    // the local command server at 127.0.0.1 on the user's machine.
-    // ...(tauriCmdServer
-    //   ? [
-    //       {
-    //         id: "tauri",
-    //         label: "Local",
-    //         shortLabel: "Local",
-    //         icon: Laptop,
-    //         description: "",
-    //         mode: "dangerous" as const,
-    //       } satisfies ConnectionOption,
-    //     ]
-    //   : []),
     {
       id: "e2b",
       label: "Cloud",
@@ -68,22 +49,28 @@ export function SandboxSelector({
     ...(connections?.map((conn) => ({
       id: conn.connectionId,
       label: conn.osInfo?.hostname || conn.name,
-      shortLabel: "Remote",
-      icon: Laptop,
-      description: "",
+      shortLabel: conn.isDesktop ? "Local" : "Remote",
+      icon: conn.isDesktop ? Monitor : Laptop,
+      description: conn.isDesktop
+        ? "Desktop app"
+        : conn.mode === "docker"
+          ? "Docker"
+          : "Direct",
       mode: conn.mode,
     })) || []),
   ];
 
+  // Trigger presence cleanup when dropdown opens
+  useEffect(() => {
+    if (open) {
+      fetch("/api/sandbox/presence").catch(() => {});
+    }
+  }, [open]);
+
   // Auto-correct stale sandbox preference
   const valueMatchesOption = options.some((opt) => opt.id === value);
   useEffect(() => {
-    if (
-      connections !== undefined &&
-      !valueMatchesOption &&
-      value !== "e2b" &&
-      value !== "tauri"
-    ) {
+    if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
       onChange?.("e2b");
       toast.info("Local sandbox disconnected. Switched to Cloud.", {
         duration: 5000,

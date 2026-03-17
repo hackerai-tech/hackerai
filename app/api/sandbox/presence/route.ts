@@ -1,0 +1,126 @@
+import { NextRequest, NextResponse } from "next/server";
+import { getUserID } from "@/lib/auth/get-user-id";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@/convex/_generated/api";
+
+interface CentrifugoPresenceClient {
+  client: string;
+  user: string;
+  conn_info: { connectionId?: string } | null;
+}
+
+interface CentrifugoPresenceResponse {
+  result: {
+    presence: Record<string, CentrifugoPresenceClient>;
+  };
+}
+
+export async function GET(request: NextRequest) {
+  let userId: string;
+  try {
+    userId = await getUserID(request);
+  } catch {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const channel = `sandbox:user#${userId}`;
+
+  const apiUrl = process.env.CENTRIFUGO_API_URL;
+  const apiKey = process.env.CENTRIFUGO_API_KEY;
+  const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+  const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
+
+  if (!apiUrl || !apiKey) {
+    return NextResponse.json(
+      { error: "Centrifugo not configured" },
+      { status: 500 },
+    );
+  }
+
+  // Fetch Centrifugo presence (who's actually online)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  let presenceResponse: Response;
+  try {
+    presenceResponse = await fetch(`${apiUrl}/api/presence`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `apikey ${apiKey}`,
+      },
+      body: JSON.stringify({ channel }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error("Centrifugo presence request failed:", err);
+    return NextResponse.json({ connections: [], onlineCount: 0 });
+  }
+  clearTimeout(timeoutId);
+
+  const onlineConnectionIds = new Set<string>();
+  let presenceReliable = false;
+  if (presenceResponse.ok) {
+    const data: CentrifugoPresenceResponse = await presenceResponse.json();
+    const presence = data?.result?.presence ?? {};
+    for (const client of Object.values(presence)) {
+      if (client.conn_info?.connectionId) {
+        onlineConnectionIds.add(client.conn_info.connectionId);
+      }
+    }
+    presenceReliable = true;
+  } else {
+    console.error(
+      `Centrifugo presence API failed: ${presenceResponse.status} ${presenceResponse.statusText}`,
+    );
+  }
+
+  // Fetch connection metadata from Convex
+  if (!convexUrl || !serviceKey) {
+    return NextResponse.json({
+      connections: [],
+      onlineCount: onlineConnectionIds.size,
+    });
+  }
+
+  const convex = new ConvexHttpClient(convexUrl);
+  const connections = await convex.query(
+    api.localSandbox.listConnectionsForBackend,
+    { serviceKey, userId },
+  );
+
+  // Mark each connection with live presence status
+  const enriched = connections.map((conn) => ({
+    ...conn,
+    online: onlineConnectionIds.has(conn.connectionId),
+  }));
+
+  // Disconnect stale connections in Convex (connected in DB but not in presence)
+  if (presenceReliable) {
+    const stale = connections.filter(
+      (conn) => !onlineConnectionIds.has(conn.connectionId),
+    );
+    if (stale.length > 0) {
+      const results = await Promise.allSettled(
+        stale.map((conn) =>
+          convex.mutation(api.localSandbox.disconnectByBackend, {
+            serviceKey,
+            connectionId: conn.connectionId,
+          }),
+        ),
+      );
+      results.forEach((result, i) => {
+        if (result.status === "rejected") {
+          console.error(
+            `Failed to disconnect stale connection ${stale[i].connectionId}:`,
+            result.reason,
+          );
+        }
+      });
+    }
+  }
+
+  return NextResponse.json({
+    connections: enriched,
+    onlineCount: onlineConnectionIds.size,
+  });
+}

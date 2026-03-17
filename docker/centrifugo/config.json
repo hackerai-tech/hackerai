@@ -1,0 +1,22 @@
+{
+  "allowed_origins": [
+    "https://hackerai.co",
+    "https://www.hackerai.co",
+    "http://localhost:3000",
+    "tauri://localhost"
+  ],
+  "namespaces": [
+    {
+      "name": "sandbox",
+      "allow_user_limited_channels": true,
+      "allow_publish_for_subscriber": true,
+      "presence": true,
+      "join_leave": true,
+      "history_size": 0,
+      "history_ttl": "0s"
+    }
+  ],
+  "uni_sse": true,
+  "uni_http_stream": true,
+  "client_connection_limit": 5000
+}

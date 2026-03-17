@@ -1,0 +1,11 @@
+services:
+  centrifugo:
+    image: centrifugo/centrifugo:v5
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.json:/centrifugo/config.json:ro
+    environment:
+      - CENTRIFUGO_TOKEN_HMAC_SECRET_KEY=${CENTRIFUGO_TOKEN_SECRET}
+      - CENTRIFUGO_API_KEY=${CENTRIFUGO_API_KEY}
+    command: centrifugo -c config.json

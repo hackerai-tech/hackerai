@@ -1,7 +1,7 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxManager, SandboxType } from "@/types";
-import { ConvexSandbox } from "./convex-sandbox";
-import { TauriSandbox } from "./tauri-sandbox";
+import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
+import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
@@ -9,14 +9,11 @@ import { PREINSTALLED_PENTESTING_TOOLS } from "@/lib/system-prompt";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 
-type SandboxInstance = Sandbox | ConvexSandbox | TauriSandbox;
+type SandboxInstance = Sandbox | CentrifugoSandbox;
 
-export type SandboxPreference = "e2b" | "tauri" | string; // "e2b", "tauri", or connectionId
-
-export interface TauriConnectionInfo {
-  port: number;
-  token: string;
-}
+// "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
+// Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
+export type SandboxPreference = "e2b" | "desktop" | (string & {});
 
 export interface SandboxFallbackInfo {
   occurred: boolean;
@@ -26,23 +23,9 @@ export interface SandboxFallbackInfo {
   actualSandboxName?: string; // Human-readable name for local sandboxes
 }
 
-interface ConnectionInfo {
-  connectionId: string;
-  name: string;
-  mode: "docker" | "dangerous";
-  osInfo?: {
-    platform: string;
-    arch: string;
-    release: string;
-    hostname: string;
-  };
-  containerId?: string;
-  lastSeen: number;
-}
-
 /**
  * Hybrid sandbox manager that automatically switches between
- * local Convex sandbox and E2B cloud sandbox based on user preference
+ * local Centrifugo sandbox and E2B cloud sandbox based on user preference
  * and connection availability.
  *
  * Supports:
@@ -60,16 +43,9 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionMode: "docker" | "dangerous" | null = null;
   private currentConnectionName: string | null = null;
   private convex: ConvexHttpClient;
-  private convexUrl: string;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
-
-  private tauriConnectionInfo: TauriConnectionInfo | null;
-  private isTauri = false;
-
-  /** Guard to prevent concurrent getTauriSandbox() calls from racing */
-  private tauriInitPromise: Promise<{ sandbox: SandboxInstance }> | null = null;
 
   constructor(
     private userID: string,
@@ -77,15 +53,12 @@ export class HybridSandboxManager implements SandboxManager {
     private sandboxPreference: SandboxPreference = "e2b",
     private serviceKey: string,
     initialSandbox?: Sandbox | null,
-    tauriConnectionInfo?: TauriConnectionInfo | null,
   ) {
     this.sandbox = initialSandbox || null;
-    this.tauriConnectionInfo = tauriConnectionInfo || null;
     const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
     if (!convexUrl) {
       throw new Error("NEXT_PUBLIC_CONVEX_URL environment variable is not set");
     }
-    this.convexUrl = convexUrl;
     this.convex = new ConvexHttpClient(convexUrl);
   }
 
@@ -121,9 +94,6 @@ export class HybridSandboxManager implements SandboxManager {
    * Use this instead of the original sandboxPreference to persist accurate state.
    */
   getEffectivePreference(): SandboxPreference {
-    if (this.isTauri) {
-      return "tauri";
-    }
     if (this.isLocal && this.currentConnectionId) {
       return this.currentConnectionId;
     }
@@ -136,27 +106,21 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   /**
-   * Get OS context for AI when using dangerous mode or Tauri
-   * Returns null if using E2B
+   * Get OS context for AI when using dangerous mode.
+   * Returns null if using E2B.
    */
   getOsContext(): string | null {
-    if (this.sandbox instanceof TauriSandbox) {
-      return this.sandbox.getOsContext();
-    }
-    if (this.sandbox instanceof ConvexSandbox) {
+    if (this.sandbox instanceof CentrifugoSandbox) {
       return this.sandbox.getOsContext();
     }
     return null;
   }
 
   /**
-   * Close current sandbox if it's a ConvexSandbox (to prevent WebSocket leaks)
+   * Close current sandbox if it's a CentrifugoSandbox (to prevent WebSocket leaks)
    */
   private async closeCurrentSandbox(): Promise<void> {
-    if (
-      this.sandbox instanceof ConvexSandbox ||
-      this.sandbox instanceof TauriSandbox
-    ) {
+    if (this.sandbox instanceof CentrifugoSandbox) {
       await this.sandbox.close().catch((err) => {
         console.warn(`[${this.userID}] Failed to close sandbox:`, err);
       });
@@ -188,11 +152,8 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   getSandboxInfo(): { type: SandboxType; name?: string } | null {
-    if (this.sandboxPreference === "e2b" || (!this.isLocal && !this.isTauri)) {
+    if (this.sandboxPreference === "e2b" || !this.isLocal) {
       return { type: "e2b" };
-    }
-    if (this.isTauri) {
-      return { type: "desktop", name: "Desktop" };
     }
     const type: SandboxType =
       this.currentConnectionMode === "docker" ? "local-sandbox" : "local";
@@ -200,16 +161,13 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   getSandboxType(toolName: string): SandboxType | undefined {
-    if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
+    if (!(SANDBOX_ENVIRONMENT_TOOLS as readonly string[]).includes(toolName)) {
       return undefined;
     }
-    if (this.sandboxPreference === "e2b" || (!this.isLocal && !this.isTauri)) {
+    if (this.sandboxPreference === "e2b" || !this.isLocal) {
       return "e2b";
     }
-    if (this.isTauri) {
-      return "desktop";
-    }
-    // Local sandbox — use cached mode to distinguish docker vs dangerous
+    // Local sandbox -- use cached mode to distinguish docker vs dangerous
     if (this.currentConnectionMode === "docker") {
       return "local-sandbox";
     }
@@ -236,11 +194,6 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
-    // If preference is Tauri desktop, use direct local execution
-    if (this.sandboxPreference === "tauri" && this.tauriConnectionInfo) {
-      return this.getTauriSandbox();
-    }
-
     // If preference is E2B, always use E2B
     if (this.sandboxPreference === "e2b") {
       return this.getE2BSandbox();
@@ -260,7 +213,7 @@ export class HybridSandboxManager implements SandboxManager {
         this.currentConnectionId !== preferredConnection.connectionId ||
         !this.sandbox
       ) {
-        await this.useConvexConnection(preferredConnection);
+        await this.useCentrifugoConnection(preferredConnection);
       }
 
       return { sandbox: this.sandbox! };
@@ -269,7 +222,7 @@ export class HybridSandboxManager implements SandboxManager {
     // If preferred connection not available, check if any connection is available
     if (connections.length > 0) {
       const firstAvailable = connections[0];
-      await this.useConvexConnection(firstAvailable);
+      await this.useCentrifugoConnection(firstAvailable);
 
       // Record fallback info for notification
       this.pendingFallbackInfo = {
@@ -296,61 +249,37 @@ export class HybridSandboxManager implements SandboxManager {
     return this.getE2BSandbox();
   }
 
-  private async getTauriSandbox(): Promise<{ sandbox: SandboxInstance }> {
-    if (this.isTauri && this.sandbox && this.sandbox instanceof TauriSandbox) {
-      return { sandbox: this.sandbox };
-    }
-
-    // Prevent concurrent health checks from racing
-    if (this.tauriInitPromise) {
-      return this.tauriInitPromise;
-    }
-
-    this.tauriInitPromise = this.initTauriSandbox();
-    try {
-      return await this.tauriInitPromise;
-    } finally {
-      this.tauriInitPromise = null;
-    }
-  }
-
-  private async initTauriSandbox(): Promise<{ sandbox: SandboxInstance }> {
-    await this.closeCurrentSandbox();
-    const sandbox = new TauriSandbox(this.tauriConnectionInfo!);
-
-    // Verify the Tauri command server is reachable. If not, throw instead
-    // of falling back to E2B — the error surfaces in the tool output.
-    const isReachable = await sandbox.healthCheck();
-    if (!isReachable) {
-      throw new Error(
-        "Tauri desktop command server is not reachable. Make sure the HackerAI Desktop app is running.",
-      );
-    }
-
-    this.sandbox = sandbox;
-    this.isTauri = true;
-    this.isLocal = true;
-    this.currentConnectionId = null;
-    this.currentConnectionMode = "dangerous";
-    this.currentConnectionName = "Desktop";
-    this.setSandboxCallback(sandbox);
-
-    return { sandbox };
-  }
-
   /**
-   * Create and wire up a ConvexSandbox for the given connection.
+   * Create and wire up a CentrifugoSandbox for the given connection.
    */
-  private async useConvexConnection(connection: ConnectionInfo): Promise<void> {
+  private async useCentrifugoConnection(
+    connection: ConnectionInfo,
+  ): Promise<void> {
     await this.closeCurrentSandbox();
-    this.sandbox = new ConvexSandbox(
+    const centrifugoApiUrl = process.env.CENTRIFUGO_API_URL;
+    const centrifugoApiKey = process.env.CENTRIFUGO_API_KEY;
+    const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
+    const centrifugoTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+    if (
+      !centrifugoApiUrl ||
+      !centrifugoApiKey ||
+      !centrifugoWsUrl ||
+      !centrifugoTokenSecret
+    ) {
+      throw new Error("Missing Centrifugo environment variables");
+    }
+    const centrifugoConfig: CentrifugoConfig = {
+      apiUrl: centrifugoApiUrl,
+      apiKey: centrifugoApiKey,
+      wsUrl: centrifugoWsUrl,
+      tokenSecret: centrifugoTokenSecret,
+    };
+    this.sandbox = new CentrifugoSandbox(
       this.userID,
-      this.convexUrl,
       connection,
-      this.serviceKey,
+      centrifugoConfig,
     );
     this.isLocal = true;
-    this.isTauri = false;
     this.currentConnectionId = connection.connectionId;
     this.currentConnectionMode = connection.mode;
     this.currentConnectionName = connection.name;
@@ -388,8 +317,16 @@ export class HybridSandboxManager implements SandboxManager {
 
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
-    this.isTauri = sandbox instanceof TauriSandbox;
-    this.isLocal = sandbox instanceof ConvexSandbox || this.isTauri;
+    this.isLocal = isCentrifugoSandbox(sandbox);
+    if (isCentrifugoSandbox(sandbox)) {
+      this.currentConnectionId = sandbox.getConnectionId();
+      this.currentConnectionMode = sandbox.getConnectionMode();
+      this.currentConnectionName = sandbox.getConnectionName();
+    } else {
+      this.currentConnectionId = null;
+      this.currentConnectionMode = null;
+      this.currentConnectionName = null;
+    }
     this.setSandboxCallback(sandbox);
   }
 
@@ -400,43 +337,6 @@ export class HybridSandboxManager implements SandboxManager {
   async getSandboxContextForPrompt(): Promise<string | null> {
     if (this.sandboxPreference === "e2b") {
       return null;
-    }
-
-    if (this.sandboxPreference === "tauri" && this.tauriConnectionInfo) {
-      // Verify the Tauri command server is actually reachable before emitting
-      // desktop prompt context. On hosted/worker deployments, the health check
-      // will fail and we should fall back to the default E2B prompt (null).
-      const sandbox = new TauriSandbox(this.tauriConnectionInfo);
-      const isReachable = await sandbox.healthCheck();
-      if (!isReachable) {
-        return null;
-      }
-
-      this.currentConnectionMode = "dangerous";
-      this.currentConnectionName = "Desktop";
-      return `<sandbox_environment>
-IMPORTANT: You are connected to the user's LOCAL machine via the HackerAI Desktop app. Commands run directly on the host OS.
-
-System Environment:
-- Mode: Direct execution (Tauri Desktop)
-- User attachments: /tmp/hackerai-upload
-
-File References: When referencing files in your response:
-- Use markdown links (not inline code) for clickable file paths
-- Each reference should have a standalone absolute filesystem path
-- Labels may be short, e.g. [output.txt](/path/to/output.txt)
-- URL-encode spaces in the path, e.g. [my file.txt](/Users/name/My%20Folder/my%20file.txt)
-- The get_terminal_files tool is NOT available in desktop mode — do not attempt to use it
-- Files you create or modify are already on the user's local filesystem
-
-Security Warning:
-- File system operations affect the host directly
-- Network operations use the host network
-- Process management can affect the host system
-- Be careful with destructive commands
-
-Available tools depend on what's installed on the host system.
-</sandbox_environment>`;
     }
 
     const connections = await this.listConnections();

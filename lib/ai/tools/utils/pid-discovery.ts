@@ -4,7 +4,7 @@ import type { AnySandbox } from "@/types";
  * Attempts to find the PID of a running process by command name.
  * Uses pgrep as the primary method with ps as a fallback.
  *
- * @param sandbox - The sandbox instance (E2B or ConvexSandbox)
+ * @param sandbox - The sandbox instance (E2B or CentrifugoSandbox)
  * @param command - The full command string
  * @returns Promise<number | null> - The PID if found, null otherwise
  */

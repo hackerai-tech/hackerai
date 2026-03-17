@@ -1,6 +1,6 @@
 {
   "name": "@hackerai/local",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "HackerAI Local Sandbox Client - Execute commands on your local machine",
   "bin": {
     "hackerai-local": "./dist/index.js"
@@ -33,6 +33,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "centrifuge": "^5.0.0",
     "convex": "^1.29.2"
   },
   "devDependencies": {

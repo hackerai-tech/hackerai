@@ -83,7 +83,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
-    tauriCmdServer,
     selectedModel,
     // setSelectedModel,
   } = useGlobalState();
@@ -533,11 +532,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
     } else if (storedSandboxType === "tauri") {
-      // Only restore "tauri" if the desktop bridge is actually available.
-      // If tauriCmdServer is still undefined (bridge discovery in progress),
-      // defer — the effect will re-run when tauriCmdServer resolves.
-      if (tauriCmdServer === undefined) return;
-      setSandboxPreference(tauriCmdServer ? "tauri" : "e2b");
+      // "tauri" is a legacy preference — desktop now uses real connectionIds
+      setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
     } else if (localConnections !== undefined) {
       // For local connectionIds, validate the connection still exists
@@ -554,7 +550,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
     // If localConnections is still loading (undefined), wait for next render
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, localConnections, isExistingChat, chatId, tauriCmdServer]);
+  }, [chatData, localConnections, isExistingChat, chatId]);
 
   // TODO: restore when model selector is re-enabled
   // Initialize model selection from chat data
