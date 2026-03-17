@@ -29,6 +29,14 @@ export {
   deductUsage,
   refundUsage,
   resetRateLimitBuckets,
+  stashOldBucketRemaining,
+  popOldBucketRemaining,
+  initProratedBucket,
+  calculateProratedCredits,
+  getTeamMemberConsumed,
+  addOrgRemovedUsage,
+  clearOrgRemovedUsage,
+  applyTeamSeatDebt,
   calculateTokenCost,
   getBudgetLimits,
   getSubscriptionPrice,
@@ -67,6 +75,7 @@ export const checkRateLimit = async (
   estimatedInputTokens?: number,
   extraUsageConfig?: ExtraUsageConfig,
   modelName?: string,
+  organizationId?: string,
 ): Promise<RateLimitInfo> => {
   // Free users: sliding window
   if (subscription === "free") {
@@ -87,5 +96,6 @@ export const checkRateLimit = async (
     estimatedInputTokens || 0,
     extraUsageConfig,
     modelName,
+    organizationId,
   );
 };

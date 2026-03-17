@@ -944,6 +944,16 @@ export const saveLatestSummary = mutation({
         });
       }
 
+      // Log sizes to help diagnose document limit issues
+      const summaryTextSizeKB = Math.round(
+        new TextEncoder().encode(args.summaryText).length / 1024,
+      );
+      console.log("[saveLatestSummary] Saving summary", {
+        chatId: args.chatId,
+        summaryTextSizeKB,
+        hasPreviousSummary: !!chat.latest_summary_id,
+      });
+
       let previousSummaries: {
         summary_text: string;
         summary_up_to_message_id: string;
@@ -971,6 +981,21 @@ export const saveLatestSummary = mutation({
         }
       }
 
+      // Log total document size before insert
+      const previousSummariesTotalSizeKB = Math.round(
+        previousSummaries.reduce(
+          (acc, s) => acc + new TextEncoder().encode(s.summary_text).length,
+          0,
+        ) / 1024,
+      );
+      console.log("[saveLatestSummary] Document sizes", {
+        chatId: args.chatId,
+        summaryTextSizeKB,
+        previousSummariesCount: previousSummaries.length,
+        previousSummariesTotalSizeKB,
+        estimatedTotalSizeKB: summaryTextSizeKB + previousSummariesTotalSizeKB,
+      });
+
       const summaryId = await ctx.db.insert("chat_summaries", {
         chat_id: args.chatId,
         summary_text: args.summaryText,
@@ -986,8 +1011,12 @@ export const saveLatestSummary = mutation({
 
       return null;
     } catch (error) {
-      console.error("Failed to save chat summary:", error);
-      throw new Error("Failed to save chat summary");
+      console.error("[saveLatestSummary] Failed to save chat summary:", {
+        chatId: args.chatId,
+        summaryTextLength: args.summaryText.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
   },
 });

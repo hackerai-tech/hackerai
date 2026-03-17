@@ -16,11 +16,9 @@ import { deductFromBalance, refundToBalance } from "@/lib/extra-usage";
 const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   default: { input: 0.5, output: 3.0 },
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
-  "model-gemini-3.1-pro": { input: 2.0, output: 12.0 },
   "model-grok-4.1": { input: 0.2, output: 0.5 },
-  "model-grok-4.2-beta": { input: 2.0, output: 6.0 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
-  "model-gpt-5.4": { input: 2.5, output: 15.0 },
+  "model-opus-4.6": { input: 5.0, output: 25.0 },
 };
 
 const getModelPricing = (modelName?: string) =>
@@ -28,6 +26,9 @@ const getModelPricing = (modelName?: string) =>
 
 /** Points per dollar (1 point = $0.0001) */
 export const POINTS_PER_DOLLAR = 10_000;
+
+/** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
+const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 
 // =============================================================================
 // Cost Calculation
@@ -84,6 +85,10 @@ export const getSubscriptionPrice = (
 // Rate Limiting
 // =============================================================================
 
+/** Build the Redis key used by the monthly token bucket. */
+const monthlyBucketKey = (userId: string, tier: SubscriptionTier) =>
+  `usage:monthly:${userId}:${tier}`;
+
 /**
  * Create rate limiter for a user (shared between agent and ask modes).
  * Single monthly bucket replacing the old session+weekly dual buckets.
@@ -119,6 +124,7 @@ export const checkTokenBucketLimit = async (
   estimatedInputTokens: number = 0,
   extraUsageConfig?: ExtraUsageConfig,
   modelName?: string,
+  organizationId?: string,
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
@@ -130,6 +136,17 @@ export const checkTokenBucketLimit = async (
   }
 
   try {
+    // For team users: detect new bucket so we can apply seat debt after creation
+    if (subscription === "team" && !organizationId) {
+      console.warn(
+        `[checkTokenBucketLimit] Team user ${userId} missing organizationId — seat debt enforcement skipped`,
+      );
+    }
+    const isNewTeamBucket =
+      subscription === "team" &&
+      organizationId &&
+      !(await redis.exists(monthlyBucketKey(userId, "team")));
+
     const { monthly, monthlyLimit } = createRateLimiter(
       redis,
       userId,
@@ -177,7 +194,14 @@ export const checkTokenBucketLimit = async (
     });
 
     // Step 1: Check limit WITHOUT deducting (rate: 0 peeks at current state)
-    const monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
+    let monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
+
+    // Step 1.5: For new team members, apply seat debt from removed members
+    if (isNewTeamBucket) {
+      await applyTeamSeatDebt(userId, organizationId!);
+      // Re-peek after debt burn to get accurate remaining
+      monthlyCheck = await monthly.limiter.limit(monthly.key, { rate: 0 });
+    }
 
     // Step 2: Check if we have enough capacity, or if we need extra usage
     const shortfall = Math.max(0, estimatedCost - monthlyCheck.remaining);
@@ -356,8 +380,7 @@ const refundBucketTokens = async (
   if (!redis) return;
 
   const { monthly: monthlyLimit } = getBudgetLimits(subscription);
-
-  const monthlyKey = `usage:monthly:${userId}:${subscription}`;
+  const monthlyKey = monthlyBucketKey(userId, subscription);
 
   try {
     const monthlyTokens = await redis.hincrby(
@@ -384,31 +407,286 @@ export const resetRateLimitBuckets = async (
   userId: string,
   subscription: SubscriptionTier,
 ): Promise<void> => {
+  await initProratedBucket(userId, subscription, 1.0, 0);
+};
+
+// =============================================================================
+// Upgrade Proration
+// =============================================================================
+
+/**
+ * Stash the old bucket's remaining tokens in a temporary Redis key before
+ * deleting the bucket on tier change. The `invoice.paid` handler picks this
+ * up to carry over unused credits into the prorated new-tier bucket.
+ */
+export const stashOldBucketRemaining = async (
+  userId: string,
+  oldTier: SubscriptionTier,
+): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
 
-  const monthlyKey = `usage:monthly:${userId}:${subscription}`;
+  const monthlyKey = monthlyBucketKey(userId, oldTier);
+  const stashKey = `upgrade:carryover:${userId}`;
+  const oldTierMax = MONTHLY_CREDITS[oldTier] ?? 0;
 
   try {
-    await redis.del(monthlyKey);
-
-    // Re-seed the Upstash TTL so it aligns with this reset. The limit()
-    // call creates a fresh bucket, and the explicit expire() guarantees
-    // exactly 30 days regardless of any Upstash TTL drift.
-    const { monthly } = createRateLimiter(redis, userId, subscription);
-    await monthly.limiter.limit(monthly.key, { rate: 0 });
-    await redis.expire(monthlyKey, 30 * 24 * 60 * 60);
-
-    console.log(
-      `[resetRateLimitBuckets] Reset bucket for user ${userId} tier ${subscription}`,
-    );
+    const tokens = await redis.hget<number>(monthlyKey, "tokens");
+    const remaining = Math.max(0, tokens ?? 0);
+    const consumed = Math.max(0, oldTierMax - remaining);
+    // Stash both remaining and consumed so proration can deduct old-tier usage
+    await redis.set(stashKey, JSON.stringify({ remaining, consumed }), {
+      ex: 300,
+    }); // 5-minute TTL
   } catch (error) {
     console.error(
-      `[resetRateLimitBuckets] Failed to reset bucket for user ${userId}:`,
+      `[stashOldBucketRemaining] Failed for user ${userId}:`,
       error,
     );
   }
 };
+
+/**
+ * Pop the stashed carry-over data for a user. Returns remaining and consumed
+ * credits from the old tier, or null if no stash exists (no tier change
+ * happened). The null case is used by the webhook to distinguish real tier
+ * changes from other subscription updates (e.g. quantity changes).
+ */
+export const popOldBucketRemaining = async (
+  userId: string,
+): Promise<{ remaining: number; consumed: number } | null> => {
+  const redis = createRedisClient();
+  if (!redis) return null;
+
+  const stashKey = `upgrade:carryover:${userId}`;
+
+  try {
+    const raw = await redis.get<string>(stashKey);
+    if (raw !== null) {
+      await redis.del(stashKey);
+    }
+    if (!raw) return null;
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return {
+      remaining: Math.max(0, parsed.remaining ?? 0),
+      consumed: Math.max(0, parsed.consumed ?? 0),
+    };
+  } catch (error) {
+    console.error(`[popOldBucketRemaining] Failed for user ${userId}:`, error);
+    return null;
+  }
+};
+
+/**
+ * Calculate prorated credits for a mid-cycle upgrade (pure function).
+ *
+ *   proratedCredits = floor(tierMax * proratedRatio) - consumed
+ *   totalCredits    = max(0, proratedCredits)
+ *
+ * Subtracting consumed ensures a user who burns all old-tier credits
+ * then upgrades doesn't get a near-full new-tier bucket for the same cycle.
+ */
+export const calculateProratedCredits = (
+  tierMax: number,
+  proratedRatio: number,
+  consumedCredits: number = 0,
+): { proratedCredits: number; totalCredits: number; burnAmount: number } => {
+  const rawProrated = Math.floor(tierMax * proratedRatio);
+  const consumed = Math.max(0, consumedCredits);
+  const totalCredits = Math.max(0, Math.min(rawProrated - consumed, tierMax));
+  return {
+    proratedCredits: rawProrated,
+    totalCredits,
+    burnAmount: tierMax - totalCredits,
+  };
+};
+
+/**
+ * Initialize a prorated token bucket for a mid-cycle upgrade.
+ * Works by creating a full-capacity bucket then "burning" the excess.
+ *
+ * @param consumedCredits - Credits already consumed from the old tier this cycle.
+ *   Deducted from the prorated allocation so users can't "double-dip".
+ */
+export const initProratedBucket = async (
+  userId: string,
+  newTier: SubscriptionTier,
+  proratedRatio: number,
+  consumedCredits: number = 0,
+): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const newTierMax = MONTHLY_CREDITS[newTier] ?? 0;
+  if (newTierMax === 0) return;
+
+  const { burnAmount } = calculateProratedCredits(
+    newTierMax,
+    proratedRatio,
+    consumedCredits,
+  );
+  const monthlyKey = monthlyBucketKey(userId, newTier);
+
+  try {
+    // Delete any existing bucket for the new tier
+    await redis.del(monthlyKey);
+
+    // Create fresh bucket at full capacity
+    const { monthly } = createRateLimiter(redis, userId, newTier);
+    await monthly.limiter.limit(monthly.key, { rate: 0 });
+
+    // Burn excess to bring bucket down to prorated level
+    if (burnAmount > 0) {
+      await monthly.limiter.limit(monthly.key, { rate: burnAmount });
+    }
+
+    // Align TTL to 30 days from now
+    await redis.expire(monthlyKey, THIRTY_DAYS_SECONDS);
+  } catch (error) {
+    console.error(`[initProratedBucket] Failed for user ${userId}:`, error);
+  }
+};
+
+// =============================================================================
+// Team Seat Rotation Protection
+// =============================================================================
+
+const TEAM_CREDITS = MONTHLY_CREDITS["team"] ?? 0;
+
+/** Redis key for accumulated removed-member usage per org. */
+const orgRemovedUsageKey = (orgId: string) => `team:removed_usage:${orgId}`;
+
+/** Redis key to ensure seat debt is applied only once per user per cycle. */
+const debtAppliedKey = (orgId: string, userId: string) =>
+  `team:debt_applied:${orgId}:${userId}`;
+
+/**
+ * Get how many points a team member has consumed from their bucket.
+ * Returns 0 if no bucket exists.
+ */
+export const getTeamMemberConsumed = async (
+  userId: string,
+): Promise<number> => {
+  const redis = createRedisClient();
+  if (!redis) return 0;
+
+  try {
+    const tokens = await redis.hget<number>(
+      monthlyBucketKey(userId, "team"),
+      "tokens",
+    );
+    return Math.max(0, TEAM_CREDITS - (tokens ?? TEAM_CREDITS));
+  } catch (error) {
+    console.error(`[getTeamMemberConsumed] Failed for user ${userId}:`, error);
+    return 0;
+  }
+};
+
+/**
+ * Add a removed member's consumed credits to the org-level counter.
+ * Called when a team member is removed so the next new member inherits the debt.
+ */
+export const addOrgRemovedUsage = async (
+  orgId: string,
+  points: number,
+): Promise<void> => {
+  if (points <= 0) return;
+
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const key = orgRemovedUsageKey(orgId);
+
+  try {
+    await redis.incrby(key, points);
+    // Ensure TTL is set (idempotent — only sets if no TTL exists)
+    const ttl = await redis.ttl(key);
+    if (ttl < 0) {
+      await redis.expire(key, THIRTY_DAYS_SECONDS);
+    }
+  } catch (error) {
+    console.error(`[addOrgRemovedUsage] Failed for org ${orgId}:`, error);
+  }
+};
+
+/**
+ * Clear the org-level removed-member usage counter.
+ * Called on subscription renewal to start a fresh cycle.
+ */
+export const clearOrgRemovedUsage = async (orgId: string): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  try {
+    await redis.del(orgRemovedUsageKey(orgId));
+  } catch (error) {
+    console.error(`[clearOrgRemovedUsage] Failed for org ${orgId}:`, error);
+  }
+};
+
+/**
+ * Apply seat debt to a new team member's bucket on first use.
+ * Burns up to one seat's worth (400k points) from their bucket, debiting the
+ * org counter by the same amount. Uses a flag key to ensure idempotency.
+ */
+export const applyTeamSeatDebt = async (
+  userId: string,
+  orgId: string,
+): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  const flagKey = debtAppliedKey(orgId, userId);
+
+  try {
+    // Atomically claim the flag — if SET NX returns null, another request already claimed it
+    const claimed = await redis.set(flagKey, 1, {
+      ex: THIRTY_DAYS_SECONDS,
+      nx: true,
+    });
+    if (!claimed) return;
+
+    // Atomically claim up to one seat's worth of debt.
+    // decrby is atomic, so concurrent new members can't claim the same debt.
+    const key = orgRemovedUsageKey(orgId);
+    const afterDecr = await redis.decrby(key, TEAM_CREDITS);
+    // afterDecr = oldDebt - TEAM_CREDITS
+    // If afterDecr >= 0: we claimed a full TEAM_CREDITS of debt
+    // If afterDecr < 0: debt was less than TEAM_CREDITS, refund the excess
+    // If afterDecr <= -TEAM_CREDITS: there was no debt at all
+    const overclaim = Math.max(0, -afterDecr);
+    const debit = TEAM_CREDITS - overclaim;
+
+    if (debit <= 0) {
+      // No debt existed — restore counter and skip
+      await redis.incrby(key, TEAM_CREDITS);
+      return;
+    }
+
+    // Restore any excess we claimed beyond actual debt
+    if (overclaim > 0) {
+      await redis.incrby(key, overclaim);
+    }
+
+    // Burn the claimed debt from the user's bucket
+    try {
+      const { monthly } = createRateLimiter(redis, userId, "team");
+      await monthly.limiter.limit(monthly.key, { rate: debit });
+    } catch (burnError) {
+      // Bucket burn failed — restore the debt we claimed so it's not lost
+      await redis.incrby(key, debit);
+      // Clear the flag so a retry can re-attempt
+      await redis.del(flagKey);
+      throw burnError;
+    }
+  } catch (error) {
+    console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
+  }
+};
+
+// =============================================================================
+// Refund
+// =============================================================================
 
 /**
  * Refund usage when a request fails after credits were deducted.

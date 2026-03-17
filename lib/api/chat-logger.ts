@@ -34,13 +34,10 @@ export interface UserContext {
 export interface ChatContext {
   messageCount: number;
   estimatedInputTokens: number;
-  hasSandboxFiles: boolean;
-  hasFileAttachments: boolean;
-  fileCount?: number;
-  fileImageCount?: number;
-  sandboxPreference?: string;
-  memoryEnabled: boolean;
   isNewChat: boolean;
+  fileCount?: number;
+  imageCount?: number;
+  memoryEnabled: boolean;
 }
 
 export interface RateLimitContext {
@@ -142,6 +139,17 @@ export function createChatLogger(config: ChatLoggerConfig) {
         builder.setActualModel(responseModel);
       }
       builder.setUsage(usage);
+    },
+
+    /**
+     * Set cache metrics for the wide event
+     */
+    setCacheMetrics(metrics: {
+      cacheHitRate: number | null;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+    }) {
+      builder.setCacheMetrics(metrics);
     },
 
     /**

@@ -395,6 +395,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     },
   });
 
+  // Ref (not state) so the Convex sync effect only fires when paginatedMessages.results
+  // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   // Auto-resume: reconnect to resumable stream on refresh (e.g. /api/chat/[id]/stream)
   useAutoResume({
     autoResume,
@@ -560,9 +565,20 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   //   }
   // }, [chatData, isExistingChat, chatId]);
 
-  // Sync Convex real-time data with useChat messages
+  // Sync Convex real-time data with useChat messages.
+  // Uses statusRef (not status state) so this effect only fires when
+  // paginatedMessages.results actually changes — not on status transitions.
+  // Guards against BOTH "streaming" and "submitted" statuses to prevent
+  // Convex real-time updates from overwriting useChat's in-flight state.
+  // Without the "submitted" guard, a race condition occurs in production:
+  // Convex receives the user message (via handleInitialChatAndUserMessage)
+  // and pushes a subscription update before the first streaming chunk arrives,
+  // resetting useChat's messages and causing an empty AI response.
   useEffect(() => {
-    if (status === "streaming") {
+    if (
+      statusRef.current === "streaming" ||
+      statusRef.current === "submitted"
+    ) {
       return;
     }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
@@ -576,7 +592,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessages.results, setMessages, isExistingChat, chatId, status]);
+  }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -591,9 +607,20 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     handleDrop,
   } = useFileUpload(chatMode);
 
-  // Handle instant scroll to bottom when loading existing chat messages
+  // Handle instant scroll to bottom when first loading existing chat messages.
+  // Only runs once per chat — pagination (which prepends older messages and
+  // increases messages.length) must NOT re-trigger this.
+  const hasScrolledToBottomRef = useRef(false);
   useEffect(() => {
-    if (isExistingChat && messages.length > 0) {
+    hasScrolledToBottomRef.current = false;
+  }, [chatId]);
+  useEffect(() => {
+    if (
+      isExistingChat &&
+      messages.length > 0 &&
+      !hasScrolledToBottomRef.current
+    ) {
+      hasScrolledToBottomRef.current = true;
       scrollToBottom({ instant: true, force: true });
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
@@ -785,7 +812,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   </div>
                 </div>
               ) : isExistingChat &&
-                paginatedMessages.status === "LoadingFirstPage" ? (
+                paginatedMessages.status === "LoadingFirstPage" &&
+                !hasMessages ? (
                 <div
                   className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center min-h-0"
                   data-testid="messages-loading"

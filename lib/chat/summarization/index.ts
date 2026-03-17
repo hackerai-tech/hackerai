@@ -54,6 +54,11 @@ Transcript location:
 /**
  * Writes a plain-text transcript of the summarized messages to the sandbox.
  * E2B (cloud) persists to ~/agent-transcripts/, local Docker to /tmp/agent-transcripts/.
+ *
+ * Content is written as a Buffer (not a string) so that ConvexSandbox's binary
+ * chunking path is used, avoiding the shell argument size limits that occur when
+ * large strings are embedded in heredoc commands.
+ *
  * Returns the file path if saved, or null on failure.
  */
 const saveTranscriptToSandbox = async (
@@ -68,7 +73,18 @@ const saveTranscriptToSandbox = async (
     const path = `${dir}/${transcriptId}`;
 
     await sandbox.commands.run(`mkdir -p ${dir}`, { timeoutMs: 5000 });
-    await sandbox.files.write(path, formatTranscript(messages));
+
+    const content = formatTranscript(messages);
+    if (isE2BSandbox(sandbox)) {
+      // E2B uploads via HTTP — no shell argument limits, string is fine
+      await sandbox.files.write(path, content);
+    } else {
+      // ConvexSandbox/TauriSandbox: pass as ArrayBuffer to trigger binary
+      // chunking in ConvexSandbox, avoiding shell argument size limits that
+      // occur when large strings are embedded in heredoc commands.
+      const buf = new TextEncoder().encode(content);
+      await sandbox.files.write(path, buf.buffer as ArrayBuffer);
+    }
 
     return path;
   } catch (error) {

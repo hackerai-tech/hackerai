@@ -43,7 +43,6 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
 import {
-  hasFileAttachments,
   countFileAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
@@ -98,6 +97,10 @@ import {
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
+import {
+  pruneToolOutputs,
+  pruneModelMessages,
+} from "@/lib/chat/compaction/prune-tool-outputs";
 
 function getStreamContext() {
   try {
@@ -167,7 +170,8 @@ export const createChatHandler = (
         isRegenerate: !!regenerate,
       });
 
-      const { userId, subscription } = await getUserIDAndPro(req);
+      const { userId, subscription, organizationId } =
+        await getUserIDAndPro(req);
       usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
 
@@ -269,13 +273,10 @@ export const createChatHandler = (
         {
           messageCount: truncatedMessages.length,
           estimatedInputTokens,
-          hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
-          hasFileAttachments: hasFileAttachments(truncatedMessages),
-          fileCount: fileCounts.totalFiles,
-          fileImageCount: fileCounts.imageCount,
-          sandboxPreference,
-          memoryEnabled,
           isNewChat,
+          fileCount: fileCounts.totalFiles,
+          imageCount: fileCounts.imageCount,
+          memoryEnabled,
         },
         selectedModel,
       );
@@ -314,6 +315,7 @@ export const createChatHandler = (
           estimatedInputTokens,
           extraUsageConfig,
           selectedModel,
+          organizationId,
         ));
 
       // Track deductions for potential refund on error
@@ -534,6 +536,9 @@ export const createChatHandler = (
 
           const usageTracker = new UsageTracker();
           let hasDeductedUsage = false;
+          // Snapshot cache tokens before fallback retry so we can isolate fallback-only metrics
+          let preFallbackCacheRead = 0;
+          let preFallbackCacheWrite = 0;
 
           const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
@@ -574,12 +579,19 @@ export const createChatHandler = (
           const createStream = async (modelName: string) =>
             streamText({
               model: trackedProvider.languageModel(modelName),
+              maxOutputTokens: 32000,
               system: currentSystemPrompt,
               messages: await convertToModelMessages(finalMessages),
               tools,
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
+                  // Prune old tool outputs to stay within rolling token budget
+                  const pruneResult = pruneToolOutputs(finalMessages);
+                  if (pruneResult.prunedCount > 0) {
+                    finalMessages = pruneResult.messages;
+                  }
+
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
                   if (!temporary && !hasSummarized) {
@@ -642,6 +654,16 @@ export const createChatHandler = (
                     }
                   }
 
+                  // Prune old tool-result outputs in model-level messages
+                  // (these accumulate during the agentic loop, up to 100 tool calls)
+                  let currentMessages = messages as Array<
+                    Record<string, unknown>
+                  >;
+                  const modelPrune = pruneModelMessages(currentMessages);
+                  if (modelPrune.prunedCount > 0) {
+                    currentMessages = modelPrune.messages;
+                  }
+
                   const lastStep = Array.isArray(steps)
                     ? steps.at(-1)
                     : undefined;
@@ -660,13 +682,13 @@ export const createChatHandler = (
                     );
 
                   if (!wasNoteModified) {
-                    return { messages };
+                    return { messages: currentMessages as typeof messages };
                   }
 
                   // Update the notes block within the existing messages,
                   // preserving the full conversation history (tool calls/results)
                   const updatedMessages = await refreshNotesInModelMessages(
-                    messages as Array<Record<string, unknown>>,
+                    currentMessages,
                     noteInjectionOpts,
                   );
 
@@ -791,6 +813,8 @@ export const createChatHandler = (
                   userId,
                   subscription,
                   isTemporary: temporary,
+                  preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
+                  preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
                   ...extractErrorDetails(error),
                 },
               );
@@ -798,6 +822,8 @@ export const createChatHandler = (
               isRetryWithFallback = true;
               lastStepInputTokens = 0;
               stoppedDueToTokenExhaustion = false;
+              preFallbackCacheRead = usageTracker.cacheReadTokens;
+              preFallbackCacheWrite = usageTracker.cacheWriteTokens;
               result = await createStream(fallbackModel);
             } else {
               throw error;
@@ -862,6 +888,23 @@ export const createChatHandler = (
                           chatLogger!.setSandbox(
                             sandboxManager.getSandboxInfo(),
                           );
+                          // Use fallback-only cache tokens (subtract pre-fallback snapshot)
+                          // so the wide event isn't mixing cumulative cache with retry-only usage
+                          const fallbackCacheRead =
+                            usageTracker.cacheReadTokens - preFallbackCacheRead;
+                          const fallbackCacheWrite =
+                            usageTracker.cacheWriteTokens -
+                            preFallbackCacheWrite;
+                          const fallbackCacheTotal =
+                            fallbackCacheRead + fallbackCacheWrite;
+                          chatLogger!.setCacheMetrics({
+                            cacheHitRate:
+                              fallbackCacheTotal > 0
+                                ? fallbackCacheRead / fallbackCacheTotal
+                                : null,
+                            cacheReadTokens: fallbackCacheRead,
+                            cacheWriteTokens: fallbackCacheWrite,
+                          });
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
@@ -969,6 +1012,14 @@ export const createChatHandler = (
                             fallbackWasAborted: retryAborted,
                             fallbackMessageCount: retryMessages.length,
                             fallbackPartTypes,
+                            preFallbackCacheReadTokens: preFallbackCacheRead,
+                            preFallbackCacheWriteTokens: preFallbackCacheWrite,
+                            fallbackCacheReadTokens: fallbackCacheRead,
+                            fallbackCacheWriteTokens: fallbackCacheWrite,
+                            fallbackCacheHitRate:
+                              fallbackCacheTotal > 0
+                                ? fallbackCacheRead / fallbackCacheTotal
+                                : null,
                             userId,
                             subscription,
                           });
@@ -1040,6 +1091,11 @@ export const createChatHandler = (
                 // Emit wide event
                 stepStart = Date.now();
                 chatLogger!.setSandbox(sandboxManager.getSandboxInfo());
+                chatLogger!.setCacheMetrics({
+                  cacheHitRate: usageTracker.cacheHitRate,
+                  cacheReadTokens: usageTracker.cacheReadTokens,
+                  cacheWriteTokens: usageTracker.cacheWriteTokens,
+                });
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
@@ -1255,6 +1311,9 @@ export const createChatHandler = (
 
       return createUIMessageStreamResponse({
         stream,
+        headers: {
+          "Transfer-Encoding": "chunked",
+        },
         async consumeSseStream({ stream: sseStream }) {
           // Temporary chats do not support resumption
           if (temporary) {

@@ -30,7 +30,7 @@ export function calculateUsageProjection(
 ): UsageProjection {
   if (recentDailyUsage.length === 0 || remainingDollars <= 0) {
     return {
-      projectedExhaustionDate: remainingDollars <= 0 ? new Date() : null,
+      projectedExhaustionDate: null,
       daysRemaining: remainingDollars <= 0 ? 0 : null,
       burnRatePerDay: 0,
     };

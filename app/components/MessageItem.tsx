@@ -335,67 +335,69 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
-        {/* Saved files from tools (shown after streaming completes - during streaming they appear in the sidebar) */}
-        {!isUser && savedFiles.length > 0 && status !== "streaming" && (
-          <div className="mt-2 flex flex-wrap items-center gap-2 w-full animate-in fade-in-0 duration-200">
-            {savedFiles.length > 2 ? (
-              <>
-                {/* Show only last file when more than 2 */}
-                <FilePartRenderer
-                  key={`${message.id}-saved-file-${savedFiles.length - 1}`}
-                  part={{
-                    url: savedFiles[savedFiles.length - 1].url ?? undefined,
-                    storageId: savedFiles[savedFiles.length - 1].storageId,
-                    fileId: savedFiles[savedFiles.length - 1].fileId,
-                    s3Key: savedFiles[savedFiles.length - 1].s3Key,
-                    name: savedFiles[savedFiles.length - 1].name,
-                    filename: savedFiles[savedFiles.length - 1].name,
-                    mediaType: savedFiles[savedFiles.length - 1].mediaType,
-                  }}
-                  partIndex={savedFiles.length - 1}
-                  messageId={message.id}
-                  totalFileParts={savedFiles.length}
-                />
-                {/* View all files button */}
-                <button
-                  onClick={() =>
-                    onShowAllFiles(message, effectiveFileDetails || [])
-                  }
-                  className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
-                  type="button"
-                  aria-label="View all files"
-                >
-                  <FileSearch
-                    className="w-4 h-4 text-muted-foreground"
-                    strokeWidth={2}
+        {/* Saved files from tools (hidden only on the actively streaming message - previous messages always show files) */}
+        {!isUser &&
+          savedFiles.length > 0 &&
+          !(status === "streaming" && isLastAssistantMessage) && (
+            <div className="mt-2 flex flex-wrap items-center gap-2 w-full animate-in fade-in-0 duration-200">
+              {savedFiles.length > 2 ? (
+                <>
+                  {/* Show only last file when more than 2 */}
+                  <FilePartRenderer
+                    key={`${message.id}-saved-file-${savedFiles.length - 1}`}
+                    part={{
+                      url: savedFiles[savedFiles.length - 1].url ?? undefined,
+                      storageId: savedFiles[savedFiles.length - 1].storageId,
+                      fileId: savedFiles[savedFiles.length - 1].fileId,
+                      s3Key: savedFiles[savedFiles.length - 1].s3Key,
+                      name: savedFiles[savedFiles.length - 1].name,
+                      filename: savedFiles[savedFiles.length - 1].name,
+                      mediaType: savedFiles[savedFiles.length - 1].mediaType,
+                    }}
+                    partIndex={savedFiles.length - 1}
+                    messageId={message.id}
+                    totalFileParts={savedFiles.length}
                   />
-                  <span className="text-sm text-muted-foreground">
-                    View all files in this task
-                  </span>
-                </button>
-              </>
-            ) : (
-              /* Show all files when 2 or less */
-              savedFiles.map((file, fileIndex) => (
-                <FilePartRenderer
-                  key={`${message.id}-saved-file-${fileIndex}`}
-                  part={{
-                    url: file.url ?? undefined,
-                    storageId: file.storageId,
-                    fileId: file.fileId,
-                    s3Key: file.s3Key,
-                    name: file.name,
-                    filename: file.name,
-                    mediaType: file.mediaType,
-                  }}
-                  partIndex={fileIndex}
-                  messageId={message.id}
-                  totalFileParts={savedFiles.length}
-                />
-              ))
-            )}
-          </div>
-        )}
+                  {/* View all files button */}
+                  <button
+                    onClick={() =>
+                      onShowAllFiles(message, effectiveFileDetails || [])
+                    }
+                    className="h-[55px] ps-4 pe-1.5 w-full max-w-80 min-w-64 flex items-center gap-1.5 rounded-[12px] border-[0.5px] border-border bg-background hover:bg-secondary transition-colors"
+                    type="button"
+                    aria-label="View all files"
+                  >
+                    <FileSearch
+                      className="w-4 h-4 text-muted-foreground"
+                      strokeWidth={2}
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      View all files in this task
+                    </span>
+                  </button>
+                </>
+              ) : (
+                /* Show all files when 2 or less */
+                savedFiles.map((file, fileIndex) => (
+                  <FilePartRenderer
+                    key={`${message.id}-saved-file-${fileIndex}`}
+                    part={{
+                      url: file.url ?? undefined,
+                      storageId: file.storageId,
+                      fileId: file.fileId,
+                      s3Key: file.s3Key,
+                      name: file.name,
+                      filename: file.name,
+                      mediaType: file.mediaType,
+                    }}
+                    partIndex={fileIndex}
+                    messageId={message.id}
+                    totalFileParts={savedFiles.length}
+                  />
+                ))
+              )}
+            </div>
+          )}
 
         {/* Inline summarization status - only shown when last assistant message has content */}
         {isLastAssistantMessage &&

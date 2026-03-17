@@ -81,17 +81,25 @@ export async function uploadSandboxFileToConvex(args: {
     // Upload directly from sandbox to S3
     await sandbox.files.uploadToUrl(fullPath, uploadUrl, mediaType);
 
-    // Get file size via stat command (try Linux format first, then macOS)
+    // Get file size — try POSIX stat first, then Windows cmd.exe fallback
+    // Linux: stat -c%s, macOS: stat -f%z, Windows: for %~z
     const statResult = await sandbox.commands.run(
-      `stat -c%s "${fullPath}" 2>/dev/null || stat -f%z "${fullPath}"`,
-      // Hide from local CLI output (internal operation)
+      `stat -c%s "${fullPath}" 2>/dev/null || stat -f%z "${fullPath}" 2>/dev/null`,
       { displayName: "" } as { displayName?: string },
     );
-    const fileSize = parseInt(statResult.stdout.trim(), 10);
+    let fileSize = parseInt(statResult.stdout.trim(), 10);
     if (isNaN(fileSize) || statResult.exitCode !== 0) {
-      throw new Error(
-        `Failed to get file size for ${fullPath}: ${statResult.stderr || "stat command failed"}`,
+      // Windows cmd.exe fallback: %~zI expands to the file size
+      const winResult = await sandbox.commands.run(
+        `for %I in ("${fullPath}") do @echo %~zI`,
+        { displayName: "" } as { displayName?: string },
       );
+      fileSize = parseInt(winResult.stdout.trim(), 10);
+      if (isNaN(fileSize) || winResult.exitCode !== 0) {
+        throw new Error(
+          `Failed to get file size for ${fullPath}: ${statResult.stderr || winResult.stderr || "stat command failed"}`,
+        );
+      }
     }
 
     try {

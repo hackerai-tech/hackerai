@@ -53,6 +53,7 @@ export function useAuthFromAuthKit(
   const { user, loading: isLoading } = deps.useAuth();
   const { getAccessToken, accessToken, refresh } = deps.useAccessToken();
   const accessTokenRef = useRef<string | undefined>(undefined);
+  const lastRefreshErrorAt = useRef<number>(0);
 
   const isCrossTabEnabled = useMemo(
     () => (deps.isCrossTabEnabled ?? isCrossTabTokenSharingEnabled)(user?.id),
@@ -77,6 +78,15 @@ export function useAuthFromAuthKit(
 
       try {
         if (forceRefreshToken) {
+          // Cooldown: skip refresh if we recently hit an error (e.g., rate limit)
+          // to prevent Convex retry loops from hammering the server
+          const REFRESH_COOLDOWN_MS = 10_000;
+          if (Date.now() - lastRefreshErrorAt.current < REFRESH_COOLDOWN_MS) {
+            console.log(
+              "[Convex Auth] Skipping refresh during cooldown, using cached token",
+            );
+            return accessTokenRef.current ?? null;
+          }
           // Use new cross-tab coordination if feature flag is enabled
           if (isCrossTabEnabled) {
             // Convex is asking for a fresh token (current one was rejected).
@@ -104,6 +114,7 @@ export function useAuthFromAuthKit(
         // On network errors during laptop wake, fall back to cached token.
         // Even if expired, Convex will treat it like null and clear auth.
         // AuthKit's tokenStore schedules automatic retries in the background.
+        lastRefreshErrorAt.current = Date.now();
         console.log("[Convex Auth] Using cached token during network issues");
         return accessTokenRef.current ?? null;
       }

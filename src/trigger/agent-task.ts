@@ -58,6 +58,10 @@ import {
 } from "@/lib/utils/error-utils";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/constants";
+import {
+  pruneToolOutputs,
+  pruneModelMessages,
+} from "@/lib/chat/compaction/prune-tool-outputs";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { triggerAxiomLogger } from "@/lib/axiom/trigger";
@@ -163,13 +167,10 @@ export const agentStreamTask = task({
       {
         messageCount: processedMessages.length,
         estimatedInputTokens,
-        hasSandboxFiles,
-        hasFileAttachments: hasFiles,
-        fileCount,
-        fileImageCount,
-        sandboxPreference,
-        memoryEnabled,
         isNewChat,
+        fileCount,
+        imageCount: fileImageCount,
+        memoryEnabled,
       },
       selectedModel,
     );
@@ -394,6 +395,12 @@ export const agentStreamTask = task({
           tools,
           prepareStep: async ({ steps, messages }) => {
             try {
+              // Prune old tool outputs to stay within rolling token budget
+              const pruneResult = pruneToolOutputs(finalMessages);
+              if (pruneResult.prunedCount > 0) {
+                finalMessages = pruneResult.messages;
+              }
+
               if (!temporary && !hasSummarized) {
                 const { needsSummarization, summarizedMessages } =
                   await checkAndSummarizeIfNeeded(
@@ -423,6 +430,14 @@ export const agentStreamTask = task({
                   };
                 }
               }
+              // Prune old tool-result outputs in model-level messages
+              // (these accumulate during the agentic loop, up to 100 tool calls)
+              let currentMessages = messages as Array<Record<string, unknown>>;
+              const modelPrune = pruneModelMessages(currentMessages);
+              if (modelPrune.prunedCount > 0) {
+                currentMessages = modelPrune.messages;
+              }
+
               const lastStep = Array.isArray(steps) ? steps.at(-1) : undefined;
               const toolResults =
                 (lastStep &&
@@ -439,13 +454,13 @@ export const agentStreamTask = task({
                 );
 
               if (!wasNoteModified) {
-                return { messages };
+                return { messages: currentMessages as typeof messages };
               }
 
               // Update the notes block within the existing messages,
               // preserving the full conversation history (tool calls/results)
               const updatedMessages = await refreshNotesInModelMessages(
-                messages as Array<Record<string, unknown>>,
+                currentMessages,
                 noteInjectionOpts,
               );
 

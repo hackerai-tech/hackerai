@@ -53,7 +53,14 @@ export function classifyE2BError(error: unknown): E2BErrorCategory {
   if (error instanceof RateLimitError) return "rate_limit";
   if (error instanceof NotEnoughSpaceError) return "disk_space";
   if (error instanceof NotFoundError) return "permanent";
-  if (error instanceof TimeoutError) return "transient";
+  if (error instanceof TimeoutError) {
+    // The E2B SDK embeds distinct phrases for different timeout causes:
+    // - "sandbox timeout" → sandbox died/expired (permanent, won't recover)
+    // - "requestTimeoutMs" → our request timed out (transient, worth retrying)
+    // - "timeoutMs" → command execution exceeded its limit (transient)
+    if (error.message.includes("sandbox timeout")) return "permanent";
+    return "transient";
+  }
   if (error instanceof SandboxError) return "transient";
 
   // String-based fallback for edge cases
@@ -99,6 +106,9 @@ export function getUserFacingE2BErrorMessage(error: unknown): string | null {
     return "Sandbox template is incompatible. Please contact HackerAI support.";
   }
   if (error instanceof TimeoutError) {
+    if (error.message.includes("sandbox timeout")) {
+      return "Sandbox has expired. A new sandbox will be created automatically.";
+    }
     return "Sandbox operation timed out. The sandbox may be overloaded. Please try again.";
   }
   if (error instanceof NotFoundError) {
