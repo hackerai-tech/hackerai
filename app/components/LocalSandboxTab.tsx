@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -89,6 +89,15 @@ const LocalSandboxTab = () => {
   const connections = useQuery(api.localSandbox.listConnections);
   const tokenResult = useMutation(api.localSandbox.getToken);
   const regenerateToken = useMutation(api.localSandbox.regenerateToken);
+
+  const cleaningUp = useRef(false);
+  useEffect(() => {
+    if (!connections || connections.length === 0 || cleaningUp.current) return;
+    cleaningUp.current = true;
+    fetch("/api/sandbox/presence").finally(() => {
+      cleaningUp.current = false;
+    });
+  }, [connections]);
 
   const handleGetToken = async () => {
     setIsLoadingToken(true);

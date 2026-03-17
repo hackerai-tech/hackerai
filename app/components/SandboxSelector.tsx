@@ -60,6 +60,13 @@ export function SandboxSelector({
     })) || []),
   ];
 
+  // Trigger presence cleanup when dropdown opens
+  useEffect(() => {
+    if (open) {
+      fetch("/api/sandbox/presence").catch(() => {});
+    }
+  }, [open]);
+
   // Auto-correct stale sandbox preference
   const valueMatchesOption = options.some((opt) => opt.id === value);
   useEffect(() => {

@@ -6,7 +6,7 @@ import { api } from "@/convex/_generated/api";
 interface CentrifugoPresenceClient {
   client: string;
   user: string;
-  conn_info: Record<string, unknown>;
+  conn_info: { connectionId?: string } | null;
 }
 
 interface CentrifugoPresenceResponse {
@@ -41,13 +41,15 @@ export async function GET(request: NextRequest) {
     body: JSON.stringify({ channel }),
   });
 
-  const onlineUserIds = new Set<string>();
+  const onlineConnectionIds = new Set<string>();
   let presenceReliable = false;
   if (presenceResponse.ok) {
     const data: CentrifugoPresenceResponse = await presenceResponse.json();
     const presence = data?.result?.presence ?? {};
     for (const client of Object.values(presence)) {
-      onlineUserIds.add(client.user);
+      if (client.conn_info?.connectionId) {
+        onlineConnectionIds.add(client.conn_info.connectionId);
+      }
     }
     presenceReliable = true;
   } else {
@@ -60,7 +62,7 @@ export async function GET(request: NextRequest) {
   if (!convexUrl || !serviceKey) {
     return NextResponse.json({
       connections: [],
-      onlineCount: onlineUserIds.size,
+      onlineCount: onlineConnectionIds.size,
     });
   }
 
@@ -73,32 +75,30 @@ export async function GET(request: NextRequest) {
   // Mark each connection with live presence status
   const enriched = connections.map((conn) => ({
     ...conn,
-    online: onlineUserIds.has(userId),
+    online: onlineConnectionIds.has(conn.connectionId),
   }));
 
   // Disconnect stale connections in Convex (connected in DB but not in presence)
-  if (
-    presenceReliable &&
-    !onlineUserIds.has(userId) &&
-    connections.length > 0
-  ) {
+  if (presenceReliable) {
     for (const conn of connections) {
-      convex
-        .mutation(api.localSandbox.disconnectByBackend, {
-          serviceKey,
-          connectionId: conn.connectionId,
-        })
-        .catch((err: unknown) => {
-          console.error(
-            `Failed to disconnect stale connection ${conn.connectionId}:`,
-            err,
-          );
-        });
+      if (!onlineConnectionIds.has(conn.connectionId)) {
+        convex
+          .mutation(api.localSandbox.disconnectByBackend, {
+            serviceKey,
+            connectionId: conn.connectionId,
+          })
+          .catch((err: unknown) => {
+            console.error(
+              `Failed to disconnect stale connection ${conn.connectionId}:`,
+              err,
+            );
+          });
+      }
     }
   }
 
   return NextResponse.json({
     connections: enriched,
-    onlineCount: onlineUserIds.size,
+    onlineCount: onlineConnectionIds.size,
   });
 }

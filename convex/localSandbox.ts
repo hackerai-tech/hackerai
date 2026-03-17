@@ -18,7 +18,10 @@ function generateToken(): string {
 // CENTRIFUGO JWT GENERATION
 // ============================================================================
 
-async function generateCentrifugoToken(userId: string): Promise<string> {
+async function generateCentrifugoToken(
+  userId: string,
+  connectionId: string,
+): Promise<string> {
   const secret = process.env.CENTRIFUGO_TOKEN_SECRET;
   if (!secret) {
     throw new Error("CENTRIFUGO_TOKEN_SECRET environment variable not set");
@@ -26,7 +29,7 @@ async function generateCentrifugoToken(userId: string): Promise<string> {
 
   const encodedSecret = new TextEncoder().encode(secret);
 
-  return new SignJWT({ sub: userId })
+  return new SignJWT({ sub: userId, info: { connectionId } })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setExpirationTime("1h")
     .sign(encodedSecret);
@@ -199,7 +202,7 @@ export const connect = mutation({
       created_at: Date.now(),
     });
 
-    const centrifugoToken = await generateCentrifugoToken(userId);
+    const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
 
     return {
@@ -255,7 +258,10 @@ export const refreshCentrifugoToken = mutation({
       });
     }
 
-    const centrifugoToken = await generateCentrifugoToken(connection.user_id);
+    const centrifugoToken = await generateCentrifugoToken(
+      connection.user_id,
+      connection.connection_id,
+    );
     return { centrifugoToken };
   },
 });
@@ -345,7 +351,7 @@ export const connectDesktop = mutation({
       created_at: Date.now(),
     });
 
-    const centrifugoToken = await generateCentrifugoToken(userId);
+    const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
     if (!centrifugoWsUrl) {
       throw new Error("CENTRIFUGO_WS_URL environment variable not set");
@@ -403,7 +409,7 @@ export const refreshCentrifugoTokenDesktop = mutation({
       });
     }
 
-    const centrifugoToken = await generateCentrifugoToken(userId);
+    const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     return { centrifugoToken };
   },
 });
