@@ -292,6 +292,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       prepareReconnectToStreamRequest: ({ api, ...rest }) => {
         const activeStreamId =
           chatDataRef.current?.active_stream_id ?? undefined;
+        console.log(
+          "[prepareReconnect] active_stream_id:",
+          activeStreamId,
+          "defaultApi:",
+          api,
+        );
         if (activeStreamId?.startsWith("wrun_")) {
           return {
             ...rest,
