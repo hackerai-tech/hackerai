@@ -266,6 +266,12 @@ Commands run inside the Docker container with network access.`;
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
 
+  /** Extract parent directory from a path, handling both `/` and `\` separators. */
+  private static parentDir(path: string): string {
+    const lastSep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    return lastSep > 0 ? path.substring(0, lastSep) : "";
+  }
+
   /**
    * Whether the target machine is Windows in dangerous mode.
    * Docker containers are always Linux regardless of host OS.
@@ -308,9 +314,17 @@ Commands run inside the Docker container with network access.`;
   private async detectHttpClient(): Promise<"curl" | "wget"> {
     if (this.httpClient) return this.httpClient;
 
-    // On Windows, curl is always available as curl.exe (bundled since Win10 build 17063).
-    // Skip detection since `command -v` is POSIX-only and doesn't work in cmd.exe.
+    // On Windows, use `where` (cmd.exe equivalent of `command -v`) to detect curl.
+    // curl.exe is bundled since Win10 build 17063, but older Windows Server may lack it.
     if (this.isWindows()) {
+      const curlCheck = await this.commands.run("where curl", {
+        displayName: "",
+      });
+      if (curlCheck.exitCode === 0) {
+        this.httpClient = "curl";
+        return "curl";
+      }
+      // No curl on this Windows host — let it fail with a clear error below
       this.httpClient = "curl";
       return "curl";
     }
@@ -347,7 +361,7 @@ Commands run inside the Docker container with network access.`;
       const fileName = path.split("/").pop() || "file";
 
       // Ensure parent directory exists
-      const dir = path.substring(0, path.lastIndexOf("/"));
+      const dir = ConvexSandbox.parentDir(path);
       if (dir) {
         await this.ensureDirectory(dir);
       }
@@ -459,7 +473,7 @@ Commands run inside the Docker container with network access.`;
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
       // Ensure parent directory exists
-      const dir = path.substring(0, path.lastIndexOf("/"));
+      const dir = ConvexSandbox.parentDir(path);
       await this.ensureDirectory(dir);
 
       const httpClient = await this.detectHttpClient();

@@ -371,7 +371,9 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       validateDownloadUrl(url);
 
       // Ensure parent directory exists (e.g. /tmp/hackerai-upload)
-      const dir = path.substring(0, path.lastIndexOf("/"));
+      // Handle both `/` and `\` separators for Windows paths
+      const lastSep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+      const dir = lastSep > 0 ? path.substring(0, lastSep) : "";
       if (dir) {
         const escapedDir = TauriSandbox.escapeShell(dir);
         // cmd.exe's mkdir creates parent dirs by default; POSIX needs -p
