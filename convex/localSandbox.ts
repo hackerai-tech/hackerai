@@ -28,7 +28,7 @@ async function generateCentrifugoToken(userId: string): Promise<string> {
 
   return new SignJWT({ sub: userId })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setExpirationTime("24h")
+    .setExpirationTime("1h")
     .sign(encodedSecret);
 }
 
