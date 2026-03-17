@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import { ConvexHttpClient, ConvexClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
-import { getPlatformDisplayName } from "./platform-utils";
+import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 
 interface CommandResult {
   stdout: string;
@@ -65,7 +65,12 @@ export class ConvexSandbox extends EventEmitter {
       const { platform, arch, release, hostname } = osInfo;
       const platformName = getPlatformDisplayName(platform);
 
+      const shellInfo =
+        platform === "win32"
+          ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
+          : `Commands are invoked via /bin/bash -c.`;
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
+${shellInfo}
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
@@ -261,16 +266,67 @@ Commands run inside the Docker container with network access.`;
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
 
+  /** Extract parent directory from a path, handling both `/` and `\` separators. */
+  private static parentDir(path: string): string {
+    const lastSep = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    return lastSep > 0 ? path.substring(0, lastSep) : "";
+  }
+
+  /**
+   * Whether the target machine is Windows in dangerous mode.
+   * Docker containers are always Linux regardless of host OS.
+   */
+  private isWindows(): boolean {
+    return (
+      this.connectionInfo.mode === "dangerous" &&
+      this.connectionInfo.osInfo?.platform === "win32"
+    );
+  }
+
+  /**
+   * Escape a value for the target platform's shell.
+   * Uses double quotes on Windows (cmd.exe), single quotes on POSIX.
+   */
+  private escapeForTarget(value: string): string {
+    return escapeShellValue(value, this.connectionInfo.osInfo?.platform);
+  }
+
+  /**
+   * Ensure a directory exists on the target, using the correct command for the platform.
+   */
+  private async ensureDirectory(dir: string): Promise<void> {
+    if (!dir) return;
+    const escaped = this.isWindows()
+      ? this.escapeForTarget(dir)
+      : ConvexSandbox.escapePath(dir);
+    // cmd.exe mkdir creates parent dirs by default; use `if not exist` to
+    // skip gracefully when it already exists without swallowing real errors.
+    const command = this.isWindows()
+      ? `if not exist ${escaped} mkdir ${escaped}`
+      : `mkdir -p ${escaped}`;
+    await this.commands.run(command, { displayName: "" });
+  }
+
   // Cache for detected HTTP client (curl or wget)
   private httpClient: "curl" | "wget" | null = null;
 
   /**
    * Detect available HTTP client (curl or wget).
    * Alpine Linux uses wget by default, most other distros have curl.
+   * On Windows (cmd.exe), curl resolves to the real curl.exe bundled with Win10+.
    * Note: We check stdout instead of exitCode for reliability through Convex relay.
    */
   private async detectHttpClient(): Promise<"curl" | "wget"> {
     if (this.httpClient) return this.httpClient;
+
+    // On Windows, curl.exe is bundled since Win10 build 17063 and there's no
+    // wget to fall back to. Skip detection since `command -v` is POSIX-only.
+    // If curl is missing on an older Windows Server, the download command
+    // itself will fail with a clear "curl is not recognized" error.
+    if (this.isWindows()) {
+      this.httpClient = "curl";
+      return "curl";
+    }
 
     // Check for curl first (more common)
     // Use stdout check - exitCode may not propagate correctly through Convex relay
@@ -304,11 +360,9 @@ Commands run inside the Docker container with network access.`;
       const fileName = path.split("/").pop() || "file";
 
       // Ensure parent directory exists
-      const dir = path.substring(0, path.lastIndexOf("/"));
+      const dir = ConvexSandbox.parentDir(path);
       if (dir) {
-        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
-          displayName: "", // Hide internal mkdir
-        });
+        await this.ensureDirectory(dir);
       }
 
       let contentStr: string;
@@ -324,8 +378,50 @@ Commands run inside the Docker container with network access.`;
         isBinary = true;
       }
 
-      if (isBinary && contentStr.length > ConvexSandbox.MAX_CHUNK_SIZE) {
-        // Chunk large binary files to stay under Convex size limits
+      if (this.isWindows()) {
+        // Windows cmd.exe: use certutil to decode base64
+        const escapedPath = this.escapeForTarget(path);
+        const b64 = isBinary
+          ? contentStr
+          : Buffer.from(contentStr).toString("base64");
+
+        // Chunk if needed
+        const chunks: string[] = [];
+        if (b64.length > ConvexSandbox.MAX_CHUNK_SIZE) {
+          for (let i = 0; i < b64.length; i += ConvexSandbox.MAX_CHUNK_SIZE) {
+            chunks.push(b64.slice(i, i + ConvexSandbox.MAX_CHUNK_SIZE));
+          }
+        } else {
+          chunks.push(b64);
+        }
+
+        // Write base64 to temp file, then certutil -decode to target
+        // certutil adds header/footer lines, so we write raw base64 via echo
+        const tempFile = this.escapeForTarget(`${path}.b64tmp.${Date.now()}`);
+        for (let i = 0; i < chunks.length; i++) {
+          const operator = i === 0 ? ">" : ">>";
+          const result = await this.commands.run(
+            `echo ${chunks[i]} ${operator} ${tempFile}`,
+            { displayName: i === 0 ? `Writing: ${fileName}` : "" },
+          );
+          if (result.exitCode !== 0) {
+            throw new Error(`Failed to write file: ${result.stderr}`);
+          }
+        }
+        // Decode and clean up temp file
+        const decodeResult = await this.commands.run(
+          `certutil -decode ${tempFile} ${escapedPath} >nul & del /q /f ${tempFile}`,
+          { displayName: "" },
+        );
+        if (decodeResult.exitCode !== 0) {
+          // Clean up temp file on failure
+          await this.commands.run(`del /q /f ${tempFile}`, {
+            displayName: "",
+          });
+          throw new Error(`Failed to write file: ${decodeResult.stderr}`);
+        }
+      } else if (isBinary && contentStr.length > ConvexSandbox.MAX_CHUNK_SIZE) {
+        // POSIX: Chunk large binary files to stay under Convex size limits
         const chunks: string[] = [];
         for (
           let i = 0;
@@ -351,20 +447,11 @@ Commands run inside the Docker container with network access.`;
         }
       } else {
         const escapedPath = ConvexSandbox.escapePath(path);
-        // Windows (PowerShell) doesn't support heredocs (<<'EOF') and chokes
-        // on special characters like [ ] ' $. Use base64 for those hosts.
         // Docker containers and Unix dangerous-mode hosts use cat heredoc
         // (more efficient — no ~33% base64 inflation or arg length limits).
-        const isWindows =
-          this.connectionInfo.mode === "dangerous" &&
-          this.connectionInfo.osInfo?.platform === "win32";
-
         let command: string;
-        if (isBinary || isWindows) {
-          const b64 = isBinary
-            ? contentStr
-            : Buffer.from(contentStr).toString("base64");
-          command = `printf '%s' "${b64}" | base64 -d > ${escapedPath}`;
+        if (isBinary) {
+          command = `printf '%s' "${contentStr}" | base64 -d > ${escapedPath}`;
         } else {
           const delimiter = `HACKERAI_EOF_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
           command = `cat > ${escapedPath} <<'${delimiter}'\n${contentStr}\n${delimiter}`;
@@ -381,10 +468,14 @@ Commands run inside the Docker container with network access.`;
 
     read: async (path: string): Promise<string> => {
       const fileName = path.split("/").pop() || "file";
-      const result = await this.commands.run(
-        `cat ${ConvexSandbox.escapePath(path)}`,
-        { displayName: `Reading: ${fileName}` },
-      );
+      // cmd.exe uses `type`, POSIX uses `cat`
+      const escaped = this.isWindows()
+        ? this.escapeForTarget(path)
+        : ConvexSandbox.escapePath(path);
+      const command = this.isWindows() ? `type ${escaped}` : `cat ${escaped}`;
+      const result = await this.commands.run(command, {
+        displayName: `Reading: ${fileName}`,
+      });
       if (result.exitCode !== 0) {
         throw new Error(`Failed to read file: ${result.stderr}`);
       }
@@ -393,48 +484,71 @@ Commands run inside the Docker container with network access.`;
 
     remove: async (path: string): Promise<void> => {
       const fileName = path.split("/").pop() || "file";
-      const result = await this.commands.run(
-        `rm -rf ${ConvexSandbox.escapePath(path)}`,
-        { displayName: `Removing: ${fileName}` },
-      );
-      if (result.exitCode !== 0) {
+      const escaped = this.isWindows()
+        ? this.escapeForTarget(path)
+        : ConvexSandbox.escapePath(path);
+      // cmd.exe: try both del (files) and rmdir (dirs) to handle either case
+      const command = this.isWindows()
+        ? `del /q /f ${escaped} 2>nul & rmdir /s /q ${escaped} 2>nul`
+        : `rm -rf ${escaped}`;
+      const result = await this.commands.run(command, {
+        displayName: `Removing: ${fileName}`,
+      });
+      // On Windows, if both del and rmdir fail the path didn't exist — that's OK for rm -rf semantics
+      if (!this.isWindows() && result.exitCode !== 0) {
         throw new Error(`Failed to remove file: ${result.stderr}`);
       }
     },
 
     list: async (path: string = "/"): Promise<{ name: string }[]> => {
       const dirName = path.split("/").pop() || path;
-      const result = await this.commands.run(
-        `find ${ConvexSandbox.escapePath(path)} -maxdepth 1 -type f 2>/dev/null || true`,
-        { displayName: `Listing: ${dirName}` },
-      );
+      const escaped = this.isWindows()
+        ? this.escapeForTarget(path)
+        : ConvexSandbox.escapePath(path);
+      // cmd.exe: `dir /b /a-d` lists files only (no dirs), one per line
+      const command = this.isWindows()
+        ? `dir /b /a-d ${escaped} 2>nul`
+        : `find ${escaped} -maxdepth 1 -type f 2>/dev/null || true`;
+      const result = await this.commands.run(command, {
+        displayName: `Listing: ${dirName}`,
+      });
       if (result.exitCode !== 0) return [];
 
       return result.stdout
         .split("\n")
         .filter(Boolean)
-        .map((name) => ({ name }));
+        .map((name) => {
+          // dir /b returns relative names; prepend the directory path
+          if (this.isWindows() && !name.startsWith(path)) {
+            const sep = path.endsWith("/") || path.endsWith("\\") ? "" : "/";
+            return { name: `${path}${sep}${name.trim()}` };
+          }
+          return { name: name.trim() };
+        });
     },
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
       // Ensure parent directory exists
-      const dir = path.substring(0, path.lastIndexOf("/"));
-      if (dir) {
-        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
-          displayName: "", // Hide internal mkdir
-        });
-      }
+      const dir = ConvexSandbox.parentDir(path);
+      await this.ensureDirectory(dir);
 
       const httpClient = await this.detectHttpClient();
-      const escapedUrl = url.replace(/'/g, "'\\''");
       const fileName = path.split("/").pop() || "file";
-      const escapedPath = ConvexSandbox.escapePath(path);
+
+      // Use platform-aware escaping: double quotes on Windows (cmd.exe),
+      // single quotes on POSIX to prevent shell expansion
+      const escapedPath = this.isWindows()
+        ? this.escapeForTarget(path)
+        : ConvexSandbox.escapePath(path);
+      const escapedUrl = this.isWindows()
+        ? this.escapeForTarget(url)
+        : `'${url.replace(/'/g, "'\\''")}'`;
 
       // Use curl or wget depending on what's available
       const command =
         httpClient === "curl"
-          ? `curl -fsSL -o ${escapedPath} '${escapedUrl}'`
-          : `wget -q -O ${escapedPath} '${escapedUrl}'`;
+          ? `curl -fsSL -o ${escapedPath} ${escapedUrl}`
+          : `wget -q -O ${escapedPath} ${escapedUrl}`;
 
       const result = await this.commands.run(command, {
         displayName: `Downloading: ${fileName}`,
@@ -466,16 +580,24 @@ Commands run inside the Docker container with network access.`;
         }
       }
 
-      const escapedUrl = uploadUrl.replace(/'/g, "'\\''");
-      const escapedContentType = contentType.replace(/'/g, "'\\''");
-      const escapedPath = ConvexSandbox.escapePath(path);
       const fileName = path.split("/").pop() || "file";
+
+      // Use platform-aware escaping for Windows (cmd.exe) vs POSIX
+      const escapedPath = this.isWindows()
+        ? this.escapeForTarget(path)
+        : ConvexSandbox.escapePath(path);
+      const escapedUrl = this.isWindows()
+        ? this.escapeForTarget(uploadUrl)
+        : `'${uploadUrl.replace(/'/g, "'\\''")}'`;
+      const escapedContentType = this.isWindows()
+        ? this.escapeForTarget(`Content-Type: ${contentType}`)
+        : `'Content-Type: ${contentType.replace(/'/g, "'\\''")}'`;
 
       // Use curl or wget depending on what's available
       const command =
         httpClient === "curl"
-          ? `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @${escapedPath} '${escapedUrl}'`
-          : `wget -q --method=PUT --header='Content-Type: ${escapedContentType}' --body-file=${escapedPath} -O - '${escapedUrl}'`;
+          ? `curl -fsSL -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+          : `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
 
       const result = await this.commands.run(command, {
         timeoutMs: 120000, // 2 minutes for large files
