@@ -38,7 +38,7 @@ sudo mv /tmp/config.json /opt/centrifugo/config.json
 ### Create docker-compose.yml
 
 ```bash
-sudo cat > /opt/centrifugo/docker-compose.yml <<'COMPOSE'
+sudo tee /opt/centrifugo/docker-compose.yml >/dev/null <<'COMPOSE'
 services:
   centrifugo:
     image: centrifugo/centrifugo:v5
@@ -64,7 +64,7 @@ COMPOSE
 Generate secrets with `openssl rand -hex 64` (two separate values).
 
 ```bash
-sudo cat > /opt/centrifugo/. <<'ENV'
+sudo tee /opt/centrifugo/.env >/dev/null <<'ENV'
 CENTRIFUGO_TOKEN_SECRET=<your-token-secret>
 CENTRIFUGO_API_KEY=<your-api-key>
 ENV
