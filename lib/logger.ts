@@ -88,6 +88,7 @@ export interface ChatWideEvent {
     reasoning_tokens?: number;
     cache_read_tokens?: number;
     cache_write_tokens?: number;
+    cache_hit_rate?: number;
     total_cost?: number;
   };
 
@@ -323,6 +324,40 @@ export class WideEventBuilder {
         // Store provider cost for build() to use
         total_cost: rawCost,
       };
+    }
+    return this;
+  }
+
+  /**
+   * Set cache metrics from UsageTracker and warn on low hit rate
+   */
+  setCacheMetrics(metrics: {
+    cacheHitRate: number | null;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  }): this {
+    if (!this.event.usage) {
+      this.event.usage = {};
+    }
+    if (metrics.cacheHitRate !== null) {
+      this.event.usage.cache_hit_rate =
+        Math.round(metrics.cacheHitRate * 1000) / 1000;
+    }
+
+    // Warn on low cache hit rate (skip small requests where misses are expected)
+    const totalCacheTokens = metrics.cacheReadTokens + metrics.cacheWriteTokens;
+    if (
+      metrics.cacheHitRate !== null &&
+      metrics.cacheHitRate < 0.5 &&
+      totalCacheTokens > 1000
+    ) {
+      logger.warn("Low cache hit rate detected", {
+        cache_hit_rate: metrics.cacheHitRate,
+        cache_read_tokens: metrics.cacheReadTokens,
+        cache_write_tokens: metrics.cacheWriteTokens,
+        chat_id: this.event.chat_id,
+        model: this.event.model?.configured,
+      });
     }
     return this;
   }

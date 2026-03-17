@@ -817,6 +817,8 @@ export const createChatHandler = (
                   userId,
                   subscription,
                   isTemporary: temporary,
+                  preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
+                  preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
                   ...extractErrorDetails(error),
                 },
               );
@@ -888,6 +890,11 @@ export const createChatHandler = (
                           chatLogger!.setSandbox(
                             sandboxManager.getSandboxInfo(),
                           );
+                          chatLogger!.setCacheMetrics({
+                            cacheHitRate: usageTracker.cacheHitRate,
+                            cacheReadTokens: usageTracker.cacheReadTokens,
+                            cacheWriteTokens: usageTracker.cacheWriteTokens,
+                          });
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
@@ -995,6 +1002,11 @@ export const createChatHandler = (
                             fallbackWasAborted: retryAborted,
                             fallbackMessageCount: retryMessages.length,
                             fallbackPartTypes,
+                            fallbackCacheReadTokens:
+                              usageTracker.cacheReadTokens,
+                            fallbackCacheWriteTokens:
+                              usageTracker.cacheWriteTokens,
+                            fallbackCacheHitRate: usageTracker.cacheHitRate,
                             userId,
                             subscription,
                           });
@@ -1066,6 +1078,11 @@ export const createChatHandler = (
                 // Emit wide event
                 stepStart = Date.now();
                 chatLogger!.setSandbox(sandboxManager.getSandboxInfo());
+                chatLogger!.setCacheMetrics({
+                  cacheHitRate: usageTracker.cacheHitRate,
+                  cacheReadTokens: usageTracker.cacheReadTokens,
+                  cacheWriteTokens: usageTracker.cacheWriteTokens,
+                });
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,

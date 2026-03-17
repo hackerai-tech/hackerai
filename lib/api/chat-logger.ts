@@ -145,6 +145,17 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
+     * Set cache metrics for the wide event
+     */
+    setCacheMetrics(metrics: {
+      cacheHitRate: number | null;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+    }) {
+      builder.setCacheMetrics(metrics);
+    },
+
+    /**
      * Finalize and emit success event
      */
     emitSuccess(result: StreamResult) {
