@@ -32,9 +32,26 @@ export function ChatInputTextarea({
   const { input, setInput, subscription } = useGlobalState();
   const { handlePasteEvent } = useFileUpload(chatMode);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef(input);
+  const prevDraftIdRef = useRef(draftId);
+  useEffect(() => {
+    inputRef.current = input;
+  });
 
   // Load draft when draftId changes (chat switch or mount)
   useEffect(() => {
+    const prevDraftId = prevDraftIdRef.current;
+    prevDraftIdRef.current = draftId;
+
+    // When a new chat gets its real ID after the first response, preserve any
+    // text the user typed during streaming rather than wiping it.
+    if (prevDraftId === "new" && draftId !== "new") {
+      if (inputRef.current.trim()) {
+        upsertDraft(draftId, inputRef.current);
+      }
+      return;
+    }
+
     const content = getDraftContentById(draftId);
     setInput(content || "");
   }, [draftId, setInput]);
