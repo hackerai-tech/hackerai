@@ -1,42 +1,4 @@
 /**
- * Shared path validation utilities for sandbox environments.
- */
-
-/**
- * Allowed base directories for file operations.
- * All file paths must resolve under one of these prefixes.
- */
-export const ALLOWED_FILE_ROOTS = ["/tmp/hackerai-upload", "/tmp/hackerai"];
-
-/**
- * Validate that a resolved file path is within allowed directories.
- * Prevents path traversal attacks (e.g. ../../etc/passwd).
- */
-export function validateFilePath(filePath: string): void {
-  // Normalize: resolve .. and . segments
-  const segments = filePath.split("/");
-  const resolved: string[] = [];
-  for (const seg of segments) {
-    if (seg === "..") {
-      resolved.pop();
-    } else if (seg !== "." && seg !== "") {
-      resolved.push(seg);
-    }
-  }
-  const normalizedPath = "/" + resolved.join("/");
-
-  const isAllowed = ALLOWED_FILE_ROOTS.some(
-    (root) => normalizedPath === root || normalizedPath.startsWith(root + "/"),
-  );
-
-  if (!isAllowed) {
-    throw new Error(
-      `File path not allowed: "${filePath}". Must be under one of: ${ALLOWED_FILE_ROOTS.join(", ")}`,
-    );
-  }
-}
-
-/**
  * Validate that a URL is safe for download (block SSRF to internal networks).
  */
 export function validateDownloadUrl(url: string): void {

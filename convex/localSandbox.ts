@@ -186,6 +186,11 @@ export const connect = mutation({
     }
 
     const userId = tokenRecord.user_id;
+    const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
+    if (!centrifugoWsUrl) {
+      return { success: false, error: "Centrifugo not configured" };
+    }
+
     const connectionId = crypto.randomUUID();
 
     // Create new connection (multiple connections allowed)
@@ -203,10 +208,6 @@ export const connect = mutation({
     });
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
-    const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
-    if (!centrifugoWsUrl) {
-      return { success: false, error: "Centrifugo not configured" };
-    }
 
     return {
       success: true,

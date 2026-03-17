@@ -9,7 +9,7 @@ import {
 } from "@/lib/centrifugo/types";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 import type { ConnectionInfo } from "./sandbox-types";
-import { validateFilePath, validateDownloadUrl } from "./path-validation";
+import { validateDownloadUrl } from "./path-validation";
 
 const VALID_MESSAGE_TYPES = new Set([
   "command",
@@ -423,7 +423,6 @@ Commands run inside the Docker container with network access.`;
       path: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
-      validateFilePath(path);
       const fileName = path.split("/").pop() || "file";
 
       // Ensure parent directory exists
@@ -540,7 +539,6 @@ Commands run inside the Docker container with network access.`;
     },
 
     read: async (path: string): Promise<string> => {
-      validateFilePath(path);
       const fileName = path.split("/").pop() || "file";
       // cmd.exe uses `type`, POSIX uses `cat`
       const escaped = this.isWindows()
@@ -557,7 +555,6 @@ Commands run inside the Docker container with network access.`;
     },
 
     remove: async (path: string): Promise<void> => {
-      validateFilePath(path);
       const fileName = path.split("/").pop() || "file";
       const escaped = this.isWindows()
         ? this.escapeForTarget(path)
@@ -576,7 +573,6 @@ Commands run inside the Docker container with network access.`;
     },
 
     list: async (path: string = "/"): Promise<{ name: string }[]> => {
-      validateFilePath(path);
       const dirName = path.split("/").pop() || path;
       const escaped = this.isWindows()
         ? this.escapeForTarget(path)
@@ -605,7 +601,6 @@ Commands run inside the Docker container with network access.`;
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
       validateDownloadUrl(url);
-      validateFilePath(path);
       // Ensure parent directory exists
       const dir = CentrifugoSandbox.parentDir(path);
       await this.ensureDirectory(dir);

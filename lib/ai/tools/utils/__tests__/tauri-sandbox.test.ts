@@ -2,73 +2,10 @@
  * Tests for path validation security utilities.
  *
  * Covers:
- * - File path validation (path traversal prevention)
  * - Download URL validation (SSRF prevention)
  */
 
-import { validateFilePath, validateDownloadUrl } from "../path-validation";
-
-// ── Path validation ────────────────────────────────────────────────────
-
-describe("validateFilePath", () => {
-  it("allows paths under /tmp/hackerai-upload", () => {
-    expect(() =>
-      validateFilePath("/tmp/hackerai-upload/file.txt"),
-    ).not.toThrow();
-    expect(() =>
-      validateFilePath("/tmp/hackerai-upload/subdir/file.txt"),
-    ).not.toThrow();
-  });
-
-  it("allows paths under /tmp/hackerai", () => {
-    expect(() => validateFilePath("/tmp/hackerai/file.txt")).not.toThrow();
-    expect(() =>
-      validateFilePath("/tmp/hackerai/deep/nested/file.txt"),
-    ).not.toThrow();
-  });
-
-  it("allows the root directories themselves", () => {
-    expect(() => validateFilePath("/tmp/hackerai-upload")).not.toThrow();
-    expect(() => validateFilePath("/tmp/hackerai")).not.toThrow();
-  });
-
-  it("rejects paths outside allowed roots", () => {
-    expect(() => validateFilePath("/etc/passwd")).toThrow(
-      "File path not allowed",
-    );
-    expect(() => validateFilePath("/home/user/file.txt")).toThrow(
-      "File path not allowed",
-    );
-    expect(() => validateFilePath("/tmp/other/file.txt")).toThrow(
-      "File path not allowed",
-    );
-    expect(() => validateFilePath("/")).toThrow("File path not allowed");
-  });
-
-  it("rejects path traversal attempts", () => {
-    expect(() =>
-      validateFilePath("/tmp/hackerai-upload/../../etc/passwd"),
-    ).toThrow("File path not allowed");
-    expect(() => validateFilePath("/tmp/hackerai/../../../etc/shadow")).toThrow(
-      "File path not allowed",
-    );
-  });
-
-  it("normalizes . segments", () => {
-    expect(() =>
-      validateFilePath("/tmp/hackerai-upload/./file.txt"),
-    ).not.toThrow();
-  });
-
-  it("rejects prefix-based bypass attempts", () => {
-    expect(() =>
-      validateFilePath("/tmp/hackerai-upload-evil/file.txt"),
-    ).toThrow("File path not allowed");
-    expect(() => validateFilePath("/tmp/hackeraifoo/file.txt")).toThrow(
-      "File path not allowed",
-    );
-  });
-});
+import { validateDownloadUrl } from "../path-validation";
 
 // ── URL validation ─────────────────────────────────────────────────────
 
