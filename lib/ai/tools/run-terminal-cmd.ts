@@ -25,7 +25,6 @@ import {
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
 const TOOL_PREEMPT_BUFFER_MS = 120_000; // Return 120s before budget expires
-const MIN_EXECUTION_TIME_MS = 30_000; // Don't start if <30s remaining
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
@@ -157,22 +156,6 @@ If you are generating files:
             output: "",
             exitCode: 1,
             error: `Command blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This command pattern has been blocked for safety. If you believe this is a false positive, the user can adjust guardrail settings.`,
-          },
-        };
-      }
-
-      // If the workflow step is about to expire, don't start the command —
-      // let stopWhen checkpoint and resume in a fresh step
-      if (
-        timeRemainingMs !== null &&
-        !is_background &&
-        timeRemainingMs - TOOL_PREEMPT_BUFFER_MS < MIN_EXECUTION_TIME_MS
-      ) {
-        return {
-          result: {
-            output: "",
-            exitCode: null,
-            error: `Insufficient time remaining (${Math.round(timeRemainingMs / 1000)}s) to safely execute this command. The workflow will checkpoint and continue in a new step — retry this command there.`,
           },
         };
       }
