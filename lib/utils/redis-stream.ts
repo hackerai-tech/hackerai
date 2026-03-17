@@ -195,7 +195,19 @@ export function createRedisChunkReadable(
           }
 
           const entries = await readChunks(reader, chatId, lastId);
-          if (!entries) continue; // Block timeout, loop again
+          if (!entries) {
+            console.log(
+              "[redis-reader] XREAD returned null, isReady:",
+              reader.isReady,
+            );
+            continue;
+          }
+          console.log(
+            "[redis-reader] got",
+            entries.length,
+            "entries, lastId:",
+            lastId,
+          );
 
           for (const entry of entries) {
             lastId = entry.id;
