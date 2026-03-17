@@ -682,7 +682,7 @@ Commands run inside the Docker container with network access.`;
     },
   };
 
-  getHost(): string {
+  getHost(_port: number): string {
     return "";
   }
 
