@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
+import { toast } from "sonner";
 import { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
 
 interface SandboxPreferenceState {
@@ -94,6 +95,7 @@ export function useSandboxPreference(
         setSandboxPreferenceState(connectionId);
       } catch (error) {
         console.error("[DesktopSandboxBridge] Failed to start:", error);
+        toast.error("Desktop sandbox failed to connect. Using cloud.");
       } finally {
         bridgeStarting = false;
       }
@@ -103,7 +105,11 @@ export function useSandboxPreference(
 
     // Cleanup on beforeunload (page close/refresh)
     const handleBeforeUnload = () => {
-      activeBridge?.stop();
+      try {
+        activeBridge?.stop();
+      } catch {
+        // Best-effort
+      }
       activeBridge = null;
     };
     window.addEventListener("beforeunload", handleBeforeUnload);

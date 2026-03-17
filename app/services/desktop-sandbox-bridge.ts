@@ -89,7 +89,9 @@ export class DesktopSandboxBridge {
         ) {
           return;
         }
-        this.handleCommand(cmd);
+        this.handleCommand(cmd).catch((err) => {
+          console.error("[DesktopSandboxBridge] Command handling failed:", err);
+        });
       }
     });
 
@@ -102,9 +104,12 @@ export class DesktopSandboxBridge {
   private extractUserIdFromToken(token: string): string {
     const parts = token.split(".");
     if (parts.length !== 3) throw new Error("Invalid JWT");
-    const payload = JSON.parse(
-      atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")),
-    );
+    let b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    const payload = JSON.parse(atob(b64));
+    if (!payload.sub || typeof payload.sub !== "string") {
+      throw new Error("JWT missing 'sub' claim");
+    }
     return payload.sub;
   }
 
@@ -125,8 +130,11 @@ export class DesktopSandboxBridge {
         const data = await response.json();
         if (data.os_info) return data.os_info;
       }
-    } catch {
-      /* ignore */
+    } catch (error) {
+      console.warn(
+        "[DesktopSandboxBridge] Failed to get OS info from /health:",
+        error,
+      );
     }
 
     try {
@@ -148,8 +156,11 @@ export class DesktopSandboxBridge {
           hostname: hostname.trim(),
         };
       }
-    } catch {
-      /* ignore */
+    } catch (error) {
+      console.warn(
+        "[DesktopSandboxBridge] Failed to get OS info via uname:",
+        error,
+      );
     }
 
     return undefined;
@@ -214,8 +225,11 @@ export class DesktopSandboxBridge {
           try {
             const chunk = JSON.parse(trimmed) as StreamChunk;
             await this.forwardChunk(commandId, chunk);
-          } catch {
-            // Skip malformed lines
+          } catch (parseError) {
+            console.warn(
+              "[DesktopSandboxBridge] Malformed NDJSON line:",
+              trimmed,
+            );
           }
         }
       }
@@ -225,8 +239,11 @@ export class DesktopSandboxBridge {
         try {
           const chunk = JSON.parse(remaining) as StreamChunk;
           await this.forwardChunk(commandId, chunk);
-        } catch {
-          /* skip */
+        } catch (parseError) {
+          console.warn(
+            "[DesktopSandboxBridge] Malformed NDJSON line:",
+            remaining,
+          );
         }
       }
     } catch (error) {
@@ -279,7 +296,12 @@ export class DesktopSandboxBridge {
   }
 
   private async publishResult(message: SandboxMessage): Promise<void> {
-    if (!this.subscription) return;
+    if (!this.subscription) {
+      console.warn(
+        "[DesktopSandboxBridge] Cannot publish result: subscription is null",
+      );
+      return;
+    }
     try {
       await this.subscription.publish(message);
     } catch (error) {
@@ -317,8 +339,8 @@ export class DesktopSandboxBridge {
         await this.config.disconnectDesktop({
           connectionId: this.connectionId,
         });
-      } catch {
-        /* ignore */
+      } catch (error) {
+        console.warn("[DesktopSandboxBridge] Failed to disconnect:", error);
       }
     }
 
@@ -326,8 +348,8 @@ export class DesktopSandboxBridge {
       try {
         this.subscription.unsubscribe();
         this.subscription.removeAllListeners();
-      } catch {
-        /* ignore */
+      } catch (error) {
+        console.warn("[DesktopSandboxBridge] Failed to unsubscribe:", error);
       }
       this.subscription = null;
     }
@@ -335,8 +357,11 @@ export class DesktopSandboxBridge {
     if (this.client) {
       try {
         this.client.disconnect();
-      } catch {
-        /* ignore */
+      } catch (error) {
+        console.warn(
+          "[DesktopSandboxBridge] Failed to disconnect client:",
+          error,
+        );
       }
       this.client = null;
     }

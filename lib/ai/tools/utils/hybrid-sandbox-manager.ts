@@ -269,11 +269,23 @@ export class HybridSandboxManager implements SandboxManager {
     connection: ConnectionInfo,
   ): Promise<void> {
     await this.closeCurrentSandbox();
+    const centrifugoApiUrl = process.env.CENTRIFUGO_API_URL;
+    const centrifugoApiKey = process.env.CENTRIFUGO_API_KEY;
+    const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
+    const centrifugoTokenSecret = process.env.CENTRIFUGO_TOKEN_SECRET;
+    if (
+      !centrifugoApiUrl ||
+      !centrifugoApiKey ||
+      !centrifugoWsUrl ||
+      !centrifugoTokenSecret
+    ) {
+      throw new Error("Missing Centrifugo environment variables");
+    }
     const centrifugoConfig: CentrifugoConfig = {
-      apiUrl: process.env.CENTRIFUGO_API_URL!,
-      apiKey: process.env.CENTRIFUGO_API_KEY!,
-      wsUrl: process.env.CENTRIFUGO_WS_URL!,
-      tokenSecret: process.env.CENTRIFUGO_TOKEN_SECRET!,
+      apiUrl: centrifugoApiUrl,
+      apiKey: centrifugoApiKey,
+      wsUrl: centrifugoWsUrl,
+      tokenSecret: centrifugoTokenSecret,
     };
     this.sandbox = new CentrifugoSandbox(
       this.userID,
