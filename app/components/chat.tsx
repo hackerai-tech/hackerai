@@ -513,6 +513,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     initialMessages: serverMessages,
     resumeStream,
     setMessages,
+    activeStreamId: chatData?.active_stream_id as string | undefined,
   });
 
   const { resetAutoContinueCount } = useAutoContinue({

@@ -10,6 +10,7 @@ export interface UseAutoResumeParams {
   initialMessages: ChatMessage[];
   resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
   setMessages: UseChatHelpers<ChatMessage>["setMessages"];
+  activeStreamId?: string;
 }
 
 export function useAutoResume({
@@ -17,6 +18,7 @@ export function useAutoResume({
   initialMessages,
   resumeStream,
   setMessages,
+  activeStreamId,
 }: UseAutoResumeParams) {
   const { dataStream, setIsAutoResuming } = useDataStream();
   const hasAutoResumedRef = useRef(false);
@@ -27,13 +29,15 @@ export function useAutoResume({
 
     const mostRecentMessage = initialMessages.at(-1);
 
-    if (mostRecentMessage?.role === "user") {
+    // Resume if the last message is from the user (assistant hasn't started),
+    // OR if there's an active stream (assistant is mid-response).
+    if (mostRecentMessage?.role === "user" || activeStreamId) {
       hasAutoResumedRef.current = true;
       setIsAutoResuming(true);
       resumeStream();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoResume, initialMessages.length > 0]);
+  }, [autoResume, initialMessages.length > 0, activeStreamId]);
 
   useEffect(() => {
     if (!dataStream) return;
