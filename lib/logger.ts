@@ -339,6 +339,14 @@ export class WideEventBuilder {
     if (!this.event.usage) {
       this.event.usage = {};
     }
+    // Always populate read/write tokens from UsageTracker (more reliable than
+    // the raw provider fields that setUsage reads, which vary by provider)
+    if (metrics.cacheReadTokens > 0) {
+      this.event.usage.cache_read_tokens = metrics.cacheReadTokens;
+    }
+    if (metrics.cacheWriteTokens > 0) {
+      this.event.usage.cache_write_tokens = metrics.cacheWriteTokens;
+    }
     if (metrics.cacheHitRate !== null) {
       this.event.usage.cache_hit_rate =
         Math.round(metrics.cacheHitRate * 1000) / 1000;
