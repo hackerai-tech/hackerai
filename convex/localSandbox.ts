@@ -204,6 +204,9 @@ export const connect = mutation({
 
     const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
     const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
+    if (!centrifugoWsUrl) {
+      return { success: false, error: "Centrifugo not configured" };
+    }
 
     return {
       success: true,

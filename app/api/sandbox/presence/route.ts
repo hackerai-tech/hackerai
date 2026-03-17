@@ -37,14 +37,25 @@ export async function GET(request: NextRequest) {
   }
 
   // Fetch Centrifugo presence (who's actually online)
-  const presenceResponse = await fetch(`${apiUrl}/api/presence`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `apikey ${apiKey}`,
-    },
-    body: JSON.stringify({ channel }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  let presenceResponse: Response;
+  try {
+    presenceResponse = await fetch(`${apiUrl}/api/presence`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `apikey ${apiKey}`,
+      },
+      body: JSON.stringify({ channel }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    console.error("Centrifugo presence request failed:", err);
+    return NextResponse.json({ connections: [], onlineCount: 0 });
+  }
+  clearTimeout(timeoutId);
 
   const onlineConnectionIds = new Set<string>();
   let presenceReliable = false;
@@ -85,20 +96,26 @@ export async function GET(request: NextRequest) {
 
   // Disconnect stale connections in Convex (connected in DB but not in presence)
   if (presenceReliable) {
-    for (const conn of connections) {
-      if (!onlineConnectionIds.has(conn.connectionId)) {
-        convex
-          .mutation(api.localSandbox.disconnectByBackend, {
+    const stale = connections.filter(
+      (conn) => !onlineConnectionIds.has(conn.connectionId),
+    );
+    if (stale.length > 0) {
+      const results = await Promise.allSettled(
+        stale.map((conn) =>
+          convex.mutation(api.localSandbox.disconnectByBackend, {
             serviceKey,
             connectionId: conn.connectionId,
-          })
-          .catch((err: unknown) => {
-            console.error(
-              `Failed to disconnect stale connection ${conn.connectionId}:`,
-              err,
-            );
-          });
-      }
+          }),
+        ),
+      );
+      results.forEach((result, i) => {
+        if (result.status === "rejected") {
+          console.error(
+            `Failed to disconnect stale connection ${stale[i].connectionId}:`,
+            result.reason,
+          );
+        }
+      });
     }
   }
 
