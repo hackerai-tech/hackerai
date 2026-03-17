@@ -284,6 +284,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       prepareSendMessagesRequest: prepareSendMessagesRequest as any,
       onChatSendMessage: (response) => {
         workflowRunIdRef.current = response.headers.get("x-workflow-run-id");
+        console.log("[workflow] runId captured:", workflowRunIdRef.current);
       },
       onChatEnd: () => {
         workflowRunIdRef.current = null;
@@ -320,6 +321,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       reconnectToStream: (options: any) => {
         const activeStreamId =
           chatDataRef.current?.active_stream_id ?? undefined;
+        console.log(
+          "[reconnect] active_stream_id:",
+          activeStreamId,
+          "chatData:",
+          !!chatDataRef.current,
+        );
         // Redis streaming path — reconnect via the Redis SSE endpoint.
         // workflowTransport.prepareReconnectToStreamRequest handles the
         // rstream_ prefix → /api/agent-workflow/{chatId}/redis-stream URL.
