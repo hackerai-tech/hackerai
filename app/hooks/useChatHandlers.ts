@@ -62,8 +62,6 @@ export const useChatHandlers = ({
     removeQueuedMessage,
     queueBehavior,
     sandboxPreference,
-    // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
-    // tauriCmdServer,
     selectedModel,
   } = useGlobalState();
 
@@ -345,7 +343,6 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          // tauriCmdServer,
           selectedModel,
         },
       });
@@ -361,7 +358,6 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          // tauriCmdServer,
           selectedModel,
         },
       });
@@ -393,7 +389,6 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          // tauriCmdServer,
           selectedModel,
         },
       });
@@ -417,7 +412,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          // tauriCmdServer,
+
           selectedModel,
         },
       });
@@ -533,7 +528,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          // tauriCmdServer,
+
           selectedModel,
         },
       });
@@ -570,7 +565,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          // tauriCmdServer,
+
           selectedModel,
         },
       });
@@ -621,7 +616,7 @@ export const useChatHandlers = ({
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
-          // tauriCmdServer,
+
           selectedModel,
         },
       });

@@ -6,16 +6,15 @@ import { FileAccumulator } from "@/lib/ai/tools/utils/file-accumulator";
 import type { BackgroundProcessTracker } from "@/lib/ai/tools/utils/background-process-tracker";
 import type { ChatMode } from "./chat";
 import type { CentrifugoSandbox } from "@/lib/ai/tools/utils/centrifugo-sandbox";
-import type { TauriSandbox } from "@/lib/ai/tools/utils/tauri-sandbox";
 import type { SandboxFallbackInfo } from "@/lib/ai/tools/utils/hybrid-sandbox-manager";
 
-// Union type for E2B Sandbox, local CentrifugoSandbox, and Tauri desktop sandbox
-export type AnySandbox = Sandbox | CentrifugoSandbox | TauriSandbox;
+// Union type for E2B Sandbox and local CentrifugoSandbox
+export type AnySandbox = Sandbox | CentrifugoSandbox;
 
 // Type guard to check if sandbox is E2B
 export type IsE2BSandboxFn = (s: AnySandbox | null) => s is Sandbox;
 
-export type SandboxType = "e2b" | "local" | "local-sandbox" | "desktop";
+export type SandboxType = "e2b" | "local" | "local-sandbox";
 
 export interface SandboxInfo {
   type: SandboxType;

@@ -111,11 +111,8 @@ interface GlobalStateType {
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
 
-  // Tauri command server info (desktop app only)
-  tauriCmdServer: {
-    port: number;
-    token: string;
-  } | null;
+  // Desktop bridge active (Centrifugo-based desktop sandbox)
+  desktopBridgeActive: boolean;
 
   // Model selection
   selectedModel: SelectedModel;
@@ -227,8 +224,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   });
 
   // Tauri detection + sandbox preference (co-located in a custom hook)
-  const { tauriCmdServer, sandboxPreference, setSandboxPreference } =
-    useSandboxPreference();
+  const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
+    useSandboxPreference(!!user);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -738,7 +735,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
-    tauriCmdServer,
+    desktopBridgeActive,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

@@ -132,7 +132,6 @@ export const createChatHandler = (
         regenerate,
         temporary,
         sandboxPreference,
-        tauriCmdServer,
         selectedModel: rawSelectedModel,
         isAutoContinue,
       }: {
@@ -143,7 +142,6 @@ export const createChatHandler = (
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
-        tauriCmdServer?: { port: number; token: string };
         selectedModel?: string;
         isAutoContinue?: boolean;
       } = await req.json();
@@ -394,7 +392,6 @@ export const createChatHandler = (
               usageTracker.providerCost += costDollars;
               chatLogger?.getBuilder().addToolCost(costDollars);
             },
-            tauriCmdServer,
           );
 
           // Helper to send file metadata via stream for resumable stream clients

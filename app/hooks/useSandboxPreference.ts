@@ -1,43 +1,69 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import type { SandboxPreference } from "@/types/chat";
+import { DesktopSandboxBridge } from "@/app/services/desktop-sandbox-bridge";
 
 interface SandboxPreferenceState {
-  tauriCmdServer: { port: number; token: string } | null;
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
+  desktopBridgeActive: boolean;
 }
 
-/**
- * Co-locates Tauri detection, sandbox preference, and localStorage persistence
- * so that all state transitions for these two values live in one place.
- */
-export function useSandboxPreference(): SandboxPreferenceState {
-  const [tauriCmdServer, setTauriCmdServer] = useState<{
-    port: number;
-    token: string;
-  } | null>(null);
+// Module-level singleton to survive React strict mode double-mount
+let activeBridge: DesktopSandboxBridge | null = null;
+let bridgeStarting = false;
+
+export function useSandboxPreference(
+  isAuthenticated: boolean,
+): SandboxPreferenceState {
+  const [desktopBridgeActive, setDesktopBridgeActive] = useState(false);
 
   const [sandboxPreference, setSandboxPreferenceState] =
     useState<SandboxPreference>(() => {
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
-      // "tauri" is no longer a valid sandbox preference (local execution
-      // doesn't work in production Tauri builds). Treat it as unset.
       if (stored && stored !== "tauri") return stored as SandboxPreference;
+      // If there's already an active bridge (HMR / remount), restore its connectionId
+      if (activeBridge?.getConnectionId())
+        return activeBridge.getConnectionId()!;
       return "e2b";
     });
 
-  // Detect Tauri environment for features that use the local command server
-  // directly from the frontend (e.g. saveFileToLocal, revealFileInDir).
-  // NOTE: We no longer set sandboxPreference to "tauri" — local command
-  // execution via the server-side sandbox doesn't work in production Tauri
-  // builds because the remote API can't reach 127.0.0.1 on the user's machine.
+  const connectDesktopMutation = useMutation(api.localSandbox.connectDesktop);
+  const refreshTokenMutation = useMutation(
+    api.localSandbox.refreshCentrifugoTokenDesktop,
+  );
+  const disconnectMutation = useMutation(api.localSandbox.disconnectDesktop);
+
+  const connectDesktopRef = useRef(connectDesktopMutation);
+  const refreshTokenRef = useRef(refreshTokenMutation);
+  const disconnectRef = useRef(disconnectMutation);
   useEffect(() => {
+    connectDesktopRef.current = connectDesktopMutation;
+    refreshTokenRef.current = refreshTokenMutation;
+    disconnectRef.current = disconnectMutation;
+  }, [connectDesktopMutation, refreshTokenMutation, disconnectMutation]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    // Already running — just sync state
+    if (activeBridge?.getConnectionId()) {
+      setDesktopBridgeActive(true);
+      setSandboxPreferenceState(activeBridge.getConnectionId()!);
+      return;
+    }
+
+    // Another call is already starting the bridge
+    if (bridgeStarting) return;
+
     let cancelled = false;
 
-    async function detectTauri() {
+    async function startBridge() {
+      bridgeStarting = true;
       try {
         const { getCmdServerInfo, isTauriEnvironment } =
           await import("@/app/hooks/useTauri");
@@ -46,31 +72,50 @@ export function useSandboxPreference(): SandboxPreferenceState {
         const info = await getCmdServerInfo();
         if (!info || cancelled) return;
 
-        setTauriCmdServer(info);
+        // Double-check after async gap
+        if (activeBridge?.getConnectionId()) return;
 
-        // TODO: Re-enable when client-side tool execution is implemented for Tauri production builds
-        // In production Tauri builds, the remote API server cannot reach 127.0.0.1 on the user's machine.
-        // Only default to "tauri" when the user hasn't explicitly chosen yet
-        // const savedPref =
-        //   typeof window !== "undefined"
-        //     ? localStorage.getItem("sandbox-preference")
-        //     : null;
-        // if (!savedPref || savedPref === "tauri") {
-        //   setSandboxPreferenceState("tauri");
-        // }
-      } catch {
-        // Not in Tauri environment — leave defaults
+        const bridge = new DesktopSandboxBridge({
+          cmdServerInfo: info,
+          connectDesktop: (args) => connectDesktopRef.current(args),
+          refreshCentrifugoTokenDesktop: (args) =>
+            refreshTokenRef.current(args),
+          disconnectDesktop: (args) => disconnectRef.current(args),
+        });
+
+        const connectionId = await bridge.start();
+        if (cancelled) {
+          bridge.stop();
+          return;
+        }
+
+        activeBridge = bridge;
+        setDesktopBridgeActive(true);
+        setSandboxPreferenceState(connectionId);
+      } catch (error) {
+        console.error("[DesktopSandboxBridge] Failed to start:", error);
+      } finally {
+        bridgeStarting = false;
       }
     }
 
-    detectTauri();
+    startBridge();
+
+    // Cleanup on beforeunload (page close/refresh)
+    const handleBeforeUnload = () => {
+      activeBridge?.stop();
+      activeBridge = null;
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+
     return () => {
       cancelled = true;
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      // Don't tear down the bridge on React strict mode unmount —
+      // it's a module-level singleton that persists across remounts.
     };
-  }, []);
+  }, [isAuthenticated]);
 
-  // Persist sandbox preference to localStorage — skip the initial mount
-  // since useState already read from localStorage (avoids a redundant write)
   const isFirstRender = useRef(true);
   useEffect(() => {
     if (isFirstRender.current) {
@@ -82,10 +127,9 @@ export function useSandboxPreference(): SandboxPreferenceState {
     }
   }, [sandboxPreference]);
 
-  // Controlled setter — the only way external code can change the preference
   const setSandboxPreference = useCallback((preference: SandboxPreference) => {
     setSandboxPreferenceState(preference);
   }, []);
 
-  return { tauriCmdServer, sandboxPreference, setSandboxPreference };
+  return { sandboxPreference, setSandboxPreference, desktopBridgeActive };
 }

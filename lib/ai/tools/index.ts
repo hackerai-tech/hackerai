@@ -3,7 +3,6 @@ import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
   type SandboxPreference,
-  type TauriConnectionInfo,
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
@@ -59,7 +58,6 @@ export const createTools = (
   guardrailsConfig?: string,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
-  tauriConnectionInfo?: TauriConnectionInfo | null,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -83,7 +81,6 @@ export const createTools = (
           sandboxPreference,
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
-          tauriConnectionInfo,
         )
       : new DefaultSandboxManager(
           userID,
@@ -121,10 +118,7 @@ export const createTools = (
   // Create all available tools
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
-    // Tauri desktop: files are already on the user's machine, no need to upload to S3
-    ...(sandboxPreference !== "tauri" && {
-      get_terminal_files: createGetTerminalFiles(context),
-    }),
+    get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),
     todo_write: createTodoWrite(context),
     // ...(!isTemporary &&

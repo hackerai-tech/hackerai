@@ -1,5 +1,10 @@
 {
-  "allowed_origins": ["https://hackerai.co", "http://localhost:3000"],
+  "allowed_origins": [
+    "https://hackerai.co",
+    "https://www.hackerai.co",
+    "http://localhost:3000",
+    "tauri://localhost"
+  ],
   "namespaces": [
     {
       "name": "sandbox",

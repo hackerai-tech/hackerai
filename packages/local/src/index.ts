@@ -192,6 +192,7 @@ interface CentrifugoCommandMessage {
   timeout?: number;
   background?: boolean;
   displayName?: string;
+  targetConnectionId?: string;
 }
 
 interface CentrifugoStdoutMessage {
@@ -503,6 +504,12 @@ class LocalSandboxClient {
 
       const message = ctx.data as CentrifugoCommandMessage;
       if (message.type === "command") {
+        if (
+          message.targetConnectionId &&
+          message.targetConnectionId !== this.connectionId
+        ) {
+          return;
+        }
         this.lastActivityTime = Date.now();
         this.handleCommand(message).catch((error: unknown) => {
           const errorMsg =

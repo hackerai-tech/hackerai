@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   Terminal,
   Server,
+  Monitor,
   ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -161,14 +162,26 @@ const LocalSandboxTab = () => {
                   <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
                   <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
                 </div>
+                {conn.isDesktop ? (
+                  <Monitor className="h-4 w-4 text-muted-foreground shrink-0" />
+                ) : (
+                  <Server className="h-4 w-4 text-muted-foreground shrink-0" />
+                )}
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">
+                  <div className="font-medium text-sm flex items-center gap-2">
                     {conn.osInfo?.hostname || conn.name}
+                    {conn.isDesktop && (
+                      <span className="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                        Desktop
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground truncate">
-                    {conn.mode === "docker"
-                      ? `Docker: ${conn.containerId?.slice(0, 12) || "unknown"}`
-                      : `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`}
+                    {conn.isDesktop
+                      ? `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`
+                      : conn.mode === "docker"
+                        ? `Docker: ${conn.containerId?.slice(0, 12) || "unknown"}`
+                        : `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`}
                   </div>
                 </div>
               </div>

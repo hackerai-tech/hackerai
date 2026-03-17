@@ -1,17 +1,12 @@
 /**
- * Tests for TauriSandbox security validations.
+ * Tests for path validation security utilities.
  *
  * Covers:
  * - File path validation (path traversal prevention)
  * - Download URL validation (SSRF prevention)
- * - TauriSandbox command execution and file operations
  */
 
-import {
-  validateFilePath,
-  validateDownloadUrl,
-  TauriSandbox,
-} from "../tauri-sandbox";
+import { validateFilePath, validateDownloadUrl } from "../path-validation";
 
 // ── Path validation ────────────────────────────────────────────────────
 
@@ -51,7 +46,6 @@ describe("validateFilePath", () => {
   });
 
   it("rejects path traversal attempts", () => {
-    // Traversal out of allowed root
     expect(() =>
       validateFilePath("/tmp/hackerai-upload/../../etc/passwd"),
     ).toThrow("File path not allowed");
@@ -67,11 +61,9 @@ describe("validateFilePath", () => {
   });
 
   it("rejects prefix-based bypass attempts", () => {
-    // /tmp/hackerai-upload-evil should not match /tmp/hackerai-upload
     expect(() =>
       validateFilePath("/tmp/hackerai-upload-evil/file.txt"),
     ).toThrow("File path not allowed");
-    // /tmp/hackeraifoo should not match /tmp/hackerai
     expect(() => validateFilePath("/tmp/hackeraifoo/file.txt")).toThrow(
       "File path not allowed",
     );
@@ -167,97 +159,5 @@ describe("validateDownloadUrl", () => {
     expect(() => validateDownloadUrl("http://0.0.0.0/file")).toThrow(
       "internal address",
     );
-  });
-});
-
-// ── TauriSandbox class ─────────────────────────────────────────────────
-
-describe("TauriSandbox", () => {
-  let sandbox: TauriSandbox;
-
-  beforeEach(() => {
-    sandbox = new TauriSandbox({ port: 12345, token: "test-token" });
-  });
-
-  describe("constructor", () => {
-    it("builds the base URL from port", () => {
-      // Verify by checking health check URL
-      expect(sandbox).toBeDefined();
-    });
-  });
-
-  describe("getSandboxContext", () => {
-    it("returns context mentioning local machine", () => {
-      const context = sandbox.getSandboxContext();
-      expect(context).toContain("local machine");
-      expect(context).toContain("HackerAI Desktop");
-    });
-  });
-
-  describe("getHost", () => {
-    it("returns localhost with the given port", () => {
-      expect(sandbox.getHost(8080)).toBe("localhost:8080");
-    });
-  });
-
-  describe("files.write - path validation", () => {
-    it("rejects writes outside allowed directories", async () => {
-      await expect(
-        sandbox.files.write("/etc/passwd", "malicious"),
-      ).rejects.toThrow("File path not allowed");
-    });
-  });
-
-  describe("files.read - path validation", () => {
-    it("rejects reads outside allowed directories", async () => {
-      await expect(sandbox.files.read("/etc/shadow")).rejects.toThrow(
-        "File path not allowed",
-      );
-    });
-  });
-
-  describe("files.remove - path validation", () => {
-    it("rejects removes outside allowed directories", async () => {
-      await expect(
-        sandbox.files.remove("/home/user/.ssh/id_rsa"),
-      ).rejects.toThrow("File path not allowed");
-    });
-  });
-
-  describe("files.list - path validation", () => {
-    it("rejects list outside allowed directories", async () => {
-      await expect(sandbox.files.list("/")).rejects.toThrow(
-        "File path not allowed",
-      );
-    });
-  });
-
-  describe("files.downloadFromUrl - validations", () => {
-    it("rejects path traversal in download target", async () => {
-      await expect(
-        sandbox.files.downloadFromUrl(
-          "https://example.com/file.zip",
-          "/tmp/hackerai-upload/../../etc/evil",
-        ),
-      ).rejects.toThrow("File path not allowed");
-    });
-
-    it("rejects SSRF URLs", async () => {
-      await expect(
-        sandbox.files.downloadFromUrl(
-          "http://169.254.169.254/latest/meta-data",
-          "/tmp/hackerai-upload/file.txt",
-        ),
-      ).rejects.toThrow("internal address");
-    });
-  });
-
-  describe("close", () => {
-    it("emits close event", async () => {
-      const closeSpy = jest.fn();
-      sandbox.on("close", closeSpy);
-      await sandbox.close();
-      expect(closeSpy).toHaveBeenCalledTimes(1);
-    });
   });
 });

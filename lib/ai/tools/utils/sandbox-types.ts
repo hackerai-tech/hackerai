@@ -1,6 +1,5 @@
 import type { Sandbox } from "@e2b/code-interpreter";
 import type { CentrifugoSandbox } from "./centrifugo-sandbox";
-import type { TauriSandbox } from "./tauri-sandbox";
 import type { AnySandbox } from "@/types";
 
 /**
@@ -16,18 +15,7 @@ export function isE2BSandbox(sandbox: AnySandbox | null): sandbox is Sandbox {
 export function isCentrifugoSandbox(
   sandbox: AnySandbox | null,
 ): sandbox is CentrifugoSandbox {
-  return (
-    sandbox !== null && !("jupyterUrl" in sandbox) && !isTauriSandbox(sandbox)
-  );
-}
-
-/**
- * Type guard to check if a sandbox is a TauriSandbox
- */
-export function isTauriSandbox(
-  sandbox: AnySandbox | null,
-): sandbox is TauriSandbox {
-  return sandbox !== null && "healthCheck" in sandbox;
+  return sandbox !== null && !("jupyterUrl" in sandbox);
 }
 
 /**

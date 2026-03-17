@@ -289,6 +289,160 @@ export const disconnect = mutation({
   },
 });
 
+export const connectDesktop = mutation({
+  args: {
+    connectionName: v.string(),
+    osInfo: v.optional(
+      v.object({
+        platform: v.string(),
+        arch: v.string(),
+        release: v.string(),
+        hostname: v.string(),
+      }),
+    ),
+  },
+  returns: v.object({
+    connectionId: v.string(),
+    centrifugoToken: v.string(),
+    centrifugoWsUrl: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const userId = identity.subject;
+
+    // Disconnect stale desktop connections for this user (page reload, etc.)
+    const existingDesktop = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_user_and_status", (q) =>
+        q.eq("user_id", userId).eq("status", "connected"),
+      )
+      .collect();
+    for (const conn of existingDesktop) {
+      if (conn.client_version === "desktop") {
+        await ctx.db.patch(conn._id, { status: "disconnected" });
+      }
+    }
+
+    const connectionId = crypto.randomUUID();
+
+    await ctx.db.insert("local_sandbox_connections", {
+      user_id: userId,
+      connection_id: connectionId,
+      connection_name: args.connectionName,
+      container_id: undefined,
+      client_version: "desktop",
+      mode: "dangerous",
+      os_info: args.osInfo,
+      last_heartbeat: Date.now(),
+      status: "connected",
+      created_at: Date.now(),
+    });
+
+    const centrifugoToken = await generateCentrifugoToken(userId);
+    const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
+    if (!centrifugoWsUrl) {
+      throw new Error("CENTRIFUGO_WS_URL environment variable not set");
+    }
+
+    return {
+      connectionId,
+      centrifugoToken,
+      centrifugoWsUrl,
+    };
+  },
+});
+
+export const refreshCentrifugoTokenDesktop = mutation({
+  args: {
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    centrifugoToken: v.string(),
+  }),
+  handler: async (ctx, { connectionId }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const userId = identity.subject;
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (!connection) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Connection not found",
+      });
+    }
+
+    if (connection.user_id !== userId) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Connection does not belong to this user",
+      });
+    }
+
+    if (connection.status !== "connected") {
+      throw new ConvexError({
+        code: "BAD_REQUEST",
+        message: "Connection is not active",
+      });
+    }
+
+    const centrifugoToken = await generateCentrifugoToken(userId);
+    return { centrifugoToken };
+  },
+});
+
+export const disconnectDesktop = mutation({
+  args: {
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+  }),
+  handler: async (ctx, { connectionId }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const userId = identity.subject;
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (!connection || connection.user_id !== userId) {
+      return { success: false };
+    }
+
+    await ctx.db.patch(connection._id, {
+      status: "disconnected",
+    });
+
+    return { success: true };
+  },
+});
+
 export const disconnectByBackend = mutation({
   args: {
     serviceKey: v.string(),
@@ -330,6 +484,7 @@ export const listConnections = query({
       ),
       containerId: v.optional(v.string()),
       lastSeen: v.number(),
+      isDesktop: v.boolean(),
     }),
   ),
   handler: async (ctx) => {
@@ -354,6 +509,7 @@ export const listConnections = query({
       osInfo: conn.os_info,
       containerId: conn.container_id,
       lastSeen: conn.last_heartbeat,
+      isDesktop: conn.client_version === "desktop",
     }));
   },
 });

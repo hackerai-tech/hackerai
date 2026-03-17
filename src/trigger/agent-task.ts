@@ -120,7 +120,6 @@ export const agentStreamTask = task({
       regenerate,
       temporary,
       sandboxPreference,
-      tauriCmdServer,
       userId,
       subscription,
       userLocation,
@@ -237,7 +236,6 @@ export const agentStreamTask = task({
           usageTracker.providerCost += costDollars;
           chatLogger.getBuilder().addToolCost(costDollars);
         },
-        tauriCmdServer,
       );
 
       const sendFileMetadataToStream = (

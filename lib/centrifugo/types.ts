@@ -7,6 +7,7 @@ export interface CommandMessage {
   timeout?: number;
   background?: boolean;
   displayName?: string;
+  targetConnectionId?: string;
 }
 
 export interface StdoutMessage {

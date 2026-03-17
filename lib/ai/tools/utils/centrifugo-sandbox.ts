@@ -226,6 +226,7 @@ Commands run inside the Docker container with network access.`;
             timeout,
             background: opts?.background,
             displayName: opts?.displayName,
+            targetConnectionId: this.connectionInfo.connectionId,
           };
 
           publishCommand(channel, commandMessage).catch((err: unknown) => {

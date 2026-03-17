@@ -37,7 +37,6 @@ export interface UseAgentLongStreamOptions {
   serverMessages: ChatMessage[];
   todos: Todo[];
   sandboxPreference: SandboxPreference;
-  tauriCmdServer: { port: number; token: string } | null;
   setUploadStatus: (
     status: { message: string; isUploading: boolean } | null,
   ) => void;
@@ -95,7 +94,6 @@ export function useAgentLongStream(
     serverMessages,
     todos,
     sandboxPreference,
-    tauriCmdServer,
     setUploadStatus,
     setSummarizationStatus,
     setRateLimitWarning,
@@ -606,7 +604,6 @@ export function useAgentLongStream(
             temporary: false,
             sandboxPreference:
               options?.body?.sandboxPreference ?? sandboxPreference,
-            tauriCmdServer,
           }),
         });
         if (!res.ok) {
@@ -625,14 +622,7 @@ export function useAgentLongStream(
         toast.error(e instanceof Error ? e.message : "Failed to start agent");
       }
     },
-    [
-      messages,
-      chatId,
-      todos,
-      sandboxPreference,
-      tauriCmdServer,
-      setActiveTriggerRunIdMutation,
-    ],
+    [messages, chatId, todos, sandboxPreference, setActiveTriggerRunIdMutation],
   );
 
   const regenerate = useCallback(
@@ -653,7 +643,6 @@ export function useAgentLongStream(
             regenerate: true,
             temporary: false,
             sandboxPreference: pref,
-            tauriCmdServer,
           }),
         });
         if (!res.ok) {
@@ -672,14 +661,7 @@ export function useAgentLongStream(
         toast.error(e instanceof Error ? e.message : "Failed to regenerate");
       }
     },
-    [
-      messages,
-      chatId,
-      todos,
-      sandboxPreference,
-      tauriCmdServer,
-      setActiveTriggerRunIdMutation,
-    ],
+    [messages, chatId, todos, sandboxPreference, setActiveTriggerRunIdMutation],
   );
 
   const cancel = useCallback(async () => {
