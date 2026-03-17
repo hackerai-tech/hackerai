@@ -34,13 +34,10 @@ export interface UserContext {
 export interface ChatContext {
   messageCount: number;
   estimatedInputTokens: number;
-  hasSandboxFiles: boolean;
-  hasFileAttachments: boolean;
-  fileCount?: number;
-  fileImageCount?: number;
-  sandboxPreference?: string;
-  memoryEnabled: boolean;
   isNewChat: boolean;
+  fileCount?: number;
+  imageCount?: number;
+  memoryEnabled: boolean;
 }
 
 export interface RateLimitContext {

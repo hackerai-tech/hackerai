@@ -29,7 +29,6 @@ export interface ChatWideEvent {
   mode: ChatMode;
   is_temporary: boolean;
   is_regenerate: boolean;
-  is_new_chat: boolean;
 
   // User context
   user: {
@@ -41,11 +40,9 @@ export interface ChatWideEvent {
   chat: {
     message_count: number;
     estimated_input_tokens: number;
-    has_sandbox_files: boolean;
-    has_file_attachments: boolean;
+    is_new_chat: boolean;
     file_count?: number;
-    file_image_count?: number;
-    sandbox_preference?: string;
+    image_count?: number;
     memory_enabled: boolean;
   };
 
@@ -174,25 +171,19 @@ export class WideEventBuilder {
   setChat(chat: {
     messageCount: number;
     estimatedInputTokens: number;
-    hasSandboxFiles: boolean;
-    hasFileAttachments: boolean;
-    fileCount?: number;
-    fileImageCount?: number;
-    sandboxPreference?: string;
-    memoryEnabled: boolean;
     isNewChat: boolean;
+    fileCount?: number;
+    imageCount?: number;
+    memoryEnabled: boolean;
   }): this {
     this.event.chat = {
       message_count: chat.messageCount,
       estimated_input_tokens: chat.estimatedInputTokens,
-      has_sandbox_files: chat.hasSandboxFiles,
-      has_file_attachments: chat.hasFileAttachments,
+      is_new_chat: chat.isNewChat,
       file_count: chat.fileCount,
-      file_image_count: chat.fileImageCount,
-      sandbox_preference: chat.sandboxPreference,
+      image_count: chat.imageCount,
       memory_enabled: chat.memoryEnabled,
     };
-    this.event.is_new_chat = chat.isNewChat;
     return this;
   }
 
@@ -316,12 +307,11 @@ export class WideEventBuilder {
         total_tokens:
           ((usage.inputTokens as number) || 0) +
           ((usage.outputTokens as number) || 0),
-        reasoning_tokens: usage.reasoningTokens as number | undefined,
+        reasoning_tokens: (usage.reasoningTokens as number) || undefined,
         cache_read_tokens: usage.cacheReadInputTokens as number | undefined,
         cache_write_tokens: usage.cacheCreationInputTokens as
           | number
           | undefined,
-        // Store provider cost for build() to use
         total_cost: rawCost,
       };
     }
@@ -437,6 +427,21 @@ export class WideEventBuilder {
     // Don't include assistant_id for temporary chats
     if (this.event.is_temporary) {
       delete this.event.assistant_id;
+    }
+
+    // Strip zero/undefined values from usage to reduce noise
+    if (this.event.usage) {
+      const u = this.event.usage;
+      if (!u.reasoning_tokens) delete u.reasoning_tokens;
+      if (!u.cache_read_tokens) delete u.cache_read_tokens;
+      if (!u.cache_write_tokens) delete u.cache_write_tokens;
+    }
+
+    // Strip zero-value file counts from chat
+    if (this.event.chat) {
+      const c = this.event.chat;
+      if (!c.file_count) delete c.file_count;
+      if (!c.image_count) delete c.image_count;
     }
 
     return this.event as ChatWideEvent;

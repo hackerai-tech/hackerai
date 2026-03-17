@@ -43,7 +43,6 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
 import {
-  hasFileAttachments,
   countFileAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
@@ -276,13 +275,10 @@ export const createChatHandler = (
         {
           messageCount: truncatedMessages.length,
           estimatedInputTokens,
-          hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
-          hasFileAttachments: hasFileAttachments(truncatedMessages),
-          fileCount: fileCounts.totalFiles,
-          fileImageCount: fileCounts.imageCount,
-          sandboxPreference,
-          memoryEnabled,
           isNewChat,
+          fileCount: fileCounts.totalFiles,
+          imageCount: fileCounts.imageCount,
+          memoryEnabled,
         },
         selectedModel,
       );
