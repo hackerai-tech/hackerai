@@ -184,24 +184,11 @@ export function createRedisChunkReadable(
       }
 
       let lastId = startIndex;
-      const PREEMPTIVE_TIMEOUT_MS = 770_000; // 770s, under 800s maxDuration
-      const startTime = Date.now();
 
       try {
         while (true) {
-          // Preemptive timeout
-          if (Date.now() - startTime > PREEMPTIVE_TIMEOUT_MS) {
-            break;
-          }
-
           const entries = await readChunks(reader, chatId, lastId);
-          if (!entries) {
-            console.log(
-              "[redis-reader] XREAD returned null, isReady:",
-              reader.isReady,
-            );
-            continue;
-          }
+          if (!entries) continue;
           console.log(
             "[redis-reader] got",
             entries.length,
