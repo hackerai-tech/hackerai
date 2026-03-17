@@ -365,7 +365,7 @@ describe("CentrifugoSandbox", () => {
 
       try {
         const sandbox = createSandbox();
-        await sandbox.files.write("/tmp/test.txt", "hello world");
+        await sandbox.files.write("/tmp/hackerai/test.txt", "hello world");
 
         // files.write runs mkdir -p then cat > ... heredoc.
         const writeCmdCall = publishCommand.mock.calls.find((call: unknown[]) =>
