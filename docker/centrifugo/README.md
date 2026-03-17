@@ -2,34 +2,43 @@
 
 Real-time pub/sub server for sandbox command relay.
 
-## EC2 Setup (User Data)
+## EC2 Setup
 
-Paste this into **Advanced Details → User Data** when launching an EC2 instance (Amazon Linux 2023, t3.micro, ports 22/443 open):
+1. **Launch an EC2 instance** manually (Amazon Linux 2023, t3.micro)
+2. **Security Group**: Open ports 22 (SSH) and 443 (HTTPS)
+3. **SSH into the instance** and run the steps below
+
+### Install Docker & Compose
 
 ```bash
-#!/bin/bash
-set -e
+sudo dnf install -y docker
+sudo systemctl enable docker
+sudo systemctl start docker
 
-# Install Docker
-dnf install -y docker
-systemctl enable docker
-systemctl start docker
-
-# Install Docker Compose plugin
-mkdir -p /usr/local/lib/docker/cli-plugins
-curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+sudo mkdir -p /usr/local/lib/docker/cli-plugins
+sudo curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
   -o /usr/local/lib/docker/cli-plugins/docker-compose
-chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+sudo chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+```
 
-# Create app directory
-mkdir -p /opt/centrifugo
+### Create app directory and config
+
+```bash
+sudo mkdir -p /opt/centrifugo
 cd /opt/centrifugo
+```
 
-# Copy Centrifugo config (from docker/centrifugo/config.json in the repo)
-cp config.json /opt/centrifugo/config.json
+Upload `config.json` from this repo (`docker/centrifugo/config.json`):
 
-# Write docker-compose
-cat > docker-compose.yml <<'COMPOSE'
+```bash
+scp -i your-key.pem docker/centrifugo/config.json ec2-user@<instance-ip>:/tmp/
+sudo mv /tmp/config.json /opt/centrifugo/config.json
+```
+
+### Create docker-compose.yml
+
+```bash
+sudo cat > /opt/centrifugo/docker-compose.yml <<'COMPOSE'
 services:
   centrifugo:
     image: centrifugo/centrifugo:v5
@@ -48,16 +57,29 @@ services:
       - CENTRIFUGO_TLS_KEY=/centrifugo/server.key
     command: centrifugo -c config.json
 COMPOSE
+```
 
-# Write env file (replace with your secrets)
-cat > .env <<'ENV'
+### Create .env with secrets
+
+Generate secrets with `openssl rand -hex 64` (two separate values).
+
+```bash
+sudo cat > /opt/centrifugo/. <<'ENV'
 CENTRIFUGO_TOKEN_SECRET=<your-token-secret>
 CENTRIFUGO_API_KEY=<your-api-key>
 ENV
-chmod 600 .env
+sudo chmod 600 /opt/centrifugo/.env
+```
 
-# Start services
-docker compose up -d
+### TLS certificates
+
+Place your TLS cert and key at `/opt/centrifugo/server.crt` and `/opt/centrifugo/server.key`.
+
+### Start
+
+```bash
+cd /opt/centrifugo
+sudo docker compose up -d
 ```
 
 ## Channel Security
@@ -66,20 +88,29 @@ Channels use the format `sandbox:user#userId` where `#` is Centrifugo's user bou
 
 ## Environment Variables
 
-**Vercel (.env.local):**
+Set the same secrets across all three systems:
+
+**Vercel:**
 
 ```
-CENTRIFUGO_API_URL=https://rt.hackerai.co
+CENTRIFUGO_API_URL=https://<DOMAIN>
 CENTRIFUGO_API_KEY=<api-key>
 CENTRIFUGO_TOKEN_SECRET=<token-secret>
-CENTRIFUGO_WS_URL=wss://rt.hackerai.co/connection/websocket
+CENTRIFUGO_WS_URL=wss://<DOMAIN>/connection/websocket
 ```
 
 **Convex Dashboard:**
 
 ```
 CENTRIFUGO_TOKEN_SECRET=<token-secret>
-CENTRIFUGO_WS_URL=wss://rt.hackerai.co/connection/websocket
+CENTRIFUGO_WS_URL=wss://<DOMAIN>/connection/websocket
+```
+
+**Centrifugo Server (.env):**
+
+```
+CENTRIFUGO_TOKEN_SECRET=<token-secret>   # must match Vercel/Convex value
+CENTRIFUGO_API_KEY=<api-key>             # must match Vercel value
 ```
 
 ## Useful Commands
@@ -93,4 +124,10 @@ sudo docker compose -f /opt/centrifugo/docker-compose.yml logs centrifugo --tail
 
 # Restart
 sudo docker compose -f /opt/centrifugo/docker-compose.yml restart
+
+# Check number of active connections
+curl -s -X POST https://<DOMAIN>/api/info \
+  -H "Authorization: apikey <CENTRIFUGO_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{}' | python3 -m json.tool
 ```
