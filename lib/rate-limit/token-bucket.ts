@@ -27,6 +27,14 @@ const getModelPricing = (modelName?: string) =>
 /** Points per dollar (1 point = $0.0001) */
 export const POINTS_PER_DOLLAR = 10_000;
 
+/**
+ * Normal usage pricing multiplier — covers additional operational costs
+ * (infrastructure, overhead, etc.) on top of raw model pricing.
+ * This is baked into the point cost so it depletes the subscription bucket
+ * faster; it is NOT subtracted from the user's subscription credit balance.
+ */
+export const NORMAL_USAGE_MULTIPLIER = 1.1;
+
 /** 30 days in seconds — used for Redis TTLs aligned with billing cycles. */
 const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
 
@@ -48,7 +56,9 @@ export const calculateTokenCost = (
   if (tokens <= 0) return 0;
   const pricing = getModelPricing(modelName);
   const price = type === "input" ? pricing.input : pricing.output;
-  return Math.ceil((tokens / 1_000_000) * price * POINTS_PER_DOLLAR);
+  return Math.ceil(
+    (tokens / 1_000_000) * price * POINTS_PER_DOLLAR * NORMAL_USAGE_MULTIPLIER,
+  );
 };
 
 // =============================================================================

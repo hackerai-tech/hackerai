@@ -248,7 +248,7 @@ describe("token-bucket async functions", () => {
         autoReloadEnabled: false,
       });
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 30);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 33);
     });
 
     it("should skip deduction for free tier", async () => {
@@ -466,9 +466,9 @@ describe("token-bucket async functions", () => {
         limit: 250000,
       });
 
-      // Estimated 1000 input = 5 points, actual provider cost = $0.005 = 50 points
-      // Difference = 50 - 5 = 45 additional needed
-      // Bucket has 10, so fromBucket=10, fromExtraUsage=35
+      // Estimated 1000 input = 6 points (with 1.1x), actual provider cost = $0.005 = 50 points
+      // Difference = 50 - 6 = 44 additional needed
+      // Bucket has 10, so fromBucket=10, fromExtraUsage=34
       await deductUsage(
         "user-123",
         "pro",
@@ -488,8 +488,8 @@ describe("token-bucket async functions", () => {
         expect.any(String),
         expect.objectContaining({ rate: 10 }),
       );
-      // Should deduct the overflow (35) from extra usage
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 35);
+      // Should deduct the overflow (34) from extra usage
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 34);
     });
 
     it("should not call extra usage when bucket covers the full amount", async () => {
