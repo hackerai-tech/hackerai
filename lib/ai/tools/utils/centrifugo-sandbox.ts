@@ -248,9 +248,14 @@ Commands run inside the Docker container with network access.`;
           if (!settled) {
             settled = true;
             cleanup();
+            const msg = ctx.error?.message ?? "unknown";
+            const isConnectionLimit =
+              msg.includes("connection limit") || ctx.error?.code === 4503;
             reject(
               new Error(
-                `Centrifugo client error: ${ctx.error?.message ?? "unknown"}`,
+                isConnectionLimit
+                  ? "Centrifugo connection limit reached. The server has too many active connections. Please try again later."
+                  : `Centrifugo client error: ${msg}`,
               ),
             );
           }

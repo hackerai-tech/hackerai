@@ -25,26 +25,8 @@ chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 mkdir -p /opt/centrifugo
 cd /opt/centrifugo
 
-# Write Centrifugo config
-cat > config.json <<'CONFIG'
-{
-  "health": true,
-  "allowed_origins": ["https://hackerai.co", "https://www.hackerai.co"],
-  "namespaces": [
-    {
-      "name": "sandbox",
-      "allow_user_limited_channels": true,
-      "allow_publish_for_subscriber": true,
-      "presence": true,
-      "join_leave": true,
-      "history_size": 0,
-      "history_ttl": "0s"
-    }
-  ],
-  "uni_sse": true,
-  "uni_http_stream": true
-}
-CONFIG
+# Copy Centrifugo config (from docker/centrifugo/config.json in the repo)
+cp config.json /opt/centrifugo/config.json
 
 # Write docker-compose
 cat > docker-compose.yml <<'COMPOSE'

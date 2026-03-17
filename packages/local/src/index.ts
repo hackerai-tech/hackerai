@@ -514,9 +514,23 @@ class LocalSandboxClient {
 
     this.centrifuge.on("disconnected", (ctx) => {
       if (!this.isShuttingDown) {
-        console.log(
-          chalk.yellow(`⚠️  Disconnected from Centrifugo: ${ctx.reason}`),
-        );
+        const isConnectionLimit =
+          ctx.reason?.includes("connection limit") || ctx.code === 4503;
+        if (isConnectionLimit) {
+          console.error(
+            chalk.red(
+              "❌ Connection limit reached. The server has too many active connections.",
+            ),
+          );
+          console.error(
+            chalk.yellow("Please try again later or contact support."),
+          );
+          this.cleanup().then(() => process.exit(1));
+        } else {
+          console.log(
+            chalk.yellow(`⚠️  Disconnected from Centrifugo: ${ctx.reason}`),
+          );
+        }
       }
     });
 

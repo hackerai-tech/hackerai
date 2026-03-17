@@ -12,5 +12,6 @@
     }
   ],
   "uni_sse": true,
-  "uni_http_stream": true
+  "uni_http_stream": true,
+  "client_connection_limit": 5000
 }
