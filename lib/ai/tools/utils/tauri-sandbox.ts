@@ -176,7 +176,12 @@ export class TauriSandbox extends EventEmitter {
       typeof process !== "undefined" ? process.platform : "unknown";
     const platformName = getPlatformDisplayName(platform);
 
+    const shellInfo =
+      platform === "win32"
+        ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
+        : `Commands are invoked via /bin/sh -c.`;
     return `You are executing commands on the user's local machine via the HackerAI Desktop app (${platformName}).
+${shellInfo}
 Commands run directly on the host OS without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
@@ -368,9 +373,13 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       // Ensure parent directory exists (e.g. /tmp/hackerai-upload)
       const dir = path.substring(0, path.lastIndexOf("/"));
       if (dir) {
-        await this.commands.run(`mkdir -p ${TauriSandbox.escapeShell(dir)}`, {
-          displayName: "",
-        });
+        const escapedDir = TauriSandbox.escapeShell(dir);
+        // cmd.exe's mkdir creates parent dirs by default; POSIX needs -p
+        const mkdirCmd =
+          process.platform === "win32"
+            ? `mkdir ${escapedDir} 2>nul || echo.`
+            : `mkdir -p ${escapedDir}`;
+        await this.commands.run(mkdirCmd, { displayName: "" });
       }
 
       // Use the command execution to download via curl/wget

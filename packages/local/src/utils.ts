@@ -100,11 +100,12 @@ export interface ShellConfig {
 
 /**
  * Get the default shell for a given platform.
- * On Windows, uses PowerShell; on Unix-like systems, uses bash.
+ * On Windows, uses cmd.exe (not PowerShell, which aliases curl to Invoke-WebRequest
+ * and breaks POSIX-style flags like -fsSL). On Unix-like systems, uses bash.
  */
 export function getDefaultShell(platform: string): ShellConfig {
   if (platform === "win32") {
-    return { shell: "powershell.exe", shellFlag: "-Command" };
+    return { shell: "cmd.exe", shellFlag: "/C" };
   }
   // Unix-like systems (Linux, macOS, etc.)
   return { shell: "/bin/bash", shellFlag: "-c" };

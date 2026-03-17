@@ -1,7 +1,7 @@
 import { EventEmitter } from "events";
 import { ConvexHttpClient, ConvexClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
-import { getPlatformDisplayName } from "./platform-utils";
+import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
 
 interface CommandResult {
   stdout: string;
@@ -65,7 +65,12 @@ export class ConvexSandbox extends EventEmitter {
       const { platform, arch, release, hostname } = osInfo;
       const platformName = getPlatformDisplayName(platform);
 
+      const shellInfo =
+        platform === "win32"
+          ? `Commands are invoked via cmd.exe /C (NOT PowerShell). Use cmd.exe syntax — do not use PowerShell cmdlets or syntax like Invoke-WebRequest, $env:, or backtick escapes.`
+          : `Commands are invoked via /bin/bash -c.`;
       return `You are executing commands on ${platformName} ${release} (${arch}) in DANGEROUS MODE.
+${shellInfo}
 Commands run directly on the host OS "${hostname}" without Docker isolation. Be careful with:
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
@@ -261,16 +266,54 @@ Commands run inside the Docker container with network access.`;
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
 
+  /**
+   * Whether the target machine is Windows in dangerous mode.
+   * Docker containers are always Linux regardless of host OS.
+   */
+  private isWindows(): boolean {
+    return (
+      this.connectionInfo.mode === "dangerous" &&
+      this.connectionInfo.osInfo?.platform === "win32"
+    );
+  }
+
+  /**
+   * Escape a value for the target platform's shell.
+   * Uses double quotes on Windows (cmd.exe), single quotes on POSIX.
+   */
+  private escapeForTarget(value: string): string {
+    return escapeShellValue(value, this.connectionInfo.osInfo?.platform);
+  }
+
+  /**
+   * Ensure a directory exists on the target, using the correct command for the platform.
+   */
+  private async ensureDirectory(dir: string): Promise<void> {
+    if (!dir) return;
+    const command = this.isWindows()
+      ? `mkdir ${this.escapeForTarget(dir)} 2>nul || echo.`
+      : `mkdir -p ${ConvexSandbox.escapePath(dir)}`;
+    await this.commands.run(command, { displayName: "" });
+  }
+
   // Cache for detected HTTP client (curl or wget)
   private httpClient: "curl" | "wget" | null = null;
 
   /**
    * Detect available HTTP client (curl or wget).
    * Alpine Linux uses wget by default, most other distros have curl.
+   * On Windows (cmd.exe), curl resolves to the real curl.exe bundled with Win10+.
    * Note: We check stdout instead of exitCode for reliability through Convex relay.
    */
   private async detectHttpClient(): Promise<"curl" | "wget"> {
     if (this.httpClient) return this.httpClient;
+
+    // On Windows, curl is always available as curl.exe (bundled since Win10 build 17063).
+    // Skip detection since `command -v` is POSIX-only and doesn't work in cmd.exe.
+    if (this.isWindows()) {
+      this.httpClient = "curl";
+      return "curl";
+    }
 
     // Check for curl first (more common)
     // Use stdout check - exitCode may not propagate correctly through Convex relay
@@ -306,9 +349,7 @@ Commands run inside the Docker container with network access.`;
       // Ensure parent directory exists
       const dir = path.substring(0, path.lastIndexOf("/"));
       if (dir) {
-        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
-          displayName: "", // Hide internal mkdir
-        });
+        await this.ensureDirectory(dir);
       }
 
       let contentStr: string;
@@ -419,22 +460,25 @@ Commands run inside the Docker container with network access.`;
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
       // Ensure parent directory exists
       const dir = path.substring(0, path.lastIndexOf("/"));
-      if (dir) {
-        await this.commands.run(`mkdir -p ${ConvexSandbox.escapePath(dir)}`, {
-          displayName: "", // Hide internal mkdir
-        });
-      }
+      await this.ensureDirectory(dir);
 
       const httpClient = await this.detectHttpClient();
-      const escapedUrl = url.replace(/'/g, "'\\''");
       const fileName = path.split("/").pop() || "file";
-      const escapedPath = ConvexSandbox.escapePath(path);
+
+      // Use platform-aware escaping: double quotes on Windows (cmd.exe),
+      // single quotes on POSIX to prevent shell expansion
+      const escapedPath = this.isWindows()
+        ? this.escapeForTarget(path)
+        : ConvexSandbox.escapePath(path);
+      const escapedUrl = this.isWindows()
+        ? this.escapeForTarget(url)
+        : `'${url.replace(/'/g, "'\\''")}'`;
 
       // Use curl or wget depending on what's available
       const command =
         httpClient === "curl"
-          ? `curl -fsSL -o ${escapedPath} '${escapedUrl}'`
-          : `wget -q -O ${escapedPath} '${escapedUrl}'`;
+          ? `curl -fsSL -o ${escapedPath} ${escapedUrl}`
+          : `wget -q -O ${escapedPath} ${escapedUrl}`;
 
       const result = await this.commands.run(command, {
         displayName: `Downloading: ${fileName}`,
@@ -466,16 +510,24 @@ Commands run inside the Docker container with network access.`;
         }
       }
 
-      const escapedUrl = uploadUrl.replace(/'/g, "'\\''");
-      const escapedContentType = contentType.replace(/'/g, "'\\''");
-      const escapedPath = ConvexSandbox.escapePath(path);
       const fileName = path.split("/").pop() || "file";
+
+      // Use platform-aware escaping for Windows (cmd.exe) vs POSIX
+      const escapedPath = this.isWindows()
+        ? this.escapeForTarget(path)
+        : ConvexSandbox.escapePath(path);
+      const escapedUrl = this.isWindows()
+        ? this.escapeForTarget(uploadUrl)
+        : `'${uploadUrl.replace(/'/g, "'\\''")}'`;
+      const escapedContentType = this.isWindows()
+        ? this.escapeForTarget(`Content-Type: ${contentType}`)
+        : `'Content-Type: ${contentType.replace(/'/g, "'\\''")}'`;
 
       // Use curl or wget depending on what's available
       const command =
         httpClient === "curl"
-          ? `curl -fsSL -X PUT -H 'Content-Type: ${escapedContentType}' --data-binary @${escapedPath} '${escapedUrl}'`
-          : `wget -q --method=PUT --header='Content-Type: ${escapedContentType}' --body-file=${escapedPath} -O - '${escapedUrl}'`;
+          ? `curl -fsSL -X PUT -H ${escapedContentType} --data-binary @${escapedPath} ${escapedUrl}`
+          : `wget -q --method=PUT --header=${escapedContentType} --body-file=${escapedPath} -O - ${escapedUrl}`;
 
       const result = await this.commands.run(command, {
         timeoutMs: 120000, // 2 minutes for large files
