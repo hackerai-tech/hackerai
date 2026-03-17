@@ -29,7 +29,6 @@ export interface ChatWideEvent {
   mode: ChatMode;
   is_temporary: boolean;
   is_regenerate: boolean;
-  is_new_chat: boolean;
 
   // User context
   user: {
@@ -41,11 +40,9 @@ export interface ChatWideEvent {
   chat: {
     message_count: number;
     estimated_input_tokens: number;
-    has_sandbox_files: boolean;
-    has_file_attachments: boolean;
+    is_new_chat: boolean;
     file_count?: number;
-    file_image_count?: number;
-    sandbox_preference?: string;
+    image_count?: number;
     memory_enabled: boolean;
   };
 
@@ -88,6 +85,7 @@ export interface ChatWideEvent {
     reasoning_tokens?: number;
     cache_read_tokens?: number;
     cache_write_tokens?: number;
+    cache_hit_rate?: number;
     total_cost?: number;
   };
 
@@ -173,25 +171,19 @@ export class WideEventBuilder {
   setChat(chat: {
     messageCount: number;
     estimatedInputTokens: number;
-    hasSandboxFiles: boolean;
-    hasFileAttachments: boolean;
-    fileCount?: number;
-    fileImageCount?: number;
-    sandboxPreference?: string;
-    memoryEnabled: boolean;
     isNewChat: boolean;
+    fileCount?: number;
+    imageCount?: number;
+    memoryEnabled: boolean;
   }): this {
     this.event.chat = {
       message_count: chat.messageCount,
       estimated_input_tokens: chat.estimatedInputTokens,
-      has_sandbox_files: chat.hasSandboxFiles,
-      has_file_attachments: chat.hasFileAttachments,
+      is_new_chat: chat.isNewChat,
       file_count: chat.fileCount,
-      file_image_count: chat.fileImageCount,
-      sandbox_preference: chat.sandboxPreference,
+      image_count: chat.imageCount,
       memory_enabled: chat.memoryEnabled,
     };
-    this.event.is_new_chat = chat.isNewChat;
     return this;
   }
 
@@ -315,14 +307,57 @@ export class WideEventBuilder {
         total_tokens:
           ((usage.inputTokens as number) || 0) +
           ((usage.outputTokens as number) || 0),
-        reasoning_tokens: usage.reasoningTokens as number | undefined,
+        reasoning_tokens: (usage.reasoningTokens as number) || undefined,
         cache_read_tokens: usage.cacheReadInputTokens as number | undefined,
         cache_write_tokens: usage.cacheCreationInputTokens as
           | number
           | undefined,
-        // Store provider cost for build() to use
         total_cost: rawCost,
       };
+    }
+    return this;
+  }
+
+  /**
+   * Set cache metrics from UsageTracker and warn on low hit rate
+   */
+  setCacheMetrics(metrics: {
+    cacheHitRate: number | null;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  }): this {
+    // Don't create an empty usage object just for cache metrics — if setUsage
+    // was never called (e.g. aborted request), skip to avoid build() backfilling
+    // a spurious total_cost: 0.
+    if (!this.event.usage) return this;
+
+    // Always populate read/write tokens from UsageTracker (more reliable than
+    // the raw provider fields that setUsage reads, which vary by provider)
+    if (metrics.cacheReadTokens > 0) {
+      this.event.usage.cache_read_tokens = metrics.cacheReadTokens;
+    }
+    if (metrics.cacheWriteTokens > 0) {
+      this.event.usage.cache_write_tokens = metrics.cacheWriteTokens;
+    }
+    if (metrics.cacheHitRate !== null) {
+      this.event.usage.cache_hit_rate =
+        Math.round(metrics.cacheHitRate * 1000) / 1000;
+    }
+
+    // Warn on low cache hit rate (skip small requests where misses are expected)
+    const totalCacheTokens = metrics.cacheReadTokens + metrics.cacheWriteTokens;
+    if (
+      metrics.cacheHitRate !== null &&
+      metrics.cacheHitRate < 0.5 &&
+      totalCacheTokens > 1000
+    ) {
+      logger.warn("Low cache hit rate detected", {
+        cache_hit_rate: metrics.cacheHitRate,
+        cache_read_tokens: metrics.cacheReadTokens,
+        cache_write_tokens: metrics.cacheWriteTokens,
+        chat_id: this.event.chat_id,
+        model: this.event.model?.configured,
+      });
     }
     return this;
   }
@@ -394,6 +429,21 @@ export class WideEventBuilder {
     // Don't include assistant_id for temporary chats
     if (this.event.is_temporary) {
       delete this.event.assistant_id;
+    }
+
+    // Strip zero/undefined values from usage to reduce noise
+    if (this.event.usage) {
+      const u = this.event.usage;
+      if (!u.reasoning_tokens) delete u.reasoning_tokens;
+      if (!u.cache_read_tokens) delete u.cache_read_tokens;
+      if (!u.cache_write_tokens) delete u.cache_write_tokens;
+    }
+
+    // Strip zero-value file counts from chat
+    if (this.event.chat) {
+      const c = this.event.chat;
+      if (!c.file_count) delete c.file_count;
+      if (!c.image_count) delete c.image_count;
     }
 
     return this.event as ChatWideEvent;

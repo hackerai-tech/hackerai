@@ -168,13 +168,10 @@ export const agentStreamTask = task({
       {
         messageCount: processedMessages.length,
         estimatedInputTokens,
-        hasSandboxFiles,
-        hasFileAttachments: hasFiles,
-        fileCount,
-        fileImageCount,
-        sandboxPreference,
-        memoryEnabled,
         isNewChat,
+        fileCount,
+        imageCount: fileImageCount,
+        memoryEnabled,
       },
       selectedModel,
     );

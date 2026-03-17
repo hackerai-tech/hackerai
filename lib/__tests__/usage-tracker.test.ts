@@ -110,6 +110,76 @@ describe("UsageTracker", () => {
     });
   });
 
+  describe("cacheHitRate", () => {
+    it("should return null when no cache data", () => {
+      expect(tracker.cacheHitRate).toBeNull();
+    });
+
+    it("should return null when both cache tokens are zero", () => {
+      tracker.accumulateStep({ inputTokens: 100, outputTokens: 50 });
+      expect(tracker.cacheHitRate).toBeNull();
+    });
+
+    it("should compute hit rate as reads / (reads + writes)", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 80, cacheWriteTokens: 20 },
+      });
+      expect(tracker.cacheHitRate).toBe(0.8);
+    });
+
+    it("should return 0 when all writes and no reads", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 50 },
+      });
+      expect(tracker.cacheHitRate).toBe(0);
+    });
+
+    it("should return 1 when all reads and no writes", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 100, cacheWriteTokens: 0 },
+      });
+      expect(tracker.cacheHitRate).toBe(1);
+    });
+
+    it("should accumulate across steps", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 60, cacheWriteTokens: 40 },
+      });
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 40, cacheWriteTokens: 10 },
+      });
+      // total: reads=100, writes=50 → rate = 100/150 ≈ 0.667
+      expect(tracker.cacheHitRate).toBeCloseTo(0.667, 2);
+    });
+  });
+
+  describe("hasCacheData", () => {
+    it("should return false when no cache tokens", () => {
+      expect(tracker.hasCacheData).toBe(false);
+    });
+
+    it("should return true when cache read tokens exist", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheReadTokens: 10 },
+      });
+      expect(tracker.hasCacheData).toBe(true);
+    });
+
+    it("should return true when cache write tokens exist", () => {
+      tracker.accumulateStep({
+        inputTokens: 100,
+        inputTokenDetails: { cacheWriteTokens: 10 },
+      });
+      expect(tracker.hasCacheData).toBe(true);
+    });
+  });
+
   describe("computeCostDollars", () => {
     it("should use providerCost when available", () => {
       tracker.accumulateStep({

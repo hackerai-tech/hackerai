@@ -46,6 +46,18 @@ export class UsageTracker {
     return this.outputTokens - this.summarizationOutputTokens;
   }
 
+  /** Whether any cache token data was reported by the provider */
+  get hasCacheData(): boolean {
+    return this.cacheReadTokens > 0 || this.cacheWriteTokens > 0;
+  }
+
+  /** Cache hit rate: proportion of cached input tokens that were reads (0–1), or null if no cache data */
+  get cacheHitRate(): number | null {
+    const total = this.cacheReadTokens + this.cacheWriteTokens;
+    if (total === 0) return null;
+    return this.cacheReadTokens / total;
+  }
+
   get hasUsage(): boolean {
     return (
       this.inputTokens > 0 || this.outputTokens > 0 || this.providerCost > 0

@@ -43,7 +43,6 @@ import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
 import {
-  hasFileAttachments,
   countFileAttachments,
   sendRateLimitWarnings,
   buildProviderOptions,
@@ -276,13 +275,10 @@ export const createChatHandler = (
         {
           messageCount: truncatedMessages.length,
           estimatedInputTokens,
-          hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
-          hasFileAttachments: hasFileAttachments(truncatedMessages),
-          fileCount: fileCounts.totalFiles,
-          fileImageCount: fileCounts.imageCount,
-          sandboxPreference,
-          memoryEnabled,
           isNewChat,
+          fileCount: fileCounts.totalFiles,
+          imageCount: fileCounts.imageCount,
+          memoryEnabled,
         },
         selectedModel,
       );
@@ -543,6 +539,9 @@ export const createChatHandler = (
 
           const usageTracker = new UsageTracker();
           let hasDeductedUsage = false;
+          // Snapshot cache tokens before fallback retry so we can isolate fallback-only metrics
+          let preFallbackCacheRead = 0;
+          let preFallbackCacheWrite = 0;
 
           const deductAccumulatedUsage = async () => {
             if (hasDeductedUsage || subscription === "free") return;
@@ -817,6 +816,8 @@ export const createChatHandler = (
                   userId,
                   subscription,
                   isTemporary: temporary,
+                  preFallbackCacheReadTokens: usageTracker.cacheReadTokens,
+                  preFallbackCacheWriteTokens: usageTracker.cacheWriteTokens,
                   ...extractErrorDetails(error),
                 },
               );
@@ -824,6 +825,8 @@ export const createChatHandler = (
               isRetryWithFallback = true;
               lastStepInputTokens = 0;
               stoppedDueToTokenExhaustion = false;
+              preFallbackCacheRead = usageTracker.cacheReadTokens;
+              preFallbackCacheWrite = usageTracker.cacheWriteTokens;
               result = await createStream(fallbackModel);
             } else {
               throw error;
@@ -888,6 +891,23 @@ export const createChatHandler = (
                           chatLogger!.setSandbox(
                             sandboxManager.getSandboxInfo(),
                           );
+                          // Use fallback-only cache tokens (subtract pre-fallback snapshot)
+                          // so the wide event isn't mixing cumulative cache with retry-only usage
+                          const fallbackCacheRead =
+                            usageTracker.cacheReadTokens - preFallbackCacheRead;
+                          const fallbackCacheWrite =
+                            usageTracker.cacheWriteTokens -
+                            preFallbackCacheWrite;
+                          const fallbackCacheTotal =
+                            fallbackCacheRead + fallbackCacheWrite;
+                          chatLogger!.setCacheMetrics({
+                            cacheHitRate:
+                              fallbackCacheTotal > 0
+                                ? fallbackCacheRead / fallbackCacheTotal
+                                : null,
+                            cacheReadTokens: fallbackCacheRead,
+                            cacheWriteTokens: fallbackCacheWrite,
+                          });
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
@@ -995,6 +1015,14 @@ export const createChatHandler = (
                             fallbackWasAborted: retryAborted,
                             fallbackMessageCount: retryMessages.length,
                             fallbackPartTypes,
+                            preFallbackCacheReadTokens: preFallbackCacheRead,
+                            preFallbackCacheWriteTokens: preFallbackCacheWrite,
+                            fallbackCacheReadTokens: fallbackCacheRead,
+                            fallbackCacheWriteTokens: fallbackCacheWrite,
+                            fallbackCacheHitRate:
+                              fallbackCacheTotal > 0
+                                ? fallbackCacheRead / fallbackCacheTotal
+                                : null,
                             userId,
                             subscription,
                           });
@@ -1066,6 +1094,11 @@ export const createChatHandler = (
                 // Emit wide event
                 stepStart = Date.now();
                 chatLogger!.setSandbox(sandboxManager.getSandboxInfo());
+                chatLogger!.setCacheMetrics({
+                  cacheHitRate: usageTracker.cacheHitRate,
+                  cacheReadTokens: usageTracker.cacheReadTokens,
+                  cacheWriteTokens: usageTracker.cacheWriteTokens,
+                });
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
