@@ -319,17 +319,11 @@ Commands run inside the Docker container with network access.`;
   private async detectHttpClient(): Promise<"curl" | "wget"> {
     if (this.httpClient) return this.httpClient;
 
-    // On Windows, use `where` (cmd.exe equivalent of `command -v`) to detect curl.
-    // curl.exe is bundled since Win10 build 17063, but older Windows Server may lack it.
+    // On Windows, curl.exe is bundled since Win10 build 17063 and there's no
+    // wget to fall back to. Skip detection since `command -v` is POSIX-only.
+    // If curl is missing on an older Windows Server, the download command
+    // itself will fail with a clear "curl is not recognized" error.
     if (this.isWindows()) {
-      const curlCheck = await this.commands.run("where curl", {
-        displayName: "",
-      });
-      if (curlCheck.exitCode === 0) {
-        this.httpClient = "curl";
-        return "curl";
-      }
-      // No curl on this Windows host — let it fail with a clear error below
       this.httpClient = "curl";
       return "curl";
     }
