@@ -326,9 +326,11 @@ export class WideEventBuilder {
     cacheReadTokens: number;
     cacheWriteTokens: number;
   }): this {
-    if (!this.event.usage) {
-      this.event.usage = {};
-    }
+    // Don't create an empty usage object just for cache metrics — if setUsage
+    // was never called (e.g. aborted request), skip to avoid build() backfilling
+    // a spurious total_cost: 0.
+    if (!this.event.usage) return this;
+
     // Always populate read/write tokens from UsageTracker (more reliable than
     // the raw provider fields that setUsage reads, which vary by provider)
     if (metrics.cacheReadTokens > 0) {
