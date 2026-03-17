@@ -376,10 +376,11 @@ Commands run directly on the host OS without Docker isolation. Be careful with:
       const dir = lastSep > 0 ? path.substring(0, lastSep) : "";
       if (dir) {
         const escapedDir = TauriSandbox.escapeShell(dir);
-        // cmd.exe's mkdir creates parent dirs by default; POSIX needs -p
+        // cmd.exe mkdir creates parent dirs by default; use `if not exist`
+        // to skip when it already exists without swallowing real errors.
         const mkdirCmd =
           process.platform === "win32"
-            ? `mkdir ${escapedDir} 2>nul || echo.`
+            ? `if not exist ${escapedDir} mkdir ${escapedDir}`
             : `mkdir -p ${escapedDir}`;
         await this.commands.run(mkdirCmd, { displayName: "" });
       }

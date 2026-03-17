@@ -296,9 +296,14 @@ Commands run inside the Docker container with network access.`;
    */
   private async ensureDirectory(dir: string): Promise<void> {
     if (!dir) return;
+    const escaped = this.isWindows()
+      ? this.escapeForTarget(dir)
+      : ConvexSandbox.escapePath(dir);
+    // cmd.exe mkdir creates parent dirs by default; use `if not exist` to
+    // skip gracefully when it already exists without swallowing real errors.
     const command = this.isWindows()
-      ? `mkdir ${this.escapeForTarget(dir)} 2>nul || echo.`
-      : `mkdir -p ${ConvexSandbox.escapePath(dir)}`;
+      ? `if not exist ${escaped} mkdir ${escaped}`
+      : `mkdir -p ${escaped}`;
     await this.commands.run(command, { displayName: "" });
   }
 
