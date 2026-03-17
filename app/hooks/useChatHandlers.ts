@@ -97,10 +97,11 @@ export const useChatHandlers = ({
     skipSave?: boolean;
   }): Promise<ChatMessage[]> => {
     // Stop the stream immediately (client-side abort).
-    // Wrapped in try/catch because aborting the body stream can throw
-    // "BodyStreamBuffer was aborted" when the transport is mid-read.
+    // Awaited and wrapped in try/catch because aborting the body stream
+    // can reject with "BodyStreamBuffer was aborted" when the transport
+    // is mid-read.
     try {
-      stop();
+      await stop();
     } catch {
       // Expected when the transport's stream is still being consumed
     }
@@ -137,7 +138,10 @@ export const useChatHandlers = ({
       const workflowCancelPromise = workflowRunIdRef.current
         ? fetch("/api/agent-workflow/cancel", {
             method: "POST",
-            body: JSON.stringify({ runId: workflowRunIdRef.current }),
+            body: JSON.stringify({
+              runId: workflowRunIdRef.current,
+              chatId,
+            }),
           }).catch((error) => {
             console.error("Failed to cancel workflow run:", error);
           })

@@ -297,6 +297,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             api: `/api/agent-workflow/${encodeURIComponent(activeStreamId)}/stream`,
           };
         }
+        if (activeStreamId?.startsWith("rstream_")) {
+          const redisChatId = activeStreamId.replace("rstream_", "");
+          return {
+            ...rest,
+            api: `/api/agent-workflow/${encodeURIComponent(redisChatId)}/redis-stream`,
+          };
+        }
         return { ...rest, api };
       },
       maxConsecutiveErrors: 10,
@@ -313,6 +320,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       reconnectToStream: (options: any) => {
         const activeStreamId =
           chatDataRef.current?.active_stream_id ?? undefined;
+        // Redis streaming path — reconnect via the Redis SSE endpoint.
+        // workflowTransport.prepareReconnectToStreamRequest handles the
+        // rstream_ prefix → /api/agent-workflow/{chatId}/redis-stream URL.
+        if (activeStreamId?.startsWith("rstream_")) {
+          return workflowTransport.reconnectToStream(options);
+        }
         if (activeStreamId?.startsWith("wrun_")) {
           return workflowTransport.reconnectToStream(options);
         }

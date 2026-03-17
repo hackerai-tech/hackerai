@@ -6,6 +6,8 @@ import { ChatSDKError } from "@/lib/errors";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { getUserFriendlyProviderError } from "@/lib/utils/error-utils";
 import { startStream } from "@/lib/db/actions";
+import { isRedisStreamingEnabled } from "@/lib/auth/feature-flags";
+import { createRedisChunkReadable } from "@/lib/utils/redis-stream";
 import type { NextRequest } from "next/server";
 
 // This route streams workflow output via run.readable for its entire lifetime.
@@ -24,8 +26,25 @@ export async function POST(req: NextRequest) {
 
     const run = await start(agentWorkflow, [payload]);
 
-    // Persist workflow run ID (wrun_*) as active_stream_id so the client's
-    // WorkflowChatTransport can reconnect via /api/agent-workflow/[id]/stream.
+    const useRedisStreaming = isRedisStreamingEnabled(payload.userId);
+
+    if (useRedisStreaming) {
+      // Redis streaming path: store rstream_{chatId} as active_stream_id
+      // so the client reconnects via /api/agent-workflow/{chatId}/redis-stream
+      await startStream({
+        chatId: payload.chatId,
+        streamId: `rstream_${payload.chatId}`,
+      });
+
+      const stream = createRedisChunkReadable(payload.chatId);
+
+      return createUIMessageStreamResponse({
+        stream,
+        headers: { "x-workflow-run-id": run.runId },
+      });
+    }
+
+    // Default Vercel Workflow streaming path
     await startStream({ chatId: payload.chatId, streamId: run.runId });
 
     return createUIMessageStreamResponse({

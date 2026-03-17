@@ -1,5 +1,6 @@
 import { getRun } from "workflow/api";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
+import { markStreamDone } from "@/lib/utils/redis-stream";
 import type { NextRequest } from "next/server";
 
 export async function POST(req: NextRequest) {
@@ -9,7 +10,7 @@ export async function POST(req: NextRequest) {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    const { runId } = await req.json();
+    const { runId, chatId } = await req.json();
     if (!runId || typeof runId !== "string") {
       return new Response("Missing runId", { status: 400 });
     }
@@ -20,6 +21,12 @@ export async function POST(req: NextRequest) {
       return new Response("OK", { status: 200 });
     }
     await run.cancel();
+
+    // Write __done sentinel so the Redis stream reader exits cleanly.
+    // The workflow cancel may kill the step before its cleanup code runs.
+    if (chatId && typeof chatId === "string") {
+      void markStreamDone(chatId);
+    }
 
     return new Response("OK", { status: 200 });
   } catch (error: any) {

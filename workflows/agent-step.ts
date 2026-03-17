@@ -10,6 +10,7 @@ import { UsageRefundTracker } from "@/lib/rate-limit/refund";
 import type { AgentTaskPayload } from "@/lib/api/prepare-agent-payload";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { workflowAxiomLogger } from "@/lib/axiom/workflow";
+import { appendChunk, markStreamDone } from "@/lib/utils/redis-stream";
 
 /**
  * Workflow step that runs the full agent loop.
@@ -40,21 +41,6 @@ export async function runAgentStep(
     isContinuation,
     messageCount: isContinuation ? payload.messages.length : undefined,
   });
-
-  // DIAGNOSTIC: Test if the writable reaches the client on continuation steps
-  if (isContinuation) {
-    const testWriter = writable.getWriter();
-    await testWriter.write({
-      type: "text-delta",
-      delta: "\n\n[CONTINUATION STEP STARTED]\n\n",
-      id: payload.assistantMessageId,
-    } as UIMessageChunk);
-    testWriter.releaseLock();
-    workflowAxiomLogger.info("Wrote test chunk to writable", {
-      chatId: payload.chatId,
-      stepId,
-    });
-  }
 
   const {
     chatId,
@@ -181,6 +167,22 @@ export async function runAgentStep(
 
   const uiStream = createUIMessageStream({ execute });
 
+  // Shadow every chunk to Redis Streams as a fire-and-forget side effect.
+  // Skip per-step "finish" chunks — those are an internal workflow artifact.
+  // The real finish + __done sentinel are written explicitly in the
+  // !canContinue block (and closeWorkflowStream safety net).
+  const redisWriteTransform = new TransformStream<
+    UIMessageChunk,
+    UIMessageChunk
+  >({
+    transform(chunk, controller) {
+      if (!("type" in chunk && chunk.type === "finish")) {
+        void appendChunk(chatId, chunk);
+      }
+      controller.enqueue(chunk);
+    },
+  });
+
   // Strip the "finish" chunk from the UIMessageStream so the client doesn't
   // see it mid-workflow. The workflow sends a single finish event after all
   // steps complete. Without this, WorkflowChatTransport would interpret the
@@ -198,6 +200,7 @@ export async function runAgentStep(
   // the next step can still pipe to it. The .catch() prevents the
   // pipeTo rejection (from the aborted source) from crashing the step.
   await uiStream
+    .pipeThrough(redisWriteTransform)
     .pipeThrough(stripFinish)
     .pipeTo(writable, { preventClose: true, preventAbort: true })
     .catch((err) => {
@@ -219,6 +222,10 @@ export async function runAgentStep(
     (result.messagesSnapshot?.length ?? 0) > 0;
 
   if (!canContinue) {
+    // Shadow the final finish to Redis before writing to the Vercel writable
+    void appendChunk(chatId, { type: "finish", finishReason: "stop" });
+    void markStreamDone(chatId);
+
     const writer = writable.getWriter();
     await writer.write({ type: "finish", finishReason: "stop" });
     writer.releaseLock();
@@ -234,8 +241,11 @@ export async function runAgentStep(
  * (e.g. MAX_CONTINUATIONS reached). Must be a step function because
  * WritableStream methods aren't available in "use workflow" context.
  */
-export async function closeWorkflowStream() {
+export async function closeWorkflowStream(chatId: string) {
   "use step";
+  void appendChunk(chatId, { type: "finish", finishReason: "stop" });
+  void markStreamDone(chatId);
+
   const writable = getWritable<UIMessageChunk>();
   const writer = writable.getWriter();
   await writer.write({ type: "finish", finishReason: "stop" });

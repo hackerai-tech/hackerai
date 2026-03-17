@@ -46,6 +46,6 @@ export async function agentWorkflow(input: AgentTaskPayload) {
   // Safety net: if the loop exited because MAX_CONTINUATIONS was reached,
   // the last step was a checkpoint and left the stream open. Close it.
   if (continuations >= MAX_CONTINUATIONS) {
-    await closeWorkflowStream();
+    await closeWorkflowStream(input.chatId);
   }
 }
