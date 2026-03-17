@@ -30,8 +30,15 @@ cd /opt/centrifugo
 
 Upload `config.json` from this repo (`docker/centrifugo/config.json`):
 
+> Run this from your **local machine** (not the EC2 instance):
+
 ```bash
 scp -i your-key.pem docker/centrifugo/config.json ec2-user@<instance-ip>:/tmp/
+```
+
+Then back on the EC2 instance:
+
+```bash
 sudo mv /tmp/config.json /opt/centrifugo/config.json
 ```
 
@@ -92,7 +99,7 @@ Set the same secrets across all three systems:
 
 **Vercel:**
 
-```
+```bash
 CENTRIFUGO_API_URL=https://<DOMAIN>
 CENTRIFUGO_API_KEY=<api-key>
 CENTRIFUGO_TOKEN_SECRET=<token-secret>
@@ -101,14 +108,14 @@ CENTRIFUGO_WS_URL=wss://<DOMAIN>/connection/websocket
 
 **Convex Dashboard:**
 
-```
+```bash
 CENTRIFUGO_TOKEN_SECRET=<token-secret>
 CENTRIFUGO_WS_URL=wss://<DOMAIN>/connection/websocket
 ```
 
 **Centrifugo Server (.env):**
 
-```
+```bash
 CENTRIFUGO_TOKEN_SECRET=<token-secret>   # must match Vercel/Convex value
 CENTRIFUGO_API_KEY=<api-key>             # must match Vercel value
 ```

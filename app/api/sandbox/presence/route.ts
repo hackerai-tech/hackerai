@@ -16,7 +16,12 @@ interface CentrifugoPresenceResponse {
 }
 
 export async function GET(request: NextRequest) {
-  const userId = await getUserID(request);
+  let userId: string;
+  try {
+    userId = await getUserID(request);
+  } catch {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const channel = `sandbox:user#${userId}`;
 
   const apiUrl = process.env.CENTRIFUGO_API_URL;

@@ -65,7 +65,11 @@ export function validateDownloadUrl(url: string): void {
     /^0\./,
     /^localhost$/i,
     /^\[::1?\]$/,
+    /^::1$/,
+    /^::ffff:/i,
     /^metadata\.google\.internal$/i,
+    /^0x[0-9a-f]+$/i,
+    /^\d+$/,
   ];
 
   for (const pattern of blockedPatterns) {
