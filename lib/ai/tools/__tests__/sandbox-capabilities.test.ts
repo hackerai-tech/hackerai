@@ -26,6 +26,7 @@ const createMockE2BSandbox = () => ({
 
 // Mock CentrifugoSandbox (no jupyterUrl property)
 const createMockCentrifugoSandbox = () => ({
+  sandboxKind: "centrifugo" as const,
   commands: { run: jest.fn() },
 });
 
@@ -67,7 +68,7 @@ describe("Sandbox Capabilities for Network Tools", () => {
   });
 
   describe("Sandbox Type Detection", () => {
-    it("should correctly identify E2B sandbox by jupyterUrl property", () => {
+    it("should correctly identify E2B vs Centrifugo sandbox", () => {
       const e2bSandbox = createMockE2BSandbox();
       const centrifugoSandbox = createMockCentrifugoSandbox();
 

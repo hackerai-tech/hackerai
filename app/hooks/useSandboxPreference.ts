@@ -122,13 +122,18 @@ export function useSandboxPreference(
     };
   }, [isAuthenticated]);
 
+  const PERSISTABLE_PREFERENCES = new Set(["e2b", "desktop"]);
+
   const isFirstRender = useRef(true);
   useEffect(() => {
     if (isFirstRender.current) {
       isFirstRender.current = false;
       return;
     }
-    if (typeof window !== "undefined") {
+    if (
+      typeof window !== "undefined" &&
+      PERSISTABLE_PREFERENCES.has(sandboxPreference)
+    ) {
       localStorage.setItem("sandbox-preference", sandboxPreference);
     }
   }, [sandboxPreference]);

@@ -1,6 +1,7 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import type { SandboxManager, SandboxType } from "@/types";
 import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
+import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
@@ -10,7 +11,9 @@ import { getPlatformDisplayName } from "./platform-utils";
 
 type SandboxInstance = Sandbox | CentrifugoSandbox;
 
-export type SandboxPreference = "e2b" | string; // "e2b" or connectionId
+// "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
+// Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
+export type SandboxPreference = "e2b" | "desktop" | (string & {});
 
 export interface SandboxFallbackInfo {
   occurred: boolean;
@@ -18,20 +21,6 @@ export interface SandboxFallbackInfo {
   requestedPreference: SandboxPreference;
   actualSandbox: "e2b" | string; // "e2b" or connectionId
   actualSandboxName?: string; // Human-readable name for local sandboxes
-}
-
-interface ConnectionInfo {
-  connectionId: string;
-  name: string;
-  mode: "docker" | "dangerous";
-  osInfo?: {
-    platform: string;
-    arch: string;
-    release: string;
-    hostname: string;
-  };
-  containerId?: string;
-  lastSeen: number;
 }
 
 /**
@@ -54,7 +43,6 @@ export class HybridSandboxManager implements SandboxManager {
   private currentConnectionMode: "docker" | "dangerous" | null = null;
   private currentConnectionName: string | null = null;
   private convex: ConvexHttpClient;
-  private convexUrl: string;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
   private healthFailureCount = 0;
   private sandboxUnavailable = false;
@@ -71,7 +59,6 @@ export class HybridSandboxManager implements SandboxManager {
     if (!convexUrl) {
       throw new Error("NEXT_PUBLIC_CONVEX_URL environment variable is not set");
     }
-    this.convexUrl = convexUrl;
     this.convex = new ConvexHttpClient(convexUrl);
   }
 
@@ -174,7 +161,7 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   getSandboxType(toolName: string): SandboxType | undefined {
-    if (!SANDBOX_ENVIRONMENT_TOOLS.includes(toolName as any)) {
+    if (!(SANDBOX_ENVIRONMENT_TOOLS as readonly string[]).includes(toolName)) {
       return undefined;
     }
     if (this.sandboxPreference === "e2b" || !this.isLocal) {
@@ -330,7 +317,16 @@ export class HybridSandboxManager implements SandboxManager {
 
   setSandbox(sandbox: SandboxInstance): void {
     this.sandbox = sandbox;
-    this.isLocal = sandbox instanceof CentrifugoSandbox;
+    this.isLocal = isCentrifugoSandbox(sandbox);
+    if (isCentrifugoSandbox(sandbox)) {
+      this.currentConnectionId = sandbox.getConnectionId();
+      this.currentConnectionMode = sandbox.getConnectionMode();
+      this.currentConnectionName = sandbox.getConnectionName();
+    } else {
+      this.currentConnectionId = null;
+      this.currentConnectionMode = null;
+      this.currentConnectionName = null;
+    }
     this.setSandboxCallback(sandbox);
   }
 

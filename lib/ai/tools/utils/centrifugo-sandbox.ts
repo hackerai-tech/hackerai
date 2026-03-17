@@ -8,27 +8,70 @@ import {
   type CommandMessage,
 } from "@/lib/centrifugo/types";
 import { getPlatformDisplayName } from "./platform-utils";
+import type { ConnectionInfo } from "./sandbox-types";
+
+const VALID_MESSAGE_TYPES = new Set([
+  "command",
+  "stdout",
+  "stderr",
+  "exit",
+  "error",
+]);
+
+function parseSandboxMessage(data: unknown): SandboxMessage | null {
+  if (typeof data !== "object" || data === null) {
+    console.warn("Invalid sandbox message: not an object", data);
+    return null;
+  }
+
+  const msg = data as Record<string, unknown>;
+
+  if (typeof msg.type !== "string" || !VALID_MESSAGE_TYPES.has(msg.type)) {
+    console.warn("Invalid sandbox message: unknown type", msg.type);
+    return null;
+  }
+
+  if (typeof msg.commandId !== "string") {
+    console.warn("Invalid sandbox message: commandId is not a string", msg);
+    return null;
+  }
+
+  switch (msg.type) {
+    case "exit":
+      if (typeof msg.exitCode !== "number") {
+        console.warn("Invalid exit message: missing exitCode", msg);
+        return null;
+      }
+      break;
+    case "stdout":
+    case "stderr":
+      if (typeof msg.data !== "string") {
+        console.warn(`Invalid ${msg.type} message: missing data`, msg);
+        return null;
+      }
+      break;
+    case "error":
+      if (typeof msg.message !== "string") {
+        console.warn("Invalid error message: missing message field", msg);
+        return null;
+      }
+      break;
+    case "command":
+      if (typeof msg.command !== "string") {
+        console.warn("Invalid command message: missing command", msg);
+        return null;
+      }
+      break;
+  }
+
+  return data as SandboxMessage;
+}
 
 interface CommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
   pid?: number;
-}
-
-interface OsInfo {
-  platform: string;
-  arch: string;
-  release: string;
-  hostname: string;
-}
-
-interface ConnectionInfo {
-  connectionId: string;
-  name: string;
-  mode: "docker" | "dangerous";
-  osInfo?: OsInfo;
-  containerId?: string;
 }
 
 export interface CentrifugoConfig {
@@ -40,10 +83,10 @@ export interface CentrifugoConfig {
 
 /**
  * Centrifugo-based sandbox that implements E2B-compatible interface.
- * Uses Centrifugo pub/sub for real-time command streaming,
- * replacing the Convex-based relay.
+ * Uses Centrifugo pub/sub for real-time command streaming.
  */
 export class CentrifugoSandbox extends EventEmitter {
+  readonly sandboxKind = "centrifugo" as const;
   private activeClients: Centrifuge[] = [];
 
   constructor(
@@ -52,6 +95,18 @@ export class CentrifugoSandbox extends EventEmitter {
     private config: CentrifugoConfig,
   ) {
     super();
+  }
+
+  getConnectionId(): string {
+    return this.connectionInfo.connectionId;
+  }
+
+  getConnectionMode(): "docker" | "dangerous" {
+    return this.connectionInfo.mode;
+  }
+
+  getConnectionName(): string {
+    return this.connectionInfo.name;
   }
 
   /**
@@ -167,7 +222,8 @@ Commands run inside the Docker container with network access.`;
         subscription.on("publication", (ctx) => {
           if (settled) return;
 
-          const message = ctx.data as SandboxMessage;
+          const message = parseSandboxMessage(ctx.data);
+          if (!message) return;
           if (message.commandId !== commandId) return;
 
           switch (message.type) {

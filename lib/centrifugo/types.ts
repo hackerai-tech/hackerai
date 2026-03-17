@@ -42,6 +42,13 @@ export type SandboxMessage =
   | ExitMessage
   | ErrorMessage;
 
+/**
+ * Build the Centrifugo channel name for a user's sandbox.
+ * The `#` is Centrifugo's user channel boundary separator: with
+ * `allow_user_limited_channels: true` in the server config, Centrifugo
+ * restricts subscription to clients whose JWT `sub` claim matches the
+ * segment after `#`.
+ */
 export function sandboxChannel(userId: string): string {
   return `sandbox:user#${userId}`;
 }

@@ -42,12 +42,18 @@ export async function GET(request: NextRequest) {
   });
 
   const onlineUserIds = new Set<string>();
+  let presenceReliable = false;
   if (presenceResponse.ok) {
     const data: CentrifugoPresenceResponse = await presenceResponse.json();
     const presence = data?.result?.presence ?? {};
     for (const client of Object.values(presence)) {
       onlineUserIds.add(client.user);
     }
+    presenceReliable = true;
+  } else {
+    console.error(
+      `Centrifugo presence API failed: ${presenceResponse.status} ${presenceResponse.statusText}`,
+    );
   }
 
   // Fetch connection metadata from Convex
@@ -71,14 +77,23 @@ export async function GET(request: NextRequest) {
   }));
 
   // Disconnect stale connections in Convex (connected in DB but not in presence)
-  if (!onlineUserIds.has(userId) && connections.length > 0) {
+  if (
+    presenceReliable &&
+    !onlineUserIds.has(userId) &&
+    connections.length > 0
+  ) {
     for (const conn of connections) {
       convex
         .mutation(api.localSandbox.disconnectByBackend, {
           serviceKey,
           connectionId: conn.connectionId,
         })
-        .catch(() => {});
+        .catch((err: unknown) => {
+          console.error(
+            `Failed to disconnect stale connection ${conn.connectionId}:`,
+            err,
+          );
+        });
     }
   }
 

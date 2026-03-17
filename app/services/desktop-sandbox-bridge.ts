@@ -68,10 +68,23 @@ export class DesktopSandboxBridge {
     this.client = new Centrifuge(centrifugoWsUrl, {
       token: centrifugoToken,
       getToken: async () => {
-        const result = await this.config.refreshCentrifugoTokenDesktop({
-          connectionId: this.connectionId!,
-        });
-        return result.centrifugoToken;
+        if (!this.connectionId) {
+          throw new Error(
+            "[DesktopSandboxBridge] Cannot refresh token: connectionId is null",
+          );
+        }
+        try {
+          const result = await this.config.refreshCentrifugoTokenDesktop({
+            connectionId: this.connectionId,
+          });
+          return result.centrifugoToken;
+        } catch (error) {
+          console.error(
+            "[DesktopSandboxBridge] Failed to refresh Centrifugo token:",
+            error,
+          );
+          throw error;
+        }
       },
     });
 
@@ -297,15 +310,15 @@ export class DesktopSandboxBridge {
 
   private async publishResult(message: SandboxMessage): Promise<void> {
     if (!this.subscription) {
-      console.warn(
+      throw new Error(
         "[DesktopSandboxBridge] Cannot publish result: subscription is null",
       );
-      return;
     }
     try {
       await this.subscription.publish(message);
     } catch (error) {
       console.error("[DesktopSandboxBridge] Failed to publish result:", error);
+      throw error;
     }
   }
 

@@ -485,14 +485,25 @@ class LocalSandboxClient {
     this.centrifuge = new Centrifuge(wsUrl, {
       token: initialToken,
       getToken: async (): Promise<string> => {
-        const result = (await this.convexHttp.mutation(
-          api.localSandbox.refreshCentrifugoToken as never,
-          {
-            token: this.config.token,
-            connectionId: this.connectionId,
-          } as never,
-        )) as RefreshTokenResult;
-        return result.centrifugoToken;
+        if (!this.connectionId) {
+          throw new Error("Cannot refresh token: connectionId is null");
+        }
+        try {
+          const result = (await this.convexHttp.mutation(
+            api.localSandbox.refreshCentrifugoToken as never,
+            {
+              token: this.config.token,
+              connectionId: this.connectionId,
+            } as never,
+          )) as RefreshTokenResult;
+          return result.centrifugoToken;
+        } catch (error) {
+          console.error(
+            chalk.red("Failed to refresh Centrifugo token:"),
+            error,
+          );
+          throw error;
+        }
       },
     });
 
@@ -648,32 +659,16 @@ class LocalSandboxClient {
       let accumulatedStdout = "";
       let accumulatedStderr = "";
 
-      let shell: string;
-      let shellFlag: string;
-      let spawnCommand: string;
-
-      if (this.config.dangerous) {
-        shell = DEFAULT_SHELL.shell;
-        shellFlag = DEFAULT_SHELL.shellFlag;
-        spawnCommand = fullCommand;
-      } else {
-        const escapedCommand = fullCommand.replace(/'/g, "'\\''");
-        const shellName = this.containerShell.split("/").pop() || "sh";
-        shell = "docker";
-        shellFlag = "exec";
-        // We need to build the full args differently for docker exec
-        // Using spawn directly with proper args array below
-        spawnCommand = escapedCommand;
-        // Override: we'll handle docker exec spawn separately
-        void spawnCommand; // suppress unused warning
-      }
-
       let proc: ChildProcess;
 
       if (this.config.dangerous) {
-        proc = spawn(shell, [shellFlag, spawnCommand], {
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+        proc = spawn(
+          DEFAULT_SHELL.shell,
+          [DEFAULT_SHELL.shellFlag, fullCommand],
+          {
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
       } else {
         const escapedCommand = fullCommand.replace(/'/g, "'\\''");
         const shellName = this.containerShell.split("/").pop() || "sh";
@@ -703,8 +698,12 @@ class LocalSandboxClient {
           type: "stdout",
           commandId,
           data: chunk,
-        }).catch(() => {
-          // Best effort streaming
+        }).catch((err: unknown) => {
+          console.error(
+            chalk.red(
+              `[ERROR] Failed to publish stdout: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
         });
       });
 
@@ -715,8 +714,12 @@ class LocalSandboxClient {
           type: "stderr",
           commandId,
           data: chunk,
-        }).catch(() => {
-          // Best effort streaming
+        }).catch((err: unknown) => {
+          console.error(
+            chalk.red(
+              `[ERROR] Failed to publish stderr: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
         });
       });
 
@@ -731,14 +734,26 @@ class LocalSandboxClient {
             type: "stderr",
             commandId,
             data: "\n[Command timed out and was terminated]",
-          }).catch(() => {});
+          }).catch((err: unknown) => {
+            console.error(
+              chalk.red(
+                `[ERROR] Failed to publish timeout stderr: ${err instanceof Error ? err.message : String(err)}`,
+              ),
+            );
+          });
         }
 
         this.publishToChannel({
           type: "exit",
           commandId,
           exitCode,
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+          console.error(
+            chalk.red(
+              `[CRITICAL] Failed to publish EXIT message: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        });
 
         if (shouldShow) {
           if (exitCode === 0) {
@@ -771,7 +786,24 @@ class LocalSandboxClient {
           type: "error",
           commandId,
           message: error.message,
-        }).catch(() => {});
+        }).catch((err: unknown) => {
+          console.error(
+            chalk.red(
+              `[ERROR] Failed to publish error message: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        });
+        this.publishToChannel({
+          type: "exit",
+          commandId,
+          exitCode: 1,
+        }).catch((err: unknown) => {
+          console.error(
+            chalk.red(
+              `[CRITICAL] Failed to publish EXIT after process error: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+          );
+        });
         resolve();
       });
     });
