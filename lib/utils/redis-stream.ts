@@ -188,12 +188,7 @@ export function createRedisChunkReadable(
       try {
         while (true) {
           const entries = await readChunks(reader, chatId, lastId);
-          if (!entries) {
-            // Send a keepalive to prevent Vercel's idle timeout from
-            // killing the streaming response between workflow steps.
-            controller.enqueue({ type: "data", data: [] });
-            continue;
-          }
+          if (!entries) continue;
           console.log(
             "[redis-reader] got",
             entries.length,
