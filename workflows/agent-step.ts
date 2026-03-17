@@ -41,6 +41,21 @@ export async function runAgentStep(
     messageCount: isContinuation ? payload.messages.length : undefined,
   });
 
+  // DIAGNOSTIC: Test if the writable reaches the client on continuation steps
+  if (isContinuation) {
+    const testWriter = writable.getWriter();
+    await testWriter.write({
+      type: "text-delta",
+      delta: "\n\n[CONTINUATION STEP STARTED]\n\n",
+      id: payload.assistantMessageId,
+    } as UIMessageChunk);
+    testWriter.releaseLock();
+    workflowAxiomLogger.info("Wrote test chunk to writable", {
+      chatId: payload.chatId,
+      stepId,
+    });
+  }
+
   const {
     chatId,
     assistantMessageId,
