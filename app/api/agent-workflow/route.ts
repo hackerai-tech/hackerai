@@ -7,7 +7,10 @@ import { createChatLogger } from "@/lib/api/chat-logger";
 import { getUserFriendlyProviderError } from "@/lib/utils/error-utils";
 import { startStream } from "@/lib/db/actions";
 import { isRedisStreamingEnabled } from "@/lib/auth/feature-flags";
-import { createRedisChunkReadable } from "@/lib/utils/redis-stream";
+import {
+  createRedisChunkReadable,
+  resetStream,
+} from "@/lib/utils/redis-stream";
 import type { NextRequest } from "next/server";
 
 // This route streams workflow output via run.readable for its entire lifetime.
@@ -30,7 +33,10 @@ export async function POST(req: NextRequest) {
 
     if (useRedisStreaming) {
       // Redis streaming path: store rstream_{chatId} as active_stream_id
-      // so the client reconnects via /api/agent-workflow/{chatId}/redis-stream
+      // so the client reconnects via /api/agent-workflow/{chatId}/redis-stream.
+      // Reset the Redis stream first so any stale chunks from a previous run
+      // (e.g. after regenerate) are not replayed to the new reader.
+      await resetStream(payload.chatId);
       await startStream({
         chatId: payload.chatId,
         streamId: `rstream_${payload.chatId}`,

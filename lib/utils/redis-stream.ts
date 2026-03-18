@@ -88,6 +88,22 @@ export async function appendChunk(
 }
 
 /**
+ * Delete the Redis stream for a chat, resetting it for a new run.
+ * Must be called before starting a new run to prevent old chunks from
+ * being replayed when the new stream reader starts from "0-0".
+ * Fire-and-forget: never throws.
+ */
+export async function resetStream(chatId: string): Promise<void> {
+  try {
+    const client = await getWriteClient();
+    if (!client) return;
+    await client.del(getStreamKey(chatId));
+  } catch (error) {
+    console.warn("[redis-stream] resetStream failed:", error);
+  }
+}
+
+/**
  * Write the __done sentinel to mark end of stream.
  * Fire-and-forget: never throws.
  */
