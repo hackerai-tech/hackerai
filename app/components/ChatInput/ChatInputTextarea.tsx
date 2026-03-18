@@ -21,6 +21,7 @@ export interface ChatInputTextareaProps {
   chatMode: ChatMode;
   onEnterSubmit: (e: React.FormEvent) => void;
   disabled?: boolean;
+  minRows?: number;
 }
 
 export function ChatInputTextarea({
@@ -28,6 +29,7 @@ export function ChatInputTextarea({
   chatMode,
   onEnterSubmit,
   disabled = false,
+  minRows = 1,
 }: ChatInputTextareaProps) {
   const { input, setInput, subscription } = useGlobalState();
   const { handlePasteEvent } = useFileUpload(chatMode);
@@ -114,7 +116,7 @@ export function ChatInputTextarea({
             : "Ask, learn, brainstorm"
         }
         className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-[15px] shadow-none resize-none min-h-[28px]"
-        rows={1}
+        minRows={minRows}
         autoFocus
         disabled={disabled}
         data-testid="chat-input"
