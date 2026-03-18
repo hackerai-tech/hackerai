@@ -24,7 +24,7 @@ import {
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
-const TOOL_PREEMPT_BUFFER_MS = 120_000; // Return 120s before budget expires
+const TOOL_PREEMPT_BUFFER_MS = 300_000; // Return 5min before budget expires
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {

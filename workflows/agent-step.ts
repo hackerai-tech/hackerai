@@ -161,8 +161,7 @@ export async function runAgentStep(
     chatLogger,
     usageRefundTracker,
     abortController: userStopSignal,
-    // No preemptiveTimeout — workflow supports up to 1 hour
-    timeBudgetMs: 180_000, // 180s budget for testing preemption (prod: 750_000)
+    timeBudgetMs: 750_000, // 750s per step (50s buffer before Vercel's 800s limit)
   });
 
   const uiStream = createUIMessageStream({ execute });
