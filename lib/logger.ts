@@ -13,7 +13,6 @@ import type { ChatMode, ExtraUsageConfig } from "@/types";
 export type ChatApiEndpoint =
   | "/api/chat"
   | "/api/agent"
-  | "/api/agent-long"
   | "/api/agent-workflow";
 
 /**

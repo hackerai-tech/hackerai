@@ -97,14 +97,6 @@ export const createChatHandler = (
           ? rawSelectedModel
           : undefined;
 
-      // Agent-long must use /api/agent-long (Trigger.dev), not this handler
-      if (mode === "agent-long") {
-        throw new ChatSDKError(
-          "bad_request:api",
-          "Agent-long mode must use POST /api/agent-long",
-        );
-      }
-
       // Initialize chat logger
       chatLogger = createChatLogger({ chatId, endpoint });
       chatLogger.setRequestDetails({

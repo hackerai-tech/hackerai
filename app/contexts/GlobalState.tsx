@@ -169,7 +169,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
-    if (saved === "agent-long") return "agent";
     return saved;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -238,7 +237,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // Model selection (persisted per-mode to localStorage)
   const getModeKey = (m: ChatMode): "ask" | "agent" =>
-    m === "agent" || m === "agent-long" ? "agent" : "ask";
+    m === "agent" ? "agent" : "ask";
 
   const [selectedModel, setSelectedModelState] = useState<SelectedModel>(() => {
     const modeKey = getModeKey(chatMode);

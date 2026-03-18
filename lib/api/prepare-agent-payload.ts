@@ -71,19 +71,13 @@ export type AgentTaskPayload = {
   fileImageCount: number;
 };
 
-/** Accepted agent modes for payload preparation */
-type AgentPayloadMode = "agent" | "agent-long";
-
 /**
- * Runs all pre-stream validation and setup for agent modes, then returns
- * a serializable payload for Trigger.dev or Vercel Workflow execution.
- *
- * @param req - The incoming Next.js request
- * @param allowedMode - Which agent mode this route accepts
+ * Runs all pre-stream validation and setup for agent mode, then returns
+ * a serializable payload for Vercel Workflow execution.
  */
 export async function prepareAgentPayload(
   req: NextRequest,
-  allowedMode: AgentPayloadMode = "agent-long",
+  allowedMode: "agent" = "agent",
 ): Promise<AgentTaskPayload> {
   let parsedBody: {
     messages: UIMessage[];
