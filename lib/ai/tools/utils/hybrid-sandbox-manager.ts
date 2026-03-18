@@ -152,11 +152,11 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   getSandboxInfo(): { type: SandboxType; name?: string } | null {
-    if (this.sandboxPreference === "e2b" || !this.isLocal) {
+    if (!this.isLocal) {
       return { type: "e2b" };
     }
     const type: SandboxType =
-      this.currentConnectionMode === "docker" ? "local-sandbox" : "local";
+      this.sandboxPreference === "desktop" ? "desktop" : "remote-connection";
     return { type, name: this.currentConnectionName ?? undefined };
   }
 
@@ -164,14 +164,12 @@ export class HybridSandboxManager implements SandboxManager {
     if (!(SANDBOX_ENVIRONMENT_TOOLS as readonly string[]).includes(toolName)) {
       return undefined;
     }
-    if (this.sandboxPreference === "e2b" || !this.isLocal) {
+    if (!this.isLocal) {
       return "e2b";
     }
-    // Local sandbox -- use cached mode to distinguish docker vs dangerous
-    if (this.currentConnectionMode === "docker") {
-      return "local-sandbox";
-    }
-    return "local";
+    return this.sandboxPreference === "desktop"
+      ? "desktop"
+      : "remote-connection";
   }
 
   /**
