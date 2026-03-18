@@ -329,7 +329,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       prepareSendMessagesRequest: prepareSendMessagesRequest as any,
       onChatSendMessage: (response) => {
         workflowRunIdRef.current = response.headers.get("x-workflow-run-id");
-        console.log("[workflow] runId captured:", workflowRunIdRef.current);
       },
       onChatEnd: () => {
         workflowRunIdRef.current = null;
@@ -337,18 +336,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       prepareReconnectToStreamRequest: ({ api, ...rest }) => {
         const activeStreamId =
           chatDataRef.current?.active_stream_id ?? undefined;
-        console.log(
-          "[prepareReconnect] active_stream_id:",
-          activeStreamId,
-          "defaultApi:",
-          api,
-        );
-        if (activeStreamId?.startsWith("wrun_")) {
-          return {
-            ...rest,
-            api: `/api/agent-workflow/${encodeURIComponent(activeStreamId)}/stream`,
-          };
-        }
         if (activeStreamId?.startsWith("rstream_")) {
           const redisChatId = activeStreamId.replace("rstream_", "");
           return {
@@ -372,19 +359,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       reconnectToStream: (options: any) => {
         const activeStreamId =
           chatDataRef.current?.active_stream_id ?? undefined;
-        console.log(
-          "[reconnect] active_stream_id:",
-          activeStreamId,
-          "chatData:",
-          !!chatDataRef.current,
-        );
-        // Redis streaming path — reconnect via the Redis SSE endpoint.
-        // workflowTransport.prepareReconnectToStreamRequest handles the
-        // rstream_ prefix → /api/agent-workflow/{chatId}/redis-stream URL.
         if (activeStreamId?.startsWith("rstream_")) {
-          return workflowTransport.reconnectToStream(options);
-        }
-        if (activeStreamId?.startsWith("wrun_")) {
           return workflowTransport.reconnectToStream(options);
         }
         return defaultTransport.reconnectToStream(options);
@@ -557,17 +532,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [error, clearError]);
 
-  // Derive serverMode from chatData to gate useAutoResume (prevents firing before we know chat type)
-  // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
-  const serverMode =
-    chatData?.id === chatId
-      ? (chatData?.default_model_slug as string | undefined) ||
-        (chatData?.active_trigger_run_id ? "agent-long" : undefined)
-      : undefined;
-
-  // Auto-resume controlled by prop; default to true when a specific chat id is present, false on "/"
-  // Disable only for agent-long: resuming hits AI SDK /api/chat, not Trigger.dev, and can block sync
-  // Enable when serverMode is undefined (old chats, or before chatData loads) so agent mode can reconnect
   useAutoResume({
     autoResume: autoResume && chatData != null,
     initialMessages: serverMessages,

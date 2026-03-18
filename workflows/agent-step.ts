@@ -203,13 +203,7 @@ export async function runAgentStep(
     .pipeThrough(redisWriteTransform)
     .pipeThrough(stripFinish)
     .pipeTo(writable, { preventClose: true, preventAbort: true })
-    .catch((err) => {
-      workflowAxiomLogger.info("pipeTo rejected", {
-        chatId: payload.chatId,
-        error: String(err),
-        isContinuation,
-      });
-    });
+    .catch(() => {});
 
   const result = await getStepResult();
 

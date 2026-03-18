@@ -419,9 +419,6 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
         if (sandboxCost > 0) {
           usageTracker.providerCost += sandboxCost;
           chatLogger?.getBuilder().addToolCost(sandboxCost);
-          console.log(
-            `[sandbox-cost] E2B session cost: $${sandboxCost.toFixed(6)}`,
-          );
         }
         if (!usageTracker.hasUsage) return;
         hasDeductedUsage = true;
@@ -892,63 +889,19 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               preemptiveTimeout?.isPreemptive() ?? false;
             const isBudgetAbort = budgetAbortFired;
             const isSystemAbort = isPreemptiveAbort || isBudgetAbort;
-            const onFinishStartTime = Date.now();
-            const triggerTime = preemptiveTimeout?.getTriggerTime();
-
-            // Helper to log step timing during system aborts (preemptive or budget)
-            const logStep = (step: string, stepStartTime: number) => {
-              if (isSystemAbort) {
-                const stepDuration = Date.now() - stepStartTime;
-                const totalElapsed =
-                  Date.now() - (triggerTime || onFinishStartTime);
-                logger.info("System abort cleanup step", {
-                  chatId,
-                  step,
-                  stepDurationMs: stepDuration,
-                  totalElapsedSinceTriggerMs: totalElapsed,
-                  endpoint,
-                  abortType: isPreemptiveAbort ? "preemptive" : "budget",
-                });
-              }
-            };
-
-            if (isPreemptiveAbort) {
-              logger.info("Preemptive timeout onFinish started", {
-                chatId,
-                endpoint,
-                timeSinceTriggerMs: triggerTime
-                  ? onFinishStartTime - triggerTime
-                  : null,
-                messageCount: messages.length,
-                isTemporary: temporary,
-              });
-            }
-
-            if (isBudgetAbort) {
-              logger.info("Budget abort onFinish started", {
-                chatId,
-                endpoint,
-                elapsedMs: Date.now() - streamStartTime,
-                messageCount: messages.length,
-              });
-            }
 
             // Clear pre-emptive timeout and budget abort timeout
-            let stepStart = Date.now();
             preemptiveTimeout?.clear();
             if (budgetAbortTimeoutId) {
               clearTimeout(budgetAbortTimeoutId);
               budgetAbortTimeoutId = undefined;
             }
-            logStep("clear_timeout", stepStart);
 
             // Stop cancellation subscriber
-            stepStart = Date.now();
             if (!subscriberStopped) {
               await cancellationSubscriber.stop();
               subscriberStopped = true;
             }
-            logStep("stop_cancellation_subscriber", stepStart);
 
             // Clear finish reason for user-initiated aborts (not system aborts)
             if (isAborted && !isSystemAbort) {
@@ -959,8 +912,6 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               streamFinishReason = WORKFLOW_CHECKPOINT_FINISH_REASON;
             }
 
-            // Emit wide event
-            stepStart = Date.now();
             chatLogger.setSandbox(sandboxManager.getSandboxInfo());
             chatLogger.emitSuccess({
               finishReason: streamFinishReason,
@@ -968,19 +919,14 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
               wasPreemptiveTimeout: isPreemptiveAbort,
               hadSummarization: hasSummarized,
             });
-            logStep("emit_success_event", stepStart);
 
-            stepStart = Date.now();
             const generatedTitle = await titlePromise;
-            logStep("wait_title_generation", stepStart);
 
             if (!temporary) {
-              stepStart = Date.now();
               const mergedTodos = getTodoManager().mergeWith(
                 baseTodos,
                 assistantMessageId,
               );
-              logStep("merge_todos", stepStart);
 
               // Skip updateChat entirely during workflow checkpoints —
               // it always clears active_stream_id which kills the
@@ -996,7 +942,6 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                     );
 
                 if (shouldPersist) {
-                  stepStart = Date.now();
                   await updateChat({
                     chatId,
                     title: generatedTitle,
@@ -1006,18 +951,13 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                     sandboxType: sandboxManager.getEffectivePreference(),
                     selectedModel: selectedModelOverride,
                   });
-                  logStep("update_chat", stepStart);
                 } else {
-                  stepStart = Date.now();
                   await prepareForNewStream({ chatId });
-                  logStep("prepare_for_new_stream", stepStart);
                 }
               }
 
-              stepStart = Date.now();
               const accumulatedFiles = getFileAccumulator().getAll();
               const newFileIds = accumulatedFiles.map((f) => f.fileId);
-              logStep("get_accumulated_files", stepStart);
 
               // Check for incomplete tool calls
               const hasIncompleteToolCalls = messages.some(
@@ -1067,8 +1007,6 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                 return;
               }
 
-              // Save messages
-              stepStart = Date.now();
               for (const message of messages) {
                 if (message.role !== "assistant") continue;
 
@@ -1108,43 +1046,12 @@ export function createAgentStreamExecute(config: AgentStreamConfig) {
                       : undefined,
                 });
               }
-              logStep("save_messages", stepStart);
 
-              stepStart = Date.now();
               sendFileMetadataToStream(accumulatedFiles);
-              logStep("send_file_metadata", stepStart);
             } else {
-              stepStart = Date.now();
               const tempFiles = getFileAccumulator().getAll();
               sendFileMetadataToStream(tempFiles);
-              logStep("send_temp_file_metadata", stepStart);
-
-              stepStart = Date.now();
               await deleteTempStreamForBackend({ chatId });
-              logStep("delete_temp_stream", stepStart);
-            }
-
-            if (isPreemptiveAbort) {
-              const totalDuration = Date.now() - onFinishStartTime;
-              logger.info("Preemptive timeout onFinish completed", {
-                chatId,
-                endpoint,
-                totalOnFinishDurationMs: totalDuration,
-                totalSinceTriggerMs: triggerTime
-                  ? Date.now() - triggerTime
-                  : null,
-              });
-              await logger.flush();
-            }
-
-            if (isBudgetAbort) {
-              const totalDuration = Date.now() - onFinishStartTime;
-              logger.info("Budget abort onFinish completed", {
-                chatId,
-                endpoint,
-                totalOnFinishDurationMs: totalDuration,
-              });
-              await logger.flush();
             }
 
             // Send updated context usage with output tokens

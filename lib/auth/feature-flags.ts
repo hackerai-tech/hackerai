@@ -41,7 +41,6 @@ export function isFeatureEnabled(
 // Feature flag keys
 export const FEATURE_FLAGS = {
   CROSS_TAB_TOKEN_SHARING: "cross-tab-token-sharing",
-  REDIS_STREAMING: "redis-streaming",
 } as const;
 
 // Feature flag rollout percentages (configurable via environment variables)
@@ -59,52 +58,19 @@ export const FEATURE_ROLLOUTS = {
   get [FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING]() {
     return getCrossTabRolloutPercentage();
   },
-  get [FEATURE_FLAGS.REDIS_STREAMING]() {
-    return getRedisStreamingRolloutPercentage();
-  },
 };
 
 /**
  * Check if cross-tab token sharing is enabled for a user.
  */
-// Feature flag rollout percentage for Redis streaming
-function getRedisStreamingRolloutPercentage(): number {
-  const envValue = "100"; // process.env.NEXT_PUBLIC_FF_REDIS_STREAMING;
-  if (envValue === undefined) return 0;
-
-  const parsed = parseInt(envValue, 10);
-  if (isNaN(parsed) || parsed < 0 || parsed > 100) return 0;
-
-  return parsed;
-}
-
 export function isCrossTabTokenSharingEnabled(
   userId: string | undefined,
 ): boolean {
   if (!userId) return false;
 
-  const enabled = isFeatureEnabled(
+  return isFeatureEnabled(
     userId,
     FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING,
     FEATURE_ROLLOUTS[FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING],
-  );
-
-  console.log(
-    `[Feature Flag] ${FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING}: ${enabled ? "enabled" : "disabled"} for user ${userId.slice(0, 8)}...`,
-  );
-
-  return enabled;
-}
-
-/**
- * Check if Redis streaming is enabled for a user.
- */
-export function isRedisStreamingEnabled(userId: string | undefined): boolean {
-  if (!userId) return false;
-
-  return isFeatureEnabled(
-    userId,
-    FEATURE_FLAGS.REDIS_STREAMING,
-    FEATURE_ROLLOUTS[FEATURE_FLAGS.REDIS_STREAMING],
   );
 }
