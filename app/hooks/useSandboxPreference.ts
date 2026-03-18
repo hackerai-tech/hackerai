@@ -27,9 +27,9 @@ export function useSandboxPreference(
       if (typeof window === "undefined") return "e2b";
       const stored = localStorage.getItem("sandbox-preference");
       if (stored && stored !== "tauri") return stored as SandboxPreference;
-      // If there's already an active bridge (HMR / remount), restore its connectionId
-      if (activeBridge?.getConnectionId())
-        return activeBridge.getConnectionId()!;
+      // Default to Cloud on Desktop; user can switch to Local if desired
+      // if (activeBridge?.getConnectionId())
+      //   return activeBridge.getConnectionId()!;
       return "e2b";
     });
 
@@ -51,10 +51,10 @@ export function useSandboxPreference(
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    // Already running — just sync state
+    // Already running — just sync bridge active state (keep Cloud as default)
     if (activeBridge?.getConnectionId()) {
       setDesktopBridgeActive(true);
-      setSandboxPreferenceState(activeBridge.getConnectionId()!);
+      // setSandboxPreferenceState(activeBridge.getConnectionId()!);
       return;
     }
 
@@ -89,7 +89,8 @@ export function useSandboxPreference(
 
         activeBridge = bridge;
         setDesktopBridgeActive(true);
-        setSandboxPreferenceState(connectionId);
+        // Keep Cloud selected by default; user can switch to Local if desired
+        // setSandboxPreferenceState(connectionId);
       } catch (error) {
         console.error("[DesktopSandboxBridge] Failed to start:", error);
         toast.error("Desktop sandbox failed to connect. Using cloud.");

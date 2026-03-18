@@ -43,18 +43,16 @@ export function SandboxSelector({
     shortLabel: "Cloud",
     icon: Cloud,
   };
-  // Desktop option hidden for now
-  // const desktopOptions: ConnectionOption[] =
-  //   connections
-  //     ?.filter((conn) => conn.isDesktop)
-  //     .map((conn) => ({
-  //       id: conn.connectionId,
-  //       label: conn.name,
-  //       shortLabel: "Local",
-  //       icon: Monitor,
-  //       mode: conn.mode,
-  //     })) || [];
-  const desktopOptions: ConnectionOption[] = [];
+  const desktopOptions: ConnectionOption[] =
+    connections
+      ?.filter((conn) => conn.isDesktop)
+      .map((conn) => ({
+        id: conn.connectionId,
+        label: "Local",
+        shortLabel: "Local",
+        icon: Monitor,
+        mode: conn.mode,
+      })) || [];
   const remoteOptions: ConnectionOption[] =
     connections
       ?.filter((conn) => !conn.isDesktop)
@@ -65,7 +63,7 @@ export function SandboxSelector({
         icon: Laptop,
         mode: conn.mode,
       })) || [];
-  const options = [cloudOption, /* ...desktopOptions, */ ...remoteOptions];
+  const options = [cloudOption, ...desktopOptions, ...remoteOptions];
 
   // Trigger presence cleanup when dropdown opens
   useEffect(() => {
@@ -142,7 +140,6 @@ export function SandboxSelector({
             {value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />}
           </button>
 
-          {/* Desktop option hidden for now
           {desktopOptions.map((option) => {
             const OptionIcon = option.icon;
             return (
@@ -164,13 +161,10 @@ export function SandboxSelector({
                     {option.label}
                   </div>
                 </div>
-                {value === option.id && (
-                  <Check className="h-4 w-4 shrink-0" />
-                )}
+                {value === option.id && <Check className="h-4 w-4 shrink-0" />}
               </button>
             );
           })}
-          */}
 
           <div className="border-t mt-1 pt-1">
             <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
