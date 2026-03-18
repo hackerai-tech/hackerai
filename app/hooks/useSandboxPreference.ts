@@ -66,18 +66,15 @@ export function useSandboxPreference(
     async function startBridge() {
       bridgeStarting = true;
       try {
-        const { getCmdServerInfo, isTauriEnvironment } =
-          await import("@/app/hooks/useTauri");
+        const { isTauriEnvironment } = await import("@/app/hooks/useTauri");
         if (!isTauriEnvironment()) return;
 
-        const info = await getCmdServerInfo();
-        if (!info || cancelled) return;
+        if (cancelled) return;
 
         // Double-check after async gap
         if (activeBridge?.getConnectionId()) return;
 
         const bridge = new DesktopSandboxBridge({
-          cmdServerInfo: info,
           connectDesktop: (args) => connectDesktopRef.current(args),
           refreshCentrifugoTokenDesktop: (args) =>
             refreshTokenRef.current(args),

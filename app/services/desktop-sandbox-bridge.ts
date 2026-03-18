@@ -5,20 +5,14 @@ import {
   type CommandMessage,
 } from "@/lib/centrifugo/types";
 
-interface CmdServerInfo {
-  port: number;
-  token: string;
-}
-
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
   data?: string;
-  exit_code?: number;
+  exitCode?: number;
   message?: string;
 }
 
 interface DesktopBridgeConfig {
-  cmdServerInfo: CmdServerInfo;
   connectDesktop: (args: {
     connectionName: string;
     osInfo?: {
@@ -55,9 +49,12 @@ export class DesktopSandboxBridge {
   }
 
   async start(): Promise<string> {
+    const osInfo = await this.getOsInfo();
+
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
       await this.config.connectDesktop({
-        connectionName: "Local",
+        connectionName: osInfo?.hostname || "Desktop",
+        osInfo,
       });
 
     this.connectionId = connectionId;
@@ -123,86 +120,58 @@ export class DesktopSandboxBridge {
     return payload.sub;
   }
 
+  private async getOsInfo(): Promise<
+    | { platform: string; arch: string; release: string; hostname: string }
+    | undefined
+  > {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result = await invoke<{
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+      }>("execute_command", {
+        command: "uname -srm && hostname",
+        timeoutMs: 5000,
+      });
+      if (result.exit_code === 0) {
+        const lines = result.stdout.trim().split("\n");
+        const [uname, hostname] = [lines[0] || "", lines[1] || "Desktop"];
+        const parts = uname.split(" ");
+        return {
+          platform:
+            parts[0]?.toLowerCase() === "darwin"
+              ? "darwin"
+              : parts[0]?.toLowerCase() || "unknown",
+          release: parts[1] || "unknown",
+          arch: parts[2] || "unknown",
+          hostname: hostname.trim(),
+        };
+      }
+    } catch (error) {
+      console.warn("[DesktopSandboxBridge] Failed to get OS info:", error);
+    }
+    return undefined;
+  }
+
   private async handleCommand(command: CommandMessage): Promise<void> {
     const { commandId } = command;
 
     try {
-      const response = await fetch(
-        `http://127.0.0.1:${this.config.cmdServerInfo.port}/execute/stream`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${this.config.cmdServerInfo.token}`,
-          },
-          body: JSON.stringify({
-            command: command.command,
-            cwd: command.cwd,
-            env: command.env,
-            timeout_ms: command.timeout ?? 30000,
-          }),
-        },
-      );
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
 
-      if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        await this.publishResult({
-          type: "error",
-          commandId,
-          message: `Command server error (${response.status}): ${text}`,
-        });
-        return;
-      }
+      const channel = new Channel<StreamChunk>();
+      channel.onmessage = async (chunk) => {
+        await this.forwardChunk(commandId, chunk);
+      };
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        await this.publishResult({
-          type: "error",
-          commandId,
-          message: "No response body for streaming execute",
-        });
-        return;
-      }
-
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-
-          try {
-            const chunk = JSON.parse(trimmed) as StreamChunk;
-            await this.forwardChunk(commandId, chunk);
-          } catch (parseError) {
-            console.warn(
-              "[DesktopSandboxBridge] Malformed NDJSON line:",
-              trimmed,
-            );
-          }
-        }
-      }
-
-      const remaining = buffer.trim();
-      if (remaining) {
-        try {
-          const chunk = JSON.parse(remaining) as StreamChunk;
-          await this.forwardChunk(commandId, chunk);
-        } catch (parseError) {
-          console.warn(
-            "[DesktopSandboxBridge] Malformed NDJSON line:",
-            remaining,
-          );
-        }
-      }
+      await invoke("execute_stream_command", {
+        command: command.command,
+        cwd: command.cwd,
+        env: command.env,
+        timeoutMs: command.timeout ?? 30000,
+        onEvent: channel,
+      });
     } catch (error) {
       await this.publishResult({
         type: "error",
@@ -239,7 +208,7 @@ export class DesktopSandboxBridge {
         await this.publishResult({
           type: "exit",
           commandId,
-          exitCode: chunk.exit_code ?? -1,
+          exitCode: chunk.exitCode ?? -1,
         });
         break;
       case "error":
