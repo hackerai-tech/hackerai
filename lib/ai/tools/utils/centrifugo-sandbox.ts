@@ -1,6 +1,6 @@
 import { EventEmitter } from "events";
 import { Centrifuge, type Subscription } from "centrifuge";
-import { publishCommand } from "@/lib/centrifugo/client";
+
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
   sandboxChannel,
@@ -76,8 +76,6 @@ interface CommandResult {
 }
 
 export interface CentrifugoConfig {
-  apiUrl: string;
-  apiKey: string;
   wsUrl: string;
   tokenSecret: string;
 }
@@ -291,7 +289,7 @@ Commands run inside the Docker container with network access.`;
             targetConnectionId: this.connectionInfo.connectionId,
           };
 
-          publishCommand(channel, commandMessage).catch((err: unknown) => {
+          subscription!.publish(commandMessage).catch((err: unknown) => {
             if (!settled) {
               settled = true;
               cleanup();
