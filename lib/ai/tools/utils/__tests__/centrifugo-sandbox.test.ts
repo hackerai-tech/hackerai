@@ -60,7 +60,6 @@ const defaultConfig: CentrifugoConfig = {
 const defaultConnection = {
   connectionId: "conn-1",
   name: "test-sandbox",
-  mode: "docker" as const,
 };
 
 function createSandbox(
@@ -373,24 +372,15 @@ describe("CentrifugoSandbox", () => {
   });
 
   describe("getSandboxContext", () => {
-    it("returns docker context for docker mode", () => {
-      const sandbox = createSandbox({ mode: "docker" });
-      const context = sandbox.getSandboxContext();
-
-      expect(context).toContain("Docker container");
-      expect(context).toContain("nmap");
-    });
-
-    it("returns dangerous mode context with OS info", () => {
+    it("returns context with OS info", () => {
       const sandbox = createSandbox({
-        mode: "dangerous",
         osInfo: {
           platform: "linux",
           arch: "x86_64",
           release: "6.1.0",
           hostname: "pentest-box",
         },
-      } as any);
+      });
 
       const context = sandbox.getSandboxContext();
 
@@ -399,8 +389,8 @@ describe("CentrifugoSandbox", () => {
       expect(context).toContain("pentest-box");
     });
 
-    it("returns null for dangerous mode without osInfo", () => {
-      const sandbox = createSandbox({ mode: "dangerous" });
+    it("returns null without osInfo", () => {
+      const sandbox = createSandbox();
       const context = sandbox.getSandboxContext();
 
       expect(context).toBeNull();
@@ -412,14 +402,13 @@ describe("CentrifugoSandbox", () => {
       ["linux", "Linux"],
     ])("maps platform %s to %s in context", (platform, displayName) => {
       const sandbox = createSandbox({
-        mode: "dangerous",
         osInfo: {
           platform,
           arch: "x86_64",
           release: "1.0",
           hostname: "host",
         },
-      } as any);
+      });
 
       const context = sandbox.getSandboxContext();
       expect(context).toContain(displayName);

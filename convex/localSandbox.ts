@@ -154,9 +154,7 @@ export const connect = mutation({
   args: {
     token: v.string(),
     connectionName: v.string(),
-    containerId: v.optional(v.string()),
     clientVersion: v.string(),
-    mode: v.union(v.literal("docker"), v.literal("dangerous")),
     osInfo: v.optional(
       v.object({
         platform: v.string(),
@@ -198,9 +196,8 @@ export const connect = mutation({
       user_id: userId,
       connection_id: connectionId,
       connection_name: args.connectionName,
-      container_id: args.containerId,
       client_version: args.clientVersion,
-      mode: args.mode,
+      mode: "dangerous",
       os_info: args.osInfo,
       last_heartbeat: Date.now(),
       status: "connected",
@@ -483,7 +480,6 @@ export const listConnections = query({
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous")),
       osInfo: v.optional(
         v.object({
           platform: v.string(),
@@ -492,7 +488,6 @@ export const listConnections = query({
           hostname: v.string(),
         }),
       ),
-      containerId: v.optional(v.string()),
       lastSeen: v.number(),
       isDesktop: v.boolean(),
     }),
@@ -515,9 +510,7 @@ export const listConnections = query({
     return connections.map((conn) => ({
       connectionId: conn.connection_id,
       name: conn.connection_name,
-      mode: conn.mode,
       osInfo: conn.os_info,
-      containerId: conn.container_id,
       lastSeen: conn.last_heartbeat,
       isDesktop: conn.client_version === "desktop",
     }));
@@ -533,7 +526,6 @@ export const listConnectionsForBackend = query({
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous")),
       osInfo: v.optional(
         v.object({
           platform: v.string(),
@@ -542,7 +534,6 @@ export const listConnectionsForBackend = query({
           hostname: v.string(),
         }),
       ),
-      containerId: v.optional(v.string()),
       lastSeen: v.number(),
     }),
   ),
@@ -559,9 +550,7 @@ export const listConnectionsForBackend = query({
     return connections.map((conn) => ({
       connectionId: conn.connection_id,
       name: conn.connection_name,
-      mode: conn.mode,
       osInfo: conn.os_info,
-      containerId: conn.container_id,
       lastSeen: conn.last_heartbeat,
     }));
   },

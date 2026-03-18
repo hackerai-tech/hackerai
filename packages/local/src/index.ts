@@ -6,23 +6,17 @@
  * Connects to HackerAI backend via Convex for connection lifecycle
  * and uses Centrifugo for real-time command relay and streaming output.
  *
+ * Runs commands directly on the host OS (no Docker isolation).
+ *
  * Usage:
- *   npx @hackerai/local --token TOKEN --name "My Laptop"
- *   npx @hackerai/local --token TOKEN --name "Work PC" --dangerous
+ *   npx @hackerai/local --token TOKEN --name "My Machine"
  */
 
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import { spawn, ChildProcess } from "child_process";
 import os from "os";
-import {
-  truncateOutput,
-  MAX_OUTPUT_SIZE,
-  getSandboxMode,
-  buildDockerRunCommand,
-  parseShellDetectionOutput,
-  getDefaultShell,
-} from "./utils";
+import { truncateOutput, MAX_OUTPUT_SIZE, getDefaultShell } from "./utils";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -130,22 +124,8 @@ function runShellCommand(
   });
 }
 
-function runWithOutput(command: string, args: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn(command, args, { stdio: "inherit" });
-    proc.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`Process exited with code ${code}`));
-    });
-    proc.on("error", reject);
-  });
-}
-
 // Production Convex URL - hardcoded for the published package
 const PRODUCTION_CONVEX_URL = "https://convex.haiusercontent.com";
-
-// Default pre-built image with all pentesting tools
-const DEFAULT_IMAGE = "hackerai/sandbox";
 
 // Convex function references (string paths work at runtime)
 const api = {
@@ -171,9 +151,6 @@ interface Config {
   convexUrl: string;
   token: string;
   name: string;
-  dangerous: boolean;
-  build: boolean;
-  persist: boolean;
 }
 
 interface OsInfo {
@@ -243,8 +220,6 @@ class LocalSandboxClient {
   private convexHttp: ConvexHttpClient;
   private centrifuge?: Centrifuge;
   private subscription?: Subscription;
-  private containerId?: string;
-  private containerShell: string = "/bin/bash";
   private userId?: string;
   private connectionId?: string;
   private isShuttingDown = false;
@@ -258,129 +233,12 @@ class LocalSandboxClient {
 
   async start(): Promise<void> {
     console.log(chalk.blue("🚀 Starting HackerAI local sandbox..."));
-
-    if (!this.config.dangerous) {
-      const dockerCheck = await runShellCommand("docker --version", {
-        timeout: 5000,
-      });
-      if (dockerCheck.exitCode !== 0) {
-        console.error(
-          chalk.red(
-            "❌ Docker not found. Please install Docker or use --dangerous mode.",
-          ),
-        );
-        process.exit(1);
-      }
-      console.log(chalk.green("✓ Docker is available"));
-
-      this.containerId = await this.createContainer();
-      console.log(chalk.green(`✓ Container: ${this.containerId.slice(0, 12)}`));
-
-      await this.detectContainerShell();
-    } else {
-      console.log(
-        chalk.yellow(
-          "⚠️  DANGEROUS MODE - Commands will run directly on your OS!",
-        ),
-      );
-    }
-
-    await this.connect();
-  }
-
-  private getContainerName(): string {
-    const sanitized = this.config.name
-      .toLowerCase()
-      .replace(/[^a-z0-9-]/g, "-")
-      .replace(/-+/g, "-")
-      .replace(/^-|-$/g, "");
-    return `hackerai-sandbox-${sanitized || "default"}`;
-  }
-
-  private async findExistingContainer(
-    containerName: string,
-  ): Promise<{ id: string; running: boolean } | null> {
-    const result = await runShellCommand(
-      `docker ps -a --filter "name=^${containerName}$" --format "{{.ID}}|{{.State}}"`,
-      { timeout: 5000 },
-    );
-
-    if (result.exitCode !== 0 || !result.stdout.trim()) {
-      return null;
-    }
-
-    const [id, state] = result.stdout.trim().split("|");
-    return { id, running: state === "running" };
-  }
-
-  private async createContainer(): Promise<string> {
-    if (this.config.persist) {
-      const containerName = this.getContainerName();
-      const existing = await this.findExistingContainer(containerName);
-
-      if (existing) {
-        if (existing.running) {
-          console.log(
-            chalk.green(`✓ Reusing existing container: ${containerName}`),
-          );
-          return existing.id;
-        } else {
-          console.log(
-            chalk.blue(`Starting existing container: ${containerName}`),
-          );
-          const startResult = await runShellCommand(
-            `docker start ${existing.id}`,
-            { timeout: 30000 },
-          );
-          if (startResult.exitCode === 0) {
-            console.log(chalk.green(`✓ Container started: ${containerName}`));
-            return existing.id;
-          }
-          console.log(
-            chalk.yellow(`⚠️  Failed to start, creating new container...`),
-          );
-          await runShellCommand(`docker rm -f ${existing.id}`, {
-            timeout: 5000,
-          });
-        }
-      }
-    }
-
-    if (this.config.build) {
-      console.log(
-        chalk.red("❌ --build flag is not supported in the npx package."),
-      );
-      process.exit(1);
-    }
-
-    console.log(chalk.blue(`Pulling pre-built image: ${DEFAULT_IMAGE}`));
     console.log(
-      chalk.gray("(First run may take a few minutes to download the image)"),
+      chalk.yellow(
+        "⚠️  Commands run directly on your OS without any isolation.",
+      ),
     );
-    console.log("");
-    try {
-      await runWithOutput("docker", ["pull", DEFAULT_IMAGE]);
-      console.log(chalk.green("✓ Image ready"));
-    } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(chalk.red("❌ Failed to pull image:"), message);
-      process.exit(1);
-    }
-
-    console.log(chalk.blue("Creating Docker container..."));
-
-    const dockerCommand = buildDockerRunCommand({
-      image: DEFAULT_IMAGE,
-      containerName: this.config.persist ? this.getContainerName() : undefined,
-    });
-
-    const result = await runShellCommand(dockerCommand, { timeout: 60000 });
-
-    if (result.exitCode !== 0) {
-      throw new Error(`Failed to create container: ${result.stderr}`);
-    }
-
-    return result.stdout.trim();
+    await this.connect();
   }
 
   private getOsInfo(): OsInfo {
@@ -392,41 +250,6 @@ class LocalSandboxClient {
     };
   }
 
-  private getMode(): "docker" | "dangerous" {
-    return getSandboxMode({
-      dangerous: this.config.dangerous,
-    });
-  }
-
-  private getModeDisplay(): string {
-    const mode = this.getMode();
-    if (mode === "dangerous") {
-      return "DANGEROUS";
-    }
-    return "Docker";
-  }
-
-  private async detectContainerShell(): Promise<void> {
-    if (!this.containerId) return;
-
-    const result = await runShellCommand(
-      `docker exec ${this.containerId} sh -c 'command -v bash || command -v sh || echo /bin/sh'`,
-      { timeout: 5000 },
-    );
-
-    if (result.exitCode === 0) {
-      this.containerShell = parseShellDetectionOutput(result.stdout);
-      console.log(chalk.green(`✓ Shell: ${this.containerShell}`));
-    } else {
-      this.containerShell = "/bin/sh";
-      console.log(
-        chalk.yellow(
-          `⚠️  Shell detection failed, using ${this.containerShell}`,
-        ),
-      );
-    }
-  }
-
   private async connect(): Promise<void> {
     console.log(chalk.blue("Connecting to HackerAI..."));
 
@@ -436,10 +259,8 @@ class LocalSandboxClient {
         {
           token: this.config.token,
           connectionName: this.config.name,
-          containerId: this.containerId,
           clientVersion: "1.0.0",
-          mode: this.getMode(),
-          osInfo: this.config.dangerous ? this.getOsInfo() : undefined,
+          osInfo: this.getOsInfo(),
         } as never,
       )) as ConnectResult;
 
@@ -457,11 +278,6 @@ class LocalSandboxClient {
       console.log(chalk.green("✓ Authenticated"));
       console.log(chalk.bold(chalk.green("🎉 Local sandbox is ready!")));
       console.log(chalk.gray(`Connection: ${this.connectionId}`));
-      console.log(
-        chalk.gray(
-          `Mode: ${this.getModeDisplay()}${this.config.persist ? " (persistent)" : ""}`,
-        ),
-      );
 
       this.setupCentrifugo(result.centrifugoWsUrl, result.centrifugoToken);
       this.startIdleCheck();
@@ -656,28 +472,14 @@ class LocalSandboxClient {
     return new Promise<void>((resolve) => {
       let killed = false;
       let timeoutId: NodeJS.Timeout | undefined;
-      let accumulatedStdout = "";
-      let accumulatedStderr = "";
 
-      let proc: ChildProcess;
-
-      if (this.config.dangerous) {
-        proc = spawn(
-          DEFAULT_SHELL.shell,
-          [DEFAULT_SHELL.shellFlag, fullCommand],
-          {
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-      } else {
-        const escapedCommand = fullCommand.replace(/'/g, "'\\''");
-        const shellName = this.containerShell.split("/").pop() || "sh";
-        proc = spawn(
-          "docker",
-          ["exec", this.containerId!, shellName, "-c", escapedCommand],
-          { stdio: ["ignore", "pipe", "pipe"] },
-        );
-      }
+      const proc = spawn(
+        DEFAULT_SHELL.shell,
+        [DEFAULT_SHELL.shellFlag, fullCommand],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
 
       if (commandTimeout > 0) {
         timeoutId = setTimeout(() => {
@@ -691,9 +493,10 @@ class LocalSandboxClient {
         }, commandTimeout);
       }
 
+      let accumulatedStderr = "";
+
       proc.stdout?.on("data", (data: Buffer) => {
         const chunk = data.toString();
-        accumulatedStdout += chunk;
         this.publishToChannel({
           type: "stdout",
           commandId,
@@ -810,31 +613,16 @@ class LocalSandboxClient {
   }
 
   private async spawnBackground(fullCommand: string): Promise<number> {
-    if (this.config.dangerous) {
-      const child = spawn(
-        DEFAULT_SHELL.shell,
-        [DEFAULT_SHELL.shellFlag, fullCommand],
-        {
-          detached: os.platform() !== "win32",
-          stdio: "ignore",
-        },
-      );
-      child.unref();
-      return child.pid ?? -1;
-    } else {
-      const escapedCommand = fullCommand.replace(/'/g, "'\\''");
-      const shellName = this.containerShell.split("/").pop() || "sh";
-      const result = await runShellCommand(
-        `docker exec ${this.containerId} ${shellName} -c 'nohup ${escapedCommand} > /dev/null 2>&1 & echo $!'`,
-        { timeout: 5000 },
-      );
-
-      if (result.exitCode === 0 && result.stdout.trim()) {
-        const pid = parseInt(result.stdout.trim(), 10);
-        return isNaN(pid) ? -1 : pid;
-      }
-      return -1;
-    }
+    const child = spawn(
+      DEFAULT_SHELL.shell,
+      [DEFAULT_SHELL.shellFlag, fullCommand],
+      {
+        detached: os.platform() !== "win32",
+        stdio: "ignore",
+      },
+    );
+    child.unref();
+    return child.pid ?? -1;
   }
 
   private startIdleCheck(): void {
@@ -899,34 +687,6 @@ class LocalSandboxClient {
           console.warn(chalk.yellow(`⚠️  Failed to disconnect: ${message}`));
         }
       }
-
-      if (this.containerId) {
-        if (this.config.persist) {
-          console.log(
-            chalk.green(`✓ Container preserved: ${this.getContainerName()}`),
-          );
-          console.log(
-            chalk.gray(
-              "  (Use --persist again to reuse it, or docker rm to remove)",
-            ),
-          );
-        } else {
-          const result = await runShellCommand(
-            `docker rm -f ${this.containerId}`,
-            {
-              timeout: 3000,
-            },
-          );
-          if (result.exitCode === 0) {
-            console.log(chalk.green("✓ Container removed"));
-          } else {
-            console.error(
-              chalk.red("Error removing container:"),
-              result.stderr,
-            );
-          }
-        }
-      }
     } finally {
       clearTimeout(forceExitTimeout);
     }
@@ -955,29 +715,16 @@ ${chalk.yellow("Usage:")}
 ${chalk.yellow("Options:")}
   --token TOKEN       Authentication token from Settings (required)
   --name NAME         Connection name (default: hostname)
-  --dangerous         Run commands directly on host OS (no Docker)
-  --persist           Keep container running on exit and reuse if exists
   --convex-url URL    Override Convex backend URL (for development)
   --help, -h          Show this help message
 
 ${chalk.yellow("Examples:")}
-  # Basic usage - pulls pre-built image with 30+ pentesting tools
   npx @hackerai/local --token hsb_abc123 --name "My Laptop"
-
-  # Persistent container (faster restarts, preserves installed packages)
-  npx @hackerai/local --token hsb_abc123 --name "Dev" --persist
-
-  # Dangerous mode (no Docker isolation) - use with caution!
-  npx @hackerai/local --token hsb_abc123 --name "Work PC" --dangerous
-
-${chalk.cyan("Pre-built Image:")}
-  The default image includes: nmap, sqlmap, ffuf, gobuster, nuclei, hydra,
-  nikto, wpscan, subfinder, httpx, and 20+ more pentesting tools.
+  npx @hackerai/local --token hsb_abc123 --name "Work PC"
 
 ${chalk.red("⚠️  Security Warning:")}
-  Docker mode provides process isolation but uses --network host for direct
-  network access (required for pentesting tools to scan network services).
-  In DANGEROUS mode, commands run directly on your OS without any isolation.
+  Commands run directly on your OS without any isolation.
+  Only connect machines you trust and control.
 
 ${chalk.cyan("Auto-termination:")}
   The client automatically terminates after 1 hour of inactivity (no commands
@@ -990,9 +737,6 @@ const config: Config = {
   convexUrl: getArg("--convex-url") || PRODUCTION_CONVEX_URL,
   token: getArg("--token") || "",
   name: getArg("--name") || os.hostname(),
-  dangerous: hasFlag("--dangerous"),
-  build: hasFlag("--build"),
-  persist: hasFlag("--persist"),
 };
 
 if (!config.token) {

@@ -257,30 +257,16 @@ const RemoteControlTab = () => {
           Quick Start
         </h4>
 
-        <div className="space-y-4">
-          {/* Docker command */}
-          <CommandBlock
-            label="Basic (Docker)"
-            command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
-            onCopy={() =>
-              handleCopyCommand(
-                `${runCommand} --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
-              )
-            }
-          />
-
-          {/* Dangerous mode */}
-          <CommandBlock
-            label="Dangerous Mode (No Docker)"
-            warning
-            command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
-            onCopy={() =>
-              handleCopyCommand(
-                `${runCommand} --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
-              )
-            }
-          />
-        </div>
+        <CommandBlock
+          label="Connect Machine"
+          warning
+          command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
+          onCopy={() =>
+            handleCopyCommand(
+              `${runCommand} --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
+            )
+          }
+        />
       </div>
 
       {/* Security Notice - Compact */}
@@ -289,8 +275,7 @@ const RemoteControlTab = () => {
         <div className="text-yellow-800 dark:text-yellow-200 space-y-1">
           <span className="font-medium">Security:</span>{" "}
           <span className="text-yellow-700 dark:text-yellow-300">
-            Docker mode runs in isolation. Dangerous mode has direct OS access.
-            Stop anytime with Ctrl+C.
+            Commands run directly on your OS. Stop anytime with Ctrl+C.
           </span>
         </div>
       </div>
