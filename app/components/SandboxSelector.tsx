@@ -25,7 +25,6 @@ interface ConnectionOption {
   label: string;
   shortLabel: string;
   icon: typeof Cloud;
-  mode?: "docker" | "dangerous";
 }
 
 export function SandboxSelector({
@@ -51,7 +50,6 @@ export function SandboxSelector({
         label: "Local",
         shortLabel: "Local",
         icon: Monitor,
-        mode: conn.mode,
       })) || [];
   const remoteOptions: ConnectionOption[] =
     connections
@@ -61,7 +59,6 @@ export function SandboxSelector({
         label: conn.osInfo?.hostname || conn.name,
         shortLabel: conn.osInfo?.hostname || conn.name,
         icon: Laptop,
-        mode: conn.mode,
       })) || [];
   const options = [cloudOption, ...desktopOptions, ...remoteOptions];
 

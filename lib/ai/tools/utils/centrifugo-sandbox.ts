@@ -100,10 +100,6 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.connectionInfo.connectionId;
   }
 
-  getConnectionMode(): "docker" | "dangerous" {
-    return this.connectionInfo.mode;
-  }
-
   getConnectionName(): string {
     return this.connectionInfo.name;
   }
@@ -112,9 +108,9 @@ export class CentrifugoSandbox extends EventEmitter {
    * Get sandbox context for AI based on mode
    */
   getSandboxContext(): string | null {
-    const { mode, osInfo } = this.connectionInfo;
+    const { osInfo } = this.connectionInfo;
 
-    if (mode === "dangerous" && osInfo) {
+    if (osInfo) {
       const { platform, arch, release, hostname } = osInfo;
       const platformName = getPlatformDisplayName(platform);
 
@@ -128,12 +124,6 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 - File system operations (no sandbox protection)
 - Network operations (direct access to host network)
 - Process management (can affect host system)`;
-    }
-
-    if (mode === "docker") {
-      return `You are executing commands in the HackerAI sandbox Docker container.
-This container includes common pentesting tools like nmap, sqlmap, ffuf, gobuster, nuclei, hydra, nikto, wpscan, subfinder, httpx, and more.
-Commands run inside the Docker container with network access.`;
     }
 
     return null;
@@ -346,10 +336,7 @@ Commands run inside the Docker container with network access.`;
    * Docker containers are always Linux regardless of host OS.
    */
   private isWindows(): boolean {
-    return (
-      this.connectionInfo.mode === "dangerous" &&
-      this.connectionInfo.osInfo?.platform === "win32"
-    );
+    return this.connectionInfo.osInfo?.platform === "win32";
   }
 
   /**

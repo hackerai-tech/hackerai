@@ -12,9 +12,7 @@ export interface OsInfo {
 export interface ConnectionInfo {
   connectionId: string;
   name: string;
-  mode: "docker" | "dangerous";
   osInfo?: OsInfo;
-  containerId?: string;
   lastSeen?: number;
 }
 

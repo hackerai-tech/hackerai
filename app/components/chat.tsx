@@ -45,6 +45,8 @@ import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
 
+import { HackingSuggestions } from "./HackingSuggestions";
+
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
@@ -846,8 +848,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
-                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
+                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center">
                       <div className="text-center">
                         {temporaryChatsEnabled ? (
                           <>
@@ -862,14 +864,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             </p>
                           </>
                         ) : (
-                          <>
-                            <h1 className="text-3xl font-bold text-foreground mb-2">
-                              HackerAI
-                            </h1>
-                            <p className="text-muted-foreground">
-                              Your AI pentest assistant
-                            </p>
-                          </>
+                          <HackingSuggestions />
                         )}
                       </div>
 

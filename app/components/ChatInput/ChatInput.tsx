@@ -184,6 +184,7 @@ export const ChatInput = ({
             draftId={draftId}
             chatMode={chatMode}
             onEnterSubmit={handleSubmit}
+            minRows={isCentered ? 3 : 1}
           />
           <ChatInputToolbar
             onAttachClick={handleAttachClick}

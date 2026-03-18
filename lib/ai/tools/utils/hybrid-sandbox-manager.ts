@@ -5,7 +5,6 @@ import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
-import { PREINSTALLED_PENTESTING_TOOLS } from "@/lib/system-prompt";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 import { getPlatformDisplayName } from "./platform-utils";
 
@@ -40,7 +39,6 @@ export class HybridSandboxManager implements SandboxManager {
   private sandbox: SandboxInstance | null = null;
   private isLocal = false;
   private currentConnectionId: string | null = null;
-  private currentConnectionMode: "docker" | "dangerous" | null = null;
   private currentConnectionName: string | null = null;
   private convex: ConvexHttpClient;
   private pendingFallbackInfo: SandboxFallbackInfo | null = null;
@@ -152,11 +150,11 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   getSandboxInfo(): { type: SandboxType; name?: string } | null {
-    if (this.sandboxPreference === "e2b" || !this.isLocal) {
+    if (!this.isLocal) {
       return { type: "e2b" };
     }
     const type: SandboxType =
-      this.currentConnectionMode === "docker" ? "local-sandbox" : "local";
+      this.sandboxPreference === "desktop" ? "desktop" : "remote-connection";
     return { type, name: this.currentConnectionName ?? undefined };
   }
 
@@ -164,14 +162,12 @@ export class HybridSandboxManager implements SandboxManager {
     if (!(SANDBOX_ENVIRONMENT_TOOLS as readonly string[]).includes(toolName)) {
       return undefined;
     }
-    if (this.sandboxPreference === "e2b" || !this.isLocal) {
+    if (!this.isLocal) {
       return "e2b";
     }
-    // Local sandbox -- use cached mode to distinguish docker vs dangerous
-    if (this.currentConnectionMode === "docker") {
-      return "local-sandbox";
-    }
-    return "local";
+    return this.sandboxPreference === "desktop"
+      ? "desktop"
+      : "remote-connection";
   }
 
   /**
@@ -272,7 +268,6 @@ export class HybridSandboxManager implements SandboxManager {
     );
     this.isLocal = true;
     this.currentConnectionId = connection.connectionId;
-    this.currentConnectionMode = connection.mode;
     this.currentConnectionName = connection.name;
     this.setSandboxCallback(this.sandbox);
   }
@@ -299,7 +294,6 @@ export class HybridSandboxManager implements SandboxManager {
     this.sandbox = result.sandbox;
     this.isLocal = false;
     this.currentConnectionId = null;
-    this.currentConnectionMode = null;
     this.currentConnectionName = null;
     this.setSandboxCallback(result.sandbox);
 
@@ -311,11 +305,9 @@ export class HybridSandboxManager implements SandboxManager {
     this.isLocal = isCentrifugoSandbox(sandbox);
     if (isCentrifugoSandbox(sandbox)) {
       this.currentConnectionId = sandbox.getConnectionId();
-      this.currentConnectionMode = sandbox.getConnectionMode();
       this.currentConnectionName = sandbox.getConnectionName();
     } else {
       this.currentConnectionId = null;
-      this.currentConnectionMode = null;
       this.currentConnectionName = null;
     }
     this.setSandboxCallback(sandbox);
@@ -341,16 +333,15 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     // Cache early so getSandboxType()/getSandboxInfo() work before getSandbox() is called
-    this.currentConnectionMode = connection.mode;
     this.currentConnectionName = connection.name;
 
     return this.buildSandboxContext(connection);
   }
 
   private buildSandboxContext(connection: ConnectionInfo): string | null {
-    const { mode, osInfo } = connection;
+    const { osInfo } = connection;
 
-    if (mode === "dangerous" && osInfo) {
+    if (osInfo) {
       const { platform, arch, release, hostname } = osInfo;
       const platformName = getPlatformDisplayName(platform);
 
@@ -370,20 +361,6 @@ Security Warning:
 - Be careful with destructive commands
 
 Available tools depend on what's installed on the host system.
-</sandbox_environment>`;
-    }
-
-    if (mode === "docker") {
-      return `<sandbox_environment>
-IMPORTANT: You are connected to a LOCAL machine running the HackerAI Docker sandbox.
-
-Container Environment:
-- Image: hackerai/sandbox (pre-built pentesting tools)
-- Mode: Docker container
-- Network: Host network (--network host)
-- User attachments: /tmp/hackerai-upload
-
-${PREINSTALLED_PENTESTING_TOOLS}
 </sandbox_environment>`;
     }
 
