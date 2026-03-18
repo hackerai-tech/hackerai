@@ -280,7 +280,52 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
     const workflowTransport = new WorkflowChatTransport<ChatMessage>({
       api: "/api/agent-workflow",
-      fetch: (input, init) => fetchWithErrorHandlers(input as string, init),
+      fetch: async (input, init) => {
+        // Don't forward the abort signal to fetch. When stop() fires the
+        // signal, the browser aborts the body stream and throws
+        // "BodyStreamBuffer was aborted", which WorkflowChatTransport
+        // console.error's. Instead, we cancel the reader ourselves on
+        // abort — resolving pending reads with {done:true} (no error).
+        const { signal, ...fetchInit } = init ?? {};
+        const response = await fetchWithErrorHandlers(
+          input as string,
+          fetchInit,
+        );
+        if (!response.body || !signal) return response;
+
+        const reader = response.body.getReader();
+        const onAbort = () => reader.cancel();
+        if (signal.aborted) {
+          onAbort();
+        } else {
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+
+        const body = new ReadableStream({
+          async pull(controller) {
+            try {
+              const { value, done } = await reader.read();
+              if (done) {
+                controller.close();
+              } else {
+                controller.enqueue(value);
+              }
+            } catch (error) {
+              controller.error(error);
+            }
+          },
+          cancel() {
+            signal.removeEventListener("abort", onAbort);
+            reader.cancel();
+          },
+        });
+
+        return new Response(body, {
+          headers: response.headers,
+          status: response.status,
+          statusText: response.statusText,
+        });
+      },
       prepareSendMessagesRequest: prepareSendMessagesRequest as any,
       onChatSendMessage: (response) => {
         workflowRunIdRef.current = response.headers.get("x-workflow-run-id");
@@ -357,6 +402,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     error,
     regenerate,
     resumeStream,
+    clearError,
   } = useChat({
     id: chatId,
     messages: serverMessages,
@@ -480,6 +526,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
+      // AbortError is expected when the user stops a stream — ignore it
+      if (error?.name === "AbortError") return;
+
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
       setUploadStatus(null);
@@ -496,6 +545,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Update ref so transport callbacks can access setMessages (breaks circular dependency)
   setMessagesRef.current = setMessages;
+
+  // Recover from UIMessageStreamError (e.g., "No tool invocation found for tool
+  // call ID"). This can happen when a stream reconnection replays tool-result
+  // chunks whose corresponding tool-start chunks were in a previous connection.
+  // Instead of leaving the chat stuck in an error state, clear it so the user
+  // can retry or send a new message.
+  useEffect(() => {
+    if (error?.name === "AI_UIMessageStreamError") {
+      clearError();
+    }
+  }, [error, clearError]);
 
   // Derive serverMode from chatData to gate useAutoResume (prevents firing before we know chat type)
   // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id
