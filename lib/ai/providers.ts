@@ -28,7 +28,7 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "model-grok-4.1": "November 2024",
   "model-gemini-3-flash": "January 2025",
   // "model-opus-4.6": "May 2025",
-  "model-gpt-5.4": "April 2025",
+  "model-gpt-5.4": "August 2025",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
   "title-generator-model": "November 2024",
