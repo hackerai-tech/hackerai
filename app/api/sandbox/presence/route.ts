@@ -1,18 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Centrifuge } from "centrifuge";
 import { getUserID } from "@/lib/auth/get-user-id";
+import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 
 interface CentrifugoPresenceClient {
   client: string;
   user: string;
-  conn_info: { connectionId?: string } | null;
+  connInfo: { connectionId?: string } | null;
 }
 
-interface CentrifugoPresenceResponse {
-  result: {
-    presence: Record<string, CentrifugoPresenceClient>;
-  };
+interface CentrifugoPresenceResult {
+  clients: Record<string, CentrifugoPresenceClient>;
 }
 
 export async function GET(request: NextRequest) {
@@ -24,54 +24,65 @@ export async function GET(request: NextRequest) {
   }
   const channel = `sandbox:user#${userId}`;
 
-  const apiUrl = process.env.CENTRIFUGO_API_URL;
-  const apiKey = process.env.CENTRIFUGO_API_KEY;
+  const wsUrl = process.env.CENTRIFUGO_WS_URL;
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
   const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY;
 
-  if (!apiUrl || !apiKey) {
+  if (!wsUrl) {
     return NextResponse.json(
       { error: "Centrifugo not configured" },
       { status: 500 },
     );
   }
 
-  // Fetch Centrifugo presence (who's actually online)
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 5000);
-  let presenceResponse: Response;
-  try {
-    presenceResponse = await fetch(`${apiUrl}/api/presence`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `apikey ${apiKey}`,
-      },
-      body: JSON.stringify({ channel }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timeoutId);
-    console.error("Centrifugo presence request failed:", err);
-    return NextResponse.json({ connections: [], onlineCount: 0 });
-  }
-  clearTimeout(timeoutId);
-
   const onlineConnectionIds = new Set<string>();
   let presenceReliable = false;
-  if (presenceResponse.ok) {
-    const data: CentrifugoPresenceResponse = await presenceResponse.json();
-    const presence = data?.result?.presence ?? {};
-    for (const client of Object.values(presence)) {
-      if (client.conn_info?.connectionId) {
-        onlineConnectionIds.add(client.conn_info.connectionId);
+
+  let client: Centrifuge | null = null;
+  try {
+    const token = await generateCentrifugoToken(userId, 30);
+    client = new Centrifuge(wsUrl, { token });
+    const sub = client.newSubscription(channel);
+
+    const presenceData: CentrifugoPresenceResult = await new Promise(
+      (resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error("Centrifugo presence timeout"));
+        }, 5000);
+
+        sub.on("subscribed", async () => {
+          clearTimeout(timeout);
+          try {
+            const result = await sub.presence();
+            resolve(result as CentrifugoPresenceResult);
+          } catch (e) {
+            reject(e);
+          }
+        });
+
+        sub.on("error", (ctx) => {
+          clearTimeout(timeout);
+          reject(new Error(ctx.error?.message));
+        });
+
+        sub.subscribe();
+        client!.connect();
+      },
+    );
+
+    const clients = presenceData?.clients ?? {};
+    for (const entry of Object.values(clients)) {
+      if (entry.connInfo?.connectionId) {
+        onlineConnectionIds.add(entry.connInfo.connectionId);
       }
     }
     presenceReliable = true;
-  } else {
-    console.error(
-      `Centrifugo presence API failed: ${presenceResponse.status} ${presenceResponse.statusText}`,
-    );
+  } catch (err) {
+    console.error("Centrifugo presence request failed:", err);
+  } finally {
+    if (client) {
+      client.disconnect();
+    }
   }
 
   // Fetch connection metadata from Convex

@@ -11,6 +11,7 @@
       "allow_user_limited_channels": true,
       "allow_publish_for_subscriber": true,
       "presence": true,
+      "allow_presence_for_subscriber": true,
       "join_leave": true,
       "history_size": 0,
       "history_ttl": "0s"
@@ -18,5 +19,6 @@
   ],
   "uni_sse": true,
   "uni_http_stream": true,
-  "client_connection_limit": 5000
+  "client_connection_limit": 5000,
+  "internal_port": 9000
 }

@@ -18,6 +18,7 @@ let mockClients: MockCentrifugeClient[];
 class MockSubscription extends EventEmitter {
   subscribe = jest.fn();
   unsubscribe = jest.fn();
+  publish = jest.fn().mockResolvedValue(undefined);
 }
 
 class MockCentrifugeClient extends EventEmitter {
@@ -39,10 +40,6 @@ jest.mock("centrifuge", () => ({
   }),
 }));
 
-jest.mock("@/lib/centrifugo/client", () => ({
-  publishCommand: jest.fn().mockResolvedValue(undefined),
-}));
-
 jest.mock("@/lib/centrifugo/jwt", () => ({
   generateCentrifugoToken: jest.fn().mockResolvedValue("mock-jwt-token"),
 }));
@@ -56,8 +53,6 @@ const FIXED_UUID = "cmd-test-uuid-1234";
 const originalRandomUUID = crypto.randomUUID;
 
 const defaultConfig: CentrifugoConfig = {
-  apiUrl: "http://centrifugo:8000",
-  apiKey: "test-key",
   wsUrl: "ws://centrifugo:8000/connection/websocket",
   tokenSecret: "test-secret",
 };
@@ -318,35 +313,12 @@ describe("CentrifugoSandbox", () => {
     it("uses heredoc approach for text content", async () => {
       jest.useRealTimers();
 
-      const { publishCommand } = require("@/lib/centrifugo/client") as {
-        publishCommand: jest.Mock;
-      };
-
       let callCount = 0;
       crypto.randomUUID = jest.fn(() => `cmd-uuid-${++callCount}`) as any;
 
-      // Auto-resolve: when publishCommand is called, emit exit on the latest subscription.
-      publishCommand.mockImplementation(
-        async (_channel: string, msg: { commandId: string }) => {
-          setTimeout(() => {
-            const sub = mockSubscriptions[mockSubscriptions.length - 1];
-            if (sub) {
-              sub.emit("publication", {
-                data: {
-                  type: "exit",
-                  commandId: msg.commandId,
-                  exitCode: 0,
-                },
-              });
-            }
-          });
-        },
-      );
-
       // Patch each new MockCentrifugeClient's newSubscription to create
-      // subscriptions that auto-emit "subscribed" when subscribe() is called.
-      // (Class field `subscribe = jest.fn()` is an instance prop, so we must
-      // patch the instance, not the prototype.)
+      // subscriptions that auto-emit "subscribed" when subscribe() is called,
+      // and auto-resolve commands when publish() is called.
       const origFactory = (require("centrifuge") as { Centrifuge: jest.Mock })
         .Centrifuge;
       origFactory.mockImplementation(() => {
@@ -356,6 +328,18 @@ describe("CentrifugoSandbox", () => {
           const sub = origNewSub(...args) as MockSubscription;
           sub.subscribe = jest.fn(() => {
             setTimeout(() => sub.emit("subscribed"));
+          });
+          // Auto-resolve: when publish is called, emit exit on the subscription.
+          sub.publish = jest.fn(async (msg: { commandId: string }) => {
+            setTimeout(() => {
+              sub.emit("publication", {
+                data: {
+                  type: "exit",
+                  commandId: msg.commandId,
+                  exitCode: 0,
+                },
+              });
+            });
           });
           return sub;
         });
@@ -368,15 +352,20 @@ describe("CentrifugoSandbox", () => {
         await sandbox.files.write("/tmp/hackerai/test.txt", "hello world");
 
         // files.write runs mkdir -p then cat > ... heredoc.
-        const writeCmdCall = publishCommand.mock.calls.find((call: unknown[]) =>
-          (call[1] as { command?: string })?.command?.includes("cat >"),
+        // Find the subscription whose publish was called with a cat > command
+        const allPublishCalls = mockSubscriptions.flatMap((sub) =>
+          (sub.publish as jest.Mock).mock.calls.map(
+            (call: unknown[]) => call[0],
+          ),
         );
-        expect(writeCmdCall).toBeDefined();
+        const writeCmd = allPublishCalls.find((msg: { command?: string }) =>
+          msg?.command?.includes("cat >"),
+        );
+        expect(writeCmd).toBeDefined();
 
-        const command = (writeCmdCall![1] as { command: string }).command;
-        expect(command).toContain("cat >");
-        expect(command).toContain("<<'HACKERAI_EOF_");
-        expect(command).toContain("hello world");
+        expect(writeCmd.command).toContain("cat >");
+        expect(writeCmd.command).toContain("<<'HACKERAI_EOF_");
+        expect(writeCmd.command).toContain("hello world");
       } finally {
         jest.useFakeTimers();
       }
