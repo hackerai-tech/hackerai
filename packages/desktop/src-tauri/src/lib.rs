@@ -492,6 +492,117 @@ async fn handle_file_list(body: &str) -> Result<String, String> {
     serde_json::to_string(&entries).map_err(|e| e.to_string())
 }
 
+// ── Tauri IPC Commands ────────────────────────────────────────────────
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+enum StreamEvent {
+    Stdout { data: String },
+    Stderr { data: String },
+    Exit { exit_code: i32 },
+    Error { message: String },
+}
+
+#[tauri::command]
+async fn execute_command(
+    command: String,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    timeout_ms: Option<u64>,
+) -> Result<ExecResponse, String> {
+    let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
+    let child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("Process error: {}", e)),
+        Err(_) => return Err(format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000))),
+    };
+    const MAX_OUTPUT: usize = 1024 * 1024;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_str = if stdout.len() > MAX_OUTPUT {
+        format!("{}... [truncated, {} total bytes]", &stdout[..MAX_OUTPUT], stdout.len())
+    } else {
+        stdout.to_string()
+    };
+    let stderr_str = if stderr.len() > MAX_OUTPUT {
+        format!("{}... [truncated, {} total bytes]", &stderr[..MAX_OUTPUT], stderr.len())
+    } else {
+        stderr.to_string()
+    };
+    Ok(ExecResponse {
+        stdout: stdout_str,
+        stderr: stderr_str,
+        exit_code: output.status.code().unwrap_or(-1),
+    })
+}
+
+#[tauri::command]
+async fn execute_stream_command(
+    command: String,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    timeout_ms: Option<u64>,
+    on_event: tauri::ipc::Channel<StreamEvent>,
+) -> Result<(), String> {
+    let mut cmd = platform::build_command(&command, cwd.as_deref(), env.as_ref());
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn: {}", e))?;
+    let timeout = Duration::from_millis(timeout_ms.unwrap_or(30000));
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+
+    let result = tokio::time::timeout(timeout, async {
+        let mut stdout_buf = [0u8; 4096];
+        let mut stderr_buf = [0u8; 4096];
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+
+        loop {
+            if stdout_done && stderr_done {
+                break;
+            }
+            tokio::select! {
+                result = stdout.read(&mut stdout_buf), if !stdout_done => {
+                    match result {
+                        Ok(0) => stdout_done = true,
+                        Ok(n) => {
+                            let data = String::from_utf8_lossy(&stdout_buf[..n]).to_string();
+                            let _ = on_event.send(StreamEvent::Stdout { data });
+                        }
+                        Err(_) => stdout_done = true,
+                    }
+                }
+                result = stderr.read(&mut stderr_buf), if !stderr_done => {
+                    match result {
+                        Ok(0) => stderr_done = true,
+                        Ok(n) => {
+                            let data = String::from_utf8_lossy(&stderr_buf[..n]).to_string();
+                            let _ = on_event.send(StreamEvent::Stderr { data });
+                        }
+                        Err(_) => stderr_done = true,
+                    }
+                }
+            }
+        }
+        child.wait().await
+    }).await;
+
+    match result {
+        Ok(Ok(status)) => {
+            let _ = on_event.send(StreamEvent::Exit { exit_code: status.code().unwrap_or(-1) });
+        }
+        Ok(Err(e)) => {
+            let _ = on_event.send(StreamEvent::Error { message: format!("Process error: {}", e) });
+        }
+        Err(_) => {
+            platform::graceful_kill(&mut child).await;
+            let _ = on_event.send(StreamEvent::Error { message: format!("Command timed out after {}ms", timeout_ms.unwrap_or(30000)) });
+        }
+    }
+    Ok(())
+}
+
 /// Start a local HTTP server for dev mode auth callbacks.
 /// This replaces deep links which don't work in `tauri dev` on macOS.
 async fn start_dev_auth_server(app_handle: tauri::AppHandle) {
@@ -817,7 +928,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info])
+        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())

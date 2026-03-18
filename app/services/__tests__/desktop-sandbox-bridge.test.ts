@@ -21,6 +21,30 @@ jest.mock("centrifuge", () => ({
   Centrifuge: jest.fn().mockImplementation(() => mockClient),
 }));
 
+// Mock Tauri IPC
+let mockInvokeHandler: (
+  cmd: string,
+  args?: Record<string, unknown>,
+) => Promise<unknown>;
+let capturedChannel: { onmessage?: (event: unknown) => void } | null = null;
+
+jest.mock("@tauri-apps/api/core", () => ({
+  invoke: jest.fn((...args: unknown[]) => {
+    const [cmd, invokeArgs] = args as [
+      string,
+      Record<string, unknown> | undefined,
+    ];
+    return mockInvokeHandler(cmd, invokeArgs);
+  }),
+  Channel: jest.fn().mockImplementation(() => {
+    const ch = {
+      onmessage: undefined as ((event: unknown) => void) | undefined,
+    };
+    capturedChannel = ch;
+    return ch;
+  }),
+}));
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 function createTestJwt(sub: string): string {
@@ -31,7 +55,6 @@ function createTestJwt(sub: string): string {
 
 function buildConfig(overrides: Record<string, unknown> = {}) {
   return {
-    cmdServerInfo: { port: 3001, token: "test-token" },
     connectDesktop: jest.fn().mockResolvedValue({
       connectionId: "conn-123",
       centrifugoToken: createTestJwt("user-456"),
@@ -56,47 +79,46 @@ function getPublicationHandler(): (ctx: { data: unknown }) => void {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  capturedChannel = null;
 
-  global.fetch = jest.fn().mockResolvedValue({
-    ok: true,
-    json: () =>
-      Promise.resolve({
-        os_info: {
-          platform: "darwin",
-          arch: "arm64",
-          release: "24.0.0",
-          hostname: "test-host",
-        },
-      }),
-  });
+  mockInvokeHandler = async (cmd: string) => {
+    if (cmd === "execute_command") {
+      return {
+        stdout: "Darwin 24.0.0 arm64\ntest-host\n",
+        stderr: "",
+        exit_code: 0,
+      };
+    }
+    if (cmd === "execute_stream_command") {
+      return undefined;
+    }
+    throw new Error(`Unknown command: ${cmd}`);
+  };
 });
 
 // ── targetConnectionId filtering ──────────────────────────────────────
 
 describe("targetConnectionId filtering", () => {
   it("handles command when targetConnectionId matches this connection", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
     await bridge.start();
 
     const handler = getPublicationHandler();
-    const streamResponse = {
-      ok: true,
-      body: {
-        getReader: () => ({
-          read: jest
-            .fn()
-            .mockResolvedValueOnce({
-              done: false,
-              value: new TextEncoder().encode(
-                JSON.stringify({ type: "exit", exit_code: 0 }) + "\n",
-              ),
-            })
-            .mockResolvedValueOnce({ done: true, value: undefined }),
-        }),
-      },
+    (invoke as jest.Mock).mockClear();
+
+    // Set up streaming mock that sends exit event via channel
+    mockInvokeHandler = async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "execute_stream_command") {
+        // Simulate the Rust side sending an exit event via channel
+        if (capturedChannel?.onmessage) {
+          capturedChannel.onmessage({ type: "exit", exitCode: 0 });
+        }
+        return undefined;
+      }
+      return undefined;
     };
-    (global.fetch as jest.Mock).mockResolvedValueOnce(streamResponse);
 
     handler({
       data: {
@@ -107,25 +129,22 @@ describe("targetConnectionId filtering", () => {
       },
     });
 
-    // Allow the async handleCommand to complete
     await new Promise((r) => setTimeout(r, 50));
 
-    // fetch should have been called for execute/stream
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:3001/execute/stream",
-      expect.objectContaining({ method: "POST" }),
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_stream_command",
+      expect.objectContaining({ command: "echo hi" }),
     );
   });
 
   it("ignores command when targetConnectionId does not match", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
     await bridge.start();
 
     const handler = getPublicationHandler();
-
-    // Reset fetch call count after start()
-    (global.fetch as jest.Mock).mockClear();
+    (invoke as jest.Mock).mockClear();
 
     handler({
       data: {
@@ -138,35 +157,30 @@ describe("targetConnectionId filtering", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(global.fetch).not.toHaveBeenCalledWith(
-      expect.stringContaining("/execute/stream"),
+    expect(invoke).not.toHaveBeenCalledWith(
+      "execute_stream_command",
       expect.anything(),
     );
   });
 
   it("handles command when targetConnectionId is undefined (broadcast)", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
     const config = buildConfig();
     const bridge = new DesktopSandboxBridge(config);
     await bridge.start();
 
     const handler = getPublicationHandler();
-    const streamResponse = {
-      ok: true,
-      body: {
-        getReader: () => ({
-          read: jest
-            .fn()
-            .mockResolvedValueOnce({
-              done: false,
-              value: new TextEncoder().encode(
-                JSON.stringify({ type: "exit", exit_code: 0 }) + "\n",
-              ),
-            })
-            .mockResolvedValueOnce({ done: true, value: undefined }),
-        }),
-      },
+    (invoke as jest.Mock).mockClear();
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        if (capturedChannel?.onmessage) {
+          capturedChannel.onmessage({ type: "exit", exitCode: 0 });
+        }
+        return undefined;
+      }
+      return undefined;
     };
-    (global.fetch as jest.Mock).mockResolvedValueOnce(streamResponse);
 
     handler({
       data: {
@@ -178,9 +192,9 @@ describe("targetConnectionId filtering", () => {
 
     await new Promise((r) => setTimeout(r, 50));
 
-    expect(global.fetch).toHaveBeenCalledWith(
-      "http://127.0.0.1:3001/execute/stream",
-      expect.objectContaining({ method: "POST" }),
+    expect(invoke).toHaveBeenCalledWith(
+      "execute_stream_command",
+      expect.objectContaining({ command: "echo broadcast" }),
     );
   });
 });
@@ -193,7 +207,6 @@ describe("extractUserIdFromToken", () => {
     const bridge = new DesktopSandboxBridge(config);
     await bridge.start();
 
-    // The bridge should have created a subscription on the correct channel
     expect(mockClient.newSubscription).toHaveBeenCalledWith(
       "sandbox:user#user-456",
     );
@@ -242,22 +255,18 @@ describe("forwardChunk", () => {
 
     const handler = getPublicationHandler();
 
-    const ndjson = chunks.map((c) => JSON.stringify(c)).join("\n") + "\n";
-    const streamResponse = {
-      ok: true,
-      body: {
-        getReader: () => ({
-          read: jest
-            .fn()
-            .mockResolvedValueOnce({
-              done: false,
-              value: new TextEncoder().encode(ndjson),
-            })
-            .mockResolvedValueOnce({ done: true, value: undefined }),
-        }),
-      },
+    // Mock execute_stream_command to send chunks via channel
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_stream_command") {
+        if (capturedChannel?.onmessage) {
+          for (const chunk of chunks) {
+            capturedChannel.onmessage(chunk);
+          }
+        }
+        return undefined;
+      }
+      return undefined;
     };
-    (global.fetch as jest.Mock).mockResolvedValueOnce(streamResponse);
 
     handler({
       data: {
@@ -293,7 +302,7 @@ describe("forwardChunk", () => {
     expect(stderrCalls).toHaveLength(0);
   });
 
-  it("defaults exit_code to -1 when missing from exit chunk", async () => {
+  it("defaults exitCode to -1 when missing from exit chunk", async () => {
     const calls = await startBridgeAndForwardChunks([{ type: "exit" }]);
 
     expect(calls).toContainEqual([
@@ -301,9 +310,9 @@ describe("forwardChunk", () => {
     ]);
   });
 
-  it("publishes correct exit_code when provided", async () => {
+  it("publishes correct exitCode when provided", async () => {
     const calls = await startBridgeAndForwardChunks([
-      { type: "exit", exit_code: 42 },
+      { type: "exit", exitCode: 42 },
     ]);
 
     expect(calls).toContainEqual([
