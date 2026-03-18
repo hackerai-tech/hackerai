@@ -211,7 +211,11 @@ export function createRedisChunkReadable(
 
             // Check for __done sentinel
             if (entry.data === "__done") {
-              controller.close();
+              try {
+                controller.close();
+              } catch {
+                // Controller already closed (client disconnected)
+              }
               await reader.quit().catch(() => {});
               return;
             }
@@ -220,7 +224,7 @@ export function createRedisChunkReadable(
             try {
               controller.enqueue(JSON.parse(entry.data));
             } catch {
-              // Skip malformed entries
+              // Skip malformed entries or closed controller
             }
           }
         }
