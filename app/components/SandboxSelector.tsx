@@ -24,7 +24,6 @@ interface ConnectionOption {
   id: string;
   label: string;
   shortLabel: string;
-  description: string;
   icon: typeof Cloud;
   mode?: "docker" | "dangerous";
 }
@@ -38,23 +37,35 @@ export function SandboxSelector({
   const [open, setOpen] = useState(false);
 
   const connections = useQuery(api.localSandbox.listConnections);
-  const options: ConnectionOption[] = [
-    {
-      id: "e2b",
-      label: "Cloud",
-      shortLabel: "Cloud",
-      icon: Cloud,
-      description: "",
-    },
-    ...(connections?.map((conn) => ({
-      id: conn.connectionId,
-      label: conn.name,
-      shortLabel: "Local",
-      icon: conn.isDesktop ? Monitor : Laptop,
-      description: "",
-      mode: conn.mode,
-    })) || []),
-  ];
+  const cloudOption: ConnectionOption = {
+    id: "e2b",
+    label: "Cloud",
+    shortLabel: "Cloud",
+    icon: Cloud,
+  };
+  // Desktop option hidden for now
+  // const desktopOptions: ConnectionOption[] =
+  //   connections
+  //     ?.filter((conn) => conn.isDesktop)
+  //     .map((conn) => ({
+  //       id: conn.connectionId,
+  //       label: conn.name,
+  //       shortLabel: "Local",
+  //       icon: Monitor,
+  //       mode: conn.mode,
+  //     })) || [];
+  const desktopOptions: ConnectionOption[] = [];
+  const remoteOptions: ConnectionOption[] =
+    connections
+      ?.filter((conn) => !conn.isDesktop)
+      .map((conn) => ({
+        id: conn.connectionId,
+        label: conn.osInfo?.hostname || conn.name,
+        shortLabel: conn.osInfo?.hostname || conn.name,
+        icon: Laptop,
+        mode: conn.mode,
+      })) || [];
+  const options = [cloudOption, /* ...desktopOptions, */ ...remoteOptions];
 
   // Trigger presence cleanup when dropdown opens
   useEffect(() => {
@@ -68,9 +79,15 @@ export function SandboxSelector({
   useEffect(() => {
     if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
       onChange?.("e2b");
-      toast.info("Local sandbox disconnected. Switched to Cloud.", {
-        duration: 5000,
-      });
+      // Only show toast for remote disconnects, not when Desktop is hidden
+      const wasHiddenDesktop =
+        connections?.some((c) => c.connectionId === value && c.isDesktop) ??
+        false;
+      if (!wasHiddenDesktop) {
+        toast.info("Local sandbox disconnected. Switched to Cloud.", {
+          duration: 5000,
+        });
+      }
     }
   }, [connections, valueMatchesOption, value, onChange]);
 
@@ -104,7 +121,29 @@ export function SandboxSelector({
       </PopoverTrigger>
       <PopoverContent className="w-[240px] p-1" align="start">
         <div className="space-y-0.5">
-          {options.map((option) => {
+          <button
+            key={cloudOption.id}
+            onClick={() => {
+              onChange?.(cloudOption.id);
+              setOpen(false);
+            }}
+            className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
+              value === cloudOption.id
+                ? "bg-accent text-accent-foreground"
+                : "hover:bg-muted"
+            }`}
+          >
+            <Cloud className="h-4 w-4 shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium truncate">
+                {cloudOption.label}
+              </div>
+            </div>
+            {value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />}
+          </button>
+
+          {/* Desktop option hidden for now
+          {desktopOptions.map((option) => {
             const OptionIcon = option.icon;
             return (
               <button
@@ -124,21 +163,46 @@ export function SandboxSelector({
                   <div className="text-sm font-medium truncate">
                     {option.label}
                   </div>
-                  {option.description && (
-                    <div className="text-xs text-muted-foreground truncate">
-                      {option.description}
-                    </div>
-                  )}
                 </div>
-                {value === option.id && <Check className="h-4 w-4 shrink-0" />}
+                {value === option.id && (
+                  <Check className="h-4 w-4 shrink-0" />
+                )}
               </button>
             );
           })}
+          */}
 
           <div className="border-t mt-1 pt-1">
             <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
               Remote control
             </div>
+            {remoteOptions.map((option) => {
+              const OptionIcon = option.icon;
+              return (
+                <button
+                  key={option.id}
+                  onClick={() => {
+                    onChange?.(option.id);
+                    setOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
+                    value === option.id
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-muted"
+                  }`}
+                >
+                  <OptionIcon className="h-4 w-4 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">
+                      {option.label}
+                    </div>
+                  </div>
+                  {value === option.id && (
+                    <Check className="h-4 w-4 shrink-0" />
+                  )}
+                </button>
+              );
+            })}
             <button
               onClick={() => {
                 setOpen(false);

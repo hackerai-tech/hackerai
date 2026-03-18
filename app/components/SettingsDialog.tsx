@@ -23,7 +23,7 @@ import { AccountTab } from "@/app/components/AccountTab";
 import { DataControlsTab } from "@/app/components/DataControlsTab";
 import { TeamTab } from "@/app/components/TeamTab";
 import { AgentsTab } from "@/app/components/AgentsTab";
-import { LocalSandboxTab } from "@/app/components/LocalSandboxTab";
+import { RemoteControlTab } from "@/app/components/RemoteControlTab";
 import { UsageTab } from "@/app/components/UsageTab";
 import { ExtraUsageSection } from "@/app/components/ExtraUsageSection";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -210,7 +210,7 @@ const SettingsDialog = ({
 
                 {activeTab === "Agents" && <AgentsTab />}
 
-                {activeTab === "Remote Control" && <LocalSandboxTab />}
+                {activeTab === "Remote Control" && <RemoteControlTab />}
 
                 {activeTab === "Usage" && <UsageTab />}
 

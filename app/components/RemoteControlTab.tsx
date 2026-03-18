@@ -14,7 +14,6 @@ import {
   AlertTriangle,
   Terminal,
   Server,
-  Monitor,
   ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -81,7 +80,7 @@ const CommandBlock = ({
   </div>
 );
 
-const LocalSandboxTab = () => {
+const RemoteControlTab = () => {
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [isLoadingToken, setIsLoadingToken] = useState(false);
@@ -133,7 +132,7 @@ const LocalSandboxTab = () => {
       <div className="flex items-center justify-between border-b pb-3">
         <div className="flex items-center gap-2">
           <Server className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-semibold">Local Sandbox</h3>
+          <h3 className="text-sm font-semibold">Remote Control</h3>
         </div>
         <a
           href="https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine"
@@ -151,27 +150,27 @@ const LocalSandboxTab = () => {
         <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Connections
         </h4>
-        {connections && connections.length > 0 ? (
+        {connections && connections.filter((c) => !c.isDesktop).length > 0 ? (
           <div className="space-y-2">
-            {connections.map((conn) => (
-              <div
-                key={conn.connectionId}
-                className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
-              >
-                <div className="relative">
-                  <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
-                  <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
-                </div>
-                {conn.isDesktop ? (
-                  <Monitor className="h-4 w-4 text-muted-foreground shrink-0" />
-                ) : (
+            {connections
+              .filter((conn) => !conn.isDesktop)
+              .map((conn) => (
+                <div
+                  key={conn.connectionId}
+                  className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
+                >
+                  <div className="relative">
+                    <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
+                    <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
+                  </div>
                   <Server className="h-4 w-4 text-muted-foreground shrink-0" />
-                )}
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">{conn.name}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm">
+                      {conn.osInfo?.hostname || conn.name}
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-6 px-4 bg-muted/30 rounded-lg">
@@ -299,4 +298,4 @@ const LocalSandboxTab = () => {
   );
 };
 
-export { LocalSandboxTab };
+export { RemoteControlTab };
