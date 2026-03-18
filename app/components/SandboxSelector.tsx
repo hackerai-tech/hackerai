@@ -48,14 +48,10 @@ export function SandboxSelector({
     },
     ...(connections?.map((conn) => ({
       id: conn.connectionId,
-      label: conn.osInfo?.hostname || conn.name,
-      shortLabel: conn.isDesktop ? "Local" : "Remote",
+      label: conn.name,
+      shortLabel: "Local",
       icon: conn.isDesktop ? Monitor : Laptop,
-      description: conn.isDesktop
-        ? "Desktop app"
-        : conn.mode === "docker"
-          ? "Docker"
-          : "Direct",
+      description: "",
       mode: conn.mode,
     })) || []),
   ];

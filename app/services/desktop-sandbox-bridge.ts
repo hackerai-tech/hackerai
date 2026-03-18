@@ -55,12 +55,9 @@ export class DesktopSandboxBridge {
   }
 
   async start(): Promise<string> {
-    const osInfo = await this.getOsInfo();
-
     const { connectionId, centrifugoToken, centrifugoWsUrl } =
       await this.config.connectDesktop({
-        connectionName: osInfo?.hostname || "Desktop",
-        osInfo,
+        connectionName: "Local",
       });
 
     this.connectionId = connectionId;
@@ -124,59 +121,6 @@ export class DesktopSandboxBridge {
       throw new Error("JWT missing 'sub' claim");
     }
     return payload.sub;
-  }
-
-  private async getOsInfo(): Promise<
-    | { platform: string; arch: string; release: string; hostname: string }
-    | undefined
-  > {
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:${this.config.cmdServerInfo.port}/health`,
-        {
-          headers: {
-            Authorization: `Bearer ${this.config.cmdServerInfo.token}`,
-          },
-        },
-      );
-      if (response.ok) {
-        const data = await response.json();
-        if (data.os_info) return data.os_info;
-      }
-    } catch (error) {
-      console.warn(
-        "[DesktopSandboxBridge] Failed to get OS info from /health:",
-        error,
-      );
-    }
-
-    try {
-      const result = await this.executeOnRustServer(
-        "uname -srm && hostname",
-        5000,
-      );
-      if (result.exitCode === 0) {
-        const lines = result.stdout.trim().split("\n");
-        const [uname, hostname] = [lines[0] || "", lines[1] || "Desktop"];
-        const parts = uname.split(" ");
-        return {
-          platform:
-            parts[0]?.toLowerCase() === "darwin"
-              ? "darwin"
-              : parts[0]?.toLowerCase() || "unknown",
-          release: parts[1] || "unknown",
-          arch: parts[2] || "unknown",
-          hostname: hostname.trim(),
-        };
-      }
-    } catch (error) {
-      console.warn(
-        "[DesktopSandboxBridge] Failed to get OS info via uname:",
-        error,
-      );
-    }
-
-    return undefined;
   }
 
   private async handleCommand(command: CommandMessage): Promise<void> {
@@ -320,30 +264,6 @@ export class DesktopSandboxBridge {
       console.error("[DesktopSandboxBridge] Failed to publish result:", error);
       throw error;
     }
-  }
-
-  private async executeOnRustServer(
-    command: string,
-    timeoutMs: number,
-  ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    const response = await fetch(
-      `http://127.0.0.1:${this.config.cmdServerInfo.port}/execute`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.config.cmdServerInfo.token}`,
-        },
-        body: JSON.stringify({ command, timeout_ms: timeoutMs }),
-      },
-    );
-    if (!response.ok) throw new Error(`Server error: ${response.status}`);
-    const result = await response.json();
-    return {
-      stdout: result.stdout || "",
-      stderr: result.stderr || "",
-      exitCode: result.exit_code ?? -1,
-    };
   }
 
   async stop(): Promise<void> {

@@ -168,21 +168,7 @@ const LocalSandboxTab = () => {
                   <Server className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm flex items-center gap-2">
-                    {conn.osInfo?.hostname || conn.name}
-                    {conn.isDesktop && (
-                      <span className="text-[10px] font-medium uppercase px-1.5 py-0.5 rounded bg-primary/10 text-primary">
-                        Desktop
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {conn.isDesktop
-                      ? `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`
-                      : conn.mode === "docker"
-                        ? `Docker: ${conn.containerId?.slice(0, 12) || "unknown"}`
-                        : `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`}
-                  </div>
+                  <div className="font-medium text-sm">{conn.name}</div>
                 </div>
               </div>
             ))}
