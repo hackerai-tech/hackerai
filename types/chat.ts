@@ -16,14 +16,16 @@ export type SelectedModel =
   | "sonnet-4.6"
   | "grok-4.1"
   | "gemini-3-flash"
-  | "opus-4.6";
+  // | "opus-4.6"
+  | "gpt-5.4";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
   "sonnet-4.6",
   "grok-4.1",
   "gemini-3-flash",
-  "opus-4.6",
+  // "opus-4.6",
+  "gpt-5.4",
 ];
 
 export function isSelectedModel(value: string | null): value is SelectedModel {

@@ -1,6 +1,13 @@
 "use client";
 
-import { Brain, Check, ChevronDown, ChevronRight, Lock } from "lucide-react";
+import {
+  Brain,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Lock,
+  ShieldAlert,
+} from "lucide-react";
 import {
   Popover,
   PopoverContent,
@@ -31,7 +38,8 @@ const MODEL_COST_TIER: Record<Exclude<SelectedModel, "auto">, CostTier> = {
   "gemini-3-flash": "low",
   "grok-4.1": "low",
   "sonnet-4.6": "high",
-  "opus-4.6": "very-high",
+  // "opus-4.6": "very-high",
+  "gpt-5.4": "high",
 };
 
 const COST_CONFIG: Record<
@@ -109,20 +117,28 @@ interface ModelOption {
   id: SelectedModel;
   label: string;
   thinking?: boolean;
+  censored?: boolean;
 }
 
 const ASK_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash" },
   { id: "grok-4.1", label: "Grok 4.1" },
-  { id: "sonnet-4.6", label: "Claude Sonnet 4.6" },
-  { id: "opus-4.6", label: "Claude Opus 4.6" },
+  { id: "gpt-5.4", label: "GPT-5.4", censored: true },
+  // { id: "opus-4.6", label: "Claude Opus 4.6" },
+  { id: "sonnet-4.6", label: "Claude Sonnet 4.6", censored: true },
 ];
 
 const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "gemini-3-flash", label: "Gemini 3 Flash", thinking: true },
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
-  { id: "sonnet-4.6", label: "Claude Sonnet 4.6", thinking: true },
-  { id: "opus-4.6", label: "Claude Opus 4.6", thinking: true },
+  { id: "gpt-5.4", label: "GPT-5.4", thinking: true, censored: true },
+  // { id: "opus-4.6", label: "Claude Opus 4.6", thinking: true },
+  {
+    id: "sonnet-4.6",
+    label: "Claude Sonnet 4.6",
+    thinking: true,
+    censored: true,
+  },
 ];
 
 const getDefaultModelForMode = (mode: ChatMode): SelectedModel => {
@@ -251,6 +267,20 @@ const ModelOptionList = ({
                   </span>
                   {option.thinking && (
                     <Brain className="h-3 w-3 text-muted-foreground/60" />
+                  )}
+                  {option.censored && (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <ShieldAlert className="h-3 w-3 text-amber-500/70 shrink-0 cursor-default" />
+                      </TooltipTrigger>
+                      <TooltipContent
+                        side="right"
+                        sideOffset={4}
+                        className="text-xs px-2 py-1"
+                      >
+                        More restricted content policy
+                      </TooltipContent>
+                    </Tooltip>
                   )}
                   {option.id !== "auto" && (
                     <CostIndicator modelId={option.id} />
