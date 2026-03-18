@@ -87,6 +87,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     tauriCmdServer,
     selectedModel,
     setSelectedModel,
+    agentLongMode,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -129,6 +130,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Use ref for sandbox preference to avoid stale closures in auto-send
   const sandboxPreferenceRef = useLatestRef(sandboxPreference);
   const selectedModelRef = useLatestRef(selectedModel);
+  const agentLongModeRef = useLatestRef(agentLongMode);
 
   // Ensure we only initialize mode from server once per chat id
   const hasInitializedModeFromChatRef = useRef(false);
@@ -348,10 +350,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       maxConsecutiveErrors: 10,
     });
 
-    // Hybrid proxy: delegates to workflow or default based on current mode
+    // Hybrid proxy: delegates to workflow or default based on mode + long toggle
     return {
       sendMessages: (options: any) => {
-        if (chatModeRef.current === "agent") {
+        if (chatModeRef.current === "agent" && agentLongModeRef.current) {
           return workflowTransport.sendMessages(options);
         }
         return defaultTransport.sendMessages(options);

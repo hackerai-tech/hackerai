@@ -37,6 +37,8 @@ import {
   writeChatMode,
   readSelectedModelForMode,
   writeSelectedModelForMode,
+  readAgentLongMode,
+  writeAgentLongMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
 interface GlobalStateType {
@@ -115,6 +117,10 @@ interface GlobalStateType {
     port: number;
     token: string;
   } | null;
+
+  // Agent long mode (durable workflow execution)
+  agentLongMode: boolean;
+  setAgentLongMode: (enabled: boolean) => void;
 
   // Model selection
   selectedModel: SelectedModel;
@@ -234,6 +240,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
       localStorage.setItem("queue-behavior", queueBehavior);
     }
   }, [queueBehavior]);
+
+  // Agent long mode (durable workflow execution via Vercel Workflow + Redis)
+  const [agentLongMode, setAgentLongModeState] = useState<boolean>(() =>
+    readAgentLongMode(),
+  );
+  const setAgentLongMode = useCallback((enabled: boolean) => {
+    setAgentLongModeState(enabled);
+    writeAgentLongMode(enabled);
+  }, []);
 
   // Model selection (persisted per-mode to localStorage)
   const getModeKey = (m: ChatMode): "ask" | "agent" =>
@@ -732,6 +747,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     sandboxPreference,
     setSandboxPreference,
     tauriCmdServer,
+
+    agentLongMode,
+    setAgentLongMode,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

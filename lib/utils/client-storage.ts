@@ -69,6 +69,26 @@ export const writeChatMode = (mode: ChatMode): void => {
   }
 };
 
+const AGENT_LONG_MODE_KEY = "agent_long_mode";
+
+export const readAgentLongMode = (): boolean => {
+  if (!isBrowser()) return false;
+  try {
+    return window.localStorage.getItem(AGENT_LONG_MODE_KEY) === "true";
+  } catch {
+    return false;
+  }
+};
+
+export const writeAgentLongMode = (enabled: boolean): void => {
+  if (!isBrowser()) return;
+  try {
+    window.localStorage.setItem(AGENT_LONG_MODE_KEY, String(enabled));
+  } catch {
+    // ignore
+  }
+};
+
 /** Read the saved model preference for a specific mode (ask vs agent) */
 export const readSelectedModelForMode = (
   mode: "ask" | "agent",
