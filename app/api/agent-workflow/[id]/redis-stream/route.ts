@@ -5,7 +5,10 @@ import {
 } from "ai";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { getChatById } from "@/lib/db/actions";
-import { createRedisChunkReadable } from "@/lib/utils/redis-stream";
+import {
+  createRedisChunkReadable,
+  streamKeyExists,
+} from "@/lib/utils/redis-stream";
 import type { NextRequest } from "next/server";
 
 export const maxDuration = 800;
@@ -56,6 +59,13 @@ export async function GET(
   // already ran. Return a finish response so the transport stops reconnecting
   // instead of replaying all chunks from Redis.
   if (!chat.active_stream_id) {
+    return emptyFinishResponse();
+  }
+
+  // If active_stream_id is set but the Redis stream key no longer exists
+  // (TTL expired, or was never created), the workflow is stale. Return a
+  // finish response to unblock the client instead of hanging in XREAD BLOCK.
+  if (!(await streamKeyExists(chatId))) {
     return emptyFinishResponse();
   }
 

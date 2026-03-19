@@ -187,6 +187,28 @@ export async function readChunks(
  * GET reconnect endpoint. Wrap the result with createUIMessageStreamResponse()
  * so the client receives a standard UIMessageStream.
  */
+/**
+ * Check whether the Redis stream key for a chat exists.
+ * Used by the reconnect endpoint to detect stale streams (e.g., TTL expired)
+ * and return a finish response immediately instead of blocking in XREAD.
+ */
+export async function streamKeyExists(chatId: string): Promise<boolean> {
+  try {
+    const client = await getWriteClient();
+    if (!client) return false;
+    return (await client.exists(getStreamKey(chatId))) === 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Maximum number of consecutive empty XREAD BLOCK responses before we consider
+ * the stream stale and close the readable. Each empty read blocks for ~5s,
+ * so 6 consecutive empties ≈ 30s of silence.
+ */
+const MAX_CONSECUTIVE_EMPTY_READS = 6;
+
 export function createRedisChunkReadable(
   chatId: string,
   startIndex: string = "0-0",
@@ -200,11 +222,22 @@ export function createRedisChunkReadable(
       }
 
       let lastId = startIndex;
+      let consecutiveEmptyReads = 0;
 
       try {
         while (true) {
           const entries = await readChunks(reader, chatId, lastId);
-          if (!entries) continue;
+          if (!entries) {
+            consecutiveEmptyReads++;
+            if (consecutiveEmptyReads >= MAX_CONSECUTIVE_EMPTY_READS) {
+              console.warn(
+                `[redis-stream] ${MAX_CONSECUTIVE_EMPTY_READS} consecutive empty reads for chat ${chatId}, closing stale stream`,
+              );
+              break;
+            }
+            continue;
+          }
+          consecutiveEmptyReads = 0;
 
           for (const entry of entries) {
             lastId = entry.id;
