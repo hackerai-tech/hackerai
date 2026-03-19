@@ -203,28 +203,18 @@ export const ChatInput = ({
         </div>
 
         {/* Sandbox selector below input — always editable.
-            Desktop: always shown for agent mode (empty chat & during messages).
-            Mobile: shown for existing chats only (new chats use above-input placement).
-            On desktop new chats, always reserve space to avoid layout shift when switching modes. */}
-        {!isMobile && isNewChat && !temporaryChatsEnabled ? (
-          <div className="order-3 flex px-1 pt-2 min-h-9">
-            {isAgentMode(chatMode) && (
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-              />
-            )}
+            Desktop new chats: absolutely positioned to avoid shifting the centered layout.
+            Existing chats: normal flow.
+            Mobile new chats: hidden (uses above-input placement). */}
+        {isAgentMode(chatMode) && (!isMobile || !isNewChat) && (
+          <div
+            className={`order-3 flex px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
+          >
+            <SandboxSelector
+              value={sandboxPreference}
+              onChange={setSandboxPreference}
+            />
           </div>
-        ) : (
-          isAgentMode(chatMode) &&
-          (!isMobile || !isNewChat) && (
-            <div className="order-3 flex px-1 pt-2">
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-              />
-            </div>
-          )
         )}
 
         {onScrollToBottom && (
