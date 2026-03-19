@@ -201,6 +201,7 @@ const SettingsDialog = ({
                     onCustomInstructions={handleCustomInstructions}
                     // onManageMemories={handleManageMemories}
                     onManageNotes={handleManageNotes}
+                    subscription={subscription}
                   />
                 )}
 

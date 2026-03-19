@@ -281,7 +281,9 @@ export const systemPrompt = async (
   isTemporary?: boolean,
   sandboxContext?: string | null,
 ): Promise<string> => {
-  const shouldIncludeNotes = userCustomization?.include_memory_entries ?? true;
+  const shouldIncludeNotes =
+    subscription !== "free" &&
+    (userCustomization?.include_memory_entries ?? true);
 
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,
@@ -315,7 +317,7 @@ The current date is ${currentDateTime}.`;
   // Notes are injected via <system-reminder> in messages to keep the system prompt
   // stable for prompt caching. Only include the static "disabled" message here.
   if (!shouldIncludeNotes) {
-    sections.push(getNotesDisabledMessage());
+    sections.push(getNotesDisabledMessage(subscription === "free"));
   }
 
   // Add personality instructions at the end

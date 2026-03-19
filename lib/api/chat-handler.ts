@@ -256,7 +256,9 @@ export const createChatHandler = (
 
       // Fetch user customization early (needed for memory settings)
       const userCustomization = await getUserCustomization({ userId });
-      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+      const memoryEnabled =
+        subscription !== "free" &&
+        (userCustomization?.include_memory_entries ?? true);
 
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
       // Token bucket requires estimated token count for cost calculation
