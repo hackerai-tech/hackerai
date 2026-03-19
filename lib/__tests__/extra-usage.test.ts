@@ -282,7 +282,7 @@ describe("extra-usage", () => {
         expect(result.monthlyCapExceeded).toBe(true);
       });
 
-      it("should return failure result on Convex error", async () => {
+      it("should return failure result on Convex error without claiming insufficientFunds", async () => {
         const { deductFromBalance } = getIsolatedModule();
 
         mockAction.mockRejectedValue(new Error("Convex error"));
@@ -292,7 +292,7 @@ describe("extra-usage", () => {
         expect(result).toEqual({
           success: false,
           newBalanceDollars: 0,
-          insufficientFunds: true,
+          insufficientFunds: false,
           monthlyCapExceeded: false,
         });
       });
