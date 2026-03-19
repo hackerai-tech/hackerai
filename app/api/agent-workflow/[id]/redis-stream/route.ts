@@ -4,7 +4,7 @@ import {
   JsonToSseTransformStream,
 } from "ai";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
-import { getChatById } from "@/lib/db/actions";
+import { getChatById, prepareForNewStream } from "@/lib/db/actions";
 import {
   createRedisChunkReadable,
   streamKeyExists,
@@ -63,9 +63,11 @@ export async function GET(
   }
 
   // If active_stream_id is set but the Redis stream key no longer exists
-  // (TTL expired, or was never created), the workflow is stale. Return a
-  // finish response to unblock the client instead of hanging in XREAD BLOCK.
+  // (TTL expired, or was never created), the workflow is stale. Clear the
+  // stale active_stream_id so the sidebar stops showing a loading indicator,
+  // then return a finish response to unblock the client.
   if (!(await streamKeyExists(chatId))) {
+    void prepareForNewStream({ chatId }).catch(() => {});
     return emptyFinishResponse();
   }
 
