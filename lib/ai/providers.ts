@@ -34,6 +34,25 @@ export const modelCutoffDates: Record<ModelName, string> = {
   "title-generator-model": "November 2024",
 };
 
+export const modelDisplayNames: Record<ModelName, string> = {
+  "ask-model": "Auto, an intelligent model router built by HackerAI",
+  "ask-model-free": "Auto, an intelligent model router built by HackerAI",
+  "agent-model": "Auto, an intelligent model router built by HackerAI",
+  "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
+  "model-grok-4.1": "xAI Grok 4.1 Fast",
+  "model-gemini-3-flash": "Google Gemini 3 Flash",
+  // "model-opus-4.6": "Anthropic Claude Opus 4.6",
+  "model-gpt-5.4": "OpenAI GPT-5.4",
+  "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
+  "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
+  "title-generator-model":
+    "Auto, an intelligent model router built by HackerAI",
+};
+
+export const getModelDisplayName = (modelName: ModelName): string => {
+  return modelDisplayNames[modelName];
+};
+
 export const getModelCutoffDate = (modelName: ModelName): string => {
   return modelCutoffDates[modelName];
 };

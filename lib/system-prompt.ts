@@ -5,7 +5,11 @@ import { generateUserBio } from "./system-prompt/bio";
 // import { generateMemorySection } from "./system-prompt/memory";
 import { getNotesDisabledMessage } from "./system-prompt/notes";
 // import { getMemories, getNotes } from "@/lib/db/actions";
-import { getModelCutoffDate, type ModelName } from "@/lib/ai/providers";
+import {
+  getModelCutoffDate,
+  getModelDisplayName,
+  type ModelName,
+} from "@/lib/ai/providers";
 
 // Constants
 const DATE_FORMAT_OPTIONS: Intl.DateTimeFormatOptions = {
@@ -284,8 +288,11 @@ export const systemPrompt = async (
   );
   const agentInstructions = getAgentModeInstructions(mode);
 
+  const modelDisplayName = getModelDisplayName(modelName);
+
   const basePrompt = `You are HackerAI, an AI penetration testing assistant for authorized cybersecurity professionals. \
 HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
+You are currently powered by ${modelDisplayName}.
 ${agentInstructions}
 Your main goal is to follow the USER's instructions at each message.\
 ${isTemporary ? "\n\nNote: You are currently in a private and temporary chat. It won't be saved, won't update or use HackerAI's memory, and will be deleted when user refreshes the page. You do not have access to the memory tool in this mode." : ""}
