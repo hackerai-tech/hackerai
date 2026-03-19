@@ -45,8 +45,8 @@ export function SandboxSelector({
   const desktopOptions: ConnectionOption[] =
     connections
       ?.filter((conn) => conn.isDesktop)
-      .map((conn) => ({
-        id: conn.connectionId,
+      .map(() => ({
+        id: "desktop" as string,
         label: "Local",
         shortLabel: "Local",
         icon: Monitor,
@@ -75,9 +75,7 @@ export function SandboxSelector({
     if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
       onChange?.("e2b");
       // Only show toast for remote disconnects, not when Desktop is hidden
-      const wasHiddenDesktop =
-        connections?.some((c) => c.connectionId === value && c.isDesktop) ??
-        false;
+      const wasHiddenDesktop = value === "desktop";
       if (!wasHiddenDesktop) {
         toast.info("Local sandbox disconnected. Switched to Cloud.", {
           duration: 5000,

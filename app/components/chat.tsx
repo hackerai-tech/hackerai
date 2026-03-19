@@ -534,11 +534,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
     } else if (storedSandboxType === "tauri") {
-      // "tauri" is a legacy preference — desktop now uses real connectionIds
+      // "tauri" is a legacy preference — desktop now uses "desktop"
       setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
+    } else if (storedSandboxType === "desktop") {
+      // Desktop preference — validate that a desktop connection exists
+      if (localConnections !== undefined) {
+        const desktopExists = localConnections.some((conn) => conn.isDesktop);
+        setSandboxPreference(desktopExists ? "desktop" : "e2b");
+        hasInitializedSandboxRef.current = true;
+      }
+      // If localConnections is still loading, wait for next render
     } else if (localConnections !== undefined) {
-      // For local connectionIds, validate the connection still exists
+      // For remote connectionIds, validate the connection still exists
       const connectionExists = localConnections.some(
         (conn) => conn.connectionId === storedSandboxType,
       );

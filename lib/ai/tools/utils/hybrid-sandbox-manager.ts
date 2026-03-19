@@ -93,7 +93,9 @@ export class HybridSandboxManager implements SandboxManager {
    */
   getEffectivePreference(): SandboxPreference {
     if (this.isLocal && this.currentConnectionId) {
-      return this.currentConnectionId;
+      return this.sandboxPreference === "desktop"
+        ? "desktop"
+        : this.currentConnectionId;
     }
     // If we've initialized a sandbox and it's not local, it's E2B
     if (this.sandbox && !this.isLocal) {
@@ -199,9 +201,12 @@ export class HybridSandboxManager implements SandboxManager {
     const connections = await this.listConnections();
 
     // Find the preferred connection
-    const preferredConnection = connections.find(
-      (conn) => conn.connectionId === this.sandboxPreference,
-    );
+    const preferredConnection =
+      this.sandboxPreference === "desktop"
+        ? connections.find((conn) => conn.isDesktop)
+        : connections.find(
+            (conn) => conn.connectionId === this.sandboxPreference,
+          );
 
     if (preferredConnection) {
       // Use the preferred local connection
@@ -323,9 +328,12 @@ export class HybridSandboxManager implements SandboxManager {
     }
 
     const connections = await this.listConnections();
-    const preferredConnection = connections.find(
-      (conn) => conn.connectionId === this.sandboxPreference,
-    );
+    const preferredConnection =
+      this.sandboxPreference === "desktop"
+        ? connections.find((conn) => conn.isDesktop)
+        : connections.find(
+            (conn) => conn.connectionId === this.sandboxPreference,
+          );
 
     const connection = preferredConnection || connections[0];
     if (!connection) {
