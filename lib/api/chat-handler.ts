@@ -290,11 +290,23 @@ export const createChatHandler = (
 
         if (extraUsageEnabled) {
           const balanceInfo = await getExtraUsageBalance(userId);
-          // Set extraUsageConfig if user has balance OR auto-reload is enabled
-          // (auto-reload can add funds even when balance is $0)
-          if (
-            balanceInfo &&
-            (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled)
+
+          if (!balanceInfo) {
+            // Balance check failed (Convex error) — use optimistic config so
+            // the rate limiter still attempts the deduction, which is the real
+            // source of truth. Without this, a transient Convex failure silently
+            // disables extra usage and the user hits the hard subscription limit.
+            console.warn(
+              `[chat-handler] getExtraUsageBalance returned null for user ${userId}, using optimistic extra usage config`,
+            );
+            extraUsageConfig = {
+              enabled: true,
+              hasBalance: true,
+              autoReloadEnabled: false,
+            };
+          } else if (
+            balanceInfo.balanceDollars > 0 ||
+            balanceInfo.autoReloadEnabled
           ) {
             extraUsageConfig = {
               enabled: true,

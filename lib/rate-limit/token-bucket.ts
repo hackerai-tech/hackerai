@@ -255,7 +255,13 @@ export const checkTokenBucketLimit = async (
           });
         }
 
-        // Fall through to standard rate limit error
+        // Deduction failed for a service reason (not insufficient funds) —
+        // tell the user to retry instead of a misleading "add credits" message.
+        throw new ChatSDKError(
+          "rate_limit:chat",
+          "Extra usage billing is temporarily unavailable. Please try again in a few moments.",
+          { resetTimestamp: monthlyCheck.reset, subscription },
+        );
       }
 
       // No extra usage enabled - throw standard rate limit error
