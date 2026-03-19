@@ -14,6 +14,7 @@ export interface ConnectionInfo {
   name: string;
   osInfo?: OsInfo;
   lastSeen?: number;
+  isDesktop?: boolean;
 }
 
 /**
