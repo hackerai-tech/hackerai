@@ -209,6 +209,16 @@ export async function runAgentStep(
     },
   });
 
+  // Write periodic heartbeats to Redis so the stream reader stays alive
+  // during long tool executions (e.g., nmap scans, sqlmap) where no AI
+  // chunks flow for extended periods. Without this, the reader's 30s
+  // stale timeout fires and emits a synthetic finish, causing the client
+  // to think the chat is done while the workflow is still running.
+  const HEARTBEAT_INTERVAL_MS = 15_000;
+  const heartbeatInterval = setInterval(() => {
+    void appendChunk(chatId, "__heartbeat");
+  }, HEARTBEAT_INTERVAL_MS);
+
   // preventClose keeps the writable open so the workflow can continue
   // piping from subsequent steps after a time-budget checkpoint.
   // preventAbort stops the budget abort from killing the writable so
@@ -219,6 +229,8 @@ export async function runAgentStep(
     .pipeThrough(stripFinish)
     .pipeTo(writable, { preventClose: true, preventAbort: true })
     .catch(() => {});
+
+  clearInterval(heartbeatInterval);
 
   const result = await getStepResult();
 

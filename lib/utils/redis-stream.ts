@@ -343,6 +343,14 @@ export function createRedisChunkReadable(
               continue;
             }
 
+            // Heartbeat: the workflow step is still alive but idle (e.g.,
+            // during a long terminal command). Reset the stale counter
+            // without forwarding to the client.
+            if (entry.data === '"__heartbeat"') {
+              consecutiveEmptyReads = 0;
+              continue;
+            }
+
             // Parse the stored JSON chunk and enqueue it
             try {
               controller.enqueue(JSON.parse(entry.data));

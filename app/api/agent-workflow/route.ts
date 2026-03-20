@@ -6,10 +6,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { createChatLogger } from "@/lib/api/chat-logger";
 import { getUserFriendlyProviderError } from "@/lib/utils/error-utils";
 import { startStream } from "@/lib/db/actions";
-import {
-  createRedisChunkReadable,
-  resetStream,
-} from "@/lib/utils/redis-stream";
+import { resetStream } from "@/lib/utils/redis-stream";
 import type { NextRequest } from "next/server";
 
 export const maxDuration = 800;
@@ -24,17 +21,21 @@ export async function POST(req: NextRequest) {
     const run = await start(agentWorkflow, [payload]);
 
     // Reset the Redis stream so stale chunks from a previous run
-    // (e.g. after regenerate) are not replayed to the new reader.
+    // (e.g. after regenerate) are not replayed on reconnect.
     await resetStream(payload.chatId);
     await startStream({
       chatId: payload.chatId,
       streamId: `rstream_${payload.chatId}`,
     });
 
-    const stream = createRedisChunkReadable(payload.chatId);
-
+    // Stream directly from the workflow's writable output (via getReadable)
+    // instead of reading from Redis. This gives the same performance as
+    // the normal agent mode — chunks flow directly from the AI to the
+    // client without a Redis hop per chunk.
+    // Redis is still populated by the step's redisWriteTransform as a
+    // cache for reconnects (page navigation, 800s function timeout).
     return createUIMessageStreamResponse({
-      stream,
+      stream: run.getReadable(),
       headers: { "x-workflow-run-id": run.runId },
     });
   } catch (error) {
