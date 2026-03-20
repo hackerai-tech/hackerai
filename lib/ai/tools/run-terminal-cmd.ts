@@ -34,7 +34,6 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     backgroundProcessTracker,
     guardrailsConfig,
     caidoEnabled,
-    isE2BSandboxPreference,
   } = context;
 
   // Parse user guardrail configuration and get effective guardrails
@@ -42,10 +41,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
 
   // Caido proxy env vars — injected into every command on non-E2B sandboxes when enabled.
-  const caidoEnvVars =
-    caidoEnabled && !isE2BSandboxPreference
-      ? buildCaidoProxyEnvVars(CAIDO_DEFAULTS)
-      : undefined;
+  const caidoEnvVars = caidoEnabled
+    ? buildCaidoProxyEnvVars(CAIDO_DEFAULTS)
+    : undefined;
 
   return tool({
     description: `Execute a command on behalf of the user.

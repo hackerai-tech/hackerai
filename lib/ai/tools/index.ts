@@ -94,11 +94,6 @@ export const createTools = (
   const fileAccumulator = new FileAccumulator();
   const backgroundProcessTracker = new BackgroundProcessTracker();
 
-  // DefaultSandboxManager always uses E2B; HybridSandboxManager uses E2B only
-  // when sandboxPreference is explicitly "e2b".
-  const isE2BSandboxPreference =
-    !sandboxPreference || sandboxPreference === "e2b";
-
   const context: ToolContext = {
     sandboxManager,
     writer,
@@ -106,7 +101,6 @@ export const createTools = (
     todoManager,
     userID,
     chatId,
-    isE2BSandboxPreference,
     assistantMessageId,
     fileAccumulator,
     backgroundProcessTracker,
@@ -136,7 +130,7 @@ export const createTools = (
     ...(process.env.PERPLEXITY_API_KEY && {
       web_search: createWebSearch(context),
     }),
-    ...(caidoEnabled && !isE2BSandboxPreference && createProxyTools(context)),
+    ...(caidoEnabled && createProxyTools(context)),
   };
 
   // Filter tools based on mode
