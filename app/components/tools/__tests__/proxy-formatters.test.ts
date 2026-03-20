@@ -1,109 +1,20 @@
 /**
- * Tests for proxy tool output formatters in ProxyToolHandler.
- *
- * These formatters produce clean terminal-style text for the sidebar.
- * Since they're defined inside the component file, we test the formatting
- * logic by reimplementing the pure functions here.
+ * Tests for proxy tool output formatters.
+ * Imports the real formatProxyOutput from ProxyToolHandler.
  */
 
-// Reimplemented from ProxyToolHandler.tsx for testing (they're not exported)
-function padRight(str: string, len: number): string {
-  return str.length >= len
-    ? str.slice(0, len)
-    : str + " ".repeat(len - str.length);
-}
-
-function formatListRequests(r: any): string {
-  const requests = r.requests ?? [];
-  if (!requests.length) return "No requests captured.";
-
-  const lines: string[] = [
-    `${r.total_count} request${r.total_count !== 1 ? "s" : ""} (showing ${r.returned_count})`,
-    "",
-    `${"ID".padEnd(6)} ${"METHOD".padEnd(7)} ${"STATUS".padEnd(7)} ${"HOST".padEnd(30)} PATH`,
-    `${"------"} ${"-------"} ${"------"} ${"------------------------------"} ----`,
-  ];
-
-  for (const req of requests) {
-    const resp = req.response;
-    const status = resp?.statusCode
-      ? String(resp.statusCode).padEnd(7)
-      : "---    ";
-    const time = resp?.roundtripTime ? `${resp.roundtripTime}ms` : "";
-    const id = String(req.id ?? "").padEnd(6);
-    const method = padRight(req.method ?? "?", 7);
-    const host = padRight(req.host ?? "", 30);
-    const path = req.path ?? "/";
-    lines.push(
-      `${id} ${method} ${status} ${host} ${path}${time ? "  " + time : ""}`,
-    );
-  }
-
-  return lines.join("\n");
-}
-
-function formatSendRequest(r: any): string {
-  const lines: string[] = [];
-  const code = r.status_code ?? 0;
-  lines.push(`HTTP ${code}  ${r.response_time_ms ?? 0}ms  ${r.url ?? ""}`);
-
-  const headers = r.headers ?? {};
-  if (Object.keys(headers).length) {
-    lines.push("");
-    for (const [k, v] of Object.entries(headers)) {
-      lines.push(`${k}: ${v}`);
-    }
-  }
-
-  if (r.body) {
-    lines.push("");
-    lines.push(r.body);
-    if (r.body_truncated) {
-      lines.push(`\n(truncated -- ${r.body_size} bytes total)`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-function formatScopeRules(r: any): string {
-  if (r.scope) {
-    const s = r.scope;
-    const lines = [`${s.name}  (id:${s.id})`];
-    if (s.allowlist?.length) lines.push(`  allow: ${s.allowlist.join(", ")}`);
-    if (s.denylist?.length) lines.push(`  deny:  ${s.denylist.join(", ")}`);
-    if (r.message) lines.push(`\n${r.message}`);
-    return lines.join("\n");
-  }
-
-  if (r.scopes) {
-    if (!r.scopes.length) return "No scopes defined.";
-    const lines = [`${r.count} scope${r.count !== 1 ? "s" : ""}`, ""];
-    for (const s of r.scopes) {
-      const allow = s.allowlist?.length ? s.allowlist.join(", ") : "*";
-      lines.push(`  ${s.name} (${s.id})  allow: ${allow}`);
-    }
-    return lines.join("\n");
-  }
-
-  if (r.message) return r.message;
-  return JSON.stringify(r, null, 2);
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+import { formatProxyOutput } from "../ProxyToolHandler";
 
 describe("Proxy Tool Output Formatters", () => {
-  describe("formatListRequests", () => {
+  describe("list_requests", () => {
     it("should show 'No requests captured' for empty list", () => {
-      expect(formatListRequests({ requests: [], total_count: 0 })).toBe(
-        "No requests captured.",
-      );
+      expect(
+        formatProxyOutput("list_requests", { requests: [], total_count: 0 }),
+      ).toBe("No requests captured.");
     });
 
     it("should format requests as a table", () => {
-      const result = formatListRequests({
+      const result = formatProxyOutput("list_requests", {
         requests: [
           {
             id: "1",
@@ -137,7 +48,7 @@ describe("Proxy Tool Output Formatters", () => {
     });
 
     it("should handle requests without responses", () => {
-      const result = formatListRequests({
+      const result = formatProxyOutput("list_requests", {
         requests: [{ id: "1", method: "GET", host: "example.com", path: "/" }],
         total_count: 1,
         returned_count: 1,
@@ -148,9 +59,9 @@ describe("Proxy Tool Output Formatters", () => {
     });
   });
 
-  describe("formatSendRequest", () => {
+  describe("send_request", () => {
     it("should format status, timing, and URL on first line", () => {
-      const result = formatSendRequest({
+      const result = formatProxyOutput("send_request", {
         status_code: 200,
         response_time_ms: 150,
         url: "https://example.com/api",
@@ -163,7 +74,7 @@ describe("Proxy Tool Output Formatters", () => {
     });
 
     it("should show filtered headers", () => {
-      const result = formatSendRequest({
+      const result = formatProxyOutput("send_request", {
         status_code: 200,
         response_time_ms: 50,
         url: "https://example.com",
@@ -179,7 +90,7 @@ describe("Proxy Tool Output Formatters", () => {
     });
 
     it("should show truncation notice", () => {
-      const result = formatSendRequest({
+      const result = formatProxyOutput("send_request", {
         status_code: 200,
         response_time_ms: 50,
         url: "https://example.com",
@@ -193,9 +104,40 @@ describe("Proxy Tool Output Formatters", () => {
     });
   });
 
-  describe("formatScopeRules", () => {
+  describe("repeat_request", () => {
+    it("should show modifications and original request ID", () => {
+      const result = formatProxyOutput("repeat_request", {
+        status_code: 200,
+        response_time_ms: 50,
+        url: "https://example.com",
+        headers: {},
+        body: "ok",
+        original_request_id: "5",
+        modifications_applied: { headers: { "X-Test": "1" }, body: "new" },
+      });
+
+      expect(result).toContain("Modified: headers, body");
+      expect(result).toContain("Original request: 5");
+      expect(result).toContain("HTTP 200");
+    });
+
+    it("should skip modification line when no modifications", () => {
+      const result = formatProxyOutput("repeat_request", {
+        status_code: 200,
+        response_time_ms: 50,
+        url: "https://example.com",
+        headers: {},
+        body: "ok",
+        modifications_applied: {},
+      });
+
+      expect(result).not.toContain("Modified:");
+    });
+  });
+
+  describe("scope_rules", () => {
     it("should format a single scope with allow/deny lists", () => {
-      const result = formatScopeRules({
+      const result = formatProxyOutput("scope_rules", {
         scope: {
           id: "1",
           name: "pentest-target",
@@ -210,7 +152,7 @@ describe("Proxy Tool Output Formatters", () => {
     });
 
     it("should format scope list", () => {
-      const result = formatScopeRules({
+      const result = formatProxyOutput("scope_rules", {
         scopes: [
           { id: "1", name: "scope-a", allowlist: ["*.a.com"] },
           { id: "2", name: "scope-b", allowlist: [] },
@@ -224,15 +166,99 @@ describe("Proxy Tool Output Formatters", () => {
     });
 
     it("should show 'No scopes defined' for empty list", () => {
-      expect(formatScopeRules({ scopes: [], count: 0 })).toBe(
+      expect(formatProxyOutput("scope_rules", { scopes: [], count: 0 })).toBe(
         "No scopes defined.",
       );
     });
 
     it("should show delete message", () => {
-      expect(formatScopeRules({ message: "Scope 1 deleted" })).toBe(
-        "Scope 1 deleted",
-      );
+      expect(
+        formatProxyOutput("scope_rules", { message: "Scope 1 deleted" }),
+      ).toBe("Scope 1 deleted");
+    });
+  });
+
+  describe("view_request", () => {
+    it("should show paginated content", () => {
+      const result = formatProxyOutput("view_request", {
+        id: "1",
+        content: "GET /api HTTP/1.1\nHost: example.com",
+        page: 1,
+        total_pages: 1,
+        has_more: false,
+      });
+
+      expect(result).toContain("GET /api HTTP/1.1");
+      expect(result).toContain("Host: example.com");
+    });
+
+    it("should show pagination header when has_more", () => {
+      const result = formatProxyOutput("view_request", {
+        id: "1",
+        content: "line1\nline2",
+        page: 1,
+        total_pages: 3,
+        showing_lines: "1-50 of 150",
+        has_more: true,
+      });
+
+      expect(result).toContain("[Lines 1-50 of 150, page 1/3]");
+    });
+
+    it("should show search matches", () => {
+      const result = formatProxyOutput("view_request", {
+        id: "1",
+        matches: [{ match: "password", before: "name=", after: "&submit=1" }],
+        total_matches: 1,
+        search_pattern: "password",
+      });
+
+      expect(result).toContain('1 match for "password"');
+      expect(result).toContain(">>>password<<<");
+    });
+  });
+
+  describe("list_sitemap", () => {
+    it("should show 'No sitemap entries' for empty list", () => {
+      expect(
+        formatProxyOutput("list_sitemap", { entries: [], total_count: 0 }),
+      ).toBe("No sitemap entries.");
+    });
+
+    it("should format entries with kind indicators", () => {
+      const result = formatProxyOutput("list_sitemap", {
+        entries: [
+          {
+            id: "1",
+            kind: "DOMAIN",
+            label: "example.com",
+            hasDescendants: true,
+            metadata: { isTls: true, port: 443 },
+          },
+          {
+            id: "2",
+            kind: "REQUEST",
+            label: "/api/users",
+            hasDescendants: false,
+            request: { method: "GET", status: 200 },
+          },
+        ],
+        total_count: 2,
+        showing: "1-2 of 2",
+      });
+
+      expect(result).toContain("[D]");
+      expect(result).toContain("example.com");
+      expect(result).toContain("(https:443)");
+      expect(result).toContain("GET");
+      expect(result).toContain("/api/users");
+    });
+  });
+
+  describe("unknown tool", () => {
+    it("should fallback to JSON.stringify", () => {
+      const result = formatProxyOutput("unknown_tool", { foo: "bar" });
+      expect(result).toBe(JSON.stringify({ foo: "bar" }, null, 2));
     });
   });
 });

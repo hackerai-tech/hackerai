@@ -212,7 +212,7 @@ function formatViewSitemapEntry(r: any): string {
   return lines.join("\n");
 }
 
-function formatProxyOutput(toolName: string, result: any): string {
+export function formatProxyOutput(toolName: string, result: any): string {
   try {
     switch (toolName) {
       case "list_requests":

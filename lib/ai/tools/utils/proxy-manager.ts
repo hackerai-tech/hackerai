@@ -22,7 +22,7 @@ const CAIDO_LOG = "/tmp/caido.log";
 const caidoLock = new WeakMap<object, Promise<void>>();
 
 /** Detects Caido's broken-database error in response content. */
-function isCaidoBroken(text: string): boolean {
+export function isCaidoBroken(text: string): boolean {
   return (
     text.includes("Could not acquire a connection to the database") ||
     text.includes("Repository operation failed")

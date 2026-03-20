@@ -10,7 +10,7 @@
  * - Pagination logic
  */
 
-import { ensureCaido } from "../proxy-manager";
+import { ensureCaido, isCaidoBroken } from "../proxy-manager";
 
 // ---------------------------------------------------------------------------
 // Mock sandbox
@@ -200,19 +200,37 @@ describe("Proxy Manager", () => {
     });
   });
 
-  describe("isCaidoBroken detection", () => {
-    it("should detect database connection error in HTML response", () => {
-      const errorPage = "Could not acquire a connection to the database";
-      // This is tested indirectly via sendRequest — the function is private
-      // but we can verify the pattern matches
-      expect(errorPage).toContain(
-        "Could not acquire a connection to the database",
-      );
+  describe("isCaidoBroken", () => {
+    it("should return true for database connection error", () => {
+      expect(
+        isCaidoBroken("Could not acquire a connection to the database"),
+      ).toBe(true);
     });
 
-    it("should detect repository operation error", () => {
-      const errorPage = "Repository operation failed";
-      expect(errorPage).toContain("Repository operation failed");
+    it("should return true for repository operation error", () => {
+      expect(isCaidoBroken("Repository operation failed")).toBe(true);
+    });
+
+    it("should return true when error is embedded in HTML", () => {
+      expect(
+        isCaidoBroken(
+          '<pre class="c-details">Repository operation failed\n\nCaused by:\n    Could not acquire a connection to the database</pre>',
+        ),
+      ).toBe(true);
+    });
+
+    it("should return false for normal responses", () => {
+      expect(
+        isCaidoBroken('{"data":{"requestsByOffset":{"count":{"value":5}}}}'),
+      ).toBe(false);
+    });
+
+    it("should return false for empty string", () => {
+      expect(isCaidoBroken("")).toBe(false);
+    });
+
+    it("should return false for unrelated errors", () => {
+      expect(isCaidoBroken("Connection refused")).toBe(false);
     });
   });
 });
