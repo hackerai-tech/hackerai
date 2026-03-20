@@ -553,11 +553,16 @@ export async function viewRequest(
   return paginateContent(requestData, rawContent, page, pageSize);
 }
 
+const MAX_REGEX_LENGTH = 500;
+
 function searchContent(
   requestData: unknown,
   content: string,
   pattern: string,
 ): Record<string, unknown> {
+  if (pattern.length > MAX_REGEX_LENGTH) {
+    return { error: `Regex pattern too long (max ${MAX_REGEX_LENGTH} chars)` };
+  }
   try {
     const regex = new RegExp(pattern, "gim");
     const matches: {
@@ -718,21 +723,31 @@ export async function sendRequest(
   const { sandbox } = await context.sandboxManager.getSandbox();
   const proxyUrl = `http://${CAIDO_DEFAULTS.host}:${CAIDO_DEFAULTS.port}`;
 
-  const headerArgs = Object.entries(headers)
-    .map(([k, v]) => `-H "${k}: ${v}"`)
+  // Encode URL, headers, body via base64 to prevent shell injection.
+  // All user-controlled values go through base64 → temp files → curl reads from files.
+  const sanitizedMethod = method.toUpperCase().replace(/[^A-Z]/g, "");
+  const urlB64 = Buffer.from(url).toString("base64");
+
+  const headerFlags = Object.entries(headers)
+    .map(([k, v]) => {
+      const hdrB64 = Buffer.from(`${k}: ${v}`).toString("base64");
+      return `-H "$(echo '${hdrB64}' | base64 -d)"`;
+    })
     .join(" ");
 
-  const bodyArg = body ? `--data-raw '${body.replace(/'/g, "'\\''")}'` : "";
+  const bodyFlag = body
+    ? `--data-raw "$(echo '${Buffer.from(body).toString("base64")}' | base64 -d)"`
+    : "";
 
   // -i includes response headers, -w appends timing metadata on a separate line
   const cmd = [
     `curl -siL --proxy ${proxyUrl} --insecure`,
-    `-X ${method.toUpperCase()}`,
-    headerArgs,
-    bodyArg,
+    `-X ${sanitizedMethod}`,
+    headerFlags,
+    bodyFlag,
     `--max-time ${timeout}`,
     `-w '\n__CURL_META__{"status":%{http_code},"time_ms":%{time_total},"url_effective":"%{url_effective}"}'`,
-    `"${url}"`,
+    `"$(echo '${urlB64}' | base64 -d)"`,
   ]
     .filter(Boolean)
     .join(" ");
