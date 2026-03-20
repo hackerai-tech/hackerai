@@ -8,6 +8,8 @@ import { getChatById, prepareForNewStream } from "@/lib/db/actions";
 import {
   createRedisChunkReadable,
   streamKeyExists,
+  getStreamLength,
+  resolveStartId,
 } from "@/lib/utils/redis-stream";
 import type { NextRequest } from "next/server";
 
@@ -72,9 +74,19 @@ export async function GET(
   }
 
   const { searchParams } = new URL(req.url);
-  const startIndex = searchParams.get("startIndex") ?? "0-0";
+  const rawStartIndex = searchParams.get("startIndex") ?? "0-0";
 
-  const stream = createRedisChunkReadable(chatId, startIndex);
+  // WorkflowChatTransport sends a sequential chunk counter (e.g. "6225")
+  // but Redis XREAD expects stream IDs (e.g. "1773935459492-0").
+  // Resolve the counter to the correct Redis stream ID.
+  const resolvedId = await resolveStartId(chatId, rawStartIndex);
+
+  const streamLength = await getStreamLength(chatId);
+  console.log(
+    `[redis-stream] GET chatId=${chatId} startIndex=${rawStartIndex} resolvedId=${resolvedId} streamLength=${streamLength}`,
+  );
+
+  const stream = createRedisChunkReadable(chatId, resolvedId);
 
   return createUIMessageStreamResponse({ stream });
 }

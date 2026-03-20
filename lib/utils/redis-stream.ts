@@ -203,11 +203,75 @@ export async function streamKeyExists(chatId: string): Promise<boolean> {
 }
 
 /**
- * Maximum number of consecutive empty XREAD BLOCK responses before we consider
- * the stream stale and close the readable. Each empty read blocks for ~5s,
- * so 6 consecutive empties ≈ 30s of silence.
+ * Return the number of entries in the Redis stream for a chat.
+ * Returns 0 if the key doesn't exist or on error.
+ */
+export async function getStreamLength(chatId: string): Promise<number> {
+  try {
+    const client = await getWriteClient();
+    if (!client) return 0;
+    return await client.xLen(getStreamKey(chatId));
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Convert a startIndex (which may be a sequential chunk counter from
+ * WorkflowChatTransport, or a Redis stream ID) to a valid Redis stream ID.
+ *
+ * WorkflowChatTransport sends sequential chunk counters (0, 336, 6225) as
+ * startIndex, but Redis XREAD expects stream IDs (timestamp-sequence format,
+ * e.g. "1773935459492-0"). Sequential numbers are always less than real
+ * timestamp-based IDs, causing XREAD to return ALL entries from the beginning.
+ *
+ * This function resolves the chunk counter to the corresponding Redis stream
+ * entry ID by skipping the first N entries.
+ */
+export async function resolveStartId(
+  chatId: string,
+  startIndex: string,
+): Promise<string> {
+  // Already a Redis stream ID (contains "-")
+  if (startIndex.includes("-")) return startIndex;
+
+  const offset = parseInt(startIndex, 10);
+  if (isNaN(offset) || offset <= 0) return "0-0";
+
+  try {
+    const client = await getWriteClient();
+    if (!client) return "0-0";
+
+    const key = getStreamKey(chatId);
+    const streamLen = await client.xLen(key);
+
+    if (offset >= streamLen) {
+      // Offset is past the end — position at the last entry so XREAD
+      // blocks for genuinely new entries instead of replaying everything.
+      const last = await client.xRevRange(key, "+", "-", { COUNT: 1 });
+      return last.length > 0 ? last[0].id : "0-0";
+    }
+
+    // Skip the first `offset` entries and return the last skipped entry's ID.
+    // XREAD returns entries AFTER this ID, so we resume from the right spot.
+    const entries = await client.xRange(key, "-", "+", { COUNT: offset });
+    return entries.length > 0 ? entries[entries.length - 1].id : "0-0";
+  } catch {
+    return "0-0";
+  }
+}
+
+/**
+ * Maximum consecutive empty XREAD BLOCK responses before closing:
+ * - Default (no checkpoint seen): 6 × 5s = 30s of silence
+ * - After checkpoint: 24 × 5s = 2min to allow for step transition
+ *
+ * MAX_TOTAL_EMPTY_READS caps the absolute wait regardless of checkpoint
+ * resets, so a crashed workflow doesn't block forever.
  */
 const MAX_CONSECUTIVE_EMPTY_READS = 6;
+const MAX_CONSECUTIVE_EMPTY_READS_AFTER_CHECKPOINT = 24;
+const MAX_TOTAL_EMPTY_READS = 36; // ~3 minutes absolute cap
 
 export function createRedisChunkReadable(
   chatId: string,
@@ -223,16 +287,33 @@ export function createRedisChunkReadable(
 
       let lastId = startIndex;
       let consecutiveEmptyReads = 0;
+      let totalEmptyReads = 0;
+      let sawCheckpoint = false;
 
       try {
         while (true) {
           const entries = await readChunks(reader, chatId, lastId);
           if (!entries) {
             consecutiveEmptyReads++;
-            if (consecutiveEmptyReads >= MAX_CONSECUTIVE_EMPTY_READS) {
+            totalEmptyReads++;
+            const threshold = sawCheckpoint
+              ? MAX_CONSECUTIVE_EMPTY_READS_AFTER_CHECKPOINT
+              : MAX_CONSECUTIVE_EMPTY_READS;
+            if (
+              consecutiveEmptyReads >= threshold ||
+              totalEmptyReads >= MAX_TOTAL_EMPTY_READS
+            ) {
               console.warn(
-                `[redis-stream] ${MAX_CONSECUTIVE_EMPTY_READS} consecutive empty reads for chat ${chatId}, closing stale stream`,
+                `[redis-stream] stale stream for chat ${chatId} (consecutive=${consecutiveEmptyReads}, total=${totalEmptyReads}, checkpoint=${sawCheckpoint}), closing`,
               );
+              // Emit a synthetic finish so WorkflowChatTransport stops
+              // reconnecting. Without this, the transport sees the stream
+              // end without a "finish" chunk and retries indefinitely.
+              try {
+                controller.enqueue({ type: "finish", finishReason: "stop" });
+              } catch {
+                // Controller already closed
+              }
               break;
             }
             continue;
@@ -251,6 +332,15 @@ export function createRedisChunkReadable(
               }
               await reader.quit().catch(() => {});
               return;
+            }
+
+            // Checkpoint marker: the workflow step is transitioning to a
+            // new step. Reset the consecutive counter and extend the timeout
+            // so we keep waiting for the next step's chunks.
+            if (entry.data === '"__checkpoint"') {
+              sawCheckpoint = true;
+              consecutiveEmptyReads = 0;
+              continue;
             }
 
             // Parse the stored JSON chunk and enqueue it

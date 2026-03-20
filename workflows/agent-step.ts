@@ -170,14 +170,35 @@ export async function runAgentStep(
   // Skip per-step "finish" chunks — those are an internal workflow artifact.
   // The real finish + __done sentinel are written explicitly in the
   // !canContinue block (and closeWorkflowStream safety net).
+  //
+  // On continuation steps, suppress "warm-up" reasoning at the start.
+  // After a checkpoint the model receives the full message history and
+  // generates many reasoning blocks before producing useful output.
+  // These add noise to the UI, so we gate them until the first real
+  // content chunk (text, tool call, etc.) arrives.
+  let seenRealContent = !isContinuation;
   const redisWriteTransform = new TransformStream<
     UIMessageChunk,
     UIMessageChunk
   >({
     transform(chunk, controller) {
-      if (!("type" in chunk && chunk.type === "finish")) {
-        void appendChunk(chatId, chunk);
+      if ("type" in chunk && chunk.type === "finish")
+        return controller.enqueue(chunk);
+
+      const type = "type" in chunk ? (chunk.type as string) : "";
+      if (
+        !seenRealContent &&
+        (type === "reasoning-start" ||
+          type === "reasoning-delta" ||
+          type === "reasoning-end" ||
+          type === "step-start")
+      ) {
+        // Suppress warm-up reasoning — don't write to Redis or forward
+        return;
       }
+      seenRealContent = true;
+
+      void appendChunk(chatId, chunk);
       controller.enqueue(chunk);
     },
   });
@@ -214,10 +235,20 @@ export async function runAgentStep(
     result.finishReason === WORKFLOW_CHECKPOINT_FINISH_REASON &&
     (result.messagesSnapshot?.length ?? 0) > 0;
 
-  if (!canContinue) {
-    // Shadow the final finish to Redis before writing to the Vercel writable
-    void appendChunk(chatId, { type: "finish", finishReason: "stop" });
-    void markStreamDone(chatId);
+  if (canContinue) {
+    // Write a checkpoint marker to Redis so the stream reader knows more
+    // data is coming from the next step. Without this, the reader's stale
+    // timeout (30s of silence) fires during the step transition gap and
+    // emits a synthetic finish, which tells the client the chat is done
+    // even though a new step is about to start.
+    await appendChunk(chatId, "__checkpoint");
+  } else {
+    // Write the final finish + __done sentinel to Redis BEFORE closing the
+    // Vercel writable. These must be awaited — fire-and-forget risks the step
+    // exiting before the writes complete, leaving the stream without __done
+    // and causing an infinite reconnect loop on the client.
+    await appendChunk(chatId, { type: "finish", finishReason: "stop" });
+    await markStreamDone(chatId);
 
     const writer = writable.getWriter();
     await writer.write({ type: "finish", finishReason: "stop" });
@@ -236,8 +267,8 @@ export async function runAgentStep(
  */
 export async function closeWorkflowStream(chatId: string) {
   "use step";
-  void appendChunk(chatId, { type: "finish", finishReason: "stop" });
-  void markStreamDone(chatId);
+  await appendChunk(chatId, { type: "finish", finishReason: "stop" });
+  await markStreamDone(chatId);
 
   const writable = getWritable<UIMessageChunk>();
   const writer = writable.getWriter();
