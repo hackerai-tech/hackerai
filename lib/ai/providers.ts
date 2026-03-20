@@ -6,7 +6,7 @@ import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-model-free": openrouter("xiaomi/mimo-v2-flash"),
+  "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
   "agent-model": openrouter("moonshotai/kimi-k2.5"),
   "model-sonnet-4.6": openrouter("anthropic/claude-sonnet-4-6"),
   "model-grok-4.1": openrouter("x-ai/grok-4.1-fast"),
