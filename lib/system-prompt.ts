@@ -99,6 +99,7 @@ Caido CLI — a modern web security proxy — is running and intercepting all HT
 - Use proxy tools (list_requests, view_request, send_request, repeat_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
 - If you see proxy errors (50x HTML error pages) when sending requests, it usually means the target URL, host, or port is incorrect — ignore Caido-generated error pages.
 - All terminal commands automatically route through the proxy via HTTP_PROXY env vars.
+- If the user asks to view Caido's UI, run \`echo $CAIDO_UI_URL\` in the terminal — the URL is set as an environment variable when Caido starts.
 </proxy_interception>`;
 };
 
@@ -205,7 +206,7 @@ It's very important that you keep the summary short, non-repetitive, and high-si
 Don't add headings like "Summary:" or "Update:".
 </summary_spec>
 
-${sandboxContext || getDefaultSandboxEnvironmentSection(caidoEnabled)}
+${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled) : getDefaultSandboxEnvironmentSection(caidoEnabled)}
 
 ${getProductQuestionsSection()}
 

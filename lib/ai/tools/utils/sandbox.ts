@@ -17,7 +17,7 @@ const MAX_CREATE_RETRIES = 3;
  * and recreated on next connection attempt.
  */
 // v8: upgraded sandbox CPU (4 cores) and memory (2GB)
-// v9: added Caido proxy (caido-cli install, docker-entrypoint.sh auto-start, HTTP_PROXY env vars)
+// v9: added Caido proxy (caido-cli install, lazy start via ensureCaido, HTTP_PROXY env vars)
 const SANDBOX_VERSION = "v9";
 
 /**

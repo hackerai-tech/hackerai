@@ -45,7 +45,7 @@ async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
       `[Caido] Database error detected — killing caido-cli on port ${port} for restart`,
     );
     await sandbox.commands.run(
-      `pgrep -f "caido-cli.*${port}" >/dev/null 2>&1 && pkill -f "caido-cli.*${port}"; rm -f ${CAIDO_TOKEN_FILE}`,
+      `CAIDO_PID=$(pgrep -f "caido-cli.*--listen.*${port}" || true); [ -n "$CAIDO_PID" ] && kill $CAIDO_PID 2>/dev/null || true; rm -f ${CAIDO_TOKEN_FILE}`,
       options,
     );
   } catch (e) {
@@ -64,20 +64,15 @@ async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
  */
 export async function ensureCaido(context: ToolContext): Promise<void> {
   const existing = caidoLock.get(context.sandboxManager);
-  if (existing) {
-    console.log("[Caido] Lock exists, awaiting existing setup");
-    return existing;
-  }
+  if (existing) return existing;
 
-  console.log("[Caido] No lock — running ensureCaido");
   const setup = doEnsureCaido(context);
   caidoLock.set(context.sandboxManager, setup);
 
   try {
     await setup;
-    console.log("[Caido] Setup completed successfully");
   } catch (e) {
-    console.error("[Caido] Setup failed, clearing lock:", e);
+    console.warn("[Caido] Setup failed:", e);
     caidoLock.delete(context.sandboxManager);
     throw e;
   }
@@ -98,7 +93,13 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
   const createB64 = Buffer.from(
     JSON.stringify({
       query:
-        'mutation { createProject(input: {name: "sandbox", temporary: true}) { project { id } } }',
+        'mutation { createProject(input: {name: "hackerai", temporary: true}) { project { id } error { ... on NameTakenUserError { code } ... on PermissionDeniedUserError { code } ... on OtherUserError { code } } } }',
+    }),
+  ).toString("base64");
+
+  const listProjectsB64 = Buffer.from(
+    JSON.stringify({
+      query: "{ projects { id name } }",
     }),
   ).toString("base64");
 
@@ -155,91 +156,45 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
     `TOKEN_FILE="${CAIDO_TOKEN_FILE}"`,
     ``,
     `# Fast path: running + token valid + project selected`,
-    `echo "[caido-setup] health check..."`,
     `STATUS=$(${healthCheck})`,
-    `echo "[caido-setup] health status=$STATUS"`,
     `if [ "$STATUS" = "200" ] || [ "$STATUS" = "400" ]; then`,
     `  if [ -s "$TOKEN_FILE" ]; then`,
-    `    echo "[caido-setup] token file exists, checking project..."`,
     `    CHECK=$(${projectCheck})`,
-    `    echo "[caido-setup] project check response: $(echo $CHECK | head -c 200)"`,
     `    if ! echo "$CHECK" | grep -q '"errors"'; then`,
     `      echo "ok" && exit 0`,
     `    fi`,
-    `    echo "[caido-setup] project check failed — re-auth needed"`,
-    `  else`,
-    `    echo "[caido-setup] no token file"`,
     `  fi`,
     `fi`,
     ``,
-    `# Start caido-cli if not running on our port`,
+    `# Caido not running or not healthy — request external start`,
     `if ! ([ "$STATUS" = "200" ] || [ "$STATUS" = "400" ]); then`,
-    `  echo "[caido-setup] Caido not healthy, starting..."`,
-    `  which caido-cli >/dev/null 2>&1 && echo "[caido-setup] caido-cli found at $(which caido-cli)" || install_caido_cli`,
-    `  # Kill any broken caido-cli on our port, but don't touch the Desktop app`,
-    `  pgrep -f "caido-cli.*${config.port}" >/dev/null 2>&1 && echo "[caido-setup] killing existing caido-cli on port ${config.port}" && pkill -f "caido-cli.*${config.port}"`,
-    `  sleep 1`,
-    `  caido-cli --listen 0.0.0.0:${config.port} --allow-guests --no-logging --no-open \\`,
-    `    >"${CAIDO_LOG}" 2>&1 &`,
-    `  for i in $(seq 1 15); do`,
-    `    STATUS=$(${healthCheck})`,
-    `    ([ "$STATUS" = "200" ] || [ "$STATUS" = "400" ]) && break`,
-    `    [ "$i" = "15" ] && echo "timeout" && exit 1`,
-    `    sleep 2`,
-    `  done`,
+    `  which caido-cli >/dev/null 2>&1 || install_caido_cli`,
+    `  echo "needs_start"`,
+    `  exit 0`,
     `fi`,
     ``,
     `# Authenticate as guest`,
-    `echo "[caido-setup] authenticating as guest..."`,
     `AUTH=$(echo '${authB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" --data @-)`,
-    `echo "[caido-setup] auth response: $(echo $AUTH | head -c 200)"`,
     `TOKEN=$(echo "$AUTH" | grep -Eo '"accessToken":"[^"]*"' | cut -d'"' -f4 || echo "")`,
-    'echo "[caido-setup] token=${TOKEN:+SET}${TOKEN:-EMPTY}"',
-    ``,
-    `# If auth failed and Caido was already running, it may be broken — kill and restart`,
-    `if [ -z "$TOKEN" ]; then`,
-    `  echo "[caido-setup] auth failed, killing and restarting..."`,
-    `  pgrep -f "caido-cli.*${config.port}" >/dev/null 2>&1 && pkill -f "caido-cli.*${config.port}" && sleep 1`,
-    `  which caido-cli >/dev/null 2>&1 || install_caido_cli`,
-    `  caido-cli --listen 0.0.0.0:${config.port} --allow-guests --no-logging --no-open \\`,
-    `    >"${CAIDO_LOG}" 2>&1 &`,
-    `  for i in $(seq 1 15); do`,
-    `    STATUS=$(${healthCheck})`,
-    `    ([ "$STATUS" = "200" ] || [ "$STATUS" = "400" ]) && break`,
-    `    [ "$i" = "15" ] && echo "timeout" && exit 1`,
-    `    sleep 2`,
-    `  done`,
-    `  AUTH=$(echo '${authB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
-    `    -H "Content-Type: application/json" --data @-)`,
-    `  TOKEN=$(echo "$AUTH" | grep -Eo '"accessToken":"[^"]*"' | cut -d'"' -f4 || echo "")`,
-    `  [ -z "$TOKEN" ] && echo "auth_failed" && exit 1`,
-    `fi`,
+    `if [ -z "$TOKEN" ]; then echo "needs_start" && exit 0; fi`,
     `printf '%s' "$TOKEN" > "$TOKEN_FILE"`,
     ``,
-    `# Create and select a project`,
-    `echo "[caido-setup] creating project..."`,
-    `CREATE=$(echo '${createB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
+    `# Find or create the "hackerai" project`,
+    `PROJECTS=$(echo '${listProjectsB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
-    `echo "[caido-setup] create response: $(echo $CREATE | head -c 300)"`,
-    `PROJECT_ID=$(echo "$CREATE" | grep -Eo '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")`,
-    `echo "[caido-setup] project_id=$PROJECT_ID"`,
-    `if [ -n "$PROJECT_ID" ]; then`,
-    `  echo "[caido-setup] selecting project $PROJECT_ID..."`,
-    `  SELECT_BODY='{"query":"mutation { selectProject(id: \\"'"$PROJECT_ID"'\\"){ currentProject { project { id } } } }"}'`,
-    `  echo "[caido-setup] select body: $SELECT_BODY"`,
-    `  SELECT_RESP=$(echo "$SELECT_BODY" | curl -sL -X POST "$CAIDO_API/graphql" \\`,
-    `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \\`,
-    `    --data @- 2>&1)`,
-    `  echo "[caido-setup] select response: $(echo $SELECT_RESP | head -c 300)"`,
-    `else`,
-    `  echo "[caido-setup] WARNING: no project ID extracted"`,
+    `PROJECT_ID=$(echo "$PROJECTS" | grep -o '"id":"[^"]*","name":"hackerai"' | grep -Eo '"id":"[^"]*"' | cut -d'"' -f4 || echo "")`,
+    `if [ -z "$PROJECT_ID" ]; then`,
+    `  CREATE=$(echo '${createB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
+    `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
+    `  PROJECT_ID=$(echo "$CREATE" | grep -Eo '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")`,
     `fi`,
-    ``,
-    `# Verify proxy works by sending a test request through it`,
-    `echo "[caido-setup] verifying proxy..."`,
-    `PROXY_TEST=$(curl -s --proxy "http://${config.host}:${config.port}" --insecure --max-time 5 -o /dev/null -w "%{http_code}" "http://httpbin.org/get" 2>/dev/null)`,
-    `echo "[caido-setup] proxy test status=$PROXY_TEST"`,
+    `if [ -n "$PROJECT_ID" ]; then`,
+    `  SELECT_BODY='{"query":"mutation { selectProject(id: \\"'"$PROJECT_ID"'\\"){ currentProject { project { id } } } }"}'`,
+    `  echo "$SELECT_BODY" | curl -sL -X POST "$CAIDO_API/graphql" \\`,
+    `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \\`,
+    `    --data @- >/dev/null 2>&1 || true`,
+    `fi`,
     `echo "ok"`,
   ].join("\n");
 
@@ -247,12 +202,6 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
     ...options,
     timeoutMs: 45000,
   });
-
-  // Log full script output for debugging
-  console.log("[Caido] ensureCaido script stdout:", result.stdout);
-  if (result.stderr)
-    console.log("[Caido] ensureCaido script stderr:", result.stderr);
-  console.log("[Caido] ensureCaido script exitCode:", result.exitCode);
 
   // Status is on the last non-empty line
   const lastLine =
@@ -278,9 +227,103 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
       `Caido authentication failed. Check ${CAIDO_LOG} for errors.`,
     );
   }
+
+  // Script detected Caido needs to be started — launch it as a proper background
+  // process via the sandbox API (not inside a shell script where it may get killed).
+  if (lastLine === "needs_start") {
+    // Get the public hostname for --ui-domain so the Caido UI is accessible externally
+    let uiDomainFlag = "";
+    try {
+      const host = sandbox.getHost(config.port);
+      // getHost returns "hostname" or "https://hostname" — extract just the domain
+      const domain = host.replace(/^https?:\/\//, "").split("/")[0];
+      if (
+        domain &&
+        !domain.startsWith("127.0.0.1") &&
+        !domain.startsWith("localhost")
+      ) {
+        uiDomainFlag = ` --ui-domain ${domain}`;
+      }
+    } catch {
+      /* local sandbox — no external domain needed */
+    }
+
+    // Start caido-cli as a persistent background process
+    await sandbox.commands.run(
+      `caido-cli --listen 0.0.0.0:${config.port} --allow-guests --no-logging --no-open${uiDomainFlag} > ${CAIDO_LOG} 2>&1`,
+      { ...options, background: true },
+    );
+
+    // Wait for Caido to become healthy
+    const waitResult = await sandbox.commands.run(
+      [
+        `for i in $(seq 1 15); do`,
+        `  STATUS=$(${healthCheck})`,
+        `  ([ "$STATUS" = "200" ] || [ "$STATUS" = "400" ]) && echo "ready" && exit 0`,
+        `  sleep 2`,
+        `done`,
+        `echo "timeout"`,
+      ].join("\n"),
+      { ...options, timeoutMs: 35000 },
+    );
+
+    if (!waitResult.stdout.includes("ready")) {
+      throw new Error(
+        `Caido did not become ready in 30 s. Check ${CAIDO_LOG} for errors.`,
+      );
+    }
+
+    // Re-run the setup script — this time Caido is running, so it will auth + create project
+    const setupResult = await sandbox.commands.run(script, {
+      ...options,
+      timeoutMs: 45000,
+    });
+
+    const setupLastLine =
+      setupResult.stdout
+        .trim()
+        .split("\n")
+        .findLast((l: string) => l.trim() !== "") ?? "";
+
+    if (setupLastLine === "auth_failed") {
+      throw new Error(
+        `Caido authentication failed after restart. Check ${CAIDO_LOG} for errors.`,
+      );
+    }
+    if (setupLastLine !== "ok") {
+      throw new Error(
+        `Caido setup failed after restart: ${setupResult.stdout || setupResult.stderr}`,
+      );
+    }
+    return;
+  }
+
   if (lastLine !== "ok") {
     throw new Error(`Caido setup failed: ${result.stdout || result.stderr}`);
   }
+
+  // Cache the Caido UI URL and set it as an env var on the sandbox
+  let uiUrl = `http://127.0.0.1:${config.port}`;
+  try {
+    const host = sandbox.getHost(config.port);
+    uiUrl = host.startsWith("http") ? host : `https://${host}`;
+  } catch {
+    /* local sandbox */
+  }
+  console.log(`[Caido] UI available at: ${uiUrl}`);
+
+  // Write env var so the AI can retrieve it via `echo $CAIDO_UI_URL`
+  await sandbox.commands
+    .run(
+      `echo 'export CAIDO_UI_URL="${uiUrl}"' >> /etc/profile.d/caido.sh`,
+      options,
+    )
+    .catch(() => {
+      // Fallback for non-root: write to user profile
+      sandbox.commands
+        .run(`echo 'export CAIDO_UI_URL="${uiUrl}"' >> ~/.bashrc`, options)
+        .catch(() => {});
+    });
 }
 
 const SORT_MAPPING: Record<string, string> = {
