@@ -50,7 +50,6 @@ export type AgentTaskPayload = {
   regenerate: boolean;
   temporary: boolean;
   sandboxPreference: SandboxPreference;
-  tauriCmdServer: { port: number; token: string } | null;
   userId: string;
   subscription: SubscriptionTier;
   userLocation: { region?: string; city?: string; country?: string } | null;
@@ -87,7 +86,6 @@ export async function prepareAgentPayload(
     regenerate?: boolean;
     temporary?: boolean;
     sandboxPreference?: SandboxPreference;
-    tauriCmdServer?: { port: number; token: string };
     selectedModel?: string;
   };
 
@@ -108,33 +106,8 @@ export async function prepareAgentPayload(
     regenerate,
     temporary,
     sandboxPreference,
-    tauriCmdServer: rawTauriCmdServer,
     selectedModel: rawSelectedModel,
   } = parsedBody;
-
-  // Validate tauriCmdServer if provided
-  let tauriCmdServer: { port: number; token: string } | undefined;
-  if (rawTauriCmdServer) {
-    const { port, token } = rawTauriCmdServer;
-    if (
-      typeof port !== "number" ||
-      !Number.isInteger(port) ||
-      port <= 0 ||
-      port > 65535
-    ) {
-      throw new ChatSDKError(
-        "bad_request:api",
-        "Invalid tauriCmdServer.port: must be an integer between 1 and 65535",
-      );
-    }
-    if (typeof token !== "string" || token.length === 0) {
-      throw new ChatSDKError(
-        "bad_request:api",
-        "Invalid tauriCmdServer.token: must be a non-empty string",
-      );
-    }
-    tauriCmdServer = { port, token };
-  }
 
   const selectedModelOverride: SelectedModel | undefined =
     rawSelectedModel && isSelectedModel(rawSelectedModel)
@@ -148,7 +121,7 @@ export async function prepareAgentPayload(
     );
   }
 
-  const { userId, subscription } = await getUserIDAndPro(req);
+  const { userId, subscription, organizationId } = await getUserIDAndPro(req);
   const userLocation = geolocation(req);
 
   if (subscription === "free") {
@@ -245,6 +218,7 @@ export async function prepareAgentPayload(
     estimatedInputTokens,
     extraUsageConfig,
     selectedModel,
+    organizationId,
   );
 
   const assistantMessageId = uuidv4();
@@ -266,7 +240,6 @@ export async function prepareAgentPayload(
     regenerate: !!regenerate,
     temporary: !!temporary,
     sandboxPreference: sandboxPreference ?? "e2b",
-    tauriCmdServer: tauriCmdServer ?? null,
     userId,
     subscription,
     userLocation: userLocation

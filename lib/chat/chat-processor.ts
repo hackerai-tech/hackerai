@@ -37,14 +37,14 @@ export function selectModel(
   subscription: SubscriptionTier,
   selectedModel?: SelectedModel,
 ): ModelName {
-  // User-selected model override (paid users only)
-  if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
-    return `model-${selectedModel}` as ModelName;
-  }
-
-  // Default models by mode
+  // Agent mode always uses the default agent model — no user override allowed
   if (isAgentMode(mode)) {
     return "agent-model";
+  }
+
+  // Ask mode: allow user-selected model override for paid users
+  if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
+    return `model-${selectedModel}` as ModelName;
   }
 
   return subscription === "free" ? "ask-model-free" : "ask-model";

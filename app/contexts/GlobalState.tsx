@@ -18,7 +18,8 @@ import type {
   QueueBehavior,
   SandboxPreference,
 } from "@/types/chat";
-import { isChatMode, isSelectedModel } from "@/types/chat";
+import { isSelectedModel } from "@/types/chat";
+import { isChatMode } from "@/types/chat";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -112,11 +113,8 @@ interface GlobalStateType {
   sandboxPreference: SandboxPreference;
   setSandboxPreference: (preference: SandboxPreference) => void;
 
-  // Tauri command server info (desktop app only)
-  tauriCmdServer: {
-    port: number;
-    token: string;
-  } | null;
+  // Desktop bridge active (Centrifugo-based desktop sandbox)
+  desktopBridgeActive: boolean;
 
   // Agent long mode (durable workflow execution)
   agentLongMode: boolean;
@@ -231,8 +229,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   });
 
   // Tauri detection + sandbox preference (co-located in a custom hook)
-  const { tauriCmdServer, sandboxPreference, setSandboxPreference } =
-    useSandboxPreference();
+  const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
+    useSandboxPreference(!!user);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -250,34 +248,39 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     writeAgentLongMode(enabled);
   }, []);
 
-  // Model selection (persisted per-mode to localStorage)
-  const getModeKey = (m: ChatMode): "ask" | "agent" =>
-    m === "agent" ? "agent" : "ask";
-
-  const [selectedModel, setSelectedModelState] = useState<SelectedModel>(() => {
-    const modeKey = getModeKey(chatMode);
-    const saved = readSelectedModelForMode(modeKey);
+  // Model selection — only enabled for Ask mode. Agent mode always uses "auto".
+  const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
+    const saved = readSelectedModelForMode("ask");
     return isSelectedModel(saved) ? saved : "auto";
   });
 
-  // When chat mode changes, load the saved model preference for that mode
-  const modeJustChanged = useRef(false);
+  // When switching to agent mode, force "auto". When switching to ask, restore saved preference.
   useEffect(() => {
-    modeJustChanged.current = true;
-    const modeKey = getModeKey(chatMode);
-    const saved = readSelectedModelForMode(modeKey);
-    setSelectedModelState(isSelectedModel(saved) ? saved : "auto");
+    if (chatMode === "agent") {
+      setSelectedModelRaw("auto");
+    } else {
+      const saved = readSelectedModelForMode("ask");
+      if (isSelectedModel(saved)) {
+        setSelectedModelRaw(saved);
+      }
+    }
   }, [chatMode]);
 
-  // Persist model selection to localStorage for the current mode
+  // Persist ask mode model preference to localStorage
   useEffect(() => {
-    if (modeJustChanged.current) {
-      modeJustChanged.current = false;
-      return;
+    if (chatMode === "ask") {
+      writeSelectedModelForMode("ask", selectedModel);
     }
-    const modeKey = getModeKey(chatMode);
-    writeSelectedModelForMode(modeKey, selectedModel);
   }, [selectedModel, chatMode]);
+
+  // Wrap setter to prevent model changes in agent mode
+  const setSelectedModelState = useCallback(
+    (model: SelectedModel) => {
+      if (chatMode === "agent") return;
+      setSelectedModelRaw(model);
+    },
+    [chatMode],
+  );
 
   // Initialize temporary chats from URL parameter
   const [temporaryChatsEnabled, setTemporaryChatsEnabled] = useState(() => {
@@ -746,7 +749,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
     sandboxPreference,
     setSandboxPreference,
-    tauriCmdServer,
+    desktopBridgeActive,
 
     agentLongMode,
     setAgentLongMode,

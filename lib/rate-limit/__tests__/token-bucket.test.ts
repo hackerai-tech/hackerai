@@ -2,6 +2,7 @@ import { describe, it, expect } from "@jest/globals";
 
 import {
   calculateTokenCost,
+  calculateProratedCredits,
   getBudgetLimits,
   getSubscriptionPrice,
   POINTS_PER_DOLLAR,
@@ -27,22 +28,22 @@ describe("token-bucket", () => {
       expect(calculateTokenCost(-100, "output")).toBe(0);
     });
 
-    it("should calculate input token cost correctly ($0.50/1M tokens)", () => {
-      // 1M input tokens = $0.50 = 5000 points
-      expect(calculateTokenCost(1_000_000, "input")).toBe(5000);
-      // 1K input tokens = $0.0005 = 5 points
-      expect(calculateTokenCost(1000, "input")).toBe(5);
-      // 10M input tokens = $5.00 = 50000 points
-      expect(calculateTokenCost(10_000_000, "input")).toBe(50000);
+    it("should calculate input token cost correctly ($0.50/1M tokens * 1.1x)", () => {
+      // 1M input tokens = $0.50 * 1.1 = 5500 points
+      expect(calculateTokenCost(1_000_000, "input")).toBe(5500);
+      // 1K input tokens = ceil(0.001 * 0.5 * 10000 * 1.1) = 6 points
+      expect(calculateTokenCost(1000, "input")).toBe(6);
+      // 10M input tokens = $5.00 * 1.1 = 55001 points (ceil of floating point)
+      expect(calculateTokenCost(10_000_000, "input")).toBe(55001);
     });
 
-    it("should calculate output token cost correctly ($3.00/1M tokens)", () => {
-      // 1M output tokens = $3.00 = 30000 points
-      expect(calculateTokenCost(1_000_000, "output")).toBe(30000);
-      // 1K output tokens = $0.003 = 30 points
-      expect(calculateTokenCost(1000, "output")).toBe(30);
-      // 10M output tokens = $30.00 = 300000 points
-      expect(calculateTokenCost(10_000_000, "output")).toBe(300000);
+    it("should calculate output token cost correctly ($3.00/1M tokens * 1.1x)", () => {
+      // 1M output tokens = $3.00 * 1.1 = 33000 points
+      expect(calculateTokenCost(1_000_000, "output")).toBe(33000);
+      // 1K output tokens = ceil(0.001 * 3.0 * 10000 * 1.1) = 33 points
+      expect(calculateTokenCost(1000, "output")).toBe(33);
+      // 10M output tokens = $30.00 * 1.1 = 330000 points
+      expect(calculateTokenCost(10_000_000, "output")).toBe(330000);
     });
 
     it("should round up small amounts to at least 1 point", () => {
@@ -58,10 +59,10 @@ describe("token-bucket", () => {
     });
 
     it("should use Math.ceil to always round up", () => {
-      // 10 tokens at $0.50/1M = fractional point → rounds up to 1
+      // 10 tokens at $0.50/1M * 1.1 = fractional point → rounds up to 1
       expect(calculateTokenCost(10, "input")).toBe(1);
-      // 10000 tokens at $0.50/1M = exactly 50 points
-      expect(calculateTokenCost(10000, "input")).toBe(50);
+      // 10000 tokens at $0.50/1M * 1.1 = 56 points (ceil of floating point)
+      expect(calculateTokenCost(10000, "input")).toBe(56);
     });
   });
 
@@ -169,37 +170,124 @@ describe("token-bucket", () => {
   // ==========================================================================
   describe("cost calculation scenarios", () => {
     it("typical conversation should cost reasonable points", () => {
-      // Typical: 2000 input tokens, 500 output tokens
-      const inputCost = calculateTokenCost(2000, "input"); // 10 points
-      const outputCost = calculateTokenCost(500, "output"); // 15 points
-      const totalCost = inputCost + outputCost; // 25 points
+      // Typical: 2000 input tokens, 500 output tokens (with 1.1x multiplier)
+      const inputCost = calculateTokenCost(2000, "input"); // 11 points
+      const outputCost = calculateTokenCost(500, "output"); // 17 points
+      const totalCost = inputCost + outputCost; // 28 points
 
-      expect(inputCost).toBe(10);
-      expect(outputCost).toBe(15);
-      expect(totalCost).toBe(25);
+      expect(inputCost).toBe(11);
+      expect(outputCost).toBe(17);
+      expect(totalCost).toBe(28);
     });
 
     it("pro user should afford many typical conversations per month", () => {
       const monthlyBudget = getBudgetLimits("pro").monthly;
-      const typicalCost = 25; // points per conversation
+      const typicalCost = 28; // points per conversation (with 1.1x multiplier)
 
       const conversationsPerMonth = Math.floor(monthlyBudget / typicalCost);
-      expect(conversationsPerMonth).toBe(10000);
+      expect(conversationsPerMonth).toBe(8928);
     });
 
     it("long context request should cost proportionally more", () => {
-      const longContextCost = calculateTokenCost(100_000, "input"); // 500 points
-      const shortContextCost = calculateTokenCost(1_000, "input"); // 5 points
+      const longContextCost = calculateTokenCost(100_000, "input"); // 550 points
+      const shortContextCost = calculateTokenCost(1_000, "input"); // 6 points
 
-      expect(longContextCost / shortContextCost).toBe(100);
+      expect(longContextCost).toBe(550);
+      expect(shortContextCost).toBe(6);
+      expect(longContextCost).toBeGreaterThan(shortContextCost * 90);
     });
 
     it("heavy output request should be significantly more expensive", () => {
       // Agent generating lots of code
-      const inputCost = calculateTokenCost(5000, "input"); // 25 points
-      const outputCost = calculateTokenCost(10000, "output"); // 300 points
+      const inputCost = calculateTokenCost(5000, "input"); // 28 points
+      const outputCost = calculateTokenCost(10000, "output"); // 330 points
 
       expect(outputCost).toBeGreaterThan(inputCost * 10);
+    });
+  });
+
+  // ==========================================================================
+  // Proration calculation logic
+  // ==========================================================================
+  describe("calculateProratedCredits", () => {
+    // Tier maxes for reference: pro=250k, pro-plus=600k, ultra=2M, team=400k
+    // Third param is consumedCredits (deducted from prorated allocation)
+
+    it("should give 50% credits at 50% ratio with no consumption", () => {
+      const result = calculateProratedCredits(2_000_000, 0.5, 0);
+      expect(result.proratedCredits).toBe(1_000_000);
+      expect(result.totalCredits).toBe(1_000_000);
+      expect(result.burnAmount).toBe(1_000_000);
+    });
+
+    it("should deduct consumed credits from prorated amount", () => {
+      // Pro → Ultra at day 15/30, user consumed 100k of Pro credits
+      const result = calculateProratedCredits(2_000_000, 0.5, 100_000);
+      expect(result.proratedCredits).toBe(1_000_000);
+      // total = 1M - 100k consumed = 900k
+      expect(result.totalCredits).toBe(900_000);
+      expect(result.burnAmount).toBe(1_100_000);
+    });
+
+    it("should not go below 0 when consumed exceeds prorated", () => {
+      // User burned all 250k Pro credits, upgrades to Ultra at day 25/30
+      // prorated = floor(2M * 5/30) = 333_333
+      // consumed = 250_000 → 333_333 - 250_000 = 83_333
+      const result = calculateProratedCredits(2_000_000, 5 / 30, 250_000);
+      expect(result.totalCredits).toBe(83_333);
+
+      // Edge: consumed > prorated → floor to 0
+      const result2 = calculateProratedCredits(2_000_000, 0.1, 250_000);
+      // prorated = 200k, consumed = 250k → 0
+      expect(result2.totalCredits).toBe(0);
+    });
+
+    it("should cap total credits at tier max", () => {
+      const result = calculateProratedCredits(250_000, 0.95, 0);
+      expect(result.totalCredits).toBeLessThanOrEqual(250_000);
+    });
+
+    it("should give full credits at ratio 1.0 with no consumption", () => {
+      const result = calculateProratedCredits(2_000_000, 1.0, 0);
+      expect(result.totalCredits).toBe(2_000_000);
+      expect(result.burnAmount).toBe(0);
+    });
+
+    it("should give 0 at ratio 0.0 with no consumption", () => {
+      const result = calculateProratedCredits(2_000_000, 0.0, 0);
+      expect(result.totalCredits).toBe(0);
+      expect(result.burnAmount).toBe(2_000_000);
+    });
+
+    it("should handle negative consumed as 0", () => {
+      const result = calculateProratedCredits(250_000, 0.5, -100);
+      expect(result.totalCredits).toBe(125_000); // just prorated, no deduction
+    });
+
+    it("should return 0 for zero tier max", () => {
+      const result = calculateProratedCredits(0, 0.5, 100_000);
+      expect(result.totalCredits).toBe(0);
+    });
+
+    it("user burns all Pro credits day 1, upgrades to Ultra", () => {
+      // Day 1 of 30 → ratio ≈ 29/30 = 0.967
+      // Consumed all 250k Pro credits
+      const result = calculateProratedCredits(2_000_000, 29 / 30, 250_000);
+      // prorated = floor(2M * 29/30) = 1_933_333
+      expect(result.proratedCredits).toBe(1_933_333);
+      // total = 1_933_333 - 250_000 = 1_683_333
+      expect(result.totalCredits).toBe(1_683_333);
+    });
+
+    it("Pro→Pro+ at 1/3 remaining, 170k consumed", () => {
+      // Day 20 of 30 → 10 days remaining → ratio = 1/3
+      // User consumed 170k of 250k Pro credits
+      const result = calculateProratedCredits(600_000, 1 / 3, 170_000);
+      // prorated = floor(600k * 0.333) = 200_000
+      expect(result.proratedCredits).toBe(200_000);
+      // total = 200k - 170k = 30k
+      expect(result.totalCredits).toBe(30_000);
+      expect(result.burnAmount).toBe(570_000);
     });
   });
 
@@ -208,44 +296,35 @@ describe("token-bucket", () => {
   // ==========================================================================
   describe("per-model pricing", () => {
     it("should use default pricing when no modelName is provided", () => {
-      // Default: $0.50 input, $3.00 output
-      expect(calculateTokenCost(1_000_000, "input")).toBe(5000);
-      expect(calculateTokenCost(1_000_000, "output")).toBe(30000);
+      // Default: $0.50 input, $3.00 output (with 1.1x multiplier)
+      expect(calculateTokenCost(1_000_000, "input")).toBe(5500);
+      expect(calculateTokenCost(1_000_000, "output")).toBe(33000);
     });
 
     it("should use default pricing for unknown model names", () => {
       expect(calculateTokenCost(1_000_000, "input", "unknown-model")).toBe(
-        5000,
+        5500,
       );
       expect(calculateTokenCost(1_000_000, "output", "unknown-model")).toBe(
-        30000,
+        33000,
       );
     });
 
     it("should use Sonnet 4.6 pricing ($3.00/$15.00)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-sonnet-4.6")).toBe(
-        30000,
+        33000,
       );
       expect(calculateTokenCost(1_000_000, "output", "model-sonnet-4.6")).toBe(
-        150000,
+        165000,
       );
-    });
-
-    it("should use Gemini 3.1 Pro pricing ($2.00/$12.00)", () => {
-      expect(
-        calculateTokenCost(1_000_000, "input", "model-gemini-3.1-pro"),
-      ).toBe(20000);
-      expect(
-        calculateTokenCost(1_000_000, "output", "model-gemini-3.1-pro"),
-      ).toBe(120000);
     });
 
     it("should use Grok 4.1 pricing ($0.20/$0.50)", () => {
       expect(calculateTokenCost(1_000_000, "input", "model-grok-4.1")).toBe(
-        2000,
+        2200,
       );
       expect(calculateTokenCost(1_000_000, "output", "model-grok-4.1")).toBe(
-        5000,
+        5500,
       );
     });
 
@@ -262,6 +341,45 @@ describe("token-bucket", () => {
       const sonnetConversations = Math.floor(monthlyBudget / sonnetCost);
 
       expect(defaultConversations).toBeGreaterThan(sonnetConversations);
+    });
+  });
+
+  // ==========================================================================
+  // Team seat rotation protection - budget constants
+  // ==========================================================================
+  describe("team seat rotation protection", () => {
+    it("team tier should have 400k monthly credits ($40)", () => {
+      const teamLimits = getBudgetLimits("team");
+      expect(teamLimits.monthly).toBe(400_000);
+    });
+
+    it("team member consuming all credits should equal tier max", () => {
+      const teamMax = getBudgetLimits("team").monthly;
+      // consumed = teamMax - remaining; when remaining=0, consumed=teamMax
+      const consumed = teamMax - 0;
+      expect(consumed).toBe(400_000);
+    });
+
+    it("partial consumption should be correctly calculated", () => {
+      const teamMax = getBudgetLimits("team").monthly;
+      const remaining = 150_000;
+      const consumed = teamMax - remaining;
+      expect(consumed).toBe(250_000);
+    });
+
+    it("seat debt should be capped at one seat's worth (400k)", () => {
+      const teamMax = getBudgetLimits("team").monthly;
+      // Even if org debt is 800k (2 members removed), each new member absorbs at most 400k
+      const orgDebt = 800_000;
+      const debit = Math.min(orgDebt, teamMax);
+      expect(debit).toBe(400_000);
+    });
+
+    it("seat debt should handle zero remaining debt", () => {
+      const orgDebt = 0;
+      const teamMax = getBudgetLimits("team").monthly;
+      const debit = Math.min(orgDebt, teamMax);
+      expect(debit).toBe(0);
     });
   });
 });

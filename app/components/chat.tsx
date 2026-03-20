@@ -31,7 +31,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
-import { isSelectedModel } from "@/types";
+// import { isSelectedModel } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
@@ -46,6 +46,9 @@ import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
+
+import { HackingSuggestions } from "./HackingSuggestions";
+
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
@@ -84,9 +87,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     todos,
     sandboxPreference,
     setSandboxPreference,
-    tauriCmdServer,
     selectedModel,
-    setSelectedModel,
     agentLongMode,
   } = useGlobalState();
 
@@ -137,8 +138,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
-  // Track whether model selection has been initialized from chat for this chat id
-  const hasInitializedModelRef = useRef(false);
+  // TODO: restore when model selector is re-enabled
+  // const hasInitializedModelRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -449,6 +450,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           actualSandboxName?: string;
         };
 
+        // Skip fallback notifications for Tauri — the server-side health check
+        // hits its own localhost, not the user's desktop, so it consistently
+        // reports false disconnects. The frontend already validated Tauri availability.
+        if (fallbackData.requestedPreference === "tauri") {
+          return;
+        }
+
         // Update sandbox preference to match actual sandbox used
         setSandboxPreference(fallbackData.actualSandbox);
 
@@ -534,6 +542,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [error, clearError]);
 
+  // Ref (not state) so the Convex sync effect only fires when paginatedMessages.results
+  // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   useAutoResume({
     autoResume: autoResume && chatData != null,
     initialMessages: serverMessages,
@@ -580,7 +593,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
-    hasInitializedModelRef.current = false;
+    // hasInitializedModelRef.current = false;
   }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
@@ -665,14 +678,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
     } else if (storedSandboxType === "tauri") {
-      // Only restore "tauri" if the desktop bridge is actually available.
-      // If tauriCmdServer is still undefined (bridge discovery in progress),
-      // defer — the effect will re-run when tauriCmdServer resolves.
-      if (tauriCmdServer === undefined) return;
-      setSandboxPreference(tauriCmdServer ? "tauri" : "e2b");
+      // "tauri" is a legacy preference — desktop now uses "desktop"
+      setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
+    } else if (storedSandboxType === "desktop") {
+      // Desktop preference — validate that a desktop connection exists
+      if (localConnections !== undefined) {
+        const desktopExists = localConnections.some((conn) => conn.isDesktop);
+        setSandboxPreference(desktopExists ? "desktop" : "e2b");
+        hasInitializedSandboxRef.current = true;
+      }
+      // If localConnections is still loading, wait for next render
     } else if (localConnections !== undefined) {
-      // For local connectionIds, validate the connection still exists
+      // For remote connectionIds, validate the connection still exists
       const connectionExists = localConnections.some(
         (conn) => conn.connectionId === storedSandboxType,
       );
@@ -686,27 +704,35 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
     // If localConnections is still loading (undefined), wait for next render
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, localConnections, isExistingChat, chatId, tauriCmdServer]);
+  }, [chatData, localConnections, isExistingChat, chatId]);
 
-  // Initialize model selection from chat data (simpler than sandbox — no connection validation needed)
+  // TODO: restore when model selector is re-enabled
+  // Initialize model selection from chat data
+  // useEffect(() => {
+  //   if (hasInitializedModelRef.current || !isExistingChat) return;
+  //   const dataId = (chatData as any)?.id as string | undefined;
+  //   if (!chatData || dataId !== chatId) return;
+  //   const savedModel = (chatData as any).selected_model as string | undefined;
+  //   hasInitializedModelRef.current = true;
+  //   if (savedModel && isSelectedModel(savedModel)) {
+  //     setSelectedModel(savedModel);
+  //   }
+  // }, [chatData, isExistingChat, chatId]);
+
+  // Sync Convex real-time data with useChat messages.
+  // Uses statusRef (not status state) so this effect only fires when
+  // paginatedMessages.results actually changes — not on status transitions.
+  // Guards against BOTH "streaming" and "submitted" statuses to prevent
+  // Convex real-time updates from overwriting useChat's in-flight state.
+  // Without the "submitted" guard, a race condition occurs in production:
+  // Convex receives the user message (via handleInitialChatAndUserMessage)
+  // and pushes a subscription update before the first streaming chunk arrives,
+  // resetting useChat's messages and causing an empty AI response.
   useEffect(() => {
-    if (hasInitializedModelRef.current || !isExistingChat) return;
-
-    const dataId = (chatData as any)?.id as string | undefined;
-    if (!chatData || dataId !== chatId) return;
-
-    const savedModel = (chatData as any).selected_model as string | undefined;
-    hasInitializedModelRef.current = true;
-
-    if (savedModel && isSelectedModel(savedModel)) {
-      setSelectedModel(savedModel);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatData, isExistingChat, chatId]);
-
-  // Sync Convex real-time data with useChat messages
-  useEffect(() => {
-    if (status === "streaming") {
+    if (
+      statusRef.current === "streaming" ||
+      statusRef.current === "submitted"
+    ) {
       return;
     }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
@@ -720,7 +746,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     if (isExistingChat) {
       setMessages(uiMessages);
     }
-  }, [paginatedMessages.results, setMessages, isExistingChat, chatId, status]);
+  }, [paginatedMessages.results, setMessages, isExistingChat, chatId]);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } =
     useMessageScroll();
@@ -735,9 +761,20 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     handleDrop,
   } = useFileUpload(chatMode);
 
-  // Handle instant scroll to bottom when loading existing chat messages
+  // Handle instant scroll to bottom when first loading existing chat messages.
+  // Only runs once per chat — pagination (which prepends older messages and
+  // increases messages.length) must NOT re-trigger this.
+  const hasScrolledToBottomRef = useRef(false);
   useEffect(() => {
-    if (isExistingChat && messages.length > 0) {
+    hasScrolledToBottomRef.current = false;
+  }, [chatId]);
+  useEffect(() => {
+    if (
+      isExistingChat &&
+      messages.length > 0 &&
+      !hasScrolledToBottomRef.current
+    ) {
+      hasScrolledToBottomRef.current = true;
       scrollToBottom({ instant: true, force: true });
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
@@ -930,7 +967,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   </div>
                 </div>
               ) : isExistingChat &&
-                paginatedMessages.status === "LoadingFirstPage" ? (
+                paginatedMessages.status === "LoadingFirstPage" &&
+                !hasMessages ? (
                 <div
                   className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center min-h-0"
                   data-testid="messages-loading"
@@ -963,8 +1001,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
-                  <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
+                  <div className="flex-1 flex flex-col items-center justify-center px-4 min-h-0">
+                    <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center">
                       <div className="text-center">
                         {temporaryChatsEnabled ? (
                           <>
@@ -979,14 +1017,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             </p>
                           </>
                         ) : (
-                          <>
-                            <h1 className="text-3xl font-bold text-foreground mb-2">
-                              HackerAI
-                            </h1>
-                            <p className="text-muted-foreground">
-                              Your AI pentest assistant
-                            </p>
-                          </>
+                          <HackingSuggestions />
                         )}
                       </div>
 

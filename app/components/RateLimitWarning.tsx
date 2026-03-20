@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { redirectToPricing } from "../hooks/usePricingDialog";
+import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import type { ChatMode, SubscriptionTier } from "@/types";
 
 // Discriminated union for warning data
@@ -18,6 +19,9 @@ export type RateLimitWarningData =
       remainingPercent: number;
       resetTime: Date;
       subscription: SubscriptionTier;
+      severity?: "info" | "warning";
+      usedDollars?: number;
+      limitDollars?: number;
     }
   | {
       warningType: "extra-usage-active";
@@ -74,11 +78,20 @@ const getMessage = (data: RateLimitWarningData, timeString: string): string => {
     return `You're now using extra usage credits. Your monthly limit resets ${timeString}.`;
   }
 
-  // Token bucket warning
-  return data.remainingPercent === 0
-    ? `You've reached your monthly usage limit. It resets ${timeString}.`
-    : `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
+  // Token bucket warning — show dollar amounts when available
+  if (data.remainingPercent === 0) {
+    return `You've reached your monthly usage limit. It resets ${timeString}.`;
+  }
+
+  const usedPercent = 100 - data.remainingPercent;
+  if (data.usedDollars !== undefined && data.limitDollars !== undefined) {
+    return `You've used $${data.usedDollars.toFixed(2)} of $${data.limitDollars.toFixed(2)} (${usedPercent}%). Resets ${timeString}.`;
+  }
+
+  return `You have ${data.remainingPercent}% of your monthly usage remaining. It resets ${timeString}.`;
 };
+
+const WARNING_STYLES = "bg-input-chat border-black/8 dark:border-border";
 
 export const RateLimitWarning = ({
   data,
@@ -89,21 +102,34 @@ export const RateLimitWarning = ({
   const showUpgrade =
     data.warningType !== "extra-usage-active" &&
     (data.subscription === "free" ||
-      (data.warningType === "token-bucket" && data.subscription === "pro"));
+      data.subscription === "pro" ||
+      data.subscription === "pro-plus");
+  const showAddCredits =
+    data.warningType === "token-bucket" && data.subscription !== "free";
 
   return (
     <div
       data-testid="rate-limit-warning"
-      className="mb-2 px-3 py-2.5 bg-input-chat border border-black/8 dark:border-border rounded-lg flex items-center justify-between gap-2"
+      className={`mb-2 px-3 py-2.5 border rounded-[22px] flex items-center justify-between gap-2 ${WARNING_STYLES}`}
     >
       <div className="flex-1 flex items-center gap-2 flex-wrap">
-        <span className="text-foreground">{message}</span>
+        <span className="text-foreground text-sm">{message}</span>
+        {showAddCredits && (
+          <Button
+            onClick={() => openSettingsDialog("Extra Usage")}
+            size="sm"
+            variant="outline"
+            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
+          >
+            Add credits
+          </Button>
+        )}
         {showUpgrade && (
           <Button
             onClick={redirectToPricing}
             size="sm"
-            variant="default"
-            className="h-7 px-3 text-xs font-medium"
+            variant="outline"
+            className="h-7 px-3 text-xs font-medium border-black/8 dark:border-border"
           >
             Upgrade plan
           </Button>

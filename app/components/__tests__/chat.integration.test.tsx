@@ -201,8 +201,7 @@ describe("Chat Component Integration", () => {
         </TestWrapper>,
       );
 
-      expect(screen.getByText("HackerAI")).toBeInTheDocument();
-      expect(screen.getByText("Your AI pentest assistant")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
     });
 
     it("should render with provided chatId", () => {
@@ -294,7 +293,7 @@ describe("Chat Component Integration", () => {
         </TestWrapper>,
       );
 
-      expect(screen.getByText("HackerAI")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
     });
   });
 

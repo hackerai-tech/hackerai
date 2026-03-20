@@ -80,7 +80,7 @@ const CommandBlock = ({
   </div>
 );
 
-const LocalSandboxTab = () => {
+const RemoteControlTab = () => {
   const [showToken, setShowToken] = useState(false);
   const [token, setToken] = useState<string | null>(null);
   const [isLoadingToken, setIsLoadingToken] = useState(false);
@@ -132,7 +132,7 @@ const LocalSandboxTab = () => {
       <div className="flex items-center justify-between border-b pb-3">
         <div className="flex items-center gap-2">
           <Server className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-semibold">Local Sandbox</h3>
+          <h3 className="text-sm font-semibold">Remote Control</h3>
         </div>
         <a
           href="https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine"
@@ -150,29 +150,27 @@ const LocalSandboxTab = () => {
         <h4 className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Connections
         </h4>
-        {connections && connections.length > 0 ? (
+        {connections && connections.filter((c) => !c.isDesktop).length > 0 ? (
           <div className="space-y-2">
-            {connections.map((conn) => (
-              <div
-                key={conn.connectionId}
-                className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
-              >
-                <div className="relative">
-                  <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
-                  <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-sm">
-                    {conn.osInfo?.hostname || conn.name}
+            {connections
+              .filter((conn) => !conn.isDesktop)
+              .map((conn) => (
+                <div
+                  key={conn.connectionId}
+                  className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg"
+                >
+                  <div className="relative">
+                    <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500" />
+                    <Circle className="h-2.5 w-2.5 fill-green-500 text-green-500 absolute inset-0 animate-ping opacity-75" />
                   </div>
-                  <div className="text-xs text-muted-foreground truncate">
-                    {conn.mode === "docker"
-                      ? `Docker: ${conn.containerId?.slice(0, 12) || "unknown"}`
-                      : `${conn.osInfo?.platform || "unknown"} ${conn.osInfo?.arch || ""}`}
+                  <Server className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm">
+                      {conn.osInfo?.hostname || conn.name}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              ))}
           </div>
         ) : (
           <div className="flex flex-col items-center justify-center py-6 px-4 bg-muted/30 rounded-lg">
@@ -259,30 +257,16 @@ const LocalSandboxTab = () => {
           Quick Start
         </h4>
 
-        <div className="space-y-4">
-          {/* Docker command */}
-          <CommandBlock
-            label="Basic (Docker)"
-            command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
-            onCopy={() =>
-              handleCopyCommand(
-                `${runCommand} --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
-              )
-            }
-          />
-
-          {/* Dangerous mode */}
-          <CommandBlock
-            label="Dangerous Mode (No Docker)"
-            warning
-            command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "Host" --dangerous${convexUrlFlag}`}
-            onCopy={() =>
-              handleCopyCommand(
-                `${runCommand} --token ${token || "YOUR_TOKEN"} --name "Host" --dangerous${convexUrlFlag}`,
-              )
-            }
-          />
-        </div>
+        <CommandBlock
+          label="Connect Machine"
+          warning
+          command={`${runCommand} --token ${showToken && token ? token : "<token>"} --name "My Machine"${convexUrlFlag}`}
+          onCopy={() =>
+            handleCopyCommand(
+              `${runCommand} --token ${token || "YOUR_TOKEN"} --name "My Machine"${convexUrlFlag}`,
+            )
+          }
+        />
       </div>
 
       {/* Security Notice - Compact */}
@@ -291,8 +275,7 @@ const LocalSandboxTab = () => {
         <div className="text-yellow-800 dark:text-yellow-200 space-y-1">
           <span className="font-medium">Security:</span>{" "}
           <span className="text-yellow-700 dark:text-yellow-300">
-            Docker mode runs in isolation. Dangerous mode has direct OS access.
-            Stop anytime with Ctrl+C.
+            Commands run directly on your OS. Stop anytime with Ctrl+C.
           </span>
         </div>
       </div>
@@ -300,4 +283,4 @@ const LocalSandboxTab = () => {
   );
 };
 
-export { LocalSandboxTab };
+export { RemoteControlTab };

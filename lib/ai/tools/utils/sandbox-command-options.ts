@@ -7,7 +7,7 @@ export const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
  * Build command options for sandbox execution.
  *
  * E2B sandbox requires user: "root" and cwd: "/home/user" for network tools
- * (ping, nmap, etc.) to work without sudo. ConvexSandbox (Docker) uses
+ * (ping, nmap, etc.) to work without sudo. CentrifugoSandbox (Docker) uses
  * --cap-add flags instead (NET_RAW, NET_ADMIN, SYS_PTRACE).
  *
  * @param sandbox - The sandbox instance

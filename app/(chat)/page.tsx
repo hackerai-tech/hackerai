@@ -26,6 +26,20 @@ const UnauthenticatedContent = () => {
     // No-op for unauthenticated users
   };
 
+  React.useEffect(() => {
+    const checkHash = () => {
+      if (
+        window.location.hash === "#pricing" ||
+        window.location.hash === "#team-pricing-seat-selection"
+      ) {
+        navigateToAuth("/login");
+      }
+    };
+    checkHash();
+    window.addEventListener("hashchange", checkHash);
+    return () => window.removeEventListener("hashchange", checkHash);
+  }, []);
+
   return (
     <div className="h-full bg-background flex flex-col overflow-hidden">
       <div className="flex-shrink-0">
@@ -34,28 +48,28 @@ const UnauthenticatedContent = () => {
 
       <div className="flex-1 flex flex-col min-h-0">
         {/* Centered content area */}
-        <div className="flex-1 flex flex-col items-center justify-center px-4 py-8 min-h-0">
-          <div className="w-full max-w-full sm:max-w-[768px] sm:min-w-[390px] flex flex-col items-center space-y-8">
-            {/* Centered title */}
-            <div className="text-center">
-              <h1 className="text-3xl font-bold text-foreground mb-2">
-                HackerAI
-              </h1>
-              <p className="text-muted-foreground">Your AI pentest assistant</p>
-            </div>
+        <div className="flex-1 flex flex-col items-center justify-center px-6 py-[15vh] pb-[18vh] min-h-0">
+          {/* Title */}
+          <div className="mb-4 flex flex-col items-center px-4 text-center md:mb-6">
+            <h1 className="text-4xl font-bold text-foreground mb-2 md:text-5xl">
+              What will you hack today?
+            </h1>
+            <p className="text-muted-foreground text-lg leading-tight md:text-xl">
+              Find vulnerabilities faster by chatting with AI.
+            </p>
+          </div>
 
-            {/* Centered input */}
-            <div className="w-full">
-              <ChatInput
-                onSubmit={handleSubmit}
-                onStop={handleStop}
-                onSendNow={() => {}}
-                status="ready"
-                isCentered={true}
-                isNewChat={true}
-                clearDraftOnSubmit={false}
-              />
-            </div>
+          {/* Input */}
+          <div className="w-full max-w-3xl">
+            <ChatInput
+              onSubmit={handleSubmit}
+              onStop={handleStop}
+              onSendNow={() => {}}
+              status="ready"
+              isCentered={true}
+              isNewChat={true}
+              clearDraftOnSubmit={false}
+            />
           </div>
         </div>
 
@@ -116,27 +130,27 @@ export default function Page() {
     <>
       <Authenticated>
         <AuthenticatedContent />
+        <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
+        <TeamPricingDialog
+          isOpen={teamPricingDialogOpen}
+          onClose={() => setTeamPricingDialogOpen(false)}
+          initialSeats={initialSeats}
+          initialPlan={initialPlan}
+        />
+        <TeamWelcomeDialog
+          open={teamWelcomeDialogOpen}
+          onOpenChange={setTeamWelcomeDialogOpen}
+        />
+        <MigratePentestgptDialog
+          open={migrateFromPentestgptDialogOpen}
+          onOpenChange={setMigrateFromPentestgptDialogOpen}
+          isMigrating={isMigrating}
+          onConfirm={migrate}
+        />
       </Authenticated>
       <Unauthenticated>
         <UnauthenticatedContent />
       </Unauthenticated>
-      <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
-      <TeamPricingDialog
-        isOpen={teamPricingDialogOpen}
-        onClose={() => setTeamPricingDialogOpen(false)}
-        initialSeats={initialSeats}
-        initialPlan={initialPlan}
-      />
-      <TeamWelcomeDialog
-        open={teamWelcomeDialogOpen}
-        onOpenChange={setTeamWelcomeDialogOpen}
-      />
-      <MigratePentestgptDialog
-        open={migrateFromPentestgptDialogOpen}
-        onOpenChange={setMigrateFromPentestgptDialogOpen}
-        isMigrating={isMigrating}
-        onConfirm={migrate}
-      />
     </>
   );
 }

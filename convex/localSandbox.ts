@@ -1,6 +1,8 @@
-import { mutation, query, internalMutation } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
+import { DatabaseReader } from "./_generated/server";
+import { SignJWT } from "jose";
 
 // ============================================================================
 // TOKEN MANAGEMENT
@@ -13,91 +15,29 @@ function generateToken(): string {
 }
 
 // ============================================================================
-// SIGNED SESSION TOKENS (HMAC-SHA256)
+// CENTRIFUGO JWT GENERATION
 // ============================================================================
-// These allow query-time verification without database lookups,
-// avoiding reactive surface issues while maintaining security.
 
-const SESSION_SIGNING_SECRET = process.env.LOCAL_SANDBOX_SESSION_SECRET;
-const SESSION_EXPIRY_MS = 10 * 60 * 1000; // 10 minutes (refreshed on heartbeat)
-
-async function signSession(
+async function generateCentrifugoToken(
   userId: string,
   connectionId: string,
-  expiresAt: number,
 ): Promise<string> {
-  if (!SESSION_SIGNING_SECRET) {
-    throw new Error(
-      "LOCAL_SANDBOX_SESSION_SECRET environment variable not set",
-    );
+  const secret = process.env.CENTRIFUGO_TOKEN_SECRET;
+  if (!secret) {
+    throw new Error("CENTRIFUGO_TOKEN_SECRET environment variable not set");
   }
 
-  const payload = `${userId}:${connectionId}:${expiresAt}`;
-  const encoder = new TextEncoder();
+  const encodedSecret = new TextEncoder().encode(secret);
 
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(SESSION_SIGNING_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    encoder.encode(payload),
-  );
-  return Array.from(new Uint8Array(signature), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
+  return new SignJWT({ sub: userId, info: { connectionId } })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setExpirationTime("1h")
+    .sign(encodedSecret);
 }
 
-async function verifySession(
-  userId: string,
-  connectionId: string,
-  expiresAt: number,
-  signature: string,
-): Promise<boolean> {
-  if (!SESSION_SIGNING_SECRET) {
-    return false;
-  }
-
-  // Check expiration first (cheap check)
-  if (Date.now() > expiresAt) {
-    return false;
-  }
-
-  // Validate signature format: HMAC-SHA256 produces 32 bytes = 64 hex chars
-  if (!/^[0-9a-f]{64}$/i.test(signature)) {
-    return false;
-  }
-
-  const payload = `${userId}:${connectionId}:${expiresAt}`;
-  const encoder = new TextEncoder();
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(SESSION_SIGNING_SECRET),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"],
-  );
-
-  // Convert hex signature to bytes (format already validated above)
-  const signatureBytes = new Uint8Array(
-    signature.match(/.{2}/g)!.map((byte) => parseInt(byte, 16)),
-  );
-
-  return crypto.subtle.verify(
-    "HMAC",
-    key,
-    signatureBytes,
-    encoder.encode(payload),
-  );
-}
-
-import { DatabaseReader } from "./_generated/server";
+// ============================================================================
+// TOKEN VALIDATION
+// ============================================================================
 
 async function validateToken(
   db: DatabaseReader,
@@ -214,9 +154,7 @@ export const connect = mutation({
   args: {
     token: v.string(),
     connectionName: v.string(),
-    containerId: v.optional(v.string()),
     clientVersion: v.string(),
-    mode: v.union(v.literal("docker"), v.literal("dangerous")),
     osInfo: v.optional(
       v.object({
         platform: v.string(),
@@ -230,13 +168,8 @@ export const connect = mutation({
     success: v.boolean(),
     userId: v.optional(v.string()),
     connectionId: v.optional(v.string()),
-    // Signed session for secure query-time verification without DB lookups
-    session: v.optional(
-      v.object({
-        expiresAt: v.number(),
-        signature: v.string(),
-      }),
-    ),
+    centrifugoToken: v.optional(v.string()),
+    centrifugoWsUrl: v.optional(v.string()),
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args) => {
@@ -251,55 +184,53 @@ export const connect = mutation({
     }
 
     const userId = tokenRecord.user_id;
+    const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
+    if (!centrifugoWsUrl) {
+      return { success: false, error: "Centrifugo not configured" };
+    }
+
     const connectionId = crypto.randomUUID();
-    const expiresAt = Date.now() + SESSION_EXPIRY_MS;
 
     // Create new connection (multiple connections allowed)
     await ctx.db.insert("local_sandbox_connections", {
       user_id: userId,
       connection_id: connectionId,
       connection_name: args.connectionName,
-      container_id: args.containerId,
       client_version: args.clientVersion,
-      mode: args.mode,
+      mode: "dangerous",
       os_info: args.osInfo,
       last_heartbeat: Date.now(),
       status: "connected",
       created_at: Date.now(),
     });
 
-    // Generate signed session for secure query access
-    const signature = await signSession(userId, connectionId, expiresAt);
+    const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
 
     return {
       success: true,
       userId,
       connectionId,
-      session: { expiresAt, signature },
+      centrifugoToken,
+      centrifugoWsUrl,
     };
   },
 });
 
-export const heartbeat = mutation({
+export const refreshCentrifugoToken = mutation({
   args: {
     token: v.string(),
     connectionId: v.string(),
   },
   returns: v.object({
-    success: v.boolean(),
-    // Refreshed session for continued query access
-    session: v.optional(
-      v.object({
-        expiresAt: v.number(),
-        signature: v.string(),
-      }),
-    ),
-    error: v.optional(v.string()),
+    centrifugoToken: v.string(),
   }),
   handler: async (ctx, { token, connectionId }) => {
     const tokenResult = await validateToken(ctx.db, token);
     if (!tokenResult.valid) {
-      return { success: false, error: "Invalid token" };
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Invalid token",
+      });
     }
 
     const connection = await ctx.db
@@ -308,33 +239,31 @@ export const heartbeat = mutation({
       .first();
 
     if (!connection) {
-      return { success: false, error: "No connection found" };
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Connection not found",
+      });
     }
 
     if (connection.user_id !== tokenResult.userId) {
-      return {
-        success: false,
-        error: "Connection does not belong to this user",
-      };
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Connection does not belong to this user",
+      });
     }
 
-    if (connection.status === "disconnected") {
-      return { success: false, error: "Connection was terminated" };
+    if (connection.status !== "connected") {
+      throw new ConvexError({
+        code: "BAD_REQUEST",
+        message: "Connection is not active",
+      });
     }
 
-    await ctx.db.patch(connection._id, {
-      last_heartbeat: Date.now(),
-    });
-
-    // Generate refreshed session for query access
-    const expiresAt = Date.now() + SESSION_EXPIRY_MS;
-    const signature = await signSession(
-      tokenResult.userId,
-      connectionId,
-      expiresAt,
+    const centrifugoToken = await generateCentrifugoToken(
+      connection.user_id,
+      connection.connection_id,
     );
-
-    return { success: true, session: { expiresAt, signature } };
+    return { centrifugoToken };
   },
 });
 
@@ -367,13 +296,190 @@ export const disconnect = mutation({
   },
 });
 
+export const connectDesktop = mutation({
+  args: {
+    connectionName: v.string(),
+    osInfo: v.optional(
+      v.object({
+        platform: v.string(),
+        arch: v.string(),
+        release: v.string(),
+        hostname: v.string(),
+      }),
+    ),
+  },
+  returns: v.object({
+    connectionId: v.string(),
+    centrifugoToken: v.string(),
+    centrifugoWsUrl: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const userId = identity.subject;
+
+    // Disconnect stale desktop connections for this user (page reload, etc.)
+    const existingDesktop = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_user_and_status", (q) =>
+        q.eq("user_id", userId).eq("status", "connected"),
+      )
+      .collect();
+    for (const conn of existingDesktop) {
+      if (conn.client_version === "desktop") {
+        await ctx.db.patch(conn._id, { status: "disconnected" });
+      }
+    }
+
+    const connectionId = crypto.randomUUID();
+
+    await ctx.db.insert("local_sandbox_connections", {
+      user_id: userId,
+      connection_id: connectionId,
+      connection_name: args.connectionName,
+      container_id: undefined,
+      client_version: "desktop",
+      mode: "dangerous",
+      os_info: args.osInfo,
+      last_heartbeat: Date.now(),
+      status: "connected",
+      created_at: Date.now(),
+    });
+
+    const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
+    const centrifugoWsUrl = process.env.CENTRIFUGO_WS_URL;
+    if (!centrifugoWsUrl) {
+      throw new Error("CENTRIFUGO_WS_URL environment variable not set");
+    }
+
+    return {
+      connectionId,
+      centrifugoToken,
+      centrifugoWsUrl,
+    };
+  },
+});
+
+export const refreshCentrifugoTokenDesktop = mutation({
+  args: {
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    centrifugoToken: v.string(),
+  }),
+  handler: async (ctx, { connectionId }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const userId = identity.subject;
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (!connection) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Connection not found",
+      });
+    }
+
+    if (connection.user_id !== userId) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Connection does not belong to this user",
+      });
+    }
+
+    if (connection.status !== "connected") {
+      throw new ConvexError({
+        code: "BAD_REQUEST",
+        message: "Connection is not active",
+      });
+    }
+
+    const centrifugoToken = await generateCentrifugoToken(userId, connectionId);
+    return { centrifugoToken };
+  },
+});
+
+export const disconnectDesktop = mutation({
+  args: {
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+  }),
+  handler: async (ctx, { connectionId }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    const userId = identity.subject;
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (!connection || connection.user_id !== userId) {
+      return { success: false };
+    }
+
+    await ctx.db.patch(connection._id, {
+      status: "disconnected",
+    });
+
+    return { success: true };
+  },
+});
+
+export const disconnectByBackend = mutation({
+  args: {
+    serviceKey: v.string(),
+    connectionId: v.string(),
+  },
+  returns: v.object({
+    success: v.boolean(),
+  }),
+  handler: async (ctx, { serviceKey, connectionId }) => {
+    validateServiceKey(serviceKey);
+
+    const connection = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_connection_id", (q) => q.eq("connection_id", connectionId))
+      .first();
+
+    if (connection && connection.status === "connected") {
+      await ctx.db.patch(connection._id, { status: "disconnected" });
+    }
+
+    return { success: true };
+  },
+});
+
 export const listConnections = query({
   args: {},
   returns: v.array(
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous")),
       osInfo: v.optional(
         v.object({
           platform: v.string(),
@@ -382,8 +488,8 @@ export const listConnections = query({
           hostname: v.string(),
         }),
       ),
-      containerId: v.optional(v.string()),
       lastSeen: v.number(),
+      isDesktop: v.boolean(),
     }),
   ),
   handler: async (ctx) => {
@@ -401,21 +507,13 @@ export const listConnections = query({
       )
       .collect();
 
-    // Check heartbeat timeout (90 seconds)
-    // Client sends heartbeat every 60s ± 10s jitter, so use 90s to be safe
-    const now = Date.now();
-    const timeout = 90000;
-
-    return connections
-      .filter((conn) => now - conn.last_heartbeat < timeout)
-      .map((conn) => ({
-        connectionId: conn.connection_id,
-        name: conn.connection_name,
-        mode: conn.mode,
-        osInfo: conn.os_info,
-        containerId: conn.container_id,
-        lastSeen: conn.last_heartbeat,
-      }));
+    return connections.map((conn) => ({
+      connectionId: conn.connection_id,
+      name: conn.connection_name,
+      osInfo: conn.os_info,
+      lastSeen: conn.last_heartbeat,
+      isDesktop: conn.client_version === "desktop",
+    }));
   },
 });
 
@@ -428,7 +526,6 @@ export const listConnectionsForBackend = query({
     v.object({
       connectionId: v.string(),
       name: v.string(),
-      mode: v.union(v.literal("docker"), v.literal("dangerous")),
       osInfo: v.optional(
         v.object({
           platform: v.string(),
@@ -437,8 +534,8 @@ export const listConnectionsForBackend = query({
           hostname: v.string(),
         }),
       ),
-      containerId: v.optional(v.string()),
       lastSeen: v.number(),
+      isDesktop: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -451,455 +548,12 @@ export const listConnectionsForBackend = query({
       )
       .collect();
 
-    // Check heartbeat timeout (90 seconds)
-    // Client sends heartbeat every 60s ± 10s jitter, so use 90s to be safe
-    const now = Date.now();
-    const timeout = 90000;
-
-    return connections
-      .filter((conn) => now - conn.last_heartbeat < timeout)
-      .map((conn) => ({
-        connectionId: conn.connection_id,
-        name: conn.connection_name,
-        mode: conn.mode,
-        osInfo: conn.os_info,
-        containerId: conn.container_id,
-        lastSeen: conn.last_heartbeat,
-      }));
-  },
-});
-
-// ============================================================================
-// COMMAND EXECUTION
-// ============================================================================
-
-export const enqueueCommand = mutation({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    connectionId: v.string(),
-    commandId: v.string(),
-    command: v.string(),
-    env: v.optional(v.record(v.string(), v.string())),
-    cwd: v.optional(v.string()),
-    timeout: v.optional(v.number()),
-    background: v.optional(v.boolean()),
-    // Optional display name for CLI output (empty string = hide, undefined = show command)
-    displayName: v.optional(v.string()),
-  },
-  returns: v.object({
-    success: v.boolean(),
-    // Signed session for subscribing to results (no DB lookup needed)
-    session: v.optional(
-      v.object({
-        userId: v.string(),
-        connectionId: v.string(),
-        expiresAt: v.number(),
-        signature: v.string(),
-      }),
-    ),
-  }),
-  handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-
-    // Validate connection exists and belongs to the specified user
-    const connection = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_connection_id", (q) =>
-        q.eq("connection_id", args.connectionId),
-      )
-      .first();
-
-    if (!connection) {
-      throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "Connection not found",
-      });
-    }
-
-    if (connection.user_id !== args.userId) {
-      throw new ConvexError({
-        code: "FORBIDDEN",
-        message: "Connection does not belong to this user",
-      });
-    }
-
-    if (connection.status !== "connected") {
-      throw new ConvexError({
-        code: "BAD_REQUEST",
-        message: "Connection is not active",
-      });
-    }
-
-    await ctx.db.insert("local_sandbox_commands", {
-      user_id: args.userId,
-      connection_id: args.connectionId,
-      command_id: args.commandId,
-      command: args.command,
-      env: args.env,
-      cwd: args.cwd,
-      timeout: args.timeout,
-      background: args.background,
-      display_name: args.displayName,
-      status: "pending",
-      created_at: Date.now(),
-    });
-
-    // Generate signed session for result subscription
-    const expiresAt = Date.now() + SESSION_EXPIRY_MS;
-    const signature = await signSession(
-      args.userId,
-      args.connectionId,
-      expiresAt,
-    );
-
-    return {
-      success: true,
-      session: {
-        userId: args.userId,
-        connectionId: args.connectionId,
-        expiresAt,
-        signature,
-      },
-    };
-  },
-});
-
-export const getPendingCommands = query({
-  args: {
-    connectionId: v.string(),
-    // Signed session for secure verification without DB lookups
-    session: v.object({
-      userId: v.string(),
-      expiresAt: v.number(),
-      signature: v.string(),
-    }),
-  },
-  returns: v.object({
-    commands: v.array(
-      v.object({
-        command_id: v.string(),
-        command: v.string(),
-        env: v.optional(v.record(v.string(), v.string())),
-        cwd: v.optional(v.string()),
-        timeout: v.optional(v.number()),
-        background: v.optional(v.boolean()),
-        display_name: v.optional(v.string()),
-      }),
-    ),
-    // Indicates session verification failed - client should re-authenticate
-    authError: v.optional(v.boolean()),
-  }),
-  handler: async (ctx, { connectionId, session }) => {
-    // Verify signed session - cryptographic check, no DB lookup needed
-    // This maintains security while avoiding reactive surface issues
-    const isValid = await verifySession(
-      session.userId,
-      connectionId,
-      session.expiresAt,
-      session.signature,
-    );
-
-    if (!isValid) {
-      // Signal auth failure so client can re-authenticate via connect()
-      return { commands: [], authError: true };
-    }
-
-    const commands = await ctx.db
-      .query("local_sandbox_commands")
-      .withIndex("by_connection_and_status", (q) =>
-        q.eq("connection_id", connectionId).eq("status", "pending"),
-      )
-      .order("asc")
-      .take(10);
-
-    return {
-      commands: commands.map((cmd) => ({
-        command_id: cmd.command_id,
-        command: cmd.command,
-        env: cmd.env,
-        cwd: cmd.cwd,
-        timeout: cmd.timeout,
-        background: cmd.background,
-        display_name: cmd.display_name,
-      })),
-    };
-  },
-});
-
-export const markCommandExecuting = mutation({
-  args: {
-    token: v.string(),
-    commandId: v.string(),
-  },
-  returns: v.object({
-    success: v.boolean(),
-  }),
-  handler: async (ctx, { token, commandId }) => {
-    const tokenResult = await validateToken(ctx.db, token);
-    if (!tokenResult.valid) {
-      return { success: false };
-    }
-
-    const command = await ctx.db
-      .query("local_sandbox_commands")
-      .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
-      .first();
-
-    if (!command || command.user_id !== tokenResult.userId) {
-      return { success: false };
-    }
-
-    // Prevent duplicate execution - only transition from pending to executing
-    if (command.status !== "pending") {
-      return { success: false };
-    }
-
-    await ctx.db.patch(command._id, {
-      status: "executing",
-    });
-
-    return { success: true };
-  },
-});
-
-export const submitResult = mutation({
-  args: {
-    token: v.string(),
-    commandId: v.string(),
-    stdout: v.string(),
-    stderr: v.string(),
-    exitCode: v.number(),
-    pid: v.optional(v.number()),
-    duration: v.number(),
-  },
-  returns: v.object({
-    success: v.boolean(),
-  }),
-  handler: async (ctx, args) => {
-    const tokenResult = await validateToken(ctx.db, args.token);
-    if (!tokenResult.valid) {
-      return { success: false };
-    }
-
-    const command = await ctx.db
-      .query("local_sandbox_commands")
-      .withIndex("by_command_id", (q) => q.eq("command_id", args.commandId))
-      .first();
-
-    if (!command || command.user_id !== tokenResult.userId) {
-      return { success: false };
-    }
-
-    await ctx.db.insert("local_sandbox_results", {
-      command_id: args.commandId,
-      user_id: tokenResult.userId,
-      stdout: args.stdout,
-      stderr: args.stderr,
-      exit_code: args.exitCode,
-      pid: args.pid,
-      duration: args.duration,
-      completed_at: Date.now(),
-    });
-
-    await ctx.db.patch(command._id, {
-      status: "completed",
-    });
-
-    return { success: true };
-  },
-});
-
-// Optimized subscription query - minimal reactive surface (only reads results table)
-// Security: Session signature verified cryptographically without DB lookups
-export const subscribeToResult = query({
-  args: {
-    commandId: v.string(),
-    // Signed session for secure verification without DB lookups
-    session: v.object({
-      userId: v.string(),
-      connectionId: v.string(),
-      expiresAt: v.number(),
-      signature: v.string(),
-    }),
-  },
-  returns: v.object({
-    found: v.boolean(),
-    stdout: v.optional(v.string()),
-    stderr: v.optional(v.string()),
-    exitCode: v.optional(v.number()),
-    pid: v.optional(v.number()),
-    duration: v.optional(v.number()),
-    // Indicates session verification failed - client should re-authenticate
-    authError: v.optional(v.boolean()),
-  }),
-  handler: async (ctx, { commandId, session }) => {
-    // Verify signed session - cryptographic check, no DB lookup needed
-    const isValid = await verifySession(
-      session.userId,
-      session.connectionId,
-      session.expiresAt,
-      session.signature,
-    );
-
-    if (!isValid) {
-      // Signal auth failure so client can distinguish from "not found"
-      return { found: false, authError: true };
-    }
-
-    const result = await ctx.db
-      .query("local_sandbox_results")
-      .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
-      .first();
-
-    if (!result || result.user_id !== session.userId) {
-      return { found: false };
-    }
-
-    return {
-      found: true,
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exit_code,
-      pid: result.pid,
-      duration: result.duration,
-    };
-  },
-});
-
-// Delete result after it's been read - reduces storage
-export const deleteResult = mutation({
-  args: {
-    serviceKey: v.string(),
-    userId: v.string(),
-    commandId: v.string(),
-  },
-  returns: v.object({ success: v.boolean() }),
-  handler: async (ctx, { serviceKey, userId, commandId }) => {
-    validateServiceKey(serviceKey);
-
-    const result = await ctx.db
-      .query("local_sandbox_results")
-      .withIndex("by_command_id", (q) => q.eq("command_id", commandId))
-      .first();
-
-    if (result && result.user_id === userId) {
-      await ctx.db.delete(result._id);
-    }
-
-    return { success: true };
-  },
-});
-
-// ============================================================================
-// CLEANUP (internal mutations for cron jobs)
-// ============================================================================
-
-export const cleanupStaleConnections = internalMutation({
-  args: {},
-  returns: v.object({
-    cleaned: v.number(),
-  }),
-  handler: async (ctx) => {
-    const now = Date.now();
-    const staleTimeout = 5 * 60 * 1000; // 5 minutes - allows several missed heartbeats
-
-    // Find stale connections
-    const staleConnections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_status_and_last_heartbeat", (q) =>
-        q.eq("status", "connected").lt("last_heartbeat", now - staleTimeout),
-      )
-      .collect();
-
-    // Mark as disconnected
-    for (const connection of staleConnections) {
-      await ctx.db.patch(connection._id, {
-        status: "disconnected",
-      });
-    }
-
-    return { cleaned: staleConnections.length };
-  },
-});
-
-export const cleanupOldCommands = internalMutation({
-  args: {},
-  returns: v.object({
-    deleted: v.number(),
-  }),
-  handler: async (ctx) => {
-    const now = Date.now();
-    const maxAge = 60 * 60 * 1000; // 1 hour
-    const stuckCommandTimeout = 60 * 60 * 1000; // 1 hour for stuck pending/executing
-
-    let deletedCount = 0;
-
-    // Delete old completed commands
-    const oldCompletedCommands = await ctx.db
-      .query("local_sandbox_commands")
-      .withIndex("by_status_and_created_at", (q) =>
-        q.eq("status", "completed").lt("created_at", now - maxAge),
-      )
-      .take(100);
-
-    for (const cmd of oldCompletedCommands) {
-      await ctx.db.delete(cmd._id);
-      deletedCount++;
-    }
-
-    // Delete orphaned pending commands (stuck for more than 1 hour)
-    const stuckPendingCommands = await ctx.db
-      .query("local_sandbox_commands")
-      .withIndex("by_status_and_created_at", (q) =>
-        q.eq("status", "pending").lt("created_at", now - stuckCommandTimeout),
-      )
-      .take(100);
-
-    for (const cmd of stuckPendingCommands) {
-      await ctx.db.delete(cmd._id);
-      deletedCount++;
-    }
-
-    // Delete orphaned executing commands (stuck for more than 1 hour)
-    const stuckExecutingCommands = await ctx.db
-      .query("local_sandbox_commands")
-      .withIndex("by_status_and_created_at", (q) =>
-        q.eq("status", "executing").lt("created_at", now - stuckCommandTimeout),
-      )
-      .take(100);
-
-    for (const cmd of stuckExecutingCommands) {
-      await ctx.db.delete(cmd._id);
-      deletedCount++;
-    }
-
-    // Delete old results
-    const oldResults = await ctx.db
-      .query("local_sandbox_results")
-      .withIndex("by_completed_at", (q) => q.lt("completed_at", now - maxAge))
-      .take(100);
-
-    for (const result of oldResults) {
-      await ctx.db.delete(result._id);
-      deletedCount++;
-    }
-
-    // Delete old disconnected connections (older than 24 hours)
-    const oldConnections = await ctx.db
-      .query("local_sandbox_connections")
-      .withIndex("by_status_and_created_at", (q) =>
-        q
-          .eq("status", "disconnected")
-          .lt("created_at", now - 24 * 60 * 60 * 1000),
-      )
-      .take(100);
-
-    for (const conn of oldConnections) {
-      await ctx.db.delete(conn._id);
-      deletedCount++;
-    }
-
-    return { deleted: deletedCount };
+    return connections.map((conn) => ({
+      connectionId: conn.connection_id,
+      name: conn.connection_name,
+      osInfo: conn.os_info,
+      lastSeen: conn.last_heartbeat,
+      isDesktop: conn.client_version === "desktop",
+    }));
   },
 });

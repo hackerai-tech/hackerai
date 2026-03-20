@@ -64,7 +64,6 @@ export const useChatHandlers = ({
     removeQueuedMessage,
     queueBehavior,
     sandboxPreference,
-    tauriCmdServer,
     selectedModel,
   } = useGlobalState();
 
@@ -284,7 +283,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
-              tauriCmdServer,
+
               selectedModel,
             },
           },
@@ -300,7 +299,7 @@ export const useChatHandlers = ({
               todos,
               temporary: temporaryChatsEnabled,
               sandboxPreference,
-              tauriCmdServer,
+
               selectedModel,
             },
           },
@@ -368,7 +367,6 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          tauriCmdServer,
           selectedModel,
         },
       });
@@ -384,7 +382,6 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          tauriCmdServer,
           selectedModel,
         },
       });
@@ -416,7 +413,6 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          tauriCmdServer,
           selectedModel,
         },
       });
@@ -440,7 +436,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          tauriCmdServer,
+
           selectedModel,
         },
       });
@@ -556,7 +552,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: false,
           sandboxPreference,
-          tauriCmdServer,
+
           selectedModel,
         },
       });
@@ -593,7 +589,7 @@ export const useChatHandlers = ({
           regenerate: true,
           temporary: true,
           sandboxPreference,
-          tauriCmdServer,
+
           selectedModel,
         },
       });
@@ -644,7 +640,7 @@ export const useChatHandlers = ({
           todos,
           temporary: temporaryChatsEnabled,
           sandboxPreference,
-          tauriCmdServer,
+
           selectedModel,
         },
       });

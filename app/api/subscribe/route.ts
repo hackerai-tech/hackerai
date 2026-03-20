@@ -116,6 +116,13 @@ export const POST = async (req: NextRequest) => {
     );
 
     if (matchingCustomer) {
+      // Reject blocked customers (flagged by fraud webhook)
+      if (matchingCustomer.metadata.blocked === "true") {
+        return NextResponse.json(
+          { error: "This account has been suspended due to a payment dispute" },
+          { status: 403 },
+        );
+      }
       customer = matchingCustomer;
     }
 
@@ -171,6 +178,12 @@ export const POST = async (req: NextRequest) => {
       mode: "subscription",
       success_url: successUrl.toString(),
       cancel_url: cancelUrl.toString(),
+      custom_text: {
+        submit: {
+          message:
+            "Renews monthly until cancelled. Cancel anytime in Settings.",
+        },
+      },
     });
 
     return NextResponse.json({ url: session.url });

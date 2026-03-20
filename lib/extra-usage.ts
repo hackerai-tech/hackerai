@@ -178,10 +178,13 @@ export async function deductFromBalance(
     };
   } catch (error) {
     console.error("Error deducting from balance:", error);
+    // Do NOT report as insufficientFunds — this was a service error, not an
+    // empty balance. Returning insufficientFunds: false lets the caller
+    // distinguish transient failures from actual balance exhaustion.
     return {
       success: false,
       newBalanceDollars: 0,
-      insufficientFunds: true,
+      insufficientFunds: false,
       monthlyCapExceeded: false,
     };
   }

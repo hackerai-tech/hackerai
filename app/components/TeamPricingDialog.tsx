@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -29,8 +30,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
 }) => {
   const { user } = useAuth();
   const { subscription } = useGlobalState();
-  const { upgradeLoading, upgradeError, handleUpgrade, setUpgradeError } =
-    useUpgrade();
+  const { upgradeLoading, handleUpgrade } = useUpgrade();
   const [billingPeriod, setBillingPeriod] = React.useState<
     "monthly" | "yearly"
   >(initialPlan);
@@ -69,7 +69,7 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
 
   const handleContinue = async () => {
     if (!user) {
-      setUpgradeError("Please sign in to upgrade");
+      toast.error("Please sign in to upgrade");
       return;
     }
 
@@ -334,12 +334,6 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
                     </div>
                   </div>
 
-                  {upgradeError && (
-                    <div className="mt-4 text-sm text-red-500">
-                      {upgradeError}
-                    </div>
-                  )}
-
                   <div className="flex flex-col gap-3 pb-10">
                     <Button
                       onClick={handleContinue}
@@ -576,12 +570,6 @@ const TeamPricingDialog: React.FC<TeamPricingDialogProps> = ({
                       starting today
                     </div>
                   </div>
-
-                  {upgradeError && (
-                    <div className="mt-4 text-sm text-red-500">
-                      {upgradeError}
-                    </div>
-                  )}
 
                   <Button
                     onClick={handleContinue}

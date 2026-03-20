@@ -14,17 +14,17 @@ export function isChatMode(value: string | null): value is ChatMode {
 export type SelectedModel =
   | "auto"
   | "sonnet-4.6"
-  | "gemini-3.1-pro"
   | "grok-4.1"
   | "gemini-3-flash"
+  // | "opus-4.6"
   | "gpt-5.4";
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
   "sonnet-4.6",
-  "gemini-3.1-pro",
   "grok-4.1",
   "gemini-3-flash",
+  // "opus-4.6",
   "gpt-5.4",
 ];
 
@@ -269,8 +269,9 @@ export interface QueuedMessage {
 
 export type QueueBehavior = "queue" | "stop-and-send";
 
-// Sandbox preference: "e2b" for cloud, or a connection ID for local sandbox
-export type SandboxPreference = "e2b" | string;
+// "e2b" for cloud sandbox, "desktop" for Tauri desktop app, or a connectionId UUID for a specific local connection.
+// Uses `string & {}` to preserve autocomplete for well-known values while allowing arbitrary strings.
+export type SandboxPreference = "e2b" | "desktop" | (string & {});
 
 /**
  * Memory entry returned by Convex memories queries

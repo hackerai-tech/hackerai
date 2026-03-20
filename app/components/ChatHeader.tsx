@@ -322,10 +322,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                             </Tooltip>
                           </TooltipProvider>
                         )}
-                        {chatTitle ||
-                          (isExistingChat && chatData === undefined
-                            ? ""
-                            : "New Chat")}
+                        {chatTitle || "New Chat"}
                       </>
                     )}
                   </span>

@@ -10,7 +10,6 @@ import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
-import { MatchToolHandler } from "./tools/MatchToolHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
@@ -72,7 +71,11 @@ function arePropsEqual(
       prevProps.part.state === nextProps.part.state &&
       prevProps.part.toolCallId === nextProps.part.toolCallId &&
       prevProps.part.output === nextProps.part.output &&
-      prevProps.part.input === nextProps.part.input
+      // Tool input is an object — reference check first (fast path), then
+      // value comparison so new objects with identical content don't re-render.
+      (prevProps.part.input === nextProps.part.input ||
+        JSON.stringify(prevProps.part.input) ===
+          JSON.stringify(nextProps.part.input))
     );
   }
 
@@ -210,9 +213,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return (
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
       );
-
-    case "tool-match":
-      return <MatchToolHandler part={part} status={status} />;
 
     default:
       return null;

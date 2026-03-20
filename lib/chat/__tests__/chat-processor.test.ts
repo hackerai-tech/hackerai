@@ -157,35 +157,35 @@ describe("selectModel", () => {
     });
   });
 
-  // Model override for paid users
-  describe("model override (paid users)", () => {
-    it("should use selected model override for pro users", () => {
-      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe(
-        "model-sonnet-4.6",
-      );
-    });
-
-    it("should use selected model override for ultra users", () => {
+  // Model override — enabled for Ask mode (paid users only), always ignored for Agent mode
+  describe("model override for ask mode (paid users)", () => {
+    it("should use selected model override for ask mode", () => {
       expect(selectModel("ask", "ultra", "sonnet-4.6")).toBe(
         "model-sonnet-4.6",
       );
     });
 
-    it("should use selected model override for team users", () => {
-      expect(selectModel("agent", "team", "sonnet-4.6")).toBe(
-        "model-sonnet-4.6",
-      );
+    it("should use selected model override for team users in ask mode", () => {
+      expect(selectModel("ask", "team", "sonnet-4.6")).toBe("model-sonnet-4.6");
     });
 
-    it("should work with all selectable models", () => {
-      expect(selectModel("agent", "pro", "gemini-3.1-pro")).toBe(
-        "model-gemini-3.1-pro",
-      );
-      expect(selectModel("agent", "pro", "grok-4.1")).toBe("model-grok-4.1");
-      expect(selectModel("agent", "pro", "gemini-3-flash")).toBe(
+    it("should apply all selectable models in ask mode", () => {
+      expect(selectModel("ask", "pro", "grok-4.1")).toBe("model-grok-4.1");
+      expect(selectModel("ask", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
       );
-      expect(selectModel("agent", "pro", "gpt-5.4")).toBe("model-gpt-5.4");
+    });
+  });
+
+  // Agent mode always ignores model override
+  describe("model override ignored for agent mode", () => {
+    it("should ignore selected model override for agent mode", () => {
+      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe("agent-model");
+    });
+
+    it("should ignore all selectable models in agent mode", () => {
+      expect(selectModel("agent", "pro", "grok-4.1")).toBe("agent-model");
+      expect(selectModel("agent", "pro", "gemini-3-flash")).toBe("agent-model");
     });
   });
 

@@ -19,10 +19,7 @@ import { getExtraUsageBalance } from "@/lib/extra-usage";
 import { countMessagesTokens } from "@/lib/token-utils";
 import { ChatSDKError } from "@/lib/errors";
 import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
-import {
-  hasFileAttachments,
-  countFileAttachments,
-} from "@/lib/api/chat-stream-helpers";
+import { countFileAttachments } from "@/lib/api/chat-stream-helpers";
 import { createAgentStreamExecute } from "@/lib/api/agent-stream-core";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -76,7 +73,6 @@ export const createChatHandler = (
         regenerate,
         temporary,
         sandboxPreference,
-        tauriCmdServer,
         selectedModel: rawSelectedModel,
         isAutoContinue,
       }: {
@@ -87,7 +83,6 @@ export const createChatHandler = (
         regenerate?: boolean;
         temporary?: boolean;
         sandboxPreference?: SandboxPreference;
-        tauriCmdServer?: { port: number; token: string };
         selectedModel?: string;
         isAutoContinue?: boolean;
       } = await req.json();
@@ -105,7 +100,8 @@ export const createChatHandler = (
         isRegenerate: !!regenerate,
       });
 
-      const { userId, subscription } = await getUserIDAndPro(req);
+      const { userId, subscription, organizationId } =
+        await getUserIDAndPro(req);
       usageRefundTracker.setUser(userId, subscription);
       const userLocation = geolocation(req);
 
@@ -190,7 +186,9 @@ export const createChatHandler = (
 
       // Fetch user customization early (needed for memory settings)
       const userCustomization = await getUserCustomization({ userId });
-      const memoryEnabled = userCustomization?.include_memory_entries ?? true;
+      const memoryEnabled =
+        subscription !== "free" &&
+        (userCustomization?.include_memory_entries ?? true);
 
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
       // Token bucket requires estimated token count for cost calculation
@@ -207,13 +205,10 @@ export const createChatHandler = (
         {
           messageCount: truncatedMessages.length,
           estimatedInputTokens,
-          hasSandboxFiles: !!(sandboxFiles && sandboxFiles.length > 0),
-          hasFileAttachments: hasFileAttachments(truncatedMessages),
-          fileCount: fileCounts.totalFiles,
-          fileImageCount: fileCounts.imageCount,
-          sandboxPreference,
-          memoryEnabled,
           isNewChat,
+          fileCount: fileCounts.totalFiles,
+          imageCount: fileCounts.imageCount,
+          memoryEnabled,
         },
         selectedModel,
       );
@@ -227,11 +222,23 @@ export const createChatHandler = (
 
         if (extraUsageEnabled) {
           const balanceInfo = await getExtraUsageBalance(userId);
-          // Set extraUsageConfig if user has balance OR auto-reload is enabled
-          // (auto-reload can add funds even when balance is $0)
-          if (
-            balanceInfo &&
-            (balanceInfo.balanceDollars > 0 || balanceInfo.autoReloadEnabled)
+
+          if (!balanceInfo) {
+            // Balance check failed (Convex error) — use optimistic config so
+            // the rate limiter still attempts the deduction, which is the real
+            // source of truth. Without this, a transient Convex failure silently
+            // disables extra usage and the user hits the hard subscription limit.
+            console.warn(
+              `[chat-handler] getExtraUsageBalance returned null for user ${userId}, using optimistic extra usage config`,
+            );
+            extraUsageConfig = {
+              enabled: true,
+              hasBalance: true,
+              autoReloadEnabled: false,
+            };
+          } else if (
+            balanceInfo.balanceDollars > 0 ||
+            balanceInfo.autoReloadEnabled
           ) {
             extraUsageConfig = {
               enabled: true,
@@ -252,6 +259,7 @@ export const createChatHandler = (
           estimatedInputTokens,
           extraUsageConfig,
           selectedModel,
+          organizationId,
         ));
 
       // Track deductions for potential refund on error
@@ -317,7 +325,6 @@ export const createChatHandler = (
         fileTokens: normalizedFileTokens,
         sandboxFiles,
         chatFinishReason: chat?.finish_reason,
-        tauriCmdServer,
         logger: nextJsAxiomLogger,
         chatLogger,
         usageRefundTracker,
@@ -329,6 +336,9 @@ export const createChatHandler = (
 
       return createUIMessageStreamResponse({
         stream,
+        headers: {
+          "Transfer-Encoding": "chunked",
+        },
         async consumeSseStream({ stream: sseStream }) {
           // Temporary chats do not support resumption
           if (temporary) {

@@ -4,7 +4,13 @@ import { workos } from "@/app/api/workos";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import Stripe from "stripe";
-import { resetRateLimitBuckets } from "@/lib/rate-limit";
+import {
+  resetRateLimitBuckets,
+  stashOldBucketRemaining,
+  popOldBucketRemaining,
+  initProratedBucket,
+  clearOrgRemovedUsage,
+} from "@/lib/rate-limit";
 import type { SubscriptionTier } from "@/types";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
@@ -26,21 +32,21 @@ function planLookupKeyToTier(lookupKey: string): SubscriptionTier | null {
 // Helpers
 // =============================================================================
 
-/** Resolve all active WorkOS user IDs from a Stripe customer ID. */
+/** Resolve all active WorkOS user IDs and org ID from a Stripe customer ID. */
 async function resolveUserIdsFromCustomer(
   customerId: string,
-): Promise<string[]> {
+): Promise<{ userIds: string[]; orgId: string | null }> {
   try {
     const customerData = await stripe.customers.retrieve(customerId);
-    if (customerData.deleted) return [];
+    if (customerData.deleted) return { userIds: [], orgId: null };
 
     const customer = customerData as Stripe.Customer;
-    const orgId = customer.metadata?.workOSOrganizationId;
+    const orgId = customer.metadata?.workOSOrganizationId ?? null;
     if (!orgId) {
       console.error(
         `[Subscription Webhook] Customer ${customerId} missing workOSOrganizationId metadata`,
       );
-      return [];
+      return { userIds: [], orgId: null };
     }
 
     const memberships = await workos.userManagement.listOrganizationMemberships(
@@ -54,23 +60,24 @@ async function resolveUserIdsFromCustomer(
       console.error(
         `[Subscription Webhook] No active memberships for org ${orgId}`,
       );
-      return [];
+      return { userIds: [], orgId };
     }
 
-    return memberships.data.map((m) => m.userId);
+    return { userIds: memberships.data.map((m) => m.userId), orgId };
   } catch (error) {
     console.error(
       `[Subscription Webhook] Failed to resolve users for customer ${customerId}:`,
       error,
     );
-    return [];
+    return { userIds: [], orgId: null };
   }
 }
 
-/** Resolve subscription tier from a Stripe subscription ID. */
-async function resolveTierFromSubscription(
-  subscriptionId: string,
-): Promise<SubscriptionTier | null> {
+/** Resolve subscription tier and object from a Stripe subscription ID. */
+async function resolveSubscription(subscriptionId: string): Promise<{
+  tier: SubscriptionTier;
+  subscription: Stripe.Subscription;
+} | null> {
   try {
     const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
       expand: ["items.data.price"],
@@ -85,7 +92,8 @@ async function resolveTierFromSubscription(
       return null;
     }
 
-    return planLookupKeyToTier(lookupKey);
+    const tier = planLookupKeyToTier(lookupKey);
+    return tier ? { tier, subscription } : null;
   } catch (error) {
     console.error(
       `[Subscription Webhook] Failed to retrieve subscription ${subscriptionId}:`,
@@ -125,22 +133,83 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     return;
   }
 
-  const [userIds, tier] = await Promise.all([
+  const [customerResult, resolved] = await Promise.all([
     resolveUserIdsFromCustomer(customerId),
-    resolveTierFromSubscription(subscriptionId),
+    resolveSubscription(subscriptionId),
   ]);
 
-  if (userIds.length === 0 || !tier) {
+  const { userIds, orgId } = customerResult;
+
+  if (userIds.length === 0 || !resolved) {
     console.error(
-      `[Subscription Webhook] Could not resolve users (${userIds.length}) or tier (${tier}) for invoice ${invoice.id}`,
+      `[Subscription Webhook] Could not resolve users (${userIds.length}) or subscription for invoice ${invoice.id}`,
     );
     return;
   }
 
+  const { tier, subscription } = resolved;
+  const billingReason = (invoice as any).billing_reason as string | undefined;
+
+  // Mid-cycle tier change: prorate credits based on remaining time in the cycle.
+  // Only prorate if handleSubscriptionUpdated stashed old-tier data (confirms
+  // a real tier change). Other subscription_update reasons (quantity changes,
+  // billing anchor changes) fall through to the full reset path.
+  if (billingReason === "subscription_update") {
+    // Check each user for a tier-change stash; collect those that have one
+    const stashResults = await Promise.all(
+      userIds.map(async (uid) => ({
+        uid,
+        stash: await popOldBucketRemaining(uid),
+      })),
+    );
+
+    const tierChangeUsers = stashResults.filter((r) => r.stash !== null);
+
+    if (tierChangeUsers.length > 0) {
+      console.log(
+        `[Subscription Webhook] invoice.paid (upgrade): prorating ${tier} buckets for ${tierChangeUsers.length} user(s)`,
+      );
+
+      const periodStart = (subscription as any).current_period_start as number;
+      const periodEnd = (subscription as any).current_period_end as number;
+      const now = Math.floor(Date.now() / 1000);
+      const totalDuration = periodEnd - periodStart;
+      const remaining = periodEnd - now;
+
+      const proratedRatio = Math.max(
+        0,
+        Math.min(1, totalDuration > 0 ? remaining / totalDuration : 1),
+      );
+
+      await Promise.all(
+        tierChangeUsers.map(({ uid, stash }) =>
+          initProratedBucket(uid, tier, proratedRatio, stash!.consumed),
+        ),
+      );
+
+      // Any users without a stash (shouldn't happen, but safe fallback)
+      const nonTierChangeUsers = stashResults.filter((r) => r.stash === null);
+      if (nonTierChangeUsers.length > 0) {
+        await Promise.all(
+          nonTierChangeUsers.map(({ uid }) => resetRateLimitBuckets(uid, tier)),
+        );
+      }
+
+      return;
+    }
+    // No stash found for any user — not a tier change, fall through to full reset
+  }
+
+  // Regular renewal or new subscription: full credits
   console.log(
-    `[Subscription Webhook] invoice.paid: resetting ${tier} buckets for ${userIds.length} user(s)`,
+    `[Subscription Webhook] invoice.paid (${billingReason ?? "unknown"}): resetting ${tier} buckets for ${userIds.length} user(s)`,
   );
   await Promise.all(userIds.map((uid) => resetRateLimitBuckets(uid, tier)));
+
+  // Clear team seat rotation debt on renewal (fresh cycle)
+  if (tier === "team" && orgId) {
+    await clearOrgRemovedUsage(orgId);
+  }
 }
 
 /** Handle customer.subscription.updated — reset old tier's buckets on plan change. */
@@ -173,7 +242,7 @@ async function handleSubscriptionUpdated(
 
   if (!customerId) return;
 
-  const userIds = await resolveUserIdsFromCustomer(customerId);
+  const { userIds } = await resolveUserIdsFromCustomer(customerId);
   if (userIds.length === 0) {
     console.error(
       `[Subscription Webhook] subscription.updated: could not resolve users for customer ${customerId}`,
@@ -185,8 +254,11 @@ async function handleSubscriptionUpdated(
     `[Subscription Webhook] subscription.updated: tier change ${previousTier} → ${currentTier} for ${userIds.length} user(s)`,
   );
 
-  // Reset old tier's buckets (new tier gets fresh keys automatically)
+  // Stash remaining credits from old tier before deleting, then reset old buckets
   if (previousTier) {
+    await Promise.all(
+      userIds.map((uid) => stashOldBucketRemaining(uid, previousTier)),
+    );
     await Promise.all(
       userIds.map((uid) => resetRateLimitBuckets(uid, previousTier)),
     );

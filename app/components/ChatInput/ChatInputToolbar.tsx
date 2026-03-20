@@ -34,11 +34,13 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector isStreaming={submitStopProps.status === "streaming"} />
-      <ModelSelector
-        value={selectedModel}
-        onChange={setSelectedModel}
-        mode={chatMode}
-      />
+      {chatMode === "ask" && (
+        <ModelSelector
+          value={selectedModel}
+          onChange={setSelectedModel}
+          mode={chatMode}
+        />
+      )}
       {showContextIndicator && contextUsage && (
         <div className="shrink-0">
           <ContextUsageIndicator {...contextUsage} />

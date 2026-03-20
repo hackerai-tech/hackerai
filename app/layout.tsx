@@ -24,7 +24,7 @@ const APP_NAME = "HackerAI";
 const APP_DEFAULT_TITLE = "HackerAI - AI-Powered Penetration Testing Assistant";
 const APP_TITLE_TEMPLATE = "%s | HackerAI";
 const APP_DESCRIPTION =
-  "HackerAI provides advanced AI and integrated tools to help security teams conduct comprehensive penetration tests effortlessly. Scan, exploit, and analyze web applications, networks, and cloud environments with ease and precision, without needing expert skills.";
+  "HackerAI is an AI pentesting assistant that helps you scan targets, exploit vulnerabilities, analyze findings, and write reports faster.";
 
 export const metadata: Metadata = {
   applicationName: APP_NAME,
@@ -39,16 +39,17 @@ export const metadata: Metadata = {
     "pentestgpt",
     "hacker ai",
     "pentest ai",
+    "penetration testing tool",
     "penetration testing ai",
     "hacking ai",
     "pentesting ai",
-    "ai hacker",
-    "hacker chat",
-    "hacker chatbot",
-    "hacker gpt",
-    "hackerai chat",
-    "hacking gpt",
-    "pentest chat",
+    "pentest automation",
+    "security assessment ai",
+    "vulnerability scanner ai",
+    "offensive security ai",
+    "red team ai",
+    "cybersecurity ai assistant",
+    "bug bounty ai",
     "pentest gpt",
     "security ai",
   ],

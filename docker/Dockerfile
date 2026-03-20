@@ -15,25 +15,17 @@ ENV GOCACHE=/home/user/go/.cache
 ENV PATH=/home/user/.local/bin:/usr/local/go/bin:/home/user/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # ============================================================================
-# Kali Mirrors & Base System Installation
+# Base System Setup (use default Kali CDN mirror - auto-routes to healthy mirrors)
 # ============================================================================
-RUN set -eux; \
-    # Try multiple Kali mirrors for reliability
-    mirrors="ftp.acc.umu.se/mirror/kali.org/kali mirror.math.princeton.edu/pub/kali kali.mirror.garr.it/mirrors/kali mirror.pit.teraswitch.com/kali"; \
-    success=0; \
-    for mirror in $mirrors; do \
-        echo "deb http://$mirror kali-rolling main contrib non-free non-free-firmware" > /etc/apt/sources.list; \
-        if apt-get update; then \
-            echo "Using Kali mirror: $mirror"; \
-            success=1; \
-            break; \
-        fi; \
-    done; \
-    if [ "$success" -ne 1 ]; then \
-        echo "ERROR: apt-get update failed for all configured mirrors" >&2; \
-        exit 1; \
-    fi; \
-    # Install all tools in one layer to minimize image size
+RUN apt-get update && \
+    apt-get install -y kali-archive-keyring sudo && \
+    apt-get update && \
+    apt-get upgrade -y
+
+# ============================================================================
+# Core System Packages
+# ============================================================================
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     # Essential utilities
     curl \

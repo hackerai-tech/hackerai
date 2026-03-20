@@ -66,7 +66,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
                 size="default"
                 className="min-w-16 rounded-[10px]"
               >
-                Sign up
+                Get started
               </Button>
             </div>
           )}
@@ -99,7 +99,7 @@ const Header: React.FC<HeaderProps> = ({ chatTitle, hideDownload = false }) => {
               size="sm"
               className="rounded-[10px]"
             >
-              Sign up
+              Get started
             </Button>
           </div>
         )}

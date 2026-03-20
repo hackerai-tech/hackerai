@@ -6,12 +6,12 @@ import { openrouter } from "@openrouter/ai-sdk-provider";
 
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
-  "agent-model": openrouter("google/gemini-3-flash-preview"),
+  "ask-model-free": openrouter("xiaomi/mimo-v2-flash"),
+  "agent-model": openrouter("moonshotai/kimi-k2.5"),
   "model-sonnet-4.6": openrouter("anthropic/claude-sonnet-4-6"),
-  "model-gemini-3.1-pro": openrouter("google/gemini-3.1-pro-preview"),
   "model-grok-4.1": openrouter("x-ai/grok-4.1-fast"),
   "model-gemini-3-flash": openrouter("google/gemini-3-flash-preview"),
+  // "model-opus-4.6": openrouter("anthropic/claude-opus-4.6"),
   "model-gpt-5.4": openrouter("openai/gpt-5.4"),
   "fallback-agent-model": openrouter("x-ai/grok-4.1-fast"),
   "fallback-ask-model": openrouter("x-ai/grok-4.1-fast"),
@@ -23,15 +23,34 @@ export type ModelName = keyof typeof baseProviders;
 export const modelCutoffDates: Record<ModelName, string> = {
   "ask-model": "January 2025",
   "ask-model-free": "November 2024",
-  "agent-model": "January 2025",
+  "agent-model": "March 2025",
   "model-sonnet-4.6": "May 2025",
-  "model-gemini-3.1-pro": "January 2025",
   "model-grok-4.1": "November 2024",
   "model-gemini-3-flash": "January 2025",
-  "model-gpt-5.4": "March 2026",
+  // "model-opus-4.6": "May 2025",
+  "model-gpt-5.4": "August 2025",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
   "title-generator-model": "November 2024",
+};
+
+export const modelDisplayNames: Record<ModelName, string> = {
+  "ask-model": "Auto, an intelligent model router built by HackerAI",
+  "ask-model-free": "Auto, an intelligent model router built by HackerAI",
+  "agent-model": "Auto, an intelligent model router built by HackerAI",
+  "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
+  "model-grok-4.1": "xAI Grok 4.1 Fast",
+  "model-gemini-3-flash": "Google Gemini 3 Flash",
+  // "model-opus-4.6": "Anthropic Claude Opus 4.6",
+  "model-gpt-5.4": "OpenAI GPT-5.4",
+  "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
+  "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
+  "title-generator-model":
+    "Auto, an intelligent model router built by HackerAI",
+};
+
+export const getModelDisplayName = (modelName: ModelName): string => {
+  return modelDisplayNames[modelName];
 };
 
 export const getModelCutoffDate = (modelName: ModelName): string => {

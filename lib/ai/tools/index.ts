@@ -3,7 +3,6 @@ import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
   type SandboxPreference,
-  type TauriConnectionInfo,
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
@@ -19,7 +18,10 @@ import {
   createUpdateNote,
   createDeleteNote,
 } from "./notes";
-import { createMatch } from "./match";
+// match tool removed — usage analytics showed it wasn't being used enough to justify
+// the added complexity. Codex doesn't provide grep/glob tools either, and for simplicity
+// and effectiveness the agent should use run_terminal_cmd with rg instead.
+// import { createMatch } from "./match";
 import type { UIMessageStreamWriter } from "ai";
 import type {
   ChatMode,
@@ -33,8 +35,8 @@ import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
 
 /**
- * Check if a sandbox instance is an E2B Sandbox (vs local ConvexSandbox)
- * E2B Sandbox has jupyterUrl property, ConvexSandbox does not
+ * Check if a sandbox instance is an E2B Sandbox (vs local CentrifugoSandbox)
+ * E2B Sandbox has jupyterUrl property, CentrifugoSandbox does not
  */
 export const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
   return s !== null && "jupyterUrl" in s;
@@ -56,7 +58,6 @@ export const createTools = (
   guardrailsConfig?: string,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
-  tauriConnectionInfo?: TauriConnectionInfo | null,
   getTimeRemaining?: () => number | null,
 ) => {
   let sandbox: AnySandbox | null = null;
@@ -81,7 +82,6 @@ export const createTools = (
           sandboxPreference,
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
-          tauriConnectionInfo,
         )
       : new DefaultSandboxManager(
           userID,
@@ -120,12 +120,8 @@ export const createTools = (
   // Create all available tools
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
-    // Tauri desktop: files are already on the user's machine, no need to upload to S3
-    ...(sandboxPreference !== "tauri" && {
-      get_terminal_files: createGetTerminalFiles(context),
-    }),
+    get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),
-    match: createMatch(context),
     todo_write: createTodoWrite(context),
     // ...(!isTemporary &&
     //   memoryEnabled && { update_memory: createUpdateMemory(context) }),

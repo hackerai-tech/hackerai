@@ -33,8 +33,8 @@ export async function fetchWithErrorHandlers(
 
     if (!response.ok) {
       try {
-        const { code, cause } = await response.json();
-        throw new ChatSDKError(code as ErrorCode, cause);
+        const { code, cause, metadata } = await response.json();
+        throw new ChatSDKError(code as ErrorCode, cause, metadata);
       } catch (parseError) {
         if (parseError instanceof ChatSDKError) throw parseError;
         throw new ChatSDKError(

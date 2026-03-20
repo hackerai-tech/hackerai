@@ -431,39 +431,6 @@ export function extractSidebarContentFromMessage(
       });
     }
 
-    // Match tool (glob/grep file search) - extract at input-available for early auto-follow
-    if (
-      part.type === "tool-match" &&
-      part.state === "input-available" &&
-      part.input?.scope
-    ) {
-      contentList.push({
-        path: part.input.scope,
-        content: "",
-        action: "searching",
-        toolCallId: part.toolCallId || "",
-        isExecuting: true,
-      });
-    }
-
-    // Match tool - extract with full results when output is available
-    if (
-      part.type === "tool-match" &&
-      part.state === "output-available" &&
-      part.input?.scope
-    ) {
-      const scope = part.input.scope;
-      const output = part.output?.output || "";
-
-      contentList.push({
-        path: scope,
-        content: output || "No results",
-        action: "searching",
-        toolCallId: part.toolCallId || "",
-        isExecuting: false,
-      });
-    }
-
     // Shared files (get_terminal_files)
     if (part.type === "tool-get_terminal_files") {
       const requestedPaths: string[] = part.input?.files || [];

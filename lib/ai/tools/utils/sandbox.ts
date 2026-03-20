@@ -3,8 +3,11 @@ import type { SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
-const BASH_SANDBOX_TIMEOUT = 15 * 60 * 1000; // 15 minutes connection timeout
+const BASH_SANDBOX_RESUME_TIMEOUT = 5 * 60 * 1000; // 5 minutes for resuming paused sandbox
 const BASH_SANDBOX_AUTOPAUSE_TIMEOUT = 7 * 60 * 1000; // 7 minutes auto-pause inactivity timeout
+// Retry config for E2B 429 rate limits
+const RATE_LIMIT_COOLDOWN_MS = 1_000;
+const MAX_CREATE_RETRIES = 3;
 
 /**
  * Current sandbox version identifier.
@@ -77,7 +80,7 @@ export const ensureSandboxConnection = async (
       // Sandbox.connect() handles both running and paused sandboxes automatically
       try {
         const sandbox = await Sandbox.connect(existingSandbox.sandboxId, {
-          timeoutMs: BASH_SANDBOX_TIMEOUT,
+          timeoutMs: BASH_SANDBOX_RESUME_TIMEOUT,
         });
         setSandbox(sandbox);
         return { sandbox };
@@ -104,30 +107,54 @@ export const ensureSandboxConnection = async (
             `[${userID}] Unexpected error resuming sandbox ${existingSandbox.sandboxId}:`,
             e,
           );
+          // Kill the broken sandbox so Sandbox.list() doesn't keep finding it
+          try {
+            await Sandbox.kill(existingSandbox.sandboxId);
+          } catch (killError) {
+            console.warn(
+              `[${userID}] Failed to clean up broken sandbox:`,
+              killError,
+            );
+          }
         }
       }
     }
 
-    // Step 5: Create new sandbox (fallback for all failure cases)
-    // Use betaCreate with autoPause - sandbox will automatically pause after timeout
-    // This eliminates the need for manual pause operations and their failure modes
-    const sandbox = await Sandbox.betaCreate(SANDBOX_TEMPLATE, {
-      timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
-      autoPause: true, // Auto-pause after inactivity timeout
-      // Enable secure mode to generate pre-signed URLs for file downloads
-      // This allows unauthorized environments (like browsers) to securely access
-      // sandbox files through signed URLs with optional expiration times
-      secure: true,
-      metadata: {
-        userID,
-        template: SANDBOX_TEMPLATE,
-        secure: "true",
-        sandboxVersion: SANDBOX_VERSION,
-      },
-    });
+    // Step 5: Create new sandbox with retry on E2B 429 rate limits
+    let lastError: unknown;
+    for (let attempt = 0; attempt < MAX_CREATE_RETRIES; attempt++) {
+      if (attempt > 0) {
+        console.warn(
+          `[${userID}] E2B rate limit — retrying sandbox creation (${attempt + 1}/${MAX_CREATE_RETRIES}) after ${RATE_LIMIT_COOLDOWN_MS}ms`,
+        );
+        await new Promise((r) => setTimeout(r, RATE_LIMIT_COOLDOWN_MS));
+      }
 
-    setSandbox(sandbox);
-    return { sandbox };
+      try {
+        const sandbox = await Sandbox.betaCreate(SANDBOX_TEMPLATE, {
+          timeoutMs: BASH_SANDBOX_AUTOPAUSE_TIMEOUT,
+          autoPause: true,
+          secure: true,
+          metadata: {
+            userID,
+            template: SANDBOX_TEMPLATE,
+            secure: "true",
+            sandboxVersion: SANDBOX_VERSION,
+          },
+        });
+
+        setSandbox(sandbox);
+        return { sandbox };
+      } catch (createError) {
+        lastError = createError;
+        const isRateLimit =
+          createError instanceof Error &&
+          (createError.message?.includes("429") ||
+            createError.message?.includes("Rate limit"));
+        if (!isRateLimit) throw createError;
+      }
+    }
+    throw lastError;
   } catch (error) {
     console.error("Error creating persistent sandbox:", error);
 
