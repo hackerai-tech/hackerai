@@ -3,6 +3,7 @@
 import {
   ImageIcon,
   Terminal,
+  Radar,
   Search,
   FileText,
   FilePlus,
@@ -41,6 +42,10 @@ import {
   type ShellToolInput,
   type ShellToolOutput,
 } from "@/app/components/tools/shell-tool-utils";
+import {
+  PROXY_ACTION_LABELS,
+  PROXY_COMPLETED_LABELS,
+} from "@/app/components/tools/ProxyToolHandler";
 
 interface MessagePart {
   type: string;
@@ -167,6 +172,19 @@ export const SharedMessagePartHandler = ({
     part.type === "tool-delete_note"
   ) {
     return renderNotesTool(part, idx, openSidebar);
+  }
+
+  // Proxy tools
+  if (
+    part.type === "tool-list_requests" ||
+    part.type === "tool-view_request" ||
+    part.type === "tool-send_request" ||
+    part.type === "tool-repeat_request" ||
+    part.type === "tool-scope_rules" ||
+    part.type === "tool-list_sitemap" ||
+    part.type === "tool-view_sitemap_entry"
+  ) {
+    return renderProxyTool(part, idx, openSidebar);
   }
 
   return null;
@@ -564,6 +582,102 @@ function renderMemoryTool(part: MessagePart, idx: number) {
         icon={<NotebookPen aria-hidden="true" />}
         action={getActionText(memoryInput?.action)}
         target={memoryInput?.title}
+      />
+    );
+  }
+  return null;
+}
+
+// Proxy tool renderer
+function renderProxyTool(
+  part: MessagePart,
+  idx: number,
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
+) {
+  const toolName = part.type.replace("tool-", "");
+  const proxyInput = part.input || {};
+
+  const getDisplayTarget = (): string => {
+    switch (toolName) {
+      case "send_request":
+        return proxyInput.method && proxyInput.url
+          ? `${proxyInput.method} ${proxyInput.url}`
+          : "";
+      case "view_request":
+      case "repeat_request":
+        return proxyInput.request_id ? `Request ${proxyInput.request_id}` : "";
+      case "list_requests":
+        return proxyInput.httpql_filter || "";
+      case "scope_rules":
+        return proxyInput.action || "";
+      case "view_sitemap_entry":
+        return proxyInput.entry_id ? `Entry ${proxyInput.entry_id}` : "";
+      default:
+        return proxyInput.explanation || "";
+    }
+  };
+
+  const getDisplayCommand = (): string => {
+    const parts: string[] = [toolName];
+    if (proxyInput.request_id) parts.push(`id:${proxyInput.request_id}`);
+    if (proxyInput.method && proxyInput.url)
+      parts.push(`${proxyInput.method} ${proxyInput.url}`);
+    if (proxyInput.httpql_filter)
+      parts.push(`filter:"${proxyInput.httpql_filter}"`);
+    if (proxyInput.action) parts.push(proxyInput.action);
+    if (proxyInput.entry_id) parts.push(`entry:${proxyInput.entry_id}`);
+    return parts.join(" ");
+  };
+
+  const getOutput = (): string => {
+    if (part.errorText) return `Error: ${part.errorText}`;
+    if (part.output?.result?.error) return `Error: ${part.output.result.error}`;
+    if (part.output?.result) {
+      try {
+        return JSON.stringify(part.output.result, null, 2);
+      } catch {
+        return String(part.output.result);
+      }
+    }
+    return "";
+  };
+
+  const isError = !!part.errorText || !!part.output?.result?.error;
+  const actionText = isError
+    ? "Proxy action failed"
+    : PROXY_COMPLETED_LABELS[toolName] || "Executed";
+
+  if (
+    part.state === "input-available" ||
+    part.state === "output-available" ||
+    part.state === "output-error"
+  ) {
+    const handleOpenInSidebar = () => {
+      openSidebar({
+        proxyAction: toolName,
+        command: getDisplayCommand(),
+        output: getOutput(),
+        isExecuting: false,
+        toolCallId: part.toolCallId || "",
+      });
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleOpenInSidebar();
+      }
+    };
+
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<Radar aria-hidden="true" />}
+        action={actionText}
+        target={getDisplayTarget()}
+        isClickable={true}
+        onClick={handleOpenInSidebar}
+        onKeyDown={handleKeyDown}
       />
     );
   }

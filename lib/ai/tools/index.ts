@@ -11,6 +11,7 @@ import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
 import { createOpenUrlTool } from "./open-url";
 import { createTodoWrite } from "./todo-write";
+import { createProxyTools } from "./proxy-tool";
 // import { createUpdateMemory } from "./update-memory";
 import {
   createCreateNote,
@@ -56,6 +57,7 @@ export const createTools = (
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
   guardrailsConfig?: string,
+  caidoEnabled: boolean = true,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
 ) => {
@@ -111,6 +113,7 @@ export const createTools = (
     mode,
     isE2BSandbox,
     guardrailsConfig,
+    caidoEnabled,
     appendMetadataStream,
     onToolCost,
   };
@@ -133,6 +136,7 @@ export const createTools = (
     ...(process.env.PERPLEXITY_API_KEY && {
       web_search: createWebSearch(context),
     }),
+    ...(caidoEnabled && !isE2BSandboxPreference && createProxyTools(context)),
   };
 
   // Filter tools based on mode

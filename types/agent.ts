@@ -64,6 +64,8 @@ export interface ToolContext {
   mode: ChatMode;
   isE2BSandbox: IsE2BSandboxFn;
   guardrailsConfig?: string;
+  /** Whether the Caido proxy is enabled (default true). When false, proxy tools are hidden and HTTP_PROXY env vars are not injected. */
+  caidoEnabled: boolean;
   /** When set, run_terminal_cmd awaits this for each terminal chunk so the run yields and Trigger can deliver metadata in real time. */
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */

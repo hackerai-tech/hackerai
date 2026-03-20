@@ -232,6 +232,8 @@ export const agentStreamTask = task({
         process.env.CONVEX_SERVICE_ROLE_KEY,
         (userCustomization as { guardrails_config?: string } | null)
           ?.guardrails_config,
+        (userCustomization as { caido_enabled?: boolean } | null)
+          ?.caido_enabled ?? true,
         appendMetadataStream,
         (costDollars: number) => {
           usageTracker.providerCost += costDollars;

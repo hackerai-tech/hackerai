@@ -87,7 +87,24 @@ before coming back to the user.\n"
     : "";
 };
 
-const getDefaultSandboxEnvironmentSection = (): string => `<sandbox_environment>
+const getProxySection = (caidoEnabled: boolean): string => {
+  if (!caidoEnabled) {
+    return `<proxy_interception>
+Caido proxy is DISABLED by the user. Proxy tools (list_requests, send_request, etc.) are not available.
+All HTTP requests from terminal commands go directly to the target without interception.
+</proxy_interception>`;
+  }
+  return `<proxy_interception>
+Caido CLI — a modern web security proxy — is running and intercepting all HTTP/HTTPS traffic automatically.
+- Use proxy tools (list_requests, view_request, send_request, repeat_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
+- If you see proxy errors (50x HTML error pages) when sending requests, it usually means the target URL, host, or port is incorrect — ignore Caido-generated error pages.
+- All terminal commands automatically route through the proxy via HTTP_PROXY env vars.
+</proxy_interception>`;
+};
+
+const getDefaultSandboxEnvironmentSection = (
+  caidoEnabled: boolean,
+): string => `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
 
 If the user wants to connect HackerAI to their local machine or local network, direct them to: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
@@ -106,11 +123,14 @@ Development Environment:
 - Golang 1.24.2 (commands: go)
 
 ${PREINSTALLED_PENTESTING_TOOLS}
+
+${getProxySection(caidoEnabled)}
 </sandbox_environment>`;
 
 const getAgentModeSection = (
   mode: ChatMode,
   sandboxContext?: string | null,
+  caidoEnabled: boolean = true,
 ): string => {
   const agentSpecificNote =
     mode === "agent"
@@ -185,7 +205,7 @@ It's very important that you keep the summary short, non-repetitive, and high-si
 Don't add headings like "Summary:" or "Update:".
 </summary_spec>
 
-${sandboxContext || getDefaultSandboxEnvironmentSection()}
+${sandboxContext || getDefaultSandboxEnvironmentSection(caidoEnabled)}
 
 ${getProductQuestionsSection()}
 
@@ -305,7 +325,8 @@ The current date is ${currentDateTime}.`;
   if (mode === "ask") {
     sections.push(getAskModeSection(modelName, subscription, isTemporary));
   } else {
-    sections.push(getAgentModeSection(mode, sandboxContext));
+    const caidoEnabled = userCustomization?.caido_enabled ?? true;
+    sections.push(getAgentModeSection(mode, sandboxContext, caidoEnabled));
   }
 
   sections.push(getSecurityInstructions());

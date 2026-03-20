@@ -454,6 +454,53 @@ export function extractSidebarContentFromMessage(
       });
     }
 
+    // Proxy tools (Caido)
+    const proxyToolTypes = [
+      "tool-list_requests",
+      "tool-view_request",
+      "tool-send_request",
+      "tool-repeat_request",
+      "tool-scope_rules",
+      "tool-list_sitemap",
+      "tool-view_sitemap_entry",
+    ];
+
+    if (proxyToolTypes.includes(part.type)) {
+      const toolName = part.type.replace("tool-", "");
+      const proxyInput = part.input || {};
+      const cmdParts: string[] = [toolName];
+      if (proxyInput.request_id) cmdParts.push(`id:${proxyInput.request_id}`);
+      if (proxyInput.method && proxyInput.url)
+        cmdParts.push(`${proxyInput.method} ${proxyInput.url}`);
+      if (proxyInput.httpql_filter)
+        cmdParts.push(`filter:"${proxyInput.httpql_filter}"`);
+      if (proxyInput.action) cmdParts.push(proxyInput.action);
+      if (proxyInput.entry_id) cmdParts.push(`entry:${proxyInput.entry_id}`);
+      const command = cmdParts.join(" ");
+
+      let output = "";
+      if (part.errorText) {
+        output = `Error: ${part.errorText}`;
+      } else if (part.output?.result?.error) {
+        output = `Error: ${part.output.result.error}`;
+      } else if (part.output?.result) {
+        try {
+          output = JSON.stringify(part.output.result, null, 2);
+        } catch {
+          output = String(part.output.result);
+        }
+      }
+
+      contentList.push({
+        proxyAction: toolName,
+        command,
+        output,
+        isExecuting:
+          part.state === "input-available" || part.state === "running",
+        toolCallId: part.toolCallId || "",
+      });
+    }
+
     // Notes tools
     const notesToolTypes = [
       "tool-create_note",
