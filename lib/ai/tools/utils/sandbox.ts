@@ -16,7 +16,9 @@ const MAX_CREATE_RETRIES = 3;
  * Old sandboxes without this version (or with mismatched versions) will be automatically deleted
  * and recreated on next connection attempt.
  */
-const SANDBOX_VERSION = "v8"; // Bumped: upgraded sandbox CPU (4 cores) and memory (2GB)
+// v8: upgraded sandbox CPU (4 cores) and memory (2GB)
+// v9: added Caido proxy (caido-cli install, docker-entrypoint.sh auto-start, HTTP_PROXY env vars)
+const SANDBOX_VERSION = "v9";
 
 /**
  * Ensures a sandbox connection is established and maintained
