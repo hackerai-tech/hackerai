@@ -385,12 +385,25 @@ async function runGql(
     );
   }
 
-  // Parse JSON — if stdout is non-empty, curl succeeded regardless of exit code
-  // (some sandbox implementations return non-zero exit codes for multi-command scripts)
-  const json = JSON.parse(stdout) as { data?: unknown; errors?: unknown[] };
+  // Parse JSON — if stdout is non-empty, curl succeeded regardless of exit code.
+  // Caido may return HTML (broken DB page) instead of JSON — detect and trigger restart.
+  let json: { data?: unknown; errors?: unknown[] };
+  try {
+    json = JSON.parse(stdout);
+  } catch {
+    if (isCaidoBroken(stdout)) {
+      void invalidateAndKillCaido(context);
+      throw new Error(
+        "Caido proxy database error — will auto-restart on next request",
+      );
+    }
+    throw new Error(
+      `Caido returned non-JSON response: ${stdout.slice(0, 200)}`,
+    );
+  }
+
   if (json.errors?.length) {
     const errStr = JSON.stringify(json.errors);
-    // If Caido's DB is broken, invalidate the lock so the next call restarts it
     if (isCaidoBroken(errStr)) {
       void invalidateAndKillCaido(context);
     }
@@ -792,11 +805,16 @@ export async function repeatRequest(
 ) {
   const { requestId, modifications = {} } = opts;
 
-  // Fetch original request details
-  const original = await viewRequest(context, { requestId, part: "request" });
-  if ("error" in original) return original;
+  // Fetch raw request bytes directly (not paginated/wrapped viewRequest output)
+  const data = (await runGql(
+    context,
+    `query GetRequest($id: ID!) { request(id: $id) { raw } }`,
+    { id: requestId },
+  )) as { request?: { raw?: string } };
 
-  const rawContent = original.content as string | undefined;
+  if (!data.request?.raw) return { error: `Request ${requestId} not found` };
+
+  const rawContent = Buffer.from(data.request.raw, "base64").toString("utf-8");
   if (!rawContent) return { error: "No raw request content found" };
 
   // Parse request line + headers + body
@@ -1053,7 +1071,10 @@ export async function listSitemap(
     total_pages: totalPages,
     total_count: totalCount,
     has_more: page < totalPages,
-    showing: `${skipCount + 1}-${Math.min(skipCount + pageSize, totalCount)} of ${totalCount}`,
+    showing:
+      totalCount === 0
+        ? "0 of 0"
+        : `${skipCount + 1}-${Math.min(skipCount + pageSize, totalCount)} of ${totalCount}`,
   };
 }
 
