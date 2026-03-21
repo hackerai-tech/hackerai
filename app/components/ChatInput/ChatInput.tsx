@@ -199,6 +199,7 @@ export const ChatInput = ({
             chatMode={chatMode}
             contextUsage={contextUsage}
             showContextIndicator={showContextIndicator}
+            hasMessages={hasMessages}
           />
         </div>
 

@@ -49,6 +49,7 @@ export const getChatByIdFromClient = query({
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -139,6 +140,7 @@ export const getChatById = query({
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -157,6 +159,69 @@ export const getChatById = query({
       console.error("Failed to get chat by id (backend):", error);
       return null;
     }
+  },
+});
+
+/**
+ * Save a chat from a local provider (e.g., Codex running on user's desktop).
+ * Client-callable — uses auth identity instead of service key.
+ */
+export const saveLocalChat = mutation({
+  args: {
+    id: v.string(),
+    title: v.string(),
+    selectedModel: v.optional(v.string()),
+    codexThreadId: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+
+    // Input validation
+    if (args.id.length > 200) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Chat ID too long",
+      });
+    }
+    if (args.title.length > 500) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Title too long",
+      });
+    }
+
+    // Check if chat already exists (idempotent)
+    const existing = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+      .first();
+    if (existing) {
+      // Verify ownership — don't let users modify other users' chats
+      if (existing.user_id !== user.subject) {
+        throw new ConvexError({ code: "FORBIDDEN", message: "Not your chat" });
+      }
+      const patch: Record<string, unknown> = { update_time: Date.now() };
+      if (args.codexThreadId) patch.codex_thread_id = args.codexThreadId;
+      await ctx.db.patch(existing._id, patch);
+      return null;
+    }
+
+    await ctx.db.insert("chats", {
+      id: args.id,
+      title: args.title,
+      user_id: user.subject,
+      update_time: Date.now(),
+      codex_thread_id: args.codexThreadId,
+      selected_model: args.selectedModel,
+    });
+    return null;
   },
 });
 

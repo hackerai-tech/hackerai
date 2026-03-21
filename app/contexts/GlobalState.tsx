@@ -20,6 +20,7 @@ import type {
 } from "@/types/chat";
 import { isSelectedModel } from "@/types/chat";
 import { isChatMode } from "@/types/chat";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
 import {
   mergeTodos as mergeTodosUtil,
@@ -240,29 +241,25 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     return isSelectedModel(saved) ? saved : "auto";
   });
 
-  // When switching to agent mode, force "auto". When switching to ask, restore saved preference.
+  // When switching modes, restore saved preference for that mode.
   useEffect(() => {
-    if (chatMode === "agent" || chatMode === "agent-long") {
-      setSelectedModelRaw("auto");
+    const modeKey = isAgentMode(chatMode) ? "agent" : "ask";
+    const saved = readSelectedModelForMode(modeKey);
+    if (isSelectedModel(saved)) {
+      setSelectedModelRaw(saved);
     } else {
-      const saved = readSelectedModelForMode("ask");
-      if (isSelectedModel(saved)) {
-        setSelectedModelRaw(saved);
-      }
+      setSelectedModelRaw("auto");
     }
   }, [chatMode]);
 
-  // Persist ask mode model preference to localStorage
+  // Persist model preference to localStorage per mode
   useEffect(() => {
-    if (chatMode === "ask") {
-      writeSelectedModelForMode("ask", selectedModel);
-    }
+    const modeKey = isAgentMode(chatMode) ? "agent" : "ask";
+    writeSelectedModelForMode(modeKey, selectedModel);
   }, [selectedModel, chatMode]);
 
-  // Wrap setter to prevent model changes in agent mode
   const setSelectedModelState = useCallback(
     (model: SelectedModel) => {
-      if (chatMode === "agent" || chatMode === "agent-long") return;
       setSelectedModelRaw(model);
     },
     [chatMode],
