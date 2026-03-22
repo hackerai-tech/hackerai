@@ -5,7 +5,10 @@ import {
   extractErrorMessage,
   isRateLimitError,
 } from "@/lib/api/response";
-import type { SubscriptionTier } from "@/types";
+import {
+  parseEntitlements,
+  resolveSubscriptionTier,
+} from "@/lib/auth/entitlements";
 
 const workos = new WorkOS(process.env.WORKOS_API_KEY!, {
   clientId: process.env.WORKOS_CLIENT_ID!,
@@ -68,36 +71,8 @@ export async function GET(req: NextRequest) {
 
     const { sealedSession, entitlements } = refreshResult as any;
 
-    const allEntitlements: string[] = Array.isArray(entitlements)
-      ? entitlements
-      : [];
-
-    // Compute a single subscription tier
-    // Prefer normalized entitlements (e.g. "ultra-plan", "pro-plan", "team-plan") if present,
-    // but maintain backward compatibility by also checking monthly/yearly variants.
-    const hasUltra =
-      allEntitlements.includes("ultra-plan") ||
-      allEntitlements.includes("ultra-monthly-plan") ||
-      allEntitlements.includes("ultra-yearly-plan");
-    const hasTeam = allEntitlements.includes("team-plan");
-    const hasProPlus =
-      allEntitlements.includes("pro-plus-plan") ||
-      allEntitlements.includes("pro-plus-monthly-plan") ||
-      allEntitlements.includes("pro-plus-yearly-plan");
-    const hasPro =
-      allEntitlements.includes("pro-plan") ||
-      allEntitlements.includes("pro-monthly-plan") ||
-      allEntitlements.includes("pro-yearly-plan");
-
-    const subscription: SubscriptionTier = hasUltra
-      ? "ultra"
-      : hasTeam
-        ? "team"
-        : hasProPlus
-          ? "pro-plus"
-          : hasPro
-            ? "pro"
-            : "free";
+    const allEntitlements = parseEntitlements(entitlements);
+    const subscription = resolveSubscriptionTier(allEntitlements);
 
     // Create response with entitlements and normalized subscription tier
     const response = json({
@@ -116,9 +91,13 @@ export async function GET(req: NextRequest) {
 
     return response;
   } catch (error) {
-    // Silently handle WorkOS rate limits to avoid noisy logs
+    // On WorkOS rate limits, return a 429 so the client knows to retry
+    // rather than silently downgrading the user to free tier
     if (isRateLimitError(error)) {
-      return json({ entitlements: [], subscription: "free" });
+      return json(
+        { error: "Rate limited", entitlements: [], subscription: "free" },
+        { status: 429 },
+      );
     }
 
     const normalized = extractErrorMessage(error).toLowerCase();
