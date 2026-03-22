@@ -55,6 +55,11 @@ export async function GET(req: NextRequest) {
               organizationId = memberships.data[0].organizationId;
             }
           } catch (membershipError) {
+            // Rethrow rate-limit errors so the outer catch returns 429
+            // instead of silently falling through to an unscoped refresh
+            if (isRateLimitError(membershipError)) {
+              throw membershipError;
+            }
             console.error(
               "Failed to fetch organization memberships:",
               membershipError,
