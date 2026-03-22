@@ -34,10 +34,12 @@
   },
   "dependencies": {
     "centrifuge": "^5.0.0",
-    "convex": "^1.29.2"
+    "convex": "^1.29.2",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
     "typescript": "^5.0.0"
   }
 }
