@@ -821,15 +821,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     </div>
                   </div>
                 </div>
-              ) : isExistingChat &&
-                paginatedMessages.status === "LoadingFirstPage" &&
-                !hasMessages ? (
-                <div
-                  className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center min-h-0"
-                  data-testid="messages-loading"
-                >
-                  <Loading size={10} />
-                </div>
               ) : showChatLayout ? (
                 <Messages
                   scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
