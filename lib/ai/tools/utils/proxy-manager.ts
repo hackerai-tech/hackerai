@@ -295,6 +295,7 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
         `Caido setup failed after restart: ${setupResult.stdout || setupResult.stderr}`,
       );
     }
+    await exportCaidoUiUrl(sandbox, config, options);
     return;
   }
 
@@ -302,7 +303,20 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
     throw new Error(`Caido setup failed: ${result.stdout || result.stderr}`);
   }
 
-  // Cache the Caido UI URL and set it as an env var on the sandbox
+  await exportCaidoUiUrl(sandbox, config, options);
+}
+
+/** Cache the Caido UI URL and set it as an env var on the sandbox. */
+async function exportCaidoUiUrl(
+  sandbox: {
+    getHost: (port: number) => string;
+    commands: {
+      run: (cmd: string, opts: Record<string, unknown>) => Promise<unknown>;
+    };
+  },
+  config: { port: number },
+  options: Record<string, unknown>,
+): Promise<void> {
   let uiUrl = `http://127.0.0.1:${config.port}`;
   try {
     const host = sandbox.getHost(config.port);
@@ -392,7 +406,7 @@ async function runGql(
     json = JSON.parse(stdout);
   } catch {
     if (isCaidoBroken(stdout)) {
-      void invalidateAndKillCaido(context);
+      await invalidateAndKillCaido(context);
       throw new Error(
         "Caido proxy database error — will auto-restart on next request",
       );
@@ -405,7 +419,7 @@ async function runGql(
   if (json.errors?.length) {
     const errStr = JSON.stringify(json.errors);
     if (isCaidoBroken(errStr)) {
-      void invalidateAndKillCaido(context);
+      await invalidateAndKillCaido(context);
     }
     throw new Error(`Caido GraphQL errors: ${errStr}`);
   }
@@ -776,7 +790,7 @@ export async function sendRequest(
   // If Caido returned its own error page instead of proxying, invalidate the lock
   // so the next call restarts it. Return the error clearly instead of the HTML page.
   if (isCaidoBroken(parsed.body)) {
-    void invalidateAndKillCaido(context);
+    await invalidateAndKillCaido(context);
     return {
       status_code: 502,
       headers: {},
@@ -820,12 +834,14 @@ export async function repeatRequest(
 ) {
   const { requestId, modifications = {} } = opts;
 
-  // Fetch raw request bytes directly (not paginated/wrapped viewRequest output)
+  // Fetch raw request bytes + isTls/port for accurate protocol detection
   const data = (await runGql(
     context,
-    `query GetRequest($id: ID!) { request(id: $id) { raw } }`,
+    `query GetRequest($id: ID!) { request(id: $id) { raw isTls port host } }`,
     { id: requestId },
-  )) as { request?: { raw?: string } };
+  )) as {
+    request?: { raw?: string; isTls?: boolean; port?: number; host?: string };
+  };
 
   if (!data.request?.raw) return { error: `Request ${requestId} not found` };
 
@@ -855,7 +871,7 @@ export async function repeatRequest(
   const host = reqHeaders["Host"] ?? "";
   if (!host) return { error: "No Host header in original request" };
 
-  const protocol = host.includes(":443") ? "https" : "http";
+  const protocol = data.request!.isTls ? "https" : "http";
   let fullUrl = modifications.url ?? `${protocol}://${host}${urlPath}`;
 
   // Apply param modifications
@@ -1075,17 +1091,18 @@ export async function listSitemap(
 
   const allNodes = data.edges.map((e) => e.node) as Record<string, unknown>[];
   const totalCount = data.count?.value ?? 0;
-  const skipCount = (page - 1) * pageSize;
-  const pageNodes = allNodes.slice(skipCount, skipCount + pageSize);
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const clampedPage = Math.max(1, Math.min(page, totalPages));
+  const skipCount = (clampedPage - 1) * pageSize;
+  const pageNodes = allNodes.slice(skipCount, skipCount + pageSize);
 
   return {
     entries: pageNodes.map(cleanSitemapNode),
-    page,
+    page: clampedPage,
     page_size: pageSize,
     total_pages: totalPages,
     total_count: totalCount,
-    has_more: page < totalPages,
+    has_more: clampedPage < totalPages,
     showing:
       totalCount === 0
         ? "0 of 0"
