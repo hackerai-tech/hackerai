@@ -1,6 +1,10 @@
 import type { NextRequest } from "next/server";
 import { ChatSDKError } from "@/lib/errors";
 import type { SubscriptionTier } from "@/types";
+import {
+  parseEntitlements,
+  resolveSubscriptionTier,
+} from "@/lib/auth/entitlements";
 
 /**
  * Get the current user ID from the authenticated session
@@ -53,38 +57,8 @@ export const getUserIDAndPro = async (
       throw new ChatSDKError("unauthorized:auth");
     }
 
-    // Check if user has paid entitlements (pro or ultra) and determine tier
-    const entitlements: Array<string> = Array.isArray(session.entitlements)
-      ? (session.entitlements.filter(
-          (e: unknown): e is string => typeof e === "string",
-        ) as Array<string>)
-      : [];
-
-    // Prefer normalized entitlements ("pro-plan", "ultra-plan", "team-plan"); also support legacy monthly/yearly keys
-    const hasUltra =
-      entitlements.includes("ultra-plan") ||
-      entitlements.includes("ultra-monthly-plan") ||
-      entitlements.includes("ultra-yearly-plan");
-    const hasTeam = entitlements.includes("team-plan");
-    const hasProPlus =
-      entitlements.includes("pro-plus-plan") ||
-      entitlements.includes("pro-plus-monthly-plan") ||
-      entitlements.includes("pro-plus-yearly-plan");
-    const hasPro =
-      entitlements.includes("pro-plan") ||
-      entitlements.includes("pro-monthly-plan") ||
-      entitlements.includes("pro-yearly-plan");
-
-    let subscription: SubscriptionTier = "free";
-    if (hasUltra) {
-      subscription = "ultra";
-    } else if (hasTeam) {
-      subscription = "team";
-    } else if (hasProPlus) {
-      subscription = "pro-plus";
-    } else if (hasPro) {
-      subscription = "pro";
-    }
+    const entitlements = parseEntitlements(session.entitlements);
+    const subscription = resolveSubscriptionTier(entitlements);
 
     return {
       userId: session.user.id,

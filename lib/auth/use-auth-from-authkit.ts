@@ -50,10 +50,16 @@ const defaultDeps: AuthKitDeps = {
 export function useAuthFromAuthKit(
   deps: AuthKitDeps = defaultDeps,
 ): ConvexAuthState {
-  const { user, loading: isLoading } = deps.useAuth();
+  const {
+    user,
+    loading: isLoading,
+    organizationId,
+    refreshAuth,
+  } = deps.useAuth();
   const { getAccessToken, accessToken, refresh } = deps.useAccessToken();
   const accessTokenRef = useRef<string | undefined>(undefined);
   const lastRefreshErrorAt = useRef<number>(0);
+  const hasResolvedOrgRef = useRef(false);
 
   const isCrossTabEnabled = useMemo(
     () => (deps.isCrossTabEnabled ?? isCrossTabTokenSharingEnabled)(user?.id),
@@ -87,6 +93,23 @@ export function useAuthFromAuthKit(
             );
             return accessTokenRef.current ?? null;
           }
+
+          // Ensure session is scoped to the user's organization so the JWT
+          // includes entitlements (e.g. "pro-plus-plan"). Without this, users
+          // whose session was created without org context get empty entitlements
+          // and hit "paid plan required" errors despite having an active subscription.
+          if (organizationId && !hasResolvedOrgRef.current && refreshAuth) {
+            try {
+              await refreshAuth({ organizationId });
+              hasResolvedOrgRef.current = true;
+            } catch {
+              // Non-fatal: continue with normal refresh — the token may still work
+              console.log(
+                "[Convex Auth] Failed to refresh org-scoped session, continuing",
+              );
+            }
+          }
+
           // Use new cross-tab coordination if feature flag is enabled
           if (isCrossTabEnabled) {
             // Convex is asking for a fresh token (current one was rejected).
@@ -119,7 +142,15 @@ export function useAuthFromAuthKit(
         return accessTokenRef.current ?? null;
       }
     },
-    [user, getAccessToken, refresh, deps.mutex, isCrossTabEnabled],
+    [
+      user,
+      getAccessToken,
+      refresh,
+      deps.mutex,
+      isCrossTabEnabled,
+      organizationId,
+      refreshAuth,
+    ],
   );
 
   return {

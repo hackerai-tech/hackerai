@@ -15,6 +15,9 @@ describe("useAuthFromAuthKit", () => {
   let mockStorage: Record<string, string>;
   let mockGetAccessToken: jest.Mock<() => Promise<string | undefined>>;
   let mockRefresh: jest.Mock<() => Promise<string | undefined>>;
+  let mockRefreshAuth: jest.Mock<
+    (options?: { organizationId?: string }) => Promise<void | { error: string }>
+  >;
   let mockMutex: CrossTabMutex;
   let mockDeps: AuthKitDeps;
 
@@ -34,13 +37,25 @@ describe("useAuthFromAuthKit", () => {
 
     mockGetAccessToken = jest.fn<() => Promise<string | undefined>>();
     mockRefresh = jest.fn<() => Promise<string | undefined>>();
+    mockRefreshAuth =
+      jest.fn<
+        (options?: {
+          organizationId?: string;
+        }) => Promise<void | { error: string }>
+      >();
+    mockRefreshAuth.mockResolvedValue(undefined);
     mockMutex = new CrossTabMutex({
       lockKey: "test-token-refresh",
       lockTimeoutMs: 15000,
     });
 
     mockDeps = {
-      useAuth: () => ({ user: { id: "user-123" }, loading: false }),
+      useAuth: () => ({
+        user: { id: "user-123" },
+        loading: false,
+        organizationId: "org-456",
+        refreshAuth: mockRefreshAuth,
+      }),
       useAccessToken: () => ({
         getAccessToken: mockGetAccessToken,
         accessToken: "current-token",
@@ -60,7 +75,12 @@ describe("useAuthFromAuthKit", () => {
 
   describe("basic auth state", () => {
     it("should return isAuthenticated true when user exists", () => {
-      mockDeps.useAuth = () => ({ user: { id: "user-123" }, loading: false });
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        organizationId: "org-456",
+        refreshAuth: mockRefreshAuth,
+      });
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
@@ -68,7 +88,12 @@ describe("useAuthFromAuthKit", () => {
     });
 
     it("should return isAuthenticated false when no user", () => {
-      mockDeps.useAuth = () => ({ user: null, loading: false });
+      mockDeps.useAuth = () => ({
+        user: null,
+        loading: false,
+        organizationId: undefined,
+        refreshAuth: mockRefreshAuth,
+      });
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
@@ -76,7 +101,12 @@ describe("useAuthFromAuthKit", () => {
     });
 
     it("should return isLoading from useAuth", () => {
-      mockDeps.useAuth = () => ({ user: null, loading: true });
+      mockDeps.useAuth = () => ({
+        user: null,
+        loading: true,
+        organizationId: undefined,
+        refreshAuth: mockRefreshAuth,
+      });
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
@@ -86,7 +116,12 @@ describe("useAuthFromAuthKit", () => {
 
   describe("fetchAccessToken without forceRefresh", () => {
     it("should return null when no user", async () => {
-      mockDeps.useAuth = () => ({ user: null, loading: false });
+      mockDeps.useAuth = () => ({
+        user: null,
+        loading: false,
+        organizationId: undefined,
+        refreshAuth: mockRefreshAuth,
+      });
 
       const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
@@ -286,6 +321,16 @@ describe("useAuthFromAuthKit", () => {
   });
 
   describe("fetchAccessToken with forceRefresh - path 3: lock timeout fresh shared token check", () => {
+    beforeEach(() => {
+      // Disable org-scoped refresh for lock timeout tests to avoid timing interference
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        organizationId: undefined,
+        refreshAuth: mockRefreshAuth,
+      });
+    });
+
     it("should fall back to getAccessToken when lock times out and no fresh shared token", async () => {
       // Another tab holds the lock indefinitely
       mockStorage["test-token-refresh"] = JSON.stringify({
@@ -406,6 +451,61 @@ describe("useAuthFromAuthKit", () => {
       // Token in storage should still be from other tab (value preserved)
       const stored = JSON.parse(mockStorage[sharedToken.SHARED_TOKEN_KEY]);
       expect(stored.token).toBe("other-tab-token");
+    });
+  });
+
+  describe("org-scoped session refresh", () => {
+    it("should call refreshAuth with organizationId on first force refresh", async () => {
+      mockRefresh.mockResolvedValue("refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      expect(mockRefreshAuth).toHaveBeenCalledWith({
+        organizationId: "org-456",
+      });
+      expect(mockRefresh).toHaveBeenCalled();
+    });
+
+    it("should only call refreshAuth once across multiple force refreshes", async () => {
+      mockRefresh.mockResolvedValue("refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      await result.current.fetchAccessToken({ forceRefreshToken: true });
+      await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      expect(mockRefreshAuth).toHaveBeenCalledTimes(1);
+    });
+
+    it("should skip refreshAuth when no organizationId", async () => {
+      mockDeps.useAuth = () => ({
+        user: { id: "user-123" },
+        loading: false,
+        organizationId: undefined,
+        refreshAuth: mockRefreshAuth,
+      });
+      mockRefresh.mockResolvedValue("refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      await result.current.fetchAccessToken({ forceRefreshToken: true });
+
+      expect(mockRefreshAuth).not.toHaveBeenCalled();
+    });
+
+    it("should continue with normal refresh if refreshAuth fails", async () => {
+      mockRefreshAuth.mockRejectedValue(new Error("refresh failed"));
+      mockRefresh.mockResolvedValue("refreshed-token");
+
+      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+
+      const token = await result.current.fetchAccessToken({
+        forceRefreshToken: true,
+      });
+
+      expect(token).toBe("refreshed-token");
     });
   });
 
