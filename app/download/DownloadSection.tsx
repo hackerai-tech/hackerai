@@ -14,14 +14,14 @@ import {
 type Platform = "macos" | "windows" | "linux" | "unknown";
 type LinuxArch = "x64" | "arm64";
 
-interface DetectedPlatform {
+export interface DetectedPlatform {
   platform: Platform;
   linuxArch?: LinuxArch;
   displayName: string;
   downloadUrl: string;
 }
 
-function detectPlatform(): DetectedPlatform {
+export function detectPlatform(): DetectedPlatform {
   const userAgent = navigator.userAgent.toLowerCase();
   const platform = navigator.platform?.toLowerCase() || "";
 
