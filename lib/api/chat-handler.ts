@@ -54,7 +54,7 @@ import {
   runSummarizationStep,
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
-  refreshNotesInModelMessages,
+  applyPrepareStepReminders,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -686,24 +686,9 @@ export const createChatHandler = (
                       (lastStep as { toolResults?: unknown[] }).toolResults) ||
                     [];
 
-                  // Check if any note was created, updated, or deleted
-                  const wasNoteModified =
-                    Array.isArray(toolResults) &&
-                    toolResults.some((r) =>
-                      ["create_note", "update_note", "delete_note"].includes(
-                        (r as { toolName?: string })?.toolName ?? "",
-                      ),
-                    );
-
-                  if (!wasNoteModified) {
-                    return { messages: currentMessages as typeof messages };
-                  }
-
-                  // Update the notes block within the existing messages,
-                  // preserving the full conversation history (tool calls/results)
-                  const updatedMessages = await refreshNotesInModelMessages(
+                  const updatedMessages = await applyPrepareStepReminders(
                     currentMessages,
-                    noteInjectionOpts,
+                    { toolResults, noteInjectionOpts },
                   );
 
                   return { messages: updatedMessages as typeof messages };

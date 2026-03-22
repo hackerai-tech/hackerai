@@ -486,37 +486,9 @@ export async function refreshNotesInModelMessages(
     // Nothing to append if user has no notes (and no existing block to remove)
     if (!newNotesContent) return messages;
 
-    const reminder = `<system-reminder>\n${newNotesContent}\n</system-reminder>`;
-
     // No existing notes block found (AI SDK strips <system-reminder> from its
     // internal message state). Append the notes to the last user message.
-    for (let i = result.length - 1; i >= 0; i--) {
-      const msg = result[i];
-      if (msg.role !== "user") continue;
-
-      const content = msg.content;
-
-      if (typeof content === "string") {
-        result[i] = { ...msg, content: `${content}\n\n${reminder}` };
-        return result;
-      } else if (Array.isArray(content)) {
-        const parts = [...(content as Array<Record<string, unknown>>)];
-        const textIdx = parts.findIndex((p) => p.type === "text");
-        if (textIdx >= 0) {
-          const textPart = parts[textIdx];
-          parts[textIdx] = {
-            ...textPart,
-            text: `${textPart.text as string}\n\n${reminder}`,
-          };
-        } else {
-          parts.push({ type: "text", text: reminder });
-        }
-        result[i] = { ...msg, content: parts };
-        return result;
-      }
-    }
-
-    return messages;
+    return appendReminderToModelMessages(result, newNotesContent);
   } catch (error) {
     logger.warn("Failed to refresh notes in prepareStep, continuing without", {
       userId: opts.userId,
@@ -524,4 +496,77 @@ export async function refreshNotesInModelMessages(
     });
     return messages;
   }
+}
+
+/**
+ * Appends a <system-reminder> block to the last user message in a CoreMessage array.
+ * Used in prepareStep to inject runtime reminders without mutating the original.
+ */
+export function appendReminderToModelMessages(
+  messages: Array<Record<string, unknown>>,
+  reminderText: string,
+): Array<Record<string, unknown>> {
+  const result = [...messages];
+  const reminder = `<system-reminder>\n${reminderText}\n</system-reminder>`;
+  for (let i = result.length - 1; i >= 0; i--) {
+    const msg = result[i];
+    if (msg.role !== "user") continue;
+    const content = msg.content;
+    if (typeof content === "string") {
+      result[i] = { ...msg, content: `${content}\n\n${reminder}` };
+    } else if (Array.isArray(content)) {
+      const parts = [...content];
+      const textIdx = parts.findLastIndex(
+        (p: unknown) => (p as Record<string, unknown>).type === "text",
+      );
+      if (textIdx >= 0) {
+        const part = parts[textIdx] as Record<string, unknown>;
+        parts[textIdx] = {
+          ...part,
+          text: `${part.text as string}\n\n${reminder}`,
+        };
+      } else {
+        parts.push({ type: "text", text: reminder });
+      }
+      result[i] = { ...msg, content: parts };
+    }
+    break;
+  }
+  return result;
+}
+
+/**
+ * Shared logic for the post-prune section of prepareStep in both
+ * chat-handler.ts and agent-task.ts: refreshes notes if a note tool
+ * was used.
+ */
+export async function applyPrepareStepReminders(
+  messages: Array<Record<string, unknown>>,
+  opts: {
+    toolResults: unknown[];
+    noteInjectionOpts: {
+      userId: string;
+      subscription: SubscriptionTier;
+      shouldIncludeNotes: boolean;
+      isTemporary?: boolean;
+    };
+  },
+): Promise<Array<Record<string, unknown>>> {
+  // Refresh notes if a note tool was used
+  const wasNoteModified =
+    Array.isArray(opts.toolResults) &&
+    opts.toolResults.some((r) =>
+      ["create_note", "update_note", "delete_note"].includes(
+        (r as { toolName?: string })?.toolName ?? "",
+      ),
+    );
+
+  if (wasNoteModified) {
+    return (await refreshNotesInModelMessages(
+      messages,
+      opts.noteInjectionOpts,
+    )) as Array<Record<string, unknown>>;
+  }
+
+  return messages;
 }
