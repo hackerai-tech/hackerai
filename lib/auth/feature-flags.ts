@@ -68,15 +68,9 @@ export function isCrossTabTokenSharingEnabled(
 ): boolean {
   if (!userId) return false;
 
-  const enabled = isFeatureEnabled(
+  return isFeatureEnabled(
     userId,
     FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING,
     FEATURE_ROLLOUTS[FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING],
   );
-
-  console.log(
-    `[Feature Flag] ${FEATURE_FLAGS.CROSS_TAB_TOKEN_SHARING}: ${enabled ? "enabled" : "disabled"} for user ${userId.slice(0, 8)}...`,
-  );
-
-  return enabled;
 }

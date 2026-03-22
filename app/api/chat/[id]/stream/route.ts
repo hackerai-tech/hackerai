@@ -22,6 +22,12 @@ export async function GET(
   const streamContext = getStreamContext();
 
   if (!streamContext) {
+    nextJsAxiomLogger.info(
+      "Stream reconnect: no stream context, returning 204",
+      {
+        chatId,
+      },
+    );
     return new Response(null, { status: 204 });
   }
 
@@ -63,120 +69,136 @@ export async function GET(
   const recentStreamId: string | undefined = chat.active_stream_id;
   const isTemporary = chat.temporary === true;
 
+  nextJsAxiomLogger.info("Stream reconnect GET", {
+    chatId,
+    recentStreamId: recentStreamId ?? null,
+    isTemporary,
+  });
+
   const emptyDataStream = createUIMessageStream<ChatMessage>({
     execute: () => {},
   });
 
+  let stream: ReadableStream | null = null;
   if (recentStreamId) {
-    const stream = await streamContext.resumableStream(recentStreamId, () =>
+    stream = await streamContext.resumableStream(recentStreamId, () =>
       emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
     );
+    nextJsAxiomLogger.info("Stream reconnect resumableStream result", {
+      chatId,
+      recentStreamId,
+      hasStream: !!stream,
+    });
+  }
 
-    if (stream) {
-      const abortController = new AbortController();
+  if (stream) {
+    const abortController = new AbortController();
 
-      // Set up pre-emptive timeout before Vercel's hard 800s limit
-      const preemptiveTimeout = createPreemptiveTimeout({
-        chatId,
-        endpoint: "/api/chat/[id]/stream",
-        abortController,
-      });
+    // Set up pre-emptive timeout before Vercel's hard 800s limit
+    const preemptiveTimeout = createPreemptiveTimeout({
+      chatId,
+      endpoint: "/api/chat/[id]/stream",
+      abortController,
+    });
 
-      // Abort on client disconnect (tab close, network error, etc.)
-      req.signal.addEventListener("abort", () => abortController.abort(), {
-        once: true,
-      });
+    // Abort on client disconnect (tab close, network error, etc.)
+    req.signal.addEventListener("abort", () => abortController.abort(), {
+      once: true,
+    });
 
-      // Abort on explicit stop button click (via Redis pub/sub or polling)
-      const cancellationSubscriber = await createCancellationSubscriber({
-        chatId,
-        isTemporary,
-        abortController,
-        onStop: () => {},
-      });
+    // Abort on explicit stop button click (via Redis pub/sub or polling)
+    const cancellationSubscriber = await createCancellationSubscriber({
+      chatId,
+      isTemporary,
+      abortController,
+      onStop: () => {},
+    });
 
-      const reader = stream.getReader();
+    const reader = stream.getReader();
 
-      const abortableStream = new ReadableStream({
-        async pull(controller) {
-          try {
-            // Create a promise that rejects on abort
-            const abortPromise = new Promise<never>((_, reject) => {
-              if (abortController.signal.aborted) {
-                reject(new DOMException("Aborted", "AbortError"));
-                return;
-              }
-              abortController.signal.addEventListener(
-                "abort",
-                () => reject(new DOMException("Aborted", "AbortError")),
-                { once: true },
-              );
-            });
-
-            // Race between read and abort
-            const { done, value } = await Promise.race([
-              reader.read(),
-              abortPromise,
-            ]);
-
-            if (done) {
-              preemptiveTimeout.clear();
-              controller.close();
-            } else {
-              controller.enqueue(value);
+    const abortableStream = new ReadableStream({
+      async pull(controller) {
+        try {
+          // Create a promise that rejects on abort
+          const abortPromise = new Promise<never>((_, reject) => {
+            if (abortController.signal.aborted) {
+              reject(new DOMException("Aborted", "AbortError"));
+              return;
             }
-          } catch (error) {
-            const isPreemptive = preemptiveTimeout.isPreemptive();
-            const triggerTime = preemptiveTimeout.getTriggerTime();
-            const cleanupStart = Date.now();
+            abortController.signal.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true },
+            );
+          });
 
-            if (isPreemptive) {
-              nextJsAxiomLogger.info("Stream route preemptive abort caught", {
-                chatId,
-                timeSinceTriggerMs: triggerTime
-                  ? cleanupStart - triggerTime
-                  : null,
-              });
-            }
+          // Race between read and abort
+          const { done, value } = await Promise.race([
+            reader.read(),
+            abortPromise,
+          ]);
 
+          if (done) {
             preemptiveTimeout.clear();
-
-            if (error instanceof DOMException && error.name === "AbortError") {
-              if (isPreemptive) {
-                nextJsAxiomLogger.info(
-                  "Stream route closing controller after abort",
-                  {
-                    chatId,
-                    cleanupDurationMs: Date.now() - cleanupStart,
-                  },
-                );
-                await nextJsAxiomLogger.flush();
-              }
-              controller.close();
-            } else {
-              controller.error(error);
-            }
+            controller.close();
+          } else {
+            controller.enqueue(value);
           }
-        },
-        cancel() {
+        } catch (error) {
           const isPreemptive = preemptiveTimeout.isPreemptive();
-          if (isPreemptive) {
-            nextJsAxiomLogger.info("Stream route cancel called", { chatId });
-          }
-          preemptiveTimeout.clear();
-          reader.cancel();
-          cancellationSubscriber.stop();
-          if (isPreemptive) {
-            nextJsAxiomLogger.flush();
-          }
-        },
-      });
+          const triggerTime = preemptiveTimeout.getTriggerTime();
+          const cleanupStart = Date.now();
 
-      return new Response(abortableStream, { status: 200 });
-    }
+          if (isPreemptive) {
+            nextJsAxiomLogger.info("Stream route preemptive abort caught", {
+              chatId,
+              timeSinceTriggerMs: triggerTime
+                ? cleanupStart - triggerTime
+                : null,
+            });
+          }
+
+          preemptiveTimeout.clear();
+
+          if (error instanceof DOMException && error.name === "AbortError") {
+            if (isPreemptive) {
+              nextJsAxiomLogger.info(
+                "Stream route closing controller after abort",
+                {
+                  chatId,
+                  cleanupDurationMs: Date.now() - cleanupStart,
+                },
+              );
+              await nextJsAxiomLogger.flush();
+            }
+            controller.close();
+          } else {
+            controller.error(error);
+          }
+        }
+      },
+      cancel() {
+        const isPreemptive = preemptiveTimeout.isPreemptive();
+        if (isPreemptive) {
+          nextJsAxiomLogger.info("Stream route cancel called", { chatId });
+        }
+        preemptiveTimeout.clear();
+        reader.cancel();
+        cancellationSubscriber.stop();
+        if (isPreemptive) {
+          nextJsAxiomLogger.flush();
+        }
+      },
+    });
+
+    return new Response(abortableStream, { status: 200 });
   }
 
   // Fallback: if no resumable stream, attempt to replay the most recent assistant message
+  nextJsAxiomLogger.info("Stream reconnect using replay fallback", {
+    chatId,
+    recentStreamId: recentStreamId ?? null,
+  });
   try {
     const mostRecentMessage = await convex.query(
       api.messages.getLastAssistantMessage,
@@ -187,7 +209,19 @@ export async function GET(
       },
     );
 
+    nextJsAxiomLogger.info("Stream reconnect replay result", {
+      chatId,
+      hasMostRecentMessage: !!mostRecentMessage,
+      messageId: mostRecentMessage?.id ?? null,
+    });
+
     if (!mostRecentMessage) {
+      nextJsAxiomLogger.info(
+        "Stream reconnect returning empty stream (no assistant message)",
+        {
+          chatId,
+        },
+      );
       return new Response(
         emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
         { status: 200 },
@@ -209,6 +243,10 @@ export async function GET(
       { status: 200 },
     );
   } catch (error) {
+    nextJsAxiomLogger.info("Stream reconnect replay error, returning empty", {
+      chatId,
+      error: String(error),
+    });
     return new Response(
       emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
       { status: 200 },

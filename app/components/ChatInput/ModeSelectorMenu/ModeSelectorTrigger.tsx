@@ -9,7 +9,6 @@ const MODE_VARIANT_CLASSES: Record<ChatMode, string> = {
   ask: "bg-muted hover:bg-muted/50",
   agent:
     "bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:bg-red-400/10 dark:text-red-400 dark:hover:bg-red-400/20",
-  "agent-long": "bg-muted hover:bg-muted/50",
 };
 
 const baseClasses =
@@ -20,7 +19,7 @@ export interface ModeSelectorTriggerProps {
 }
 
 export function ModeSelectorTrigger({ chatMode }: ModeSelectorTriggerProps) {
-  const displayMode = chatMode === "agent-long" ? "agent" : chatMode;
+  const displayMode = chatMode;
   return (
     <DropdownMenuTrigger asChild>
       <Button

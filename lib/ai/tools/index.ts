@@ -58,6 +58,7 @@ export const createTools = (
   guardrailsConfig?: string,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
+  getTimeRemaining?: () => number | null,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -113,6 +114,7 @@ export const createTools = (
     guardrailsConfig,
     appendMetadataStream,
     onToolCost,
+    getTimeRemaining,
   };
 
   // Create all available tools

@@ -33,7 +33,7 @@ export function ChatInputToolbar({
       <div className="shrink-0">
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
-      <ChatModeSelector />
+      <ChatModeSelector isStreaming={submitStopProps.status === "streaming"} />
       {chatMode === "ask" && (
         <ModelSelector
           value={selectedModel}

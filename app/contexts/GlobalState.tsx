@@ -38,6 +38,8 @@ import {
   writeChatMode,
   readSelectedModelForMode,
   writeSelectedModelForMode,
+  readAgentLongMode,
+  writeAgentLongMode,
   cleanupExpiredDrafts,
 } from "@/lib/utils/client-storage";
 interface GlobalStateType {
@@ -114,6 +116,10 @@ interface GlobalStateType {
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
 
+  // Agent long mode (durable workflow execution)
+  agentLongMode: boolean;
+  setAgentLongMode: (enabled: boolean) => void;
+
   // Model selection
   selectedModel: SelectedModel;
   setSelectedModel: (model: SelectedModel) => void;
@@ -167,7 +173,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
-    if (saved === "agent-long") return "agent";
     return saved;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -234,6 +239,15 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     }
   }, [queueBehavior]);
 
+  // Agent long mode (durable workflow execution via Vercel Workflow + Redis)
+  const [agentLongMode, setAgentLongModeState] = useState<boolean>(() =>
+    readAgentLongMode(),
+  );
+  const setAgentLongMode = useCallback((enabled: boolean) => {
+    setAgentLongModeState(enabled);
+    writeAgentLongMode(enabled);
+  }, []);
+
   // Model selection — only enabled for Ask mode. Agent mode always uses "auto".
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
     const saved = readSelectedModelForMode("ask");
@@ -242,7 +256,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // When switching to agent mode, force "auto". When switching to ask, restore saved preference.
   useEffect(() => {
-    if (chatMode === "agent" || chatMode === "agent-long") {
+    if (chatMode === "agent") {
       setSelectedModelRaw("auto");
     } else {
       const saved = readSelectedModelForMode("ask");
@@ -262,7 +276,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Wrap setter to prevent model changes in agent mode
   const setSelectedModelState = useCallback(
     (model: SelectedModel) => {
-      if (chatMode === "agent" || chatMode === "agent-long") return;
+      if (chatMode === "agent") return;
       setSelectedModelRaw(model);
     },
     [chatMode],
@@ -736,6 +750,9 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     sandboxPreference,
     setSandboxPreference,
     desktopBridgeActive,
+
+    agentLongMode,
+    setAgentLongMode,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

@@ -23,6 +23,14 @@ but you may be missing details from the earlier conversation. If the user says "
 resume the task where you left off. Consult the transcript file on the sandbox if you need to recover \
 specific details from the earlier conversation.
 </resume_context>`;
+  } else if (finishReason === "workflow-checkpoint") {
+    return `<resume_context>
+Your previous response was paused due to a server-side time limit, but you are continuing \
+in the same session without interruption. The user has NOT seen any break or interruption. \
+Continue executing the current task exactly where you left off. Do not repeat completed work, \
+do not explain the pause, and do not ask the user for direction. Simply proceed with the next \
+step of whatever you were doing.
+</resume_context>`;
   }
 
   return "";
