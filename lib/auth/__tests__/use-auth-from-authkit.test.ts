@@ -321,16 +321,6 @@ describe("useAuthFromAuthKit", () => {
   });
 
   describe("fetchAccessToken with forceRefresh - path 3: lock timeout fresh shared token check", () => {
-    beforeEach(() => {
-      // Disable org-scoped refresh for lock timeout tests to avoid timing interference
-      mockDeps.useAuth = () => ({
-        user: { id: "user-123" },
-        loading: false,
-        organizationId: undefined,
-        refreshAuth: mockRefreshAuth,
-      });
-    });
-
     it("should fall back to getAccessToken when lock times out and no fresh shared token", async () => {
       // Another tab holds the lock indefinitely
       mockStorage["test-token-refresh"] = JSON.stringify({
@@ -454,27 +444,29 @@ describe("useAuthFromAuthKit", () => {
     });
   });
 
-  describe("org-scoped session refresh", () => {
-    it("should call refreshAuth with organizationId on first force refresh", async () => {
-      mockRefresh.mockResolvedValue("refreshed-token");
-
-      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
-
-      await result.current.fetchAccessToken({ forceRefreshToken: true });
+  describe("org-scoped session refresh (effect)", () => {
+    it("should call refreshAuth with organizationId on mount", async () => {
+      await act(async () => {
+        renderHook(() => useAuthFromAuthKit(mockDeps));
+      });
 
       expect(mockRefreshAuth).toHaveBeenCalledWith({
         organizationId: "org-456",
       });
-      expect(mockRefresh).toHaveBeenCalled();
     });
 
-    it("should only call refreshAuth once across multiple force refreshes", async () => {
-      mockRefresh.mockResolvedValue("refreshed-token");
+    it("should only call refreshAuth once across re-renders", async () => {
+      const { rerender } = renderHook(() => useAuthFromAuthKit(mockDeps));
 
-      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
 
-      await result.current.fetchAccessToken({ forceRefreshToken: true });
-      await result.current.fetchAccessToken({ forceRefreshToken: true });
+      rerender();
+
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
 
       expect(mockRefreshAuth).toHaveBeenCalledTimes(1);
     });
@@ -486,20 +478,21 @@ describe("useAuthFromAuthKit", () => {
         organizationId: undefined,
         refreshAuth: mockRefreshAuth,
       });
-      mockRefresh.mockResolvedValue("refreshed-token");
 
-      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
-
-      await result.current.fetchAccessToken({ forceRefreshToken: true });
+      await act(async () => {
+        renderHook(() => useAuthFromAuthKit(mockDeps));
+      });
 
       expect(mockRefreshAuth).not.toHaveBeenCalled();
     });
 
-    it("should continue with normal refresh if refreshAuth fails", async () => {
+    it("should not break auth flow if refreshAuth fails", async () => {
       mockRefreshAuth.mockRejectedValue(new Error("refresh failed"));
       mockRefresh.mockResolvedValue("refreshed-token");
 
-      const { result } = renderHook(() => useAuthFromAuthKit(mockDeps));
+      const { result } = await act(async () =>
+        renderHook(() => useAuthFromAuthKit(mockDeps)),
+      );
 
       const token = await result.current.fetchAccessToken({
         forceRefreshToken: true,

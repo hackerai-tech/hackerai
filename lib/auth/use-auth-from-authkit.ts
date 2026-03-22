@@ -68,6 +68,24 @@ export function useAuthFromAuthKit(
 
   useSharedTokenCleanup(isCrossTabEnabled);
 
+  // Eagerly ensure session is scoped to the user's organization so JWTs
+  // include entitlements (e.g. "pro-plus-plan"). Running this in an effect
+  // (rather than inside fetchAccessToken) avoids a mid-auth-flow state
+  // change that would cause Convex to briefly flip isLoading back to true,
+  // producing a visible loading-screen flash.
+  useEffect(() => {
+    if (organizationId && !hasResolvedOrgRef.current && refreshAuth) {
+      refreshAuth({ organizationId })
+        .then(() => {
+          hasResolvedOrgRef.current = true;
+        })
+        .catch(() => {
+          // Non-fatal: the token may still include entitlements if the
+          // session was already org-scoped.
+        });
+    }
+  }, [organizationId, refreshAuth]);
+
   useEffect(() => {
     accessTokenRef.current = accessToken;
   }, [accessToken]);
@@ -92,22 +110,6 @@ export function useAuthFromAuthKit(
               "[Convex Auth] Skipping refresh during cooldown, using cached token",
             );
             return accessTokenRef.current ?? null;
-          }
-
-          // Ensure session is scoped to the user's organization so the JWT
-          // includes entitlements (e.g. "pro-plus-plan"). Without this, users
-          // whose session was created without org context get empty entitlements
-          // and hit "paid plan required" errors despite having an active subscription.
-          if (organizationId && !hasResolvedOrgRef.current && refreshAuth) {
-            try {
-              await refreshAuth({ organizationId });
-              hasResolvedOrgRef.current = true;
-            } catch {
-              // Non-fatal: continue with normal refresh — the token may still work
-              console.log(
-                "[Convex Auth] Failed to refresh org-scoped session, continuing",
-              );
-            }
           }
 
           // Use new cross-tab coordination if feature flag is enabled
@@ -142,15 +144,7 @@ export function useAuthFromAuthKit(
         return accessTokenRef.current ?? null;
       }
     },
-    [
-      user,
-      getAccessToken,
-      refresh,
-      deps.mutex,
-      isCrossTabEnabled,
-      organizationId,
-      refreshAuth,
-    ],
+    [user, getAccessToken, refresh, deps.mutex, isCrossTabEnabled],
   );
 
   return {
