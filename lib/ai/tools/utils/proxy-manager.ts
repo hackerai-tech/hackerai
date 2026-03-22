@@ -861,14 +861,14 @@ export async function repeatRequest(
     }
     const colonIdx = lines[i]!.indexOf(":");
     if (colonIdx > 0) {
-      reqHeaders[lines[i]!.slice(0, colonIdx).trim()] = lines[i]!.slice(
-        colonIdx + 1,
-      ).trim();
+      reqHeaders[lines[i]!.slice(0, colonIdx).trim().toLowerCase()] = lines[
+        i
+      ]!.slice(colonIdx + 1).trim();
     }
   }
 
   const reqBody = lines.slice(bodyStart).join("\n").trim();
-  const host = reqHeaders["Host"] ?? "";
+  const host = reqHeaders["host"] || data.request!.host || "";
   if (!host) return { error: "No Host header in original request" };
 
   const protocol = data.request!.isTls ? "https" : "http";
@@ -887,14 +887,14 @@ export async function repeatRequest(
 
   if (modifications.cookies) {
     const cookies: Record<string, string> = {};
-    if (finalHeaders["Cookie"]) {
-      for (const part of finalHeaders["Cookie"].split(";")) {
+    if (finalHeaders["cookie"]) {
+      for (const part of finalHeaders["cookie"].split(";")) {
         const [k, v] = part.split("=");
         if (k && v) cookies[k.trim()] = v.trim();
       }
     }
     Object.assign(cookies, modifications.cookies);
-    finalHeaders["Cookie"] = Object.entries(cookies)
+    finalHeaders["cookie"] = Object.entries(cookies)
       .map(([k, v]) => `${k}=${v}`)
       .join("; ");
   }
