@@ -498,12 +498,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // Initialize mode from server once per chat id (only for existing chats)
     if (!hasInitializedModeFromChatRef.current && isExistingChat) {
       hasInitializedModeFromChatRef.current = true;
-      // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id (legacy DB)
-      const slug =
-        (chatData as any).default_model_slug ||
-        ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
-      if (slug === "ask" || slug === "agent" || slug === "agent-long") {
-        setChatMode(slug === "agent-long" ? "agent" : slug);
+      const slug = (chatData as any).default_model_slug;
+      if (slug === "ask" || slug === "agent") {
+        setChatMode(slug);
+      } else if (slug === "agent-long") {
+        // Legacy chats stored as agent-long map to agent mode
+        setChatMode("agent");
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

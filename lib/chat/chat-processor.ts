@@ -14,7 +14,7 @@ export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  // Agent / Agent-Long mode
+  // Agent mode
   if (isAgentMode(mode)) {
     return 100;
   }

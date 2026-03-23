@@ -164,7 +164,7 @@ export const checkAndSummarizeIfNeeded = async (
     // In agent modes, save the full transcript of summarized messages to the sandbox
     // so the agent can consult the raw conversation later if context is lost
     const transcriptPromise: Promise<string | null> =
-      ensureSandbox && (mode === "agent" || mode === "agent-long")
+      ensureSandbox && mode === "agent"
         ? ensureSandbox()
             .then((sandbox) =>
               saveTranscriptToSandbox(messagesToSummarize, sandbox),
