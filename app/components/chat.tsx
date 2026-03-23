@@ -746,6 +746,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   const handleScrollToBottom = () => scrollToBottom({ force: true });
 
+  const handleSubmitWithScroll = useCallback(
+    (e: React.FormEvent) => {
+      if (!isAtBottom) {
+        scrollToBottom({ force: true });
+      }
+      handleSubmit(e);
+    },
+    [isAtBottom, scrollToBottom, handleSubmit],
+  );
+
   // Rate limit warning dismiss handler
   const handleDismissRateLimitWarning = () => {
     setRateLimitWarning(null);
@@ -871,7 +881,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                       {!isMobile && (
                         <div className="w-full">
                           <ChatInput
-                            onSubmit={handleSubmit}
+                            onSubmit={handleSubmitWithScroll}
                             onStop={handleStop}
                             onSendNow={handleSendNow}
                             status={displayStatus}
@@ -905,7 +915,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               {(hasMessages || isExistingChat || isMobile) &&
                 !isChatNotFound && (
                   <ChatInput
-                    onSubmit={handleSubmit}
+                    onSubmit={handleSubmitWithScroll}
                     onStop={handleStop}
                     onSendNow={handleSendNow}
                     status={displayStatus}
