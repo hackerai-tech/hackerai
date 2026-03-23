@@ -557,9 +557,7 @@ export const saveFile = action({
     serviceKey: v.optional(v.string()),
     userId: v.optional(v.string()),
     skipTokenValidation: v.optional(v.boolean()),
-    mode: v.optional(
-      v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),
-    ),
+    mode: v.optional(v.union(v.literal("ask"), v.literal("agent"))),
   },
   returns: v.object({
     url: v.string(),
@@ -625,9 +623,7 @@ export const saveFile = action({
     // Agent mode: files are accessed in sandbox, no token counting needed
     // Ask mode: files are included in context, token counting required
     const shouldSkipTokenValidation =
-      args.skipTokenValidation ||
-      args.mode === "agent" ||
-      args.mode === "agent-long";
+      args.skipTokenValidation || args.mode === "agent";
 
     // Check if paid tier (free tier cannot upload)
     const hasPaidEntitlement =

@@ -167,7 +167,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
-    if (saved === "agent-long") return "agent";
     return saved;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -242,7 +241,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
 
   // When switching to agent mode, force "auto". When switching to ask, restore saved preference.
   useEffect(() => {
-    if (chatMode === "agent" || chatMode === "agent-long") {
+    if (chatMode === "agent") {
       setSelectedModelRaw("auto");
     } else {
       const saved = readSelectedModelForMode("ask");
@@ -262,7 +261,7 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Wrap setter to prevent model changes in agent mode
   const setSelectedModelState = useCallback(
     (model: SelectedModel) => {
-      if (chatMode === "agent" || chatMode === "agent-long") return;
+      if (chatMode === "agent") return;
       setSelectedModelRaw(model);
     },
     [chatMode],

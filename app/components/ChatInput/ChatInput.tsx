@@ -89,7 +89,7 @@ export const ChatInput = ({
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
 
-  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent/agent-long selected
+  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent selected
   useEffect(() => {
     if (
       !isCheckingProPlan &&

@@ -140,10 +140,6 @@ describe("selectModel", () => {
       expect(selectModel("agent", "pro")).toBe("agent-model");
     });
 
-    it("should return agent-model for agent-long mode", () => {
-      expect(selectModel("agent-long", "pro")).toBe("agent-model");
-    });
-
     it("should return ask-model for ask mode (paid)", () => {
       expect(selectModel("ask", "pro")).toBe("ask-model");
     });
@@ -185,12 +181,6 @@ describe("selectModel", () => {
   describe("model override ignored for agent mode", () => {
     it("should ignore selected model override for agent mode", () => {
       expect(selectModel("agent", "pro", "sonnet-4.6")).toBe("agent-model");
-    });
-
-    it("should ignore selected model override for agent-long mode", () => {
-      expect(selectModel("agent-long", "pro", "sonnet-4.6")).toBe(
-        "agent-model",
-      );
     });
 
     it("should ignore all selectable models in agent mode", () => {
@@ -238,10 +228,6 @@ describe("getMaxStepsForUser", () => {
     expect(getMaxStepsForUser("agent", "free")).toBe(100);
     expect(getMaxStepsForUser("agent", "pro")).toBe(100);
     expect(getMaxStepsForUser("agent", "ultra")).toBe(100);
-  });
-
-  it("should return 100 steps for agent-long mode", () => {
-    expect(getMaxStepsForUser("agent-long", "pro")).toBe(100);
   });
 
   it("should return 5 steps for free ask mode", () => {
