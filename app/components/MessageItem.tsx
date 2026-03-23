@@ -127,6 +127,13 @@ export const MessageItem = memo(function MessageItem({
   const canRegenerate = status === "ready" || status === "error";
   const isLastMessage = index === messagesLength - 1;
 
+  // Only the last assistant message should propagate "streaming" status to its
+  // tool handlers. Old messages may have tools stuck in input-available /
+  // input-streaming state (e.g. from a broken stream) — passing the global
+  // "streaming" status to them would incorrectly show shimmer animations.
+  const effectiveStatus: ChatStatus =
+    status === "streaming" && !isLastAssistantMessage ? "ready" : status;
+
   // Memoize expensive computations
   const messageText = useMemo(
     () => extractMessageText(message.parts),
@@ -293,7 +300,7 @@ export const MessageItem = memo(function MessageItem({
                         message={message}
                         part={part}
                         partIndex={partIndex}
-                        status={status}
+                        status={effectiveStatus}
                         terminalOutputByToolCallId={terminalOutputByToolCallId}
                       />
                     ))}
@@ -306,7 +313,7 @@ export const MessageItem = memo(function MessageItem({
                       message={message}
                       part={part}
                       partIndex={partIndex}
-                      status={status}
+                      status={effectiveStatus}
                       isLastMessage={isLastMessage}
                       terminalOutputByToolCallId={terminalOutputByToolCallId}
                       sharedFileDetails={effectiveFileDetails}
@@ -325,7 +332,7 @@ export const MessageItem = memo(function MessageItem({
                     message={message}
                     part={part}
                     partIndex={partIndex}
-                    status={status}
+                    status={effectiveStatus}
                     terminalOutputByToolCallId={terminalOutputByToolCallId}
                     sharedFileDetails={effectiveFileDetails}
                   />
