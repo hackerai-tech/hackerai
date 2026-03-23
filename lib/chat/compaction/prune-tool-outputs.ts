@@ -461,3 +461,29 @@ export function pruneModelMessages(
     skipReason: null,
   };
 }
+
+/**
+ * Filters out assistant messages with empty or whitespace-only content.
+ *
+ * convertToModelMessages() splits multi-step UIMessages at step-start boundaries.
+ * When a step contains only reasoning (no text or tool calls), it produces an
+ * assistant CoreMessage with content: [] — which strict providers like Moonshot AI
+ * reject with "must not be empty" errors.
+ *
+ * Safe to remove (not patch) because reasoning-only steps have no tool calls,
+ * so removing them won't orphan any subsequent tool messages.
+ */
+export function filterEmptyAssistantMessages<T extends Record<string, unknown>>(
+  messages: T[],
+): T[] {
+  return messages.filter((msg) => {
+    if (msg.role !== "assistant") return true;
+    const content = msg.content;
+    if (!Array.isArray(content)) return true;
+    if (content.length === 0) return false;
+    return content.some((part: any) => {
+      if (part.type === "text") return !!part.text?.trim();
+      return true; // tool-call, file, etc. are substantive
+    });
+  });
+}

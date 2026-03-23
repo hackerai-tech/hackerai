@@ -100,6 +100,7 @@ import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/con
 import {
   pruneToolOutputs,
   pruneModelMessages,
+  filterEmptyAssistantMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
 
 function getStreamContext() {
@@ -595,7 +596,9 @@ export const createChatHandler = (
               model: trackedProvider.languageModel(modelName),
               maxOutputTokens: 32000,
               system: currentSystemPrompt,
-              messages: await convertToModelMessages(finalMessages),
+              messages: filterEmptyAssistantMessages(
+                await convertToModelMessages(finalMessages),
+              ),
               tools,
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
@@ -661,8 +664,10 @@ export const createChatHandler = (
                         ctxUsage = result.contextUsage;
                       }
                       return {
-                        messages: await convertToModelMessages(
-                          result.summarizedMessages,
+                        messages: filterEmptyAssistantMessages(
+                          await convertToModelMessages(
+                            result.summarizedMessages,
+                          ),
                         ),
                       };
                     }
@@ -691,7 +696,11 @@ export const createChatHandler = (
                     { toolResults, noteInjectionOpts },
                   );
 
-                  return { messages: updatedMessages as typeof messages };
+                  return {
+                    messages: filterEmptyAssistantMessages(
+                      updatedMessages,
+                    ) as typeof messages,
+                  };
                 } catch (error) {
                   if (
                     error instanceof DOMException &&

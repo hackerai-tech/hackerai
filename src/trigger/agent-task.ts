@@ -61,6 +61,7 @@ import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/con
 import {
   pruneToolOutputs,
   pruneModelMessages,
+  filterEmptyAssistantMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
 import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import { createChatLogger } from "@/lib/api/chat-logger";
@@ -391,7 +392,9 @@ export const agentStreamTask = task({
         streamText({
           model: trackedProvider.languageModel(modelName),
           system: currentSystemPrompt,
-          messages: await convertToModelMessages(finalMessages),
+          messages: filterEmptyAssistantMessages(
+            await convertToModelMessages(finalMessages),
+          ),
           tools,
           prepareStep: async ({ steps, messages }) => {
             try {
@@ -426,7 +429,9 @@ export const agentStreamTask = task({
                     >,
                   );
                   return {
-                    messages: await convertToModelMessages(summarizedMessages),
+                    messages: filterEmptyAssistantMessages(
+                      await convertToModelMessages(summarizedMessages),
+                    ),
                   };
                 }
               }
@@ -449,7 +454,11 @@ export const agentStreamTask = task({
                 { toolResults, noteInjectionOpts },
               );
 
-              return { messages: updatedMessages as typeof messages };
+              return {
+                messages: filterEmptyAssistantMessages(
+                  updatedMessages,
+                ) as typeof messages,
+              };
             } catch (error) {
               if (
                 error instanceof DOMException &&
