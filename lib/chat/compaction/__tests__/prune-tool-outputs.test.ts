@@ -1,6 +1,10 @@
 import { describe, it, expect } from "@jest/globals";
 import type { UIMessage } from "ai";
-import { pruneToolOutputs, pruneModelMessages } from "../prune-tool-outputs";
+import {
+  pruneToolOutputs,
+  pruneModelMessages,
+  filterEmptyAssistantMessages,
+} from "../prune-tool-outputs";
 
 // Helper to create a UIMessage with tool parts
 function makeAssistantMessage(
@@ -1039,5 +1043,130 @@ describe("pruneModelMessages", () => {
     expect(result.toolOutputCount).toBe(2);
     expect(result.totalToolOutputTokens).toBeGreaterThan(0);
     expect(result.tokensSaved).toBeGreaterThan(0);
+  });
+});
+
+describe("filterEmptyAssistantMessages", () => {
+  it("removes assistant messages with empty content array", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      { role: "assistant", content: [] },
+      { role: "user", content: [{ type: "text", text: "world" }] },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(2);
+    expect(result.every((m) => m.role !== "assistant")).toBe(true);
+  });
+
+  it("removes assistant messages with only whitespace text parts", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "hello" }] },
+      { role: "assistant", content: [{ type: "text", text: "   " }] },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(1);
+  });
+
+  it("keeps assistant messages with tool-call content", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "tc1", toolName: "read", args: {} },
+        ],
+      },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(1);
+  });
+
+  it("keeps assistant messages with non-empty text", () => {
+    const messages = [
+      { role: "assistant", content: [{ type: "text", text: "Hello!" }] },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(1);
+  });
+
+  it("keeps non-assistant messages unchanged", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "tc1" }] },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(2);
+  });
+
+  it("handles string content gracefully", () => {
+    const messages = [{ role: "assistant", content: "some text" }];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(1);
+  });
+
+  it("preserves message ordering after filtering", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "a" }] },
+      { role: "assistant", content: [] },
+      { role: "assistant", content: [{ type: "text", text: "b" }] },
+      { role: "user", content: [{ type: "text", text: "c" }] },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toEqual([
+      { role: "user", content: [{ type: "text", text: "a" }] },
+      { role: "assistant", content: [{ type: "text", text: "b" }] },
+      { role: "user", content: [{ type: "text", text: "c" }] },
+    ]);
+  });
+
+  it("keeps assistant with empty text alongside tool-call", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "" },
+          { type: "tool-call", toolCallId: "tc1", toolName: "read", args: {} },
+        ],
+      },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(1);
+  });
+
+  it("removes assistant with empty string text (not just whitespace)", () => {
+    const messages = [
+      { role: "assistant", content: [{ type: "text", text: "" }] },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(0);
+  });
+
+  it("does not break assistant→tool pairing when assistant has tool calls", () => {
+    const messages = [
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "tc1", toolName: "read", args: {} },
+        ],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "tc1",
+            toolName: "read",
+            output: "file contents",
+          },
+        ],
+      },
+      { role: "assistant", content: [] },
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(4);
+    expect(result[1]).toEqual(messages[1]); // assistant with tool-call kept
+    expect(result[2]).toEqual(messages[2]); // tool result kept
+    expect(result[3]).toEqual(messages[4]); // final assistant kept
   });
 });
