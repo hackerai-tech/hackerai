@@ -147,6 +147,17 @@ export const ChatInput = ({
           />
         )}
 
+        {/* Sandbox selector for new chats on mobile: shown above input & file upload.
+            On desktop, it's shown below the input (order-3). */}
+        {isMobile && isNewChat && isAgentMode(chatMode) && (
+          <div className="flex px-1 pb-2 min-h-9">
+            <SandboxSelector
+              value={sandboxPreference}
+              onChange={setSandboxPreference}
+            />
+          </div>
+        )}
+
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
@@ -163,19 +174,6 @@ export const ChatInput = ({
           aria-label="Upload files"
           onChange={handleFileUploadEvent}
         />
-
-        {/* Sandbox selector for new chats on mobile: shown above input.
-            On desktop, it's inside the toolbar like existing chats. */}
-        {isNewChat && !temporaryChatsEnabled && !hasMessages && isMobile && (
-          <div className="order-1 flex px-1 pb-2 min-h-9">
-            {isAgentMode(chatMode) && (
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-              />
-            )}
-          </div>
-        )}
 
         <div
           className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border focus-within:ring-2 focus-within:ring-ring/20 ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
@@ -202,9 +200,9 @@ export const ChatInput = ({
           />
         </div>
 
-        {/* Sandbox selector below input — always editable.
+        {/* Sandbox selector below input.
             Desktop new chats: absolutely positioned to avoid shifting the centered layout.
-            Existing chats: normal flow.
+            Existing chats (all screens): normal flow.
             Mobile new chats: hidden (uses above-input placement). */}
         {isAgentMode(chatMode) && (!isMobile || !isNewChat) && (
           <div

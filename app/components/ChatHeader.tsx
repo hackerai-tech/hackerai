@@ -317,7 +317,7 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                           </Tooltip>
                         </TooltipProvider>
                       )}
-                      {chatTitle || "New Chat"}
+                      {chatTitle || (hasActiveChat ? "\u00A0" : "New Chat")}
                     </>
                   )}
                 </span>
