@@ -4,6 +4,7 @@ import {
   convertToModelMessages,
   LanguageModel,
   ToolSet,
+  ModelMessage,
 } from "ai";
 import { v4 as uuidv4 } from "uuid";
 import {
@@ -112,6 +113,7 @@ export const generateSummaryText = async (
   tools?: ToolSet,
   providerOptions?: Record<string, Record<string, unknown>>,
   abortSignal?: AbortSignal,
+  modelMessages?: ModelMessage[],
 ): Promise<{ text: string; usage: SummarizationUsage }> => {
   const summarizationPrompt = getSummarizationPrompt(mode);
 
@@ -143,7 +145,7 @@ export const generateSummaryText = async (
 
     providerOptions: providerOptions as any,
     messages: [
-      ...(await convertToModelMessages(messagesToSummarize)),
+      ...(modelMessages ?? (await convertToModelMessages(messagesToSummarize))),
       {
         role: "user" as const,
         content: `${summarizationPrompt}${incrementalNote}\n\nSummarize the above conversation using the structured format. Output ONLY the summary — do not continue the conversation or role-play as the assistant.`,

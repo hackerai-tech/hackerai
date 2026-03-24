@@ -68,6 +68,27 @@ export const createSummarizationCompletedPart = (): UIMessagePart<
   },
 });
 
+/**
+ * Finds the insertion index for the summarization part based on which step
+ * summarization happened at. Uses step-start parts as positional markers
+ * so the badge appears at the correct position in the conversation.
+ */
+export const findSummarizationInsertIndex = (
+  parts: UIMessagePart<any, any>[],
+  stepNumber: number,
+): number => {
+  let stepStartsSeen = 0;
+  for (let i = 0; i < parts.length; i++) {
+    if ((parts[i] as { type: string }).type === "step-start") {
+      if (stepStartsSeen === stepNumber) {
+        return i;
+      }
+      stepStartsSeen++;
+    }
+  }
+  return 0;
+};
+
 // Unified rate limit warning data types
 export type RateLimitWarningData =
   | {

@@ -9,11 +9,17 @@ import type {
   UIMessage,
   UIMessageStreamWriter,
   ToolSet,
+  ModelMessage,
 } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
-import { writeRateLimitWarning } from "@/lib/utils/stream-writer-utils";
+import type { UIMessagePart } from "ai";
+import {
+  writeRateLimitWarning,
+  createSummarizationCompletedPart,
+  findSummarizationInsertIndex,
+} from "@/lib/utils/stream-writer-utils";
 import { POINTS_PER_DOLLAR } from "@/lib/rate-limit/token-bucket";
 import { countMessagesTokens } from "@/lib/token-utils";
 import {
@@ -24,6 +30,7 @@ import {
 import { getNotes } from "@/lib/db/actions";
 import { generateNotesSection } from "@/lib/system-prompt/notes";
 import { logger } from "@/lib/logger";
+import { UsageTracker } from "@/lib/usage-tracker";
 
 /**
  * Check if messages contain file attachments
@@ -257,6 +264,7 @@ export async function runSummarizationStep(options: {
   chatSystemPrompt: string;
   tools?: ToolSet;
   providerOptions?: Record<string, Record<string, unknown>>;
+  modelMessages?: ModelMessage[];
 }): Promise<SummarizationStepResult> {
   const { needsSummarization, summarizedMessages, summarizationUsage } =
     await checkAndSummarizeIfNeeded(
@@ -275,6 +283,7 @@ export async function runSummarizationStep(options: {
       options.chatSystemPrompt,
       options.tools,
       options.providerOptions,
+      options.modelMessages,
     );
 
   if (!needsSummarization) {
@@ -300,6 +309,58 @@ export async function runSummarizationStep(options: {
     contextUsage,
     summarizationUsage,
   };
+}
+
+/**
+ * Tracks summarization state and handles inserting the summarization badge
+ * into message parts at the correct position during save.
+ */
+export class SummarizationTracker {
+  hasSummarized = false;
+  private parts: UIMessagePart<any, any>[] = [];
+  private atStep: number | undefined;
+
+  /**
+   * Record that summarization completed at the given step and accumulate
+   * usage into the provided UsageTracker.
+   */
+  recordSummarization(
+    stepNumber: number,
+    usage: SummarizationUsage | undefined,
+    usageTracker: UsageTracker,
+  ): void {
+    this.hasSummarized = true;
+    this.atStep = stepNumber;
+    this.parts.push(createSummarizationCompletedPart());
+
+    if (usage) {
+      usageTracker.inputTokens += usage.inputTokens;
+      usageTracker.outputTokens += usage.outputTokens;
+      usageTracker.summarizationOutputTokens += usage.outputTokens;
+      usageTracker.cacheReadTokens += usage.cacheReadTokens || 0;
+      usageTracker.cacheWriteTokens += usage.cacheWriteTokens || 0;
+      if (usage.cost) {
+        usageTracker.providerCost += usage.cost;
+      }
+    }
+  }
+
+  /**
+   * Insert summarization parts into an assistant message at the correct
+   * position (before the step-start for the step where summarization happened).
+   * Returns the original message unchanged if no summarization occurred.
+   */
+  processMessageForSave<T extends { role: string; parts: any[] }>(
+    message: T,
+  ): T {
+    if (message.role !== "assistant" || this.parts.length === 0) {
+      return message;
+    }
+    const parts = [...message.parts];
+    const idx = findSummarizationInsertIndex(parts, this.atStep ?? 0);
+    parts.splice(idx, 0, ...this.parts);
+    return { ...message, parts };
+  }
 }
 
 /**
