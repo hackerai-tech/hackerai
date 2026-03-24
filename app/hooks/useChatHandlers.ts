@@ -7,7 +7,7 @@ import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
   getMaxTokensForSubscription,
-  MAX_TOKENS_FILE,
+  getMaxFileTokens,
 } from "@/lib/token-utils";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
@@ -213,9 +213,10 @@ export const useChatHandlers = ({
           (total, file) => total + (file.tokens || 0),
           0,
         );
-        if (fileTokens > MAX_TOKENS_FILE) {
+        const maxFileTokens = getMaxFileTokens(subscription);
+        if (fileTokens > maxFileTokens) {
           toast.error("Cannot send files in Ask mode", {
-            description: `Files exceed Ask mode token limit (${fileTokens.toLocaleString()}/${MAX_TOKENS_FILE.toLocaleString()} tokens). Tip: Switch to Agent mode or remove large files.`,
+            description: `Files exceed Ask mode token limit (${fileTokens.toLocaleString()}/${maxFileTokens.toLocaleString()} tokens). Tip: Switch to Agent mode or remove large files.`,
           });
           return;
         }

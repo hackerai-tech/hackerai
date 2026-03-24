@@ -9,7 +9,8 @@ import { isSupportedImageMediaType } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
-import { MAX_TOKENS_FILE } from "../token-utils";
+import { getMaxFileTokens } from "../token-utils";
+import type { SubscriptionTier } from "@/types";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -182,6 +183,7 @@ const applyModeSpecificTransforms = async (
   mode: ChatMode,
   sandboxFiles: SandboxFile[],
   uploadBasePath?: string,
+  maxFileTokens?: number,
 ) => {
   const fileIds = extractAllFileIdsFromMessages(messages);
 
@@ -191,7 +193,11 @@ const applyModeSpecificTransforms = async (
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
     if (nonMediaFileIds.length > 0) {
-      await addDocumentContentToMessages(messages, nonMediaFileIds);
+      await addDocumentContentToMessages(
+        messages,
+        nonMediaFileIds,
+        maxFileTokens,
+      );
     }
     removeAudioFileParts(messages);
   }
@@ -224,6 +230,7 @@ export const processMessageFiles = async (
   messages: UIMessage[],
   mode: ChatMode = "ask",
   uploadBasePath?: string,
+  subscription?: SubscriptionTier,
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
@@ -248,11 +255,16 @@ export const processMessageFiles = async (
     await applyUrlsToFileParts(updatedMessages, files, mode);
   }
 
+  const maxFileTokens = subscription
+    ? getMaxFileTokens(subscription)
+    : undefined;
+
   await applyModeSpecificTransforms(
     updatedMessages,
     mode,
     sandboxFiles,
     uploadBasePath,
+    maxFileTokens,
   );
 
   return {
@@ -299,6 +311,7 @@ const formatUnprocessableDocument = (name: string, reason: string) =>
 const addDocumentContentToMessages = async (
   messages: UIMessage[],
   fileIds: Id<"files">[],
+  maxFileTokens: number = getMaxFileTokens("pro"),
 ): Promise<void> => {
   if (!fileIds.length || !messages.length) return;
 
@@ -319,10 +332,10 @@ const addDocumentContentToMessages = async (
 
     fileContents.forEach((file: FileContent) => {
       // Check if file exceeds token limit for ask mode
-      if (file.tokenSize > MAX_TOKENS_FILE) {
+      if (file.tokenSize > maxFileTokens) {
         unprocessableFiles.set(file.id, {
           name: file.name,
-          reason: `This file is too large for ask mode (${file.tokenSize.toLocaleString()} tokens, limit: ${MAX_TOKENS_FILE.toLocaleString()} tokens). Please use agent mode to access this file, where you can use terminal tools to analyze it.`,
+          reason: `This file is too large for ask mode (${file.tokenSize.toLocaleString()} tokens, limit: ${maxFileTokens.toLocaleString()} tokens). Please use agent mode to access this file, where you can use terminal tools to analyze it.`,
         });
       } else if (file.content?.trim()) {
         processableFiles.set(file.id, {

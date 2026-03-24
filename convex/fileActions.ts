@@ -19,7 +19,7 @@ import type {
 import { Id } from "./_generated/dataModel";
 import { validateServiceKey } from "./lib/utils";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
-import { MAX_TOKENS_FILE } from "../lib/token-utils";
+import { FILE_TOKEN_PERCENT, MAX_TOKENS_PAID } from "../lib/token-utils";
 
 // Maximum file size: 20 MB (enforced regardless of skipTokenValidation)
 const MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
@@ -159,15 +159,16 @@ const validateTokenLimit = (
   chunks: FileItemChunk[],
   fileName: string,
   skipValidation: boolean = false,
+  maxTokens: number = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT),
 ): void => {
   if (skipValidation) {
     return; // Skip validation for assistant-generated files
   }
   const totalTokens = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
-  if (totalTokens > MAX_TOKENS_FILE) {
+  if (totalTokens > maxTokens) {
     throw new ConvexError({
       code: "FILE_TOKEN_LIMIT_EXCEEDED",
-      message: `File "${fileName}" exceeds the maximum token limit of ${MAX_TOKENS_FILE.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
+      message: `File "${fileName}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${totalTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
     });
   }
 };
@@ -302,6 +303,7 @@ const processFileAuto = async (
   mediaType?: string,
   prepend?: string,
   skipTokenValidation: boolean = false,
+  maxTokens: number = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT),
 ): Promise<FileItemChunk[]> => {
   // Check if file is a supported image format - return 0 tokens immediately
   // Unsupported image formats will be processed as files
@@ -323,13 +325,23 @@ const processFileAuto = async (
         prepend,
         fileName,
       });
-      validateTokenLimit(chunks, fileName || "unknown", skipTokenValidation);
+      validateTokenLimit(
+        chunks,
+        fileName || "unknown",
+        skipTokenValidation,
+        maxTokens,
+      );
       return chunks;
     }
     const fileType = detectedType;
 
     const chunks = await processFile(file, { fileType, prepend, fileName });
-    validateTokenLimit(chunks, fileName || "unknown", skipTokenValidation);
+    validateTokenLimit(
+      chunks,
+      fileName || "unknown",
+      skipTokenValidation,
+      maxTokens,
+    );
     return chunks;
   } catch (error) {
     // Check if this is a ConvexError (including token limit errors) - re-throw as-is
@@ -369,10 +381,10 @@ const processFileAuto = async (
         const fallbackTokens = countTokens(textContent);
 
         // Check token limit for fallback processing
-        if (!skipTokenValidation && fallbackTokens > MAX_TOKENS_FILE) {
+        if (!skipTokenValidation && fallbackTokens > maxTokens) {
           throw new ConvexError({
             code: "FILE_TOKEN_LIMIT_EXCEEDED",
-            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${MAX_TOKENS_FILE.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
+            message: `File "${fileName || "unknown"}" exceeds the maximum token limit of ${maxTokens.toLocaleString()} tokens. Current tokens: ${fallbackTokens.toLocaleString()}. Tip: Switch to Agent mode to upload larger files without token limits.`,
           });
         }
 
@@ -707,6 +719,9 @@ export const saveFile = action({
     let fileContent: string | undefined = undefined;
 
     try {
+      // Compute file token limit based on subscription (all paid tiers use MAX_TOKENS_PAID)
+      const maxFileTokens = Math.floor(MAX_TOKENS_PAID * FILE_TOKEN_PERCENT);
+
       // Use the comprehensive file processing for all file types (including auto-detection and default handling)
       const chunks = await processFileAuto(
         file,
@@ -714,6 +729,7 @@ export const saveFile = action({
         args.mediaType,
         undefined,
         shouldSkipTokenValidation,
+        maxFileTokens,
       );
       tokenSize = chunks.reduce((total, chunk) => total + chunk.tokens, 0);
 
@@ -727,9 +743,9 @@ export const saveFile = action({
 
       if (shouldSaveContent) {
         const rawContent = chunks.map((chunk) => chunk.content).join("\n\n");
-        // Always truncate content to MAX_TOKENS_FILE before saving to database
+        // Always truncate content to maxFileTokens before saving to database
         // This ensures database content field stays reasonable even for agent mode files
-        fileContent = truncateContentByTokens(rawContent, MAX_TOKENS_FILE);
+        fileContent = truncateContentByTokens(rawContent, maxFileTokens);
       }
     } catch (error) {
       // Check if this is a ConvexError (including token limit errors) - re-throw as-is
