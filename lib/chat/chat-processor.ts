@@ -464,7 +464,12 @@ export async function processChatMessages({
 
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
   const { messages: messagesWithUrls, sandboxFiles } =
-    await processMessageFiles(messagesWithLimitedFiles, mode, uploadBasePath);
+    await processMessageFiles(
+      messagesWithLimitedFiles,
+      mode,
+      uploadBasePath,
+      subscription,
+    );
 
   // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.
   // This must happen BEFORE the empty-content filter because fixing incomplete parts can

@@ -11,7 +11,7 @@ import {
   isImageFile,
   RateLimitInfo,
 } from "@/lib/utils/file-utils";
-import { MAX_TOKENS_FILE } from "@/lib/token-utils";
+import { getMaxFileTokens } from "@/lib/token-utils";
 import { FileProcessingResult, FileSource } from "@/types/file";
 import type { ChatMode } from "@/types/chat";
 import { useGlobalState } from "../contexts/GlobalState";
@@ -214,13 +214,14 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
           const currentTotal = getTotalTokens();
           const newTotal = currentTotal + tokens;
 
-          if (newTotal > MAX_TOKENS_FILE) {
+          const maxFileTokens = getMaxFileTokens(subscription);
+          if (newTotal > maxFileTokens) {
             // Exceeds limit - delete file from storage and remove from upload list
             deleteFile({ fileId: fileId as Id<"files"> }).catch(console.error);
             removeUploadedFile(uploadIndex);
 
             toast.error(
-              `${file.name} exceeds token limit (${newTotal.toLocaleString()}/${MAX_TOKENS_FILE.toLocaleString()} tokens). Tip: Switch to Agent mode to upload larger files.`,
+              `${file.name} exceeds token limit (${newTotal.toLocaleString()}/${maxFileTokens.toLocaleString()} tokens). Tip: Switch to Agent mode to upload larger files.`,
             );
             return;
           }
@@ -268,6 +269,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       updateUploadedFile,
       showRateLimitWarning,
       mode,
+      subscription,
     ],
   );
 
