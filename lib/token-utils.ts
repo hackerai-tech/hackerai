@@ -4,7 +4,7 @@ import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
 export const MAX_TOKENS_FREE = 32000;
-export const MAX_TOKENS_PAID = 128000;
+export const MAX_TOKENS_PAID = 200000;
 /**
  * Percentage of context window budget allocated to file uploads in Ask mode.
  * Leaves remaining budget for conversation history, system prompt, and model output.
