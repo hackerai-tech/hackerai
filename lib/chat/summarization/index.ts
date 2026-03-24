@@ -1,6 +1,12 @@
 import "server-only";
 
-import { UIMessage, UIMessageStreamWriter, LanguageModel, ToolSet } from "ai";
+import {
+  UIMessage,
+  UIMessageStreamWriter,
+  LanguageModel,
+  ToolSet,
+  ModelMessage,
+} from "ai";
 import { v4 as uuidv4 } from "uuid";
 import { SubscriptionTier, ChatMode, Todo, AnySandbox } from "@/types";
 import {
@@ -21,7 +27,6 @@ import {
   isSummaryMessage,
   extractSummaryText,
 } from "./helpers";
-import { formatTranscript } from "./transcript-formatter";
 import type { SummarizationResult } from "./helpers";
 
 export type { SummarizationResult, SummarizationUsage } from "./helpers";
@@ -35,24 +40,24 @@ export type EnsureSandbox = () => Promise<AnySandbox>;
 const buildTranscriptNotice = (path: string): string => `
 
 Transcript location:
-   This is the full plain-text transcript of your past conversation with the user (pre- and post-summary): ${path}
+   This is the full JSON transcript of your past conversation with the user (pre- and post-summary): ${path}
 
    If anything about the task or current state is unclear (missing context, ambiguous requirements, uncertain decisions, exact wording, IDs/paths, errors/logs, tool inputs/outputs), you should consult this transcript rather than guessing.
 
    How to use it:
    - Search first for relevant keywords (task name, filenames, IDs, errors, tool names).
    - Then read a small window around the matching lines to reconstruct intent and state.
-   - Avoid reading linearly end-to-end; the file can be very large and some single lines (tool payloads/results) can be huge.
+   - Avoid reading the entire file; it can be very large.
 
    Format:
-   - Plain text with role labels ("user:", "A:")
-   - Tool calls: [Tool call] toolName with arguments
-   - Tool results: [Tool result] toolName
-   - Reasoning/thinking: [Thinking] ...
-   - Images/files: [Image] and [File: filename]`;
+   - JSON array of messages, each with "role" and "parts" (or "content" for model messages)
+   - Tool calls: parts with type "tool-<name>" containing "input" and "output" fields
+   - Tool results (model format): separate role "tool" messages with "tool-result" content
+   - Text: parts with type "text"
+   - Reasoning: parts with type "reasoning"`;
 
 /**
- * Writes a plain-text transcript of the summarized messages to the sandbox.
+ * Writes a JSON transcript of the summarized messages to the sandbox.
  * E2B (cloud) persists to ~/agent-transcripts/, local Docker to /tmp/agent-transcripts/.
  *
  * Content is written as a Buffer (not a string) so that ConvexSandbox's binary
@@ -64,17 +69,20 @@ Transcript location:
 const saveTranscriptToSandbox = async (
   messages: UIMessage[],
   sandbox: AnySandbox,
+  modelMessages?: ModelMessage[],
 ): Promise<string | null> => {
   try {
     const transcriptId = uuidv4();
     const dir = isE2BSandbox(sandbox)
       ? "/home/user/agent-transcripts"
       : "/tmp/agent-transcripts";
-    const path = `${dir}/${transcriptId}`;
+    const path = `${dir}/${transcriptId}.json`;
 
     await sandbox.commands.run(`mkdir -p ${dir}`, { timeoutMs: 5000 });
 
-    const content = formatTranscript(messages);
+    // Save as structured JSON — model messages (mid-stream, with separate
+    // tool-call/tool-result parts) when available, otherwise UI messages
+    const content = JSON.stringify(modelMessages ?? messages, null, 2);
     if (isE2BSandbox(sandbox)) {
       // E2B uploads via HTTP — no shell argument limits, string is fine
       await sandbox.files.write(path, content);
@@ -109,6 +117,7 @@ export const checkAndSummarizeIfNeeded = async (
   chatSystemPrompt: string = "",
   tools?: ToolSet,
   providerOptions?: Record<string, Record<string, unknown>>,
+  modelMessages?: ModelMessage[],
 ): Promise<SummarizationResult> => {
   // Detect and separate synthetic summary message from real messages
   let realMessages: UIMessage[];
@@ -159,6 +168,7 @@ export const checkAndSummarizeIfNeeded = async (
       tools,
       providerOptions,
       abortSignal,
+      modelMessages,
     );
 
     // In agent modes, save the full transcript of summarized messages to the sandbox
@@ -167,7 +177,11 @@ export const checkAndSummarizeIfNeeded = async (
       ensureSandbox && mode === "agent"
         ? ensureSandbox()
             .then((sandbox) =>
-              saveTranscriptToSandbox(messagesToSummarize, sandbox),
+              saveTranscriptToSandbox(
+                messagesToSummarize,
+                sandbox,
+                modelMessages,
+              ),
             )
             .catch((error) => {
               console.error(

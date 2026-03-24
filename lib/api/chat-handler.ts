@@ -6,7 +6,6 @@ import {
   stepCountIs,
   streamText,
   UIMessage,
-  UIMessagePart,
   smoothStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
@@ -52,6 +51,7 @@ import {
   writeContextUsage,
   contextUsageEnabled,
   runSummarizationStep,
+  SummarizationTracker,
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
   applyPrepareStepReminders,
@@ -85,7 +85,6 @@ import { createResumableStreamContext } from "resumable-stream";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
-  createSummarizationCompletedPart,
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
@@ -364,8 +363,7 @@ export const createChatHandler = (
         },
       });
 
-      // Track summarization events to add to message parts
-      const summarizationParts: UIMessagePart<any, any>[] = [];
+      const summarizationTracker = new SummarizationTracker();
 
       // Start stream timing
       chatLogger.startStream();
@@ -525,7 +523,7 @@ export const createChatHandler = (
             noteInjectionOpts,
           );
 
-          let hasSummarized = false;
+          const hasSummarized = () => summarizationTracker.hasSummarized;
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
@@ -554,9 +552,6 @@ export const createChatHandler = (
             if (sandboxCost > 0) {
               usageTracker.providerCost += sandboxCost;
               chatLogger?.getBuilder().addToolCost(sandboxCost);
-              console.log(
-                `[sandbox-cost] E2B session cost: $${sandboxCost.toFixed(6)}`,
-              );
             }
             if (!usageTracker.hasUsage) return;
             hasDeductedUsage = true;
@@ -595,6 +590,12 @@ export const createChatHandler = (
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
+                  const stepNumber = steps.length;
+                  const threshold = Math.floor(
+                    getMaxTokensForSubscription(subscription) *
+                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                  );
+
                   // Prune old tool outputs to stay within rolling token budget
                   const pruneResult = pruneToolOutputs(finalMessages);
                   if (pruneResult.prunedCount > 0) {
@@ -603,9 +604,10 @@ export const createChatHandler = (
 
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
-                  if (!temporary && !hasSummarized) {
+                  if (!temporary && !hasSummarized()) {
                     const result = await runSummarizationStep({
                       messages: finalMessages,
+                      modelMessages: messages,
                       subscription,
                       languageModel: trackedProvider.languageModel(modelName),
                       mode,
@@ -632,26 +634,11 @@ export const createChatHandler = (
                       result.needsSummarization &&
                       result.summarizedMessages
                     ) {
-                      hasSummarized = true;
-                      summarizationParts.push(
-                        createSummarizationCompletedPart(),
+                      summarizationTracker.recordSummarization(
+                        steps.length,
+                        result.summarizationUsage,
+                        usageTracker,
                       );
-                      if (result.summarizationUsage) {
-                        usageTracker.inputTokens +=
-                          result.summarizationUsage.inputTokens;
-                        usageTracker.outputTokens +=
-                          result.summarizationUsage.outputTokens;
-                        usageTracker.summarizationOutputTokens +=
-                          result.summarizationUsage.outputTokens;
-                        usageTracker.cacheReadTokens +=
-                          result.summarizationUsage.cacheReadTokens || 0;
-                        usageTracker.cacheWriteTokens +=
-                          result.summarizationUsage.cacheWriteTokens || 0;
-                        if (result.summarizationUsage.cost) {
-                          usageTracker.providerCost +=
-                            result.summarizationUsage.cost;
-                        }
-                      }
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
                       }
@@ -723,7 +710,7 @@ export const createChatHandler = (
                           SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
-                      getHasSummarized: () => hasSummarized,
+                      getHasSummarized: hasSummarized,
                       onFired: () => {
                         stoppedDueToTokenExhaustion = true;
                       },
@@ -909,7 +896,7 @@ export const createChatHandler = (
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
                             wasPreemptiveTimeout: false,
-                            hadSummarization: hasSummarized,
+                            hadSummarization: hasSummarized(),
                           });
 
                           const generatedTitle = await titlePromise;
@@ -950,15 +937,7 @@ export const createChatHandler = (
                               if (msg.role !== "assistant") continue;
 
                               const processed =
-                                summarizationParts.length > 0
-                                  ? {
-                                      ...msg,
-                                      parts: [
-                                        ...summarizationParts,
-                                        ...(msg.parts || []),
-                                      ],
-                                    }
-                                  : msg;
+                                summarizationTracker.processMessageForSave(msg);
 
                               await saveMessage({
                                 chatId,
@@ -1100,7 +1079,7 @@ export const createChatHandler = (
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
                   wasPreemptiveTimeout: isPreemptiveAbort,
-                  hadSummarization: hasSummarized,
+                  hadSummarization: hasSummarized(),
                 });
                 logStep("emit_success_event", stepStart);
 
@@ -1206,15 +1185,8 @@ export const createChatHandler = (
                   // Save messages (either full save or just append extraFileIds)
                   stepStart = Date.now();
                   for (const message of messages) {
-                    // For assistant messages, prepend summarization parts if any
                     let processedMessage =
-                      message.role === "assistant" &&
-                      summarizationParts.length > 0
-                        ? {
-                            ...message,
-                            parts: [...summarizationParts, ...message.parts],
-                          }
-                        : message;
+                      summarizationTracker.processMessageForSave(message);
 
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry
