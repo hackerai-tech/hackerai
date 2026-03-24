@@ -205,6 +205,11 @@ export class DesktopSandboxBridge {
         }
         break;
       case "exit":
+        if (chunk.exitCode === undefined) {
+          console.warn(
+            `[desktop-bridge] exit chunk missing exitCode for command ${commandId}, defaulting to -1`,
+          );
+        }
         await this.publishResult({
           type: "exit",
           commandId,
