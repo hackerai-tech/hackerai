@@ -21,6 +21,22 @@ static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
 /// Session token for authenticating command server requests
 static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+static CONVEX_URL: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
+static CONVEX_SERVICE_KEY: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
+static CONVEX_USER_ID: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
+
+fn convex_url_lock() -> &'static tokio::sync::RwLock<String> {
+    CONVEX_URL.get_or_init(|| tokio::sync::RwLock::new(String::new()))
+}
+
+fn convex_service_key_lock() -> &'static tokio::sync::RwLock<String> {
+    CONVEX_SERVICE_KEY.get_or_init(|| tokio::sync::RwLock::new(String::new()))
+}
+
+fn convex_user_id_lock() -> &'static tokio::sync::RwLock<String> {
+    CONVEX_USER_ID.get_or_init(|| tokio::sync::RwLock::new(String::new()))
+}
+
 /// Get the dev auth callback port (0 if not running in dev mode)
 #[tauri::command]
 fn get_dev_auth_port() -> u16 {
@@ -40,6 +56,267 @@ fn get_cmd_server_info() -> CmdServerInfo {
 struct CmdServerInfo {
     port: u16,
     token: String,
+}
+
+#[tauri::command]
+async fn set_convex_config(url: String, service_key: String, user_id: String) -> Result<(), String> {
+    *convex_url_lock().write().await = url.clone();
+    *convex_service_key_lock().write().await = service_key;
+    *convex_user_id_lock().write().await = user_id.clone();
+    log::info!("Convex config updated (url: {}, user: {})", url, user_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_notes_user_id(user_id: String) -> Result<(), String> {
+    *convex_user_id_lock().write().await = user_id;
+    log::info!("Notes user ID set");
+    Ok(())
+}
+
+// ── Convex API Helper ────────────────────────────────────────────────
+
+async fn call_convex_function(function_path: &str, args: serde_json::Value, is_mutation: bool) -> Result<String, String> {
+    let url = convex_url_lock().read().await.clone();
+    let service_key = convex_service_key_lock().read().await.clone();
+
+    if url.is_empty() || service_key.is_empty() {
+        return Err("Convex not configured. Notes API unavailable.".to_string());
+    }
+
+    let endpoint = if is_mutation {
+        format!("{}/api/mutation", url)
+    } else {
+        format!("{}/api/query", url)
+    };
+
+    let mut full_args = args;
+    match full_args.as_object_mut() {
+        Some(obj) => {
+            obj.insert("serviceKey".to_string(), serde_json::Value::String(service_key));
+        }
+        None => {
+            return Err("Internal error: args must be a JSON object".to_string());
+        }
+    }
+
+    let body = serde_json::json!({
+        "path": function_path,
+        "args": full_args,
+        "format": "json"
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client.post(&endpoint)
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Convex request failed: {}", e))?;
+
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("Failed to read response: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("Convex error ({})", status));
+    }
+
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(parsed) => {
+            if let Some(value) = parsed.get("value") {
+                serde_json::to_string(value).map_err(|e| format!("Serialize error: {}", e))
+            } else if let Some(err) = parsed.get("errorMessage") {
+                Err(format!("Convex error: {}", err))
+            } else {
+                Err("Unexpected Convex response format".to_string())
+            }
+        }
+        Err(_) => Err("Unexpected response format from Convex".to_string()),
+    }
+}
+
+// ── Notes API ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct NoteCreateRequest {
+    title: String,
+    content: String,
+    #[serde(default = "default_note_category")]
+    category: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+fn default_note_category() -> String {
+    "general".to_string()
+}
+
+#[derive(Deserialize)]
+struct NoteUpdateRequest {
+    #[serde(alias = "noteId", alias = "note_id")]
+    note_id: String,
+    title: Option<String>,
+    content: Option<String>,
+    category: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct NoteDeleteRequest {
+    #[serde(alias = "noteId", alias = "note_id")]
+    note_id: String,
+}
+
+async fn handle_notes_list(query_string: &str) -> Result<String, String> {
+    let user_id = convex_user_id_lock().read().await.clone();
+    if user_id.is_empty() {
+        return Err("User not configured".to_string());
+    }
+
+    let mut category: Option<String> = None;
+    if !query_string.is_empty() {
+        for pair in query_string.split('&') {
+            if let Some(val) = pair.strip_prefix("category=") {
+                category = Some(urldecode(val));
+            }
+        }
+    }
+
+    let mut args = serde_json::json!({ "userId": user_id });
+    if let Some(cat) = category {
+        args["category"] = serde_json::Value::String(cat);
+    }
+
+    call_convex_function("notes:listNotesForBackend", args, false).await
+}
+
+async fn handle_notes_create(body: &str) -> Result<String, String> {
+    let user_id = convex_user_id_lock().read().await.clone();
+    if user_id.is_empty() {
+        return Err("User not configured".to_string());
+    }
+
+    let req: NoteCreateRequest = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let mut args = serde_json::json!({
+        "userId": user_id,
+        "title": req.title,
+        "content": req.content,
+        "category": req.category,
+    });
+    if !req.tags.is_empty() {
+        args["tags"] = serde_json::json!(req.tags);
+    }
+
+    call_convex_function("notes:createNoteForBackend", args, true).await
+}
+
+async fn handle_notes_update(body: &str) -> Result<String, String> {
+    let user_id = convex_user_id_lock().read().await.clone();
+    if user_id.is_empty() {
+        return Err("User not configured".to_string());
+    }
+
+    let req: NoteUpdateRequest = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let mut args = serde_json::json!({
+        "userId": user_id,
+        "noteId": req.note_id,
+    });
+    if let Some(title) = req.title {
+        args["title"] = serde_json::Value::String(title);
+    }
+    if let Some(content) = req.content {
+        args["content"] = serde_json::Value::String(content);
+    }
+    if let Some(category) = req.category {
+        args["category"] = serde_json::Value::String(category);
+    }
+    if let Some(tags) = req.tags {
+        args["tags"] = serde_json::json!(tags);
+    }
+
+    call_convex_function("notes:updateNoteForBackend", args, true).await
+}
+
+async fn handle_notes_delete(body: &str) -> Result<String, String> {
+    let user_id = convex_user_id_lock().read().await.clone();
+    if user_id.is_empty() {
+        return Err("User not configured".to_string());
+    }
+
+    let req: NoteDeleteRequest = serde_json::from_str(body)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let args = serde_json::json!({
+        "userId": user_id,
+        "noteId": req.note_id,
+    });
+
+    call_convex_function("notes:deleteNoteForBackend", args, true).await
+}
+
+async fn handle_notes_search(query_string: &str) -> Result<String, String> {
+    let user_id = convex_user_id_lock().read().await.clone();
+    if user_id.is_empty() {
+        return Err("User not configured".to_string());
+    }
+
+    let mut search = String::new();
+    let mut category: Option<String> = None;
+
+    for pair in query_string.split('&') {
+        if let Some(val) = pair.strip_prefix("q=") {
+            search = urldecode(val);
+        } else if let Some(val) = pair.strip_prefix("category=") {
+            category = Some(urldecode(val));
+        }
+    }
+
+    if search.is_empty() {
+        return Err("Missing 'q' parameter".to_string());
+    }
+
+    let mut args = serde_json::json!({
+        "userId": user_id,
+        "search": search,
+    });
+    if let Some(cat) = category {
+        args["category"] = serde_json::Value::String(cat);
+    }
+
+    call_convex_function("notes:listNotesForBackend", args, false).await
+}
+
+fn urldecode(s: &str) -> String {
+    let mut bytes: Vec<u8> = Vec::with_capacity(s.len());
+    let mut chars = s.as_bytes().iter();
+    while let Some(&b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next().copied();
+            let h2 = chars.next().copied();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                let hex = [h1, h2];
+                if let Ok(byte) = u8::from_str_radix(std::str::from_utf8(&hex).unwrap_or(""), 16) {
+                    bytes.push(byte);
+                } else {
+                    bytes.push(b'%');
+                    bytes.push(h1);
+                    bytes.push(h2);
+                }
+            } else {
+                bytes.push(b'%');
+                if let Some(h1) = h1 { bytes.push(h1); }
+            }
+        } else if b == b'+' {
+            bytes.push(b' ');
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 // ── Command Execution Server ──────────────────────────────────────────
@@ -139,6 +416,9 @@ async fn start_cmd_server() {
 /// Maximum allowed header size (256KB). Requests with headers exceeding this are rejected.
 const MAX_HEADER_SIZE: usize = 256 * 1024;
 
+/// Maximum allowed body size (10MB). Requests with bodies exceeding this are rejected.
+const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+
 /// Parse an HTTP request from the stream, returning (method, path, headers, body)
 async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(String, String, HashMap<String, String>, String), String> {
     let mut buf = vec![0u8; 64 * 1024]; // 64KB initial buffer
@@ -152,9 +432,8 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
         }
         total_read += n;
 
-        // Check if we have the full headers
-        let request_so_far = String::from_utf8_lossy(&buf[..total_read]);
-        if request_so_far.contains("\r\n\r\n") {
+        // Check if we have the full headers (search in bytes, not string)
+        if buf[..total_read].windows(4).any(|w| w == b"\r\n\r\n") {
             break;
         }
 
@@ -173,10 +452,13 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
         }
     }
 
-    let request = String::from_utf8_lossy(&buf[..total_read]).to_string();
-    let header_end = request.find("\r\n\r\n").ok_or("No header end")?;
-    let header_section = &request[..header_end];
+    // Find header/body boundary in raw bytes to avoid string/byte index mismatch
+    let header_end = buf[..total_read].windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("No header end")?;
     let body_start_idx = header_end + 4;
+
+    let header_section = String::from_utf8_lossy(&buf[..header_end]).to_string();
 
     // Parse request line
     let first_line = header_section.lines().next().ok_or("Empty request")?;
@@ -199,6 +481,10 @@ async fn parse_http_request(stream: &mut tokio::net::TcpStream) -> Result<(Strin
     let content_length: usize = headers.get("content-length")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+
+    if content_length > MAX_BODY_SIZE {
+        return Err("Request body too large".into());
+    }
 
     let body_bytes_read = total_read - body_start_idx;
     let mut body_buf = buf[body_start_idx..total_read].to_vec();
@@ -228,7 +514,7 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
 
     // CORS preflight
     if method == "OPTIONS" {
-        let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
+        let response = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nAccess-Control-Max-Age: 86400\r\n\r\n";
         stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
         return Ok(());
     }
@@ -246,28 +532,29 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
         return Ok(());
     }
 
-    if method != "POST" {
-        let body = r#"{"error":"method not allowed"}"#;
-        let response = format!(
-            "HTTP/1.1 405 Method Not Allowed\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
-            body.len(), body
-        );
-        stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
     // Streaming execute gets special handling (writes directly to stream)
-    if path == "/execute/stream" {
+    if method == "POST" && path == "/execute/stream" {
         return handle_execute_stream(&body, &mut stream).await;
     }
 
-    let result = match path.as_str() {
-        "/execute" => handle_execute(&body).await,
-        "/files/read" => handle_file_read(&body).await,
-        "/files/write" => handle_file_write(&body).await,
-        "/files/remove" => handle_file_remove(&body).await,
-        "/files/list" => handle_file_list(&body).await,
-        "/health" => Ok(r#"{"status":"ok"}"#.to_string()),
+    let (route_path, query_string) = if let Some(idx) = path.find('?') {
+        (&path[..idx], &path[idx+1..])
+    } else {
+        (path.as_str(), "")
+    };
+
+    let result = match (method.as_str(), route_path) {
+        ("GET", "/notes") => handle_notes_list(query_string).await,
+        ("POST", "/notes") => handle_notes_create(&body).await,
+        ("PUT", "/notes") => handle_notes_update(&body).await,
+        ("DELETE", "/notes") => handle_notes_delete(&body).await,
+        ("GET", "/notes/search") => handle_notes_search(query_string).await,
+        ("POST", "/execute") => handle_execute(&body).await,
+        ("POST", "/files/read") => handle_file_read(&body).await,
+        ("POST", "/files/write") => handle_file_write(&body).await,
+        ("POST", "/files/remove") => handle_file_remove(&body).await,
+        ("POST", "/files/list") => handle_file_list(&body).await,
+        (_, "/health") => Ok(r#"{"status":"ok"}"#.to_string()),
         _ => Err("not found".to_string()),
     };
 
@@ -1088,7 +1375,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, start_codex_app_server, codex_rpc_send, get_codex_app_server_info])
+        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, start_codex_app_server, codex_rpc_send, get_codex_app_server_info, set_convex_config, set_notes_user_id])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -1148,6 +1435,22 @@ pub fn run() {
 
             // Start command execution server (always, for local terminal commands)
             tauri::async_runtime::spawn(start_cmd_server());
+
+            // Initialize Convex config from env vars (service key + URL)
+            if let Ok(key) = std::env::var("HACKERAI_SERVICE_KEY") {
+                let url = std::env::var("CONVEX_URL")
+                    .or_else(|_| std::env::var("NEXT_PUBLIC_CONVEX_URL"))
+                    .unwrap_or_default();
+                if url.is_empty() {
+                    log::warn!("HACKERAI_SERVICE_KEY set but no CONVEX_URL found; notes API will be unavailable");
+                } else {
+                    tauri::async_runtime::spawn(async move {
+                        *convex_url_lock().write().await = url;
+                        *convex_service_key_lock().write().await = key;
+                        log::info!("Convex config loaded from environment");
+                    });
+                }
+            }
 
             // Check for updates on every launch
             let handle = app.handle().clone();

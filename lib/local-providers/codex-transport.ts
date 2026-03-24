@@ -68,6 +68,8 @@ export interface LocalPromptData {
   userCustomization?: UserCustomization | null;
   notes?: Array<{ title: string; content: string; category: string }>;
   model?: string;
+  cmdServerPort?: number;
+  cmdServerToken?: string;
 }
 
 /**

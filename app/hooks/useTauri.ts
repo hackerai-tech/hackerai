@@ -94,6 +94,26 @@ export async function getCmdServerInfo(): Promise<{
 }
 
 /**
+ * Set the Convex config (URL + service key + user ID) on the Tauri backend.
+ * Used to enable the Notes API bridge.
+ */
+export async function setConvexConfig(
+  url: string,
+  serviceKey: string,
+  userId: string,
+): Promise<boolean> {
+  if (!detectTauri()) return false;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("set_convex_config", { url, serviceKey, userId });
+    return true;
+  } catch (err) {
+    console.error("[Tauri] Failed to set Convex config:", err);
+    return false;
+  }
+}
+
+/**
  * Reveal a file or folder in the OS file manager (Finder/Explorer).
  */
 export async function revealFileInDir(path: string): Promise<boolean> {

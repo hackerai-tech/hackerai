@@ -37,6 +37,8 @@ import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { useLatestRef } from "../hooks/useLatestRef";
+import { getCmdServerInfo, isTauriEnvironment } from "../hooks/useTauri";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
@@ -208,6 +210,34 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const userCustomizationRef = useLatestRef(userCustomization);
   const userNotesRef = useLatestRef(userNotes);
 
+  // Cmd server info for notes API (fetched once in Tauri environment)
+  const cmdServerInfoRef = useRef<{ port: number; token: string } | null>(null);
+  const { user: authUser } = useAuth();
+  useEffect(() => {
+    if (isTauriEnvironment()) {
+      getCmdServerInfo()
+        .then((info) => {
+          cmdServerInfoRef.current = info;
+        })
+        .catch((err) => {
+          console.error("[Tauri] Failed to get cmd server info:", err);
+        });
+    }
+  }, []);
+
+  // Sync user ID to Tauri backend for notes API
+  useEffect(() => {
+    if (!isTauriEnvironment() || !authUser?.id) return;
+    (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("set_notes_user_id", { userId: authUser.id });
+      } catch (err) {
+        console.error("[Tauri] Failed to sync notes user ID:", err);
+      }
+    })();
+  }, [authUser?.id]);
+
   // Stable transport instances
   const codexTransport = useMemo(() => new CodexLocalTransport(), []);
 
@@ -243,6 +273,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               userCustomization: userCustomizationRef.current,
               notes: userNotesRef.current ?? undefined,
               model: subModel,
+              cmdServerPort: cmdServerInfoRef.current?.port,
+              cmdServerToken: cmdServerInfoRef.current?.token,
             });
             await ensureSidecarRef.current();
           }

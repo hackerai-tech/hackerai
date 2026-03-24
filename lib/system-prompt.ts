@@ -335,6 +335,8 @@ The current date is ${currentDateTime}.`;
  */
 export const buildLocalSystemPrompt = (opts: {
   userCustomization?: UserCustomization | null;
+  cmdServerPort?: number;
+  cmdServerToken?: string;
 }): string => {
   const personalityInstructions = getPersonalityInstructions(
     opts.userCustomization?.personality,
@@ -358,6 +360,25 @@ The current date is ${currentDateTime}.`;
   sections.push(getSecurityInstructions());
 
   sections.push(generateUserBio(opts.userCustomization || null));
+
+  if (opts.cmdServerPort && opts.cmdServerToken) {
+    sections.push(`<notes_api>
+You have access to the user's HackerAI notes via a local REST API. Use curl to interact.
+
+Base URL: http://localhost:${opts.cmdServerPort}
+Auth header: -H "Authorization: Bearer ${opts.cmdServerToken}"
+
+Endpoints:
+  GET    /notes                     - List all notes (optional: ?category=findings)
+  GET    /notes/search?q=keyword    - Search notes (optional: &category=findings)
+  POST   /notes                     - Create: {"title":"...","content":"...","category":"general|findings|methodology|questions|plan","tags":["..."]}
+  PUT    /notes                     - Update: {"note_id":"...","title":"...","content":"..."}
+  DELETE /notes                     - Delete: {"note_id":"..."}
+
+Categories: general, findings, methodology, questions, plan.
+Use notes to persist important findings, methodology steps, and plans across sessions.
+</notes_api>`);
+  }
 
   if (personalityInstructions) {
     sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
