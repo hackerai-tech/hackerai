@@ -41,7 +41,7 @@ export const checkFreeUserRateLimit = async (
     if (!success) {
       throw new ChatSDKError(
         "rate_limit:chat",
-        `You've used all your daily credits. Daily credits reset at midnight UTC.\n\nUpgrade plan for higher usage limits and more features.`,
+        `You've used all your daily responses. Daily responses reset at midnight UTC.\n\nUpgrade plan for higher usage limits and more features.`,
       );
     }
 

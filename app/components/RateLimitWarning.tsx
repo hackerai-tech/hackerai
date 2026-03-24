@@ -70,8 +70,8 @@ const formatTimeUntil = (resetTime: Date): string => {
 const getMessage = (data: RateLimitWarningData, timeString: string): string => {
   if (data.warningType === "sliding-window") {
     return data.remaining === 0
-      ? `You've used all your daily credits. Daily credits reset at midnight UTC.`
-      : `You have ${data.remaining} daily ${data.remaining === 1 ? "credit" : "credits"} remaining. Daily credits reset at midnight UTC.`;
+      ? `You've used all your daily responses. Daily responses reset at midnight UTC.`
+      : `You have ${data.remaining} daily ${data.remaining === 1 ? "response" : "responses"} remaining. Daily responses reset at midnight UTC.`;
   }
 
   if (data.warningType === "extra-usage-active") {

@@ -83,7 +83,7 @@ describe("sliding-window", () => {
         await checkFreeUserRateLimit("user-123");
         expect.fail("Should have thrown");
       } catch (error: any) {
-        expect(error.cause).toContain("daily credits");
+        expect(error.cause).toContain("daily responses");
         expect(error.cause).toContain("midnight UTC");
         expect(error.cause).toContain("Upgrade plan");
       }

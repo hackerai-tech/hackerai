@@ -117,7 +117,7 @@ describe("checkRateLimit", () => {
         await checkRateLimit("user-123", "ask", "free", 0);
         expect.fail("Should have thrown");
       } catch (error: any) {
-        expect(error.cause).toContain("daily credits");
+        expect(error.cause).toContain("daily responses");
         expect(error.cause).toContain("Upgrade plan");
       }
     });
