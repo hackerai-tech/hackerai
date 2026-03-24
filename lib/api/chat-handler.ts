@@ -552,9 +552,6 @@ export const createChatHandler = (
             if (sandboxCost > 0) {
               usageTracker.providerCost += sandboxCost;
               chatLogger?.getBuilder().addToolCost(sandboxCost);
-              console.log(
-                `[sandbox-cost] E2B session cost: $${sandboxCost.toFixed(6)}`,
-              );
             }
             if (!usageTracker.hasUsage) return;
             hasDeductedUsage = true;
@@ -597,9 +594,6 @@ export const createChatHandler = (
                   const threshold = Math.floor(
                     getMaxTokensForSubscription(subscription) *
                       SUMMARIZATION_THRESHOLD_PERCENTAGE,
-                  );
-                  console.log(
-                    `[prepareStep] step=${stepNumber} | providerInputTokens=${lastStepInputTokens} | threshold=${threshold} (${Math.round((lastStepInputTokens / threshold) * 100)}%) | systemPromptTokens=${systemPromptTokens} | finalMessages=${finalMessages.length} | modelMessages=${messages.length} | hasSummarized=${hasSummarized()}`,
                   );
 
                   // Prune old tool outputs to stay within rolling token budget
