@@ -269,6 +269,7 @@ export const useFileUpload = (mode: ChatMode = "ask") => {
       updateUploadedFile,
       showRateLimitWarning,
       mode,
+      subscription,
     ],
   );
 
