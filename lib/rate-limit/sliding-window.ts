@@ -1,18 +1,18 @@
 /**
- * Sliding Window Rate Limiting (Free Users)
+ * Fixed Window Rate Limiting (Free Users)
  *
- * Simple request counting within a 5-hour rolling window.
+ * Simple request counting within a daily fixed window (resets at midnight UTC).
  * Used only for free users - paid users use token bucket (cost-based).
  */
 
 import { Ratelimit } from "@upstash/ratelimit";
 import { ChatSDKError } from "@/lib/errors";
 import type { RateLimitInfo } from "@/types";
-import { createRedisClient, formatTimeRemaining } from "./redis";
+import { createRedisClient } from "./redis";
 
 /**
- * Check rate limit for free users using sliding window.
- * Simple request counting within a 5-hour rolling window.
+ * Check rate limit for free users using a fixed daily window.
+ * Resets at midnight UTC each day.
  */
 export const checkFreeUserRateLimit = async (
   userId: string,
@@ -31,7 +31,7 @@ export const checkFreeUserRateLimit = async (
   try {
     const ratelimit = new Ratelimit({
       redis,
-      limiter: Ratelimit.slidingWindow(requestLimit, "5 h"),
+      limiter: Ratelimit.fixedWindow(requestLimit, "1 d"),
       prefix: "free_limit",
     });
 
@@ -39,10 +39,9 @@ export const checkFreeUserRateLimit = async (
     const { success, reset, remaining } = await ratelimit.limit(rateLimitKey);
 
     if (!success) {
-      const timeString = formatTimeRemaining(new Date(reset));
       throw new ChatSDKError(
         "rate_limit:chat",
-        `You've reached your rate limit, please try again ${timeString}.\n\nUpgrade plan for higher usage limits and more features.`,
+        `You've used all your daily credits. Daily credits reset at midnight UTC.\n\nUpgrade plan for higher usage limits and more features.`,
       );
     }
 

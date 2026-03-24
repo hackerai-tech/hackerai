@@ -11,7 +11,6 @@ describe("checkRateLimit", () => {
   const mockLimitFn = jest.fn();
   const mockCheckTokenBucketLimit = jest.fn();
   const mockCreateRedisClient = jest.fn();
-  const mockFormatTimeRemaining = jest.fn();
 
   beforeEach(() => {
     jest.resetModules();
@@ -30,8 +29,6 @@ describe("checkRateLimit", () => {
       limit: 10000,
       pointsDeducted: 100,
     });
-
-    mockFormatTimeRemaining.mockReturnValue("5 hours");
   });
 
   const getIsolatedModule = () => {
@@ -41,7 +38,7 @@ describe("checkRateLimit", () => {
       const MockRatelimit = jest.fn().mockImplementation(() => ({
         limit: mockLimitFn,
       }));
-      (MockRatelimit as any).slidingWindow = jest.fn().mockReturnValue({});
+      (MockRatelimit as any).fixedWindow = jest.fn().mockReturnValue({});
 
       jest.doMock("@upstash/ratelimit", () => ({
         Ratelimit: MockRatelimit,
@@ -49,7 +46,6 @@ describe("checkRateLimit", () => {
 
       jest.doMock("../redis", () => ({
         createRedisClient: mockCreateRedisClient,
-        formatTimeRemaining: mockFormatTimeRemaining,
       }));
 
       jest.doMock("../token-bucket", () => ({
@@ -121,7 +117,7 @@ describe("checkRateLimit", () => {
         await checkRateLimit("user-123", "ask", "free", 0);
         expect.fail("Should have thrown");
       } catch (error: any) {
-        expect(error.cause).toContain("rate limit");
+        expect(error.cause).toContain("daily credits");
         expect(error.cause).toContain("Upgrade plan");
       }
     });
