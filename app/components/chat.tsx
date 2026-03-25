@@ -276,7 +276,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               cmdServerPort: cmdServerInfoRef.current?.port,
               cmdServerToken: cmdServerInfoRef.current?.token,
             });
-            await ensureSidecarRef.current();
+            const sidecarOk = await ensureSidecarRef.current();
+            if (!sidecarOk) {
+              throw new Error("Codex sidecar failed to start");
+            }
           }
         },
       ),
@@ -718,14 +721,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       [...paginatedMessages.results].reverse(),
     );
 
-    // Skip if useChat already has the same messages (same IDs in same order).
+    // Skip if useChat already has the same messages (same IDs, same part count).
     // This prevents redundant setMessages calls — e.g. after a local provider
     // save, Convex echoes the same data back via reactive query, which would
     // otherwise cause a visible flicker from new object references.
+    // Comparing parts.length catches content updates where the ID stays the same.
     const current = messagesRef.current;
     if (
       current.length === uiMessages.length &&
-      current.every((m, i) => m.id === uiMessages[i].id)
+      current.every(
+        (m, i) =>
+          m.id === uiMessages[i].id &&
+          (m.parts?.length ?? 0) === (uiMessages[i].parts?.length ?? 0),
+      )
     ) {
       return;
     }

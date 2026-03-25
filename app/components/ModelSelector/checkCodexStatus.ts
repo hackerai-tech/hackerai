@@ -2,18 +2,21 @@
  * Check if Codex CLI is installed and authenticated via Tauri IPC.
  * Caches the result for the session — only checks once.
  */
+const CACHE_TTL_MS = 30_000; // 30 seconds
+
 let _cache: {
   installed: boolean;
   authenticated: boolean;
   version?: string;
 } | null = null;
+let _cacheTimestamp = 0;
 
 export async function checkCodexStatus(): Promise<{
   installed: boolean;
   authenticated: boolean;
   version?: string;
 } | null> {
-  if (_cache) {
+  if (_cache && Date.now() - _cacheTimestamp < CACHE_TTL_MS) {
     return _cache;
   }
 
@@ -63,6 +66,7 @@ export async function checkCodexStatus(): Promise<{
     console.log("[CodexLocal] Authenticated:", authenticated);
 
     _cache = { installed: true, authenticated, version };
+    _cacheTimestamp = Date.now();
     return _cache;
   } catch (err) {
     console.error("[CodexLocal] Check failed:", err);

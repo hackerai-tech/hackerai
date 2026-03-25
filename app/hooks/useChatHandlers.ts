@@ -255,6 +255,10 @@ export const useChatHandlers = ({
           });
         } catch (err) {
           console.error("[CodexLocal] Failed to pre-save chat:", err);
+          toast.warning("Chat may not be saved", {
+            description:
+              "Failed to save chat metadata. Your conversation may not persist.",
+          });
         }
       }
 

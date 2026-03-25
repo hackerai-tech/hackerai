@@ -622,8 +622,12 @@ export class CodexLocalTransport {
   private async rpcNotify(method: string, params: any): Promise<void> {
     const msg = JSON.stringify({ jsonrpc: "2.0", method, params });
     console.log("[CodexTransport] → (notify)", method);
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("codex_rpc_send", { message: msg });
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("codex_rpc_send", { message: msg });
+    } catch (err) {
+      console.warn("[CodexTransport] rpcNotify failed for", method, err);
+    }
   }
 
   /** Build a human-readable label for a Codex tool item */
