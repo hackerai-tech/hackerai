@@ -146,6 +146,8 @@ export async function saveFileToLocal(
 
   const escaped = filename.replace(/'/g, "'\\''");
 
+  const delimiter = `HACKERAI_EOF_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+
   const writeToDir = async (dir: string) => {
     const targetPath = `${dir}/${escaped}`;
     const res = await fetch(`http://127.0.0.1:${info.port}/execute`, {
@@ -155,7 +157,7 @@ export async function saveFileToLocal(
         Authorization: `Bearer ${info.token}`,
       },
       body: JSON.stringify({
-        command: `cat > '${targetPath}' << 'HACKERAI_EOF'\n${content}\nHACKERAI_EOF`,
+        command: `cat > '${targetPath}' << '${delimiter}'\n${content}\n${delimiter}`,
         timeout_ms: 5000,
       }),
     });

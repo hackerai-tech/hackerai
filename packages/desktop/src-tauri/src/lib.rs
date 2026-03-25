@@ -23,7 +23,7 @@ static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 
 static CONVEX_URL: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
 static CONVEX_AUTH_TOKEN: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
-static NOTES_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+static NOTES_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn convex_url_lock() -> &'static tokio::sync::RwLock<String> {
     CONVEX_URL.get_or_init(|| tokio::sync::RwLock::new(String::new()))
@@ -137,7 +137,6 @@ struct NoteUpdateRequest {
     note_id: String,
     title: Option<String>,
     content: Option<String>,
-    category: Option<String>,
     tags: Option<Vec<String>>,
 }
 
@@ -193,9 +192,6 @@ async fn handle_notes_update(body: &str) -> Result<String, String> {
     }
     if let Some(content) = req.content {
         args["content"] = serde_json::Value::String(content);
-    }
-    if let Some(category) = req.category {
-        args["category"] = serde_json::Value::String(category);
     }
     if let Some(tags) = req.tags {
         args["tags"] = serde_json::json!(tags);

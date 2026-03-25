@@ -232,6 +232,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Sync Convex auth token + notes setting to Tauri backend for notes API
   const notesEnabled = userCustomization?.include_memory_entries ?? true;
+  const lastSyncedTokenRef = useRef<string | null>(null);
+  const lastSyncedNotesEnabledRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (!isTauriEnvironment() || !authUser?.id) return;
     const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -240,8 +242,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const syncToken = async () => {
       try {
         const token = await getAccessToken();
-        if (token) {
+        if (
+          token &&
+          (token !== lastSyncedTokenRef.current ||
+            notesEnabled !== lastSyncedNotesEnabledRef.current)
+        ) {
           await setConvexAuth(convexUrl, token, notesEnabled);
+          lastSyncedTokenRef.current = token;
+          lastSyncedNotesEnabledRef.current = notesEnabled;
         }
       } catch (err) {
         console.error("[Tauri] Failed to sync Convex auth:", err);
@@ -249,7 +257,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     };
 
     syncToken();
-    // Refresh token every 30s to keep Tauri backend auth fresh
+    // Check token freshness every 30s but only sync if changed
     const interval = setInterval(syncToken, 30_000);
     return () => clearInterval(interval);
   }, [authUser?.id, getAccessToken, notesEnabled]);
