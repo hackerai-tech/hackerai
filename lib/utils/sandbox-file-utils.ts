@@ -113,7 +113,12 @@ const downloadFileToSandbox = async (
   );
 
   if (result.exitCode !== 0) {
-    throw new Error(`Failed to download file: ${result.stderr}`);
+    throw new Error(
+      `Failed to download file: ${result.stderr}\n` +
+        `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
+        `  path: ${localPath}\n` +
+        `  exitCode: ${result.exitCode}`,
+    );
   }
 };
 
@@ -140,5 +145,14 @@ export const uploadSandboxFiles = async (
     );
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);
+    console.error(
+      "Sandbox file details:",
+      sandboxFiles.map((f) => ({
+        url: f.url.substring(0, 120),
+        urlLength: f.url.length,
+        localPath: f.localPath,
+        protocol: f.url.split("://")[0],
+      })),
+    );
   }
 };

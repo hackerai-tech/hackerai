@@ -611,7 +611,13 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         displayName: `Downloading: ${fileName}`,
       });
       if (result.exitCode !== 0) {
-        throw new Error(`Failed to download file: ${result.stderr}`);
+        throw new Error(
+          `Failed to download file: ${result.stderr}\n` +
+            `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
+            `  path: ${path}\n` +
+            `  command: ${httpClient}\n` +
+            `  exitCode: ${result.exitCode}`,
+        );
       }
     },
 
