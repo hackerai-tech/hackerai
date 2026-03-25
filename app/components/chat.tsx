@@ -113,9 +113,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Context usage tracking (populated by server via data stream on each generation)
   const [contextUsage, setContextUsage] = useState<ContextUsageData>({
-    messagesTokens: 0,
-    summaryTokens: 0,
-    systemTokens: 0,
+    usedTokens: 0,
     maxTokens: 0,
   });
 
@@ -433,9 +431,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setUploadStatus(null);
       setSummarizationStatus(null);
       setContextUsage({
-        messagesTokens: 0,
-        summaryTokens: 0,
-        systemTokens: 0,
+        usedTokens: 0,
         maxTokens: 0,
       });
       resetAutoContinueCount();

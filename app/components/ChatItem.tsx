@@ -211,13 +211,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
     try {
       await pinChat({ chatId: id });
     } catch (error) {
-      if (error instanceof ConvexError) {
-        const data = error.data as { code?: string; message?: string };
-        if (data.code === "MAX_PINNED_REACHED") {
-          toast.error(data.message ?? "You can pin at most 3 chats");
-          return;
-        }
-      }
       console.error("Failed to pin chat:", error);
       toast.error("Failed to pin chat");
     }

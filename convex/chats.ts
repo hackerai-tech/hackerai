@@ -3,7 +3,7 @@ import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
-import { MAX_PINNED_CHATS, MAX_PREVIOUS_SUMMARIES } from "./constants";
+import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
 
 /**
@@ -300,7 +300,7 @@ export const updateChat = mutation({
 });
 
 /**
- * Get user's latest chats with pagination. Pinned chats (max 3) appear first in pin order.
+ * Get user's latest chats with pagination. Pinned chats appear first in pin order.
  */
 export const getUserChats = query({
   args: {
@@ -324,7 +324,7 @@ export const getUserChats = query({
           q.eq("user_id", identity.subject).gt("pinned_at", 0),
         )
         .order("asc")
-        .take(MAX_PINNED_CHATS);
+        .collect();
 
       const pinnedIds = pinnedChats.map((c) => c.id);
 
@@ -402,7 +402,7 @@ export const getUserChats = query({
 });
 
 /**
- * Pin a chat. Pinned chats appear at the top of the list. Max 3 pinned chats per user.
+ * Pin a chat. Pinned chats appear at the top of the list.
  */
 export const pinChat = mutation({
   args: {
@@ -437,20 +437,6 @@ export const pinChat = mutation({
     }
     if (chat.pinned_at != null) {
       return null; // Already pinned
-    }
-
-    const pinnedChats = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_pinned", (q) =>
-        q.eq("user_id", identity.subject).gt("pinned_at", 0),
-      )
-      .take(MAX_PINNED_CHATS);
-
-    if (pinnedChats.length >= MAX_PINNED_CHATS) {
-      throw new ConvexError({
-        code: "MAX_PINNED_REACHED",
-        message: `You can pin at most ${MAX_PINNED_CHATS} chats`,
-      });
     }
 
     await ctx.db.patch(chat._id, { pinned_at: Date.now() });

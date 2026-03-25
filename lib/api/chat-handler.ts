@@ -49,7 +49,7 @@ import {
   isProviderApiError,
   computeContextUsage,
   writeContextUsage,
-  contextUsageEnabled,
+  isContextUsageEnabled,
   runSummarizationStep,
   SummarizationTracker,
   appendSystemReminderToLastUserMessage,
@@ -472,12 +472,13 @@ export const createChatHandler = (
 
           const systemPromptTokens = countTokens(currentSystemPrompt);
 
-          // Compute and stream actual context usage breakdown (when enabled)
-          const ctxSystemTokens = contextUsageEnabled ? systemPromptTokens : 0;
-          const ctxMaxTokens = contextUsageEnabled
+          // Compute and stream context usage breakdown for paid users
+          const contextUsageOn = isContextUsageEnabled(subscription);
+          const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
+          const ctxMaxTokens = contextUsageOn
             ? getMaxTokensForSubscription(subscription)
             : 0;
-          let ctxUsage = contextUsageEnabled
+          let ctxUsage = contextUsageOn
             ? computeContextUsage(
                 truncatedMessages,
                 fileTokens,
@@ -485,14 +486,10 @@ export const createChatHandler = (
                 ctxMaxTokens,
               )
             : {
-                systemTokens: 0,
-                summaryTokens: 0,
-                messagesTokens: 0,
+                usedTokens: 0,
                 maxTokens: 0,
               };
-          if (contextUsageEnabled) {
-            writeContextUsage(writer, ctxUsage);
-          }
+          // Context usage is sent at the end of the request (onFinish)
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
@@ -1257,11 +1254,11 @@ export const createChatHandler = (
                 }
 
                 // Send updated context usage with output tokens included
-                if (contextUsageEnabled) {
+                if (contextUsageOn) {
                   writeContextUsage(writer, {
-                    ...ctxUsage,
-                    messagesTokens:
-                      ctxUsage.messagesTokens + usageTracker.streamOutputTokens,
+                    usedTokens:
+                      ctxUsage.usedTokens + usageTracker.streamOutputTokens,
+                    maxTokens: ctxUsage.maxTokens,
                   });
                 }
 
