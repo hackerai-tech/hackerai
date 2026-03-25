@@ -230,7 +230,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, []);
 
-  // Sync Convex auth token to Tauri backend for notes API
+  // Sync Convex auth token + notes setting to Tauri backend for notes API
+  const notesEnabled = userCustomization?.include_memory_entries ?? true;
   useEffect(() => {
     if (!isTauriEnvironment() || !authUser?.id) return;
     const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -240,7 +241,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       try {
         const token = await getAccessToken();
         if (token) {
-          await setConvexAuth(convexUrl, token);
+          await setConvexAuth(convexUrl, token, notesEnabled);
         }
       } catch (err) {
         console.error("[Tauri] Failed to sync Convex auth:", err);
@@ -251,7 +252,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // Refresh token every 30s to keep Tauri backend auth fresh
     const interval = setInterval(syncToken, 30_000);
     return () => clearInterval(interval);
-  }, [authUser?.id, getAccessToken]);
+  }, [authUser?.id, getAccessToken, notesEnabled]);
 
   // Stable transport instances
   const codexTransport = useMemo(() => new CodexLocalTransport(), []);
@@ -284,9 +285,13 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           if (isCodexLocal(selectedModelRef.current)) {
             const subModel = getCodexSubModel(selectedModelRef.current || "");
             codexTransport.setModel(subModel);
+            const includeNotes =
+              userCustomizationRef.current?.include_memory_entries ?? true;
             codexTransport.setUserData({
               userCustomization: userCustomizationRef.current,
-              notes: userNotesRef.current ?? undefined,
+              notes: includeNotes
+                ? (userNotesRef.current ?? undefined)
+                : undefined,
               model: subModel,
               cmdServerPort: cmdServerInfoRef.current?.port,
               cmdServerToken: cmdServerInfoRef.current?.token,

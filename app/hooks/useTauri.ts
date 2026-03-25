@@ -100,11 +100,12 @@ export async function getCmdServerInfo(): Promise<{
 export async function setConvexAuth(
   url: string,
   token: string,
+  notesEnabled: boolean,
 ): Promise<boolean> {
   if (!detectTauri()) return false;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_convex_auth", { url, token });
+    await invoke("set_convex_auth", { url, token, notesEnabled });
     return true;
   } catch (err) {
     console.error("[Tauri] Failed to set Convex auth:", err);

@@ -361,7 +361,9 @@ The current date is ${currentDateTime}.`;
 
   sections.push(generateUserBio(opts.userCustomization || null));
 
-  if (opts.cmdServerPort && opts.cmdServerToken) {
+  const notesEnabled = opts.userCustomization?.include_memory_entries ?? true;
+
+  if (opts.cmdServerPort && opts.cmdServerToken && notesEnabled) {
     sections.push(`<notes_api>
 You have access to the user's HackerAI notes via a local REST API. Use curl to interact.
 
@@ -378,6 +380,8 @@ Endpoints:
 Categories: general, findings, methodology, questions, plan.
 Use notes to persist important findings, methodology steps, and plans across sessions.
 </notes_api>`);
+  } else if (!notesEnabled) {
+    sections.push(getNotesDisabledMessage(false));
   }
 
   if (personalityInstructions) {

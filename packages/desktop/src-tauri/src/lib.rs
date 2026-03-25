@@ -23,6 +23,7 @@ static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 
 static CONVEX_URL: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
 static CONVEX_AUTH_TOKEN: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
+static NOTES_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 fn convex_url_lock() -> &'static tokio::sync::RwLock<String> {
     CONVEX_URL.get_or_init(|| tokio::sync::RwLock::new(String::new()))
@@ -54,10 +55,11 @@ struct CmdServerInfo {
 }
 
 #[tauri::command]
-async fn set_convex_auth(url: String, token: String) -> Result<(), String> {
+async fn set_convex_auth(url: String, token: String, notes_enabled: bool) -> Result<(), String> {
     *convex_url_lock().write().await = url.clone();
     *convex_auth_token_lock().write().await = token;
-    log::info!("Convex auth updated (url: {})", url);
+    NOTES_ENABLED.store(notes_enabled, Ordering::Relaxed);
+    log::info!("Convex auth updated (url: {}, notes: {})", url, notes_enabled);
     Ok(())
 }
 
@@ -491,6 +493,17 @@ async fn handle_cmd_request(mut stream: tokio::net::TcpStream, expected_token: &
     } else {
         (path.as_str(), "")
     };
+
+    // Check if notes are disabled for any /notes route
+    if route_path.starts_with("/notes") && !NOTES_ENABLED.load(Ordering::Relaxed) {
+        let resp_body = r#"{"error":"Notes are disabled. Please go to Settings > Personalization > Notes to enable them."}"#;
+        let response = format!(
+            "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\n\r\n{}",
+            resp_body.len(), resp_body
+        );
+        stream.write_all(response.as_bytes()).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
 
     let result = match (method.as_str(), route_path) {
         ("GET", "/notes") => handle_notes_list(query_string).await,
