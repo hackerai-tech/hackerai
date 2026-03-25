@@ -37,8 +37,12 @@ import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { useLatestRef } from "../hooks/useLatestRef";
-import { getCmdServerInfo, isTauriEnvironment } from "../hooks/useTauri";
-import { useAuth } from "@workos-inc/authkit-nextjs/components";
+import {
+  getCmdServerInfo,
+  setConvexAuth,
+  isTauriEnvironment,
+} from "../hooks/useTauri";
+import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
 import { useDataStream } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
@@ -213,6 +217,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Cmd server info for notes API (fetched once in Tauri environment)
   const cmdServerInfoRef = useRef<{ port: number; token: string } | null>(null);
   const { user: authUser } = useAuth();
+  const { getAccessToken } = useAccessToken();
   useEffect(() => {
     if (isTauriEnvironment()) {
       getCmdServerInfo()
@@ -225,18 +230,28 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, []);
 
-  // Sync user ID to Tauri backend for notes API
+  // Sync Convex auth token to Tauri backend for notes API
   useEffect(() => {
     if (!isTauriEnvironment() || !authUser?.id) return;
-    (async () => {
+    const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+    if (!convexUrl) return;
+
+    const syncToken = async () => {
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("set_notes_user_id", { userId: authUser.id });
+        const token = await getAccessToken();
+        if (token) {
+          await setConvexAuth(convexUrl, token);
+        }
       } catch (err) {
-        console.error("[Tauri] Failed to sync notes user ID:", err);
+        console.error("[Tauri] Failed to sync Convex auth:", err);
       }
-    })();
-  }, [authUser?.id]);
+    };
+
+    syncToken();
+    // Refresh token every 30s to keep Tauri backend auth fresh
+    const interval = setInterval(syncToken, 30_000);
+    return () => clearInterval(interval);
+  }, [authUser?.id, getAccessToken]);
 
   // Stable transport instances
   const codexTransport = useMemo(() => new CodexLocalTransport(), []);

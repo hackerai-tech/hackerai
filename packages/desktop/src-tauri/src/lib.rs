@@ -22,19 +22,14 @@ static CMD_SERVER_PORT: AtomicU16 = AtomicU16::new(0);
 static CMD_SERVER_TOKEN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 static CONVEX_URL: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
-static CONVEX_SERVICE_KEY: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
-static CONVEX_USER_ID: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
+static CONVEX_AUTH_TOKEN: std::sync::OnceLock<tokio::sync::RwLock<String>> = std::sync::OnceLock::new();
 
 fn convex_url_lock() -> &'static tokio::sync::RwLock<String> {
     CONVEX_URL.get_or_init(|| tokio::sync::RwLock::new(String::new()))
 }
 
-fn convex_service_key_lock() -> &'static tokio::sync::RwLock<String> {
-    CONVEX_SERVICE_KEY.get_or_init(|| tokio::sync::RwLock::new(String::new()))
-}
-
-fn convex_user_id_lock() -> &'static tokio::sync::RwLock<String> {
-    CONVEX_USER_ID.get_or_init(|| tokio::sync::RwLock::new(String::new()))
+fn convex_auth_token_lock() -> &'static tokio::sync::RwLock<String> {
+    CONVEX_AUTH_TOKEN.get_or_init(|| tokio::sync::RwLock::new(String::new()))
 }
 
 /// Get the dev auth callback port (0 if not running in dev mode)
@@ -59,18 +54,10 @@ struct CmdServerInfo {
 }
 
 #[tauri::command]
-async fn set_convex_config(url: String, service_key: String, user_id: String) -> Result<(), String> {
+async fn set_convex_auth(url: String, token: String) -> Result<(), String> {
     *convex_url_lock().write().await = url.clone();
-    *convex_service_key_lock().write().await = service_key;
-    *convex_user_id_lock().write().await = user_id.clone();
-    log::info!("Convex config updated (url: {}, user: {})", url, user_id);
-    Ok(())
-}
-
-#[tauri::command]
-async fn set_notes_user_id(user_id: String) -> Result<(), String> {
-    *convex_user_id_lock().write().await = user_id;
-    log::info!("Notes user ID set");
+    *convex_auth_token_lock().write().await = token;
+    log::info!("Convex auth updated (url: {})", url);
     Ok(())
 }
 
@@ -78,9 +65,9 @@ async fn set_notes_user_id(user_id: String) -> Result<(), String> {
 
 async fn call_convex_function(function_path: &str, args: serde_json::Value, is_mutation: bool) -> Result<String, String> {
     let url = convex_url_lock().read().await.clone();
-    let service_key = convex_service_key_lock().read().await.clone();
+    let auth_token = convex_auth_token_lock().read().await.clone();
 
-    if url.is_empty() || service_key.is_empty() {
+    if url.is_empty() || auth_token.is_empty() {
         return Err("Convex not configured. Notes API unavailable.".to_string());
     }
 
@@ -90,25 +77,16 @@ async fn call_convex_function(function_path: &str, args: serde_json::Value, is_m
         format!("{}/api/query", url)
     };
 
-    let mut full_args = args;
-    match full_args.as_object_mut() {
-        Some(obj) => {
-            obj.insert("serviceKey".to_string(), serde_json::Value::String(service_key));
-        }
-        None => {
-            return Err("Internal error: args must be a JSON object".to_string());
-        }
-    }
-
     let body = serde_json::json!({
         "path": function_path,
-        "args": full_args,
+        "args": args,
         "format": "json"
     });
 
     let client = reqwest::Client::new();
     let resp = client.post(&endpoint)
         .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", auth_token))
         .json(&body)
         .send()
         .await
@@ -168,11 +146,6 @@ struct NoteDeleteRequest {
 }
 
 async fn handle_notes_list(query_string: &str) -> Result<String, String> {
-    let user_id = convex_user_id_lock().read().await.clone();
-    if user_id.is_empty() {
-        return Err("User not configured".to_string());
-    }
-
     let mut category: Option<String> = None;
     if !query_string.is_empty() {
         for pair in query_string.split('&') {
@@ -182,25 +155,19 @@ async fn handle_notes_list(query_string: &str) -> Result<String, String> {
         }
     }
 
-    let mut args = serde_json::json!({ "userId": user_id });
+    let mut args = serde_json::json!({});
     if let Some(cat) = category {
         args["category"] = serde_json::Value::String(cat);
     }
 
-    call_convex_function("notes:listNotesForBackend", args, false).await
+    call_convex_function("notes:getUserNotes", args, false).await
 }
 
 async fn handle_notes_create(body: &str) -> Result<String, String> {
-    let user_id = convex_user_id_lock().read().await.clone();
-    if user_id.is_empty() {
-        return Err("User not configured".to_string());
-    }
-
     let req: NoteCreateRequest = serde_json::from_str(body)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
 
     let mut args = serde_json::json!({
-        "userId": user_id,
         "title": req.title,
         "content": req.content,
         "category": req.category,
@@ -209,20 +176,14 @@ async fn handle_notes_create(body: &str) -> Result<String, String> {
         args["tags"] = serde_json::json!(req.tags);
     }
 
-    call_convex_function("notes:createNoteForBackend", args, true).await
+    call_convex_function("notes:createUserNote", args, true).await
 }
 
 async fn handle_notes_update(body: &str) -> Result<String, String> {
-    let user_id = convex_user_id_lock().read().await.clone();
-    if user_id.is_empty() {
-        return Err("User not configured".to_string());
-    }
-
     let req: NoteUpdateRequest = serde_json::from_str(body)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
 
     let mut args = serde_json::json!({
-        "userId": user_id,
         "noteId": req.note_id,
     });
     if let Some(title) = req.title {
@@ -238,32 +199,21 @@ async fn handle_notes_update(body: &str) -> Result<String, String> {
         args["tags"] = serde_json::json!(tags);
     }
 
-    call_convex_function("notes:updateNoteForBackend", args, true).await
+    call_convex_function("notes:updateUserNote", args, true).await
 }
 
 async fn handle_notes_delete(body: &str) -> Result<String, String> {
-    let user_id = convex_user_id_lock().read().await.clone();
-    if user_id.is_empty() {
-        return Err("User not configured".to_string());
-    }
-
     let req: NoteDeleteRequest = serde_json::from_str(body)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
 
     let args = serde_json::json!({
-        "userId": user_id,
         "noteId": req.note_id,
     });
 
-    call_convex_function("notes:deleteNoteForBackend", args, true).await
+    call_convex_function("notes:deleteUserNote", args, true).await
 }
 
 async fn handle_notes_search(query_string: &str) -> Result<String, String> {
-    let user_id = convex_user_id_lock().read().await.clone();
-    if user_id.is_empty() {
-        return Err("User not configured".to_string());
-    }
-
     let mut search = String::new();
     let mut category: Option<String> = None;
 
@@ -280,14 +230,13 @@ async fn handle_notes_search(query_string: &str) -> Result<String, String> {
     }
 
     let mut args = serde_json::json!({
-        "userId": user_id,
         "search": search,
     });
     if let Some(cat) = category {
         args["category"] = serde_json::Value::String(cat);
     }
 
-    call_convex_function("notes:listNotesForBackend", args, false).await
+    call_convex_function("notes:searchUserNotes", args, false).await
 }
 
 fn urldecode(s: &str) -> String {
@@ -1375,7 +1324,7 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, start_codex_app_server, codex_rpc_send, get_codex_app_server_info, set_convex_config, set_notes_user_id])
+        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, start_codex_app_server, codex_rpc_send, get_codex_app_server_info, set_convex_auth])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -1435,22 +1384,6 @@ pub fn run() {
 
             // Start command execution server (always, for local terminal commands)
             tauri::async_runtime::spawn(start_cmd_server());
-
-            // Initialize Convex config from env vars (service key + URL)
-            if let Ok(key) = std::env::var("HACKERAI_SERVICE_KEY") {
-                let url = std::env::var("CONVEX_URL")
-                    .or_else(|_| std::env::var("NEXT_PUBLIC_CONVEX_URL"))
-                    .unwrap_or_default();
-                if url.is_empty() {
-                    log::warn!("HACKERAI_SERVICE_KEY set but no CONVEX_URL found; notes API will be unavailable");
-                } else {
-                    tauri::async_runtime::spawn(async move {
-                        *convex_url_lock().write().await = url;
-                        *convex_service_key_lock().write().await = key;
-                        log::info!("Convex config loaded from environment");
-                    });
-                }
-            }
 
             // Check for updates on every launch
             let handle = app.handle().clone();

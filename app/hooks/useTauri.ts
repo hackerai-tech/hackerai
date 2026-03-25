@@ -94,21 +94,20 @@ export async function getCmdServerInfo(): Promise<{
 }
 
 /**
- * Set the Convex config (URL + service key + user ID) on the Tauri backend.
- * Used to enable the Notes API bridge.
+ * Set the Convex auth (URL + user token) on the Tauri backend.
+ * Used to enable the Notes API bridge with user's own auth token.
  */
-export async function setConvexConfig(
+export async function setConvexAuth(
   url: string,
-  serviceKey: string,
-  userId: string,
+  token: string,
 ): Promise<boolean> {
   if (!detectTauri()) return false;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_convex_config", { url, serviceKey, userId });
+    await invoke("set_convex_auth", { url, token });
     return true;
   } catch (err) {
-    console.error("[Tauri] Failed to set Convex config:", err);
+    console.error("[Tauri] Failed to set Convex auth:", err);
     return false;
   }
 }
