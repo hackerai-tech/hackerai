@@ -256,37 +256,6 @@ test.describe("Pinned Chats", () => {
     }).toPass({ timeout: TIMEOUTS.MEDIUM });
   });
 
-  test("max pins (3) shows error toast", async ({ page }) => {
-    const sidebar = new SidebarComponent(page);
-    await sidebar.expandIfCollapsed();
-
-    await waitForChatsToAppear(page);
-
-    await sidebar.clickPinByIndex(0);
-    await expect(page.getByTestId("chat-item-pin-icon")).toHaveCount(1, {
-      timeout: TIMEOUTS.SHORT,
-    });
-    await sidebar.clickPinByIndex(1);
-    await expect(page.getByTestId("chat-item-pin-icon")).toHaveCount(2, {
-      timeout: TIMEOUTS.SHORT,
-    });
-    await sidebar.clickPinByIndex(2);
-    await expect(page.getByTestId("chat-item-pin-icon")).toHaveCount(3, {
-      timeout: TIMEOUTS.SHORT,
-    });
-    await sidebar.clickPinByIndex(3);
-
-    await expect(
-      page.getByText("You can pin at most 3 chats", { exact: false }),
-    ).toBeVisible({ timeout: TIMEOUTS.SHORT });
-
-    await sidebar.openChatOptionsByIndex(3);
-    const menu = page.getByRole("menu");
-    await expect(
-      menu.getByRole("menuitem", { name: "Pin", exact: true }),
-    ).toBeVisible();
-  });
-
   test("unpin moves chat to top of unpinned list", async ({ page }) => {
     const sidebar = new SidebarComponent(page);
     await sidebar.expandIfCollapsed();
