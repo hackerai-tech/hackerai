@@ -360,7 +360,10 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     const command = this.isWindows()
       ? `if not exist ${escaped} mkdir ${escaped}`
       : `mkdir -p ${escaped}`;
-    await this.commands.run(command, { displayName: "" });
+    const result = await this.commands.run(command, { displayName: "" });
+    if (result.exitCode !== 0) {
+      throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
+    }
   }
 
   // Cache for detected HTTP client (curl or wget)
@@ -586,10 +589,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
     downloadFromUrl: async (url: string, path: string): Promise<void> => {
       validateDownloadUrl(url);
-      // Ensure parent directory exists
       const dir = CentrifugoSandbox.parentDir(path);
-      await this.ensureDirectory(dir);
-
       const httpClient = await this.detectHttpClient();
       const fileName = path.split("/").pop() || "file";
 
@@ -602,21 +602,37 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         ? this.escapeForTarget(url)
         : `'${url.replace(/'/g, "'\\''")}'`;
 
-      const command =
+      // Combine mkdir + download into a single command to avoid separate
+      // round-trips through the sandbox bridge (e.g. Tauri desktop app),
+      // ensuring the directory exists in the same shell session as the download.
+      const escapedDir = this.isWindows()
+        ? this.escapeForTarget(dir)
+        : CentrifugoSandbox.escapePath(dir);
+      const mkdirPart = this.isWindows()
+        ? `if not exist ${escapedDir} mkdir ${escapedDir} &&`
+        : `mkdir -p ${escapedDir} &&`;
+      const downloadPart =
         httpClient === "curl"
           ? `curl -fsSL -o ${escapedPath} ${escapedUrl}`
           : `wget -q -O ${escapedPath} ${escapedUrl}`;
+      const command = `${mkdirPart} ${downloadPart}`;
 
       const result = await this.commands.run(command, {
         displayName: `Downloading: ${fileName}`,
       });
       if (result.exitCode !== 0) {
+        // Gather diagnostic info to help debug write failures (e.g. curl exit 23)
+        const diagCmd = this.isWindows()
+          ? `dir ${escapedDir} 2>&1`
+          : `ls -la ${escapedDir} 2>&1; df -h /tmp 2>&1`;
+        const diag = await this.commands.run(diagCmd, { displayName: "" });
         throw new Error(
           `Failed to download file: ${result.stderr}\n` +
             `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
             `  path: ${path}\n` +
             `  command: ${httpClient}\n` +
-            `  exitCode: ${result.exitCode}`,
+            `  exitCode: ${result.exitCode}\n` +
+            `  diagnostics: ${diag.stdout}`,
         );
       }
     },
