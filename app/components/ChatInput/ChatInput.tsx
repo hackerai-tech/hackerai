@@ -18,7 +18,10 @@ import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
-import type { ContextUsageData } from "../ContextUsageIndicator";
+import {
+  ContextUsageIndicator,
+  type ContextUsageData,
+} from "../ContextUsageIndicator";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface ChatInputProps {
@@ -83,9 +86,7 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const showContextIndicator =
-    process.env.NEXT_PUBLIC_ENABLE_CONTEXT_USAGE === "true" &&
-    !!contextUsage &&
-    contextUsage.maxTokens > 0;
+    !isMobile && subscription !== "free" && !!contextUsage;
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
 
@@ -206,12 +207,17 @@ export const ChatInput = ({
             Mobile new chats: hidden (uses above-input placement). */}
         {isAgentMode(chatMode) && (!isMobile || !isNewChat) && (
           <div
-            className={`order-3 flex px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
+            className={`order-3 flex items-center px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
           >
             <SandboxSelector
               value={sandboxPreference}
               onChange={setSandboxPreference}
             />
+            {showContextIndicator && contextUsage && (
+              <div className="ml-auto">
+                <ContextUsageIndicator {...contextUsage} />
+              </div>
+            )}
           </div>
         )}
 

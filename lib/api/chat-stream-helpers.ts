@@ -199,7 +199,7 @@ export function isProviderApiError(error: unknown): boolean {
 }
 
 /**
- * Compute context usage breakdown from messages, separating summary from regular messages.
+ * Compute total context usage from messages.
  */
 export function computeContextUsage(
   messages: UIMessage[],
@@ -207,27 +207,13 @@ export function computeContextUsage(
   systemTokens: number,
   maxTokens: number,
 ): ContextUsageData {
-  const summaryMsg = messages.find((m) =>
-    m.parts?.some(
-      (p: { type?: string; text?: string }) =>
-        p.type === "text" &&
-        typeof p.text === "string" &&
-        p.text.includes("<context_summary>"),
-    ),
-  );
-  const summaryTokens = summaryMsg
-    ? countMessagesTokens([summaryMsg], fileTokens)
-    : 0;
-  const nonSummaryMessages = summaryMsg
-    ? messages.filter((m) => m !== summaryMsg)
-    : messages;
-  const messagesTokens = countMessagesTokens(nonSummaryMessages, fileTokens);
-
-  return { systemTokens, summaryTokens, messagesTokens, maxTokens };
+  const usedTokens = systemTokens + countMessagesTokens(messages, fileTokens);
+  return { usedTokens, maxTokens };
 }
 
-export const contextUsageEnabled =
-  process.env.NEXT_PUBLIC_ENABLE_CONTEXT_USAGE === "true";
+export function isContextUsageEnabled(subscription: SubscriptionTier): boolean {
+  return subscription !== "free";
+}
 
 /**
  * Write a context usage data stream part to the client.
@@ -290,7 +276,7 @@ export async function runSummarizationStep(options: {
     return { needsSummarization: false };
   }
 
-  const contextUsage = contextUsageEnabled
+  const contextUsage = isContextUsageEnabled(options.subscription)
     ? computeContextUsage(
         summarizedMessages,
         options.fileTokens,
