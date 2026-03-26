@@ -54,12 +54,13 @@ function parseGitDiff(diff: string): {
   for (const line of lines) {
     // Skip diff headers
     if (
-      line.startsWith("diff --git") ||
-      line.startsWith("index ") ||
-      line.startsWith("---") ||
-      line.startsWith("+++") ||
-      line.startsWith("new file") ||
-      line.startsWith("deleted file")
+      !inHunk &&
+      (line.startsWith("diff --git") ||
+        line.startsWith("index ") ||
+        line.startsWith("--- ") ||
+        line.startsWith("+++ ") ||
+        line.startsWith("new file ") ||
+        line.startsWith("deleted file "))
     ) {
       continue;
     }

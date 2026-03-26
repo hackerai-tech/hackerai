@@ -36,6 +36,17 @@ export function useCodexPersistence({
       if (!isCodexLocal(selectedModelRef.current)) return false;
 
       try {
+        // Ensure the chat row exists before saving messages
+        // saveLocalMessage calls verifyChatOwnership which throws CHAT_NOT_FOUND
+        // if the chat doesn't exist yet
+        if (!isExistingChatRef.current) {
+          await saveLocalChat({
+            id: chatId,
+            title: "",
+            selectedModel: selectedModelRef.current || undefined,
+          });
+        }
+
         // Only save new messages (skip already-persisted ones)
         const newMessages = messages
           .filter((m) => m.role === "user" || m.role === "assistant")
@@ -66,8 +77,9 @@ export function useCodexPersistence({
         if (threadId) {
           saveLocalChat({
             id: chatId,
-            title: "", // won't overwrite — saveLocalChat patches existing
+            title: "",
             codexThreadId: threadId,
+            selectedModel: selectedModelRef.current || undefined,
           }).catch((err) => {
             console.error("[CodexLocal] Failed to persist codexThreadId:", err);
           });
