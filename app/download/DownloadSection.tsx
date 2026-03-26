@@ -61,7 +61,7 @@ export function detectPlatform(): DetectedPlatform {
         platform: "linux",
         linuxArch: "arm64",
         displayName: "Linux (ARM64)",
-        downloadUrl: downloadLinks.linuxArm64AppImage,
+        downloadUrl: downloadLinks.linuxArm64Deb,
       };
     }
 
@@ -69,7 +69,7 @@ export function detectPlatform(): DetectedPlatform {
       platform: "linux",
       linuxArch: "x64",
       displayName: "Linux",
-      downloadUrl: downloadLinks.linuxAppImage,
+      downloadUrl: downloadLinks.linuxDeb,
     };
   }
 

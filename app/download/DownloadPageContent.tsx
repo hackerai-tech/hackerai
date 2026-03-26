@@ -70,13 +70,25 @@ function DownloadContent() {
             />
             <DownloadCard
               title="Linux"
-              subtitle="x64"
+              subtitle="x64 (.deb)"
+              href={downloadLinks.linuxDeb}
+              icon={<LinuxIcon />}
+            />
+            <DownloadCard
+              title="Linux"
+              subtitle="ARM64 (.deb)"
+              href={downloadLinks.linuxArm64Deb}
+              icon={<LinuxIcon />}
+            />
+            <DownloadCard
+              title="Linux"
+              subtitle="x64 (.AppImage)"
               href={downloadLinks.linuxAppImage}
               icon={<LinuxIcon />}
             />
             <DownloadCard
               title="Linux"
-              subtitle="ARM64"
+              subtitle="ARM64 (.AppImage)"
               href={downloadLinks.linuxArm64AppImage}
               icon={<LinuxIcon />}
             />
