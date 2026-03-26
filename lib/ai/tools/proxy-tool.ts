@@ -18,8 +18,8 @@ export const createListRequestsTool = (context: ToolContext) =>
 HTTPQL filter syntax:
   Integer fields (port, code, roundtrip, id) - eq, gt, gte, lt, lte, ne:
     resp.code.eq:200, resp.code.gte:400, req.port.eq:443
-  Text/byte fields (ext, host, method, path, query, raw) - regex:
-    req.method.regex:"POST", req.path.regex:"/api/.*", req.host.regex:".*.com"
+  Text/byte fields (ext, host, method, path, query, raw) - regex (values MUST be in double quotes):
+    req.method.regex:"POST", req.path.regex:"/api/.*", req.host.regex:"example.com"
   Date fields (created_at) - gt, lt with ISO formats:
     req.created_at.gt:"2024-01-01T00:00:00Z"
   Special: source:intercept, preset:"name"

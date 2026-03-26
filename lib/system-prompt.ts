@@ -87,19 +87,25 @@ before coming back to the user.\n"
     : "";
 };
 
-const getProxySection = (caidoEnabled: boolean): string => {
+const getProxySection = (
+  caidoEnabled: boolean,
+  isLocalSandbox: boolean,
+): string => {
   if (!caidoEnabled) {
     return `<proxy_interception>
 Caido proxy is DISABLED by the user. Proxy tools (list_requests, send_request, etc.) are not available.
 All HTTP requests from terminal commands go directly to the target without interception.
 </proxy_interception>`;
   }
+  const uiLine = isLocalSandbox
+    ? `- The user can view captured traffic in Caido's UI at http://127.0.0.1:48080 (local sandbox only).`
+    : `- The Caido proxy UI is NOT accessible to users in this environment. NEVER share any proxy URL, sandbox URL, or Caido URL. Users interact with proxy data exclusively through the proxy tools.`;
   return `<proxy_interception>
 Caido CLI — a modern web security proxy — is running and intercepting all HTTP/HTTPS traffic automatically.
 - Use proxy tools (list_requests, view_request, send_request, repeat_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
 - If you see proxy errors (50x HTML error pages) when sending requests, it usually means the target URL, host, or port is incorrect — ignore Caido-generated error pages.
 - All terminal commands automatically route through the proxy via HTTP_PROXY env vars.
-- If the user asks to view Caido's UI, run \`echo $CAIDO_UI_URL\` in the terminal — the URL is set as an environment variable when Caido starts.
+${uiLine}
 </proxy_interception>`;
 };
 
@@ -125,7 +131,7 @@ Development Environment:
 
 ${PREINSTALLED_PENTESTING_TOOLS}
 
-${getProxySection(caidoEnabled)}
+${getProxySection(caidoEnabled, false)}
 </sandbox_environment>`;
 
 const getAgentModeSection = (
@@ -206,7 +212,7 @@ It's very important that you keep the summary short, non-repetitive, and high-si
 Don't add headings like "Summary:" or "Update:".
 </summary_spec>
 
-${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled) : getDefaultSandboxEnvironmentSection(caidoEnabled)}
+${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled, true) : getDefaultSandboxEnvironmentSection(caidoEnabled)}
 
 ${getProductQuestionsSection()}
 

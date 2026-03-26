@@ -139,13 +139,12 @@ describe("Proxy Manager", () => {
       expect(bgCall![0]).toContain("--allow-guests");
     });
 
-    it("should include --ui-domain for E2B sandboxes", async () => {
+    it("should NOT include --ui-domain for E2B sandboxes (URL is unstable)", async () => {
       const sandbox = createMockSandbox([
         { stdout: "needs_start\n", stderr: "", exitCode: 0 },
         { stdout: "", stderr: "", exitCode: 0 },
         { stdout: "ready\n", stderr: "", exitCode: 0 },
         { stdout: "ok\n", stderr: "", exitCode: 0 },
-        { stdout: "", stderr: "", exitCode: 0 },
       ]);
       const context = createMockContext(sandbox);
 
@@ -154,7 +153,7 @@ describe("Proxy Manager", () => {
       const bgCall = sandbox.commands.run.mock.calls.find(
         (call: any[]) => call[1]?.background === true,
       );
-      expect(bgCall![0]).toContain("--ui-domain 48080-test123.e2b.app");
+      expect(bgCall![0]).not.toContain("--ui-domain");
     });
 
     it("should throw on install_failed", async () => {
@@ -182,11 +181,9 @@ describe("Proxy Manager", () => {
       );
     });
 
-    it("should set CAIDO_UI_URL env var on sandbox", async () => {
+    it("should NOT set CAIDO_UI_URL env var on E2B sandboxes", async () => {
       const sandbox = createMockSandbox([
         { stdout: "ok\n", stderr: "", exitCode: 0 },
-        // env var write to /etc/profile.d
-        { stdout: "", stderr: "", exitCode: 0 },
       ]);
       const context = createMockContext(sandbox);
 
@@ -195,8 +192,7 @@ describe("Proxy Manager", () => {
       const envCall = sandbox.commands.run.mock.calls.find((call: any[]) =>
         call[0]?.includes("CAIDO_UI_URL"),
       );
-      expect(envCall).toBeDefined();
-      expect(envCall![0]).toContain("https://48080-test123.e2b.app");
+      expect(envCall).toBeUndefined();
     });
   });
 

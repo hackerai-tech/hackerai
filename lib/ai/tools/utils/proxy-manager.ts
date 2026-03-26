@@ -231,22 +231,9 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
   // Script detected Caido needs to be started — launch it as a proper background
   // process via the sandbox API (not inside a shell script where it may get killed).
   if (lastLine === "needs_start") {
-    // Get the public hostname for --ui-domain so the Caido UI is accessible externally
+    // On local sandboxes, set --ui-domain so the Caido UI is accessible.
+    // On E2B, skip it — the sandbox URL is unstable and we don't want users accessing it.
     let uiDomainFlag = "";
-    try {
-      const host = sandbox.getHost(config.port);
-      // getHost returns "hostname" or "https://hostname" — extract just the domain
-      const domain = host.replace(/^https?:\/\//, "").split("/")[0];
-      if (
-        domain &&
-        !domain.startsWith("127.0.0.1") &&
-        !domain.startsWith("localhost")
-      ) {
-        uiDomainFlag = ` --ui-domain ${domain}`;
-      }
-    } catch {
-      /* local sandbox — no external domain needed */
-    }
 
     // Start caido-cli as a persistent background process
     await sandbox.commands.run(
@@ -306,7 +293,7 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
   await exportCaidoUiUrl(sandbox, config, options);
 }
 
-/** Cache the Caido UI URL and set it as an env var on the sandbox. */
+/** Set CAIDO_UI_URL env var on local sandboxes only (E2B URLs are unstable). */
 async function exportCaidoUiUrl(
   sandbox: {
     getHost: (port: number) => string;
@@ -317,27 +304,44 @@ async function exportCaidoUiUrl(
   config: { port: number },
   options: Record<string, unknown>,
 ): Promise<void> {
+  let isE2B = false;
   let uiUrl = `http://127.0.0.1:${config.port}`;
   try {
     const host = sandbox.getHost(config.port);
-    uiUrl = host.startsWith("http") ? host : `https://${host}`;
+    const domain = host.replace(/^https?:\/\//, "").split("/")[0];
+    if (
+      domain &&
+      !domain.startsWith("127.0.0.1") &&
+      !domain.startsWith("localhost")
+    ) {
+      isE2B = true;
+    }
   } catch {
     /* local sandbox */
   }
-  console.log(`[Caido] UI available at: ${uiUrl}`);
 
-  // Write env var so the AI can retrieve it via `echo $CAIDO_UI_URL`
+  // Skip env var export for E2B — the URL dies when the sandbox pauses
+  if (isE2B) return;
+
+  console.log(`[Caido] UI available at: ${uiUrl}`);
   await sandbox.commands
     .run(
       `echo 'export CAIDO_UI_URL="${uiUrl}"' >> /etc/profile.d/caido.sh`,
       options,
     )
     .catch(() => {
-      // Fallback for non-root: write to user profile
       sandbox.commands
         .run(`echo 'export CAIDO_UI_URL="${uiUrl}"' >> ~/.bashrc`, options)
         .catch(() => {});
     });
+}
+
+/** Add missing quotes around HTTPQL regex values (e.g. `.regex:foo` → `.regex:"foo"`). */
+function fixHttpqlQuoting(filter: string): string {
+  return filter.replace(
+    /\.regex:([^"\s][^\s)]*)/g,
+    (_match, value) => `.regex:"${value}"`,
+  );
 }
 
 const SORT_MAPPING: Record<string, string> = {
@@ -476,7 +480,7 @@ export async function listRequests(
     {
       limit,
       offset,
-      filter: httpqlFilter ?? null,
+      filter: httpqlFilter ? fixHttpqlQuoting(httpqlFilter) : null,
       order: {
         by: SORT_MAPPING[sortBy] ?? "CREATED_AT",
         ordering: sortOrder.toUpperCase(),
@@ -652,17 +656,6 @@ function paginateContent(
 
 // ─── send_request ─────────────────────────────────────────────────────────────
 
-const INTERESTING_HEADERS = new Set([
-  "content-type",
-  "content-length",
-  "server",
-  "set-cookie",
-  "location",
-  "x-powered-by",
-  "www-authenticate",
-  "access-control-allow-origin",
-]);
-
 /**
  * Parse an HTTP response with headers (curl -i output).
  * Returns structured {status_code, headers, body, ...}.
@@ -698,9 +691,7 @@ function parseHttpResponse(raw: string): {
         if (colonIdx > 0) {
           const key = lines[j]!.slice(0, colonIdx).trim().toLowerCase();
           const val = lines[j]!.slice(colonIdx + 1).trim();
-          if (INTERESTING_HEADERS.has(key)) {
-            headers[key] = val;
-          }
+          headers[key] = val;
         }
       }
       bodyStartIdx = i + 1;
