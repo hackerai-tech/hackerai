@@ -551,8 +551,8 @@ jobs:
           fi
 
           # Linux ARM64 deb
-          LINUX_ARM64_DEB=$(ls release-files/*_aarch64.deb 2>/dev/null | head -1 || echo "")
-          echo "Looking for Linux ARM64 deb: pattern '*_aarch64.deb'"
+          LINUX_ARM64_DEB=$(ls release-files/*_arm64.deb 2>/dev/null | head -1 || echo "")
+          echo "Looking for Linux ARM64 deb: pattern '*_arm64.deb'"
           echo "Found: $LINUX_ARM64_DEB"
           if [ -n "$LINUX_ARM64_DEB" ] && [ -f "$LINUX_ARM64_DEB" ]; then
             cp "$LINUX_ARM64_DEB" release-files/HackerAI-linux-arm64.deb
