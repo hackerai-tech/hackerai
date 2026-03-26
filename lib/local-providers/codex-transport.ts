@@ -94,6 +94,32 @@ export class CodexLocalTransport {
   private notificationHandler: ((method: string, params: any) => void) | null =
     null;
 
+  /**
+   * Reset handshake and connection state.
+   * Must be called before restarting the Codex process so the transport
+   * re-runs the initialize handshake with the new process.
+   */
+  reset() {
+    this.initialized = false;
+    this.threadIds.clear();
+    this.rpcId = 0;
+
+    // Reject any in-flight requests — the old process is gone
+    for (const [id, pending] of this.pendingRequests) {
+      pending.reject(new Error("Transport reset: Codex process restarted"));
+    }
+    this.pendingRequests.clear();
+
+    // Remove old event listener so startListening() re-registers
+    if (this.eventUnlisten) {
+      this.eventUnlisten();
+      this.eventUnlisten = null;
+    }
+
+    this.notificationHandler = null;
+    console.log("[CodexTransport] Reset — ready for new process");
+  }
+
   /** Set the Codex model to use (e.g., "gpt-5.4" from "codex-local:gpt-5.4") */
   setModel(model: string | undefined) {
     this.currentModel = model;

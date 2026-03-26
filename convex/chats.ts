@@ -209,6 +209,7 @@ export const saveLocalChat = mutation({
       }
       const patch: Record<string, unknown> = { update_time: Date.now() };
       if (args.codexThreadId) patch.codex_thread_id = args.codexThreadId;
+      if (args.selectedModel) patch.selected_model = args.selectedModel;
       await ctx.db.patch(existing._id, patch);
       return null;
     }

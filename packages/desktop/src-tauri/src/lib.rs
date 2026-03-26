@@ -866,10 +866,12 @@ async fn start_codex_app_server(app: tauri::AppHandle) -> Result<bool, String> {
     }
 
     // Wait for process exit and clean up
+    let app_exit = app.clone();
     tokio::spawn(async move {
         let _ = child.wait().await;
         log::info!("codex app-server process exited");
         codex_mark_stopped();
+        let _ = app_exit.emit("codex-server-exit", ());
     });
 
     log::info!("codex app-server started (stdio mode)");

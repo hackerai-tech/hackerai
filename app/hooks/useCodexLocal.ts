@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { isTauriEnvironment } from "./useTauri";
 import type { CodexLocalTransport } from "@/lib/local-providers/codex-transport";
 
@@ -46,6 +46,10 @@ export function useCodexSidecar(
       // Check if already running
       const running = await invoke<boolean>("get_codex_app_server_info");
       if (!running) {
+        // Reset transport state so the handshake re-runs with the new process
+        transport.reset();
+        startedRef.current = false;
+
         console.log("[CodexAppServer] Starting codex app-server (stdio)...");
         await invoke("start_codex_app_server");
         console.log("[CodexAppServer] Started");
@@ -68,6 +72,36 @@ export function useCodexSidecar(
       setStarting(false);
     }
   }, [transport, ready]);
+
+  // Listen for the app-server process exiting and reset state
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+
+    import("@tauri-apps/api/event").then(({ listen }) => {
+      if (cancelled) return;
+      listen<void>("codex-server-exit", () => {
+        console.warn("[CodexAppServer] Process exited — resetting ready state");
+        transport?.reset();
+        startedRef.current = false;
+        setReady(false);
+        setError("Codex app-server exited unexpectedly");
+      }).then((fn) => {
+        if (cancelled) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   return { ready, starting, error, ensureSidecar };
 }

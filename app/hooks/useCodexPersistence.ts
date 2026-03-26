@@ -68,11 +68,12 @@ export function useCodexPersistence({
           removeDraft("new");
           setIsExistingChat(true);
         }
+
+        return true;
       } catch (error) {
         console.error("[CodexLocal] Failed to save messages:", error);
+        return false;
       }
-
-      return true;
     },
     [
       chatId,

@@ -112,7 +112,6 @@ export const DiffView: React.FC<DiffViewProps> = ({
               }
             `}</style>
             <DiffEditor
-              key={`${originalContent.length}-${modifiedContent.length}`}
               original={originalContent}
               modified={modifiedContent}
               language={getMonacoLanguage(language)}

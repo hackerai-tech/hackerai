@@ -29,6 +29,8 @@ function arePropsEqual(
   if (prev.part.state !== next.part.state) return false;
   if (prev.part.toolCallId !== next.part.toolCallId) return false;
   if (prev.part.output !== next.part.output) return false;
+  if (prev.part.input !== next.part.input) return false;
+  if (prev.part.type !== next.part.type) return false;
   return true;
 }
 

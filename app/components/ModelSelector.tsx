@@ -117,6 +117,7 @@ const ModelOptionButton = ({
   mobile?: boolean;
 }) => (
   <button
+    type="button"
     onClick={() => onSelect(option)}
     aria-pressed={isSelected}
     className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
@@ -197,6 +198,7 @@ const CodexSubMenu = ({
     </Button>
   ) : (
     <button
+      type="button"
       onClick={mobile ? () => setSubOpen(true) : undefined}
       className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
         mobile ? "py-2.5" : "py-1.5"
