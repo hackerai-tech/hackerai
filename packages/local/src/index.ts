@@ -14,6 +14,7 @@
 
 import { ConvexHttpClient } from "convex/browser";
 import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
+import WebSocket from "ws";
 import { spawn, ChildProcess } from "child_process";
 import os from "os";
 import { truncateOutput, MAX_OUTPUT_SIZE, getDefaultShell } from "./utils";
@@ -299,6 +300,7 @@ class LocalSandboxClient {
 
   private setupCentrifugo(wsUrl: string, initialToken: string): void {
     this.centrifuge = new Centrifuge(wsUrl, {
+      websocket: WebSocket as unknown as typeof globalThis.WebSocket,
       token: initialToken,
       getToken: async (): Promise<string> => {
         if (!this.connectionId) {

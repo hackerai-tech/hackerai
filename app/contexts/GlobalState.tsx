@@ -168,7 +168,6 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   const [chatMode, setChatMode] = useState<ChatMode>(() => {
     const saved = readChatMode();
     if (!isChatMode(saved)) return "ask";
-    if (saved === "agent-long") return "agent";
     return saved;
   });
   const [sidebarOpen, setSidebarOpen] = useState(false);

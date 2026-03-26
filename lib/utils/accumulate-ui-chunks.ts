@@ -6,26 +6,6 @@
 import type { UIMessageChunk } from "ai";
 import type { ChatMessage } from "@/types";
 
-/** Sync partial JSON parse for tool-input-delta accumulation */
-function parsePartialJsonSync(text: string): unknown {
-  if (!text?.trim()) return undefined;
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    const trimmed = text.trim();
-    const closed = trimmed.endsWith(",")
-      ? `${trimmed.slice(0, -1)}]`
-      : trimmed.endsWith('"') || trimmed.endsWith("'")
-        ? `${trimmed}}`
-        : `${trimmed}]`;
-    try {
-      return JSON.parse(closed) as unknown;
-    } catch {
-      return undefined;
-    }
-  }
-}
-
 export function accumulateChunksToMessage(
   chunks: UIMessageChunk[],
   messageId: string,
@@ -38,10 +18,6 @@ export function accumulateChunksToMessage(
   const activeReasoningParts: Record<
     string,
     { text: string; state?: "streaming" | "done" }
-  > = {};
-  const partialToolCalls: Record<
-    string,
-    { text: string; toolName: string; dynamic?: boolean; title?: string }
   > = {};
   let id = messageId;
 
@@ -117,17 +93,6 @@ export function accumulateChunksToMessage(
       }
 
       case "tool-input-start": {
-        const toolInvocations = parts.filter(
-          (p) =>
-            (p as { type?: string }).type?.startsWith("tool-") ||
-            (p as { type?: string }).type === "dynamic-tool",
-        );
-        partialToolCalls[chunk.toolCallId] = {
-          text: "",
-          toolName: chunk.toolName,
-          dynamic: chunk.dynamic,
-          title: chunk.title,
-        };
         if (chunk.dynamic) {
           parts.push({
             type: "dynamic-tool",
@@ -150,21 +115,8 @@ export function accumulateChunksToMessage(
         }
         break;
       }
-      case "tool-input-delta": {
-        const partial = partialToolCalls[chunk.toolCallId];
-        if (partial) {
-          partial.text += chunk.inputTextDelta;
-          const value = parsePartialJsonSync(partial.text);
-          const part = parts.find(
-            (p) =>
-              (p as { toolCallId?: string }).toolCallId === chunk.toolCallId,
-          ) as
-            | { input?: unknown; toolName?: string; title?: string }
-            | undefined;
-          if (part) part.input = value;
-        }
+      case "tool-input-delta":
         break;
-      }
       case "tool-input-available": {
         const part = parts.find(
           (p) => (p as { toolCallId?: string }).toolCallId === chunk.toolCallId,
@@ -180,7 +132,6 @@ export function accumulateChunksToMessage(
           part.state = "input-available";
           part.input = chunk.input;
         }
-        delete partialToolCalls[chunk.toolCallId];
         break;
       }
       case "tool-input-error": {
@@ -199,7 +150,6 @@ export function accumulateChunksToMessage(
           part.rawInput = chunk.input;
           part.errorText = chunk.errorText;
         }
-        delete partialToolCalls[chunk.toolCallId];
         break;
       }
       case "tool-approval-request": {

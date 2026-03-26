@@ -18,7 +18,10 @@ import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
 import { ChatInputToolbar } from "./ChatInputToolbar";
-import type { ContextUsageData } from "../ContextUsageIndicator";
+import {
+  ContextUsageIndicator,
+  type ContextUsageData,
+} from "../ContextUsageIndicator";
 import { useIsMobile } from "@/hooks/use-mobile";
 
 interface ChatInputProps {
@@ -83,13 +86,11 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const showContextIndicator =
-    process.env.NEXT_PUBLIC_ENABLE_CONTEXT_USAGE === "true" &&
-    !!contextUsage &&
-    contextUsage.maxTokens > 0;
+    !isMobile && subscription !== "free" && !!contextUsage;
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
 
-  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent/agent-long selected
+  // Fallback to 'ask' mode if user doesn't have pro plan and somehow has agent selected
   useEffect(() => {
     if (
       !isCheckingProPlan &&
@@ -147,6 +148,17 @@ export const ChatInput = ({
           />
         )}
 
+        {/* Sandbox selector for new chats on mobile: shown above input & file upload.
+            On desktop, it's shown below the input (order-3). */}
+        {isMobile && isNewChat && isAgentMode(chatMode) && (
+          <div className="flex px-1 pb-2 min-h-9">
+            <SandboxSelector
+              value={sandboxPreference}
+              onChange={setSandboxPreference}
+            />
+          </div>
+        )}
+
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
             uploadedFiles={uploadedFiles}
@@ -163,19 +175,6 @@ export const ChatInput = ({
           aria-label="Upload files"
           onChange={handleFileUploadEvent}
         />
-
-        {/* Sandbox selector for new chats on mobile: shown above input.
-            On desktop, it's inside the toolbar like existing chats. */}
-        {isNewChat && !temporaryChatsEnabled && !hasMessages && isMobile && (
-          <div className="order-1 flex px-1 pb-2 min-h-9">
-            {isAgentMode(chatMode) && (
-              <SandboxSelector
-                value={sandboxPreference}
-                onChange={setSandboxPreference}
-              />
-            )}
-          </div>
-        )}
 
         <div
           className={`order-2 sm:order-1 flex flex-col gap-3 transition-colors relative bg-input-chat py-3 max-h-[300px] min-w-0 overflow-hidden shadow-[0px_12px_32px_0px_rgba(0,0,0,0.02)] border border-black/8 dark:border-border focus-within:ring-2 focus-within:ring-ring/20 ${uploadedFiles && uploadedFiles.length > 0 ? "rounded-b-[22px] border-t-0" : "rounded-[22px]"}`}
@@ -203,18 +202,23 @@ export const ChatInput = ({
           />
         </div>
 
-        {/* Sandbox selector below input — always editable.
+        {/* Sandbox selector below input.
             Desktop new chats: absolutely positioned to avoid shifting the centered layout.
-            Existing chats: normal flow.
+            Existing chats (all screens): normal flow.
             Mobile new chats: hidden (uses above-input placement). */}
         {isAgentMode(chatMode) && (!isMobile || !isNewChat) && (
           <div
-            className={`order-3 flex px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
+            className={`order-3 flex items-center px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
           >
             <SandboxSelector
               value={sandboxPreference}
               onChange={setSandboxPreference}
             />
+            {showContextIndicator && contextUsage && (
+              <div className="ml-auto">
+                <ContextUsageIndicator {...contextUsage} />
+              </div>
+            )}
           </div>
         )}
 

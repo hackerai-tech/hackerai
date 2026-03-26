@@ -1,15 +1,13 @@
 "use client";
 
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 export interface ContextUsageData {
-  messagesTokens: number;
-  summaryTokens: number;
-  systemTokens: number;
+  usedTokens: number;
   maxTokens: number;
 }
 
@@ -21,106 +19,75 @@ function formatTokenCount(n: number): string {
   return String(n);
 }
 
-function getBarColor(percent: number): string {
-  if (percent > 80) return "bg-red-500";
-  if (percent > 50) return "bg-yellow-500";
-  return "bg-green-500";
-}
-
-const CATEGORY_COLORS = {
-  system: "bg-blue-500",
-  summary: "bg-purple-500",
-  messages: "bg-green-500",
-} as const;
+const CIRCLE_SIZE = 16;
+const STROKE_WIDTH = 2.5;
+const RADIUS = (CIRCLE_SIZE - STROKE_WIDTH) / 2;
+const CIRCUMFERENCE = 2 * Math.PI * RADIUS;
 
 export const ContextUsageIndicator = ({
-  messagesTokens,
-  summaryTokens,
-  systemTokens,
+  usedTokens,
   maxTokens,
 }: ContextUsageData) => {
-  const totalTokens = messagesTokens + summaryTokens + systemTokens;
-  const percent =
-    maxTokens > 0 ? Math.min((totalTokens / maxTokens) * 100, 100) : 0;
-
-  const categories = [
-    { label: "System", tokens: systemTokens, color: CATEGORY_COLORS.system },
-    { label: "Summary", tokens: summaryTokens, color: CATEGORY_COLORS.summary },
-    {
-      label: "Messages",
-      tokens: messagesTokens,
-      color: CATEGORY_COLORS.messages,
-    },
-  ];
+  if (usedTokens === 0 || maxTokens === 0) return null;
+  const percent = Math.min((usedTokens / maxTokens) * 100, 100);
+  const remaining = Math.max(0, 100 - Math.round(percent));
+  const dashOffset = CIRCUMFERENCE - (percent / 100) * CIRCUMFERENCE;
 
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center gap-1.5 h-7 px-2 rounded-md text-xs text-muted-foreground hover:bg-muted/50 transition-colors cursor-pointer"
-          aria-label={`Context usage: ${formatTokenCount(totalTokens)} of ${formatTokenCount(maxTokens)} tokens`}
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div
+          className="flex items-center h-7 px-1 cursor-default"
+          aria-label={`Context usage: ${formatTokenCount(usedTokens)} of ${formatTokenCount(maxTokens)} tokens`}
           data-testid="context-usage-indicator"
         >
-          <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all duration-300 ${getBarColor(percent)}`}
-              style={{ width: `${percent}%` }}
-              data-testid="context-usage-bar"
+          <svg
+            width={CIRCLE_SIZE}
+            height={CIRCLE_SIZE}
+            viewBox={`0 0 ${CIRCLE_SIZE} ${CIRCLE_SIZE}`}
+            className="shrink-0 -rotate-90"
+            data-testid="context-usage-circle"
+          >
+            <circle
+              cx={CIRCLE_SIZE / 2}
+              cy={CIRCLE_SIZE / 2}
+              r={RADIUS}
+              fill="none"
+              className="stroke-muted"
+              strokeWidth={STROKE_WIDTH}
             />
-          </div>
-          <span className="tabular-nums whitespace-nowrap">
-            {formatTokenCount(totalTokens)} / {formatTokenCount(maxTokens)}
-          </span>
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
+            <circle
+              cx={CIRCLE_SIZE / 2}
+              cy={CIRCLE_SIZE / 2}
+              r={RADIUS}
+              fill="none"
+              className="transition-all duration-300 stroke-foreground"
+              strokeWidth={STROKE_WIDTH}
+              strokeDasharray={CIRCUMFERENCE}
+              strokeDashoffset={dashOffset}
+              strokeLinecap="round"
+            />
+          </svg>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent
         side="top"
         align="center"
         sideOffset={8}
-        className="w-64 p-3"
+        className="max-w-[200px] px-3 py-2.5 text-center space-y-0.5"
       >
-        <div className="space-y-2.5">
-          <div className="flex justify-between items-center text-xs font-medium">
-            <span>Context Usage</span>
-            <span className="text-muted-foreground tabular-nums">
-              {Math.round(percent)}%
-            </span>
-          </div>
-
-          <div className="w-full h-2 rounded-full bg-muted overflow-hidden flex">
-            {categories.map(
-              (cat) =>
-                cat.tokens > 0 && (
-                  <div
-                    key={cat.label}
-                    className={`h-full ${cat.color} transition-all duration-300`}
-                    style={{
-                      width: `${maxTokens > 0 ? (cat.tokens / maxTokens) * 100 : 0}%`,
-                    }}
-                  />
-                ),
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            {categories.map((cat) => (
-              <div
-                key={cat.label}
-                className="flex items-center justify-between text-xs"
-              >
-                <div className="flex items-center gap-1.5">
-                  <div className={`w-2 h-2 rounded-full ${cat.color}`} />
-                  <span className="text-muted-foreground">{cat.label}</span>
-                </div>
-                <span className="tabular-nums">
-                  {formatTokenCount(cat.tokens)}
-                </span>
-              </div>
-            ))}
-          </div>
+        <div className="font-medium text-xs">Context window:</div>
+        <div className="text-xs">
+          {Math.round(percent)}% used ({remaining}% left)
         </div>
-      </PopoverContent>
-    </Popover>
+        <div className="text-xs tabular-nums">
+          {formatTokenCount(usedTokens)} / {formatTokenCount(maxTokens)} tokens
+          used
+        </div>
+        <div className="text-xs text-muted-foreground pt-1">
+          HackerAI automatically compacts its context
+        </div>
+      </TooltipContent>
+    </Tooltip>
   );
 };

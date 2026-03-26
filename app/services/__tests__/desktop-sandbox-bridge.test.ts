@@ -319,4 +319,24 @@ describe("forwardChunk", () => {
       { type: "exit", commandId: "cmd-fwd", exitCode: 42 },
     ]);
   });
+
+  it("forwards exitCode 0 for successful commands", async () => {
+    const calls = await startBridgeAndForwardChunks([
+      { type: "exit", exitCode: 0 },
+    ]);
+
+    expect(calls).toContainEqual([
+      { type: "exit", commandId: "cmd-fwd", exitCode: 0 },
+    ]);
+  });
+
+  it("warns when exitCode is missing from exit chunk", async () => {
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    await startBridgeAndForwardChunks([{ type: "exit" }]);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("exit chunk missing exitCode"),
+    );
+    warnSpy.mockRestore();
+  });
 });

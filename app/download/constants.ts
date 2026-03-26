@@ -6,4 +6,6 @@ export const downloadLinks = {
   windows: `${GITHUB_RELEASE_BASE}/HackerAI-windows-x64.exe`,
   linuxAppImage: `${GITHUB_RELEASE_BASE}/HackerAI-linux-x64.AppImage`,
   linuxArm64AppImage: `${GITHUB_RELEASE_BASE}/HackerAI-linux-arm64.AppImage`,
+  linuxDeb: `${GITHUB_RELEASE_BASE}/HackerAI-linux-x64.deb`,
+  linuxArm64Deb: `${GITHUB_RELEASE_BASE}/HackerAI-linux-arm64.deb`,
 };

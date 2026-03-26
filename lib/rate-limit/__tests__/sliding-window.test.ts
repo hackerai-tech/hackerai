@@ -1,5 +1,5 @@
 /**
- * Tests for sliding-window rate limiting (free users).
+ * Tests for fixed-window rate limiting (free users).
  *
  * Uses jest.isolateModules() for fresh module instances with mocked dependencies.
  */
@@ -8,7 +8,6 @@ import { describe, it, expect, beforeEach, jest } from "@jest/globals";
 describe("sliding-window", () => {
   const mockLimitFn = jest.fn();
   const mockCreateRedisClient = jest.fn();
-  const mockFormatTimeRemaining = jest.fn();
 
   beforeEach(() => {
     jest.resetModules();
@@ -20,8 +19,6 @@ describe("sliding-window", () => {
       remaining: 5,
       reset: Date.now() + 3600000,
     });
-
-    mockFormatTimeRemaining.mockReturnValue("5 hours");
   });
 
   const getIsolatedModule = () => {
@@ -31,7 +28,7 @@ describe("sliding-window", () => {
       const MockRatelimit = jest.fn().mockImplementation(() => ({
         limit: mockLimitFn,
       }));
-      (MockRatelimit as any).slidingWindow = jest.fn().mockReturnValue({});
+      (MockRatelimit as any).fixedWindow = jest.fn().mockReturnValue({});
 
       jest.doMock("@upstash/ratelimit", () => ({
         Ratelimit: MockRatelimit,
@@ -39,7 +36,6 @@ describe("sliding-window", () => {
 
       jest.doMock("../redis", () => ({
         createRedisClient: mockCreateRedisClient,
-        formatTimeRemaining: mockFormatTimeRemaining,
       }));
 
       isolatedModule = require("../sliding-window");
@@ -62,7 +58,7 @@ describe("sliding-window", () => {
       }
     });
 
-    it("should use sliding window for free users", async () => {
+    it("should use fixed window for free users", async () => {
       const { checkFreeUserRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue({});
@@ -87,27 +83,9 @@ describe("sliding-window", () => {
         await checkFreeUserRateLimit("user-123");
         expect.fail("Should have thrown");
       } catch (error: any) {
-        expect(error.cause).toContain("rate limit");
+        expect(error.cause).toContain("daily responses");
+        expect(error.cause).toContain("midnight UTC");
         expect(error.cause).toContain("Upgrade plan");
-      }
-    });
-
-    it("should include time remaining in error message", async () => {
-      const { checkFreeUserRateLimit } = getIsolatedModule();
-
-      mockCreateRedisClient.mockReturnValue({});
-      mockLimitFn.mockResolvedValue({
-        success: false,
-        remaining: 0,
-        reset: Date.now() + 3600000,
-      });
-      mockFormatTimeRemaining.mockReturnValue("2 hours");
-
-      try {
-        await checkFreeUserRateLimit("user-123");
-        expect.fail("Should have thrown");
-      } catch (error: any) {
-        expect(error.cause).toContain("2 hours");
       }
     });
 

@@ -46,6 +46,7 @@ import {
   Share,
   Pin,
   PinOff,
+  LoaderCircle,
 } from "lucide-react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
@@ -62,6 +63,7 @@ interface ChatItemProps {
   shareId?: string;
   shareDate?: number;
   isPinned?: boolean;
+  isStreaming?: boolean;
 }
 
 const ChatItem: React.FC<ChatItemProps> = ({
@@ -72,6 +74,7 @@ const ChatItem: React.FC<ChatItemProps> = ({
   shareId,
   shareDate,
   isPinned = false,
+  isStreaming = false,
 }) => {
   const router = useRouter();
   const pathname = usePathname();
@@ -208,13 +211,6 @@ const ChatItem: React.FC<ChatItemProps> = ({
     try {
       await pinChat({ chatId: id });
     } catch (error) {
-      if (error instanceof ConvexError) {
-        const data = error.data as { code?: string; message?: string };
-        if (data.code === "MAX_PINNED_REACHED") {
-          toast.error(data.message ?? "You can pin at most 3 chats");
-          return;
-        }
-      }
       console.error("Failed to pin chat:", error);
       toast.error("Failed to pin chat");
     }
@@ -314,13 +310,19 @@ const ChatItem: React.FC<ChatItemProps> = ({
         dir="auto"
       >
         <span className="flex items-center gap-1.5">
-          {isPinned && (
+          {isStreaming && (
+            <LoaderCircle
+              className="size-3 flex-shrink-0 animate-spin text-muted-foreground"
+              data-testid="chat-item-streaming-icon"
+            />
+          )}
+          {isPinned && !isStreaming && (
             <Pin
               className="size-3 flex-shrink-0 text-muted-foreground"
               data-testid="chat-item-pin-icon"
             />
           )}
-          {isBranched && branchedFromTitle && (
+          {isBranched && branchedFromTitle && !isStreaming && (
             <TooltipProvider delayDuration={300}>
               <Tooltip>
                 <TooltipTrigger asChild>

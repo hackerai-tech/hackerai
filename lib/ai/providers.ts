@@ -1,12 +1,42 @@
 import { customProvider } from "ai";
-import { openrouter } from "@openrouter/ai-sdk-provider";
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 // import { withTracing } from "@posthog/ai";
 // import PostHogClient from "@/app/posthog";
 // import type { SubscriptionTier } from "@/types";
 
+// Custom fetch that patches assistant tool-call messages for Kimi K2.5.
+// When reasoning mode is enabled, Kimi's API requires a `reasoning` field
+// on every assistant message with tool_calls, but the AI SDK doesn't always
+// include it (e.g. model made a tool call without emitting reasoning tokens).
+const openrouter = createOpenRouter({
+  fetch: async (url, init) => {
+    if (init?.body && typeof init.body === "string") {
+      try {
+        const body = JSON.parse(init.body);
+        if (Array.isArray(body.messages) && body.reasoning?.enabled === true) {
+          for (const msg of body.messages) {
+            if (
+              msg.role === "assistant" &&
+              Array.isArray(msg.tool_calls) &&
+              msg.tool_calls.length > 0 &&
+              !msg.reasoning
+            ) {
+              msg.reasoning = ".";
+            }
+          }
+          init = { ...init, body: JSON.stringify(body) };
+        }
+      } catch {
+        // If parsing fails, send the request as-is
+      }
+    }
+    return globalThis.fetch(url, init);
+  },
+});
+
 const baseProviders = {
   "ask-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-model-free": openrouter("xiaomi/mimo-v2-flash"),
+  "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
   "agent-model": openrouter("moonshotai/kimi-k2.5"),
   "model-sonnet-4.6": openrouter("anthropic/claude-sonnet-4-6"),
   "model-grok-4.1": openrouter("x-ai/grok-4.1-fast"),

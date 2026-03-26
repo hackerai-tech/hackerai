@@ -9,8 +9,8 @@
  *    - Single monthly bucket: credits = subscription price, refills every 30 days
  *    - Supports extra usage (prepaid balance) when limits exceeded
  *
- * 2. Sliding Window (Free users - Ask mode only):
- *    - Simple request counting within a 5-hour rolling window
+ * 2. Fixed Window (Free users - Ask mode only):
+ *    - Simple request counting within a daily fixed window (resets at midnight UTC)
  *    - Agent mode is blocked for free users in checkRateLimit()
  */
 
@@ -77,7 +77,7 @@ export const checkRateLimit = async (
   modelName?: string,
   organizationId?: string,
 ): Promise<RateLimitInfo> => {
-  // Free users: sliding window
+  // Free users: fixed daily window
   if (subscription === "free") {
     // Block agent mode for free users
     if (isAgentMode(mode)) {

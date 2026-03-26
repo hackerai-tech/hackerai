@@ -6,7 +6,6 @@ import {
   stepCountIs,
   streamText,
   UIMessage,
-  UIMessagePart,
   smoothStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
@@ -50,11 +49,12 @@ import {
   isProviderApiError,
   computeContextUsage,
   writeContextUsage,
-  contextUsageEnabled,
+  isContextUsageEnabled,
   runSummarizationStep,
+  SummarizationTracker,
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
-  refreshNotesInModelMessages,
+  applyPrepareStepReminders,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -85,7 +85,6 @@ import { createResumableStreamContext } from "resumable-stream";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
-  createSummarizationCompletedPart,
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
@@ -100,6 +99,7 @@ import { SUMMARIZATION_THRESHOLD_PERCENTAGE } from "@/lib/chat/summarization/con
 import {
   pruneToolOutputs,
   pruneModelMessages,
+  filterEmptyAssistantMessages,
 } from "@/lib/chat/compaction/prune-tool-outputs";
 
 function getStreamContext() {
@@ -153,14 +153,6 @@ export const createChatHandler = (
         rawSelectedModel && isSelectedModel(rawSelectedModel)
           ? rawSelectedModel
           : undefined;
-
-      // Agent-long must use /api/agent-long (Trigger.dev), not this handler
-      if (mode === "agent-long") {
-        throw new ChatSDKError(
-          "bad_request:api",
-          "Agent-long mode must use POST /api/agent-long",
-        );
-      }
 
       // Local provider models are handled client-side and must never reach the server
       if (
@@ -382,8 +374,7 @@ export const createChatHandler = (
         },
       });
 
-      // Track summarization events to add to message parts
-      const summarizationParts: UIMessagePart<any, any>[] = [];
+      const summarizationTracker = new SummarizationTracker();
 
       // Start stream timing
       chatLogger.startStream();
@@ -492,12 +483,13 @@ export const createChatHandler = (
 
           const systemPromptTokens = countTokens(currentSystemPrompt);
 
-          // Compute and stream actual context usage breakdown (when enabled)
-          const ctxSystemTokens = contextUsageEnabled ? systemPromptTokens : 0;
-          const ctxMaxTokens = contextUsageEnabled
+          // Compute and stream context usage breakdown for paid users
+          const contextUsageOn = isContextUsageEnabled(subscription);
+          const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
+          const ctxMaxTokens = contextUsageOn
             ? getMaxTokensForSubscription(subscription)
             : 0;
-          let ctxUsage = contextUsageEnabled
+          let ctxUsage = contextUsageOn
             ? computeContextUsage(
                 truncatedMessages,
                 fileTokens,
@@ -505,14 +497,10 @@ export const createChatHandler = (
                 ctxMaxTokens,
               )
             : {
-                systemTokens: 0,
-                summaryTokens: 0,
-                messagesTokens: 0,
+                usedTokens: 0,
                 maxTokens: 0,
               };
-          if (contextUsageEnabled) {
-            writeContextUsage(writer, ctxUsage);
-          }
+          // Context usage is sent at the end of the request (onFinish)
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
@@ -543,7 +531,7 @@ export const createChatHandler = (
             noteInjectionOpts,
           );
 
-          let hasSummarized = false;
+          const hasSummarized = () => summarizationTracker.hasSummarized;
           let stoppedDueToTokenExhaustion = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
@@ -572,9 +560,6 @@ export const createChatHandler = (
             if (sandboxCost > 0) {
               usageTracker.providerCost += sandboxCost;
               chatLogger?.getBuilder().addToolCost(sandboxCost);
-              console.log(
-                `[sandbox-cost] E2B session cost: $${sandboxCost.toFixed(6)}`,
-              );
             }
             if (!usageTracker.hasUsage) return;
             hasDeductedUsage = true;
@@ -606,11 +591,19 @@ export const createChatHandler = (
               model: trackedProvider.languageModel(modelName),
               maxOutputTokens: 32000,
               system: currentSystemPrompt,
-              messages: await convertToModelMessages(finalMessages),
+              messages: filterEmptyAssistantMessages(
+                await convertToModelMessages(finalMessages),
+              ),
               tools,
               // Refresh system prompt when memory updates occur, cache and reuse until next update
               prepareStep: async ({ steps, messages }) => {
                 try {
+                  const stepNumber = steps.length;
+                  const threshold = Math.floor(
+                    getMaxTokensForSubscription(subscription) *
+                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                  );
+
                   // Prune old tool outputs to stay within rolling token budget
                   const pruneResult = pruneToolOutputs(finalMessages);
                   if (pruneResult.prunedCount > 0) {
@@ -619,9 +612,10 @@ export const createChatHandler = (
 
                   // Run summarization check on every step (non-temporary chats only)
                   // but only summarize once
-                  if (!temporary && !hasSummarized) {
+                  if (!temporary && !hasSummarized()) {
                     const result = await runSummarizationStep({
                       messages: finalMessages,
+                      modelMessages: messages,
                       subscription,
                       languageModel: trackedProvider.languageModel(modelName),
                       mode,
@@ -648,32 +642,19 @@ export const createChatHandler = (
                       result.needsSummarization &&
                       result.summarizedMessages
                     ) {
-                      hasSummarized = true;
-                      summarizationParts.push(
-                        createSummarizationCompletedPart(),
+                      summarizationTracker.recordSummarization(
+                        steps.length,
+                        result.summarizationUsage,
+                        usageTracker,
                       );
-                      if (result.summarizationUsage) {
-                        usageTracker.inputTokens +=
-                          result.summarizationUsage.inputTokens;
-                        usageTracker.outputTokens +=
-                          result.summarizationUsage.outputTokens;
-                        usageTracker.summarizationOutputTokens +=
-                          result.summarizationUsage.outputTokens;
-                        usageTracker.cacheReadTokens +=
-                          result.summarizationUsage.cacheReadTokens || 0;
-                        usageTracker.cacheWriteTokens +=
-                          result.summarizationUsage.cacheWriteTokens || 0;
-                        if (result.summarizationUsage.cost) {
-                          usageTracker.providerCost +=
-                            result.summarizationUsage.cost;
-                        }
-                      }
                       if (result.contextUsage) {
                         ctxUsage = result.contextUsage;
                       }
                       return {
-                        messages: await convertToModelMessages(
-                          result.summarizedMessages,
+                        messages: filterEmptyAssistantMessages(
+                          await convertToModelMessages(
+                            result.summarizedMessages,
+                          ),
                         ),
                       };
                     }
@@ -697,27 +678,16 @@ export const createChatHandler = (
                       (lastStep as { toolResults?: unknown[] }).toolResults) ||
                     [];
 
-                  // Check if any note was created, updated, or deleted
-                  const wasNoteModified =
-                    Array.isArray(toolResults) &&
-                    toolResults.some((r) =>
-                      ["create_note", "update_note", "delete_note"].includes(
-                        (r as { toolName?: string })?.toolName ?? "",
-                      ),
-                    );
-
-                  if (!wasNoteModified) {
-                    return { messages: currentMessages as typeof messages };
-                  }
-
-                  // Update the notes block within the existing messages,
-                  // preserving the full conversation history (tool calls/results)
-                  const updatedMessages = await refreshNotesInModelMessages(
+                  const updatedMessages = await applyPrepareStepReminders(
                     currentMessages,
-                    noteInjectionOpts,
+                    { toolResults, noteInjectionOpts },
                   );
 
-                  return { messages: updatedMessages as typeof messages };
+                  return {
+                    messages: filterEmptyAssistantMessages(
+                      updatedMessages,
+                    ) as typeof messages,
+                  };
                 } catch (error) {
                   if (
                     error instanceof DOMException &&
@@ -748,7 +718,7 @@ export const createChatHandler = (
                           SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
-                      getHasSummarized: () => hasSummarized,
+                      getHasSummarized: hasSummarized,
                       onFired: () => {
                         stoppedDueToTokenExhaustion = true;
                       },
@@ -934,7 +904,7 @@ export const createChatHandler = (
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
                             wasPreemptiveTimeout: false,
-                            hadSummarization: hasSummarized,
+                            hadSummarization: hasSummarized(),
                           });
 
                           const generatedTitle = await titlePromise;
@@ -975,15 +945,7 @@ export const createChatHandler = (
                               if (msg.role !== "assistant") continue;
 
                               const processed =
-                                summarizationParts.length > 0
-                                  ? {
-                                      ...msg,
-                                      parts: [
-                                        ...summarizationParts,
-                                        ...(msg.parts || []),
-                                      ],
-                                    }
-                                  : msg;
+                                summarizationTracker.processMessageForSave(msg);
 
                               await saveMessage({
                                 chatId,
@@ -1125,7 +1087,7 @@ export const createChatHandler = (
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
                   wasPreemptiveTimeout: isPreemptiveAbort,
-                  hadSummarization: hasSummarized,
+                  hadSummarization: hasSummarized(),
                 });
                 logStep("emit_success_event", stepStart);
 
@@ -1231,15 +1193,8 @@ export const createChatHandler = (
                   // Save messages (either full save or just append extraFileIds)
                   stepStart = Date.now();
                   for (const message of messages) {
-                    // For assistant messages, prepend summarization parts if any
                     let processedMessage =
-                      message.role === "assistant" &&
-                      summarizationParts.length > 0
-                        ? {
-                            ...message,
-                            parts: [...summarizationParts, ...message.parts],
-                          }
-                        : message;
+                      summarizationTracker.processMessageForSave(message);
 
                     // Skip saving messages with no parts or files
                     // This prevents saving empty messages on error that would accumulate on retry
@@ -1310,11 +1265,11 @@ export const createChatHandler = (
                 }
 
                 // Send updated context usage with output tokens included
-                if (contextUsageEnabled) {
+                if (contextUsageOn) {
                   writeContextUsage(writer, {
-                    ...ctxUsage,
-                    messagesTokens:
-                      ctxUsage.messagesTokens + usageTracker.streamOutputTokens,
+                    usedTokens:
+                      ctxUsage.usedTokens + usageTracker.streamOutputTokens,
+                    maxTokens: ctxUsage.maxTokens,
                   });
                 }
 

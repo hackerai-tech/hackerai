@@ -14,14 +14,14 @@ import {
 type Platform = "macos" | "windows" | "linux" | "unknown";
 type LinuxArch = "x64" | "arm64";
 
-interface DetectedPlatform {
+export interface DetectedPlatform {
   platform: Platform;
   linuxArch?: LinuxArch;
   displayName: string;
   downloadUrl: string;
 }
 
-function detectPlatform(): DetectedPlatform {
+export function detectPlatform(): DetectedPlatform {
   const userAgent = navigator.userAgent.toLowerCase();
   const platform = navigator.platform?.toLowerCase() || "";
 
@@ -61,7 +61,7 @@ function detectPlatform(): DetectedPlatform {
         platform: "linux",
         linuxArch: "arm64",
         displayName: "Linux (ARM64)",
-        downloadUrl: downloadLinks.linuxArm64AppImage,
+        downloadUrl: downloadLinks.linuxArm64Deb,
       };
     }
 
@@ -69,7 +69,7 @@ function detectPlatform(): DetectedPlatform {
       platform: "linux",
       linuxArch: "x64",
       displayName: "Linux",
-      downloadUrl: downloadLinks.linuxAppImage,
+      downloadUrl: downloadLinks.linuxDeb,
     };
   }
 

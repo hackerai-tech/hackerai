@@ -2,16 +2,27 @@
 
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
-import { Check, Cloud, Laptop, Monitor, ChevronDown, Plus } from "lucide-react";
+import {
+  Check,
+  Cloud,
+  Laptop,
+  Monitor,
+  ChevronDown,
+  ChevronRight,
+  Plus,
+  Download,
+} from "lucide-react";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
+import { useTauri } from "@/app/hooks/useTauri";
+import { detectPlatform } from "@/app/download/DownloadSection";
 
 interface SandboxSelectorProps {
   value: string;
@@ -34,6 +45,13 @@ export function SandboxSelector({
   size = "sm",
 }: SandboxSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [connectHovered, setConnectHovered] = useState(false);
+  const { isTauri } = useTauri();
+
+  const detectedPlatform = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    return detectPlatform();
+  }, []);
 
   const connections = useQuery(api.localSandbox.listConnections);
   const cloudOption: ConnectionOption = {
@@ -160,6 +178,50 @@ export function SandboxSelector({
               </button>
             );
           })}
+
+          {!isTauri && desktopOptions.length === 0 && (
+            <Popover open={connectHovered} onOpenChange={setConnectHovered}>
+              <PopoverTrigger asChild>
+                <button className="w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors hover:bg-muted">
+                  <Monitor className="h-4 w-4 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">
+                      Connect My Computer
+                    </div>
+                  </div>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                side="top"
+                sideOffset={8}
+                className="w-[240px] p-4"
+              >
+                <div className="flex items-center justify-center rounded-md border bg-gradient-to-b from-muted/50 to-muted py-5 mb-3">
+                  <Monitor className="h-10 w-10 text-muted-foreground/70" />
+                </div>
+                <h4 className="text-sm font-semibold mb-1">My Computer</h4>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Download the desktop app to grant HackerAI access to your
+                  computer.
+                </p>
+                <Button asChild size="sm" className="w-full">
+                  <a
+                    href={
+                      detectedPlatform?.platform === "unknown"
+                        ? "/download"
+                        : detectedPlatform?.downloadUrl || "/download"
+                    }
+                  >
+                    <Download className="h-4 w-4 mr-1.5" />
+                    {detectedPlatform && detectedPlatform.platform !== "unknown"
+                      ? `Download for ${detectedPlatform.displayName}`
+                      : "Download desktop"}
+                  </a>
+                </Button>
+              </PopoverContent>
+            </Popover>
+          )}
 
           <div className="border-t mt-1 pt-1">
             <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">

@@ -906,7 +906,12 @@ fn get_codex_app_server_info() -> bool {
 enum StreamEvent {
     Stdout { data: String },
     Stderr { data: String },
-    Exit { exit_code: i32 },
+    Exit {
+        // Explicit rename needed: Tauri 2's Channel<T> does not apply
+        // rename_all to fields inside internally-tagged enum variants.
+        #[serde(rename = "exitCode")]
+        exit_code: i32,
+    },
     Error { message: String },
 }
 

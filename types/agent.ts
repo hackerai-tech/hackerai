@@ -43,7 +43,7 @@ export interface SandboxContext {
   setSandbox: (sandbox: Sandbox) => void;
 }
 
-/** Optional: when set (e.g. in Trigger agent-task), terminal chunks are awaited so the run yields and stream delivery can happen in real time. */
+/** Optional: when set, terminal chunks are awaited so the run yields and stream delivery can happen in real time. */
 export type AppendMetadataStreamFn = (event: {
   type: "data-terminal";
   data: { terminal: string; toolCallId: string };
@@ -64,7 +64,7 @@ export interface ToolContext {
   mode: ChatMode;
   isE2BSandbox: IsE2BSandboxFn;
   guardrailsConfig?: string;
-  /** When set, run_terminal_cmd awaits this for each terminal chunk so the run yields and Trigger can deliver metadata in real time. */
+  /** When set, run_terminal_cmd awaits this for each terminal chunk so the run yields and metadata delivery can happen in real time. */
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */
   onToolCost?: (costDollars: number) => void;

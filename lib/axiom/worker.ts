@@ -1,7 +1,7 @@
 /**
- * Framework-agnostic Axiom logger for use in Trigger.dev, workers, and other
+ * Framework-agnostic Axiom logger for use in workers and other
  * non-Next.js contexts. Does NOT import @axiomhq/nextjs to avoid Next.js-specific
- * code that may not run in isolated runtimes (e.g., Trigger.dev tasks).
+ * code that may not run in isolated runtimes.
  */
 
 import axiomClient from "@/lib/axiom/axiom";
