@@ -14,6 +14,7 @@ import {
   type RateLimitWarningData,
 } from "../RateLimitWarning";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
+import { isCodexLocal } from "@/types/chat";
 import { NULL_THREAD_DRAFT_ID } from "@/lib/utils/client-storage";
 import { SandboxSelector } from "../SandboxSelector";
 import { ChatInputTextarea } from "./ChatInputTextarea";
@@ -72,6 +73,7 @@ export const ChatInput = ({
     setQueueBehavior,
     sandboxPreference,
     setSandboxPreference,
+    selectedModel,
     subscription,
     isCheckingProPlan,
     temporaryChatsEnabled,
@@ -149,15 +151,19 @@ export const ChatInput = ({
         )}
 
         {/* Sandbox selector for new chats on mobile: shown above input & file upload.
-            On desktop, it's shown below the input (order-3). */}
-        {isMobile && isNewChat && isAgentMode(chatMode) && (
-          <div className="flex px-1 pb-2 min-h-9">
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
-          </div>
-        )}
+            On desktop, it's shown below the input (order-3).
+            Hidden when Codex is selected (it manages its own sandbox). */}
+        {isMobile &&
+          isNewChat &&
+          isAgentMode(chatMode) &&
+          !isCodexLocal(selectedModel) && (
+            <div className="flex px-1 pb-2 min-h-9">
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+            </div>
+          )}
 
         {uploadedFiles && uploadedFiles.length > 0 && (
           <FileUploadPreview
@@ -205,22 +211,25 @@ export const ChatInput = ({
         {/* Sandbox selector below input.
             Desktop new chats: absolutely positioned to avoid shifting the centered layout.
             Existing chats (all screens): normal flow.
-            Mobile new chats: hidden (uses above-input placement). */}
-        {isAgentMode(chatMode) && (!isMobile || !isNewChat) && (
-          <div
-            className={`order-3 flex items-center px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
-          >
-            <SandboxSelector
-              value={sandboxPreference}
-              onChange={setSandboxPreference}
-            />
-            {showContextIndicator && contextUsage && (
-              <div className="ml-auto">
-                <ContextUsageIndicator {...contextUsage} />
-              </div>
-            )}
-          </div>
-        )}
+            Mobile new chats: hidden (uses above-input placement).
+            Hidden when Codex is selected (it manages its own sandbox). */}
+        {isAgentMode(chatMode) &&
+          (!isMobile || !isNewChat) &&
+          !isCodexLocal(selectedModel) && (
+            <div
+              className={`order-3 flex items-center px-1 pt-2 ${isNewChat ? "absolute left-4 right-4 top-full" : ""}`}
+            >
+              <SandboxSelector
+                value={sandboxPreference}
+                onChange={setSandboxPreference}
+              />
+              {showContextIndicator && contextUsage && (
+                <div className="ml-auto">
+                  <ContextUsageIndicator {...contextUsage} />
+                </div>
+              )}
+            </div>
+          )}
 
         {onScrollToBottom && (
           <div className="absolute -top-16 left-1/2 -translate-x-1/2 z-40">
