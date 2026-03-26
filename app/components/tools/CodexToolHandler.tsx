@@ -224,7 +224,7 @@ export const CodexToolHandler = memo(function CodexToolHandler({
       action={isExecuting ? display.runningAction : display.doneAction}
       target={display.target}
       isShimmer={isExecuting}
-      isClickable={true}
+      isClickable={sidebarContent != null}
       onClick={handleOpenInSidebar}
       onKeyDown={handleKeyDown}
     />

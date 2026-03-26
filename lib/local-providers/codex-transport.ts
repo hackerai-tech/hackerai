@@ -91,6 +91,7 @@ export class CodexLocalTransport {
     { resolve: (result: any) => void; reject: (error: any) => void }
   >();
   private eventUnlisten: (() => void) | null = null;
+  private startListeningPromise: Promise<void> | null = null;
   private notificationHandler: ((method: string, params: any) => void) | null =
     null;
 
@@ -116,6 +117,7 @@ export class CodexLocalTransport {
       this.eventUnlisten = null;
     }
 
+    this.startListeningPromise = null;
     this.notificationHandler = null;
     console.log("[CodexTransport] Reset — ready for new process");
   }
@@ -154,34 +156,39 @@ export class CodexLocalTransport {
    */
   async startListening(): Promise<void> {
     if (this.eventUnlisten) return;
+    if (this.startListeningPromise) return this.startListeningPromise;
 
-    const { listen } = await import("@tauri-apps/api/event");
-    this.eventUnlisten = await listen<string>("codex-rpc-event", (event) => {
-      try {
-        const msg = JSON.parse(event.payload);
+    this.startListeningPromise = (async () => {
+      const { listen } = await import("@tauri-apps/api/event");
+      this.eventUnlisten = await listen<string>("codex-rpc-event", (event) => {
+        try {
+          const msg = JSON.parse(event.payload);
 
-        // Response to a request (has id field)
-        if ("id" in msg && this.pendingRequests.has(msg.id)) {
-          const pending = this.pendingRequests.get(msg.id)!;
-          this.pendingRequests.delete(msg.id);
-          if (msg.error) {
-            pending.reject(new Error(msg.error.message || "RPC error"));
-          } else {
-            pending.resolve(msg.result);
+          // Response to a request (has id field)
+          if ("id" in msg && this.pendingRequests.has(msg.id)) {
+            const pending = this.pendingRequests.get(msg.id)!;
+            this.pendingRequests.delete(msg.id);
+            if (msg.error) {
+              pending.reject(new Error(msg.error.message || "RPC error"));
+            } else {
+              pending.resolve(msg.result);
+            }
+            return;
           }
-          return;
-        }
 
-        // Notification (no id field) — forward to current handler
-        if (msg.method && this.notificationHandler) {
-          this.notificationHandler(msg.method, msg.params || {});
+          // Notification (no id field) — forward to current handler
+          if (msg.method && this.notificationHandler) {
+            this.notificationHandler(msg.method, msg.params || {});
+          }
+        } catch (err) {
+          console.warn("[CodexTransport] Failed to parse event:", err);
         }
-      } catch (err) {
-        console.warn("[CodexTransport] Failed to parse event:", err);
-      }
-    });
+      });
 
-    console.log("[CodexTransport] Listening for Tauri events");
+      console.log("[CodexTransport] Listening for Tauri events");
+    })();
+
+    return this.startListeningPromise;
   }
 
   async sendMessages(
@@ -233,11 +240,10 @@ export class CodexLocalTransport {
     let currentReasoningId: string | null = null;
     let hasStarted = false;
     let turnId: string | null = null;
+    let aborted = false;
     let streamClosed = false;
     // Accumulate tool output for tool-output-available on completion
     const toolOutputBuffers = new Map<string, string>();
-    // Track last fileChange toolCallId to update with turn/diff/updated
-    let lastFileChangeToolCallId: string | null = null;
 
     const safeEnqueue = (
       controller: ReadableStreamDefaultController<UIMessageChunk>,
@@ -301,6 +307,11 @@ export class CodexLocalTransport {
             switch (method) {
               case "turn/started": {
                 turnId = params.turn?.id;
+                // If abort was requested before turnId was available, send interrupt now
+                if (aborted && turnId && threadId) {
+                  this.rpcNotify("turn/interrupt", { threadId, turnId });
+                  break;
+                }
                 if (!hasStarted) {
                   hasStarted = true;
                   safeEnqueue(controller, { type: "start" });
@@ -363,11 +374,6 @@ export class CodexLocalTransport {
                 // Extract fields based on item type
                 const toolLabel = this.getToolLabel(item);
                 const firstChange = item.changes?.[0];
-                // Track fileChange for turn/diff/updated
-                if (item.type === "fileChange") {
-                  lastFileChangeToolCallId = item.id;
-                }
-
                 safeEnqueue(controller, {
                   type: "tool-input-available",
                   toolCallId: item.id,
@@ -515,23 +521,11 @@ export class CodexLocalTransport {
                 break;
               }
 
-              // Full git diff for all file changes in this turn
-              case "turn/diff/updated": {
-                const diff = params.diff;
-                if (diff && lastFileChangeToolCallId) {
-                  // Re-emit tool output with the full git diff
-                  safeEnqueue(controller, {
-                    type: "tool-output-available",
-                    toolCallId: lastFileChangeToolCallId,
-                    output: {
-                      codexItemType: "fileChange",
-                      output: "",
-                      diff,
-                    },
-                  });
-                }
+              // turn/diff/updated contains an aggregated diff for all files in the turn.
+              // Individual file diffs are already provided via item/completed, so we
+              // skip the aggregated diff to avoid overwriting per-file data.
+              case "turn/diff/updated":
                 break;
-              }
 
               // Generic handler for ALL item output deltas (item/*/outputDelta)
               default: {
@@ -564,6 +558,7 @@ export class CodexLocalTransport {
             abortSignal.addEventListener(
               "abort",
               () => {
+                aborted = true;
                 if (turnId && threadId) {
                   this.rpcNotify("turn/interrupt", { threadId, turnId });
                 }
@@ -583,6 +578,17 @@ export class CodexLocalTransport {
               },
               { once: true },
             );
+          }
+
+          // Bail out if cancelled during handshake/thread-start
+          if (abortSignal?.aborted) {
+            safeEnqueue(controller, { type: "finish-step" });
+            safeEnqueue(controller, {
+              type: "finish",
+              finishReason: "stop",
+            });
+            safeClose(controller);
+            return;
           }
 
           // Start the turn — append notes context to the user message

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { isCodexLocal } from "@/types/chat";
@@ -29,17 +29,21 @@ export function useCodexPersistence({
 }: UseCodexPersistenceProps) {
   const saveLocalMessage = useMutation(api.messages.saveLocalMessage);
   const saveLocalChat = useMutation(api.chats.saveLocalChat);
+  const persistedIdsRef = useRef(new Set<string>());
 
   const persistCodexMessages = useCallback(
     async (messages: ChatMessage[]) => {
       if (!isCodexLocal(selectedModelRef.current)) return false;
 
       try {
-        // Save all messages (user + assistant) to Convex
-        await Promise.all(
-          messages
-            .filter((m) => m.role === "user" || m.role === "assistant")
-            .map((msg) =>
+        // Only save new messages (skip already-persisted ones)
+        const newMessages = messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .filter((m) => !persistedIdsRef.current.has(m.id));
+
+        if (newMessages.length > 0) {
+          await Promise.all(
+            newMessages.map((msg) =>
               saveLocalMessage({
                 id: msg.id,
                 chatId,
@@ -51,7 +55,11 @@ export function useCodexPersistence({
                     : undefined,
               }),
             ),
-        );
+          );
+          for (const msg of newMessages) {
+            persistedIdsRef.current.add(msg.id);
+          }
+        }
 
         // Persist the Codex thread ID so it survives page reloads
         const threadId = codexTransport.getThreadId(chatId);
@@ -60,7 +68,9 @@ export function useCodexPersistence({
             id: chatId,
             title: "", // won't overwrite — saveLocalChat patches existing
             codexThreadId: threadId,
-          }).catch(() => {});
+          }).catch((err) => {
+            console.error("[CodexLocal] Failed to persist codexThreadId:", err);
+          });
         }
 
         if (!isExistingChatRef.current) {
