@@ -511,9 +511,10 @@ jobs:
           find artifacts -name "*.nsis.zip" -exec cp {} release-files/ \;
           find artifacts -name "*.nsis.zip.sig" -exec cp {} release-files/ \;
           find artifacts -name "*.exe" -exec cp {} release-files/ \;
+          find artifacts -name "*.deb" -exec cp {} release-files/ \;
 
           echo "Files in release-files before creating aliases:"
-          ls -la release-files/ | grep -E "(AppImage|exe)" || echo "No AppImage or exe files found"
+          ls -la release-files/ | grep -E "(AppImage|exe|deb)" || echo "No AppImage, exe, or deb files found"
 
           # Create fixed-name aliases for download page (no version in filename)
           # Linux x64 AppImage
@@ -536,6 +537,28 @@ jobs:
             echo "Created alias: HackerAI-linux-arm64.AppImage from $(basename "$LINUX_ARM64_APPIMAGE")"
           else
             echo "WARNING: Linux ARM64 AppImage not found for alias creation"
+          fi
+
+          # Linux x64 deb
+          LINUX_X64_DEB=$(ls release-files/*_amd64.deb 2>/dev/null | head -1 || echo "")
+          echo "Looking for Linux x64 deb: pattern '*_amd64.deb'"
+          echo "Found: $LINUX_X64_DEB"
+          if [ -n "$LINUX_X64_DEB" ] && [ -f "$LINUX_X64_DEB" ]; then
+            cp "$LINUX_X64_DEB" release-files/HackerAI-linux-x64.deb
+            echo "Created alias: HackerAI-linux-x64.deb from $(basename "$LINUX_X64_DEB")"
+          else
+            echo "WARNING: Linux x64 deb not found for alias creation"
+          fi
+
+          # Linux ARM64 deb
+          LINUX_ARM64_DEB=$(ls release-files/*_aarch64.deb 2>/dev/null | head -1 || echo "")
+          echo "Looking for Linux ARM64 deb: pattern '*_aarch64.deb'"
+          echo "Found: $LINUX_ARM64_DEB"
+          if [ -n "$LINUX_ARM64_DEB" ] && [ -f "$LINUX_ARM64_DEB" ]; then
+            cp "$LINUX_ARM64_DEB" release-files/HackerAI-linux-arm64.deb
+            echo "Created alias: HackerAI-linux-arm64.deb from $(basename "$LINUX_ARM64_DEB")"
+          else
+            echo "WARNING: Linux ARM64 deb not found for alias creation"
           fi
 
           # Windows exe
@@ -564,6 +587,14 @@ jobs:
           fi
           if [ ! -f "release-files/HackerAI-windows-x64.exe" ]; then
             echo "ERROR: HackerAI-windows-x64.exe alias not created!"
+            exit 1
+          fi
+          if [ ! -f "release-files/HackerAI-linux-x64.deb" ]; then
+            echo "ERROR: HackerAI-linux-x64.deb alias not created!"
+            exit 1
+          fi
+          if [ ! -f "release-files/HackerAI-linux-arm64.deb" ]; then
+            echo "ERROR: HackerAI-linux-arm64.deb alias not created!"
             exit 1
           fi
           echo "All fixed-name aliases verified successfully!"
