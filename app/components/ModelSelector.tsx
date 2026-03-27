@@ -3,10 +3,13 @@
 import {
   Brain,
   Check,
+  CheckCheck,
   ChevronDown,
   ChevronRight,
+  Copy,
   Lock,
   ShieldAlert,
+  Terminal,
 } from "lucide-react";
 import {
   Popover,
@@ -27,6 +30,15 @@ import {
 } from "@/components/ui/tooltip";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useState } from "react";
 import { isCodexLocal, type ChatMode, type SelectedModel } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
@@ -411,6 +423,13 @@ export function ModelSelector({
   locked,
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [codexDialog, setCodexDialog] = useState<{
+    open: boolean;
+    title: string;
+    description: string;
+    command: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
   const { subscription } = useGlobalState();
   const isMobile = useIsMobile();
   const { isTauri } = useTauri();
@@ -455,19 +474,25 @@ export function ModelSelector({
       }
 
       if (!status.installed) {
-        toast.error("Codex CLI (codex) is not installed or not on PATH", {
+        setCopied(false);
+        setCodexDialog({
+          open: true,
+          title: "Codex CLI Not Found",
           description:
-            "Install it with: npm install -g @openai/codex\nThen restart the app.",
-          duration: 10000,
+            "Codex CLI (codex) is not installed or not on your PATH. Install it with the command below, then restart the app.",
+          command: "npm install -g @openai/codex",
         });
         return;
       }
 
       if (!status.authenticated) {
-        toast.error("Codex CLI is installed but not authenticated", {
+        setCopied(false);
+        setCodexDialog({
+          open: true,
+          title: "Codex CLI Not Authenticated",
           description:
-            "Run 'codex login' in your terminal to sign in with your OpenAI account.",
-          duration: 10000,
+            "Codex CLI is installed but not signed in. Run the command below in your terminal to authenticate with your OpenAI account.",
+          command: "codex login",
         });
         return;
       }
@@ -480,18 +505,64 @@ export function ModelSelector({
     setOpen(false);
   };
 
+  const codexSetupDialog = codexDialog && (
+    <AlertDialog
+      open={codexDialog.open}
+      onOpenChange={(open) => {
+        if (!open) setCodexDialog(null);
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle className="flex items-center gap-2">
+            <Terminal className="h-5 w-5" />
+            {codexDialog.title}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {codexDialog.description}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 font-mono text-sm">
+          <code className="flex-1 select-all">{codexDialog.command}</code>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            onClick={() => {
+              navigator.clipboard.writeText(codexDialog.command);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 2000);
+            }}
+          >
+            {copied ? (
+              <CheckCheck className="h-3.5 w-3.5 text-green-500" />
+            ) : (
+              <Copy className="h-3.5 w-3.5" />
+            )}
+          </Button>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogAction>Got it</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+
   // When locked (Codex mid-conversation), show only the Codex submenu trigger
   if (locked && isCodexLocal(value)) {
     return (
-      <div className="shrink min-w-0">
-        <CodexSubMenu
-          codexOptions={codexOptions}
-          value={value}
-          onSelect={handleModelSelect}
-          mobile={isMobile}
-          compact
-        />
-      </div>
+      <>
+        {codexSetupDialog}
+        <div className="shrink min-w-0">
+          <CodexSubMenu
+            codexOptions={codexOptions}
+            value={value}
+            onSelect={handleModelSelect}
+            mobile={isMobile}
+            compact
+          />
+        </div>
+      </>
     );
   }
 
@@ -513,6 +584,7 @@ export function ModelSelector({
   if (isMobile) {
     return (
       <>
+        {codexSetupDialog}
         {trigger}
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
@@ -543,20 +615,23 @@ export function ModelSelector({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
-        <ModelOptionList
-          options={options}
-          codexOptions={codexOptions}
-          value={effectiveValue}
-          isAuto={isAuto}
-          isFreeUser={isFreeUser}
-          onAutoToggle={handleAutoToggle}
-          onSelect={handleModelSelect}
-          onClose={() => setOpen(false)}
-        />
-      </PopoverContent>
-    </Popover>
+    <>
+      {codexSetupDialog}
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+        <PopoverContent className="w-[270px] p-1.5 rounded-xl" align="start">
+          <ModelOptionList
+            options={options}
+            codexOptions={codexOptions}
+            value={effectiveValue}
+            isAuto={isAuto}
+            isFreeUser={isFreeUser}
+            onAutoToggle={handleAutoToggle}
+            onSelect={handleModelSelect}
+            onClose={() => setOpen(false)}
+          />
+        </PopoverContent>
+      </Popover>
+    </>
   );
 }
