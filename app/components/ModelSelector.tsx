@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Copy,
   Download,
+  Loader2,
   Lock,
   Monitor,
   ShieldAlert,
@@ -481,6 +482,7 @@ export function ModelSelector({
   locked,
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [codexDialog, setCodexDialog] = useState<{
     open: boolean;
     title: string;
@@ -522,41 +524,46 @@ export function ModelSelector({
 
     if (option.localProvider) {
       setOpen(false);
+      setChecking(true);
 
-      const status = await checkCodexStatus();
+      try {
+        const status = await checkCodexStatus();
 
-      if (!status) {
-        toast.error("Desktop features unavailable", {
-          description: "Could not connect to the desktop app.",
-        });
-        return;
+        if (!status) {
+          toast.error("Desktop features unavailable", {
+            description: "Could not connect to the desktop app.",
+          });
+          return;
+        }
+
+        if (!status.installed) {
+          setCopied(false);
+          setCodexDialog({
+            open: true,
+            title: "Codex CLI Not Found",
+            description:
+              "Codex CLI (codex) is not installed or not on your PATH. Install it with the command below, then restart the app.",
+            command: "npm install -g @openai/codex",
+          });
+          return;
+        }
+
+        if (!status.authenticated) {
+          setCopied(false);
+          setCodexDialog({
+            open: true,
+            title: "Codex CLI Not Authenticated",
+            description:
+              "Codex CLI is installed but not signed in. Run the command below in your terminal to authenticate with your OpenAI account.",
+            command: "codex login",
+          });
+          return;
+        }
+
+        onChange(option.id);
+      } finally {
+        setChecking(false);
       }
-
-      if (!status.installed) {
-        setCopied(false);
-        setCodexDialog({
-          open: true,
-          title: "Codex CLI Not Found",
-          description:
-            "Codex CLI (codex) is not installed or not on your PATH. Install it with the command below, then restart the app.",
-          command: "npm install -g @openai/codex",
-        });
-        return;
-      }
-
-      if (!status.authenticated) {
-        setCopied(false);
-        setCodexDialog({
-          open: true,
-          title: "Codex CLI Not Authenticated",
-          description:
-            "Codex CLI is installed but not signed in. Run the command below in your terminal to authenticate with your OpenAI account.",
-          command: "codex login",
-        });
-        return;
-      }
-
-      onChange(option.id);
       return;
     }
 
@@ -634,11 +641,18 @@ export function ModelSelector({
       onClick={isMobile ? () => setOpen(true) : undefined}
       aria-expanded={isMobile ? open : undefined}
       aria-haspopup={isMobile ? "dialog" : undefined}
+      disabled={checking}
       className="h-7 px-2 gap-1 text-sm font-medium rounded-md bg-transparent hover:bg-muted/30 focus-visible:ring-1 min-w-0 shrink"
     >
-      {isCodexLocal(value) && <OpenAIIcon className="h-3 w-3 shrink-0" />}
-      <span className="truncate">{triggerLabel}</span>
-      <ChevronDown className="h-3 w-3 ml-0.5 shrink-0" />
+      {checking ? (
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      ) : (
+        isCodexLocal(value) && <OpenAIIcon className="h-3 w-3 shrink-0" />
+      )}
+      <span className="truncate">
+        {checking ? "Connecting..." : triggerLabel}
+      </span>
+      {!checking && <ChevronDown className="h-3 w-3 ml-0.5 shrink-0" />}
     </Button>
   );
 

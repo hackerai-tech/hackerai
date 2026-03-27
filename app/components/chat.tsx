@@ -1005,6 +1005,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   chatTitle={chatTitle}
                   branchedFromChatId={branchedFromChatId}
                   branchedFromChatTitle={branchedFromChatTitle}
+                  isLocalProvider={isCodexLocal(selectedModel)}
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
