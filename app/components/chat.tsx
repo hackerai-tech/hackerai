@@ -27,7 +27,7 @@ import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
-import { isCodexLocal, getCodexSubModel } from "@/types/chat";
+import { isCodexLocal, getCodexSubModel, isSelectedModel } from "@/types/chat";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -89,7 +89,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     sandboxPreference,
     setSandboxPreference,
     selectedModel,
-    // setSelectedModel,
+    setSelectedModel,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -135,8 +135,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
-  // TODO: restore when model selector is re-enabled
-  // const hasInitializedModelRef = useRef(false);
+  const hasInitializedModelRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -582,7 +581,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
-    // hasInitializedModelRef.current = false;
+    hasInitializedModelRef.current = false;
   }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
@@ -704,18 +703,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, localConnections, isExistingChat, chatId]);
 
-  // TODO: restore when model selector is re-enabled
   // Initialize model selection from chat data
-  // useEffect(() => {
-  //   if (hasInitializedModelRef.current || !isExistingChat) return;
-  //   const dataId = (chatData as any)?.id as string | undefined;
-  //   if (!chatData || dataId !== chatId) return;
-  //   const savedModel = (chatData as any).selected_model as string | undefined;
-  //   hasInitializedModelRef.current = true;
-  //   if (savedModel && isSelectedModel(savedModel)) {
-  //     setSelectedModel(savedModel);
-  //   }
-  // }, [chatData, isExistingChat, chatId]);
+  useEffect(() => {
+    if (hasInitializedModelRef.current || !isExistingChat) return;
+    const dataId = (chatData as any)?.id as string | undefined;
+    if (!chatData || dataId !== chatId) return;
+    const savedModel = (chatData as any).selected_model as string | undefined;
+    hasInitializedModelRef.current = true;
+    if (savedModel && isSelectedModel(savedModel)) {
+      setSelectedModel(savedModel);
+    }
+  }, [chatData, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages.
   // Uses statusRef (not status state) so this effect only fires when
