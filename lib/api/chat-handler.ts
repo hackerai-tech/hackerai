@@ -40,7 +40,11 @@ import {
 import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
-import { createChatLogger, type ChatLogger } from "@/lib/api/chat-logger";
+import {
+  captureToolCalls,
+  createChatLogger,
+  type ChatLogger,
+} from "@/lib/api/chat-logger";
 import {
   countFileAttachments,
   sendRateLimitWarnings,
@@ -339,7 +343,9 @@ export const createChatHandler = (
         extraUsageConfig,
       );
 
+      // PostHog client for analytics (initialized once, used at end of request)
       const posthog = PostHogClient();
+
       const assistantMessageId = uuidv4();
       chatLogger.getBuilder().setAssistantId(assistantMessageId);
 
@@ -721,17 +727,6 @@ export const createChatHandler = (
                   );
 
                   chatLogger!.recordToolCall(chunk.chunk.toolName, sandboxType);
-
-                  if (posthog) {
-                    posthog.capture({
-                      distinctId: userId,
-                      event: "hackerai-" + chunk.chunk.toolName,
-                      properties: {
-                        mode,
-                        ...(sandboxType && { sandboxType }),
-                      },
-                    });
-                  }
                 }
               },
               onStepFinish: async ({ usage }) => {
@@ -888,6 +883,12 @@ export const createChatHandler = (
                                 : null,
                             cacheReadTokens: fallbackCacheRead,
                             cacheWriteTokens: fallbackCacheWrite,
+                          });
+                          captureToolCalls({
+                            posthog,
+                            chatLogger,
+                            userId,
+                            mode,
                           });
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
@@ -1072,6 +1073,7 @@ export const createChatHandler = (
                   cacheReadTokens: usageTracker.cacheReadTokens,
                   cacheWriteTokens: usageTracker.cacheWriteTokens,
                 });
+                captureToolCalls({ posthog, chatLogger, userId, mode });
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
