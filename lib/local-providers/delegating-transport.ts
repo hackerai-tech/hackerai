@@ -15,11 +15,11 @@ interface TransportLike {
  */
 export class DelegatingTransport<T extends UIMessage = UIMessage> {
   private getTransport: () => TransportLike;
-  private beforeSend?: () => Promise<void>;
+  private beforeSend?: () => Promise<void | false>;
 
   constructor(
     getTransport: () => TransportLike,
-    beforeSend?: () => Promise<void>,
+    beforeSend?: () => Promise<void | false>,
   ) {
     this.getTransport = getTransport;
     this.beforeSend = beforeSend;
@@ -27,7 +27,16 @@ export class DelegatingTransport<T extends UIMessage = UIMessage> {
 
   async sendMessages(options: any): Promise<ReadableStream<any>> {
     if (this.beforeSend) {
-      await this.beforeSend();
+      const result = await this.beforeSend();
+      // If beforeSend returns false, abort without throwing so the message
+      // stays in the input and useChat doesn't enter an error state.
+      if (result === false) {
+        return new ReadableStream({
+          start(c) {
+            c.close();
+          },
+        });
+      }
     }
     const transport = this.getTransport();
     return transport.sendMessages(options);

@@ -4,6 +4,7 @@ import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { ChatMessage, ChatStatus } from "@/types";
 import { isCodexLocal } from "@/types/chat";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
@@ -150,6 +151,16 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Block sending in Codex chats on web — message stays in the input
+    if (isCodexLocal(selectedModel) && !isTauriEnvironment()) {
+      toast.error("This chat requires the desktop app", {
+        description:
+          "Codex models run locally and need the HackerAI desktop app.",
+      });
+      return;
+    }
+
     setIsAutoResuming(false);
 
     // Reset manual stop flag when user submits a new message

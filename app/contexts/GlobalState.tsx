@@ -10,16 +10,18 @@ import React, {
   ReactNode,
 } from "react";
 import { useAuth } from "@workos-inc/authkit-nextjs/components";
-import type {
-  ChatMode,
-  SelectedModel,
-  SidebarContent,
-  QueuedMessage,
-  QueueBehavior,
-  SandboxPreference,
+import {
+  type ChatMode,
+  type SelectedModel,
+  type SidebarContent,
+  type QueuedMessage,
+  type QueueBehavior,
+  type SandboxPreference,
+  isSelectedModel,
+  isCodexLocal,
+  isChatMode,
 } from "@/types/chat";
-import { isSelectedModel } from "@/types/chat";
-import { isChatMode } from "@/types/chat";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Todo } from "@/types";
 import {
@@ -235,26 +237,38 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   }, [queueBehavior]);
 
   // Model selection — only enabled for Ask mode. Agent mode always uses "auto".
+  // On web, Codex models are not usable so treat them as "auto".
   const [selectedModel, setSelectedModelRaw] = useState<SelectedModel>(() => {
     const saved = readSelectedModelForMode("ask");
-    return isSelectedModel(saved) ? saved : "auto";
+    if (!isSelectedModel(saved)) return "auto";
+    if (isCodexLocal(saved) && !isTauriEnvironment()) return "auto";
+    return saved;
   });
 
   // When switching modes, restore saved preference for that mode.
   useEffect(() => {
     const modeKey = isAgentMode(chatMode) ? "agent" : "ask";
     const saved = readSelectedModelForMode(modeKey);
-    if (isSelectedModel(saved)) {
+    if (
+      isSelectedModel(saved) &&
+      !(isCodexLocal(saved) && !isTauriEnvironment())
+    ) {
       setSelectedModelRaw(saved);
     } else {
       setSelectedModelRaw("auto");
     }
   }, [chatMode]);
 
-  // Persist model preference to localStorage per mode
+  // Persist model preference to localStorage per mode.
+  // Codex models run across both modes, so save to both ask and agent.
   useEffect(() => {
-    const modeKey = isAgentMode(chatMode) ? "agent" : "ask";
-    writeSelectedModelForMode(modeKey, selectedModel);
+    if (isCodexLocal(selectedModel)) {
+      writeSelectedModelForMode("ask", selectedModel);
+      writeSelectedModelForMode("agent", selectedModel);
+    } else {
+      const modeKey = isAgentMode(chatMode) ? "agent" : "ask";
+      writeSelectedModelForMode(modeKey, selectedModel);
+    }
   }, [selectedModel, chatMode]);
 
   const setSelectedModelState = useCallback(

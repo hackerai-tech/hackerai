@@ -303,7 +303,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             });
             const sidecarOk = await ensureSidecarRef.current();
             if (!sidecarOk) {
-              throw new Error("Codex sidecar failed to start");
+              toast.error("This chat requires the desktop app", {
+                description:
+                  "Codex models run locally and need the HackerAI desktop app.",
+              });
+              return false;
             }
           }
         },
