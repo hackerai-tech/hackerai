@@ -7,7 +7,9 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Download,
   Lock,
+  Monitor,
   ShieldAlert,
   Terminal,
 } from "lucide-react";
@@ -46,6 +48,7 @@ import { useGlobalState } from "@/app/contexts/GlobalState";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useTauri } from "@/app/hooks/useTauri";
 import { toast } from "sonner";
+import { detectPlatform } from "@/app/download/DownloadSection";
 
 import { OpenAIIcon } from "./ModelSelector/icons";
 import { CostIndicator } from "./ModelSelector/CostIndicator";
@@ -179,16 +182,48 @@ const ModelOptionButton = ({
 
 // ── Codex submenu ──────────────────────────────────────────────────
 
+const DesktopDownloadPrompt = () => {
+  const detectedPlatform = detectPlatform();
+  return (
+    <div className="p-3">
+      <div className="flex items-center justify-center rounded-md border bg-gradient-to-b from-muted/50 to-muted py-4 mb-3">
+        <Monitor className="h-8 w-8 text-muted-foreground/70" />
+      </div>
+      <h4 className="text-sm font-semibold mb-1">Desktop App Required</h4>
+      <p className="text-xs text-muted-foreground mb-3">
+        Codex models run locally on your machine. Download the desktop app to
+        use them.
+      </p>
+      <Button asChild size="sm" className="w-full">
+        <a
+          href={
+            detectedPlatform?.platform === "unknown"
+              ? "/download"
+              : detectedPlatform?.downloadUrl || "/download"
+          }
+        >
+          <Download className="h-4 w-4 mr-1.5" />
+          {detectedPlatform && detectedPlatform.platform !== "unknown"
+            ? `Download for ${detectedPlatform.displayName}`
+            : "Download desktop app"}
+        </a>
+      </Button>
+    </div>
+  );
+};
+
 const CodexSubMenu = ({
   codexOptions,
   value,
   onSelect,
+  isTauri = false,
   mobile = false,
   compact = false,
 }: {
   codexOptions: ModelOption[];
   value: SelectedModel;
   onSelect: (option: ModelOption) => void;
+  isTauri?: boolean;
   mobile?: boolean;
   compact?: boolean;
 }) => {
@@ -234,7 +269,7 @@ const CodexSubMenu = ({
     </button>
   );
 
-  const optionsList = (
+  const subContent = isTauri ? (
     <div className="flex flex-col gap-px">
       {codexOptions.map((option) => (
         <ModelOptionButton
@@ -250,9 +285,11 @@ const CodexSubMenu = ({
         />
       ))}
     </div>
+  ) : (
+    <DesktopDownloadPrompt />
   );
 
-  if (mobile || compact) {
+  if (mobile) {
     return (
       <>
         {triggerButton}
@@ -262,15 +299,33 @@ const CodexSubMenu = ({
             className="rounded-t-2xl px-3 pb-8 pt-0 overscroll-contain"
           >
             <SheetHeader className="pb-1 pt-4">
-              <SheetTitle className="text-base">Select Codex Model</SheetTitle>
+              <SheetTitle className="text-base">
+                {isTauri ? "Select Codex Model" : "Codex"}
+              </SheetTitle>
               <SheetDescription className="sr-only">
-                Choose a Codex model
+                {isTauri ? "Choose a Codex model" : "Desktop app required"}
               </SheetDescription>
             </SheetHeader>
-            {optionsList}
+            {subContent}
           </SheetContent>
         </Sheet>
       </>
+    );
+  }
+
+  if (compact) {
+    return (
+      <Popover open={subOpen} onOpenChange={setSubOpen}>
+        <PopoverTrigger asChild>{triggerButton}</PopoverTrigger>
+        <PopoverContent
+          className="w-[220px] p-1.5 rounded-xl"
+          side="bottom"
+          align="start"
+          sideOffset={4}
+        >
+          {subContent}
+        </PopoverContent>
+      </Popover>
     );
   }
 
@@ -289,7 +344,7 @@ const CodexSubMenu = ({
           onMouseEnter={() => setSubOpen(true)}
           onMouseLeave={() => setSubOpen(false)}
         >
-          {optionsList}
+          {subContent}
         </PopoverContent>
       </Popover>
     </div>
@@ -304,6 +359,7 @@ const ModelOptionList = ({
   value,
   isAuto,
   isFreeUser,
+  isTauri = false,
   onAutoToggle,
   onSelect,
   onClose,
@@ -314,6 +370,7 @@ const ModelOptionList = ({
   value: SelectedModel;
   isAuto: boolean;
   isFreeUser: boolean;
+  isTauri?: boolean;
   onAutoToggle: (checked: boolean) => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
@@ -405,6 +462,7 @@ const ModelOptionList = ({
               codexOptions={codexOptions}
               value={value}
               onSelect={onSelect}
+              isTauri={isTauri}
               mobile={mobile}
             />
           </>
@@ -437,7 +495,7 @@ export function ModelSelector({
   const isAuto = value === "auto";
   const isFreeUser = subscription === "free";
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
-  const codexOptions = isTauri ? CODEX_LOCAL_OPTIONS : [];
+  const codexOptions = CODEX_LOCAL_OPTIONS;
   const allOptions = [...options, ...codexOptions];
 
   const effectiveValue = isAuto ? getDefaultModelForMode(mode) : value;
@@ -464,6 +522,7 @@ export function ModelSelector({
 
     if (option.localProvider) {
       setOpen(false);
+
       const status = await checkCodexStatus();
 
       if (!status) {
@@ -553,11 +612,13 @@ export function ModelSelector({
     return (
       <>
         {codexSetupDialog}
+
         <div className="shrink min-w-0">
           <CodexSubMenu
             codexOptions={codexOptions}
             value={value}
             onSelect={handleModelSelect}
+            isTauri={isTauri}
             mobile={isMobile}
             compact
           />
@@ -585,6 +646,7 @@ export function ModelSelector({
     return (
       <>
         {codexSetupDialog}
+
         {trigger}
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetContent
@@ -603,6 +665,7 @@ export function ModelSelector({
               value={effectiveValue}
               isAuto={isAuto}
               isFreeUser={isFreeUser}
+              isTauri={isTauri}
               onAutoToggle={handleAutoToggle}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
@@ -626,6 +689,7 @@ export function ModelSelector({
             value={effectiveValue}
             isAuto={isAuto}
             isFreeUser={isFreeUser}
+            isTauri={isTauri}
             onAutoToggle={handleAutoToggle}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}
