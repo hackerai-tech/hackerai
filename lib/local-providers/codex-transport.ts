@@ -449,6 +449,19 @@ export class CodexLocalTransport {
   ) {
     const { safeEnqueue, safeClose, ensureStarted, flushOpenStreams } = helpers;
 
+    // Strip login-shell wrapper from commands once, before any handler sees them
+    if (params.item) {
+      const item = params.item;
+      if (item.command)
+        item.command = CodexLocalTransport.stripShellWrapper(item.command);
+      if (item.commandActions) {
+        for (const a of item.commandActions) {
+          if (a.command)
+            a.command = CodexLocalTransport.stripShellWrapper(a.command);
+        }
+      }
+    }
+
     console.log(
       "[CodexTransport] ←",
       method,
@@ -525,7 +538,7 @@ export class CodexLocalTransport {
             ...item,
             codexItemType: item.type,
             toolLabel,
-            command: item.commandActions?.[0]?.command || item.command,
+            command: item.commandActions?.[0]?.command || item.command || "",
             path: firstChange?.path || item.filename || item.path,
             action: firstChange?.kind?.type || item.changeType,
             diff: firstChange?.diff,
@@ -595,7 +608,7 @@ export class CodexLocalTransport {
               diff: firstChange?.diff || item.diff,
               path: firstChange?.path || item.path,
               action: firstChange?.kind?.type || item.changeType,
-              command: item.commandActions?.[0]?.command || item.command,
+              command: item.commandActions?.[0]?.command || item.command || "",
             },
           });
         }
@@ -719,6 +732,20 @@ export class CodexLocalTransport {
     } catch (err) {
       console.warn("[CodexTransport] rpcNotify failed for", method, err);
     }
+  }
+
+  /** Strip the login-shell wrapper (e.g. `/bin/zsh -lc "cmd"`) added by Tauri */
+  private static stripShellWrapper(cmd: string): string {
+    const idx = cmd.indexOf(" -lc ");
+    if (idx === -1) return cmd;
+    let inner = cmd.slice(idx + 5).trim();
+    if (
+      (inner.startsWith('"') && inner.endsWith('"')) ||
+      (inner.startsWith("'") && inner.endsWith("'"))
+    ) {
+      inner = inner.slice(1, -1);
+    }
+    return inner || cmd;
   }
 
   /** Build a human-readable label for a Codex tool item */
