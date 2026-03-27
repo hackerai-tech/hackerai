@@ -7,12 +7,20 @@ pub struct ShellConfig {
 }
 
 /// Get the shell and argument flag for the current platform.
-/// Windows uses `cmd /C`, Unix uses `/bin/sh -c`.
+/// Windows uses `cmd /C`, Unix uses the user's default shell as a login shell
+/// so that PATH from `.zshrc` / `.bashrc` / `.profile` is available — needed to
+/// find globally-installed CLIs like `codex`.
 pub fn get_shell_config() -> ShellConfig {
     if cfg!(target_os = "windows") {
         ShellConfig { shell: "cmd", flag: "/C" }
     } else {
-        ShellConfig { shell: "/bin/sh", flag: "-c" }
+        // Prefer the user's shell so login-shell init files are sourced.
+        // Falls back to /bin/sh if $SHELL is unset.
+        static USER_SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let shell = USER_SHELL.get_or_init(|| {
+            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+        });
+        ShellConfig { shell: shell.as_str(), flag: "-lc" }
     }
 }
 

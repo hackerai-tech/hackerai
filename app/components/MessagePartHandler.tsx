@@ -11,6 +11,7 @@ import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
+import { CodexToolHandler } from "./tools/CodexToolHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
@@ -215,6 +216,13 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       );
 
     default:
+      // Generic Codex tool handler — matches any tool-codex_* type
+      if (
+        typeof part.type === "string" &&
+        part.type.startsWith("tool-codex_")
+      ) {
+        return <CodexToolHandler part={part} status={status} />;
+      }
       return null;
   }
 }, arePropsEqual);

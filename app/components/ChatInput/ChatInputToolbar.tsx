@@ -12,11 +12,13 @@ import {
   type ContextUsageData,
 } from "@/app/components/ContextUsageIndicator";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { isCodexLocal } from "@/types/chat";
 
 export interface ChatInputToolbarProps extends SubmitStopButtonProps {
   onAttachClick: () => void;
   contextUsage?: ContextUsageData;
   showContextIndicator?: boolean;
+  hasMessages?: boolean;
 }
 
 export function ChatInputToolbar({
@@ -24,9 +26,13 @@ export function ChatInputToolbar({
   contextUsage,
   showContextIndicator = false,
   chatMode,
+  hasMessages = false,
   ...submitStopProps
 }: ChatInputToolbarProps) {
   const { selectedModel, setSelectedModel } = useGlobalState();
+
+  // Lock switching away from Codex mid-conversation (but allow sub-model changes)
+  const modelLocked = isCodexLocal(selectedModel) && hasMessages;
 
   return (
     <div className="px-3 flex gap-2 items-center min-w-0">
@@ -34,15 +40,14 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      {chatMode === "ask" && (
-        <ModelSelector
-          value={selectedModel}
-          onChange={setSelectedModel}
-          mode={chatMode}
-        />
-      )}
+      <ModelSelector
+        value={selectedModel}
+        onChange={setSelectedModel}
+        mode={chatMode}
+        locked={modelLocked}
+      />
       <div className="ml-auto shrink-0 flex items-center gap-2.5">
-        {showContextIndicator && contextUsage && chatMode !== "agent" && (
+        {showContextIndicator && contextUsage && (
           <ContextUsageIndicator {...contextUsage} />
         )}
         <SubmitStopButton

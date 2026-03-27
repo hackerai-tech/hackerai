@@ -711,6 +711,329 @@ export const deleteUserNote = mutation({
 });
 
 /**
+ * Create a new note for the authenticated user
+ */
+export const createUserNote = mutation({
+  args: {
+    title: v.string(),
+    content: v.string(),
+    category: v.optional(
+      v.union(
+        v.literal("general"),
+        v.literal("findings"),
+        v.literal("methodology"),
+        v.literal("questions"),
+        v.literal("plan"),
+      ),
+    ),
+    tags: v.optional(v.array(v.string())),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    note_id: v.optional(v.string()),
+    error: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    if (!args.title || !args.title.trim()) {
+      return { success: false, error: "Title cannot be empty" };
+    }
+
+    if (!args.content || !args.content.trim()) {
+      return { success: false, error: "Content cannot be empty" };
+    }
+
+    const category: NoteCategory = args.category || "general";
+    const now = Date.now();
+    const tags = args.tags || [];
+    const tokens = estimateNoteTokens(
+      args.title.trim(),
+      args.content.trim(),
+      category,
+      tags,
+    );
+
+    const maxAttempts = 5;
+    let noteId: string | null = null;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const candidateId = generateNoteId();
+      const existing = await ctx.db
+        .query("notes")
+        .withIndex("by_note_id", (q) => q.eq("note_id", candidateId))
+        .first();
+
+      if (!existing) {
+        noteId = candidateId;
+        break;
+      }
+    }
+
+    if (!noteId) {
+      return { success: false, error: "Failed to generate unique note ID" };
+    }
+
+    try {
+      await ctx.db.insert("notes", {
+        user_id: identity.subject,
+        note_id: noteId,
+        title: args.title.trim(),
+        content: args.content.trim(),
+        category,
+        tags,
+        tokens,
+        updated_at: now,
+      });
+
+      return { success: true, note_id: noteId };
+    } catch (error) {
+      console.error("Failed to create note:", error);
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to create note",
+      };
+    }
+  },
+});
+
+/**
+ * Update an existing note for the authenticated user
+ */
+export const updateUserNote = mutation({
+  args: {
+    noteId: v.string(),
+    title: v.optional(v.string()),
+    content: v.optional(v.string()),
+    tags: v.optional(v.array(v.string())),
+  },
+  returns: v.object({
+    success: v.boolean(),
+    error: v.optional(v.string()),
+    original: v.optional(
+      v.object({
+        title: v.string(),
+        content: v.string(),
+        category: v.string(),
+        tags: v.array(v.string()),
+      }),
+    ),
+    modified: v.optional(
+      v.object({
+        title: v.string(),
+        content: v.string(),
+        category: v.string(),
+        tags: v.array(v.string()),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    try {
+      const note = await ctx.db
+        .query("notes")
+        .withIndex("by_note_id", (q) => q.eq("note_id", args.noteId))
+        .first();
+
+      if (!note) {
+        return { success: false, error: `Note '${args.noteId}' not found` };
+      }
+
+      if (note.user_id !== identity.subject) {
+        throw new ConvexError({
+          code: "ACCESS_DENIED",
+          message: "Access denied: You don't own this note",
+        });
+      }
+
+      if (
+        args.title === undefined &&
+        args.content === undefined &&
+        args.tags === undefined
+      ) {
+        return {
+          success: false,
+          error:
+            "At least one field (title, content, or tags) must be provided",
+        };
+      }
+
+      if (args.title !== undefined && !args.title.trim()) {
+        return { success: false, error: "Title cannot be empty" };
+      }
+
+      if (args.content !== undefined && !args.content.trim()) {
+        return { success: false, error: "Content cannot be empty" };
+      }
+
+      const finalTitle =
+        args.title !== undefined ? args.title.trim() : note.title;
+      const finalContent =
+        args.content !== undefined ? args.content.trim() : note.content;
+      const finalTags = args.tags !== undefined ? args.tags : note.tags;
+
+      const tokens = estimateNoteTokens(
+        finalTitle,
+        finalContent,
+        note.category,
+        finalTags,
+      );
+
+      const updates: {
+        title?: string;
+        content?: string;
+        tags?: string[];
+        tokens: number;
+        updated_at: number;
+      } = {
+        tokens,
+        updated_at: Date.now(),
+      };
+
+      if (args.title !== undefined) {
+        updates.title = args.title.trim();
+      }
+      if (args.content !== undefined) {
+        updates.content = args.content.trim();
+      }
+      if (args.tags !== undefined) {
+        updates.tags = args.tags;
+      }
+
+      await ctx.db.patch(note._id, updates);
+
+      return {
+        success: true,
+        original: {
+          title: note.title,
+          content: note.content,
+          category: note.category,
+          tags: note.tags,
+        },
+        modified: {
+          title: finalTitle,
+          content: finalContent,
+          category: note.category,
+          tags: finalTags,
+        },
+      };
+    } catch (error) {
+      console.error("Failed to update note:", error);
+      if (error instanceof ConvexError) {
+        throw error;
+      }
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : "Failed to update note",
+      };
+    }
+  },
+});
+
+/**
+ * Search notes for the authenticated user
+ */
+export const searchUserNotes = query({
+  args: {
+    search: v.string(),
+    category: v.optional(
+      v.union(
+        v.literal("general"),
+        v.literal("findings"),
+        v.literal("methodology"),
+        v.literal("questions"),
+        v.literal("plan"),
+      ),
+    ),
+  },
+  returns: v.array(
+    v.object({
+      note_id: v.string(),
+      title: v.string(),
+      content: v.string(),
+      category: v.string(),
+      tags: v.array(v.string()),
+      _creationTime: v.number(),
+      updated_at: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized: User not authenticated",
+      });
+    }
+
+    try {
+      let notes;
+
+      if (args.search.trim()) {
+        notes = await ctx.db
+          .query("notes")
+          .withSearchIndex("search_notes", (q) => {
+            let searchQuery = q
+              .search("content", args.search)
+              .eq("user_id", identity.subject);
+            if (args.category) {
+              searchQuery = searchQuery.eq("category", args.category);
+            }
+            return searchQuery;
+          })
+          .collect();
+      } else if (args.category) {
+        notes = await ctx.db
+          .query("notes")
+          .withIndex("by_user_and_category", (q) =>
+            q.eq("user_id", identity.subject).eq("category", args.category!),
+          )
+          .collect();
+      } else {
+        notes = await ctx.db
+          .query("notes")
+          .withIndex("by_user_and_updated", (q) =>
+            q.eq("user_id", identity.subject),
+          )
+          .order("desc")
+          .collect();
+      }
+
+      notes.sort((a, b) => b._creationTime - a._creationTime);
+
+      return notes.map((note) => ({
+        note_id: note.note_id,
+        title: note.title,
+        content: note.content,
+        category: note.category,
+        tags: note.tags,
+        _creationTime: note._creationTime,
+        updated_at: note.updated_at,
+      }));
+    } catch (error) {
+      console.error("Failed to search notes:", error);
+      return [];
+    }
+  },
+});
+
+/**
  * Delete all notes for the authenticated user
  */
 export const deleteAllUserNotes = mutation({

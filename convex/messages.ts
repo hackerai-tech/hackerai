@@ -169,6 +169,81 @@ export const verifyChatOwnership = internalQuery({
 });
 
 /**
+ * Save a message from a local provider (e.g., Codex on desktop).
+ * Client-callable — uses auth identity instead of service key.
+ * Works for both user and assistant messages.
+ */
+export const saveLocalMessage = mutation({
+  args: {
+    id: v.string(),
+    chatId: v.string(),
+    role: v.union(v.literal("user"), v.literal("assistant")),
+    parts: v.array(v.any()),
+    model: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+
+    // Input validation
+    if (args.id.length > 200) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Message ID too long",
+      });
+    }
+    if (args.chatId.length > 200) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Chat ID too long",
+      });
+    }
+
+    // Deduplicate by message id
+    const existing = await ctx.db
+      .query("messages")
+      .withIndex("by_message_id", (q) => q.eq("id", args.id))
+      .first();
+    if (existing) {
+      return null;
+    }
+
+    // Verify chat ownership
+    const chatExists: boolean = await ctx.runQuery(
+      internal.messages.verifyChatOwnership,
+      { chatId: args.chatId, userId: user.subject },
+    );
+    if (!chatExists) {
+      throw new ConvexError({
+        code: "CHAT_NOT_FOUND",
+        message: "Chat not found",
+      });
+    }
+
+    const content = extractTextFromParts(args.parts);
+
+    await ctx.db.insert("messages", {
+      id: args.id,
+      chat_id: args.chatId,
+      user_id: user.subject,
+      role: args.role,
+      parts: args.parts,
+      content: content || undefined,
+      update_time: Date.now(),
+      model: args.model,
+    });
+
+    return null;
+  },
+});
+
+/**
  * Save a single message to a chat
  */
 export const saveMessage = mutation({
