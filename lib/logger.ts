@@ -265,6 +265,13 @@ export class WideEventBuilder {
   }
 
   /**
+   * Get recorded tool calls
+   */
+  getToolCalls(): Array<{ name: string; sandbox_type?: string }> {
+    return this.toolCalls;
+  }
+
+  /**
    * Set stream completion details
    */
   setStreamResult(result: {
