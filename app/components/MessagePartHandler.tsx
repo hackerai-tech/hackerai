@@ -33,6 +33,21 @@ const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
   return <div className="whitespace-pre-wrap">{text}</div>;
 });
 
+// Shallow object comparison — avoids JSON.stringify overhead in memo comparators.
+// Tool inputs are typically flat objects with primitive values, so shallow is sufficient.
+function shallowEqual(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    const key = keysA[i];
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 // Custom comparison for MessagePartHandler to minimize re-renders
 function arePropsEqual(
   prevProps: MessagePartHandlerProps,
@@ -73,10 +88,9 @@ function arePropsEqual(
       prevProps.part.toolCallId === nextProps.part.toolCallId &&
       prevProps.part.output === nextProps.part.output &&
       // Tool input is an object — reference check first (fast path), then
-      // value comparison so new objects with identical content don't re-render.
+      // shallow comparison so new objects with identical content don't re-render.
       (prevProps.part.input === nextProps.part.input ||
-        JSON.stringify(prevProps.part.input) ===
-          JSON.stringify(nextProps.part.input))
+        shallowEqual(prevProps.part.input, nextProps.part.input))
     );
   }
 

@@ -1,5 +1,5 @@
 import { ChatMode } from "@/types/chat";
-import { useDataStream } from "@/app/components/DataStreamProvider";
+import { useDataStreamState } from "@/app/components/DataStreamProvider";
 import { MAX_AUTO_CONTINUES } from "@/app/hooks/useAutoContinue";
 
 interface FinishReasonNoticeProps {
@@ -11,7 +11,7 @@ export const FinishReasonNotice = ({
   finishReason,
   mode,
 }: FinishReasonNoticeProps) => {
-  const { isAutoResuming, autoContinueCount } = useDataStream();
+  const { isAutoResuming, autoContinueCount } = useDataStreamState();
 
   if (isAutoResuming) return null;
 

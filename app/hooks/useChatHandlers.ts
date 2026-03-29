@@ -13,7 +13,7 @@ import {
 } from "@/lib/token-utils";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
-import { useDataStream } from "@/app/components/DataStreamProvider";
+import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 
 interface UseChatHandlersProps {
@@ -47,7 +47,7 @@ export const useChatHandlers = ({
   onStopCallback,
   resetAutoContinueCount,
 }: UseChatHandlersProps) => {
-  const { setIsAutoResuming } = useDataStream();
+  const { setIsAutoResuming } = useDataStreamDispatch();
   const {
     input,
     uploadedFiles,
