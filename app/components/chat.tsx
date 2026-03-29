@@ -703,6 +703,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         type: "SET_CONTEXT_USAGE",
         payload: { usedTokens: 0, maxTokens: 0 },
       });
+      // Clear DataStreamProvider state so stale parts from the previous chat
+      // don't feed into useAutoResume/useAutoContinue in the next conversation.
+      setDataStream([]);
+      setIsAutoResuming(false);
       resetAutoContinueCount();
     };
     setChatReset(reset);
@@ -1076,6 +1080,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   return (
     <ConvexErrorBoundary>
       <StreamEffects
+        key={chatId}
         autoResume={autoResume}
         serverMessages={serverMessages}
         resumeStream={resumeStream}
