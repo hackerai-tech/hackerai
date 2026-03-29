@@ -89,6 +89,7 @@ export const ChatInput = ({
   const isGenerating = status === "submitted" || status === "streaming";
   const showContextIndicator =
     !isMobile && subscription !== "free" && !!contextUsage;
+  const isAgent = isAgentMode(chatMode);
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;
 
@@ -202,9 +203,9 @@ export const ChatInput = ({
             input={input}
             uploadedFiles={uploadedFiles}
             chatMode={chatMode}
-            contextUsage={contextUsage}
-            showContextIndicator={showContextIndicator}
             hasMessages={hasMessages}
+            contextUsage={!isAgent ? contextUsage : undefined}
+            showContextIndicator={!isAgent && showContextIndicator}
           />
         </div>
 
@@ -213,7 +214,7 @@ export const ChatInput = ({
             Existing chats (all screens): normal flow.
             Mobile new chats: hidden (uses above-input placement).
             Hidden when Codex is selected (it manages its own sandbox). */}
-        {isAgentMode(chatMode) &&
+        {isAgent &&
           (!isMobile || !isNewChat) &&
           !isCodexLocal(selectedModel) && (
             <div
