@@ -1,6 +1,6 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
+import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import {
   useRef,
@@ -110,12 +110,83 @@ function streamingReducer(
     case "SET_CONTEXT_USAGE":
       return { ...state, contextUsage: action.payload };
     case "RESET_ON_FINISH":
-      if (state.uploadStatus === null && state.summarizationStatus === null)
+      if (
+        state.uploadStatus === null &&
+        state.summarizationStatus === null &&
+        state.rateLimitWarning === null
+      )
         return state;
-      return { ...state, uploadStatus: null, summarizationStatus: null };
+      return {
+        ...state,
+        uploadStatus: null,
+        summarizationStatus: null,
+        rateLimitWarning: null,
+      };
     default:
       return state;
   }
+}
+
+// Renderless component that isolates dataStream state subscriptions
+// (useAutoResume + useAutoContinue) from the Chat component.
+// Without this boundary, Chat subscribes to DataStreamStateContext
+// through these hooks and re-renders on every stream chunk.
+function StreamEffects({
+  autoResume,
+  serverMessages,
+  resumeStream,
+  setMessages,
+  status,
+  chatMode,
+  sendMessage,
+  hasManuallyStoppedRef,
+  todos,
+  temporaryChatsEnabled,
+  sandboxPreference,
+  selectedModel,
+  resetRef,
+}: {
+  autoResume: boolean;
+  serverMessages: ChatMessage[];
+  resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
+  setMessages: UseChatHelpers<ChatMessage>["setMessages"];
+  status: UseChatHelpers<ChatMessage>["status"];
+  chatMode: string;
+  sendMessage: (
+    message: { text: string } | any,
+    options?: { body?: Record<string, unknown> },
+  ) => void;
+  hasManuallyStoppedRef: RefObject<boolean>;
+  todos: Todo[];
+  temporaryChatsEnabled: boolean;
+  sandboxPreference: string;
+  selectedModel: string;
+  resetRef: RefObject<(() => void) | null>;
+}) {
+  useAutoResume({
+    autoResume,
+    initialMessages: serverMessages,
+    resumeStream,
+    setMessages,
+  });
+
+  const { resetAutoContinueCount } = useAutoContinue({
+    status,
+    chatMode,
+    sendMessage,
+    hasManuallyStoppedRef,
+    todos,
+    temporaryChatsEnabled,
+    sandboxPreference,
+    selectedModel,
+  });
+
+  // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
+  useEffect(() => {
+    resetRef.current = resetAutoContinueCount;
+  }, [resetRef, resetAutoContinueCount]);
+
+  return null;
 }
 
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
@@ -612,24 +683,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  // Auto-resume: reconnect to resumable stream on refresh (e.g. /api/chat/[id]/stream)
-  useAutoResume({
-    autoResume,
-    initialMessages: serverMessages,
-    resumeStream,
-    setMessages,
-  });
-
-  const { resetAutoContinueCount } = useAutoContinue({
-    status,
-    chatMode,
-    sendMessage,
-    hasManuallyStoppedRef,
-    todos,
-    temporaryChatsEnabled,
-    sandboxPreference,
-    selectedModel,
-  });
+  // Ref bridge: StreamEffects exposes resetAutoContinueCount here
+  const resetAutoContinueRef = useRef<(() => void) | null>(null);
+  const resetAutoContinueCount = useCallback(() => {
+    resetAutoContinueRef.current?.();
+  }, []);
 
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
@@ -1017,6 +1075,21 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   return (
     <ConvexErrorBoundary>
+      <StreamEffects
+        autoResume={autoResume}
+        serverMessages={serverMessages}
+        resumeStream={resumeStream}
+        setMessages={setMessages}
+        status={status}
+        chatMode={chatMode}
+        sendMessage={sendMessage}
+        hasManuallyStoppedRef={hasManuallyStoppedRef}
+        todos={todos}
+        temporaryChatsEnabled={temporaryChatsEnabled}
+        sandboxPreference={sandboxPreference}
+        selectedModel={selectedModel}
+        resetRef={resetAutoContinueRef}
+      />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
           {/* Left side - Chat content */}

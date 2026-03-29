@@ -33,17 +33,31 @@ const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
   return <div className="whitespace-pre-wrap">{text}</div>;
 });
 
-// Shallow object comparison — avoids JSON.stringify overhead in memo comparators.
-// Tool inputs are typically flat objects with primitive values, so shallow is sufficient.
-function shallowEqual(a: any, b: any): boolean {
+// Deep equality check for tool inputs — avoids JSON.stringify overhead while
+// correctly handling nested objects/arrays (e.g. tool-file edits, todo_write todos).
+function deepEqual(a: any, b: any): boolean {
   if (a === b) return true;
-  if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+  if (!a || !b || typeof a !== typeof b) return false;
+  if (typeof a !== "object") return false;
+
+  const isArrayA = Array.isArray(a);
+  const isArrayB = Array.isArray(b);
+  if (isArrayA !== isArrayB) return false;
+
+  if (isArrayA) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
   const keysA = Object.keys(a);
   const keysB = Object.keys(b);
   if (keysA.length !== keysB.length) return false;
   for (let i = 0; i < keysA.length; i++) {
     const key = keysA[i];
-    if (a[key] !== b[key]) return false;
+    if (!deepEqual(a[key], b[key])) return false;
   }
   return true;
 }
@@ -90,7 +104,7 @@ function arePropsEqual(
       // Tool input is an object — reference check first (fast path), then
       // shallow comparison so new objects with identical content don't re-render.
       (prevProps.part.input === nextProps.part.input ||
-        shallowEqual(prevProps.part.input, nextProps.part.input))
+        deepEqual(prevProps.part.input, nextProps.part.input))
     );
   }
 
