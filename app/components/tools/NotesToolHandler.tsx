@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import type { ChatStatus, SidebarNote, SidebarNotes } from "@/types/chat";
 import { isSidebarNotes } from "@/types/chat";
@@ -17,11 +17,11 @@ interface NotesToolHandlerProps {
   toolName: NotesToolName;
 }
 
-export const NotesToolHandler = ({
+export const NotesToolHandler = memo(function NotesToolHandler({
   part,
   status,
   toolName,
-}: NotesToolHandlerProps) => {
+}: NotesToolHandlerProps) {
   const { toolCallId, state, input, output } = part;
 
   const getTarget = () => {
@@ -154,4 +154,4 @@ export const NotesToolHandler = ({
     default:
       return null;
   }
-};
+});

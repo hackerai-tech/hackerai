@@ -6,7 +6,6 @@ import {
   stepCountIs,
   streamText,
   UIMessage,
-  smoothStream,
 } from "ai";
 import { systemPrompt } from "@/lib/system-prompt";
 import { getResumeSection } from "@/lib/system-prompt/resume";
@@ -714,7 +713,6 @@ export const createChatHandler = (
                 subscription,
                 userId,
               ),
-              experimental_transform: smoothStream({ chunking: "word" }),
               stopWhen: isAgentMode(mode)
                 ? [
                     stepCountIs(getMaxStepsForUser(mode, subscription)),

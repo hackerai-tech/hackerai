@@ -1,18 +1,32 @@
 "use client";
 
-import React, { createContext, useContext, useMemo, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useState,
+} from "react";
 import type { DataUIPart } from "ai";
 
-interface DataStreamContextValue {
+// --- State context (changes frequently during streaming) ---
+interface DataStreamStateValue {
   dataStream: DataUIPart<any>[];
-  setDataStream: React.Dispatch<React.SetStateAction<DataUIPart<any>[]>>;
   isAutoResuming: boolean;
-  setIsAutoResuming: React.Dispatch<React.SetStateAction<boolean>>;
   autoContinueCount: number;
+}
+
+// --- Dispatch context (stable references, never causes re-renders) ---
+interface DataStreamDispatchValue {
+  setDataStream: React.Dispatch<React.SetStateAction<DataUIPart<any>[]>>;
+  setIsAutoResuming: React.Dispatch<React.SetStateAction<boolean>>;
   setAutoContinueCount: React.Dispatch<React.SetStateAction<number>>;
 }
 
-const DataStreamContext = createContext<DataStreamContextValue | null>(null);
+const DataStreamStateContext = createContext<DataStreamStateValue | null>(null);
+const DataStreamDispatchContext = createContext<DataStreamDispatchValue | null>(
+  null,
+);
 
 export function DataStreamProvider({
   children,
@@ -23,29 +37,53 @@ export function DataStreamProvider({
   const [isAutoResuming, setIsAutoResuming] = useState<boolean>(false);
   const [autoContinueCount, setAutoContinueCount] = useState<number>(0);
 
-  const value = useMemo(
-    () => ({
-      dataStream,
-      setDataStream,
-      isAutoResuming,
-      setIsAutoResuming,
-      autoContinueCount,
-      setAutoContinueCount,
-    }),
+  const stateValue = useMemo(
+    () => ({ dataStream, isAutoResuming, autoContinueCount }),
     [dataStream, isAutoResuming, autoContinueCount],
   );
 
+  const dispatchValue = useMemo(
+    () => ({ setDataStream, setIsAutoResuming, setAutoContinueCount }),
+    // setState functions from useState are stable — this memo runs once
+    [setDataStream, setIsAutoResuming, setAutoContinueCount],
+  );
+
   return (
-    <DataStreamContext.Provider value={value}>
-      {children}
-    </DataStreamContext.Provider>
+    <DataStreamDispatchContext.Provider value={dispatchValue}>
+      <DataStreamStateContext.Provider value={stateValue}>
+        {children}
+      </DataStreamStateContext.Provider>
+    </DataStreamDispatchContext.Provider>
   );
 }
 
-export function useDataStream() {
-  const context = useContext(DataStreamContext);
+/** Subscribe to stream state (dataStream, isAutoResuming, autoContinueCount).
+ *  Components using this will re-render on every state change. */
+export function useDataStreamState() {
+  const context = useContext(DataStreamStateContext);
   if (!context) {
-    throw new Error("useDataStream must be used within a DataStreamProvider");
+    throw new Error(
+      "useDataStreamState must be used within a DataStreamProvider",
+    );
   }
   return context;
+}
+
+/** Subscribe to dispatch functions only (setDataStream, setIsAutoResuming, setAutoContinueCount).
+ *  Components using this will NOT re-render when stream state changes. */
+export function useDataStreamDispatch() {
+  const context = useContext(DataStreamDispatchContext);
+  if (!context) {
+    throw new Error(
+      "useDataStreamDispatch must be used within a DataStreamProvider",
+    );
+  }
+  return context;
+}
+
+/** Legacy hook — returns both state and dispatch. Prefer the split hooks above. */
+export function useDataStream() {
+  const state = useDataStreamState();
+  const dispatch = useDataStreamDispatch();
+  return { ...state, ...dispatch };
 }

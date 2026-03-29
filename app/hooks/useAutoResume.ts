@@ -3,7 +3,10 @@
 import { useEffect, useRef } from "react";
 import type { UseChatHelpers } from "@ai-sdk/react";
 import type { ChatMessage } from "@/types/chat";
-import { useDataStream } from "@/app/components/DataStreamProvider";
+import {
+  useDataStreamState,
+  useDataStreamDispatch,
+} from "@/app/components/DataStreamProvider";
 
 export interface UseAutoResumeParams {
   autoResume: boolean;
@@ -18,7 +21,8 @@ export function useAutoResume({
   resumeStream,
   setMessages,
 }: UseAutoResumeParams) {
-  const { dataStream, setIsAutoResuming } = useDataStream();
+  const { dataStream } = useDataStreamState();
+  const { setIsAutoResuming } = useDataStreamDispatch();
   const hasAutoResumedRef = useRef(false);
 
   useEffect(() => {

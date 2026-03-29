@@ -1,8 +1,16 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
+import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useRef, useEffect, useState, useMemo, type RefObject } from "react";
+import {
+  useRef,
+  useEffect,
+  useState,
+  useReducer,
+  useMemo,
+  useCallback,
+  type RefObject,
+} from "react";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
@@ -43,29 +51,156 @@ import {
   isTauriEnvironment,
 } from "../hooks/useTauri";
 import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
-import { useDataStream } from "./DataStreamProvider";
+import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
+// --- Streaming ephemeral state reducer ---
+// Consolidates high-frequency streaming state updates into a single dispatch
+// to avoid cascading re-renders from multiple independent useState calls.
+interface StreamingEphemeralState {
+  uploadStatus: { message: string; isUploading: boolean } | null;
+  summarizationStatus: {
+    status: "started" | "completed";
+    message: string;
+  } | null;
+  rateLimitWarning: RateLimitWarningData | null;
+  contextUsage: ContextUsageData;
+}
+
+type StreamingAction =
+  | {
+      type: "SET_UPLOAD_STATUS";
+      payload: StreamingEphemeralState["uploadStatus"];
+    }
+  | {
+      type: "SET_SUMMARIZATION_STATUS";
+      payload: StreamingEphemeralState["summarizationStatus"];
+    }
+  | {
+      type: "SET_RATE_LIMIT_WARNING";
+      payload: StreamingEphemeralState["rateLimitWarning"];
+    }
+  | { type: "SET_CONTEXT_USAGE"; payload: ContextUsageData }
+  | { type: "RESET_ON_FINISH" };
+
+const initialStreamingState: StreamingEphemeralState = {
+  uploadStatus: null,
+  summarizationStatus: null,
+  rateLimitWarning: null,
+  contextUsage: { usedTokens: 0, maxTokens: 0 },
+};
+
+function streamingReducer(
+  state: StreamingEphemeralState,
+  action: StreamingAction,
+): StreamingEphemeralState {
+  switch (action.type) {
+    case "SET_UPLOAD_STATUS":
+      if (state.uploadStatus === action.payload) return state;
+      return { ...state, uploadStatus: action.payload };
+    case "SET_SUMMARIZATION_STATUS":
+      if (state.summarizationStatus === action.payload) return state;
+      return { ...state, summarizationStatus: action.payload };
+    case "SET_RATE_LIMIT_WARNING":
+      return { ...state, rateLimitWarning: action.payload };
+    case "SET_CONTEXT_USAGE":
+      return { ...state, contextUsage: action.payload };
+    case "RESET_ON_FINISH":
+      if (
+        state.uploadStatus === null &&
+        state.summarizationStatus === null &&
+        state.rateLimitWarning === null
+      )
+        return state;
+      return {
+        ...state,
+        uploadStatus: null,
+        summarizationStatus: null,
+        rateLimitWarning: null,
+      };
+    default:
+      return state;
+  }
+}
+
+// Renderless component that isolates dataStream state subscriptions
+// (useAutoResume + useAutoContinue) from the Chat component.
+// Without this boundary, Chat subscribes to DataStreamStateContext
+// through these hooks and re-renders on every stream chunk.
+function StreamEffects({
+  autoResume,
+  serverMessages,
+  resumeStream,
+  setMessages,
+  status,
+  chatMode,
+  sendMessage,
+  hasManuallyStoppedRef,
+  todos,
+  temporaryChatsEnabled,
+  sandboxPreference,
+  selectedModel,
+  resetRef,
+}: {
+  autoResume: boolean;
+  serverMessages: ChatMessage[];
+  resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
+  setMessages: UseChatHelpers<ChatMessage>["setMessages"];
+  status: UseChatHelpers<ChatMessage>["status"];
+  chatMode: string;
+  sendMessage: (
+    message: { text: string } | any,
+    options?: { body?: Record<string, unknown> },
+  ) => void;
+  hasManuallyStoppedRef: RefObject<boolean>;
+  todos: Todo[];
+  temporaryChatsEnabled: boolean;
+  sandboxPreference: string;
+  selectedModel: string;
+  resetRef: RefObject<(() => void) | null>;
+}) {
+  useAutoResume({
+    autoResume,
+    initialMessages: serverMessages,
+    resumeStream,
+    setMessages,
+  });
+
+  const { resetAutoContinueCount } = useAutoContinue({
+    status,
+    chatMode,
+    sendMessage,
+    hasManuallyStoppedRef,
+    todos,
+    temporaryChatsEnabled,
+    sandboxPreference,
+    selectedModel,
+  });
+
+  // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
+  useEffect(() => {
+    resetRef.current = resetAutoContinueCount;
+  }, [resetRef, resetAutoContinueCount]);
+
+  return null;
+}
+
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
-  const { setDataStream, setIsAutoResuming } = useDataStream();
-  const [uploadStatus, setUploadStatus] = useState<{
-    message: string;
-    isUploading: boolean;
-  } | null>(null);
-  const [summarizationStatus, setSummarizationStatus] = useState<{
-    status: "started" | "completed";
-    message: string;
-  } | null>(null);
-  const [rateLimitWarning, setRateLimitWarning] =
-    useState<RateLimitWarningData | null>(null);
+  const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
+  const [streamingState, dispatchStreaming] = useReducer(
+    streamingReducer,
+    initialStreamingState,
+  );
+  const { uploadStatus, summarizationStatus, rateLimitWarning, contextUsage } =
+    streamingState;
 
   const {
     chatMode,
@@ -113,12 +248,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const [tempChatFileDetails, setTempChatFileDetails] = useState<
     Map<string, FileDetails[]>
   >(new Map());
-
-  // Context usage tracking (populated by server via data stream on each generation)
-  const [contextUsage, setContextUsage] = useState<ContextUsageData>({
-    usedTokens: 0,
-    maxTokens: 0,
-  });
 
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   // Use global state ref so streaming callback reads latest value
@@ -388,88 +517,103 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   } = useChat({
     id: chatId,
     messages: serverMessages,
-    experimental_throttle: 100,
+    experimental_throttle: 150,
     generateId: () => uuidv4(),
 
     transport,
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
-      if (dataPart.type === "data-upload-status") {
-        const uploadData = dataPart.data as {
-          message: string;
-          isUploading: boolean;
-        };
-        setUploadStatus(uploadData.isUploading ? uploadData : null);
-      }
-      if (dataPart.type === "data-summarization") {
-        const summaryData = dataPart.data as {
-          status: "started" | "completed";
-          message: string;
-        };
-        // Show shimmer while started, clear when completed
-        setSummarizationStatus(
-          summaryData.status === "started" ? summaryData : null,
-        );
-      }
-      if (dataPart.type === "data-rate-limit-warning") {
-        const rawData = dataPart.data as Record<string, unknown>;
-        const parsed = parseRateLimitWarning(rawData, {
-          hasUserDismissed: hasUserDismissedWarningRef.current,
-        });
-        if (parsed) setRateLimitWarning(parsed);
-      }
-      if (dataPart.type === "data-file-metadata") {
-        const fileData = dataPart.data as {
-          messageId: string;
-          fileDetails: FileDetails[];
-        };
-
-        // Merge into parallel state (outside AI SDK control)
-        // Uses merge-with-dedup so incremental events (per-file) and
-        // the onFinish batch event both work without duplicates
-        setTempChatFileDetails((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(fileData.messageId) || [];
-          const existingIds = new Set(
-            existing.map((f: FileDetails) => f.fileId),
-          );
-          const newFiles = fileData.fileDetails.filter(
-            (f: FileDetails) => !existingIds.has(f.fileId),
-          );
-          next.set(fileData.messageId, [...existing, ...newFiles]);
-          return next;
-        });
-      }
-      if (dataPart.type === "data-context-usage") {
-        const usage = dataPart.data as ContextUsageData;
-        setContextUsage(usage);
-      }
-      if (dataPart.type === "data-sandbox-fallback") {
-        const fallbackData = dataPart.data as {
-          occurred: boolean;
-          reason: "connection_unavailable" | "no_local_connections";
-          requestedPreference: string;
-          actualSandbox: string;
-          actualSandboxName?: string;
-        };
-
-        // Skip fallback notifications for Tauri — the server-side health check
-        // hits its own localhost, not the user's desktop, so it consistently
-        // reports false disconnects. The frontend already validated Tauri availability.
-        if (fallbackData.requestedPreference === "tauri") {
-          return;
+      switch (dataPart.type) {
+        case "data-upload-status": {
+          const uploadData = dataPart.data as {
+            message: string;
+            isUploading: boolean;
+          };
+          dispatchStreaming({
+            type: "SET_UPLOAD_STATUS",
+            payload: uploadData.isUploading ? uploadData : null,
+          });
+          break;
         }
+        case "data-summarization": {
+          const summaryData = dataPart.data as {
+            status: "started" | "completed";
+            message: string;
+          };
+          dispatchStreaming({
+            type: "SET_SUMMARIZATION_STATUS",
+            payload: summaryData.status === "started" ? summaryData : null,
+          });
+          break;
+        }
+        case "data-rate-limit-warning": {
+          const rawData = dataPart.data as Record<string, unknown>;
+          const parsed = parseRateLimitWarning(rawData, {
+            hasUserDismissed: hasUserDismissedWarningRef.current,
+          });
+          if (parsed) {
+            dispatchStreaming({
+              type: "SET_RATE_LIMIT_WARNING",
+              payload: parsed,
+            });
+          }
+          break;
+        }
+        case "data-file-metadata": {
+          const fileData = dataPart.data as {
+            messageId: string;
+            fileDetails: FileDetails[];
+          };
+          // Merge into parallel state (outside AI SDK control)
+          // Uses merge-with-dedup so incremental events (per-file) and
+          // the onFinish batch event both work without duplicates
+          setTempChatFileDetails((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(fileData.messageId) || [];
+            const existingIds = new Set(
+              existing.map((f: FileDetails) => f.fileId),
+            );
+            const newFiles = fileData.fileDetails.filter(
+              (f: FileDetails) => !existingIds.has(f.fileId),
+            );
+            next.set(fileData.messageId, [...existing, ...newFiles]);
+            return next;
+          });
+          break;
+        }
+        case "data-context-usage": {
+          const usage = dataPart.data as ContextUsageData;
+          dispatchStreaming({ type: "SET_CONTEXT_USAGE", payload: usage });
+          break;
+        }
+        case "data-sandbox-fallback": {
+          const fallbackData = dataPart.data as {
+            occurred: boolean;
+            reason: "connection_unavailable" | "no_local_connections";
+            requestedPreference: string;
+            actualSandbox: string;
+            actualSandboxName?: string;
+          };
 
-        // Update sandbox preference to match actual sandbox used
-        setSandboxPreference(fallbackData.actualSandbox);
+          // Skip fallback notifications for Tauri — the server-side health check
+          // hits its own localhost, not the user's desktop, so it consistently
+          // reports false disconnects. The frontend already validated Tauri availability.
+          if (fallbackData.requestedPreference === "tauri") {
+            break;
+          }
 
-        // Show toast notification
-        const message =
-          fallbackData.reason === "no_local_connections"
-            ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}.`
-            : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}.`;
-        toast.info(message, { duration: 5000 });
+          // Update sandbox preference to match actual sandbox used
+          setSandboxPreference(fallbackData.actualSandbox);
+
+          // Show toast notification
+          const message =
+            fallbackData.reason === "no_local_connections"
+              ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}.`
+              : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}.`;
+          toast.info(message, { duration: 5000 });
+          break;
+        }
       }
     },
     onToolCall: ({ toolCall }) => {
@@ -499,8 +643,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     onFinish: () => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
-      setUploadStatus(null);
-      setSummarizationStatus(null);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
 
       // Local providers: persist messages + thread to Convex.
       // Suppress Convex sync for 2s so the echo-back doesn't replace
@@ -524,8 +667,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     onError: (error) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
-      setUploadStatus(null);
-      setSummarizationStatus(null);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
@@ -541,24 +683,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  // Auto-resume: reconnect to resumable stream on refresh (e.g. /api/chat/[id]/stream)
-  useAutoResume({
-    autoResume,
-    initialMessages: serverMessages,
-    resumeStream,
-    setMessages,
-  });
-
-  const { resetAutoContinueCount } = useAutoContinue({
-    status,
-    chatMode,
-    sendMessage,
-    hasManuallyStoppedRef,
-    todos,
-    temporaryChatsEnabled,
-    sandboxPreference,
-    selectedModel,
-  });
+  // Ref bridge: StreamEffects exposes resetAutoContinueCount here
+  const resetAutoContinueRef = useRef<(() => void) | null>(null);
+  const resetAutoContinueCount = useCallback(() => {
+    resetAutoContinueRef.current?.();
+  }, []);
 
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
@@ -569,12 +698,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       wasNewChatRef.current = true;
       setTodos([]);
       setAwaitingServerChat(false);
-      setUploadStatus(null);
-      setSummarizationStatus(null);
-      setContextUsage({
-        usedTokens: 0,
-        maxTokens: 0,
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
+      dispatchStreaming({
+        type: "SET_CONTEXT_USAGE",
+        payload: { usedTokens: 0, maxTokens: 0 },
       });
+      // Clear DataStreamProvider state so stale parts from the previous chat
+      // don't feed into useAutoResume/useAutoContinue in the next conversation.
+      setDataStream([]);
+      setIsAutoResuming(false);
       resetAutoContinueCount();
     };
     setChatReset(reset);
@@ -901,8 +1033,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     isSendingNowRef,
     hasManuallyStoppedRef,
     onStopCallback: () => {
-      setUploadStatus(null);
-      setSummarizationStatus(null);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
   });
@@ -911,7 +1042,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Rate limit warning dismiss handler
   const handleDismissRateLimitWarning = () => {
-    setRateLimitWarning(null);
+    dispatchStreaming({ type: "SET_RATE_LIMIT_WARNING", payload: null });
     setHasUserDismissedRateLimitWarning(true);
   };
 
@@ -948,6 +1079,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   return (
     <ConvexErrorBoundary>
+      <StreamEffects
+        key={chatId}
+        autoResume={autoResume}
+        serverMessages={serverMessages}
+        resumeStream={resumeStream}
+        setMessages={setMessages}
+        status={status}
+        chatMode={chatMode}
+        sendMessage={sendMessage}
+        hasManuallyStoppedRef={hasManuallyStoppedRef}
+        todos={todos}
+        temporaryChatsEnabled={temporaryChatsEnabled}
+        sandboxPreference={sandboxPreference}
+        selectedModel={selectedModel}
+        resetRef={resetAutoContinueRef}
+      />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
           {/* Left side - Chat content */}
