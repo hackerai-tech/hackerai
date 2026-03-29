@@ -46,7 +46,6 @@ export interface SubmitStopButtonProps {
   input: string;
   uploadedFiles: UploadedFileState[];
   chatMode: ChatMode;
-  showContextIndicator?: boolean;
 }
 
 export function SubmitStopButton({
@@ -59,7 +58,6 @@ export function SubmitStopButton({
   input,
   uploadedFiles,
   chatMode,
-  showContextIndicator = false,
 }: SubmitStopButtonProps) {
   useHotkeys(
     "ctrl+c",
@@ -77,7 +75,7 @@ export function SubmitStopButton({
     [isGenerating, onStop],
   );
 
-  const containerClass = `flex gap-2 shrink-0 items-center ${showContextIndicator ? "" : "ml-auto"}`;
+  const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
 
   if (isGenerating && !hideStop) {
     return (

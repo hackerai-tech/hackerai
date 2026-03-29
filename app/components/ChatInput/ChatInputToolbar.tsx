@@ -50,11 +50,7 @@ export function ChatInputToolbar({
         {showContextIndicator && contextUsage && (
           <ContextUsageIndicator {...contextUsage} />
         )}
-        <SubmitStopButton
-          {...submitStopProps}
-          chatMode={chatMode}
-          showContextIndicator={showContextIndicator}
-        />
+        <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
       </div>
     </div>
   );
