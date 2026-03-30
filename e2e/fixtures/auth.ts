@@ -181,8 +181,9 @@ async function performLogin(page: Page, user: TestUser): Promise<void> {
   // Navigate to login page
   await page.goto("/login");
 
-  // Wait for WorkOS login page to load
-  await page.waitForLoadState("networkidle");
+  // Wait for WorkOS login page to load (avoid "networkidle" — Cloudflare
+  // challenge scripts keep connections open and cause timeouts)
+  await page.waitForLoadState("domcontentloaded");
 
   // Step 1: Enter email and click Continue
   // WorkOS uses a two-step process: email first, then password
