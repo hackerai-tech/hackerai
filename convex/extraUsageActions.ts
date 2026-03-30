@@ -18,7 +18,7 @@ function getStripe(): Stripe {
   if (!stripeInstance) {
     const key = process.env.STRIPE_SECRET_KEY;
     if (!key) throw new Error("STRIPE_SECRET_KEY not configured");
-    stripeInstance = new Stripe(key, { apiVersion: "2026-02-25.clover" });
+    stripeInstance = new Stripe(key, { apiVersion: "2026-03-25.dahlia" });
   }
   return stripeInstance;
 }

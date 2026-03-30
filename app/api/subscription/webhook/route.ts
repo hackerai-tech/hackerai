@@ -139,7 +139,7 @@ async function resolveSubscription(subscriptionId: string): Promise<{
 
 /** Handle invoice.paid — reset rate limit buckets on subscription payment. */
 async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
-  // In Stripe API 2026-02-25, subscription lives under invoice.parent.subscription_details
+  // In Stripe API 2026-03-25, subscription lives under invoice.parent.subscription_details
   const subDetails = invoice.parent?.subscription_details;
   const subscriptionId = subDetails
     ? typeof subDetails.subscription === "string"
