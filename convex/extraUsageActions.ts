@@ -190,24 +190,6 @@ async function createAutoReloadPayment(
       };
     }
 
-    // Propagate metadata to the PaymentIntent so Stripe Radar rules can
-    // match on charge metadata (e.g. block if risk_level = "highest" and
-    // metadata[type] = "extra_usage_auto_reload")
-    const piId = (
-      finalizedInvoice as unknown as {
-        payment_intent?: string | { id: string };
-      }
-    ).payment_intent;
-    const paymentIntentId = typeof piId === "string" ? piId : piId?.id;
-    if (paymentIntentId) {
-      await stripe.paymentIntents.update(paymentIntentId, {
-        metadata: {
-          type: "extra_usage_auto_reload",
-          userId,
-        },
-      });
-    }
-
     // Pay the invoice with the specified payment method
     const paidInvoice = await stripe.invoices.pay(finalizedInvoice.id, {
       payment_method: paymentMethodId,
