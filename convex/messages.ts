@@ -3,7 +3,7 @@ import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import { paginationOptsValidator } from "convex/server";
-import { validateServiceKey } from "./lib/utils";
+import { validateServiceKey, copyChatSummary } from "./lib/utils";
 import { fileCountAggregate } from "./fileAggregate";
 
 /**
@@ -1130,7 +1130,7 @@ export const branchChat = mutation({
       // Create new chat with same title as original
       const newChatId = crypto.randomUUID();
 
-      await ctx.db.insert("chats", {
+      const newChatDocId = await ctx.db.insert("chats", {
         id: newChatId,
         title: originalChat.title,
         user_id: user.subject,
@@ -1138,9 +1138,11 @@ export const branchChat = mutation({
         update_time: Date.now(),
       });
 
-      // Copy messages to new chat
+      // Copy messages to new chat, tracking old→new ID mapping for summary remapping
+      const messageIdMap = new Map<string, string>();
       for (const msg of messagesToCopy) {
         const newMessageId = crypto.randomUUID();
+        messageIdMap.set(msg.id, newMessageId);
         await ctx.db.insert("messages", {
           id: newMessageId,
           chat_id: newChatId,
@@ -1155,6 +1157,16 @@ export const branchChat = mutation({
           generation_time_ms: msg.generation_time_ms,
           finish_reason: msg.finish_reason,
           usage: msg.usage,
+        });
+      }
+
+      // Copy summary from original chat if it covers the copied messages
+      if (originalChat.latest_summary_id) {
+        await copyChatSummary(ctx.db, {
+          sourceSummaryId: originalChat.latest_summary_id,
+          targetChatDocId: newChatDocId,
+          targetChatId: newChatId,
+          messageIdMap,
         });
       }
 
@@ -1462,6 +1474,18 @@ export const getPreviewMessages = query({
         v.literal("system"),
       ),
       content: v.optional(v.string()),
+      parts: v.array(v.any()),
+      fileDetails: v.optional(
+        v.array(
+          v.object({
+            fileId: v.id("files"),
+            name: v.string(),
+            mediaType: v.optional(v.string()),
+            storageId: v.optional(v.string()),
+            s3Key: v.optional(v.string()),
+          }),
+        ),
+      ),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1487,18 +1511,56 @@ export const getPreviewMessages = query({
         .take(10);
 
       // Get first 4 visible messages (user and assistant messages only)
-      const result = messages
+      const visibleMessages = messages
         .filter(
           (m) =>
             m.is_hidden !== true &&
             (m.role === "user" || m.role === "assistant"),
         )
-        .slice(0, 4)
-        .map((m) => ({
+        .slice(0, 4);
+
+      // Batch fetch file details for messages with file_ids
+      const allFileIds = new Set<Id<"files">>();
+      for (const message of visibleMessages) {
+        if (message.file_ids && message.file_ids.length > 0) {
+          message.file_ids.forEach((id) => allFileIds.add(id));
+        }
+      }
+
+      const fileIdArray = Array.from(allFileIds);
+      const files = await Promise.all(
+        fileIdArray.map((fileId) => ctx.db.get(fileId)),
+      );
+
+      const fileDetailsMap = new Map();
+      files.forEach((file, index) => {
+        if (file) {
+          fileDetailsMap.set(fileIdArray[index], {
+            fileId: fileIdArray[index],
+            name: file.name,
+            mediaType: file.media_type,
+            storageId: file.storage_id,
+            s3Key: file.s3_key,
+          });
+        }
+      });
+
+      const result = visibleMessages.map((m) => {
+        let fileDetails = undefined;
+        if (m.file_ids && m.file_ids.length > 0) {
+          fileDetails = m.file_ids
+            .map((fileId) => fileDetailsMap.get(fileId))
+            .filter((detail) => detail !== undefined);
+        }
+
+        return {
           id: m.id,
           role: m.role,
           content: m.content,
-        }));
+          parts: m.parts,
+          fileDetails,
+        };
+      });
 
       return result;
     } catch (error) {

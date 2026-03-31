@@ -303,12 +303,14 @@ export interface Memory {
 }
 
 /**
- * Preview message for share dialog (simplified message structure)
+ * Preview message for share dialog (full message structure with parts)
  */
 export interface PreviewMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content?: string;
+  parts: any[];
+  fileDetails?: FileDetails[];
 }
 
 /**

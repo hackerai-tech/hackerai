@@ -15,7 +15,8 @@ import { Input } from "@/components/ui/input";
 import { Copy, Check, Loader2, X as XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
-import { MemoizedMarkdown } from "@/app/components/MemoizedMarkdown";
+import { MessagePartHandler } from "@/app/components/MessagePartHandler";
+import { FilePartRenderer } from "@/app/components/FilePartRenderer";
 
 interface ShareDialogProps {
   open: boolean;
@@ -205,13 +206,33 @@ export const ShareDialog = ({
             {/* Chat Preview */}
             <div className="px-6 py-4">
               <div className="w-full rounded-xl aspect-[1200/630] overflow-hidden border bg-muted/30 relative">
-                <div className="h-full w-full overflow-hidden">
-                  {/* Content wrapper - adapts to dialog width */}
+                <div className="h-full w-full overflow-hidden pointer-events-none select-none">
+                  {/* Content wrapper - adapts to dialog width, non-interactive preview */}
                   <div className="h-full w-full p-4">
                     <div className="w-full flex flex-col space-y-4">
                       {previewMessages &&
                         previewMessages.map((message: PreviewMessage) => {
                           const isUser = message.role === "user";
+                          const parts = message.parts || [];
+                          const fileParts = parts.filter(
+                            (p: any) => p.type === "file",
+                          );
+                          const nonFileParts = parts.filter(
+                            (p: any) => p.type !== "file",
+                          );
+                          const uiMessage = {
+                            id: message.id,
+                            role: message.role,
+                            parts,
+                          };
+
+                          // Build fileDetails for saved files from tools
+                          const savedFiles = isUser
+                            ? []
+                            : (message.fileDetails || []).filter(
+                                (f) => f.storageId || f.s3Key,
+                              );
+
                           return (
                             <div
                               key={message.id}
@@ -224,24 +245,89 @@ export const ShareDialog = ({
                                     : "w-full text-foreground"
                                 } overflow-hidden`}
                               >
-                                <div
-                                  className={`${
-                                    isUser
-                                      ? "max-w-[80%] bg-secondary rounded-[18px] px-4 py-1.5 data-[multiline]:py-3 rounded-se-lg text-primary-foreground border border-border"
-                                      : "w-full prose space-y-3 max-w-none dark:prose-invert min-w-0"
-                                  } overflow-hidden`}
-                                >
-                                  {isUser ? (
-                                    <div className="whitespace-pre-wrap">
-                                      {message.content}
-                                    </div>
-                                  ) : (
-                                    <MemoizedMarkdown
-                                      content={message.content || ""}
-                                    />
-                                  )}
-                                </div>
+                                {/* File attachments for user messages */}
+                                {isUser && fileParts.length > 0 && (
+                                  <div className="flex flex-wrap items-center justify-end gap-2 w-full">
+                                    {fileParts.map(
+                                      (part: any, partIndex: number) => (
+                                        <FilePartRenderer
+                                          key={`${message.id}-file-${partIndex}`}
+                                          part={part}
+                                          partIndex={partIndex}
+                                          messageId={message.id}
+                                          totalFileParts={fileParts.length}
+                                        />
+                                      ),
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Text and tool parts */}
+                                {(isUser
+                                  ? nonFileParts.length > 0
+                                  : parts.length > 0) && (
+                                  <div
+                                    className={`${
+                                      isUser
+                                        ? "max-w-[80%] bg-secondary rounded-[18px] px-4 py-1.5 data-[multiline]:py-3 rounded-se-lg text-primary-foreground border border-border"
+                                        : "w-full prose space-y-3 max-w-none dark:prose-invert min-w-0"
+                                    } overflow-hidden`}
+                                  >
+                                    {isUser ? (
+                                      <div className="whitespace-pre-wrap">
+                                        {nonFileParts.map(
+                                          (part: any, partIndex: number) => (
+                                            <MessagePartHandler
+                                              key={`${message.id}-${partIndex}`}
+                                              message={uiMessage as any}
+                                              part={part}
+                                              partIndex={partIndex}
+                                              status="ready"
+                                            />
+                                          ),
+                                        )}
+                                      </div>
+                                    ) : (
+                                      parts.map(
+                                        (part: any, partIndex: number) => (
+                                          <MessagePartHandler
+                                            key={`${message.id}-${partIndex}`}
+                                            message={uiMessage as any}
+                                            part={part}
+                                            partIndex={partIndex}
+                                            status="ready"
+                                            sharedFileDetails={
+                                              message.fileDetails
+                                            }
+                                          />
+                                        ),
+                                      )
+                                    )}
+                                  </div>
+                                )}
                               </div>
+
+                              {/* Saved files from tools */}
+                              {savedFiles.length > 0 && (
+                                <div className="mt-2 flex flex-wrap items-center gap-2 w-full">
+                                  {savedFiles.map((file, fileIndex) => (
+                                    <FilePartRenderer
+                                      key={`${message.id}-saved-file-${fileIndex}`}
+                                      part={{
+                                        storageId: file.storageId,
+                                        fileId: file.fileId,
+                                        s3Key: file.s3Key,
+                                        name: file.name,
+                                        filename: file.name,
+                                        mediaType: file.mediaType,
+                                      }}
+                                      partIndex={fileIndex}
+                                      messageId={message.id}
+                                      totalFileParts={savedFiles.length}
+                                    />
+                                  ))}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
