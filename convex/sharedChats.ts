@@ -251,6 +251,91 @@ export const getUserSharedChats = query({
 });
 
 /**
+ * Fork a shared chat into the authenticated user's own chat.
+ * Copies all visible messages (up to share_date) into a new chat
+ * owned by the current user, so they can continue the conversation.
+ *
+ * @param shareId - The public share ID of the chat to fork
+ * @returns The new chat ID
+ * @throws {Error} If chat not found, not shared, or user not authenticated
+ */
+export const forkSharedChat = mutation({
+  args: { shareId: v.string() },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthorized: User not authenticated");
+    }
+
+    // Validate UUID format
+    const UUID_REGEX =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_REGEX.test(args.shareId)) {
+      throw new Error("Invalid share link");
+    }
+
+    const chat = await ctx.db
+      .query("chats")
+      .withIndex("by_share_id", (q) => q.eq("share_id", args.shareId))
+      .first();
+
+    if (!chat || !chat.share_id || !chat.share_date) {
+      throw new Error("Shared chat not found");
+    }
+
+    // Get all messages up to share_date (frozen content)
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
+      .order("asc")
+      .collect();
+
+    const frozenMessages = messages.filter(
+      (msg) => msg.update_time <= chat.share_date! && msg.is_hidden !== true,
+    );
+
+    // Create new chat owned by the current user
+    const newChatId = crypto.randomUUID();
+
+    await ctx.db.insert("chats", {
+      id: newChatId,
+      title: chat.title,
+      user_id: identity.subject,
+      branched_from_chat_id: chat.id,
+      update_time: Date.now(),
+    });
+
+    // Copy messages to new chat
+    for (const msg of frozenMessages) {
+      const newMessageId = crypto.randomUUID();
+      // Remove file/image parts entirely — the forking user doesn't own the
+      // original files, signed URLs will expire, and placeholder parts render
+      // as broken "Unknown file" cards in the regular chat view.
+      const sanitizedParts = msg.parts.filter(
+        (part: any) => part.type !== "file",
+      );
+      await ctx.db.insert("messages", {
+        id: newMessageId,
+        chat_id: newChatId,
+        user_id: identity.subject,
+        role: msg.role,
+        parts: sanitizedParts,
+        content: msg.content,
+        source_message_id: msg.id,
+        update_time: Date.now(),
+        model: msg.model,
+        generation_time_ms: msg.generation_time_ms,
+        finish_reason: msg.finish_reason,
+        usage: msg.usage,
+      });
+    }
+
+    return newChatId;
+  },
+});
+
+/**
  * Unshare all chats for the authenticated user.
  *
  * @throws {Error} If user not authenticated

@@ -203,6 +203,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     streamingState;
 
   const {
+    input,
     chatMode,
     setChatMode,
     sidebarOpen,
@@ -1059,6 +1060,27 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       throw error;
     }
   };
+
+  // Auto-send message after forking a shared chat
+  const autoSendFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoSendFiredRef.current) return;
+    try {
+      const pendingChatId = sessionStorage.getItem("autoSendChatId");
+      if (pendingChatId !== chatId) return;
+    } catch {
+      return;
+    }
+    // Wait for chat to be ready with draft input loaded
+    if (status !== "ready" || !input.trim()) return;
+    // Wait for server messages to be loaded (forked chat has messages)
+    if (!isExistingChat || messages.length === 0) return;
+
+    autoSendFiredRef.current = true;
+    sessionStorage.removeItem("autoSendChatId");
+    // Trigger submit with a synthetic event
+    handleSubmit(new Event("submit") as unknown as React.FormEvent);
+  }, [chatId, status, input, isExistingChat, messages.length, handleSubmit]);
 
   const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
