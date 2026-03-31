@@ -936,11 +936,19 @@ function getCodexToolDisplay(itemType: string, input: any) {
         doneAction: "Executed",
         target: input?.command || "command",
       };
-    case "fileChange":
+    case "fileChange": {
+      const pastTense: Record<string, string> = {
+        add: "Added",
+        create: "Created",
+        update: "Updated",
+        delete: "Deleted",
+        edit: "Edited",
+      };
       return {
-        doneAction: `${input?.action || "edit"}ed`,
+        doneAction: pastTense[input?.action] || "Edited",
         target: input?.path || input?.file || "file",
       };
+    }
     case "webSearch":
       return {
         doneAction: "Searched",
@@ -965,12 +973,33 @@ function renderCodexTool(
     input?.codexItemType || part.type?.replace("tool-codex_", "") || "unknown";
   const display = getCodexToolDisplay(itemType, input);
 
+  const isError = part.state === "output-error";
+
   if (
     part.state === "input-available" ||
     part.state === "output-available" ||
-    part.state === "output-error"
+    isError
   ) {
+    const errorDisplay = isError
+      ? { doneAction: "Failed", target: display.target }
+      : display;
+
     const buildSidebarContent = (): SidebarContent | null => {
+      if (isError) {
+        const command =
+          input?.command ||
+          input?.path ||
+          input?.file ||
+          input?.toolLabel ||
+          display.target;
+        return {
+          command: command || itemType,
+          output: part.errorText || "An error occurred",
+          isExecuting: false,
+          toolCallId: part.toolCallId || "",
+        } satisfies SidebarTerminal;
+      }
+
       switch (itemType) {
         case "webSearch": {
           const query =
@@ -1047,8 +1076,8 @@ function renderCodexTool(
       <ToolBlock
         key={idx}
         icon={<OpenAIIcon className="h-4 w-4" />}
-        action={display.doneAction}
-        target={display.target}
+        action={errorDisplay.doneAction}
+        target={errorDisplay.target}
         isClickable={sidebarContent != null}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}
