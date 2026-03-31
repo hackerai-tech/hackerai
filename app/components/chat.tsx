@@ -30,12 +30,17 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
-import { normalizeMessages } from "@/lib/utils/message-processor";
+import {
+  normalizeMessages,
+  sanitizeCodexToolCalls,
+} from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
 import { isCodexLocal, getCodexSubModel, isSelectedModel } from "@/types/chat";
+import { serializeConversation } from "@/lib/utils/conversation-serializer";
+import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -226,6 +231,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     setSandboxPreference,
     selectedModel,
     setSelectedModel,
+    subscription,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -332,6 +338,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Ref for selected model so the delegating transport reads latest value
   const selectedModelRef = useLatestRef(selectedModel);
+  // Ref for subscription so the delegating transport reads latest value
+  const subscriptionRef = useLatestRef(subscription);
+  // Ref for chatId so the delegating transport reads latest value
+  const chatIdRef = useLatestRef(chatId);
 
   // Convex queries for local provider prompt data (only fetched when in Tauri desktop)
   const userCustomization = useQuery(
@@ -431,6 +441,23 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               cmdServerPort: cmdServerInfoRef.current?.port,
               cmdServerToken: cmdServerInfoRef.current?.token,
             });
+
+            // Detect server→codex switch: existing messages but no codex thread
+            const currentMessages = messagesRef.current;
+            const currentChatId = chatIdRef.current;
+            if (
+              currentMessages.length > 0 &&
+              !codexTransport.getThreadId(currentChatId)
+            ) {
+              const maxTokens = getMaxTokensForSubscription(
+                subscriptionRef.current,
+              );
+              const context = serializeConversation(currentMessages, maxTokens);
+              if (context) {
+                codexTransport.setConversationContext(currentChatId, context);
+              }
+            }
+
             const sidecarOk = await ensureSidecarRef.current();
             if (!sidecarOk) {
               toast.error("This chat requires the desktop app", {
@@ -493,7 +520,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         const messagesToSend = isTemporaryChat
           ? normalizedMessages
           : lastMessage;
-        const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
+        // Convert codex-specific tool parts to text so server models understand them
+        const sanitizedMessages = sanitizeCodexToolCalls(messagesToSend);
+        const messagesWithoutUrls = stripUrlsFromMessages(sanitizedMessages);
 
         return {
           body: {

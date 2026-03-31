@@ -207,6 +207,79 @@ export const normalizeMessages = (
 };
 
 /**
+ * Converts codex-specific tool call parts (codex_*) into readable text parts
+ * so server-side models can understand them when switching from codex to server.
+ */
+export const sanitizeCodexToolCalls = (
+  messages: ChatMessage[],
+): ChatMessage[] => {
+  let hasChanges = false;
+
+  const sanitized = messages.map((message) => {
+    if (message.role !== "assistant" || !message.parts) return message;
+
+    const newParts: any[] = [];
+    let messageChanged = false;
+
+    for (const part of message.parts as any[]) {
+      const partType: string = part.type || "";
+
+      // Convert codex tool call parts to text
+      if (partType.startsWith("codex_") || partType.startsWith("tool-codex_")) {
+        messageChanged = true;
+        const text = codexToolPartToText(part);
+        if (text) {
+          newParts.push({ type: "text", text });
+        }
+      } else {
+        newParts.push(part);
+      }
+    }
+
+    if (messageChanged) {
+      hasChanges = true;
+      return { ...message, parts: newParts };
+    }
+    return message;
+  });
+
+  return hasChanges ? sanitized : messages;
+};
+
+/**
+ * Converts a single codex tool part into a readable text string.
+ */
+function codexToolPartToText(part: any): string {
+  const input = part.input;
+  const output = part.output ?? part.result;
+  const itemType =
+    input?.codexItemType || part.type?.replace(/^(tool-)?codex_/, "") || "tool";
+
+  switch (itemType) {
+    case "commandExecution": {
+      const cmd = input?.command || "";
+      const stdout = output?.output || output?.result?.stdout || "";
+      const exitCode = output?.exit_code ?? output?.exitCode ?? "";
+      return `[Ran command: \`${cmd}\`${exitCode !== "" ? ` (exit ${exitCode})` : ""}${stdout ? `\n${stdout}` : ""}]`;
+    }
+    case "fileChange": {
+      const path = input?.path || input?.filename || "";
+      const action = input?.action || input?.changeType || "modified";
+      const diff = output?.diff || input?.diff || "";
+      return `[${action} file: ${path}${diff ? `\n${diff}` : ""}]`;
+    }
+    case "webSearch": {
+      const query = input?.query || "";
+      return `[Web search: "${query}"]`;
+    }
+    default: {
+      const label = input?.toolLabel || itemType;
+      return `[Codex tool: ${label}]`;
+    }
+  }
+}
+
+/**
  * Transforms terminal tool parts with special handling for terminal output.
  * Collects streaming output from data-terminal parts before they're removed.
  */

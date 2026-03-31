@@ -68,7 +68,6 @@ interface ModelSelectorProps {
   value: SelectedModel;
   onChange: (model: SelectedModel) => void;
   mode: ChatMode;
-  locked?: boolean;
 }
 
 const AutoToggle = ({
@@ -475,12 +474,7 @@ const ModelOptionList = ({
 
 // ── Main component ─────────────────────────────────────────────────
 
-export function ModelSelector({
-  value,
-  onChange,
-  mode,
-  locked,
-}: ModelSelectorProps) {
+export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
   const [checking, setChecking] = useState(false);
   const [codexDialog, setCodexDialog] = useState<{
@@ -613,26 +607,6 @@ export function ModelSelector({
       </AlertDialogContent>
     </AlertDialog>
   );
-
-  // When locked (Codex mid-conversation), show only the Codex submenu trigger
-  if (locked && isCodexLocal(value)) {
-    return (
-      <>
-        {codexSetupDialog}
-
-        <div className="shrink min-w-0">
-          <CodexSubMenu
-            codexOptions={codexOptions}
-            value={value}
-            onSelect={handleModelSelect}
-            isTauri={isTauri}
-            mobile={isMobile}
-            compact
-          />
-        </div>
-      </>
-    );
-  }
 
   const trigger = (
     <Button

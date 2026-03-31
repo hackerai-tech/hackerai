@@ -203,7 +203,6 @@ export const ChatInput = ({
             input={input}
             uploadedFiles={uploadedFiles}
             chatMode={chatMode}
-            hasMessages={hasMessages}
             contextUsage={!isAgent ? contextUsage : undefined}
             showContextIndicator={!isAgent && showContextIndicator}
           />

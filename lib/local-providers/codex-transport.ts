@@ -111,6 +111,7 @@ export class CodexLocalTransport {
   private threadIds = new Map<string, string>();
   private currentModel: string | undefined;
   private promptData: LocalPromptData = {};
+  private pendingContext = new Map<string, string>();
   private rpcId = 0;
   private pendingRequests = new Map<
     number,
@@ -169,6 +170,11 @@ export class CodexLocalTransport {
         chatId,
       );
     }
+  }
+
+  /** Store conversation context to inject into developerInstructions on next thread/start */
+  setConversationContext(chatId: string, context: string) {
+    this.pendingContext.set(chatId, context);
   }
 
   /** Get the current thread ID for a chat (for persisting to Convex) */
@@ -329,10 +335,21 @@ export class CodexLocalTransport {
             const instructions = buildLocalSystemPrompt({
               ...this.promptData,
             });
+            // Inject prior conversation context if switching from a server model
+            const pendingCtx = this.pendingContext.get(chatId);
+            const fullInstructions = pendingCtx
+              ? `${instructions}\n\n${pendingCtx}`
+              : instructions;
+            if (pendingCtx) {
+              this.pendingContext.delete(chatId);
+              console.log(
+                "[CodexTransport] Injecting prior conversation context",
+              );
+            }
             console.log("[CodexTransport] Starting thread with model:", model);
             const result = await this.rpcRequest("thread/start", {
               model,
-              developerInstructions: instructions,
+              developerInstructions: fullInstructions,
               approvalPolicy: "never",
               sandbox: "danger-full-access",
             });
