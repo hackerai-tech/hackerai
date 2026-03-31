@@ -145,6 +145,9 @@ export function serializeConversation(
     maxTokens,
   );
 
+  // If even the most recent message exceeds the token limit, nothing to inject
+  if (truncatedMessages.length === 0) return "";
+
   const wasTruncated = truncatedMessages.length < relevantMessages.length;
 
   const serializedMessages = (truncatedMessages as ChatMessage[])
