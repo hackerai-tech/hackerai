@@ -20,6 +20,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "kimi-k2.5", label: "Kimi K2.5", thinking: true },
   { id: "gemini-3-flash", label: "Gemini 3 Flash", thinking: true },
+  { id: "grok-4.1", label: "Grok 4.1", thinking: true },
 ];
 
 export const CODEX_LOCAL_OPTIONS: ModelOption[] = [
