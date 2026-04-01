@@ -19,7 +19,9 @@ export const FinishReasonNotice = ({
   if (
     mode === "agent" &&
     autoContinueCount < MAX_AUTO_CONTINUES &&
-    (finishReason === "context-limit" || finishReason === "length")
+    (finishReason === "context-limit" ||
+      finishReason === "length" ||
+      finishReason === "preemptive-timeout")
   ) {
     return null;
   }
@@ -61,6 +63,15 @@ export const FinishReasonNotice = ({
           I reached the context limit for this conversation after summarizing
           earlier messages. Say &quot;continue&quot; to pick up where I left
           off.
+        </>
+      );
+    }
+
+    if (finishReason === "preemptive-timeout") {
+      return (
+        <>
+          I had to stop because the session exceeded the time limit. Say
+          &quot;continue&quot; to pick up where I left off.
         </>
       );
     }

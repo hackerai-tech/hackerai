@@ -18,3 +18,18 @@ export function tokenExhaustedAfterSummarization(state: {
     return shouldStop;
   };
 }
+
+export const PREEMPTIVE_TIMEOUT_FINISH_REASON = "preemptive-timeout";
+
+export function elapsedTimeExceeds(state: {
+  maxDurationMs: number;
+  getStartTime: () => number;
+  onFired: () => void;
+}): StopCondition<any> {
+  return () => {
+    const elapsed = Date.now() - state.getStartTime();
+    const shouldStop = elapsed >= state.maxDurationMs;
+    if (shouldStop) state.onFired();
+    return shouldStop;
+  };
+}
