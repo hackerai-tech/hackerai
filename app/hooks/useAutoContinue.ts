@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useCallback } from "react";
-import type { ChatStatus, Todo } from "@/types";
+import type { ChatStatus, MessageMetadata, Todo } from "@/types";
 import {
   useDataStreamState,
   useDataStreamDispatch,
@@ -14,7 +14,7 @@ export interface UseAutoContinueParams {
   status: ChatStatus;
   chatMode: string;
   sendMessage: (
-    message: { text: string },
+    message: { text: string; metadata?: MessageMetadata },
     options?: { body?: Record<string, unknown> },
   ) => void;
   hasManuallyStoppedRef: React.RefObject<boolean>;
@@ -75,7 +75,7 @@ export function useAutoContinue({
 
     const timeout = setTimeout(() => {
       sendMessageRef.current(
-        { text: "continue" },
+        { text: "continue", metadata: { isAutoContinue: true } },
         {
           body: {
             mode: chatMode,

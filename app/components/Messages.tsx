@@ -289,46 +289,48 @@ export const Messages = ({
               <Loading size={6} />
             </div>
           )}
-          {messages.map((message, index) => (
-            <MessageItem
-              key={message.id}
-              message={message}
-              index={index}
-              messagesLength={messages.length}
-              lastAssistantMessageIndex={lastAssistantMessageIndex}
-              status={status}
-              isHovered={hoveredMessageId === message.id}
-              isEditing={editingMessageId === message.id}
-              feedbackInputMessageId={feedbackInputMessageId}
-              tempChatFileDetails={tempChatFileDetails}
-              finishReason={finishReason}
-              mode={mode}
-              isTemporaryChat={isTemporaryChat}
-              branchedFromChatId={branchedFromChatId}
-              branchedFromChatTitle={branchedFromChatTitle}
-              branchBoundaryIndex={branchBoundaryIndex}
-              onMouseEnter={handleMouseEnter}
-              onMouseLeave={handleMouseLeave}
-              onStartEdit={handleStartEdit}
-              onSaveEdit={handleSaveEdit}
-              onCancelEdit={handleCancelEdit}
-              onRegenerate={onRegenerate}
-              onBranchMessage={
-                onBranchMessage ? handleBranchMessage : undefined
-              }
-              onFeedback={handleFeedback}
-              onFeedbackSubmit={handleFeedbackSubmit}
-              onFeedbackCancel={handleFeedbackCancel}
-              onShowAllFiles={handleShowAllFiles}
-              getCachedUrl={getCachedUrl}
-              showingLoadingIndicator={
-                summarizationStatus?.status === "started" ||
-                uploadStatus?.isUploading ||
-                shouldShowLoadingDots
-              }
-              summarizationStatus={summarizationStatus}
-            />
-          ))}
+          {messages
+            .filter((msg) => !msg.metadata?.isAutoContinue)
+            .map((message, index) => (
+              <MessageItem
+                key={message.id}
+                message={message}
+                index={index}
+                messagesLength={messages.length}
+                lastAssistantMessageIndex={lastAssistantMessageIndex}
+                status={status}
+                isHovered={hoveredMessageId === message.id}
+                isEditing={editingMessageId === message.id}
+                feedbackInputMessageId={feedbackInputMessageId}
+                tempChatFileDetails={tempChatFileDetails}
+                finishReason={finishReason}
+                mode={mode}
+                isTemporaryChat={isTemporaryChat}
+                branchedFromChatId={branchedFromChatId}
+                branchedFromChatTitle={branchedFromChatTitle}
+                branchBoundaryIndex={branchBoundaryIndex}
+                onMouseEnter={handleMouseEnter}
+                onMouseLeave={handleMouseLeave}
+                onStartEdit={handleStartEdit}
+                onSaveEdit={handleSaveEdit}
+                onCancelEdit={handleCancelEdit}
+                onRegenerate={onRegenerate}
+                onBranchMessage={
+                  onBranchMessage ? handleBranchMessage : undefined
+                }
+                onFeedback={handleFeedback}
+                onFeedbackSubmit={handleFeedbackSubmit}
+                onFeedbackCancel={handleFeedbackCancel}
+                onShowAllFiles={handleShowAllFiles}
+                getCachedUrl={getCachedUrl}
+                showingLoadingIndicator={
+                  summarizationStatus?.status === "started" ||
+                  uploadStatus?.isUploading ||
+                  shouldShowLoadingDots
+                }
+                summarizationStatus={summarizationStatus}
+              />
+            ))}
 
           {/* Processing status - upload/loading dots always separate, summarization only when no content */}
           {(showSummarizationSeparately ||
