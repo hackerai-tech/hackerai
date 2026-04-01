@@ -14,6 +14,7 @@ import {
   TOKEN_EXHAUSTION_FINISH_REASON,
   elapsedTimeExceeds,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
+  AGENT_MAX_STREAM_DURATION_MS,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -734,7 +735,7 @@ export const createChatHandler = (
                       },
                     }),
                     elapsedTimeExceeds({
-                      maxDurationMs: 2 * 60 * 1000,
+                      maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
                       getStartTime: () => streamStartTime,
                       onFired: () => {
                         stoppedDueToPreemptiveTimeout = true;
