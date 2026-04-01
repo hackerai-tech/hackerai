@@ -20,6 +20,7 @@ export function tokenExhaustedAfterSummarization(state: {
 }
 
 export const PREEMPTIVE_TIMEOUT_FINISH_REASON = "preemptive-timeout";
+export const AGENT_MAX_STREAM_DURATION_MS = 10 * 60 * 1000; // 10 minutes
 
 export function elapsedTimeExceeds(state: {
   maxDurationMs: number;
