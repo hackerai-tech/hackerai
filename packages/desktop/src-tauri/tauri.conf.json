@@ -74,6 +74,8 @@
         "bundleMediaFramework": true
       },
       "deb": {
+        "desktopTemplate": "hackerai.desktop",
+        "postInstallScript": "scripts/deb-postinstall.sh",
         "depends": [
           "libwebkit2gtk-4.1-0",
           "libgtk-3-0",
