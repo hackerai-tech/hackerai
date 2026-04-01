@@ -693,10 +693,10 @@ describe("pruneToolOutputs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// pruneModelMessages (CoreMessage-level pruning for agentic loop)
+// pruneModelMessages (ModelMessage-level pruning for agentic loop)
 // ---------------------------------------------------------------------------
 
-// Helpers for CoreMessage format
+// Helpers for ModelMessage format
 function makeAssistantModelMsg(
   toolCalls: Array<{
     toolCallId: string;
@@ -1138,6 +1138,56 @@ describe("filterEmptyAssistantMessages", () => {
     ];
     const result = filterEmptyAssistantMessages(messages);
     expect(result).toHaveLength(0);
+  });
+
+  it("removes assistant with only reasoning parts", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "reasoning", text: "thinking about this..." }],
+      },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(0);
+  });
+
+  it("removes assistant with only redacted-reasoning parts", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "redacted-reasoning", data: "abc" }],
+      },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(0);
+  });
+
+  it("keeps assistant with reasoning and text", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "thinking..." },
+          { type: "text", text: "Here is my answer" },
+        ],
+      },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(1);
+  });
+
+  it("keeps assistant with reasoning and tool-call", () => {
+    const messages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "reasoning", text: "I should call this tool" },
+          { type: "tool-call", toolCallId: "tc1", toolName: "read", args: {} },
+        ],
+      },
+    ];
+    const result = filterEmptyAssistantMessages(messages);
+    expect(result).toHaveLength(1);
   });
 
   it("does not break assistant→tool pairing when assistant has tool calls", () => {
