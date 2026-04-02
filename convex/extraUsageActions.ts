@@ -467,6 +467,8 @@ export const deductWithAutoReload = action({
     newBalanceDollars: v.number(),
     insufficientFunds: v.boolean(),
     monthlyCapExceeded: v.boolean(),
+    trustCapExceeded: v.optional(v.boolean()),
+    trustCapDollars: v.optional(v.union(v.null(), v.number())),
     autoReloadTriggered: v.boolean(),
     autoReloadResult: v.optional(
       v.object({
@@ -618,6 +620,8 @@ export const deductWithAutoReload = action({
       newBalanceDollars: number;
       insufficientFunds: boolean;
       monthlyCapExceeded: boolean;
+      trustCapExceeded?: boolean;
+      trustCapDollars?: number | null;
     } = await ctx.runMutation(api.extraUsage.deductPoints, {
       serviceKey: args.serviceKey,
       userId: args.userId,
@@ -642,6 +646,8 @@ export const deductWithAutoReload = action({
       newBalanceDollars: deductResult.newBalanceDollars,
       insufficientFunds: deductResult.insufficientFunds,
       monthlyCapExceeded: deductResult.monthlyCapExceeded,
+      trustCapExceeded: deductResult.trustCapExceeded,
+      trustCapDollars: deductResult.trustCapDollars,
       autoReloadTriggered,
       autoReloadResult,
     };
