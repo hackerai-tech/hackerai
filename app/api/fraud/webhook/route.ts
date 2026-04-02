@@ -282,7 +282,7 @@ async function isNewAccount(customerId: string): Promise<boolean> {
  * Detects card-testing attacks using multiple signals:
  * - Weighted scoring (incorrect_number = 2x)
  * - Distinct card fingerprints (3+ = instant block)
- * - Decline code diversity (3+ different codes = instant block)
+ * - Decline code diversity (4+ different codes = instant block)
  * - Account age factor (new accounts have lower threshold)
  */
 async function handlePaymentFailed(

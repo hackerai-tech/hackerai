@@ -273,7 +273,7 @@ export const getPaymentStatus = action({
 
 /**
  * Create a Stripe Checkout session for purchasing extra usage credits.
- * Accepts any positive dollar amount (minimum $15, maximum $1,000,000).
+ * Accepts any positive dollar amount (minimum $15, maximum $999,999).
  *
  * Note: baseUrl is passed from the client for redirect URLs only.
  * This is safe because:
