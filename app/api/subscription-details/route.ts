@@ -3,6 +3,10 @@ import { workos } from "../workos";
 import { getUserID } from "@/lib/auth/get-user-id";
 import { NextRequest, NextResponse } from "next/server";
 import { SubscriptionTier } from "@/types/chat";
+import { ConvexHttpClient } from "convex/browser";
+import { api } from "@/convex/_generated/api";
+
+const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
 export const POST = async (req: NextRequest) => {
   try {
@@ -52,9 +56,35 @@ export const POST = async (req: NextRequest) => {
     // Reject blocked customers (flagged by fraud webhook)
     if (matchingCustomer.metadata.blocked === "true") {
       return NextResponse.json(
-        { error: "This account has been suspended due to a payment dispute" },
+        {
+          error:
+            "Your account has been suspended. Please contact support via chat at https://help.hackerai.co/ to resolve this.",
+        },
         { status: 403 },
       );
+    }
+
+    // Reject customers with too many recent payment failures (card-testing)
+    try {
+      const fraudCheck = await convex.query(
+        api.fraudTracking.isCustomerSuspicious,
+        {
+          serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+          stripeCustomerId: matchingCustomer.id,
+        },
+      );
+      if (fraudCheck.suspicious) {
+        return NextResponse.json(
+          {
+            error:
+              "Too many failed payment attempts. If you need help, contact us via chat at https://help.hackerai.co/",
+          },
+          { status: 429 },
+        );
+      }
+    } catch (err) {
+      // Non-blocking — don't prevent legitimate purchases if the check fails
+      console.warn("[Subscription Details] Fraud pre-check failed:", err);
     }
 
     // Get target price
