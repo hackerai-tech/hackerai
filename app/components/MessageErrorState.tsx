@@ -120,6 +120,15 @@ export const MessageErrorState = ({
                 Contact Support
               </Button>
             )}
+            {isPaidUser && !isTrustCapExceeded && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => openSettingsDialog("Extra Usage")}
+              >
+                Add Credits
+              </Button>
+            )}
             {canUpgrade && !isTrustCapExceeded && (
               <Button variant="default" size="sm" onClick={redirectToPricing}>
                 Upgrade Plan
