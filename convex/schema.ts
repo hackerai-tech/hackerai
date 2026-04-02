@@ -141,6 +141,10 @@ export default defineSchema({
     monthly_cap_points: v.optional(v.number()),
     monthly_spent_points: v.optional(v.number()),
     monthly_reset_date: v.optional(v.string()),
+    // Trust-based spending cap fields
+    first_successful_charge_at: v.optional(v.number()), // Timestamp of first successful charge
+    cumulative_spend_dollars: v.optional(v.number()), // Total of all successful charges
+    override_monthly_cap_dollars: v.optional(v.number()), // Manual override set by support team
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 

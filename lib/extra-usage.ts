@@ -20,6 +20,8 @@ export interface DeductBalanceResult {
   newBalanceDollars: number;
   insufficientFunds: boolean;
   monthlyCapExceeded: boolean;
+  trustCapExceeded?: boolean;
+  trustCapDollars?: number | null;
   autoReloadTriggered?: boolean;
   autoReloadResult?: {
     success: boolean;
@@ -173,6 +175,8 @@ export async function deductFromBalance(
       newBalanceDollars: result.newBalanceDollars,
       insufficientFunds: result.insufficientFunds,
       monthlyCapExceeded: result.monthlyCapExceeded,
+      trustCapExceeded: result.trustCapExceeded,
+      trustCapDollars: result.trustCapDollars,
       autoReloadTriggered: result.autoReloadTriggered,
       autoReloadResult: result.autoReloadResult,
     };

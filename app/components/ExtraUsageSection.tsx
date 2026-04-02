@@ -175,6 +175,20 @@ const ExtraUsageSection = () => {
   const autoReloadEnabled = extraUsageSettings?.autoReloadEnabled ?? false;
   const monthlyCapDollars = extraUsageSettings?.monthlyCapDollars;
   const monthlySpentDollars = extraUsageSettings?.monthlySpentDollars ?? 0;
+  const trustCapDollars = extraUsageSettings?.trustCapDollars;
+  const trustReason = extraUsageSettings?.trustReason;
+
+  // Effective cap is the lower of user-set cap and trust-based cap
+  const effectiveCapDollars =
+    monthlyCapDollars != null && trustCapDollars != null
+      ? Math.min(monthlyCapDollars, trustCapDollars)
+      : (monthlyCapDollars ?? trustCapDollars);
+
+  // Whether the trust cap is the binding constraint
+  const isTrustCapActive =
+    trustCapDollars != null &&
+    trustReason !== "trusted" &&
+    (monthlyCapDollars == null || trustCapDollars <= monthlyCapDollars);
 
   // Get color class based on usage percentage (matches UsageTab)
   const getUsageColorClass = (percentage: number): string => {
@@ -219,45 +233,60 @@ const ExtraUsageSection = () => {
         {userCustomization?.extra_usage_enabled && (
           <>
             {/* Monthly Spending Progress */}
-            {monthlyCapDollars && monthlyCapDollars > 0 && (
-              <div className="w-full flex flex-row gap-x-8 gap-y-3 justify-between items-center flex-wrap">
-                <div className="flex flex-col gap-1.5 min-w-0">
-                  <p className="text-sm">
-                    ${monthlySpentDollars.toFixed(2)} spent
-                  </p>
-                  <p className="text-sm text-muted-foreground whitespace-nowrap">
-                    Resets{" "}
-                    {new Date(
-                      new Date().getFullYear(),
-                      new Date().getMonth() + 1,
-                      1,
-                    ).toLocaleDateString("en-US", {
-                      month: "short",
-                      day: "numeric",
-                    })}
-                  </p>
-                </div>
-                <div className="flex items-center gap-3 md:flex-1 md:max-w-xl">
-                  <div className="flex-1">
-                    <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
-                      <div
-                        className={`h-full transition-all duration-500 ${getUsageColorClass((monthlySpentDollars / monthlyCapDollars) * 100)}`}
-                        style={{
-                          width: `${Math.min(100, (monthlySpentDollars / monthlyCapDollars) * 100)}%`,
-                        }}
-                      />
-                    </div>
+            {effectiveCapDollars != null && effectiveCapDollars > 0 && (
+              <div className="w-full flex flex-col gap-2">
+                <div className="w-full flex flex-row gap-x-8 gap-y-3 justify-between items-center flex-wrap">
+                  <div className="flex flex-col gap-1.5 min-w-0">
+                    <p className="text-sm">
+                      ${monthlySpentDollars.toFixed(2)} spent
+                    </p>
+                    <p className="text-sm text-muted-foreground whitespace-nowrap">
+                      Resets{" "}
+                      {new Date(
+                        new Date().getFullYear(),
+                        new Date().getMonth() + 1,
+                        1,
+                      ).toLocaleDateString("en-US", {
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </p>
                   </div>
-                  <p className="text-sm text-muted-foreground whitespace-nowrap text-right">
-                    {Math.min(
-                      100,
-                      Math.round(
-                        (monthlySpentDollars / monthlyCapDollars) * 100,
-                      ),
-                    )}
-                    % used
-                  </p>
+                  <div className="flex items-center gap-3 md:flex-1 md:max-w-xl">
+                    <div className="flex-1">
+                      <div className="relative h-2 w-full overflow-hidden rounded-full bg-muted">
+                        <div
+                          className={`h-full transition-all duration-500 ${getUsageColorClass((monthlySpentDollars / effectiveCapDollars) * 100)}`}
+                          style={{
+                            width: `${Math.min(100, (monthlySpentDollars / effectiveCapDollars) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-sm text-muted-foreground whitespace-nowrap text-right">
+                      {Math.min(
+                        100,
+                        Math.round(
+                          (monthlySpentDollars / effectiveCapDollars) * 100,
+                        ),
+                      )}
+                      % used
+                    </p>
+                  </div>
                 </div>
+                {isTrustCapActive && (
+                  <p className="text-xs text-muted-foreground">
+                    Your extra usage limit is ${trustCapDollars}/month while
+                    your account builds payment history.{" "}
+                    <a
+                      href="mailto:support@hackerai.co"
+                      className="underline underline-offset-[3px] hover:text-foreground"
+                    >
+                      Contact us
+                    </a>{" "}
+                    for a higher limit.
+                  </p>
+                )}
               </div>
             )}
 
@@ -265,8 +294,8 @@ const ExtraUsageSection = () => {
             <div className="w-full flex flex-row gap-x-8 gap-y-3 justify-between items-center">
               <div className="flex flex-col gap-1.5 min-w-0">
                 <p className="text-sm">
-                  {monthlyCapDollars
-                    ? `$${monthlyCapDollars.toFixed(2)}`
+                  {effectiveCapDollars != null
+                    ? `$${effectiveCapDollars.toFixed(2)}`
                     : "Unlimited"}
                 </p>
                 <p className="text-sm text-muted-foreground">
