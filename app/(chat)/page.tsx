@@ -55,7 +55,7 @@ const UnauthenticatedContent = () => {
               What will you hack today?
             </h1>
             <p className="text-muted-foreground text-lg leading-tight md:text-xl">
-              Find vulnerabilities faster by chatting with AI.
+              Find and fix vulnerabilities by chatting with AI.
             </p>
           </div>
 
