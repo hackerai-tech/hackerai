@@ -92,7 +92,7 @@ function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
  * - Cancel all subscriptions (stops billing)
  * - Detach all payment methods (prevents future charges)
  * - Mark customer as blocked (metadata flag for app-layer checks)
- * - Report charge as fraudulent (feeds Radar ML)
+ * - Report charge as fraudulent (feeds Radar ML) — skipped when no charge
  *
  * The Stripe customer and WorkOS account are preserved for:
  * - Dispute evidence (up to 120 days later)
@@ -101,13 +101,15 @@ function getCustomerIdFromCharge(charge: Stripe.Charge): string | null {
  */
 async function blockFraudulentUser(
   customerId: string,
-  chargeId: string,
+  chargeId: string | null,
   reason: string,
 ): Promise<void> {
   await cancelAllSubscriptions(customerId);
   await detachAllPaymentMethods(customerId);
   await markCustomerBlocked(customerId, reason);
-  await reportChargeFraudulent(chargeId);
+  if (chargeId) {
+    await reportChargeFraudulent(chargeId);
+  }
 
   console.log(
     `[Fraud Webhook] Blocked customer ${customerId}: subscriptions cancelled, payment methods detached, marked as blocked (${reason})`,
@@ -214,6 +216,148 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
 }
 
 // =============================================================================
+// Card-Testing Detection
+// =============================================================================
+
+/** Decline codes that warrant an immediate block — no threshold needed. */
+const IMMEDIATE_BLOCK_CODES = new Set(["stolen_card", "fraudulent"]);
+
+/** Decline codes from legitimate financial issues — don't count toward fraud. */
+const IGNORED_CODES = new Set([
+  "insufficient_funds",
+  "expired_card",
+  "processing_error",
+  "reenter_transaction",
+]);
+
+/** 24 hours in milliseconds — accounts newer than this get a lower block threshold. */
+const NEW_ACCOUNT_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Extract the card fingerprint from the payment intent's failed payment method.
+ * Returns null if the payment method isn't a card or isn't expanded.
+ */
+async function extractCardFingerprint(
+  paymentIntent: Stripe.PaymentIntent,
+): Promise<string | null> {
+  const pmRef = paymentIntent.last_payment_error?.payment_method;
+  if (!pmRef) return null;
+
+  // If already expanded as an object
+  if (typeof pmRef === "object" && pmRef.card?.fingerprint) {
+    return pmRef.card.fingerprint;
+  }
+
+  // If it's a string ID, fetch it
+  if (typeof pmRef === "string") {
+    try {
+      const pm = await stripe.paymentMethods.retrieve(pmRef);
+      return pm.card?.fingerprint ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Check whether the Stripe customer was created recently (< 24h)
+ * with no prior successful charges.
+ */
+async function isNewAccount(customerId: string): Promise<boolean> {
+  try {
+    const customer = await stripe.customers.retrieve(customerId);
+    if (customer.deleted) return false;
+    const createdMs = (customer as Stripe.Customer).created * 1000;
+    return Date.now() - createdMs < NEW_ACCOUNT_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Handle payment_intent.payment_failed
+ *
+ * Detects card-testing attacks using multiple signals:
+ * - Weighted scoring (incorrect_number = 2x)
+ * - Distinct card fingerprints (3+ = instant block)
+ * - Decline code diversity (3+ different codes = instant block)
+ * - Account age factor (new accounts have lower threshold)
+ */
+async function handlePaymentFailed(
+  paymentIntent: Stripe.PaymentIntent,
+): Promise<void> {
+  const customerId =
+    typeof paymentIntent.customer === "string"
+      ? paymentIntent.customer
+      : (paymentIntent.customer?.id ?? null);
+
+  if (!customerId) {
+    console.warn(
+      `[Fraud Webhook] payment_intent.payment_failed without customer: ${paymentIntent.id}`,
+    );
+    return;
+  }
+
+  const declineCode =
+    paymentIntent.last_payment_error?.decline_code ??
+    paymentIntent.last_payment_error?.code ??
+    "unknown";
+
+  const chargeId =
+    typeof paymentIntent.latest_charge === "string"
+      ? paymentIntent.latest_charge
+      : (paymentIntent.latest_charge?.id ?? null);
+
+  console.log(
+    `[Fraud Webhook] Payment failed for customer ${customerId}: decline_code=${declineCode}, charge=${chargeId ?? "none"}`,
+  );
+
+  // Immediate block for clearly fraudulent decline codes
+  if (IMMEDIATE_BLOCK_CODES.has(declineCode)) {
+    await blockFraudulentUser(
+      customerId,
+      chargeId,
+      `immediate_block:${declineCode}`,
+    );
+    return;
+  }
+
+  // Skip tracking for legitimate financial failures
+  if (IGNORED_CODES.has(declineCode)) {
+    return;
+  }
+
+  // Extract additional fraud signals in parallel
+  const [cardFingerprint, newAccount] = await Promise.all([
+    extractCardFingerprint(paymentIntent),
+    isNewAccount(customerId),
+  ]);
+
+  // Track suspicious failure in sliding window (multi-signal)
+  const result = await convex.mutation(api.fraudTracking.recordPaymentFailure, {
+    serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+    stripeCustomerId: customerId,
+    declineCode,
+    cardFingerprint: cardFingerprint ?? undefined,
+    isNewAccount: newAccount,
+  });
+
+  if (result.shouldBlock) {
+    const reason = result.blockReason ?? "threshold_reached";
+    console.log(
+      `[Fraud Webhook] Card-testing detected for customer ${customerId} (${result.failureCount} failures, reason: ${reason}) — blocking`,
+    );
+    await blockFraudulentUser(
+      customerId,
+      chargeId,
+      `card_testing_detected:${reason}`,
+    );
+  }
+}
+
+// =============================================================================
 // Webhook Endpoint
 // =============================================================================
 
@@ -223,7 +367,7 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
  *
  * Configure in Stripe Dashboard:
  * - Endpoint URL: https://your-domain.com/api/fraud/webhook
- * - Events: radar.early_fraud_warning.created, charge.dispute.created
+ * - Events: radar.early_fraud_warning.created, charge.dispute.created, payment_intent.payment_failed
  */
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -294,6 +438,10 @@ export async function POST(req: NextRequest) {
     }
     case "charge.dispute.created": {
       await handleDisputeCreated(event.data.object as Stripe.Dispute);
+      break;
+    }
+    case "payment_intent.payment_failed": {
+      await handlePaymentFailed(event.data.object as Stripe.PaymentIntent);
       break;
     }
   }
