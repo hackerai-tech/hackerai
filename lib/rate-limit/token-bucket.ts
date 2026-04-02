@@ -242,10 +242,11 @@ export const checkTokenBucketLimit = async (
 
           if (deductResult.trustCapExceeded) {
             const capAmount = deductResult.trustCapDollars ?? 100;
-            const msg = `You've reached your extra usage limit of $${capAmount}/month. This limit increases automatically as your account builds payment history. Need a higher limit sooner? Contact us at support@hackerai.co`;
+            const msg = `You've reached your extra usage limit of $${capAmount}/month. This limit grows automatically with your payment history. Need a higher limit? Chat with us through our Help Center.`;
             throw new ChatSDKError("rate_limit:chat", msg, {
               resetTimestamp: monthlyCheck.reset,
               subscription,
+              trustCapExceeded: true,
             });
           }
 
