@@ -6,8 +6,8 @@ import { validateServiceKey } from "./lib/utils";
 // Card-Testing Fraud Detection (Multi-Signal)
 // =============================================================================
 //
-// Tracks rapid payment failures per Stripe customer using a sliding window
-// with four fraud signals:
+// Tracks rapid payment failures per Stripe customer using a true sliding
+// window with four fraud signals:
 //
 // 1. **Weighted scoring** — `incorrect_number` counts double because Stripe
 //    validates card format client-side; seeing it from the API means
@@ -16,12 +16,16 @@ import { validateServiceKey } from "./lib/utils";
 // 2. **Distinct card fingerprints** — Legitimate users retry 1-2 cards.
 //    3+ unique fingerprints in one window = instant block.
 //
-// 3. **Decline code diversity** — Getting 3+ *different* suspicious decline
-//    codes (e.g. incorrect_number + incorrect_cvc + invalid_expiry) means
-//    someone is iterating card details = instant block.
+// 3. **Decline code diversity** — Getting 4+ *different* suspicious decline
+//    codes means someone is iterating card details = instant block.
 //
 // 4. **Account age factor** — Brand-new accounts (< 24h, no prior successful
 //    charge) use a lower block threshold (3 instead of 5).
+//
+// NOTE: These are exposed as public mutation/query (not internal) because they
+// are called from Next.js API routes via ConvexHttpClient, which cannot invoke
+// internal functions. The serviceKey arg acts as the auth gate — same pattern
+// used by checkAndMarkWebhook and other service-key-gated Convex functions.
 
 /** Sliding window duration in milliseconds (10 minutes). */
 const WINDOW_MS = 10 * 60 * 1000;
@@ -41,11 +45,8 @@ const DECLINE_DIVERSITY_BLOCK_THRESHOLD = 4;
 /** Number of recent failures that marks a customer as "suspicious" for pre-checks. */
 const SUSPICIOUS_THRESHOLD = 3;
 
-/** Maximum number of decline codes to retain per tracking record (audit trail). */
-const MAX_STORED_CODES = 20;
-
-/** Maximum number of fingerprints to retain per tracking record. */
-const MAX_STORED_FINGERPRINTS = 20;
+/** Maximum number of individual failure entries to retain (audit trail). */
+const MAX_STORED_ENTRIES = 30;
 
 // -- Decline code weights ----------------------------------------------------
 
@@ -64,6 +65,59 @@ function getDeclineWeight(code: string): number {
   return WEIGHTED_CODES[code] ?? DEFAULT_WEIGHT;
 }
 
+// -- Sliding window helpers ---------------------------------------------------
+
+interface FailureEntry {
+  timestamp: number;
+  declineCode: string;
+  fingerprint: string | null;
+  weight: number;
+}
+
+/**
+ * Evaluate fraud signals over a true sliding window of recent failures.
+ * Only entries within [now - WINDOW_MS, now] are considered.
+ */
+function evaluateWindow(
+  entries: FailureEntry[],
+  now: number,
+  threshold: number,
+): { shouldBlock: boolean; blockReason: string | undefined } {
+  const windowStart = now - WINDOW_MS;
+  const recent = entries.filter((e) => e.timestamp >= windowStart);
+
+  // Signal 1: Weighted score
+  const score = recent.reduce((sum, e) => sum + e.weight, 0);
+  if (score >= threshold) {
+    return {
+      shouldBlock: true,
+      blockReason: `weighted_score:${score.toFixed(1)}>=${threshold}`,
+    };
+  }
+
+  // Signal 2: Distinct card fingerprints
+  const fingerprints = new Set(
+    recent.map((e) => e.fingerprint).filter(Boolean),
+  );
+  if (fingerprints.size >= FINGERPRINT_BLOCK_THRESHOLD) {
+    return {
+      shouldBlock: true,
+      blockReason: `distinct_cards:${fingerprints.size}`,
+    };
+  }
+
+  // Signal 3: Decline code diversity
+  const uniqueCodes = new Set(recent.map((e) => e.declineCode));
+  if (uniqueCodes.size >= DECLINE_DIVERSITY_BLOCK_THRESHOLD) {
+    return {
+      shouldBlock: true,
+      blockReason: `code_diversity:${uniqueCodes.size}_distinct_codes`,
+    };
+  }
+
+  return { shouldBlock: false, blockReason: undefined };
+}
+
 // =============================================================================
 // Mutations
 // =============================================================================
@@ -71,7 +125,9 @@ function getDeclineWeight(code: string): number {
 /**
  * Record a suspicious payment failure for a Stripe customer.
  *
- * Evaluates four signals and returns whether the customer should be blocked.
+ * Uses a true sliding window: all entries are stored with timestamps, and
+ * only entries within the last WINDOW_MS are evaluated. Old entries outside
+ * the window are pruned on each call.
  */
 export const recordPaymentFailure = mutation({
   args: {
@@ -95,6 +151,13 @@ export const recordPaymentFailure = mutation({
       ? NEW_ACCOUNT_BLOCK_THRESHOLD
       : BLOCK_THRESHOLD;
 
+    const newEntry: FailureEntry = {
+      timestamp: now,
+      declineCode: args.declineCode,
+      fingerprint: args.cardFingerprint ?? null,
+      weight,
+    };
+
     const existing = await ctx.db
       .query("payment_failure_tracking")
       .withIndex("by_customer_id", (q) =>
@@ -103,9 +166,12 @@ export const recordPaymentFailure = mutation({
       .first();
 
     if (!existing) {
-      // First failure for this customer — create tracking record
-      const fingerprints = args.cardFingerprint ? [args.cardFingerprint] : [];
-      const shouldBlock = weight >= threshold;
+      // First failure — create record
+      const { shouldBlock, blockReason } = evaluateWindow(
+        [newEntry],
+        now,
+        threshold,
+      );
       await ctx.db.insert("payment_failure_tracking", {
         stripe_customer_id: args.stripeCustomerId,
         failure_count: 1,
@@ -113,17 +179,17 @@ export const recordPaymentFailure = mutation({
         first_failure_at: now,
         last_failure_at: now,
         decline_codes: [args.declineCode],
-        distinct_fingerprints: fingerprints,
+        distinct_fingerprints: args.cardFingerprint
+          ? [args.cardFingerprint]
+          : [],
         auto_blocked: shouldBlock,
+        // Store structured entries for sliding window
+        entries: JSON.stringify([newEntry]),
       });
-      return {
-        shouldBlock,
-        failureCount: 1,
-        blockReason: shouldBlock ? "weighted_score" : undefined,
-      };
+      return { shouldBlock, failureCount: 1, blockReason };
     }
 
-    // Already blocked — no need to process further
+    // Already blocked — short circuit
     if (existing.auto_blocked) {
       return {
         shouldBlock: true,
@@ -132,74 +198,98 @@ export const recordPaymentFailure = mutation({
       };
     }
 
-    // Check if the window has expired — reset if so
-    const windowExpired = now - existing.first_failure_at > WINDOW_MS;
+    // Parse stored entries, prune old ones outside the window, add new one
+    const windowStart = now - WINDOW_MS;
+    const storedEntries: FailureEntry[] = existing.entries
+      ? JSON.parse(existing.entries)
+      : [];
+    const recentEntries = storedEntries.filter(
+      (e) => e.timestamp >= windowStart,
+    );
+    recentEntries.push(newEntry);
 
-    if (windowExpired) {
-      const fingerprints = args.cardFingerprint ? [args.cardFingerprint] : [];
-      await ctx.db.patch(existing._id, {
-        failure_count: 1,
-        weighted_score: weight,
-        first_failure_at: now,
-        last_failure_at: now,
-        decline_codes: [args.declineCode],
-        distinct_fingerprints: fingerprints,
-      });
-      return { shouldBlock: false, failureCount: 1 };
-    }
+    // Cap storage to prevent unbounded growth
+    const cappedEntries = recentEntries.slice(-MAX_STORED_ENTRIES);
 
-    // ---- Within the window — evaluate all signals ----
-
-    const newCount = existing.failure_count + 1;
-    const newScore = existing.weighted_score + weight;
-
-    // Update decline codes (capped for storage)
-    const codes = [...existing.decline_codes, args.declineCode].slice(
-      -MAX_STORED_CODES,
+    // Evaluate all signals over the true sliding window
+    const { shouldBlock, blockReason } = evaluateWindow(
+      cappedEntries,
+      now,
+      threshold,
     );
 
-    // Update distinct fingerprints
-    let fingerprints = existing.distinct_fingerprints;
-    if (args.cardFingerprint && !fingerprints.includes(args.cardFingerprint)) {
-      fingerprints = [...fingerprints, args.cardFingerprint].slice(
-        -MAX_STORED_FINGERPRINTS,
-      );
-    }
-
-    // --- Signal evaluation ---
-
-    let blockReason: string | undefined;
-
-    // Signal 1: Weighted score threshold
-    if (newScore >= threshold) {
-      blockReason = `weighted_score:${newScore.toFixed(1)}>=${threshold}`;
-    }
-
-    // Signal 2: Distinct card fingerprints
-    if (!blockReason && fingerprints.length >= FINGERPRINT_BLOCK_THRESHOLD) {
-      blockReason = `distinct_cards:${fingerprints.length}`;
-    }
-
-    // Signal 3: Decline code diversity (count unique suspicious codes in window)
-    if (!blockReason) {
-      const uniqueCodes = new Set(codes);
-      if (uniqueCodes.size >= DECLINE_DIVERSITY_BLOCK_THRESHOLD) {
-        blockReason = `code_diversity:${uniqueCodes.size}_distinct_codes`;
-      }
-    }
-
-    const shouldBlock = !!blockReason;
+    // Compute summary fields for the record
+    const allFingerprints = new Set(
+      cappedEntries.map((e) => e.fingerprint).filter(Boolean) as string[],
+    );
+    const allCodes = cappedEntries.map((e) => e.declineCode);
 
     await ctx.db.patch(existing._id, {
-      failure_count: newCount,
-      weighted_score: newScore,
+      failure_count: cappedEntries.length,
+      weighted_score: cappedEntries.reduce((sum, e) => sum + e.weight, 0),
+      first_failure_at:
+        cappedEntries.length > 0 ? cappedEntries[0].timestamp : now,
       last_failure_at: now,
-      decline_codes: codes,
-      distinct_fingerprints: fingerprints,
+      decline_codes: allCodes.slice(-MAX_STORED_ENTRIES),
+      distinct_fingerprints: [...allFingerprints],
       auto_blocked: shouldBlock,
+      entries: JSON.stringify(cappedEntries),
     });
 
-    return { shouldBlock, failureCount: newCount, blockReason };
+    return {
+      shouldBlock,
+      failureCount: cappedEntries.length,
+      blockReason,
+    };
+  },
+});
+
+/**
+ * Persist a durable block signal in Convex.
+ *
+ * Called BEFORE Stripe cleanup so that even if Stripe calls fail and the
+ * webhook retry is skipped (idempotency claim already written), the
+ * isCustomerSuspicious pre-check will still see the block.
+ */
+export const markCustomerAutoBlocked = mutation({
+  args: {
+    serviceKey: v.string(),
+    stripeCustomerId: v.string(),
+    reason: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const existing = await ctx.db
+      .query("payment_failure_tracking")
+      .withIndex("by_customer_id", (q) =>
+        q.eq("stripe_customer_id", args.stripeCustomerId),
+      )
+      .first();
+
+    const now = Date.now();
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        auto_blocked: true,
+        last_failure_at: now,
+      });
+    } else {
+      await ctx.db.insert("payment_failure_tracking", {
+        stripe_customer_id: args.stripeCustomerId,
+        failure_count: 0,
+        weighted_score: 0,
+        first_failure_at: now,
+        last_failure_at: now,
+        decline_codes: [args.reason],
+        distinct_fingerprints: [],
+        auto_blocked: true,
+        entries: JSON.stringify([]),
+      });
+    }
+
+    return null;
   },
 });
 
@@ -238,11 +328,16 @@ export const isCustomerSuspicious = query({
       return { suspicious: true, blocked: true };
     }
 
-    // Check if within the active window and above suspicious threshold
+    // True sliding window check: count recent entries
     const now = Date.now();
-    const withinWindow = now - record.first_failure_at <= WINDOW_MS;
-    const suspicious =
-      withinWindow && record.failure_count >= SUSPICIOUS_THRESHOLD;
+    const windowStart = now - WINDOW_MS;
+    const entries: FailureEntry[] = record.entries
+      ? JSON.parse(record.entries)
+      : [];
+    const recentCount = entries.filter(
+      (e) => e.timestamp >= windowStart,
+    ).length;
+    const suspicious = recentCount >= SUSPICIOUS_THRESHOLD;
 
     return { suspicious, blocked: false };
   },

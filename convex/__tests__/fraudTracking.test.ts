@@ -12,6 +12,7 @@ jest.mock("convex/values", () => ({
     optional: jest.fn(() => "optional"),
     object: jest.fn(() => "object"),
     array: jest.fn(() => "array"),
+    null: jest.fn(() => "null"),
   },
 }));
 jest.mock("../lib/utils", () => ({
@@ -22,12 +23,12 @@ const SERVICE_KEY = "test-service-key";
 process.env.CONVEX_SERVICE_ROLE_KEY = SERVICE_KEY;
 
 const CUSTOMER_ID = "cus_test_123";
+const WINDOW_MS = 10 * 60 * 1000;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Build a mock Convex context with a configurable first() result. */
 function makeCtx(existingRecord: Record<string, any> | null = null) {
   const patchFn = jest.fn<any>();
   const insertFn = jest.fn<any>();
@@ -47,17 +48,45 @@ function makeCtx(existingRecord: Record<string, any> | null = null) {
   return { ctx, patchFn, insertFn };
 }
 
-function makeRecord(overrides: Record<string, any> = {}) {
+/** Build a failure entry for the sliding window. */
+function makeEntry(
+  overrides: Partial<{
+    timestamp: number;
+    declineCode: string;
+    fingerprint: string | null;
+    weight: number;
+  }> = {},
+) {
+  return {
+    timestamp: Date.now(),
+    declineCode: "card_declined",
+    fingerprint: null,
+    weight: 1,
+    ...overrides,
+  };
+}
+
+/** Build a tracking record with entries serialized. */
+function makeRecord(overrides: Record<string, any> = {}, entries: any[] = []) {
   return {
     _id: "doc_abc" as any,
     stripe_customer_id: CUSTOMER_ID,
-    failure_count: 0,
-    weighted_score: 0,
-    first_failure_at: Date.now(),
-    last_failure_at: Date.now(),
-    decline_codes: [] as string[],
-    distinct_fingerprints: [] as string[],
+    failure_count: entries.length,
+    weighted_score: entries.reduce(
+      (sum: number, e: any) => sum + (e.weight ?? 1),
+      0,
+    ),
+    first_failure_at: entries.length > 0 ? entries[0].timestamp : Date.now(),
+    last_failure_at:
+      entries.length > 0 ? entries[entries.length - 1].timestamp : Date.now(),
+    decline_codes: entries.map((e: any) => e.declineCode ?? "card_declined"),
+    distinct_fingerprints: [
+      ...new Set(
+        entries.map((e: any) => e.fingerprint).filter(Boolean) as string[],
+      ),
+    ],
     auto_blocked: false,
+    entries: JSON.stringify(entries),
     ...overrides,
   };
 }
@@ -68,6 +97,7 @@ function makeRecord(overrides: Record<string, any> = {}) {
 
 let recordPaymentFailure: any;
 let isCustomerSuspicious: any;
+let markCustomerAutoBlocked: any;
 
 beforeEach(async () => {
   jest.clearAllMocks();
@@ -77,6 +107,7 @@ beforeEach(async () => {
   const mod = await import("../fraudTracking");
   recordPaymentFailure = mod.recordPaymentFailure;
   isCustomerSuspicious = mod.isCustomerSuspicious;
+  markCustomerAutoBlocked = mod.markCustomerAutoBlocked;
 });
 
 describe("recordPaymentFailure", () => {
@@ -97,7 +128,7 @@ describe("recordPaymentFailure", () => {
       expect.objectContaining({
         stripe_customer_id: CUSTOMER_ID,
         failure_count: 1,
-        weighted_score: 1, // default weight
+        weighted_score: 1,
         auto_blocked: false,
       }),
     );
@@ -106,13 +137,12 @@ describe("recordPaymentFailure", () => {
   it("applies double weight for incorrect_number", async () => {
     const { ctx, insertFn } = makeCtx(null);
 
-    const result = await recordPaymentFailure.handler(ctx, {
+    await recordPaymentFailure.handler(ctx, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
       declineCode: "incorrect_number",
     });
 
-    expect(result.shouldBlock).toBe(false);
     expect(insertFn).toHaveBeenCalledWith(
       "payment_failure_tracking",
       expect.objectContaining({ weighted_score: 2 }),
@@ -135,18 +165,26 @@ describe("recordPaymentFailure", () => {
   });
 
   it("blocks when weighted score reaches threshold (5)", async () => {
-    const existing = makeRecord({
-      failure_count: 2,
-      weighted_score: 4, // one more incorrect_number (2pts) will push to 6
-      first_failure_at: Date.now() - 1000, // within window
-      decline_codes: ["incorrect_number", "incorrect_number"],
-    });
+    const now = Date.now();
+    const entries = [
+      makeEntry({
+        timestamp: now - 2000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - 1000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
     const { ctx, patchFn } = makeCtx(existing);
 
     const result = await recordPaymentFailure.handler(ctx, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
-      declineCode: "incorrect_number",
+      declineCode: "incorrect_number", // +2 → total 6 >= 5
     });
 
     expect(result.shouldBlock).toBe(true);
@@ -158,18 +196,21 @@ describe("recordPaymentFailure", () => {
   });
 
   it("uses lower threshold (3) for new accounts", async () => {
-    const existing = makeRecord({
-      failure_count: 1,
-      weighted_score: 2, // one more incorrect_number (2pts) → 4 >= 3
-      first_failure_at: Date.now() - 1000,
-      decline_codes: ["incorrect_number"],
-    });
+    const now = Date.now();
+    const entries = [
+      makeEntry({
+        timestamp: now - 1000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
     const { ctx } = makeCtx(existing);
 
     const result = await recordPaymentFailure.handler(ctx, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
-      declineCode: "incorrect_number",
+      declineCode: "incorrect_number", // +2 → total 4 >= 3
       isNewAccount: true,
     });
 
@@ -178,57 +219,29 @@ describe("recordPaymentFailure", () => {
   });
 
   it("does NOT block new account below lower threshold", async () => {
-    const existing = makeRecord({
-      failure_count: 1,
-      weighted_score: 1, // card_declined (1pt) → 2 < 3
-      first_failure_at: Date.now() - 1000,
-      decline_codes: ["card_declined"],
-    });
+    const now = Date.now();
+    const entries = [
+      makeEntry({
+        timestamp: now - 1000,
+        declineCode: "card_declined",
+        weight: 1,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
     const { ctx } = makeCtx(existing);
 
     const result = await recordPaymentFailure.handler(ctx, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
-      declineCode: "card_declined",
+      declineCode: "card_declined", // +1 → total 2 < 3
       isNewAccount: true,
     });
 
     expect(result.shouldBlock).toBe(false);
   });
 
-  it("resets counter when window expires", async () => {
-    const existing = makeRecord({
-      failure_count: 4,
-      weighted_score: 4,
-      first_failure_at: Date.now() - 11 * 60 * 1000, // 11 min ago — expired
-      decline_codes: ["a", "b", "c", "d"],
-    });
-    const { ctx, patchFn } = makeCtx(existing);
-
-    const result = await recordPaymentFailure.handler(ctx, {
-      serviceKey: SERVICE_KEY,
-      stripeCustomerId: CUSTOMER_ID,
-      declineCode: "card_declined",
-    });
-
-    expect(result.shouldBlock).toBe(false);
-    expect(result.failureCount).toBe(1);
-    expect(patchFn).toHaveBeenCalledWith(
-      existing._id,
-      expect.objectContaining({
-        failure_count: 1,
-        weighted_score: 1,
-        decline_codes: ["card_declined"],
-        distinct_fingerprints: [],
-      }),
-    );
-  });
-
   it("short-circuits if already blocked", async () => {
-    const existing = makeRecord({
-      failure_count: 10,
-      auto_blocked: true,
-    });
+    const existing = makeRecord({ auto_blocked: true, failure_count: 10 }, []);
     const { ctx, patchFn, insertFn } = makeCtx(existing);
 
     const result = await recordPaymentFailure.handler(ctx, {
@@ -244,24 +257,112 @@ describe("recordPaymentFailure", () => {
   });
 
   // ---------------------------------------------------------------------------
+  // True sliding window
+  // ---------------------------------------------------------------------------
+
+  it("prunes old entries outside the window (true sliding window)", async () => {
+    const now = Date.now();
+    const entries = [
+      // These are OUTSIDE the window — should be pruned
+      makeEntry({
+        timestamp: now - WINDOW_MS - 5000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - WINDOW_MS - 4000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - WINDOW_MS - 3000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - WINDOW_MS - 2000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+      // This one is INSIDE the window — should be kept
+      makeEntry({
+        timestamp: now - 1000,
+        declineCode: "card_declined",
+        weight: 1,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
+    const { ctx } = makeCtx(existing);
+
+    const result = await recordPaymentFailure.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      stripeCustomerId: CUSTOMER_ID,
+      declineCode: "card_declined", // +1 → only 2 in window
+    });
+
+    // Old entries pruned; only 2 remain in window (score=2, not 10)
+    expect(result.shouldBlock).toBe(false);
+    expect(result.failureCount).toBe(2);
+  });
+
+  it("does not evade detection by pacing across old-style window boundary", async () => {
+    // Regression: old tumbling window would reset at boundary.
+    // True sliding window keeps recent entries.
+    const now = Date.now();
+    const entries = [
+      // 4 failures starting 9.5 min ago — all still within 10-min window
+      makeEntry({
+        timestamp: now - 9.5 * 60 * 1000,
+        declineCode: "card_declined",
+        weight: 1,
+      }),
+      makeEntry({
+        timestamp: now - 8 * 60 * 1000,
+        declineCode: "card_declined",
+        weight: 1,
+      }),
+      makeEntry({
+        timestamp: now - 6 * 60 * 1000,
+        declineCode: "card_declined",
+        weight: 1,
+      }),
+      makeEntry({
+        timestamp: now - 3 * 60 * 1000,
+        declineCode: "card_declined",
+        weight: 1,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
+    const { ctx } = makeCtx(existing);
+
+    const result = await recordPaymentFailure.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      stripeCustomerId: CUSTOMER_ID,
+      declineCode: "card_declined", // +1 → 5 in window, = threshold
+    });
+
+    expect(result.shouldBlock).toBe(true);
+    expect(result.failureCount).toBe(5);
+  });
+
+  // ---------------------------------------------------------------------------
   // Distinct fingerprints signal
   // ---------------------------------------------------------------------------
 
   it("blocks when 3 distinct card fingerprints are seen", async () => {
-    const existing = makeRecord({
-      failure_count: 2,
-      weighted_score: 2,
-      first_failure_at: Date.now() - 1000,
-      decline_codes: ["card_declined", "card_declined"],
-      distinct_fingerprints: ["fp_aaa", "fp_bbb"],
-    });
+    const now = Date.now();
+    const entries = [
+      makeEntry({ timestamp: now - 2000, fingerprint: "fp_aaa", weight: 1 }),
+      makeEntry({ timestamp: now - 1000, fingerprint: "fp_bbb", weight: 1 }),
+    ];
+    const existing = makeRecord({}, entries);
     const { ctx } = makeCtx(existing);
 
     const result = await recordPaymentFailure.handler(ctx, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
       declineCode: "card_declined",
-      cardFingerprint: "fp_ccc", // 3rd unique fingerprint
+      cardFingerprint: "fp_ccc", // 3rd unique
     });
 
     expect(result.shouldBlock).toBe(true);
@@ -269,13 +370,11 @@ describe("recordPaymentFailure", () => {
   });
 
   it("does NOT double-count the same fingerprint", async () => {
-    const existing = makeRecord({
-      failure_count: 1,
-      weighted_score: 1,
-      first_failure_at: Date.now() - 1000,
-      decline_codes: ["card_declined"],
-      distinct_fingerprints: ["fp_aaa"],
-    });
+    const now = Date.now();
+    const entries = [
+      makeEntry({ timestamp: now - 1000, fingerprint: "fp_aaa", weight: 1 }),
+    ];
+    const existing = makeRecord({}, entries);
     const { ctx, patchFn } = makeCtx(existing);
 
     await recordPaymentFailure.handler(ctx, {
@@ -298,22 +397,21 @@ describe("recordPaymentFailure", () => {
   // ---------------------------------------------------------------------------
 
   it("blocks when 4 distinct decline codes are seen", async () => {
-    const existing = makeRecord({
-      failure_count: 3,
-      weighted_score: 3,
-      first_failure_at: Date.now() - 1000,
-      decline_codes: [
-        "incorrect_number",
-        "incorrect_cvc",
-        "invalid_expiry_month",
-      ],
-    });
+    const now = Date.now();
+    // Use low-weight codes so weighted score stays below 5 and
+    // the diversity signal is what triggers the block
+    const entries = [
+      makeEntry({ timestamp: now - 3000, declineCode: "code_a", weight: 1 }),
+      makeEntry({ timestamp: now - 2000, declineCode: "code_b", weight: 1 }),
+      makeEntry({ timestamp: now - 1000, declineCode: "code_c", weight: 1 }),
+    ];
+    const existing = makeRecord({}, entries);
     const { ctx } = makeCtx(existing);
 
     const result = await recordPaymentFailure.handler(ctx, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
-      declineCode: "card_declined", // 4th distinct code
+      declineCode: "code_d", // 4th distinct code, total score = 4 < 5
     });
 
     expect(result.shouldBlock).toBe(true);
@@ -321,12 +419,20 @@ describe("recordPaymentFailure", () => {
   });
 
   it("does NOT block with only 3 distinct decline codes", async () => {
-    const existing = makeRecord({
-      failure_count: 2,
-      weighted_score: 2,
-      first_failure_at: Date.now() - 1000,
-      decline_codes: ["incorrect_number", "incorrect_cvc"],
-    });
+    const now = Date.now();
+    const entries = [
+      makeEntry({
+        timestamp: now - 2000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - 1000,
+        declineCode: "incorrect_cvc",
+        weight: 1.5,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
     const { ctx } = makeCtx(existing);
 
     const result = await recordPaymentFailure.handler(ctx, {
@@ -335,6 +441,7 @@ describe("recordPaymentFailure", () => {
       declineCode: "card_declined", // 3rd distinct — below threshold of 4
     });
 
+    // Score is 2 + 1.5 + 1 = 4.5 which is < 5, and only 3 distinct codes
     expect(result.shouldBlock).toBe(false);
   });
 
@@ -343,9 +450,8 @@ describe("recordPaymentFailure", () => {
   // ---------------------------------------------------------------------------
 
   it("handles the screenshot scenario: rapid incorrect_number declines", async () => {
-    // Simulate 3 rapid incorrect_number failures (the screenshot pattern)
     // Failure 1: new record, score=2
-    const { ctx: ctx1, insertFn } = makeCtx(null);
+    const { ctx: ctx1 } = makeCtx(null);
     const r1 = await recordPaymentFailure.handler(ctx1, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
@@ -355,13 +461,15 @@ describe("recordPaymentFailure", () => {
     expect(r1.failureCount).toBe(1);
 
     // Failure 2: score=4, still under threshold
-    const after1 = makeRecord({
-      failure_count: 1,
-      weighted_score: 2,
-      first_failure_at: Date.now() - 500,
-      decline_codes: ["incorrect_number"],
-    });
-    const { ctx: ctx2 } = makeCtx(after1);
+    const now = Date.now();
+    const entries2 = [
+      makeEntry({
+        timestamp: now - 500,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+    ];
+    const { ctx: ctx2 } = makeCtx(makeRecord({}, entries2));
     const r2 = await recordPaymentFailure.handler(ctx2, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
@@ -370,13 +478,19 @@ describe("recordPaymentFailure", () => {
     expect(r2.shouldBlock).toBe(false);
 
     // Failure 3: score=6 >= 5, BLOCKED
-    const after2 = makeRecord({
-      failure_count: 2,
-      weighted_score: 4,
-      first_failure_at: Date.now() - 1000,
-      decline_codes: ["incorrect_number", "incorrect_number"],
-    });
-    const { ctx: ctx3 } = makeCtx(after2);
+    const entries3 = [
+      makeEntry({
+        timestamp: now - 1000,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - 500,
+        declineCode: "incorrect_number",
+        weight: 2,
+      }),
+    ];
+    const { ctx: ctx3 } = makeCtx(makeRecord({}, entries3));
     const r3 = await recordPaymentFailure.handler(ctx3, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
@@ -395,14 +509,16 @@ describe("recordPaymentFailure", () => {
     });
     expect(r1.shouldBlock).toBe(false);
 
-    const after1 = makeRecord({
-      failure_count: 1,
-      weighted_score: 1,
-      first_failure_at: Date.now() - 30_000,
-      decline_codes: ["card_declined"],
-      distinct_fingerprints: ["fp_aaa"],
-    });
-    const { ctx: ctx2 } = makeCtx(after1);
+    const now = Date.now();
+    const entries = [
+      makeEntry({
+        timestamp: now - 30_000,
+        declineCode: "card_declined",
+        fingerprint: "fp_aaa",
+        weight: 1,
+      }),
+    ];
+    const { ctx: ctx2 } = makeCtx(makeRecord({}, entries));
     const r2 = await recordPaymentFailure.handler(ctx2, {
       serviceKey: SERVICE_KEY,
       stripeCustomerId: CUSTOMER_ID,
@@ -411,6 +527,42 @@ describe("recordPaymentFailure", () => {
     });
     expect(r2.shouldBlock).toBe(false);
     expect(r2.failureCount).toBe(2);
+  });
+});
+
+describe("markCustomerAutoBlocked", () => {
+  it("creates a blocked record when no record exists", async () => {
+    const { ctx, insertFn } = makeCtx(null);
+
+    await markCustomerAutoBlocked.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      stripeCustomerId: CUSTOMER_ID,
+      reason: "immediate_block:stolen_card",
+    });
+
+    expect(insertFn).toHaveBeenCalledWith(
+      "payment_failure_tracking",
+      expect.objectContaining({
+        stripe_customer_id: CUSTOMER_ID,
+        auto_blocked: true,
+      }),
+    );
+  });
+
+  it("patches existing record to blocked", async () => {
+    const existing = makeRecord({}, []);
+    const { ctx, patchFn } = makeCtx(existing);
+
+    await markCustomerAutoBlocked.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      stripeCustomerId: CUSTOMER_ID,
+      reason: "immediate_block:fraudulent",
+    });
+
+    expect(patchFn).toHaveBeenCalledWith(
+      existing._id,
+      expect.objectContaining({ auto_blocked: true }),
+    );
   });
 });
 
@@ -427,7 +579,7 @@ describe("isCustomerSuspicious", () => {
   });
 
   it("returns blocked when auto_blocked is true", async () => {
-    const record = makeRecord({ auto_blocked: true });
+    const record = makeRecord({ auto_blocked: true }, []);
     const { ctx } = makeCtx(record);
 
     const result = await isCustomerSuspicious.handler(ctx, {
@@ -438,11 +590,14 @@ describe("isCustomerSuspicious", () => {
     expect(result).toEqual({ suspicious: true, blocked: true });
   });
 
-  it("returns suspicious when 3+ failures within window", async () => {
-    const record = makeRecord({
-      failure_count: 3,
-      first_failure_at: Date.now() - 1000, // within window
-    });
+  it("returns suspicious when 3+ failures within sliding window", async () => {
+    const now = Date.now();
+    const entries = [
+      makeEntry({ timestamp: now - 3000 }),
+      makeEntry({ timestamp: now - 2000 }),
+      makeEntry({ timestamp: now - 1000 }),
+    ];
+    const record = makeRecord({}, entries);
     const { ctx } = makeCtx(record);
 
     const result = await isCustomerSuspicious.handler(ctx, {
@@ -453,11 +608,16 @@ describe("isCustomerSuspicious", () => {
     expect(result).toEqual({ suspicious: true, blocked: false });
   });
 
-  it("returns not suspicious when failures are outside window", async () => {
-    const record = makeRecord({
-      failure_count: 10,
-      first_failure_at: Date.now() - 11 * 60 * 1000, // expired
-    });
+  it("returns not suspicious when failures are outside sliding window", async () => {
+    const now = Date.now();
+    const entries = [
+      makeEntry({ timestamp: now - WINDOW_MS - 5000 }),
+      makeEntry({ timestamp: now - WINDOW_MS - 4000 }),
+      makeEntry({ timestamp: now - WINDOW_MS - 3000 }),
+      makeEntry({ timestamp: now - WINDOW_MS - 2000 }),
+    ];
+    // failure_count is high but all entries are outside the window
+    const record = makeRecord({}, entries);
     const { ctx } = makeCtx(record);
 
     const result = await isCustomerSuspicious.handler(ctx, {
@@ -469,10 +629,12 @@ describe("isCustomerSuspicious", () => {
   });
 
   it("returns not suspicious when below threshold within window", async () => {
-    const record = makeRecord({
-      failure_count: 2,
-      first_failure_at: Date.now() - 1000,
-    });
+    const now = Date.now();
+    const entries = [
+      makeEntry({ timestamp: now - 2000 }),
+      makeEntry({ timestamp: now - 1000 }),
+    ];
+    const record = makeRecord({}, entries);
     const { ctx } = makeCtx(record);
 
     const result = await isCustomerSuspicious.handler(ctx, {

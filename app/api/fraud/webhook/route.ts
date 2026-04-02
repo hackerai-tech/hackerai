@@ -316,6 +316,14 @@ async function handlePaymentFailed(
 
   // Immediate block for clearly fraudulent decline codes
   if (IMMEDIATE_BLOCK_CODES.has(declineCode)) {
+    // Persist block to Convex FIRST so that isCustomerSuspicious pre-checks
+    // will see it even if the subsequent Stripe calls fail and the webhook
+    // retry is skipped (idempotency claim already written above).
+    await convex.mutation(api.fraudTracking.markCustomerAutoBlocked, {
+      serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
+      stripeCustomerId: customerId,
+      reason: `immediate_block:${declineCode}`,
+    });
     await blockFraudulentUser(
       customerId,
       chargeId,

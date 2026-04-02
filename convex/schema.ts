@@ -260,6 +260,9 @@ export default defineSchema({
     decline_codes: v.array(v.string()),
     distinct_fingerprints: v.array(v.string()),
     auto_blocked: v.boolean(),
+    // JSON-serialized array of {timestamp, declineCode, fingerprint, weight}
+    // for true sliding window evaluation (pruned on each write)
+    entries: v.optional(v.string()),
   }).index("by_customer_id", ["stripe_customer_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
