@@ -505,7 +505,7 @@ export const createChatHandler = (
                 usedTokens: 0,
                 maxTokens: 0,
               };
-          // Context usage is sent at the end of the request (onFinish)
+          // Context usage is sent after pruning, summarization, each step, and onFinish
 
           let streamFinishReason: string | undefined;
           // finalMessages will be set in prepareStep if summarization is needed
@@ -744,6 +744,15 @@ export const createChatHandler = (
                     usage as Parameters<typeof usageTracker.accumulateStep>[0],
                   );
                   lastStepInputTokens = usage.inputTokens || 0;
+
+                  // Update context indicator after each step
+                  if (contextUsageOn) {
+                    writeContextUsage(writer, {
+                      usedTokens:
+                        ctxUsage.usedTokens + usageTracker.streamOutputTokens,
+                      maxTokens: ctxUsage.maxTokens,
+                    });
+                  }
                 }
               },
               onFinish: async ({ finishReason, usage, response }) => {
