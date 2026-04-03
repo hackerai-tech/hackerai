@@ -3,7 +3,7 @@ import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
 import { internal } from "./_generated/api";
 import { fileCountAggregate } from "./fileAggregate";
-import { MAX_PINNED_CHATS, MAX_PREVIOUS_SUMMARIES } from "./constants";
+import { MAX_PREVIOUS_SUMMARIES } from "./constants";
 import { validateServiceKey } from "./lib/utils";
 
 /**
@@ -49,6 +49,7 @@ export const getChatByIdFromClient = query({
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -139,6 +140,7 @@ export const getChatById = query({
       active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
+      codex_thread_id: v.optional(v.string()),
     }),
     v.null(),
   ),
@@ -157,6 +159,70 @@ export const getChatById = query({
       console.error("Failed to get chat by id (backend):", error);
       return null;
     }
+  },
+});
+
+/**
+ * Save a chat from a local provider (e.g., Codex running on user's desktop).
+ * Client-callable — uses auth identity instead of service key.
+ */
+export const saveLocalChat = mutation({
+  args: {
+    id: v.string(),
+    title: v.string(),
+    selectedModel: v.optional(v.string()),
+    codexThreadId: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const user = await ctx.auth.getUserIdentity();
+    if (!user) {
+      throw new ConvexError({
+        code: "UNAUTHORIZED",
+        message: "Not authenticated",
+      });
+    }
+
+    // Input validation
+    if (args.id.length > 200) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Chat ID too long",
+      });
+    }
+    if (args.title.length > 500) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Title too long",
+      });
+    }
+
+    // Check if chat already exists (idempotent)
+    const existing = await ctx.db
+      .query("chats")
+      .withIndex("by_chat_id", (q) => q.eq("id", args.id))
+      .first();
+    if (existing) {
+      // Verify ownership — don't let users modify other users' chats
+      if (existing.user_id !== user.subject) {
+        throw new ConvexError({ code: "FORBIDDEN", message: "Not your chat" });
+      }
+      const patch: Record<string, unknown> = { update_time: Date.now() };
+      if (args.codexThreadId) patch.codex_thread_id = args.codexThreadId;
+      if (args.selectedModel) patch.selected_model = args.selectedModel;
+      await ctx.db.patch(existing._id, patch);
+      return null;
+    }
+
+    await ctx.db.insert("chats", {
+      id: args.id,
+      title: args.title,
+      user_id: user.subject,
+      update_time: Date.now(),
+      codex_thread_id: args.codexThreadId,
+      selected_model: args.selectedModel,
+    });
+    return null;
   },
 });
 
@@ -300,7 +366,7 @@ export const updateChat = mutation({
 });
 
 /**
- * Get user's latest chats with pagination. Pinned chats (max 3) appear first in pin order.
+ * Get user's latest chats with pagination. Pinned chats appear first in pin order.
  */
 export const getUserChats = query({
   args: {
@@ -324,7 +390,7 @@ export const getUserChats = query({
           q.eq("user_id", identity.subject).gt("pinned_at", 0),
         )
         .order("asc")
-        .take(MAX_PINNED_CHATS);
+        .collect();
 
       const pinnedIds = pinnedChats.map((c) => c.id);
 
@@ -402,7 +468,7 @@ export const getUserChats = query({
 });
 
 /**
- * Pin a chat. Pinned chats appear at the top of the list. Max 3 pinned chats per user.
+ * Pin a chat. Pinned chats appear at the top of the list.
  */
 export const pinChat = mutation({
   args: {
@@ -437,20 +503,6 @@ export const pinChat = mutation({
     }
     if (chat.pinned_at != null) {
       return null; // Already pinned
-    }
-
-    const pinnedChats = await ctx.db
-      .query("chats")
-      .withIndex("by_user_and_pinned", (q) =>
-        q.eq("user_id", identity.subject).gt("pinned_at", 0),
-      )
-      .take(MAX_PINNED_CHATS);
-
-    if (pinnedChats.length >= MAX_PINNED_CHATS) {
-      throw new ConvexError({
-        code: "MAX_PINNED_REACHED",
-        message: `You can pin at most ${MAX_PINNED_CHATS} chats`,
-      });
     }
 
     await ctx.db.patch(chat._id, { pinned_at: Date.now() });

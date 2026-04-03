@@ -97,6 +97,18 @@ export const writeSelectedModelForMode = (
   }
 };
 
+/** Remove all persisted model preferences (ask + agent) — e.g. on logout. */
+export const clearSelectedModelFromStorage = (): void => {
+  if (!isBrowser()) return;
+  try {
+    for (const mode of ["ask", "agent"] as const) {
+      window.localStorage.removeItem(`${SELECTED_MODEL_STORAGE_KEY}_${mode}`);
+    }
+  } catch {
+    // ignore
+  }
+};
+
 export const getDraftContentById = (id: string): string | null => {
   const store = readDraftStore();
   const entry = store.drafts.find((d) => d.id === id);

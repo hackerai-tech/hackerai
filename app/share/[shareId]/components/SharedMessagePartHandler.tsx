@@ -46,6 +46,14 @@ import {
   PROXY_ACTION_LABELS,
   PROXY_COMPLETED_LABELS,
 } from "@/app/components/tools/ProxyToolHandler";
+import { OpenAIIcon } from "@/app/components/ModelSelector/icons";
+import type {
+  SidebarContent,
+  SidebarTerminal,
+  SidebarFile,
+  SidebarWebSearch,
+  WebSearchResult,
+} from "@/types/chat";
 
 interface MessagePart {
   type: string;
@@ -185,6 +193,11 @@ export const SharedMessagePartHandler = ({
     part.type === "tool-view_sitemap_entry"
   ) {
     return renderProxyTool(part, idx, openSidebar);
+  }
+
+  // Generic Codex tool handler — matches any tool-codex_* type
+  if (typeof part.type === "string" && part.type.startsWith("tool-codex_")) {
+    return renderCodexTool(part, idx, openSidebar);
   }
 
   return null;
@@ -971,6 +984,215 @@ function renderNotesTool(
         action={getNotesActionText(toolName)}
         target={getTarget()}
         isClickable={true}
+        onClick={handleOpenInSidebar}
+        onKeyDown={handleKeyDown}
+      />
+    );
+  }
+  return null;
+}
+
+// Parse a unified git diff into original and modified content
+function parseGitDiff(diff: string): {
+  originalContent: string;
+  modifiedContent: string;
+} | null {
+  if (!diff) return null;
+
+  const lines = diff.split("\n");
+  const original: string[] = [];
+  const modified: string[] = [];
+  let inHunk = false;
+
+  for (const line of lines) {
+    if (
+      !inHunk &&
+      (line.startsWith("diff --git") ||
+        line.startsWith("index ") ||
+        line.startsWith("--- ") ||
+        line.startsWith("+++ ") ||
+        line.startsWith("new file ") ||
+        line.startsWith("deleted file "))
+    ) {
+      continue;
+    }
+
+    if (line.startsWith("@@")) {
+      inHunk = true;
+      continue;
+    }
+
+    if (!inHunk) continue;
+
+    if (line.startsWith("-")) {
+      original.push(line.slice(1));
+    } else if (line.startsWith("+")) {
+      modified.push(line.slice(1));
+    } else if (line.startsWith(" ")) {
+      original.push(line.slice(1));
+      modified.push(line.slice(1));
+    }
+  }
+
+  if (original.length === 0 && modified.length === 0) return null;
+
+  return {
+    originalContent: original.join("\n"),
+    modifiedContent: modified.join("\n"),
+  };
+}
+
+// Map codex item types to action verbs and targets
+function getCodexToolDisplay(itemType: string, input: any) {
+  switch (itemType) {
+    case "commandExecution":
+      return {
+        doneAction: "Executed",
+        target: input?.command || "command",
+      };
+    case "fileChange": {
+      const pastTense: Record<string, string> = {
+        add: "Added",
+        create: "Created",
+        update: "Updated",
+        delete: "Deleted",
+        edit: "Edited",
+      };
+      return {
+        doneAction: pastTense[input?.action] || "Edited",
+        target: input?.path || input?.file || "file",
+      };
+    }
+    case "webSearch":
+      return {
+        doneAction: "Searched",
+        target: input?.toolLabel || input?.query || "web",
+      };
+    default:
+      return {
+        doneAction: "Ran",
+        target: input?.toolLabel || input?.command || itemType,
+      };
+  }
+}
+
+// Codex tool renderer (tool-codex_*)
+function renderCodexTool(
+  part: MessagePart,
+  idx: number,
+  openSidebar: ReturnType<typeof useSharedChatContext>["openSidebar"],
+) {
+  const { input, output } = part;
+  const itemType =
+    input?.codexItemType || part.type?.replace("tool-codex_", "") || "unknown";
+  const display = getCodexToolDisplay(itemType, input);
+
+  const isError = part.state === "output-error";
+
+  if (
+    part.state === "input-available" ||
+    part.state === "output-available" ||
+    isError
+  ) {
+    const errorDisplay = isError
+      ? { doneAction: "Failed", target: display.target }
+      : display;
+
+    const buildSidebarContent = (): SidebarContent | null => {
+      if (isError) {
+        const command =
+          input?.command ||
+          input?.path ||
+          input?.file ||
+          input?.toolLabel ||
+          display.target;
+        return {
+          command: command || itemType,
+          output: part.errorText || "An error occurred",
+          isExecuting: false,
+          toolCallId: part.toolCallId || "",
+        } satisfies SidebarTerminal;
+      }
+
+      switch (itemType) {
+        case "webSearch": {
+          const query =
+            output?.query || input?.toolLabel || input?.query || "web search";
+          const action = output?.action;
+          const queries: string[] = action?.queries || [];
+          const results: WebSearchResult[] = queries.map((q: string) => ({
+            title: q,
+            url: "",
+            content: "",
+            date: null,
+            lastUpdated: null,
+          }));
+          return {
+            query,
+            results,
+            isSearching: false,
+            toolCallId: part.toolCallId || "",
+          } satisfies SidebarWebSearch;
+        }
+
+        case "fileChange": {
+          const filePath = output?.path || input?.path || input?.file || "file";
+          const changeAction = output?.action || input?.action || "edit";
+          const actionMap: Record<string, SidebarFile["action"]> = {
+            add: "writing",
+            update: "editing",
+            delete: "reading",
+          };
+          const rawDiff = output?.diff || input?.diff || "";
+          const parsed = parseGitDiff(rawDiff);
+          return {
+            path: filePath,
+            content: parsed?.modifiedContent || rawDiff || output?.output || "",
+            action: actionMap[changeAction] || "editing",
+            toolCallId: part.toolCallId || "",
+            isExecuting: false,
+            originalContent: parsed?.originalContent,
+            modifiedContent: parsed?.modifiedContent,
+          } satisfies SidebarFile;
+        }
+
+        case "commandExecution":
+        default: {
+          const command =
+            input?.command || input?.toolLabel || input?.path || display.target;
+          if (!command) return null;
+          return {
+            command,
+            output: output?.output || output?.diff || "",
+            isExecuting: false,
+            toolCallId: part.toolCallId || "",
+          } satisfies SidebarTerminal;
+        }
+      }
+    };
+
+    const sidebarContent = buildSidebarContent();
+
+    const handleOpenInSidebar = () => {
+      if (sidebarContent) {
+        openSidebar(sidebarContent);
+      }
+    };
+
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        handleOpenInSidebar();
+      }
+    };
+
+    return (
+      <ToolBlock
+        key={idx}
+        icon={<OpenAIIcon className="h-4 w-4" />}
+        action={errorDisplay.doneAction}
+        target={errorDisplay.target}
+        isClickable={sidebarContent != null}
         onClick={handleOpenInSidebar}
         onKeyDown={handleKeyDown}
       />

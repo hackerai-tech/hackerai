@@ -12,6 +12,7 @@ import { NotesToolHandler } from "./tools/NotesToolHandler";
 import { ProxyToolHandler } from "./tools/ProxyToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
+import { CodexToolHandler } from "./tools/CodexToolHandler";
 import type { ChatStatus } from "@/types";
 import type { FileDetails } from "@/types/file";
 import { ReasoningHandler } from "./ReasoningHandler";
@@ -32,6 +33,35 @@ interface MessagePartHandlerProps {
 const UserTextPart = memo(function UserTextPart({ text }: { text: string }) {
   return <div className="whitespace-pre-wrap">{text}</div>;
 });
+
+// Deep equality check for tool inputs — avoids JSON.stringify overhead while
+// correctly handling nested objects/arrays (e.g. tool-file edits, todo_write todos).
+function deepEqual(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== typeof b) return false;
+  if (typeof a !== "object") return false;
+
+  const isArrayA = Array.isArray(a);
+  const isArrayB = Array.isArray(b);
+  if (isArrayA !== isArrayB) return false;
+
+  if (isArrayA) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (let i = 0; i < keysA.length; i++) {
+    const key = keysA[i];
+    if (!deepEqual(a[key], b[key])) return false;
+  }
+  return true;
+}
 
 // Custom comparison for MessagePartHandler to minimize re-renders
 function arePropsEqual(
@@ -73,10 +103,9 @@ function arePropsEqual(
       prevProps.part.toolCallId === nextProps.part.toolCallId &&
       prevProps.part.output === nextProps.part.output &&
       // Tool input is an object — reference check first (fast path), then
-      // value comparison so new objects with identical content don't re-render.
+      // shallow comparison so new objects with identical content don't re-render.
       (prevProps.part.input === nextProps.part.input ||
-        JSON.stringify(prevProps.part.input) ===
-          JSON.stringify(nextProps.part.input))
+        deepEqual(prevProps.part.input, nextProps.part.input))
     );
   }
 
@@ -257,6 +286,13 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       );
 
     default:
+      // Generic Codex tool handler — matches any tool-codex_* type
+      if (
+        typeof part.type === "string" &&
+        part.type.startsWith("tool-codex_")
+      ) {
+        return <CodexToolHandler part={part} status={status} />;
+      }
       return null;
   }
 }, arePropsEqual);

@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { memo, useMemo } from "react";
 import ToolBlock from "@/components/ui/tool-block";
 import { FileDown } from "lucide-react";
 import { useToolSidebar } from "@/app/hooks/useToolSidebar";
@@ -31,11 +31,11 @@ export interface GetTerminalFilesHandlerProps {
   sharedFileDetails?: FileDetails[];
 }
 
-export const GetTerminalFilesHandler = ({
+export const GetTerminalFilesHandler = memo(function GetTerminalFilesHandler({
   part,
   status,
   sharedFileDetails,
-}: GetTerminalFilesHandlerProps) => {
+}: GetTerminalFilesHandlerProps) {
   const { toolCallId, state, input, output } = part;
 
   // Memoize requestedPaths to prevent unstable references from triggering
@@ -142,4 +142,4 @@ export const GetTerminalFilesHandler = ({
     default:
       return null;
   }
-};
+});

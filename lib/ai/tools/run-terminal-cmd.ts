@@ -531,7 +531,7 @@ If you are generating files:
                           output: `Background process started with PID: ${processId ?? "unknown"}\n`,
                         }
                       : {
-                          exitCode: 0,
+                          exitCode: exec.exitCode ?? 0,
                           output: outputWithSaveInfo,
                         },
                   });

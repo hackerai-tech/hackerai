@@ -9,7 +9,8 @@ import { isSupportedImageMediaType } from "./file-utils";
 import type { SandboxFile } from "./sandbox-file-utils";
 import { collectSandboxFiles } from "./sandbox-file-utils";
 import { extractAllFileIdsFromMessages, isFilePart } from "./file-token-utils";
-import { MAX_TOKENS_FILE } from "../token-utils";
+import { getMaxFileTokens } from "../token-utils";
+import type { SubscriptionTier } from "@/types";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 const serviceKey = process.env.CONVEX_SERVICE_ROLE_KEY!;
@@ -88,7 +89,6 @@ const collectFilesToProcess = (
 
       const shouldProcess =
         mode === "agent" ||
-        mode === "agent-long" ||
         part.mediaType === "application/pdf" ||
         isMediaFile(part.mediaType);
 
@@ -183,16 +183,21 @@ const applyModeSpecificTransforms = async (
   mode: ChatMode,
   sandboxFiles: SandboxFile[],
   uploadBasePath?: string,
+  maxFileTokens?: number,
 ) => {
   const fileIds = extractAllFileIdsFromMessages(messages);
 
-  if (mode === "agent" || mode === "agent-long") {
+  if (mode === "agent") {
     collectSandboxFiles(messages, sandboxFiles, uploadBasePath);
     removeNonMediaFileParts(messages);
   } else {
     const nonMediaFileIds = filterNonMediaFileIds(messages, fileIds);
     if (nonMediaFileIds.length > 0) {
-      await addDocumentContentToMessages(messages, nonMediaFileIds);
+      await addDocumentContentToMessages(
+        messages,
+        nonMediaFileIds,
+        maxFileTokens,
+      );
     }
     removeAudioFileParts(messages);
   }
@@ -206,7 +211,7 @@ const applyModeSpecificTransforms = async (
  *
  * Transforms file parts based on chat mode:
  * - **Ask mode**: Converts non-media files to document content, keeps images/PDFs as file parts
- * - **Agent / Agent-long mode**: Prepares all files for sandbox upload, keeps only images as file parts
+ * - **Agent mode**: Prepares all files for sandbox upload, keeps only images as file parts
  *
  * Processing steps:
  * 1. Generates fresh URLs for files (prevents expiration)
@@ -214,10 +219,10 @@ const applyModeSpecificTransforms = async (
  * 3. Detects media files (images/PDFs)
  * 4. Applies mode-specific transforms:
  *    - Ask: Injects document content for text files, removes audio
- *    - Agent/Agent-long: Collects files for sandbox, adds attachment tags, removes non-images
+ *    - Agent: Collects files for sandbox, adds attachment tags, removes non-images
  *
  * @param messages - Messages to process
- * @param mode - Chat mode ("ask", "agent", or "agent-long")
+ * @param mode - Chat mode ("ask" or "agent")
  * @param uploadBasePath - Override for agent mode (/home/user/upload or /tmp/hackerai-upload for local dangerous)
  * @returns Processed messages with file metadata and sandbox files for upload
  */
@@ -225,6 +230,7 @@ export const processMessageFiles = async (
   messages: UIMessage[],
   mode: ChatMode = "ask",
   uploadBasePath?: string,
+  subscription?: SubscriptionTier,
 ): Promise<{
   messages: UIMessage[];
   hasMediaFiles: boolean;
@@ -249,11 +255,16 @@ export const processMessageFiles = async (
     await applyUrlsToFileParts(updatedMessages, files, mode);
   }
 
+  const maxFileTokens = subscription
+    ? getMaxFileTokens(subscription)
+    : undefined;
+
   await applyModeSpecificTransforms(
     updatedMessages,
     mode,
     sandboxFiles,
     uploadBasePath,
+    maxFileTokens,
   );
 
   return {
@@ -300,6 +311,7 @@ const formatUnprocessableDocument = (name: string, reason: string) =>
 const addDocumentContentToMessages = async (
   messages: UIMessage[],
   fileIds: Id<"files">[],
+  maxFileTokens: number = getMaxFileTokens("pro"),
 ): Promise<void> => {
   if (!fileIds.length || !messages.length) return;
 
@@ -320,10 +332,10 @@ const addDocumentContentToMessages = async (
 
     fileContents.forEach((file: FileContent) => {
       // Check if file exceeds token limit for ask mode
-      if (file.tokenSize > MAX_TOKENS_FILE) {
+      if (file.tokenSize > maxFileTokens) {
         unprocessableFiles.set(file.id, {
           name: file.name,
-          reason: `This file is too large for ask mode (${file.tokenSize.toLocaleString()} tokens, limit: ${MAX_TOKENS_FILE.toLocaleString()} tokens). Please use agent mode to access this file, where you can use terminal tools to analyze it.`,
+          reason: `This file is too large for ask mode (${file.tokenSize.toLocaleString()} tokens, limit: ${maxFileTokens.toLocaleString()} tokens). Please use agent mode to access this file, where you can use terminal tools to analyze it.`,
         });
       } else if (file.content?.trim()) {
         processableFiles.set(file.id, {

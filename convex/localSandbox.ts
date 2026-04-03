@@ -535,6 +535,7 @@ export const listConnectionsForBackend = query({
         }),
       ),
       lastSeen: v.number(),
+      isDesktop: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -552,6 +553,7 @@ export const listConnectionsForBackend = query({
       name: conn.connection_name,
       osInfo: conn.os_info,
       lastSeen: conn.last_heartbeat,
+      isDesktop: conn.client_version === "desktop",
     }));
   },
 });

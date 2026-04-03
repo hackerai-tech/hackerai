@@ -73,6 +73,17 @@ async function resolveUserIdsFromCustomer(
   }
 }
 
+/** Infer subscription tier from a Stripe product name (fallback when lookup_key is missing). */
+function tierFromProductName(name: string): SubscriptionTier | null {
+  const lower = name.toLowerCase();
+  if (lower.includes("ultra")) return "ultra";
+  if (lower.includes("pro-plus") || lower.includes("pro plus"))
+    return "pro-plus";
+  if (lower.includes("team")) return "team";
+  if (lower.includes("pro")) return "pro";
+  return null;
+}
+
 /** Resolve subscription tier and object from a Stripe subscription ID. */
 async function resolveSubscription(subscriptionId: string): Promise<{
   tier: SubscriptionTier;
@@ -80,20 +91,39 @@ async function resolveSubscription(subscriptionId: string): Promise<{
 } | null> {
   try {
     const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
-      expand: ["items.data.price"],
+      expand: ["items.data.price", "items.data.price.product"],
     });
 
-    const lookupKey = subscription.items?.data[0]?.price?.lookup_key ?? null;
+    const price = subscription.items?.data[0]?.price;
+    const lookupKey = price?.lookup_key ?? null;
 
-    if (!lookupKey) {
-      console.error(
-        `[Subscription Webhook] Subscription ${subscriptionId} has no price lookup_key`,
-      );
-      return null;
+    if (lookupKey) {
+      const tier = planLookupKeyToTier(lookupKey);
+      return tier ? { tier, subscription } : null;
     }
 
-    const tier = planLookupKeyToTier(lookupKey);
-    return tier ? { tier, subscription } : null;
+    // Fallback: infer tier from product name or metadata when lookup_key is missing
+    const product = price?.product;
+    const productObj =
+      product && typeof product === "object" && !("deleted" in product)
+        ? (product as Stripe.Product)
+        : null;
+
+    const tier =
+      (productObj?.metadata?.tier as SubscriptionTier | undefined) ??
+      (productObj?.name ? tierFromProductName(productObj.name) : null);
+
+    if (tier) {
+      console.warn(
+        `[Subscription Webhook] Subscription ${subscriptionId} missing price lookup_key, resolved tier "${tier}" from product fallback`,
+      );
+      return { tier, subscription };
+    }
+
+    console.error(
+      `[Subscription Webhook] Subscription ${subscriptionId} has no price lookup_key and could not infer tier from product`,
+    );
+    return null;
   } catch (error) {
     console.error(
       `[Subscription Webhook] Failed to retrieve subscription ${subscriptionId}:`,
@@ -109,7 +139,7 @@ async function resolveSubscription(subscriptionId: string): Promise<{
 
 /** Handle invoice.paid — reset rate limit buckets on subscription payment. */
 async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
-  // In Stripe API 2026-02-25, subscription lives under invoice.parent.subscription_details
+  // In Stripe API 2026-03-25, subscription lives under invoice.parent.subscription_details
   const subDetails = invoice.parent?.subscription_details;
   const subscriptionId = subDetails
     ? typeof subDetails.subscription === "string"
@@ -221,11 +251,24 @@ async function handleSubscriptionUpdated(
   const previousItems = (previousAttributes as any)?.items;
   if (!previousItems) return;
 
-  const currentLookupKey =
-    subscription.items?.data[0]?.price?.lookup_key ?? null;
-  const currentTier = currentLookupKey
+  const currentPrice = subscription.items?.data[0]?.price;
+  const currentLookupKey = currentPrice?.lookup_key ?? null;
+  let currentTier = currentLookupKey
     ? planLookupKeyToTier(currentLookupKey)
     : null;
+
+  // Fallback: infer current tier from product when lookup_key is missing
+  if (!currentTier && currentPrice?.product) {
+    const product = currentPrice.product;
+    const productObj =
+      product && typeof product === "object" && !("deleted" in product)
+        ? (product as Stripe.Product)
+        : null;
+    currentTier =
+      (productObj?.metadata?.tier as SubscriptionTier | undefined) ??
+      (productObj?.name ? tierFromProductName(productObj.name) : null) ??
+      null;
+  }
 
   const prevLookupKey = previousItems?.data?.[0]?.price?.lookup_key ?? null;
   const previousTier = prevLookupKey

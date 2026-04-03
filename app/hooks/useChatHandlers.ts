@@ -3,15 +3,17 @@ import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { useGlobalState } from "../contexts/GlobalState";
 import type { ChatMessage, ChatStatus } from "@/types";
+import { isCodexLocal } from "@/types/chat";
+import { isTauriEnvironment } from "@/app/hooks/useTauri";
 import { Id } from "@/convex/_generated/dataModel";
 import {
   countInputTokens,
   getMaxTokensForSubscription,
-  MAX_TOKENS_FILE,
+  getMaxFileTokens,
 } from "@/lib/token-utils";
 import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
-import { useDataStream } from "@/app/components/DataStreamProvider";
+import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
 import { normalizeMessages } from "@/lib/utils/message-processor";
 
 interface UseChatHandlersProps {
@@ -45,7 +47,7 @@ export const useChatHandlers = ({
   onStopCallback,
   resetAutoContinueCount,
 }: UseChatHandlersProps) => {
-  const { setIsAutoResuming } = useDataStream();
+  const { setIsAutoResuming } = useDataStreamDispatch();
   const {
     input,
     uploadedFiles,
@@ -84,6 +86,7 @@ export const useChatHandlers = ({
   const cancelTempStreamMutation = useMutation(
     api.tempStreams.cancelTempStreamFromClient,
   );
+  const saveLocalChatMutation = useMutation(api.chats.saveLocalChat);
 
   /**
    * Helper to stop an active stream, normalize messages, and persist state.
@@ -108,7 +111,13 @@ export const useChatHandlers = ({
       setMessages(normalizedMessages);
     }
 
-    if (!temporaryChatsEnabledRef.current) {
+    // Local provider models (e.g. codex-local) bypass the server entirely —
+    // skip all Convex stream/save operations since no server-side chat exists.
+    const isLocalProvider = isCodexLocal(selectedModel);
+
+    if (isLocalProvider) {
+      // Nothing to cancel or save server-side
+    } else if (!temporaryChatsEnabledRef.current) {
       // Run cancel and save in parallel - they're independent operations
       const lastMessage = normalizedMessages[normalizedMessages.length - 1];
       const savePromise =
@@ -142,6 +151,16 @@ export const useChatHandlers = ({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Block sending in Codex chats on web — message stays in the input
+    if (isCodexLocal(selectedModel) && !isTauriEnvironment()) {
+      toast.error("This chat requires the desktop app", {
+        description:
+          "Codex models run locally and need the HackerAI desktop app.",
+      });
+      return;
+    }
+
     setIsAutoResuming(false);
 
     // Reset manual stop flag when user submits a new message
@@ -179,7 +198,10 @@ export const useChatHandlers = ({
           stop();
 
           // Cancel the stream in database and save current message state
-          if (!temporaryChatsEnabledRef.current) {
+          if (
+            !temporaryChatsEnabledRef.current &&
+            !isCodexLocal(selectedModel)
+          ) {
             cancelStreamMutation({ chatId }).catch((error) => {
               console.error("Failed to cancel stream:", error);
             });
@@ -213,9 +235,10 @@ export const useChatHandlers = ({
           (total, file) => total + (file.tokens || 0),
           0,
         );
-        if (fileTokens > MAX_TOKENS_FILE) {
+        const maxFileTokens = getMaxFileTokens(subscription);
+        if (fileTokens > maxFileTokens) {
           toast.error("Cannot send files in Ask mode", {
-            description: `Files exceed Ask mode token limit (${fileTokens.toLocaleString()}/${MAX_TOKENS_FILE.toLocaleString()} tokens). Tip: Switch to Agent mode or remove large files.`,
+            description: `Files exceed Ask mode token limit (${fileTokens.toLocaleString()}/${maxFileTokens.toLocaleString()} tokens). Tip: Switch to Agent mode or remove large files.`,
           });
           return;
         }
@@ -231,6 +254,24 @@ export const useChatHandlers = ({
       }
       if (!isExistingChat && !temporaryChatsEnabledRef.current) {
         window.history.replaceState({}, "", `/c/${chatId}`);
+      }
+
+      // Local providers: save chat + user message before streaming starts
+      if (isCodexLocal(selectedModel)) {
+        try {
+          const title = input.trim().slice(0, 100) || "Codex Chat";
+          await saveLocalChatMutation({
+            id: chatId,
+            title,
+            selectedModel,
+          });
+        } catch (err) {
+          console.error("[CodexLocal] Failed to pre-save chat:", err);
+          toast.warning("Chat may not be saved", {
+            description:
+              "Failed to save chat metadata. Your conversation may not persist.",
+          });
+        }
       }
 
       try {

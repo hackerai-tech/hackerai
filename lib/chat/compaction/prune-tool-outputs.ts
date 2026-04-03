@@ -62,7 +62,7 @@ interface ToolPart {
 
 /**
  * Builds a compact placeholder string given the tool name, its input args, and output.
- * Shared by both UIMessage and CoreMessage pruners.
+ * Shared by both UIMessage and ModelMessage pruners.
  */
 const buildPlaceholderFromParts = (
   toolName: string,
@@ -279,11 +279,11 @@ export function pruneToolOutputs(
 }
 
 // ---------------------------------------------------------------------------
-// Model-level (CoreMessage) pruning — runs during the agentic loop
+// Model-level (ModelMessage) pruning — runs during the agentic loop
 // ---------------------------------------------------------------------------
 
 /**
- * A tool-result content part inside a CoreMessage with role "tool".
+ * A tool-result content part inside a ModelMessage with role "tool".
  * Shape: { type: "tool-result", toolCallId, toolName, output, providerOptions? }
  */
 interface ToolResultPart {
@@ -308,12 +308,12 @@ export interface ModelPruneResult {
 }
 
 /**
- * Prunes old tool-result outputs in CoreMessage[] (model-level messages).
+ * Prunes old tool-result outputs in ModelMessage[] (model-level messages).
  *
  * This runs inside prepareStep to prune tool outputs that accumulate
  * during the agentic loop (up to 100 tool calls per streamText invocation).
  *
- * CoreMessage format:
+ * ModelMessage format:
  *   assistant: { role: "assistant", content: [{ type: "tool-call", toolCallId, toolName, args }] }
  *   tool:      { role: "tool", content: [{ type: "tool-result", toolCallId, toolName, output }] }
  *
@@ -460,4 +460,39 @@ export function pruneModelMessages(
     toolOutputCount: toolEntries.length,
     skipReason: null,
   };
+}
+
+/**
+ * Filters out assistant messages with empty or whitespace-only content.
+ *
+ * convertToModelMessages() splits multi-step UIMessages at step-start boundaries.
+ * When a step contains only reasoning (no text or tool calls), it produces an
+ * assistant ModelMessage with content: [] — which strict providers like Moonshot AI
+ * reject with "must not be empty" errors.
+ *
+ * Safe to remove (not patch) because reasoning-only steps have no tool calls,
+ * so removing them won't orphan any subsequent tool messages.
+ */
+export function filterEmptyAssistantMessages<T extends Record<string, unknown>>(
+  messages: T[],
+): T[] {
+  return messages.filter((msg) => {
+    if (msg.role !== "assistant") return true;
+    const content = msg.content;
+    // Handle non-array content: empty string, null, undefined are all empty
+    if (!Array.isArray(content)) {
+      if (content == null) return false;
+      if (typeof content === "string") return !!content.trim();
+      return true;
+    }
+    if (content.length === 0) return false;
+    return content.some((part: any) => {
+      if (part.type === "text") return !!part.text?.trim();
+      // Reasoning parts are stripped by the AI SDK before the HTTP request,
+      // so they don't count as substantive content for the provider.
+      if (part.type === "reasoning" || part.type === "redacted-reasoning")
+        return false;
+      return true; // tool-call, file, etc. are substantive
+    });
+  });
 }

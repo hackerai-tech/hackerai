@@ -17,6 +17,10 @@ export class Ratelimit {
   static slidingWindow(_max: number, _interval: string) {
     return {};
   }
+
+  static fixedWindow(_max: number, _interval: string) {
+    return {};
+  }
 }
 
 const ratelimitExports = { Ratelimit, mockLimit };

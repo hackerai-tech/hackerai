@@ -202,7 +202,7 @@ export async function updateChat({
     status: "pending" | "in_progress" | "completed" | "cancelled";
     sourceMessageId?: string;
   }>;
-  defaultModelSlug?: "ask" | "agent" | "agent-long";
+  defaultModelSlug?: "ask" | "agent";
   sandboxType?: string;
   selectedModel?: string;
 }) {
@@ -240,7 +240,7 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
-  mode?: "ask" | "agent" | "agent-long";
+  mode?: "ask" | "agent";
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -269,7 +269,7 @@ export async function getMessagesByChatId({
         let fetchedDesc: UIMessage[] = [];
         let truncatedFromLoop: UIMessage[] | null = null;
         let fileTokensFromLoop: Record<Id<"files">, number> = {};
-        const skipFileTokens = mode === "agent" || mode === "agent-long";
+        const skipFileTokens = mode === "agent";
 
         while (pagesFetched < MAX_PAGES) {
           const pageResult: {
@@ -432,7 +432,7 @@ export async function getMessagesByChatId({
   const truncateResult = await truncateMessagesWithFileTokens(
     allMessages,
     subscription,
-    mode === "agent" || mode === "agent-long", // Skip file tokens for agent modes (files go to sandbox)
+    mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -561,22 +561,6 @@ export async function prepareForNewStream({ chatId }: { chatId: string }) {
       "bad_request:database",
       "Failed to prepare for new stream",
     );
-  }
-}
-
-export async function clearActiveTriggerRunIdFromBackend({
-  chatId,
-}: {
-  chatId: string;
-}) {
-  try {
-    await convex.mutation(api.chatStreams.clearActiveTriggerRunIdFromBackend, {
-      serviceKey,
-      chatId,
-    });
-  } catch (error) {
-    // Non-fatal: log and continue (client may have already cleared)
-    console.error("Failed to clear active_trigger_run_id:", error);
   }
 }
 

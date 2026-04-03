@@ -18,7 +18,7 @@ function getStripe(): Stripe {
   if (!stripeInstance) {
     const key = process.env.STRIPE_SECRET_KEY;
     if (!key) throw new Error("STRIPE_SECRET_KEY not configured");
-    stripeInstance = new Stripe(key, { apiVersion: "2026-02-25.clover" });
+    stripeInstance = new Stripe(key, { apiVersion: "2026-03-25.dahlia" });
   }
   return stripeInstance;
 }
@@ -273,7 +273,7 @@ export const getPaymentStatus = action({
 
 /**
  * Create a Stripe Checkout session for purchasing extra usage credits.
- * Accepts any positive dollar amount (minimum $5, maximum $1,000,000).
+ * Accepts any positive dollar amount (minimum $15, maximum $999,999).
  *
  * Note: baseUrl is passed from the client for redirect URLs only.
  * This is safe because:
@@ -300,8 +300,8 @@ export const createPurchaseSession = action({
     if (!Number.isInteger(args.amountDollars)) {
       return { url: null, error: "Amount must be a whole dollar value" };
     }
-    if (args.amountDollars < 5) {
-      return { url: null, error: "Minimum amount is $5" };
+    if (args.amountDollars < 15) {
+      return { url: null, error: "Minimum amount is $15" };
     }
     if (args.amountDollars > 999_999) {
       return { url: null, error: "Maximum amount is $999,999" };
@@ -467,6 +467,8 @@ export const deductWithAutoReload = action({
     newBalanceDollars: v.number(),
     insufficientFunds: v.boolean(),
     monthlyCapExceeded: v.boolean(),
+    trustCapExceeded: v.optional(v.boolean()),
+    trustCapDollars: v.optional(v.union(v.null(), v.number())),
     autoReloadTriggered: v.boolean(),
     autoReloadResult: v.optional(
       v.object({
@@ -536,59 +538,77 @@ export const deductWithAutoReload = action({
       if (!stripeCustomerId) {
         autoReloadResult = { success: false, reason: "no_stripe_customer" };
       } else {
-        // Get default payment method
-        const paymentMethodId =
-          await getDefaultPaymentMethodId(stripeCustomerId);
-        if (!paymentMethodId) {
-          autoReloadResult = {
-            success: false,
-            reason: "no_default_payment_method",
-          };
-        } else {
-          // Calculate how much to charge to reach target balance
-          // reloadAmount is the TARGET balance, not the amount to add
-          const currentBalanceDollars = settings.balanceDollars;
-          const targetBalanceDollars = reloadAmount;
-          const amountToCharge = Math.max(
-            0,
-            targetBalanceDollars - currentBalanceDollars,
-          );
+        try {
+          // Check if customer is blocked (fraud flagged) before attempting charge
+          const customerObj =
+            await getStripe().customers.retrieve(stripeCustomerId);
+          const isBlocked =
+            !customerObj.deleted &&
+            (customerObj as Stripe.Customer).metadata?.blocked === "true";
 
-          // Minimum charge of $1 to avoid tiny transactions
-          const MIN_CHARGE_DOLLARS = 1;
-          if (amountToCharge < MIN_CHARGE_DOLLARS) {
-            autoReloadResult = {
-              success: false,
-              reason: "amount_to_charge_below_minimum",
-            };
+          if (isBlocked) {
+            autoReloadResult = { success: false, reason: "customer_blocked" };
           } else {
-            // Create payment (Stripe uses cents)
-            const amountToChargeCents = Math.round(amountToCharge * 100);
-            const paymentResult = await createAutoReloadPayment(
-              stripeCustomerId,
-              paymentMethodId,
-              amountToChargeCents,
-              args.userId,
-            );
-
-            if (paymentResult.success) {
-              // Add credits (dollars -> points conversion happens in mutation)
-              await ctx.runMutation(api.extraUsage.addCredits, {
-                serviceKey: args.serviceKey,
-                userId: args.userId,
-                amountDollars: amountToCharge,
-              });
-              autoReloadResult = {
-                success: true,
-                chargedAmountDollars: amountToCharge,
-              };
-            } else {
+            // Get default payment method
+            const paymentMethodId =
+              await getDefaultPaymentMethodId(stripeCustomerId);
+            if (!paymentMethodId) {
               autoReloadResult = {
                 success: false,
-                reason: paymentResult.error || "payment_failed",
+                reason: "no_default_payment_method",
               };
+            } else {
+              // Calculate how much to charge to reach target balance
+              // reloadAmount is the TARGET balance, not the amount to add
+              const currentBalanceDollars = settings.balanceDollars;
+              const targetBalanceDollars = reloadAmount;
+              const amountToCharge = Math.max(
+                0,
+                targetBalanceDollars - currentBalanceDollars,
+              );
+
+              // Minimum charge of $1 to avoid tiny transactions
+              const MIN_CHARGE_DOLLARS = 1;
+              if (amountToCharge < MIN_CHARGE_DOLLARS) {
+                autoReloadResult = {
+                  success: false,
+                  reason: "amount_to_charge_below_minimum",
+                };
+              } else {
+                // Create payment (Stripe uses cents)
+                const amountToChargeCents = Math.round(amountToCharge * 100);
+                const paymentResult = await createAutoReloadPayment(
+                  stripeCustomerId,
+                  paymentMethodId,
+                  amountToChargeCents,
+                  args.userId,
+                );
+
+                if (paymentResult.success) {
+                  // Add credits (dollars -> points conversion happens in mutation)
+                  await ctx.runMutation(api.extraUsage.addCredits, {
+                    serviceKey: args.serviceKey,
+                    userId: args.userId,
+                    amountDollars: amountToCharge,
+                  });
+                  autoReloadResult = {
+                    success: true,
+                    chargedAmountDollars: amountToCharge,
+                  };
+                } else {
+                  autoReloadResult = {
+                    success: false,
+                    reason: paymentResult.error || "payment_failed",
+                  };
+                }
+              }
             }
           }
+        } catch {
+          autoReloadResult = {
+            success: false,
+            reason: "stripe_lookup_failed",
+          };
         }
       }
     }
@@ -600,6 +620,8 @@ export const deductWithAutoReload = action({
       newBalanceDollars: number;
       insufficientFunds: boolean;
       monthlyCapExceeded: boolean;
+      trustCapExceeded?: boolean;
+      trustCapDollars?: number | null;
     } = await ctx.runMutation(api.extraUsage.deductPoints, {
       serviceKey: args.serviceKey,
       userId: args.userId,
@@ -624,6 +646,8 @@ export const deductWithAutoReload = action({
       newBalanceDollars: deductResult.newBalanceDollars,
       insufficientFunds: deductResult.insufficientFunds,
       monthlyCapExceeded: deductResult.monthlyCapExceeded,
+      trustCapExceeded: deductResult.trustCapExceeded,
+      trustCapDollars: deductResult.trustCapDollars,
       autoReloadTriggered,
       autoReloadResult,
     };

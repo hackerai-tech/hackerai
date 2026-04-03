@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
 
@@ -62,13 +61,8 @@ const mockFileCountAggregate = {
   deleteIfExists: jest.fn<any>().mockResolvedValue(undefined),
 };
 
-const mockIsFileSizeAggregateAvailable = jest.fn<any>().mockResolvedValue(true);
-
 jest.mock("../fileAggregate", () => ({
   fileCountAggregate: mockFileCountAggregate,
-}));
-jest.mock("../aggregateVersions", () => ({
-  isFileSizeAggregateAvailable: mockIsFileSizeAggregateAvailable,
 }));
 
 describe("fileStorage - Aggregate Integration", () => {
@@ -84,7 +78,6 @@ describe("fileStorage - Aggregate Integration", () => {
     jest.spyOn(console, "warn").mockImplementation(() => {});
     // Reset mocks to default values
     mockFileCountAggregate.sum.mockResolvedValue(0);
-    mockIsFileSizeAggregateAvailable.mockResolvedValue(true);
   });
 
   describe("saveFileToDb", () => {
@@ -185,40 +178,6 @@ describe("fileStorage - Aggregate Integration", () => {
 
       expect(mockCtx.db.insert).not.toHaveBeenCalled();
     });
-
-    it("should skip storage check when aggregate not available", async () => {
-      mockIsFileSizeAggregateAvailable.mockResolvedValue(false);
-
-      const mockFile = {
-        _id: testFileId,
-        user_id: testUserId,
-        name: "test.pdf",
-        media_type: "application/pdf",
-        size: 1024,
-        file_token_size: 100,
-        is_attached: false,
-      };
-
-      const mockCtx: any = {
-        db: {
-          insert: jest.fn<any>().mockResolvedValue(testFileId),
-          get: jest.fn<any>().mockResolvedValue(mockFile),
-        },
-      };
-
-      const { saveFileToDb } = (await import("../fileStorage")) as any;
-      await saveFileToDb.handler(mockCtx, {
-        userId: testUserId,
-        name: "test.pdf",
-        mediaType: "application/pdf",
-        size: 1024,
-        fileTokenSize: 100,
-      });
-
-      // Should not check sum when aggregate not available
-      expect(mockFileCountAggregate.sum).not.toHaveBeenCalled();
-      expect(mockCtx.db.insert).toHaveBeenCalled();
-    });
   });
 
   describe("getUserStorageUsage", () => {
@@ -238,19 +197,6 @@ describe("fileStorage - Aggregate Integration", () => {
         maxBytes: MAX_STORAGE_BYTES,
         availableBytes: MAX_STORAGE_BYTES - usedBytes,
       });
-    });
-
-    it("should return null when aggregate is not available", async () => {
-      mockIsFileSizeAggregateAvailable.mockResolvedValue(false);
-
-      const mockCtx: any = {};
-
-      const { getUserStorageUsage } = (await import("../fileStorage")) as any;
-      const result = await getUserStorageUsage.handler(mockCtx, {
-        userId: testUserId,
-      });
-
-      expect(result).toBeNull();
     });
 
     it("should return 0 available bytes when at limit", async () => {

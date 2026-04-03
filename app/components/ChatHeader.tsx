@@ -278,75 +278,66 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           existingShareDate={chatData?.share_date}
         />
         <div className="px-4 bg-background flex-shrink-0">
-          <div className="sm:min-w-[390px] flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">
-            <div className="flex items-center flex-1">
-              <div className="relative flex items-center">
-                {/* Only show sidebar toggle on mobile - desktop uses collapsed sidebar logo */}
-                {showSidebarToggle && !chatSidebarOpen && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    aria-label="Open sidebar"
-                    onClick={toggleChatSidebar}
-                    className="h-7 w-7 md:hidden"
-                  >
-                    <PanelLeft className="size-5" />
-                  </Button>
-                )}
-              </div>
-            </div>
-            <div className="max-w-full sm:max-w-[768px] sm:min-w-[390px] flex w-full flex-col gap-[4px] overflow-hidden">
-              <div className="w-full flex flex-row items-center justify-between flex-1 min-w-0 gap-[24px]">
-                <div className="flex flex-row items-center gap-[6px] flex-1 min-w-0 text-foreground text-lg font-medium">
-                  <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2">
-                    {isChatNotFound ? (
-                      ""
-                    ) : !isExistingChat && temporaryChatsEnabled ? (
-                      <>
-                        Temporary Chat
-                        <HatGlasses className="size-5" />
-                      </>
-                    ) : (
-                      <>
-                        {isBranchedChat && branchedFromChatTitle && (
-                          <TooltipProvider delayDuration={300}>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Split className="size-4 flex-shrink-0 text-muted-foreground" />
-                              </TooltipTrigger>
-                              <TooltipContent>
-                                <p className="text-xs">
-                                  Branched from: {branchedFromChatTitle}
-                                </p>
-                              </TooltipContent>
-                            </Tooltip>
-                          </TooltipProvider>
-                        )}
-                        {chatTitle || "New Chat"}
-                      </>
-                    )}
-                  </span>
-                </div>
-                {/* Share button - only show for existing chats that aren't temporary, hide on mobile */}
-                {isExistingChat &&
-                  !temporaryChatsEnabled &&
-                  id &&
-                  chatTitle && (
-                    <button
-                      aria-label="Share"
-                      data-testid="share-chat-button"
-                      onClick={() => setShowShareDialog(true)}
-                      className="relative mx-2 flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden"
-                    >
-                      <div className="flex w-full items-center justify-center gap-1.5">
-                        <Share className="h-4 w-4 -ms-0.5" />
-                        Share
-                      </div>
-                    </button>
+          <div className="flex flex-row items-center justify-between pt-3 pb-1 gap-1 sticky top-0 z-10 bg-background flex-shrink-0">
+            <div className="flex items-center gap-2 min-w-0">
+              {/* Only show sidebar toggle on mobile - desktop uses collapsed sidebar logo */}
+              {showSidebarToggle && !chatSidebarOpen && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Open sidebar"
+                  onClick={toggleChatSidebar}
+                  className="h-7 w-7 flex-shrink-0 md:hidden"
+                >
+                  <PanelLeft className="size-5" />
+                </Button>
+              )}
+              <div className="flex flex-row items-center gap-[6px] min-w-0 text-foreground text-lg font-medium">
+                <span className="whitespace-nowrap text-ellipsis overflow-hidden flex items-center gap-2">
+                  {isChatNotFound ? (
+                    ""
+                  ) : !isExistingChat && temporaryChatsEnabled ? (
+                    <>
+                      Temporary Chat
+                      <HatGlasses className="size-5" />
+                    </>
+                  ) : (
+                    <>
+                      {isBranchedChat && branchedFromChatTitle && (
+                        <TooltipProvider delayDuration={300}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Split className="size-4 flex-shrink-0 text-muted-foreground" />
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              <p className="text-xs">
+                                Branched from: {branchedFromChatTitle}
+                              </p>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      )}
+                      {chatTitle || (hasActiveChat ? "\u00A0" : "New Chat")}
+                    </>
                   )}
+                </span>
               </div>
             </div>
-            <div className="flex-1 flex justify-end">
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {/* Share button - only show for existing chats that aren't temporary, hide on mobile */}
+              {isExistingChat && !temporaryChatsEnabled && id && chatTitle && (
+                <button
+                  aria-label="Share"
+                  data-testid="share-chat-button"
+                  onClick={() => setShowShareDialog(true)}
+                  className="relative flex-shrink-0 rounded-full h-[34px] px-3 py-0 text-sm font-medium transition-colors hover:bg-[#ffffff1a] max-md:hidden"
+                >
+                  <div className="flex w-full items-center justify-center gap-1.5">
+                    <Share className="h-4 w-4 -ms-0.5" />
+                    Share
+                  </div>
+                </button>
+              )}
               {/* New Chat Button - Show on mobile when in a chat or when temporary chat is active */}
               {isMobile &&
                 (isInChat || (!isExistingChat && temporaryChatsEnabled)) &&

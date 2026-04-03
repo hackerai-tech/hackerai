@@ -14,7 +14,7 @@ export const getMaxStepsForUser = (
   mode: ChatMode,
   subscription: SubscriptionTier,
 ): number => {
-  // Agent / Agent-Long mode
+  // Agent mode
   if (isAgentMode(mode)) {
     return 100;
   }
@@ -37,8 +37,21 @@ export function selectModel(
   subscription: SubscriptionTier,
   selectedModel?: SelectedModel,
 ): ModelName {
-  // Agent mode always uses the default agent model — no user override allowed
+  // Local provider models should never reach server-side model selection
+  // if (
+  //   selectedModel === "codex-local" ||
+  //   selectedModel?.startsWith("codex-local:")
+  // ) {
+  //   throw new Error(
+  //     "Local provider model 'codex-local' cannot be used server-side",
+  //   );
+  // }
+
+  // Agent mode: allow model override for paid users, default to agent-model
   if (isAgentMode(mode)) {
+    if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
+      return `model-${selectedModel}` as ModelName;
+    }
     return "agent-model";
   }
 
@@ -464,7 +477,12 @@ export async function processChatMessages({
 
   // Process all file attachments: transform URLs, detect media/PDFs, and add document content
   const { messages: messagesWithUrls, sandboxFiles } =
-    await processMessageFiles(messagesWithLimitedFiles, mode, uploadBasePath);
+    await processMessageFiles(
+      messagesWithLimitedFiles,
+      mode,
+      uploadBasePath,
+      subscription,
+    );
 
   // Fix incomplete tool invocations and reasoning (from interrupted streams) before filtering.
   // This must happen BEFORE the empty-content filter because fixing incomplete parts can

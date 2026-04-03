@@ -1,6 +1,6 @@
 [package]
 name = "hackerai-desktop"
-version = "0.1.0"
+version = "0.0.0"
 description = "HackerAI Desktop Application"
 authors = ["HackerAI"]
 edition = "2021"
@@ -35,6 +35,7 @@ env_logger = "0.11"
 tokio = { version = "1", features = ["time", "net", "io-util", "process", "sync", "macros"] }
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
+reqwest = { version = "0.12", features = ["json"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

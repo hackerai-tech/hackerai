@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useCallback } from "react";
 import type { ChatStatus, Todo } from "@/types";
-import { useDataStream } from "@/app/components/DataStreamProvider";
+import {
+  useDataStreamState,
+  useDataStreamDispatch,
+} from "@/app/components/DataStreamProvider";
 import { useLatestRef } from "./useLatestRef";
 
 export const MAX_AUTO_CONTINUES = 5;
@@ -31,8 +34,8 @@ export function useAutoContinue({
   sandboxPreference,
   selectedModel,
 }: UseAutoContinueParams) {
-  const { dataStream, setIsAutoResuming, setAutoContinueCount } =
-    useDataStream();
+  const { dataStream } = useDataStreamState();
+  const { setIsAutoResuming, setAutoContinueCount } = useDataStreamDispatch();
   const autoContinueCountRef = useRef(0);
   const pendingAutoContinueRef = useRef(false);
   const lastProcessedIndexRef = useRef(0);

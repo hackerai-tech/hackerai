@@ -11,9 +11,15 @@ interface Note {
  * Static message for the system prompt when notes are disabled.
  * This is stable across the session and safe for prompt caching.
  */
-export const getNotesDisabledMessage = (): string => `<notes>
+export const getNotesDisabledMessage = (
+  isFreeUser: boolean = false,
+): string => `<notes>
 The notes tool is disabled. Do not use it.
-If the user explicitly asks you to save a note, politely ask them to go to **Settings > Personalization > Notes** to enable notes.
+${
+  isFreeUser
+    ? "If the user explicitly asks you to save a note, let them know that notes are available on paid plans and suggest upgrading."
+    : "If the user explicitly asks you to save a note, politely ask them to go to **Settings > Personalization > Notes** to enable notes."
+}
 </notes>`;
 
 /**

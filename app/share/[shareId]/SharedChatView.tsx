@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "convex/react";
+import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { SharedMessages } from "./SharedMessages";
 import { Loader2, AlertCircle } from "lucide-react";
@@ -13,7 +13,10 @@ import ChatHeader from "@/app/components/ChatHeader";
 import MainSidebar from "@/app/components/Sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { ChatInput } from "@/app/components/ChatInput";
+import { upsertDraft } from "@/lib/utils/client-storage";
 
 // Desktop wrapper component that connects ComputerSidebarBase to SharedChatContext
 function SharedComputerSidebarDesktop({ messages }: { messages: any[] }) {
@@ -72,7 +75,10 @@ const UUID_REGEX =
 export function SharedChatView({ shareId }: SharedChatViewProps) {
   const isMobile = useIsMobile();
   const { user, loading: authLoading } = useAuth();
-  const { chatSidebarOpen, setChatSidebarOpen } = useGlobalState();
+  const { chatSidebarOpen, setChatSidebarOpen, input } = useGlobalState();
+  const router = useRouter();
+  const forkSharedChatMutation = useMutation(api.sharedChats.forkSharedChat);
+  const [isForking, setIsForking] = useState(false);
 
   // Validate shareId format before making database query
   const isValidUUID = UUID_REGEX.test(shareId);
@@ -96,6 +102,26 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
       document.title = "Shared Chat | HackerAI";
     };
   }, [chat?.title]);
+
+  const handleContinueChat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isForking) return;
+    setIsForking(true);
+    try {
+      const newChatId = await forkSharedChatMutation({ shareId });
+      // Save the user's typed input as a draft for the new chat
+      // so it appears in the textarea when they land on the new chat page
+      if (input.trim()) {
+        upsertDraft(newChatId, input);
+        // Signal the chat page to auto-send the draft message
+        sessionStorage.setItem("autoSendChatId", newChatId);
+      }
+      router.push(`/c/${newChatId}`);
+    } catch (error) {
+      console.error("Failed to fork shared chat:", error);
+      setIsForking(false);
+    }
+  };
 
   // Invalid UUID format - show not found immediately
   if (!isValidUUID) {
@@ -203,6 +229,19 @@ export function SharedChatView({ shareId }: SharedChatViewProps) {
                     )}
                   </div>
                 </div>
+
+                {/* Chat input for logged-in users to continue the conversation */}
+                {!authLoading && user && messages && messages.length > 0 && (
+                  <ChatInput
+                    onSubmit={handleContinueChat}
+                    onStop={() => {}}
+                    onSendNow={() => {}}
+                    status={isForking ? "submitted" : "ready"}
+                    hasMessages={true}
+                    isNewChat={false}
+                    clearDraftOnSubmit={false}
+                  />
+                )}
               </div>
             </div>
 

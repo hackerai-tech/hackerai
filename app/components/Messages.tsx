@@ -52,10 +52,11 @@ interface MessagesProps {
     status: "started" | "completed";
     message: string;
   } | null;
-  mode?: "ask" | "agent" | "agent-long";
+  mode?: "ask" | "agent";
   chatTitle?: string | null;
   branchedFromChatId?: string;
   branchedFromChatTitle?: string;
+  isLocalProvider?: boolean;
 }
 
 export const Messages = ({
@@ -80,6 +81,7 @@ export const Messages = ({
   chatTitle,
   branchedFromChatId,
   branchedFromChatTitle,
+  isLocalProvider = false,
 }: MessagesProps) => {
   // Prefetch and cache image URLs for better performance
   const { getCachedUrl, setCachedUrl } = useFileUrlCache(messages);
@@ -101,8 +103,12 @@ export const Messages = ({
     return hasText || hasFiles;
   }, [lastAssistantMessageIndex, messages]);
 
-  // Check if we should show loading dots (streaming with no content yet)
+  // Check if we should show loading dots (streaming with no content yet, or submitted for local providers)
   const shouldShowLoadingDots = useMemo(() => {
+    if (status === "submitted" && isLocalProvider) {
+      // Show dots immediately for local providers during sidecar startup
+      return true;
+    }
     if (status !== "streaming") return false;
     if (summarizationStatus?.status === "started") return false;
     if (uploadStatus?.isUploading) return false;
@@ -116,6 +122,7 @@ export const Messages = ({
     return !hasTextContent(lastAssistantMsg.parts);
   }, [
     status,
+    isLocalProvider,
     summarizationStatus,
     uploadStatus,
     lastAssistantMessageIndex,

@@ -97,23 +97,23 @@ const downloadFileToSandbox = async (
     return sandbox.files.downloadFromUrl(url, localPath);
   }
 
-  // E2B sandbox - use commands.run to execute curl
+  // E2B sandbox - combine mkdir + curl into a single command
   const dir = localPath.substring(0, localPath.lastIndexOf("/"));
-  if (dir) {
-    await sandbox.commands.run(`mkdir -p "${dir}"`);
-  }
-
-  // Use single quotes for the URL to avoid shell expansion of characters like $
-  // and escape any single quotes already in the URL.
   const escapedUrl = url.replace(/'/g, "'\\''");
   const escapedLocalPath = localPath.replace(/'/g, "'\\''");
 
+  const mkdirPart = dir ? `mkdir -p '${dir}' &&` : "";
   const result = await sandbox.commands.run(
-    `curl -fsSL -o '${escapedLocalPath}' '${escapedUrl}'`,
+    `${mkdirPart} curl -fsSL -o '${escapedLocalPath}' '${escapedUrl}'`,
   );
 
   if (result.exitCode !== 0) {
-    throw new Error(`Failed to download file: ${result.stderr}`);
+    throw new Error(
+      `Failed to download file: ${result.stderr}\n` +
+        `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
+        `  path: ${localPath}\n` +
+        `  exitCode: ${result.exitCode}`,
+    );
   }
 };
 
@@ -140,5 +140,14 @@ export const uploadSandboxFiles = async (
     );
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);
+    console.error(
+      "Sandbox file details:",
+      sandboxFiles.map((f) => ({
+        url: f.url.substring(0, 120),
+        urlLength: f.url.length,
+        localPath: f.localPath,
+        protocol: f.url.split("://")[0],
+      })),
+    );
   }
 };

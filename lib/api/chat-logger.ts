@@ -13,10 +13,12 @@ import {
 } from "@/lib/logger";
 import type { ChatMode, ExtraUsageConfig } from "@/types";
 import type { ChatSDKError } from "@/lib/errors";
+import type { PostHog } from "posthog-node";
+import { after } from "next/server";
 
 export interface ChatLoggerConfig {
   chatId: string;
-  endpoint: "/api/chat" | "/api/agent" | "/api/agent-long";
+  endpoint: "/api/chat" | "/api/agent";
 }
 
 export interface RequestDetails {
@@ -202,6 +204,13 @@ export function createChatLogger(config: ChatLoggerConfig) {
     },
 
     /**
+     * Get recorded tool calls
+     */
+    getToolCalls() {
+      return builder.getToolCalls();
+    },
+
+    /**
      * Get the underlying builder (for advanced use cases)
      */
     getBuilder(): WideEventBuilder {
@@ -211,3 +220,34 @@ export function createChatLogger(config: ChatLoggerConfig) {
 }
 
 export type ChatLogger = ReturnType<typeof createChatLogger>;
+
+/**
+ * Capture all tool call events to PostHog at end of request.
+ * Events are queued synchronously and flushed after the response is sent.
+ */
+export function captureToolCalls({
+  posthog,
+  chatLogger,
+  userId,
+  mode,
+}: {
+  posthog: PostHog | null;
+  chatLogger: ChatLogger | undefined;
+  userId: string;
+  mode: ChatMode;
+}) {
+  if (!posthog || !chatLogger) return;
+  const toolCalls = chatLogger.getToolCalls();
+  if (toolCalls.length === 0) return;
+  for (const tool of toolCalls) {
+    posthog.capture({
+      distinctId: userId,
+      event: "hackerai-" + tool.name,
+      properties: {
+        mode,
+        ...(tool.sandbox_type && { sandboxType: tool.sandbox_type }),
+      },
+    });
+  }
+  after(() => posthog.shutdown());
+}

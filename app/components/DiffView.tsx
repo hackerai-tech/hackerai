@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { ComputerCodeBlock } from "./ComputerCodeBlock";
 
@@ -20,6 +20,23 @@ export const DiffView: React.FC<DiffViewProps> = ({
   wrap = true,
 }) => {
   const [viewMode, setViewMode] = useState<ViewMode>("diff");
+  const editorRef = useRef<any>(null);
+
+  // Safely dispose editor on unmount to prevent "TextModel got disposed" errors
+  useEffect(() => {
+    return () => {
+      try {
+        editorRef.current?.dispose();
+      } catch {
+        // Ignore disposal errors
+      }
+      editorRef.current = null;
+    };
+  }, []);
+
+  const handleEditorMount = (editor: any) => {
+    editorRef.current = editor;
+  };
 
   const tabs: Array<{ id: ViewMode; label: string }> = [
     { id: "diff", label: "Diff" },
@@ -99,6 +116,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
               modified={modifiedContent}
               language={getMonacoLanguage(language)}
               theme="vs-dark"
+              onMount={handleEditorMount}
               options={{
                 readOnly: true,
                 renderSideBySide: false,

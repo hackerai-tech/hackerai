@@ -50,10 +50,16 @@ const defaultDeps: AuthKitDeps = {
 export function useAuthFromAuthKit(
   deps: AuthKitDeps = defaultDeps,
 ): ConvexAuthState {
-  const { user, loading: isLoading } = deps.useAuth();
+  const {
+    user,
+    loading: isLoading,
+    organizationId,
+    refreshAuth,
+  } = deps.useAuth();
   const { getAccessToken, accessToken, refresh } = deps.useAccessToken();
   const accessTokenRef = useRef<string | undefined>(undefined);
   const lastRefreshErrorAt = useRef<number>(0);
+  const hasResolvedOrgRef = useRef(false);
 
   const isCrossTabEnabled = useMemo(
     () => (deps.isCrossTabEnabled ?? isCrossTabTokenSharingEnabled)(user?.id),
@@ -61,6 +67,24 @@ export function useAuthFromAuthKit(
   );
 
   useSharedTokenCleanup(isCrossTabEnabled);
+
+  // Eagerly ensure session is scoped to the user's organization so JWTs
+  // include entitlements (e.g. "pro-plus-plan"). Running this in an effect
+  // (rather than inside fetchAccessToken) avoids a mid-auth-flow state
+  // change that would cause Convex to briefly flip isLoading back to true,
+  // producing a visible loading-screen flash.
+  useEffect(() => {
+    if (organizationId && !hasResolvedOrgRef.current && refreshAuth) {
+      refreshAuth({ organizationId })
+        .then(() => {
+          hasResolvedOrgRef.current = true;
+        })
+        .catch(() => {
+          // Non-fatal: the token may still include entitlements if the
+          // session was already org-scoped.
+        });
+    }
+  }, [organizationId, refreshAuth]);
 
   useEffect(() => {
     accessTokenRef.current = accessToken;
@@ -87,6 +111,7 @@ export function useAuthFromAuthKit(
             );
             return accessTokenRef.current ?? null;
           }
+
           // Use new cross-tab coordination if feature flag is enabled
           if (isCrossTabEnabled) {
             // Convex is asking for a fresh token (current one was rejected).

@@ -3,18 +3,29 @@ import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
 
-export const MAX_TOKENS_FREE = 16000;
-export const MAX_TOKENS_PAID = 128000;
+export const MAX_TOKENS_FREE = 32000;
+export const MAX_TOKENS_PAID = 200000;
 /**
- * Maximum total tokens allowed across all files
+ * Percentage of context window budget allocated to file uploads in Ask mode.
+ * Leaves remaining budget for conversation history, system prompt, and model output.
  */
-export const MAX_TOKENS_FILE = 24000;
+export const FILE_TOKEN_PERCENT = 0.5;
 
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
 ): number => {
   if (subscription === "free") return MAX_TOKENS_FREE;
   return MAX_TOKENS_PAID;
+};
+
+/**
+ * Maximum total tokens allowed across all uploaded files in Ask mode.
+ * Scales with the subscription's context window budget.
+ */
+export const getMaxFileTokens = (subscription: SubscriptionTier): number => {
+  return Math.floor(
+    getMaxTokensForSubscription(subscription) * FILE_TOKEN_PERCENT,
+  );
 };
 
 // Token limits for different contexts

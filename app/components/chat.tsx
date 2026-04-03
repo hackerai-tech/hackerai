@@ -1,17 +1,23 @@
 "use client";
 
-import { useChat } from "@ai-sdk/react";
+import { useChat, type UseChatHelpers } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import {
   useRef,
   useEffect,
   useState,
+  useReducer,
+  useMemo,
   useCallback,
   type RefObject,
 } from "react";
 import { useQuery, usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { FileDetails } from "@/types/file";
+import { CodexLocalTransport } from "@/lib/local-providers/codex-transport";
+import { DelegatingTransport } from "@/lib/local-providers/delegating-transport";
+import { useCodexSidecar } from "@/app/hooks/useCodexLocal";
+import { useCodexPersistence } from "@/app/hooks/useCodexPersistence";
 import { Messages } from "./Messages";
 import { ChatInput } from "./ChatInput";
 import type { RateLimitWarningData } from "./RateLimitWarning";
@@ -24,13 +30,17 @@ import { useGlobalState } from "../contexts/GlobalState";
 import { useFileUpload } from "../hooks/useFileUpload";
 import { useDocumentDragAndDrop } from "../hooks/useDocumentDragAndDrop";
 import { DragDropOverlay } from "./DragDropOverlay";
-import { normalizeMessages } from "@/lib/utils/message-processor";
+import {
+  normalizeMessages,
+  sanitizeCodexToolCalls,
+} from "@/lib/utils/message-processor";
 import { ChatSDKError } from "@/lib/errors";
 import { fetchWithErrorHandlers, convertToUIMessages } from "@/lib/utils";
 import { toast } from "sonner";
 import type { Todo, ChatMessage, ChatMode } from "@/types";
-// import { isSelectedModel } from "@/types";
-import type { Id } from "@/convex/_generated/dataModel";
+import { isCodexLocal, getCodexSubModel, isSelectedModel } from "@/types/chat";
+import { serializeConversation } from "@/lib/utils/conversation-serializer";
+import { getMaxTokensForSubscription } from "@/lib/token-utils";
 import type { ContextUsageData } from "./ContextUsageIndicator";
 import { shouldTreatAsMerge } from "@/lib/utils/todo-utils";
 import { v4 as uuidv4 } from "uuid";
@@ -40,31 +50,165 @@ import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
 import { useLatestRef } from "../hooks/useLatestRef";
-import { useDataStream } from "./DataStreamProvider";
+import {
+  getCmdServerInfo,
+  setConvexAuth,
+  isTauriEnvironment,
+} from "../hooks/useTauri";
+import { useAuth, useAccessToken } from "@workos-inc/authkit-nextjs/components";
+import { useDataStreamDispatch } from "./DataStreamProvider";
 import { removeDraft } from "@/lib/utils/client-storage";
 import { parseRateLimitWarning } from "@/lib/utils/parse-rate-limit-warning";
 import Loading from "@/components/ui/loading";
 
 import { HackingSuggestions } from "./HackingSuggestions";
 
+// --- Streaming ephemeral state reducer ---
+// Consolidates high-frequency streaming state updates into a single dispatch
+// to avoid cascading re-renders from multiple independent useState calls.
+interface StreamingEphemeralState {
+  uploadStatus: { message: string; isUploading: boolean } | null;
+  summarizationStatus: {
+    status: "started" | "completed";
+    message: string;
+  } | null;
+  rateLimitWarning: RateLimitWarningData | null;
+  contextUsage: ContextUsageData;
+}
+
+type StreamingAction =
+  | {
+      type: "SET_UPLOAD_STATUS";
+      payload: StreamingEphemeralState["uploadStatus"];
+    }
+  | {
+      type: "SET_SUMMARIZATION_STATUS";
+      payload: StreamingEphemeralState["summarizationStatus"];
+    }
+  | {
+      type: "SET_RATE_LIMIT_WARNING";
+      payload: StreamingEphemeralState["rateLimitWarning"];
+    }
+  | { type: "SET_CONTEXT_USAGE"; payload: ContextUsageData }
+  | { type: "RESET_ON_FINISH" };
+
+const initialStreamingState: StreamingEphemeralState = {
+  uploadStatus: null,
+  summarizationStatus: null,
+  rateLimitWarning: null,
+  contextUsage: { usedTokens: 0, maxTokens: 0 },
+};
+
+function streamingReducer(
+  state: StreamingEphemeralState,
+  action: StreamingAction,
+): StreamingEphemeralState {
+  switch (action.type) {
+    case "SET_UPLOAD_STATUS":
+      if (state.uploadStatus === action.payload) return state;
+      return { ...state, uploadStatus: action.payload };
+    case "SET_SUMMARIZATION_STATUS":
+      if (state.summarizationStatus === action.payload) return state;
+      return { ...state, summarizationStatus: action.payload };
+    case "SET_RATE_LIMIT_WARNING":
+      return { ...state, rateLimitWarning: action.payload };
+    case "SET_CONTEXT_USAGE":
+      return { ...state, contextUsage: action.payload };
+    case "RESET_ON_FINISH":
+      if (
+        state.uploadStatus === null &&
+        state.summarizationStatus === null &&
+        state.rateLimitWarning === null
+      )
+        return state;
+      return {
+        ...state,
+        uploadStatus: null,
+        summarizationStatus: null,
+        rateLimitWarning: null,
+      };
+    default:
+      return state;
+  }
+}
+
+// Renderless component that isolates dataStream state subscriptions
+// (useAutoResume + useAutoContinue) from the Chat component.
+// Without this boundary, Chat subscribes to DataStreamStateContext
+// through these hooks and re-renders on every stream chunk.
+function StreamEffects({
+  autoResume,
+  serverMessages,
+  resumeStream,
+  setMessages,
+  status,
+  chatMode,
+  sendMessage,
+  hasManuallyStoppedRef,
+  todos,
+  temporaryChatsEnabled,
+  sandboxPreference,
+  selectedModel,
+  resetRef,
+}: {
+  autoResume: boolean;
+  serverMessages: ChatMessage[];
+  resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
+  setMessages: UseChatHelpers<ChatMessage>["setMessages"];
+  status: UseChatHelpers<ChatMessage>["status"];
+  chatMode: string;
+  sendMessage: (
+    message: { text: string } | any,
+    options?: { body?: Record<string, unknown> },
+  ) => void;
+  hasManuallyStoppedRef: RefObject<boolean>;
+  todos: Todo[];
+  temporaryChatsEnabled: boolean;
+  sandboxPreference: string;
+  selectedModel: string;
+  resetRef: RefObject<(() => void) | null>;
+}) {
+  useAutoResume({
+    autoResume,
+    initialMessages: serverMessages,
+    resumeStream,
+    setMessages,
+  });
+
+  const { resetAutoContinueCount } = useAutoContinue({
+    status,
+    chatMode,
+    sendMessage,
+    hasManuallyStoppedRef,
+    todos,
+    temporaryChatsEnabled,
+    sandboxPreference,
+    selectedModel,
+  });
+
+  // Expose resetAutoContinueCount to parent via ref (avoids state coupling)
+  useEffect(() => {
+    resetRef.current = resetAutoContinueCount;
+  }, [resetRef, resetAutoContinueCount]);
+
+  return null;
+}
+
 export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const params = useParams();
   const routeChatId = params?.id as string | undefined;
   const router = useRouter();
   const isMobile = useIsMobile();
-  const { setDataStream, setIsAutoResuming } = useDataStream();
-  const [uploadStatus, setUploadStatus] = useState<{
-    message: string;
-    isUploading: boolean;
-  } | null>(null);
-  const [summarizationStatus, setSummarizationStatus] = useState<{
-    status: "started" | "completed";
-    message: string;
-  } | null>(null);
-  const [rateLimitWarning, setRateLimitWarning] =
-    useState<RateLimitWarningData | null>(null);
+  const { setDataStream, setIsAutoResuming } = useDataStreamDispatch();
+  const [streamingState, dispatchStreaming] = useReducer(
+    streamingReducer,
+    initialStreamingState,
+  );
+  const { uploadStatus, summarizationStatus, rateLimitWarning, contextUsage } =
+    streamingState;
 
   const {
+    input,
     chatMode,
     setChatMode,
     sidebarOpen,
@@ -86,7 +230,8 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     sandboxPreference,
     setSandboxPreference,
     selectedModel,
-    // setSelectedModel,
+    setSelectedModel,
+    subscription,
   } = useGlobalState();
 
   // Simple logic: use route chatId if provided, otherwise generate new one
@@ -111,14 +256,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     Map<string, FileDetails[]>
   >(new Map());
 
-  // Context usage tracking (populated by server via data stream on each generation)
-  const [contextUsage, setContextUsage] = useState<ContextUsageData>({
-    messagesTokens: 0,
-    summaryTokens: 0,
-    systemTokens: 0,
-    maxTokens: 0,
-  });
-
   const temporaryChatsEnabledRef = useLatestRef(temporaryChatsEnabled);
   // Use global state ref so streaming callback reads latest value
   const hasUserDismissedWarningRef = useLatestRef(
@@ -134,8 +271,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Track whether sandbox preference has been initialized from chat for this chat id
   const hasInitializedSandboxRef = useRef(false);
   // Track whether the stored sandbox connection was validated (stale connections unlock the selector)
-  // TODO: restore when model selector is re-enabled
-  // const hasInitializedModelRef = useRef(false);
+  const hasInitializedModelRef = useRef(false);
 
   // Sync local chat state from URL (single source of truth)
   useEffect(() => {
@@ -193,26 +329,158 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   const isSendingNowRef = useRef(false);
   // Ref to track if user manually stopped - prevents auto-processing until new message submitted
   const hasManuallyStoppedRef = useRef(false);
+  // Track current message IDs so the Convex sync effect can skip redundant
+  // setMessages calls (e.g. after local provider saves echo back the same data).
+  const messagesRef = useRef<ChatMessage[]>([]);
+  // Suppress Convex sync briefly after Codex stream finishes to prevent
+  // the echo-back from replacing in-memory messages (causes flicker/scroll jump).
+  const codexSyncSuppressedUntilRef = useRef(0);
 
-  const {
-    messages,
-    sendMessage,
-    setMessages,
-    status,
-    stop,
-    error,
-    regenerate,
-    resumeStream,
-  } = useChat({
-    id: chatId,
-    messages: serverMessages,
-    experimental_throttle: 100,
-    generateId: () => uuidv4(),
+  // Ref for selected model so the delegating transport reads latest value
+  const selectedModelRef = useLatestRef(selectedModel);
+  // Ref for subscription so the delegating transport reads latest value
+  const subscriptionRef = useLatestRef(subscription);
+  // Ref for chatId so the delegating transport reads latest value
+  const chatIdRef = useLatestRef(chatId);
 
-    transport: new DefaultChatTransport({
+  // Convex queries for local provider prompt data (only fetched when in Tauri desktop)
+  const userCustomization = useQuery(
+    api.userCustomization.getUserCustomization,
+  );
+  const userNotes = useQuery(api.notes.getUserNotes, {});
+  const userCustomizationRef = useLatestRef(userCustomization);
+  const userNotesRef = useLatestRef(userNotes);
+
+  // Cmd server info for notes API (fetched once in Tauri environment)
+  const cmdServerInfoRef = useRef<{ port: number; token: string } | null>(null);
+  const { user: authUser } = useAuth();
+  const { getAccessToken } = useAccessToken();
+  useEffect(() => {
+    if (isTauriEnvironment()) {
+      getCmdServerInfo()
+        .then((info) => {
+          cmdServerInfoRef.current = info;
+        })
+        .catch((err) => {
+          console.error("[Tauri] Failed to get cmd server info:", err);
+        });
+    }
+  }, []);
+
+  // Sync Convex auth token + notes setting to Tauri backend for notes API
+  const notesEnabled = userCustomization?.include_memory_entries ?? true;
+  const lastSyncedTokenRef = useRef<string | null>(null);
+  const lastSyncedNotesEnabledRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (!isTauriEnvironment() || !authUser?.id) return;
+    const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
+    if (!convexUrl) return;
+
+    const syncToken = async () => {
+      try {
+        const token = await getAccessToken();
+        if (
+          token &&
+          (token !== lastSyncedTokenRef.current ||
+            notesEnabled !== lastSyncedNotesEnabledRef.current)
+        ) {
+          await setConvexAuth(convexUrl, token, notesEnabled);
+          lastSyncedTokenRef.current = token;
+          lastSyncedNotesEnabledRef.current = notesEnabled;
+        }
+      } catch (err) {
+        console.error("[Tauri] Failed to sync Convex auth:", err);
+      }
+    };
+
+    syncToken();
+    // Check token freshness every 30s but only sync if changed
+    const interval = setInterval(syncToken, 30_000);
+    return () => clearInterval(interval);
+  }, [authUser?.id, getAccessToken, notesEnabled]);
+
+  // Stable transport instances
+  const codexTransport = useMemo(() => new CodexLocalTransport(), []);
+
+  // Manage the Codex SDK sidecar process — starts on demand when Codex is selected
+  const { ensureSidecar } = useCodexSidecar(codexTransport);
+  const ensureSidecarRef = useLatestRef(ensureSidecar);
+
+  // Local provider message persistence
+  const { persistCodexMessages } = useCodexPersistence({
+    chatId,
+    codexTransport,
+    selectedModelRef,
+    isExistingChatRef,
+    setIsExistingChat,
+  });
+
+  // Delegating transport that switches between Codex local and default based on selected model
+  // beforeSend ensures the sidecar is running when Codex is selected
+  const transport = useMemo(
+    () =>
+      new DelegatingTransport(
+        () => {
+          if (isCodexLocal(selectedModelRef.current)) {
+            return codexTransport;
+          }
+          return defaultTransportRef.current;
+        },
+        async () => {
+          if (isCodexLocal(selectedModelRef.current)) {
+            const subModel = getCodexSubModel(selectedModelRef.current || "");
+            codexTransport.setModel(subModel);
+            const includeNotes =
+              userCustomizationRef.current?.include_memory_entries ?? true;
+            codexTransport.setUserData({
+              userCustomization: userCustomizationRef.current,
+              notes: includeNotes
+                ? (userNotesRef.current ?? undefined)
+                : undefined,
+              model: subModel,
+              cmdServerPort: cmdServerInfoRef.current?.port,
+              cmdServerToken: cmdServerInfoRef.current?.token,
+            });
+
+            // Detect server→codex switch: existing messages but no codex thread
+            const currentMessages = messagesRef.current;
+            const currentChatId = chatIdRef.current;
+            if (
+              currentMessages.length > 0 &&
+              !codexTransport.getThreadId(currentChatId)
+            ) {
+              const maxTokens = getMaxTokensForSubscription(
+                subscriptionRef.current,
+              );
+              const context = serializeConversation(currentMessages, maxTokens);
+              if (context) {
+                codexTransport.setConversationContext(currentChatId, context);
+              }
+            }
+
+            const sidecarOk = await ensureSidecarRef.current();
+            if (!sidecarOk) {
+              toast.error("This chat requires the desktop app", {
+                description:
+                  "Codex models run locally and need the HackerAI desktop app.",
+              });
+              return false;
+            }
+          }
+        },
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [codexTransport],
+  );
+
+  // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
+  const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
+
+  // Default transport (OpenRouter) - stored in ref since it's created before useChat
+  const defaultTransportRef = useRef(
+    new DefaultChatTransport({
       api: "/api/chat",
       fetch: async (input, init) => {
-        // Dynamically route to correct API based on current mode
         const url =
           input === "/api/chat" && chatModeRef.current === "agent"
             ? "/api/agent"
@@ -226,21 +494,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           hasChanges,
         } = normalizeMessages(messages as ChatMessage[]);
         if (hasChanges) {
-          setMessages(normalizedMessages);
+          setMessagesRef.current(normalizedMessages);
         }
 
         const isTemporaryChat =
           !isExistingChatRef.current && temporaryChatsEnabledRef.current;
 
-        // Strip URLs from file parts before sending to backend
-        // This ensures backend always generates fresh URLs (prevents 403 errors from expired URLs)
-        // Backend will fetch URLs using fileId, supporting both S3 and Convex storage
         const stripUrlsFromMessages = (msgs: ChatMessage[]): ChatMessage[] => {
           return msgs.map((msg) => {
             if (!msg.parts || msg.parts.length === 0) return msg;
             const strippedParts = msg.parts.map((part: any) => {
               if (part.type === "file" && "url" in part) {
-                // Remove URL property, keeping all other file metadata
                 const { url, ...partWithoutUrl } = part;
                 return partWithoutUrl;
               }
@@ -256,7 +520,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         const messagesToSend = isTemporaryChat
           ? normalizedMessages
           : lastMessage;
-        const messagesWithoutUrls = stripUrlsFromMessages(messagesToSend);
+        // Convert codex-specific tool parts to text so server models understand them
+        const sanitizedMessages = sanitizeCodexToolCalls(messagesToSend);
+        const messagesWithoutUrls = stripUrlsFromMessages(sanitizedMessages);
 
         return {
           body: {
@@ -267,84 +533,117 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         };
       },
     }),
+  );
+
+  const {
+    messages,
+    sendMessage,
+    setMessages,
+    status,
+    stop,
+    error,
+    regenerate,
+    resumeStream,
+  } = useChat({
+    id: chatId,
+    messages: serverMessages,
+    experimental_throttle: 150,
+    generateId: () => uuidv4(),
+
+    transport,
 
     onData: (dataPart) => {
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
-      if (dataPart.type === "data-upload-status") {
-        const uploadData = dataPart.data as {
-          message: string;
-          isUploading: boolean;
-        };
-        setUploadStatus(uploadData.isUploading ? uploadData : null);
-      }
-      if (dataPart.type === "data-summarization") {
-        const summaryData = dataPart.data as {
-          status: "started" | "completed";
-          message: string;
-        };
-        // Show shimmer while started, clear when completed
-        setSummarizationStatus(
-          summaryData.status === "started" ? summaryData : null,
-        );
-      }
-      if (dataPart.type === "data-rate-limit-warning") {
-        const rawData = dataPart.data as Record<string, unknown>;
-        const parsed = parseRateLimitWarning(rawData, {
-          hasUserDismissed: hasUserDismissedWarningRef.current,
-        });
-        if (parsed) setRateLimitWarning(parsed);
-      }
-      if (dataPart.type === "data-file-metadata") {
-        const fileData = dataPart.data as {
-          messageId: string;
-          fileDetails: FileDetails[];
-        };
-
-        // Merge into parallel state (outside AI SDK control)
-        // Uses merge-with-dedup so incremental events (per-file) and
-        // the onFinish batch event both work without duplicates
-        setTempChatFileDetails((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(fileData.messageId) || [];
-          const existingIds = new Set(
-            existing.map((f: FileDetails) => f.fileId),
-          );
-          const newFiles = fileData.fileDetails.filter(
-            (f: FileDetails) => !existingIds.has(f.fileId),
-          );
-          next.set(fileData.messageId, [...existing, ...newFiles]);
-          return next;
-        });
-      }
-      if (dataPart.type === "data-context-usage") {
-        const usage = dataPart.data as ContextUsageData;
-        setContextUsage(usage);
-      }
-      if (dataPart.type === "data-sandbox-fallback") {
-        const fallbackData = dataPart.data as {
-          occurred: boolean;
-          reason: "connection_unavailable" | "no_local_connections";
-          requestedPreference: string;
-          actualSandbox: string;
-          actualSandboxName?: string;
-        };
-
-        // Skip fallback notifications for Tauri — the server-side health check
-        // hits its own localhost, not the user's desktop, so it consistently
-        // reports false disconnects. The frontend already validated Tauri availability.
-        if (fallbackData.requestedPreference === "tauri") {
-          return;
+      switch (dataPart.type) {
+        case "data-upload-status": {
+          const uploadData = dataPart.data as {
+            message: string;
+            isUploading: boolean;
+          };
+          dispatchStreaming({
+            type: "SET_UPLOAD_STATUS",
+            payload: uploadData.isUploading ? uploadData : null,
+          });
+          break;
         }
+        case "data-summarization": {
+          const summaryData = dataPart.data as {
+            status: "started" | "completed";
+            message: string;
+          };
+          dispatchStreaming({
+            type: "SET_SUMMARIZATION_STATUS",
+            payload: summaryData.status === "started" ? summaryData : null,
+          });
+          break;
+        }
+        case "data-rate-limit-warning": {
+          const rawData = dataPart.data as Record<string, unknown>;
+          const parsed = parseRateLimitWarning(rawData, {
+            hasUserDismissed: hasUserDismissedWarningRef.current,
+          });
+          if (parsed) {
+            dispatchStreaming({
+              type: "SET_RATE_LIMIT_WARNING",
+              payload: parsed,
+            });
+          }
+          break;
+        }
+        case "data-file-metadata": {
+          const fileData = dataPart.data as {
+            messageId: string;
+            fileDetails: FileDetails[];
+          };
+          // Merge into parallel state (outside AI SDK control)
+          // Uses merge-with-dedup so incremental events (per-file) and
+          // the onFinish batch event both work without duplicates
+          setTempChatFileDetails((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(fileData.messageId) || [];
+            const existingIds = new Set(
+              existing.map((f: FileDetails) => f.fileId),
+            );
+            const newFiles = fileData.fileDetails.filter(
+              (f: FileDetails) => !existingIds.has(f.fileId),
+            );
+            next.set(fileData.messageId, [...existing, ...newFiles]);
+            return next;
+          });
+          break;
+        }
+        case "data-context-usage": {
+          const usage = dataPart.data as ContextUsageData;
+          dispatchStreaming({ type: "SET_CONTEXT_USAGE", payload: usage });
+          break;
+        }
+        case "data-sandbox-fallback": {
+          const fallbackData = dataPart.data as {
+            occurred: boolean;
+            reason: "connection_unavailable" | "no_local_connections";
+            requestedPreference: string;
+            actualSandbox: string;
+            actualSandboxName?: string;
+          };
 
-        // Update sandbox preference to match actual sandbox used
-        setSandboxPreference(fallbackData.actualSandbox);
+          // Skip fallback notifications for Tauri — the server-side health check
+          // hits its own localhost, not the user's desktop, so it consistently
+          // reports false disconnects. The frontend already validated Tauri availability.
+          if (fallbackData.requestedPreference === "tauri") {
+            break;
+          }
 
-        // Show toast notification
-        const message =
-          fallbackData.reason === "no_local_connections"
-            ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}.`
-            : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}.`;
-        toast.info(message, { duration: 5000 });
+          // Update sandbox preference to match actual sandbox used
+          setSandboxPreference(fallbackData.actualSandbox);
+
+          // Show toast notification
+          const message =
+            fallbackData.reason === "no_local_connections"
+              ? `Local sandbox unavailable. Using ${fallbackData.actualSandboxName || "Cloud"}.`
+              : `Selected sandbox disconnected. Switched to ${fallbackData.actualSandboxName || "Cloud"}.`;
+          toast.info(message, { duration: 5000 });
+          break;
+        }
       }
     },
     onToolCall: ({ toolCall }) => {
@@ -374,8 +673,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     onFinish: () => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
-      setUploadStatus(null);
-      setSummarizationStatus(null);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
+
+      // Local providers: persist messages + thread to Convex.
+      // Suppress Convex sync for 2s so the echo-back doesn't replace
+      // in-memory messages with fresh objects (causes flicker/scroll jump).
+      if (isCodexLocal(selectedModelRef.current)) {
+        codexSyncSuppressedUntilRef.current = Date.now() + 2000;
+        persistCodexMessages(messages);
+        return;
+      }
+
       const isTemporaryChat =
         !isExistingChatRef.current && temporaryChatsEnabledRef.current;
       if (!isExistingChatRef.current && !isTemporaryChat) {
@@ -389,37 +697,27 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     onError: (error) => {
       setIsAutoResuming(false);
       setAwaitingServerChat(false);
-      setUploadStatus(null);
-      setSummarizationStatus(null);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
     },
   });
 
+  // Keep refs in sync so closures read latest values
+  setMessagesRef.current = setMessages;
+  messagesRef.current = messages;
+
   // Ref (not state) so the Convex sync effect only fires when paginatedMessages.results
   // changes, not on status transitions — avoiding the stale-data overwrite on stream stop.
   const statusRef = useRef(status);
   statusRef.current = status;
 
-  // Auto-resume: reconnect to resumable stream on refresh (e.g. /api/chat/[id]/stream)
-  useAutoResume({
-    autoResume,
-    initialMessages: serverMessages,
-    resumeStream,
-    setMessages,
-  });
-
-  const { resetAutoContinueCount } = useAutoContinue({
-    status,
-    chatMode,
-    sendMessage,
-    hasManuallyStoppedRef,
-    todos,
-    temporaryChatsEnabled,
-    sandboxPreference,
-    selectedModel,
-  });
+  // Ref bridge: StreamEffects exposes resetAutoContinueCount here
+  const resetAutoContinueRef = useRef<(() => void) | null>(null);
+  const resetAutoContinueCount = useCallback(() => {
+    resetAutoContinueRef.current?.();
+  }, []);
 
   // Register a reset function with global state so initializeNewChat can call it
   useEffect(() => {
@@ -430,14 +728,15 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       wasNewChatRef.current = true;
       setTodos([]);
       setAwaitingServerChat(false);
-      setUploadStatus(null);
-      setSummarizationStatus(null);
-      setContextUsage({
-        messagesTokens: 0,
-        summaryTokens: 0,
-        systemTokens: 0,
-        maxTokens: 0,
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
+      dispatchStreaming({
+        type: "SET_CONTEXT_USAGE",
+        payload: { usedTokens: 0, maxTokens: 0 },
       });
+      // Clear DataStreamProvider state so stale parts from the previous chat
+      // don't feed into useAutoResume/useAutoContinue in the next conversation.
+      setDataStream([]);
+      setIsAutoResuming(false);
       resetAutoContinueCount();
     };
     setChatReset(reset);
@@ -448,7 +747,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   useEffect(() => {
     hasInitializedModeFromChatRef.current = false;
     hasInitializedSandboxRef.current = false;
-    // hasInitializedModelRef.current = false;
+    hasInitializedModelRef.current = false;
   }, [chatId]);
 
   // Set chat title and load todos when chat data is loaded
@@ -462,6 +761,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // Ignore when no data or data is stale (doesn't match current chatId)
     if (!chatData || dataId !== chatId) {
       return;
+    }
+
+    // Restore Codex thread ID from persisted chat data
+    const codexThreadId = (chatData as any)?.codex_thread_id as
+      | string
+      | undefined;
+    if (codexThreadId && codexTransport) {
+      codexTransport.restoreThread(chatId, codexThreadId);
     }
 
     // Load todos from the chat data if they exist.
@@ -498,12 +805,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // Initialize mode from server once per chat id (only for existing chats)
     if (!hasInitializedModeFromChatRef.current && isExistingChat) {
       hasInitializedModeFromChatRef.current = true;
-      // For older chats without default_model_slug, detect agent-long by presence of active_trigger_run_id (legacy DB)
-      const slug =
-        (chatData as any).default_model_slug ||
-        ((chatData as any).active_trigger_run_id ? "agent-long" : undefined);
-      if (slug === "ask" || slug === "agent" || slug === "agent-long") {
-        setChatMode(slug === "agent-long" ? "agent" : slug);
+      const slug = (chatData as any).default_model_slug;
+      if (slug === "ask" || slug === "agent") {
+        setChatMode(slug);
+      } else if (slug === "agent-long") {
+        // Legacy chats stored as agent-long map to agent mode
+        setChatMode("agent");
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -534,11 +841,19 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
     } else if (storedSandboxType === "tauri") {
-      // "tauri" is a legacy preference — desktop now uses real connectionIds
+      // "tauri" is a legacy preference — desktop now uses "desktop"
       setSandboxPreference("e2b");
       hasInitializedSandboxRef.current = true;
+    } else if (storedSandboxType === "desktop") {
+      // Desktop preference — validate that a desktop connection exists
+      if (localConnections !== undefined) {
+        const desktopExists = localConnections.some((conn) => conn.isDesktop);
+        setSandboxPreference(desktopExists ? "desktop" : "e2b");
+        hasInitializedSandboxRef.current = true;
+      }
+      // If localConnections is still loading, wait for next render
     } else if (localConnections !== undefined) {
-      // For local connectionIds, validate the connection still exists
+      // For remote connectionIds, validate the connection still exists
       const connectionExists = localConnections.some(
         (conn) => conn.connectionId === storedSandboxType,
       );
@@ -554,18 +869,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatData, localConnections, isExistingChat, chatId]);
 
-  // TODO: restore when model selector is re-enabled
   // Initialize model selection from chat data
-  // useEffect(() => {
-  //   if (hasInitializedModelRef.current || !isExistingChat) return;
-  //   const dataId = (chatData as any)?.id as string | undefined;
-  //   if (!chatData || dataId !== chatId) return;
-  //   const savedModel = (chatData as any).selected_model as string | undefined;
-  //   hasInitializedModelRef.current = true;
-  //   if (savedModel && isSelectedModel(savedModel)) {
-  //     setSelectedModel(savedModel);
-  //   }
-  // }, [chatData, isExistingChat, chatId]);
+  useEffect(() => {
+    if (hasInitializedModelRef.current || !isExistingChat) return;
+    const dataId = (chatData as any)?.id as string | undefined;
+    if (!chatData || dataId !== chatId) return;
+    const savedModel = (chatData as any).selected_model as string | undefined;
+    hasInitializedModelRef.current = true;
+    if (savedModel && isSelectedModel(savedModel)) {
+      setSelectedModel(savedModel);
+    }
+  }, [chatData, isExistingChat, chatId]);
 
   // Sync Convex real-time data with useChat messages.
   // Uses statusRef (not status state) so this effect only fires when
@@ -583,6 +897,10 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     ) {
       return;
     }
+    // Skip while Codex echo-back is settling to avoid flicker
+    if (Date.now() < codexSyncSuppressedUntilRef.current) {
+      return;
+    }
     if (!paginatedMessages.results || paginatedMessages.results.length === 0) {
       return;
     }
@@ -590,6 +908,23 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     const uiMessages = convertToUIMessages(
       [...paginatedMessages.results].reverse(),
     );
+
+    // Skip if useChat already has the same messages (same IDs, same part count).
+    // This prevents redundant setMessages calls — e.g. after a local provider
+    // save, Convex echoes the same data back via reactive query, which would
+    // otherwise cause a visible flicker from new object references.
+    // Comparing parts.length catches content updates where the ID stays the same.
+    const current = messagesRef.current;
+    if (
+      current.length === uiMessages.length &&
+      current.every(
+        (m, i) =>
+          m.id === uiMessages[i].id &&
+          (m.parts?.length ?? 0) === (uiMessages[i].parts?.length ?? 0),
+      )
+    ) {
+      return;
+    }
 
     if (isExistingChat) {
       setMessages(uiMessages);
@@ -627,8 +962,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  const displayStatusForQueue = status;
-
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useRef(messageQueue);
   useEffect(() => {
@@ -662,7 +995,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Automatic queue processing - send next queued message when ready
   useEffect(() => {
     if (
-      displayStatusForQueue === "ready" &&
+      status === "ready" &&
       messageQueue.length > 0 &&
       !isProcessingQueue &&
       !isSendingNowRef.current &&
@@ -701,7 +1034,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       setTimeout(() => setIsProcessingQueue(false), 100);
     }
   }, [
-    displayStatusForQueue,
+    status,
     messageQueue.length,
     isProcessingQueue,
     chatMode,
@@ -730,8 +1063,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     isSendingNowRef,
     hasManuallyStoppedRef,
     onStopCallback: () => {
-      setUploadStatus(null);
-      setSummarizationStatus(null);
+      dispatchStreaming({ type: "RESET_ON_FINISH" });
     },
     resetAutoContinueCount,
   });
@@ -740,7 +1072,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   // Rate limit warning dismiss handler
   const handleDismissRateLimitWarning = () => {
-    setRateLimitWarning(null);
+    dispatchStreaming({ type: "SET_RATE_LIMIT_WARNING", payload: null });
     setHasUserDismissedRateLimitWarning(true);
   };
 
@@ -758,9 +1090,28 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   };
 
-  const displayMessages = messages;
-  const displayStatus = status;
-  const hasMessages = displayMessages.length > 0;
+  // Auto-send message after forking a shared chat
+  const autoSendFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoSendFiredRef.current) return;
+    try {
+      const pendingChatId = sessionStorage.getItem("autoSendChatId");
+      if (pendingChatId !== chatId) return;
+    } catch {
+      return;
+    }
+    // Wait for chat to be ready with draft input loaded
+    if (status !== "ready" || !input.trim()) return;
+    // Wait for server messages to be loaded (forked chat has messages)
+    if (!isExistingChat || messages.length === 0) return;
+
+    autoSendFiredRef.current = true;
+    sessionStorage.removeItem("autoSendChatId");
+    // Trigger submit with a synthetic event
+    handleSubmit(new Event("submit") as unknown as React.FormEvent);
+  }, [chatId, status, input, isExistingChat, messages.length, handleSubmit]);
+
+  const hasMessages = messages.length > 0;
   const showChatLayout = hasMessages || isExistingChat;
 
   // UI-level temporary chat flag
@@ -779,6 +1130,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
 
   return (
     <ConvexErrorBoundary>
+      <StreamEffects
+        key={chatId}
+        autoResume={autoResume}
+        serverMessages={serverMessages}
+        resumeStream={resumeStream}
+        setMessages={setMessages}
+        status={status}
+        chatMode={chatMode}
+        sendMessage={sendMessage}
+        hasManuallyStoppedRef={hasManuallyStoppedRef}
+        todos={todos}
+        temporaryChatsEnabled={temporaryChatsEnabled}
+        sandboxPreference={sandboxPreference}
+        selectedModel={selectedModel}
+        resetRef={resetAutoContinueRef}
+      />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
           {/* Left side - Chat content */}
@@ -813,26 +1180,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     </div>
                   </div>
                 </div>
-              ) : isExistingChat &&
-                paginatedMessages.status === "LoadingFirstPage" &&
-                !hasMessages ? (
-                <div
-                  className="flex-1 overflow-y-auto p-4 flex flex-col items-center justify-center min-h-0"
-                  data-testid="messages-loading"
-                >
-                  <Loading size={10} />
-                </div>
               ) : showChatLayout ? (
                 <Messages
                   scrollRef={scrollRef as RefObject<HTMLDivElement | null>}
                   contentRef={contentRef as RefObject<HTMLDivElement | null>}
-                  messages={displayMessages}
+                  messages={messages}
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}
                   onRetry={handleRetry}
                   onEditMessage={handleEditMessage}
                   onBranchMessage={handleBranchMessage}
-                  status={displayStatus}
+                  status={status}
                   error={error || null}
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
@@ -845,6 +1203,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   chatTitle={chatTitle}
                   branchedFromChatId={branchedFromChatId}
                   branchedFromChatTitle={branchedFromChatTitle}
+                  isLocalProvider={isCodexLocal(selectedModel)}
                 />
               ) : (
                 <div className="flex-1 flex flex-col min-h-0">
@@ -875,7 +1234,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                             onSubmit={handleSubmit}
                             onStop={handleStop}
                             onSendNow={handleSendNow}
-                            status={displayStatus}
+                            status={status}
                             isCentered={true}
                             hasMessages={hasMessages}
                             isAtBottom={isAtBottom}
@@ -909,7 +1268,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                     onSubmit={handleSubmit}
                     onStop={handleStop}
                     onSendNow={handleSendNow}
-                    status={displayStatus}
+                    status={status}
                     hasMessages={hasMessages}
                     isAtBottom={isAtBottom}
                     onScrollToBottom={handleScrollToBottom}
@@ -933,10 +1292,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
               }`}
             >
               {sidebarOpen && (
-                <ComputerSidebar
-                  messages={displayMessages}
-                  status={displayStatus}
-                />
+                <ComputerSidebar messages={messages} status={status} />
               )}
             </div>
           )}
@@ -952,10 +1308,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         {isMobile && sidebarOpen && (
           <div className="flex fixed inset-0 z-50 bg-background items-center justify-center p-4">
             <div className="w-full max-w-4xl h-full">
-              <ComputerSidebar
-                messages={displayMessages}
-                status={displayStatus}
-              />
+              <ComputerSidebar messages={messages} status={status} />
             </div>
           </div>
         )}

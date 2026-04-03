@@ -14,8 +14,6 @@ const BASE_BUTTON_CLASSES = "rounded-full p-0 w-8 h-8 min-w-0";
 const STOP_BUTTON_VARIANT_CLASSES: Record<ChatMode, string> = {
   agent:
     "bg-red-500/10 hover:bg-red-500/20 text-red-700 dark:bg-red-400/10 dark:hover:bg-red-400/20 dark:text-red-400 focus-visible:ring-red-500",
-  "agent-long":
-    "bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:bg-amber-400/10 dark:hover:bg-amber-400/20 dark:text-amber-400 focus-visible:ring-amber-500",
   ask: "bg-muted hover:bg-muted/70 text-foreground",
 };
 
@@ -48,7 +46,6 @@ export interface SubmitStopButtonProps {
   input: string;
   uploadedFiles: UploadedFileState[];
   chatMode: ChatMode;
-  showContextIndicator?: boolean;
 }
 
 export function SubmitStopButton({
@@ -61,7 +58,6 @@ export function SubmitStopButton({
   input,
   uploadedFiles,
   chatMode,
-  showContextIndicator = false,
 }: SubmitStopButtonProps) {
   useHotkeys(
     "ctrl+c",
@@ -79,7 +75,7 @@ export function SubmitStopButton({
     [isGenerating, onStop],
   );
 
-  const containerClass = `flex gap-2 shrink-0 items-center ${showContextIndicator ? "" : "ml-auto"}`;
+  const containerClass = "flex gap-2 shrink-0 items-center ml-auto";
 
   if (isGenerating && !hideStop) {
     return (

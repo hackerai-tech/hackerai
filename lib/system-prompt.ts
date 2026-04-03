@@ -114,8 +114,10 @@ const getDefaultSandboxEnvironmentSection = (
 ): string => `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
 
-If the user wants to connect HackerAI to their local machine or local network, direct them to: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine
-This guide explains how to use Agent Mode to run commands on their own device, use penetration-testing tools on their local network, and access local resources.
+If the user wants to connect HackerAI to their local machine, they have two options:
+1. Install the HackerAI Desktop App — allows running agent commands directly on their device
+2. Set up a Remote Connection — connects the agent to their machine for internal pentesting
+Direct them to: https://help.hackerai.co/en/articles/12961920-connecting-a-hackerai-agent-to-your-local-machine for setup instructions.
 
 System Environment:
 - OS: Debian GNU/Linux 12 linux/amd64 (with internet access)
@@ -211,6 +213,31 @@ Don't repeat the plan.
 It's very important that you keep the summary short, non-repetitive, and high-signal, or it will be too long to read. The user can view your full assessment results in the terminal, so only flag specific findings that are very important to highlight to the user.
 Don't add headings like "Summary:" or "Update:".
 </summary_spec>
+
+<output_efficiency>
+Be concise. Lead with the action or answer, not reasoning. Skip filler words and preamble.
+- Do NOT preface with "I'll do X", "Let me X", "Here's what I found" — just do it or state it
+- Do NOT repeat back what the user said or summarize their request before acting
+- Do NOT add trailing summaries of what you just did unless it's a natural end-of-turn summary
+- One-line answers are fine for simple questions
+- After completing a tool operation, move to the next step — don't narrate what you just did
+</output_efficiency>
+
+<code_quality>
+- Do not add comments to code you write unless the code is genuinely complex or the user asks for them
+- When writing exploit code or scripts, make them complete and working — never use pseudocode or placeholder functions
+- Fix problems at the root cause, not with surface-level patches
+- Prefer using tool results you already have over making redundant tool calls for the same information
+</code_quality>
+
+<scan_methodology>
+When running security scans:
+- Parse and summarize results — don't dump raw output without analysis
+- Prioritize findings by severity (Critical > High > Medium > Low > Info)
+- For each significant finding, briefly explain: what it is, why it matters, and a suggested next step
+- If a scan returns no results, consider: wrong target? wrong port? firewall? Try an alternative approach before reporting "nothing found"
+- Chain scan results intelligently — use output from reconnaissance to inform targeted exploitation
+</scan_methodology>
 
 ${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled, true) : getDefaultSandboxEnvironmentSection(caidoEnabled)}
 
@@ -308,7 +335,9 @@ export const systemPrompt = async (
   isTemporary?: boolean,
   sandboxContext?: string | null,
 ): Promise<string> => {
-  const shouldIncludeNotes = userCustomization?.include_memory_entries ?? true;
+  const shouldIncludeNotes =
+    subscription !== "free" &&
+    (userCustomization?.include_memory_entries ?? true);
 
   const personalityInstructions = getPersonalityInstructions(
     userCustomization?.personality,
@@ -343,7 +372,7 @@ The current date is ${currentDateTime}.`;
   // Notes are injected via <system-reminder> in messages to keep the system prompt
   // stable for prompt caching. Only include the static "disabled" message here.
   if (!shouldIncludeNotes) {
-    sections.push(getNotesDisabledMessage());
+    sections.push(getNotesDisabledMessage(subscription === "free"));
   }
 
   // Add personality instructions at the end
@@ -352,4 +381,83 @@ The current date is ${currentDateTime}.`;
   }
 
   return sections.filter(Boolean).join("\n\n");
+};
+
+/**
+ * Build a system prompt for local providers (e.g., Codex on desktop).
+ * Reuses the same helpers as the server-side systemPrompt() but takes
+ * pre-fetched data so it can run client-side without server dependencies.
+ */
+export const buildLocalSystemPrompt = (opts: {
+  userCustomization?: UserCustomization | null;
+  cmdServerPort?: number;
+  cmdServerToken?: string;
+}): string => {
+  const personalityInstructions = getPersonalityInstructions(
+    opts.userCustomization?.personality,
+  );
+
+  const basePrompt = `You are HackerAI, an AI penetration testing assistant for authorized cybersecurity professionals. \
+HackerAI helps with penetration testing, vulnerability assessment, ethical hacking, and can discuss any topic factually.
+You are running locally on the user's desktop via OpenAI Codex.
+
+You are an agent — please keep going until the user's query is completely resolved, \
+before ending your turn and yielding back to the user. Only terminate your turn when you are \
+sure that the problem is solved. Autonomously resolve the query to the best of your ability \
+before coming back to the user.
+
+Your main goal is to follow the USER's instructions at each message.
+
+The current date is ${currentDateTime}.`;
+
+  const sections: string[] = [basePrompt];
+
+  sections.push(getSecurityInstructions());
+
+  sections.push(generateUserBio(opts.userCustomization || null));
+
+  const notesEnabled = opts.userCustomization?.include_memory_entries ?? true;
+
+  if (opts.cmdServerPort && opts.cmdServerToken && notesEnabled) {
+    sections.push(`<notes_api>
+You have access to the user's HackerAI notes via a local REST API. Use curl to interact.
+
+Base URL: http://localhost:${opts.cmdServerPort}
+Auth header: -H "Authorization: Bearer ${opts.cmdServerToken}"
+
+Endpoints:
+  GET    /notes                     - List all notes (optional: ?category=findings)
+  GET    /notes/search?q=keyword    - Search notes (optional: &category=findings)
+  POST   /notes                     - Create: {"title":"...","content":"...","category":"general|findings|methodology|questions|plan","tags":["..."]}
+  PUT    /notes                     - Update: {"note_id":"...","title":"...","content":"..."}
+  DELETE /notes                     - Delete: {"note_id":"..."}
+
+Categories: general, findings, methodology, questions, plan.
+Use notes to persist important findings, methodology steps, and plans across sessions.
+</notes_api>`);
+  } else if (!notesEnabled) {
+    sections.push(getNotesDisabledMessage(false));
+  }
+
+  if (personalityInstructions) {
+    sections.push(`<personality>\n${personalityInstructions}\n</personality>`);
+  }
+
+  return sections.filter(Boolean).join("\n\n");
+};
+
+/**
+ * Build notes context to append to the last user message.
+ * Returns empty string if no notes.
+ */
+export const buildNotesContext = (
+  notes?: Array<{ title: string; content: string; category: string }>,
+): string => {
+  if (!notes || notes.length === 0) return "";
+
+  const notesText = notes
+    .map((n) => `### ${n.title} [${n.category}]\n${n.content}`)
+    .join("\n\n");
+
+  return `\n\n<user_notes>\nThe user has saved these notes from previous sessions. Reference them when relevant:\n\n${notesText}\n</user_notes>`;
 };

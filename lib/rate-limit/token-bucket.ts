@@ -240,6 +240,16 @@ export const checkTokenBucketLimit = async (
         if (deductResult.insufficientFunds) {
           const resetTime = formatTimeRemaining(new Date(monthlyCheck.reset));
 
+          if (deductResult.trustCapExceeded) {
+            const capAmount = deductResult.trustCapDollars ?? 100;
+            const msg = `You've reached your extra usage limit of $${capAmount}/month. This limit grows automatically with your payment history. Need a higher limit? Chat with us through our Help Center.`;
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+              trustCapExceeded: true,
+            });
+          }
+
           if (deductResult.monthlyCapExceeded) {
             const msg = `You've hit your monthly extra usage spending limit.\n\nYour limit resets ${resetTime}. To keep going now, increase your spending limit in Settings.`;
             throw new ChatSDKError("rate_limit:chat", msg, {
@@ -255,7 +265,13 @@ export const checkTokenBucketLimit = async (
           });
         }
 
-        // Fall through to standard rate limit error
+        // Deduction failed for a service reason (not insufficient funds) —
+        // tell the user to retry instead of a misleading "add credits" message.
+        throw new ChatSDKError(
+          "rate_limit:chat",
+          "Extra usage billing is temporarily unavailable. Please try again in a few moments.",
+          { resetTimestamp: monthlyCheck.reset, subscription },
+        );
       }
 
       // No extra usage enabled - throw standard rate limit error

@@ -7,17 +7,20 @@ import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
+import type { SubscriptionTier } from "@/types";
 
 interface PersonalizationTabProps {
   onCustomInstructions: () => void;
   // onManageMemories: () => void;
   onManageNotes: () => void;
+  subscription?: SubscriptionTier;
 }
 
 const PersonalizationTab = ({
   onCustomInstructions,
   // onManageMemories,
   onManageNotes,
+  subscription,
 }: PersonalizationTabProps) => {
   const userCustomization = useQuery(
     api.userCustomization.getUserCustomization,
@@ -47,54 +50,56 @@ const PersonalizationTab = ({
         </div>
       </div>
 
-      {/* Notes Section (formerly Memory Section) */}
-      <div>
-        <h3 className="text-lg font-medium mb-4 pb-2 border-b">Notes</h3>
-        <div className="space-y-4">
-          <div className="flex items-center justify-between py-3 border-b">
-            <div>
-              <div className="font-medium">Enable notes</div>
-              <div className="text-sm text-muted-foreground">
-                Let HackerAI save and use notes when responding.
+      {/* Notes Section (formerly Memory Section) - hidden for free users */}
+      {subscription && subscription !== "free" && (
+        <div>
+          <h3 className="text-lg font-medium mb-4 pb-2 border-b">Notes</h3>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between py-3 border-b">
+              <div>
+                <div className="font-medium">Enable notes</div>
+                <div className="text-sm text-muted-foreground">
+                  Let HackerAI save and use notes when responding.
+                </div>
               </div>
+              <Switch
+                checked={userCustomization?.include_memory_entries ?? true}
+                onCheckedChange={async (checked) => {
+                  try {
+                    await saveCustomization({
+                      include_memory_entries: checked,
+                    });
+                  } catch (error) {
+                    console.error("Failed to save customization:", error);
+                    const errorMessage =
+                      error instanceof ConvexError
+                        ? (error.data as { message?: string })?.message ||
+                          error.message ||
+                          "Failed to save customization"
+                        : error instanceof Error
+                          ? error.message
+                          : "Failed to save customization";
+                    toast.error(errorMessage);
+                  }
+                }}
+                aria-label="Toggle notes"
+              />
             </div>
-            <Switch
-              checked={userCustomization?.include_memory_entries ?? true}
-              onCheckedChange={async (checked) => {
-                try {
-                  await saveCustomization({
-                    include_memory_entries: checked,
-                  });
-                } catch (error) {
-                  console.error("Failed to save customization:", error);
-                  const errorMessage =
-                    error instanceof ConvexError
-                      ? (error.data as { message?: string })?.message ||
-                        error.message ||
-                        "Failed to save customization"
-                      : error instanceof Error
-                        ? error.message
-                        : "Failed to save customization";
-                  toast.error(errorMessage);
-                }
-              }}
-              aria-label="Toggle notes"
-            />
-          </div>
 
-          <div className="flex items-center justify-between py-3">
-            <div>
-              <div className="font-medium">Manage notes</div>
+            <div className="flex items-center justify-between py-3">
+              <div>
+                <div className="font-medium">Manage notes</div>
+              </div>
+              {/* <Button variant="outline" size="sm" onClick={onManageMemories}>
+                Manage
+              </Button> */}
+              <Button variant="outline" size="sm" onClick={onManageNotes}>
+                Manage
+              </Button>
             </div>
-            {/* <Button variant="outline" size="sm" onClick={onManageMemories}>
-              Manage
-            </Button> */}
-            <Button variant="outline" size="sm" onClick={onManageNotes}>
-              Manage
-            </Button>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

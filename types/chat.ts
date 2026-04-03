@@ -3,9 +3,9 @@ import { z } from "zod";
 import { Id } from "@/convex/_generated/dataModel";
 import type { FileDetails } from "./file";
 
-export type ChatMode = "agent" | "agent-long" | "ask";
+export type ChatMode = "agent" | "ask";
 
-export const CHAT_MODES: readonly ChatMode[] = ["agent", "agent-long", "ask"];
+export const CHAT_MODES: readonly ChatMode[] = ["agent", "ask"];
 
 export function isChatMode(value: string | null): value is ChatMode {
   return value !== null && (CHAT_MODES as readonly string[]).includes(value);
@@ -17,7 +17,9 @@ export type SelectedModel =
   | "grok-4.1"
   | "gemini-3-flash"
   // | "opus-4.6"
-  | "gpt-5.4";
+  | "kimi-k2.5";
+// | "codex-local"
+// | `codex-local:${string}`;
 
 export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "auto",
@@ -25,12 +27,29 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "grok-4.1",
   "gemini-3-flash",
   // "opus-4.6",
-  "gpt-5.4",
+  "kimi-k2.5",
+  // "codex-local",
 ];
+
+/** Check if a model is a local Codex model (with or without sub-model) */
+export function isCodexLocal(model: string | null): boolean {
+  return (
+    model === "codex-local" || (!!model && model.startsWith("codex-local:"))
+  );
+}
+
+/** Extract the Codex sub-model (e.g., "gpt-5.4" from "codex-local:gpt-5.4") */
+export function getCodexSubModel(model: string): string | undefined {
+  if (model.startsWith("codex-local:")) {
+    return model.slice("codex-local:".length);
+  }
+  return undefined;
+}
 
 export function isSelectedModel(value: string | null): value is SelectedModel {
   return (
     value !== null && (SELECTABLE_MODELS as readonly string[]).includes(value)
+    // || isCodexLocal(value)
   );
 }
 
@@ -299,12 +318,14 @@ export interface Memory {
 }
 
 /**
- * Preview message for share dialog (simplified message structure)
+ * Preview message for share dialog (full message structure with parts)
  */
 export interface PreviewMessage {
   id: string;
   role: "user" | "assistant" | "system";
   content?: string;
+  parts: any[];
+  fileDetails?: FileDetails[];
 }
 
 /**

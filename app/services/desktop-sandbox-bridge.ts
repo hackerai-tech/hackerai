@@ -148,6 +148,41 @@ export class DesktopSandboxBridge {
           hostname: hostname.trim(),
         };
       }
+
+      // uname failed — try Windows-specific detection
+      const winResult = await invoke<{
+        stdout: string;
+        stderr: string;
+        exit_code: number;
+      }>("execute_command", {
+        command: "ver && hostname",
+        timeoutMs: 5000,
+      });
+      if (winResult.exit_code === 0) {
+        const lines = winResult.stdout.trim().split("\n").filter(Boolean);
+        // `ver` outputs e.g. "Microsoft Windows [Version 10.0.22631.4890]"
+        const verLine = lines[0] || "";
+        const hostname = lines[1]?.trim() || "Desktop";
+        const versionMatch = verLine.match(/\[Version\s+([\d.]+)\]/i);
+        const archResult = await invoke<{
+          stdout: string;
+          stderr: string;
+          exit_code: number;
+        }>("execute_command", {
+          command: "echo %PROCESSOR_ARCHITECTURE%",
+          timeoutMs: 5000,
+        });
+        const arch =
+          archResult.exit_code === 0
+            ? archResult.stdout.trim().toLowerCase()
+            : "unknown";
+        return {
+          platform: "win32",
+          release: versionMatch?.[1] || "unknown",
+          arch: arch === "amd64" ? "x64" : arch,
+          hostname,
+        };
+      }
     } catch (error) {
       console.warn("[DesktopSandboxBridge] Failed to get OS info:", error);
     }
@@ -205,6 +240,11 @@ export class DesktopSandboxBridge {
         }
         break;
       case "exit":
+        if (chunk.exitCode === undefined) {
+          console.warn(
+            `[desktop-bridge] exit chunk missing exitCode for command ${commandId}, defaulting to -1`,
+          );
+        }
         await this.publishResult({
           type: "exit",
           commandId,

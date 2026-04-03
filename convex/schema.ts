@@ -37,6 +37,7 @@ export default defineSchema({
     pinned_at: v.optional(v.number()),
     sandbox_type: v.optional(v.string()),
     selected_model: v.optional(v.string()),
+    codex_thread_id: v.optional(v.string()),
   })
     .index("by_chat_id", ["id"])
     .index("by_user_and_updated", ["user_id", "update_time"])
@@ -141,6 +142,10 @@ export default defineSchema({
     monthly_cap_points: v.optional(v.number()),
     monthly_spent_points: v.optional(v.number()),
     monthly_reset_date: v.optional(v.string()),
+    // Trust-based spending cap fields
+    first_successful_charge_at: v.optional(v.number()), // Timestamp of first successful charge
+    cumulative_spend_dollars: v.optional(v.number()), // Total of all successful charges
+    override_monthly_cap_dollars: v.optional(v.number()), // Manual override set by support team
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 
@@ -217,15 +222,6 @@ export default defineSchema({
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
-  // Tracks aggregate migration state per user
-  // Version 0 (default/missing) = no aggregates migrated
-  // Version 1 = file count aggregate available
-  user_aggregate_state: defineTable({
-    user_id: v.string(),
-    version: v.number(),
-    updated_at: v.number(),
-  }).index("by_user_id", ["user_id"]),
-
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
     user_id: v.string(),
@@ -240,6 +236,26 @@ export default defineSchema({
   })
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"]),
+
+  // Tracks rapid payment failures per Stripe customer for card-testing fraud detection.
+  // Uses a weighted sliding window (10 min) with multiple fraud signals:
+  // - Weighted scoring (incorrect_number counts double)
+  // - Distinct card fingerprints (3+ unique cards = instant block)
+  // - Decline code diversity (3+ distinct codes = instant block)
+  // - Account age factor (new accounts have lower threshold)
+  payment_failure_tracking: defineTable({
+    stripe_customer_id: v.string(),
+    failure_count: v.number(),
+    weighted_score: v.number(),
+    first_failure_at: v.number(),
+    last_failure_at: v.number(),
+    decline_codes: v.array(v.string()),
+    distinct_fingerprints: v.array(v.string()),
+    auto_blocked: v.boolean(),
+    // JSON-serialized array of {timestamp, declineCode, fingerprint, weight}
+    // for true sliding window evaluation (pruned on each write)
+    entries: v.optional(v.string()),
+  }).index("by_customer_id", ["stripe_customer_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({

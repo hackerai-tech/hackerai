@@ -10,7 +10,6 @@ import { validateServiceKey } from "./lib/utils";
 import { internal } from "./_generated/api";
 import { isSupportedImageMediaType } from "../lib/utils/file-utils";
 import { fileCountAggregate } from "./fileAggregate";
-import { isFileSizeAggregateAvailable } from "./aggregateVersions";
 
 // Maximum storage per user: 10 GB
 const MAX_STORAGE_BYTES = 10 * 1024 * 1024 * 1024; // 10737418240 bytes
@@ -110,10 +109,8 @@ export const deleteFile = mutation({
       );
     }
 
-    // Delete from aggregate (uses deleteIfExists for idempotency with pre-backfill data)
     await fileCountAggregate.deleteIfExists(ctx, file);
 
-    // Delete database record
     await ctx.db.delete(args.fileId);
 
     return null;
@@ -288,7 +285,6 @@ export const purgeExpiredUnattachedFiles = internalMutation({
         console.error(`Failed to delete storage for file ${file._id}:`, e);
       }
 
-      // Delete from aggregate (uses deleteIfExists for idempotency with pre-backfill data)
       await fileCountAggregate.deleteIfExists(ctx, file);
 
       // Delete database record regardless of storage deletion result
@@ -347,22 +343,16 @@ export const saveFileToDb = internalMutation({
   },
   returns: v.id("files"),
   handler: async (ctx, args) => {
-    // Check storage limit if aggregate is available (user has been migrated)
-    const sizeAggregateAvailable = await isFileSizeAggregateAvailable(
-      ctx,
-      args.userId,
-    );
-    if (sizeAggregateAvailable) {
-      const currentStorageBytes = await fileCountAggregate.sum(ctx, {
-        namespace: args.userId,
+    // Check storage limit
+    const currentStorageBytes = await fileCountAggregate.sum(ctx, {
+      namespace: args.userId,
+    });
+    if (currentStorageBytes + args.size > MAX_STORAGE_BYTES) {
+      const usedGB = (currentStorageBytes / (1024 * 1024 * 1024)).toFixed(2);
+      throw new ConvexError({
+        code: "STORAGE_LIMIT_EXCEEDED",
+        message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB.`,
       });
-      if (currentStorageBytes + args.size > MAX_STORAGE_BYTES) {
-        const usedGB = (currentStorageBytes / (1024 * 1024 * 1024)).toFixed(2);
-        throw new ConvexError({
-          code: "STORAGE_LIMIT_EXCEEDED",
-          message: `Storage limit exceeded. You are using ${usedGB} GB of 10 GB.`,
-        });
-      }
     }
 
     const fileId = await ctx.db.insert("files", {
@@ -377,8 +367,6 @@ export const saveFileToDb = internalMutation({
       is_attached: false,
     });
 
-    // Insert into aggregate for O(log(n)) counting
-    // Uses insertIfDoesNotExist for idempotency in case of race with backfill
     const doc = await ctx.db.get(fileId);
     if (doc) {
       await fileCountAggregate.insertIfDoesNotExist(ctx, doc);
@@ -390,29 +378,17 @@ export const saveFileToDb = internalMutation({
 
 /**
  * Internal query to get user's current storage usage in bytes.
- * Returns null if the aggregate is not yet available (user not migrated).
  */
 export const getUserStorageUsage = internalQuery({
   args: {
     userId: v.string(),
   },
-  returns: v.union(
-    v.object({
-      usedBytes: v.number(),
-      maxBytes: v.number(),
-      availableBytes: v.number(),
-    }),
-    v.null(),
-  ),
+  returns: v.object({
+    usedBytes: v.number(),
+    maxBytes: v.number(),
+    availableBytes: v.number(),
+  }),
   handler: async (ctx, args) => {
-    const sizeAggregateAvailable = await isFileSizeAggregateAvailable(
-      ctx,
-      args.userId,
-    );
-    if (!sizeAggregateAvailable) {
-      return null;
-    }
-
     const usedBytes = await fileCountAggregate.sum(ctx, {
       namespace: args.userId,
     });

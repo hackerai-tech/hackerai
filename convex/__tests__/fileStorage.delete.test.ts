@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, jest, beforeEach } from "@jest/globals";
 import type { Id } from "../_generated/dataModel";
 
@@ -64,11 +63,6 @@ const mockFileCountAggregate = {
 jest.mock("../fileAggregate", () => ({
   fileCountAggregate: mockFileCountAggregate,
 }));
-jest.mock("../aggregateVersions", () => ({
-  isFileCountAggregateAvailable: jest.fn<any>().mockResolvedValue(true),
-  isFileSizeAggregateAvailable: jest.fn<any>().mockResolvedValue(true),
-}));
-
 describe("fileStorage - deleteFile", () => {
   let mockCtx: any;
   let mockFile: any;

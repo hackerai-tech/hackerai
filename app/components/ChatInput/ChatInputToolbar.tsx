@@ -34,24 +34,16 @@ export function ChatInputToolbar({
         <AttachmentButton onAttachClick={onAttachClick} />
       </div>
       <ChatModeSelector />
-      {chatMode === "ask" && (
-        <ModelSelector
-          value={selectedModel}
-          onChange={setSelectedModel}
-          mode={chatMode}
-        />
-      )}
-      {showContextIndicator && contextUsage && (
-        <div className="shrink-0">
+      <ModelSelector
+        value={selectedModel}
+        onChange={setSelectedModel}
+        mode={chatMode}
+      />
+      <div className="ml-auto shrink-0 flex items-center gap-2.5">
+        {showContextIndicator && contextUsage && (
           <ContextUsageIndicator {...contextUsage} />
-        </div>
-      )}
-      <div className="ml-auto shrink-0">
-        <SubmitStopButton
-          {...submitStopProps}
-          chatMode={chatMode}
-          showContextIndicator={showContextIndicator}
-        />
+        )}
+        <SubmitStopButton {...submitStopProps} chatMode={chatMode} />
       </div>
     </div>
   );

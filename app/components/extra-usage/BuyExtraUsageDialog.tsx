@@ -51,7 +51,7 @@ const BuyExtraUsageDialogContent = ({
   isLoading,
   onClose,
 }: ContentProps) => {
-  const [purchaseAmount, setPurchaseAmount] = useState<string>("5");
+  const [purchaseAmount, setPurchaseAmount] = useState<string>("15");
   const [paymentMethod, setPaymentMethod] = useState<{
     hasPaymentMethod: boolean;
     last4: string | null;
@@ -102,9 +102,9 @@ const BuyExtraUsageDialogContent = ({
 
   const parsedAmount = parseInt(removeCommas(purchaseAmount) || "0", 10);
   const isValidAmount =
-    !isNaN(parsedAmount) && parsedAmount >= 5 && parsedAmount <= MAX_AMOUNT;
+    !isNaN(parsedAmount) && parsedAmount >= 15 && parsedAmount <= MAX_AMOUNT;
   const showMinAmountError =
-    purchaseAmount !== "" && !isNaN(parsedAmount) && parsedAmount < 5;
+    purchaseAmount !== "" && !isNaN(parsedAmount) && parsedAmount < 15;
   const showMaxAmountError =
     purchaseAmount !== "" && !isNaN(parsedAmount) && parsedAmount > MAX_AMOUNT;
 
@@ -124,7 +124,7 @@ const BuyExtraUsageDialogContent = ({
             Get extra usage to keep using HackerAI when you hit a limit.
           </label>
           <Input
-            placeholder="$5"
+            placeholder="$15"
             className="w-full"
             type="text"
             value={`$${formatWithCommas(purchaseAmount)}`}
@@ -136,7 +136,7 @@ const BuyExtraUsageDialogContent = ({
             aria-label="Purchase amount"
           />
           {showMinAmountError && (
-            <p className="text-sm text-red-500 mt-2">Minimum amount is $5</p>
+            <p className="text-sm text-red-500 mt-2">Minimum amount is $15</p>
           )}
           {showMaxAmountError && (
             <p className="text-sm text-red-500 mt-2">
