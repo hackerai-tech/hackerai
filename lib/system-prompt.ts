@@ -100,8 +100,9 @@ All HTTP requests from terminal commands go directly to the target without inter
   const uiLine = isLocalSandbox
     ? `- The user can view captured traffic in Caido's UI at http://127.0.0.1:48080 (local sandbox only).`
     : `- The Caido proxy UI is NOT accessible to users in this environment. NEVER share any proxy URL, sandbox URL, or Caido URL. Users interact with proxy data exclusively through the proxy tools.`;
+  const runningLine = `Caido CLI — a modern web security proxy — starts automatically when proxy tools are first used. Once started, it intercepts all HTTP/HTTPS traffic.`;
   return `<proxy_interception>
-Caido CLI — a modern web security proxy — is running and intercepting all HTTP/HTTPS traffic automatically.
+${runningLine}
 - Use proxy tools (list_requests, view_request, send_request, repeat_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
 - If you see proxy errors (50x HTML error pages) when sending requests, it usually means the target URL, host, or port is incorrect — ignore Caido-generated error pages.
 - All terminal commands automatically route through the proxy via HTTP_PROXY env vars.
