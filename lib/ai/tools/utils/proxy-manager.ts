@@ -9,10 +9,14 @@
 import type { ToolContext } from "@/types";
 import { CAIDO_DEFAULTS } from "./caido-proxy";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
+import { isCentrifugoSandbox } from "./sandbox-types";
 import { truncateContent, TRUNCATION_MESSAGE } from "@/lib/token-utils";
 
 const CAIDO_TOKEN_FILE = "/tmp/caido-token";
 const CAIDO_LOG = "/tmp/caido.log";
+
+/** Cached auth token for local (CentrifugoSandbox) GraphQL calls via fetch. */
+let cachedCaidoToken: string | null = null;
 
 /**
  * Per-session lock: ensures only one ensureCaido runs at a time per sandboxManager.
@@ -37,6 +41,7 @@ export function isCaidoBroken(text: string): boolean {
  */
 async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
   caidoLock.delete(context.sandboxManager);
+  cachedCaidoToken = null;
   try {
     const { sandbox } = await context.sandboxManager.getSandbox();
     const options = buildSandboxCommandOptions(sandbox);
@@ -391,15 +396,13 @@ function getBaseUrl(): string {
 }
 
 /**
- * Execute a Caido GraphQL query by running curl on the sandbox.
- * Uses base64 to pass JSON body safely through shell without escaping issues.
+ * Execute a Caido GraphQL query.
+ *
+ * On local sandboxes (CentrifugoSandbox), uses Node.js fetch directly to
+ * bypass Caido's proxy dispatcher which misroutes curl requests on macOS.
+ * On E2B sandboxes, uses curl through the sandbox shell.
  */
-/**
- * Maximum number of retries for transient Caido connection failures (exit 56).
- * Caido on macOS can misroute requests to its proxy dispatcher instead of the
- * GraphQL API handler, especially right after setup or under concurrent load.
- */
-const GRAPHQL_MAX_RETRIES = 2;
+const GRAPHQL_TIMEOUT = 15_000;
 
 async function runGql(
   context: ToolContext,
@@ -409,97 +412,150 @@ async function runGql(
   await ensureCaido(context);
 
   const { sandbox } = await context.sandboxManager.getSandbox();
+
+  if (isCentrifugoSandbox(sandbox)) {
+    return runGqlLocal(context, query, variables);
+  }
+  return runGqlViaSandbox(context, sandbox, query, variables);
+}
+
+/**
+ * Local path: fetch from Node.js directly.
+ * Works because on local sandboxes, Caido listens on the same machine.
+ * Avoids the curl-through-CentrifugoSandbox path that Caido's proxy dispatcher
+ * misroutes on macOS (exit 56).
+ */
+async function runGqlLocal(
+  context: ToolContext,
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<unknown> {
   const baseUrl = getBaseUrl();
-  const options = buildSandboxCommandOptions(sandbox);
 
-  const body = JSON.stringify({ query, variables: variables ?? {} });
-  // base64-encode the body to avoid any shell escaping issues
-  const bodyB64 = Buffer.from(body).toString("base64");
-
-  // Write body to a temp file instead of piping through stdin.
-  // On macOS with Caido Desktop installed, piping via `echo | base64 -d | curl --data @-`
-  // can cause Caido to misroute the request to its proxy dispatcher (exit 56).
-  // Using a temp file ensures curl sends a clean direct POST to the API.
-  const buildCmd = (verbose: boolean) => {
-    const curlFlags = verbose ? "-v" : "-s";
-    return [
-      // Clear any proxy env vars that could interfere with direct API calls
-      `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy 2>/dev/null`,
-      `TOKEN=$(cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo "")`,
-      `BODY_FILE=$(mktemp)`,
-      `echo '${bodyB64}' | base64 -d > "$BODY_FILE"`,
-      `curl ${curlFlags} -X POST ${baseUrl}/graphql \\`,
-      `  --noproxy '*' \\`,
-      `  -H "Content-Type: application/json" \\`,
-      `  \${TOKEN:+-H "Authorization: Bearer \${TOKEN}"} \\`,
-      `  --connect-timeout 10 --max-time 15 \\`,
-      `  -d @"$BODY_FILE"`,
-      `CURL_EXIT=$?`,
-      `rm -f "$BODY_FILE"`,
-      `exit $CURL_EXIT`,
-    ].join("\n");
-  };
-
-  for (let attempt = 0; attempt <= GRAPHQL_MAX_RETRIES; attempt++) {
-    const isRetry = attempt > 0;
-    // Use verbose curl on retries to capture HTTP-level diagnostics
-    const useVerbose = isRetry;
-    const cmd = buildCmd(useVerbose);
-
-    const result = await sandbox.commands.run(cmd, options);
-
-    // curl -v writes HTTP trace to stderr, response body to stdout (same as -s)
-    const stdout = result.stdout.trim();
-
-    if (!stdout) {
-      const msg = result.stderr || result.stdout;
-
-      // Retry on exit 56 (server closed connection) — likely proxy misroute
-      if (result.exitCode === 56 && attempt < GRAPHQL_MAX_RETRIES) {
-        // Small delay before retry to let Caido settle
-        await new Promise((r) => setTimeout(r, 500));
-        continue;
-      }
-
-      if (msg.includes("Connection refused") || msg.includes("curl: (7)")) {
-        throw new Error(
-          `Caido is not reachable at ${baseUrl}. Check ${CAIDO_LOG} for errors.`,
-        );
-      }
-      throw new Error(
-        `No response from Caido (exit ${result.exitCode}): ${msg || "empty output"}`,
-      );
-    }
-
-    // Parse JSON — if stdout is non-empty, curl succeeded regardless of exit code.
-    // Caido may return HTML (broken DB page) instead of JSON — detect and trigger restart.
-    let json: { data?: unknown; errors?: unknown[] };
-    try {
-      json = JSON.parse(stdout);
-    } catch {
-      if (isCaidoBroken(stdout)) {
-        await invalidateAndKillCaido(context);
-        throw new Error(
-          "Caido proxy database error — will auto-restart on next request",
-        );
-      }
-      throw new Error(
-        `Caido returned non-JSON response: ${stdout.slice(0, 200)}`,
-      );
-    }
-
-    if (json!.errors?.length) {
-      const errStr = JSON.stringify(json!.errors);
-      if (isCaidoBroken(errStr)) {
-        await invalidateAndKillCaido(context);
-      }
-      throw new Error(`Caido GraphQL errors: ${errStr}`);
-    }
-    return json!.data;
+  // Read the token from disk if not cached (setup script writes it to /tmp/caido-token)
+  if (!cachedCaidoToken) {
+    const { sandbox } = await context.sandboxManager.getSandbox();
+    const options = buildSandboxCommandOptions(sandbox);
+    const tokenResult = await sandbox.commands.run(
+      `cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo ""`,
+      options,
+    );
+    cachedCaidoToken = tokenResult.stdout.trim() || null;
   }
 
-  // Unreachable, but TypeScript needs it
-  throw new Error(`Caido GraphQL failed after ${GRAPHQL_MAX_RETRIES} retries`);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (cachedCaidoToken) {
+    headers["Authorization"] = `Bearer ${cachedCaidoToken}`;
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(`${baseUrl}/graphql`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ query, variables: variables ?? {} }),
+      signal: AbortSignal.timeout(GRAPHQL_TIMEOUT),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("ECONNREFUSED")) {
+      caidoLock.delete(context.sandboxManager);
+      throw new Error(
+        `Caido is not reachable at ${baseUrl}. Check ${CAIDO_LOG} for errors.`,
+      );
+    }
+    throw new Error(`Caido GraphQL request failed: ${msg}`);
+  }
+  const text = await resp.text();
+  if (!text) {
+    throw new Error(`No response from Caido (HTTP ${resp.status}): empty body`);
+  }
+
+  return parseGqlResponse(context, text);
+}
+
+/**
+ * E2B path: run curl inside the sandbox.
+ * E2B sandboxes don't have Caido Desktop installed, so the proxy dispatcher
+ * misroute issue doesn't occur.
+ */
+async function runGqlViaSandbox(
+  context: ToolContext,
+  sandbox: {
+    commands: {
+      run: (
+        cmd: string,
+        opts: Record<string, unknown>,
+      ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+    };
+  },
+  query: string,
+  variables?: Record<string, unknown>,
+): Promise<unknown> {
+  const baseUrl = getBaseUrl();
+  const baseOptions = buildSandboxCommandOptions(
+    sandbox as Parameters<typeof buildSandboxCommandOptions>[0],
+  );
+  const options = { ...baseOptions, timeoutMs: GRAPHQL_TIMEOUT + 10_000 };
+
+  const body = JSON.stringify({ query, variables: variables ?? {} });
+  const bodyB64 = Buffer.from(body).toString("base64");
+
+  const cmd =
+    `TOKEN=$(cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo "")\n` +
+    `echo '${bodyB64}' | base64 -d | curl -sL --noproxy '*' \\\n` +
+    `  -H "Content-Type: application/json" \\\n` +
+    `  \${TOKEN:+-H "Authorization: Bearer \${TOKEN}"} \\\n` +
+    `  --connect-timeout 10 --max-time 15 \\\n` +
+    `  --data @- ${baseUrl}/graphql`;
+
+  const result = await sandbox.commands.run(cmd, options);
+  const stdout = result.stdout.trim();
+
+  if (!stdout) {
+    const msg = result.stderr || result.stdout;
+    if (msg.includes("Connection refused") || msg.includes("curl: (7)")) {
+      caidoLock.delete(context.sandboxManager);
+      throw new Error(
+        `Caido is not reachable at ${baseUrl}. Check ${CAIDO_LOG} for errors.`,
+      );
+    }
+    throw new Error(
+      `No response from Caido (exit ${result.exitCode}): ${msg || "empty output"}`,
+    );
+  }
+
+  return parseGqlResponse(context, stdout);
+}
+
+/** Shared JSON parsing and error handling for both local and sandbox paths. */
+async function parseGqlResponse(
+  context: ToolContext,
+  text: string,
+): Promise<unknown> {
+  let json: { data?: unknown; errors?: unknown[] };
+  try {
+    json = JSON.parse(text);
+  } catch {
+    if (isCaidoBroken(text)) {
+      await invalidateAndKillCaido(context);
+      throw new Error(
+        "Caido proxy database error — will auto-restart on next request",
+      );
+    }
+    throw new Error(`Caido returned non-JSON response: ${text.slice(0, 200)}`);
+  }
+
+  if (json.errors?.length) {
+    const errStr = JSON.stringify(json.errors);
+    if (isCaidoBroken(errStr)) {
+      await invalidateAndKillCaido(context);
+    }
+    throw new Error(`Caido GraphQL errors: ${errStr}`);
+  }
+  return json.data;
 }
 
 // ─── list_requests ────────────────────────────────────────────────────────────

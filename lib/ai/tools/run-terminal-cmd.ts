@@ -250,14 +250,17 @@ If you are generating files:
         async function executeCommand(sandboxInstance: typeof sandbox) {
           // Ensure Caido proxy is running + authenticated before commands route through it.
           // This is a no-op after the first successful call (cached per session).
-          if (caidoEnvVars) {
+          // If setup fails, clear caidoEnvVars so commands don't route to a dead proxy.
+          let effectiveCaidoEnvVars = caidoEnvVars;
+          if (effectiveCaidoEnvVars) {
             try {
               await ensureCaido(context);
             } catch (e) {
               console.warn(
-                "[Terminal Command] Caido setup failed, commands may not route through proxy:",
+                "[Terminal Command] Caido setup failed, disabling proxy env vars for this command:",
                 e,
               );
+              effectiveCaidoEnvVars = undefined;
             }
           }
 
@@ -403,7 +406,7 @@ If you are generating files:
                     onStdout: handler!.stdout,
                     onStderr: handler!.stderr,
                   },
-              caidoEnvVars,
+              effectiveCaidoEnvVars,
             );
 
             // Determine if an error is a permanent command failure (don't retry)
