@@ -314,12 +314,12 @@ describe("checkAndInvalidateSummary via deleteLastAssistantMessage", () => {
       const currentCall = callIndex++;
 
       if (currentCall === 0 && table === "messages") {
+        // deleteLastAssistantMessage now fetches all messages desc to walk back the chain
+        const allMessages = assistantMessage ? [assistantMessage] : [];
         return {
           withIndex: jest.fn().mockReturnValue({
-            filter: jest.fn().mockReturnValue({
-              order: jest.fn().mockReturnValue({
-                first: jest.fn<any>().mockResolvedValue(assistantMessage),
-              }),
+            order: jest.fn().mockReturnValue({
+              collect: jest.fn<any>().mockResolvedValue(allMessages),
             }),
           }),
         };
