@@ -133,6 +133,9 @@ export const createTools = (
     ...(process.env.PERPLEXITY_API_KEY && {
       web_search: createWebSearch(context),
     }),
+    ...(process.env.JINA_API_KEY && {
+      open_url: createOpenUrlTool(),
+    }),
   };
 
   // Filter tools based on mode
