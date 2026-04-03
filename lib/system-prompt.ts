@@ -106,6 +106,7 @@ Caido CLI — a modern web security proxy — is running and intercepting all HT
 - If you see proxy errors (50x HTML error pages) when sending requests, it usually means the target URL, host, or port is incorrect — ignore Caido-generated error pages.
 - All terminal commands automatically route through the proxy via HTTP_PROXY env vars.
 ${uiLine}
+- If the user experiences proxy-related issues or doesn't need traffic interception, they can disable the Caido proxy in Settings > Agent.
 </proxy_interception>`;
 };
 
