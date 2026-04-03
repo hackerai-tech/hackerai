@@ -10,7 +10,7 @@
  * - Pagination logic
  */
 
-import { ensureCaido, isCaidoBroken } from "../proxy-manager";
+import { ensureCaido, isCaidoBroken, fixHttpqlQuoting } from "../proxy-manager";
 
 // ---------------------------------------------------------------------------
 // Mock sandbox
@@ -227,6 +227,49 @@ describe("Proxy Manager", () => {
 
     it("should return false for unrelated errors", () => {
       expect(isCaidoBroken("Connection refused")).toBe(false);
+    });
+  });
+
+  describe("fixHttpqlQuoting", () => {
+    it("should rewrite text field .eq to .regex with quotes", () => {
+      expect(fixHttpqlQuoting("req.method.eq:POST")).toBe(
+        'req.method.regex:"POST"',
+      );
+    });
+
+    it("should rewrite text field .eq for host", () => {
+      expect(fixHttpqlQuoting("req.host.eq:example.com")).toBe(
+        'req.host.regex:"example.com"',
+      );
+    });
+
+    it("should not rewrite integer field .eq", () => {
+      expect(fixHttpqlQuoting("resp.code.eq:200")).toBe("resp.code.eq:200");
+    });
+
+    it("should handle compound filters with AND", () => {
+      expect(
+        fixHttpqlQuoting("req.method.eq:GET AND req.host.eq:httpbin.org"),
+      ).toBe('req.method.regex:"GET" AND req.host.regex:"httpbin.org"');
+    });
+
+    it("should add missing quotes to regex values", () => {
+      expect(fixHttpqlQuoting("req.method.regex:POST")).toBe(
+        'req.method.regex:"POST"',
+      );
+    });
+
+    it("should not double-quote already quoted regex values", () => {
+      expect(fixHttpqlQuoting('req.method.regex:"POST"')).toBe(
+        'req.method.regex:"POST"',
+      );
+    });
+
+    it("should pass through valid filters unchanged", () => {
+      expect(fixHttpqlQuoting('req.method.regex:"GET"')).toBe(
+        'req.method.regex:"GET"',
+      );
+      expect(fixHttpqlQuoting("resp.code.eq:404")).toBe("resp.code.eq:404");
     });
   });
 });

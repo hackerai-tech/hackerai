@@ -104,13 +104,13 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
   ).toString("base64");
 
   const healthCheck =
-    `curl -s -o /dev/null -w "%{http_code}" -X POST "${baseUrl}/graphql"` +
+    `curl -s --noproxy '*' -o /dev/null -w "%{http_code}" -X POST "${baseUrl}/graphql"` +
     ` -H "Content-Type: application/json" -d '{"query":"{ __typename }"}' 2>/dev/null`;
 
   // Query that requires a valid token AND a selected project — if this returns
   // 200 with valid JSON, Caido is fully operational and we can skip setup.
   const projectCheck = [
-    `curl -s -X POST "$CAIDO_API/graphql"`,
+    `curl -s --noproxy '*' -X POST "$CAIDO_API/graphql"`,
     `-H "Content-Type: application/json"`,
     `-H "Authorization: Bearer $(cat "$TOKEN_FILE" 2>/dev/null)"`,
     `-d '{"query":"{ requestsByOffset(limit:1) { count { value } } }"}'`,
@@ -174,24 +174,24 @@ async function doEnsureCaido(context: ToolContext): Promise<void> {
     `fi`,
     ``,
     `# Authenticate as guest`,
-    `AUTH=$(echo '${authB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
+    `AUTH=$(echo '${authB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" --data @-)`,
     `TOKEN=$(echo "$AUTH" | grep -Eo '"accessToken":"[^"]*"' | cut -d'"' -f4 || echo "")`,
     `if [ -z "$TOKEN" ]; then echo "needs_start" && exit 0; fi`,
     `printf '%s' "$TOKEN" > "$TOKEN_FILE"`,
     ``,
     `# Find or create the "hackerai" project`,
-    `PROJECTS=$(echo '${listProjectsB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
+    `PROJECTS=$(echo '${listProjectsB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
     `PROJECT_ID=$(echo "$PROJECTS" | grep -o '"id":"[^"]*","name":"hackerai"' | grep -Eo '"id":"[^"]*"' | cut -d'"' -f4 || echo "")`,
     `if [ -z "$PROJECT_ID" ]; then`,
-    `  CREATE=$(echo '${createB64}' | base64 -d | curl -sL -X POST "$CAIDO_API/graphql" \\`,
+    `  CREATE=$(echo '${createB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
     `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
     `  PROJECT_ID=$(echo "$CREATE" | grep -Eo '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")`,
     `fi`,
     `if [ -n "$PROJECT_ID" ]; then`,
     `  SELECT_BODY='{"query":"mutation { selectProject(id: \\"'"$PROJECT_ID"'\\"){ currentProject { project { id } } } }"}'`,
-    `  echo "$SELECT_BODY" | curl -sL -X POST "$CAIDO_API/graphql" \\`,
+    `  echo "$SELECT_BODY" | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
     `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \\`,
     `    --data @- >/dev/null 2>&1 || true`,
     `fi`,
@@ -336,12 +336,43 @@ async function exportCaidoUiUrl(
     });
 }
 
-/** Add missing quotes around HTTPQL regex values (e.g. `.regex:foo` → `.regex:"foo"`). */
-function fixHttpqlQuoting(filter: string): string {
-  return filter.replace(
+/**
+ * Fix common HTTPQL mistakes:
+ * - Add missing quotes around regex values (`.regex:foo` → `.regex:"foo"`)
+ * - Rewrite `.eq:` on text fields to `.regex:"value"` (text fields don't support .eq)
+ */
+const HTTPQL_TEXT_FIELDS = new Set([
+  "ext",
+  "host",
+  "method",
+  "path",
+  "query",
+  "raw",
+]);
+
+export function fixHttpqlQuoting(filter: string): string {
+  let fixed = filter;
+
+  // Rewrite text field .eq/.ne to .regex (HTTPQL only supports regex for text fields)
+  // e.g. req.method.eq:POST → req.method.regex:"POST"
+  //      resp.raw.ne:error  → resp.raw.ne is not valid, but .regex works
+  fixed = fixed.replace(
+    /\b(req|resp)\.(\w+)\.eq:([^"\s&|)]+)/g,
+    (_match, prefix, field, value) => {
+      if (HTTPQL_TEXT_FIELDS.has(field)) {
+        return `${prefix}.${field}.regex:"${value}"`;
+      }
+      return _match;
+    },
+  );
+
+  // Add missing quotes around regex values
+  fixed = fixed.replace(
     /\.regex:([^"\s][^\s)]*)/g,
     (_match, value) => `.regex:"${value}"`,
   );
+
+  return fixed;
 }
 
 const SORT_MAPPING: Record<string, string> = {
@@ -363,6 +394,13 @@ function getBaseUrl(): string {
  * Execute a Caido GraphQL query by running curl on the sandbox.
  * Uses base64 to pass JSON body safely through shell without escaping issues.
  */
+/**
+ * Maximum number of retries for transient Caido connection failures (exit 56).
+ * Caido on macOS can misroute requests to its proxy dispatcher instead of the
+ * GraphQL API handler, especially right after setup or under concurrent load.
+ */
+const GRAPHQL_MAX_RETRIES = 2;
+
 async function runGql(
   context: ToolContext,
   query: string,
@@ -372,62 +410,96 @@ async function runGql(
 
   const { sandbox } = await context.sandboxManager.getSandbox();
   const baseUrl = getBaseUrl();
+  const options = buildSandboxCommandOptions(sandbox);
 
   const body = JSON.stringify({ query, variables: variables ?? {} });
   // base64-encode the body to avoid any shell escaping issues
   const bodyB64 = Buffer.from(body).toString("base64");
 
-  const cmd =
-    `TOKEN=$(cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo "")\n` +
-    `echo '${bodyB64}' | base64 -d | curl -sL -X POST ${baseUrl}/graphql \\\n` +
-    `  -H "Content-Type: application/json" \\\n` +
-    `  \${TOKEN:+-H "Authorization: Bearer \${TOKEN}"} \\\n` +
-    `  --connect-timeout 10 --max-time 15 \\\n` +
-    `  --data @-`;
+  // Write body to a temp file instead of piping through stdin.
+  // On macOS with Caido Desktop installed, piping via `echo | base64 -d | curl --data @-`
+  // can cause Caido to misroute the request to its proxy dispatcher (exit 56).
+  // Using a temp file ensures curl sends a clean direct POST to the API.
+  const buildCmd = (verbose: boolean) => {
+    const curlFlags = verbose ? "-v" : "-s";
+    return [
+      // Clear any proxy env vars that could interfere with direct API calls
+      `unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy 2>/dev/null`,
+      `TOKEN=$(cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo "")`,
+      `BODY_FILE=$(mktemp)`,
+      `echo '${bodyB64}' | base64 -d > "$BODY_FILE"`,
+      `curl ${curlFlags} -X POST ${baseUrl}/graphql \\`,
+      `  --noproxy '*' \\`,
+      `  -H "Content-Type: application/json" \\`,
+      `  \${TOKEN:+-H "Authorization: Bearer \${TOKEN}"} \\`,
+      `  --connect-timeout 10 --max-time 15 \\`,
+      `  -d @"$BODY_FILE"`,
+      `CURL_EXIT=$?`,
+      `rm -f "$BODY_FILE"`,
+      `exit $CURL_EXIT`,
+    ].join("\n");
+  };
 
-  const options = buildSandboxCommandOptions(sandbox);
-  const result = await sandbox.commands.run(cmd, options);
+  for (let attempt = 0; attempt <= GRAPHQL_MAX_RETRIES; attempt++) {
+    const isRetry = attempt > 0;
+    // Use verbose curl on retries to capture HTTP-level diagnostics
+    const useVerbose = isRetry;
+    const cmd = buildCmd(useVerbose);
 
-  const stdout = result.stdout.trim();
+    const result = await sandbox.commands.run(cmd, options);
 
-  // Check for real curl errors (empty stdout + connection error in stderr/stdout)
-  if (!stdout) {
-    const msg = result.stderr || result.stdout;
-    if (msg.includes("Connection refused") || msg.includes("curl: (7)")) {
+    // curl -v writes HTTP trace to stderr, response body to stdout (same as -s)
+    const stdout = result.stdout.trim();
+
+    if (!stdout) {
+      const msg = result.stderr || result.stdout;
+
+      // Retry on exit 56 (server closed connection) — likely proxy misroute
+      if (result.exitCode === 56 && attempt < GRAPHQL_MAX_RETRIES) {
+        // Small delay before retry to let Caido settle
+        await new Promise((r) => setTimeout(r, 500));
+        continue;
+      }
+
+      if (msg.includes("Connection refused") || msg.includes("curl: (7)")) {
+        throw new Error(
+          `Caido is not reachable at ${baseUrl}. Check ${CAIDO_LOG} for errors.`,
+        );
+      }
       throw new Error(
-        `Caido is not reachable at ${baseUrl}. Check ${CAIDO_LOG} for errors.`,
+        `No response from Caido (exit ${result.exitCode}): ${msg || "empty output"}`,
       );
     }
-    throw new Error(
-      `No response from Caido (exit ${result.exitCode}): ${msg || "empty output"}`,
-    );
-  }
 
-  // Parse JSON — if stdout is non-empty, curl succeeded regardless of exit code.
-  // Caido may return HTML (broken DB page) instead of JSON — detect and trigger restart.
-  let json: { data?: unknown; errors?: unknown[] };
-  try {
-    json = JSON.parse(stdout);
-  } catch {
-    if (isCaidoBroken(stdout)) {
-      await invalidateAndKillCaido(context);
+    // Parse JSON — if stdout is non-empty, curl succeeded regardless of exit code.
+    // Caido may return HTML (broken DB page) instead of JSON — detect and trigger restart.
+    let json: { data?: unknown; errors?: unknown[] };
+    try {
+      json = JSON.parse(stdout);
+    } catch {
+      if (isCaidoBroken(stdout)) {
+        await invalidateAndKillCaido(context);
+        throw new Error(
+          "Caido proxy database error — will auto-restart on next request",
+        );
+      }
       throw new Error(
-        "Caido proxy database error — will auto-restart on next request",
+        `Caido returned non-JSON response: ${stdout.slice(0, 200)}`,
       );
     }
-    throw new Error(
-      `Caido returned non-JSON response: ${stdout.slice(0, 200)}`,
-    );
+
+    if (json!.errors?.length) {
+      const errStr = JSON.stringify(json!.errors);
+      if (isCaidoBroken(errStr)) {
+        await invalidateAndKillCaido(context);
+      }
+      throw new Error(`Caido GraphQL errors: ${errStr}`);
+    }
+    return json!.data;
   }
 
-  if (json.errors?.length) {
-    const errStr = JSON.stringify(json.errors);
-    if (isCaidoBroken(errStr)) {
-      await invalidateAndKillCaido(context);
-    }
-    throw new Error(`Caido GraphQL errors: ${errStr}`);
-  }
-  return json.data;
+  // Unreachable, but TypeScript needs it
+  throw new Error(`Caido GraphQL failed after ${GRAPHQL_MAX_RETRIES} retries`);
 }
 
 // ─── list_requests ────────────────────────────────────────────────────────────
