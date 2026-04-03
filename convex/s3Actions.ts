@@ -68,7 +68,7 @@ export const generateS3UploadUrlAction = action({
       internal.fileStorage.getUserStorageUsage,
       { userId },
     );
-    if (storageUsage && storageUsage.availableBytes <= 0) {
+    if (storageUsage.availableBytes <= 0) {
       const usedGB = (storageUsage.usedBytes / (1024 * 1024 * 1024)).toFixed(2);
       throw new ConvexError({
         code: "STORAGE_LIMIT_EXCEEDED",
