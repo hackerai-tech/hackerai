@@ -221,15 +221,6 @@ export default defineSchema({
     .index("by_user_and_status", ["user_id", "status"])
     .index("by_status_and_created_at", ["status", "created_at"]),
 
-  // Tracks aggregate migration state per user
-  // Version 0 (default/missing) = no aggregates migrated
-  // Version 1 = file count aggregate available
-  user_aggregate_state: defineTable({
-    user_id: v.string(),
-    version: v.number(),
-    updated_at: v.number(),
-  }).index("by_user_id", ["user_id"]),
-
   // Per-request usage logs for the usage dashboard
   usage_logs: defineTable({
     user_id: v.string(),
