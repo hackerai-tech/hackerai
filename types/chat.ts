@@ -48,9 +48,8 @@ export function getCodexSubModel(model: string): string | undefined {
 
 export function isSelectedModel(value: string | null): value is SelectedModel {
   return (
-    value !== null &&
-    ((SELECTABLE_MODELS as readonly string[]).includes(value) ||
-      isCodexLocal(value))
+    value !== null && (SELECTABLE_MODELS as readonly string[]).includes(value)
+    // || isCodexLocal(value)
   );
 }
 
