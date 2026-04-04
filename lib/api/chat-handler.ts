@@ -549,6 +549,11 @@ export const createChatHandler = (
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
+          const isAutoModel = [
+            "ask-model",
+            "ask-model-free",
+            "agent-model",
+          ].includes(selectedModel);
           const fallbackModel =
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
 
@@ -798,7 +803,11 @@ export const createChatHandler = (
             result = await createStream(selectedModel);
           } catch (error) {
             // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback
-            if (isProviderApiError(error) && !isRetryWithFallback) {
+            if (
+              isProviderApiError(error) &&
+              !isRetryWithFallback &&
+              isAutoModel
+            ) {
               nextJsAxiomLogger.error(
                 "Provider API error, retrying with fallback",
                 {
@@ -858,8 +867,8 @@ export const createChatHandler = (
                     },
                   );
 
-                  // Retry with fallback model if not already retrying
-                  if (!isRetryWithFallback && !isAborted) {
+                  // Retry with fallback model if not already retrying (only for auto models)
+                  if (!isRetryWithFallback && !isAborted && isAutoModel) {
                     isRetryWithFallback = true;
                     lastStepInputTokens = 0;
                     stoppedDueToTokenExhaustion = false;
