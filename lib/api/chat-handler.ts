@@ -793,8 +793,7 @@ export const createChatHandler = (
                     ...extractErrorDetails(error),
                   });
                 }
-                // Refund credits on streaming errors (idempotent - only refunds once)
-                await usageRefundTracker.refund();
+                // No refund on streaming errors - usage is still charged
               },
             });
 
@@ -1341,8 +1340,7 @@ export const createChatHandler = (
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
 
-      // Refund credits if any were deducted (idempotent - only refunds once)
-      await usageRefundTracker.refund();
+      // No refund on errors - usage is still charged
 
       // Handle ChatSDKErrors (including authentication errors)
       if (error instanceof ChatSDKError) {
