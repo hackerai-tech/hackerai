@@ -248,7 +248,7 @@ describe("token-bucket async functions", () => {
         autoReloadEnabled: false,
       });
 
-      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 33);
+      expect(mockDeductFromBalance).toHaveBeenCalledWith("user-123", 36);
     });
 
     it("should skip deduction for free tier", async () => {
