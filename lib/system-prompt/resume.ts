@@ -23,6 +23,12 @@ but you may be missing details from the earlier conversation. If the user says "
 resume the task where you left off. Consult the transcript file on the sandbox if you need to recover \
 specific details from the earlier conversation.
 </resume_context>`;
+  } else if (finishReason === "preemptive-timeout") {
+    return `<resume_context>
+Your previous response was stopped because the streaming duration exceeded the server time limit. \
+This is a normal operational limit, not an error. The conversation is intact and your work is preserved. \
+Resume the task exactly where you left off without repeating what was already done.
+</resume_context>`;
   }
 
   return "";

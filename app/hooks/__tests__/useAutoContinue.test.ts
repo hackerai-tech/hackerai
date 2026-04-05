@@ -99,7 +99,7 @@ describe("useAutoContinue", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith(
-      { text: "continue" },
+      { text: "continue", metadata: { isAutoContinue: true } },
       {
         body: {
           mode: "agent",
@@ -133,7 +133,7 @@ describe("useAutoContinue", () => {
 
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage).toHaveBeenCalledWith(
-      { text: "continue" },
+      { text: "continue", metadata: { isAutoContinue: true } },
       {
         body: expect.objectContaining({
           isAutoContinue: true,

@@ -388,9 +388,22 @@ export const useChatHandlers = ({
         },
       });
     } else {
-      // For temporary chats, send all messages except the last assistant message
+      // For temporary chats, send all messages except the last assistant message.
+      // Walk backwards past any auto-continue user+assistant pairs to find the
+      // last real user message, so regenerate targets the original request.
+      let sliceEnd = messages.length - 1;
+      while (sliceEnd >= 2) {
+        const userMsg = messages[sliceEnd - 1];
+        if (userMsg?.role === "user" && userMsg.metadata?.isAutoContinue) {
+          sliceEnd -= 2;
+        } else {
+          break;
+        }
+      }
       const messagesForRegenerate =
-        messages && messages.length > 0 ? messages.slice(0, -1) : messages;
+        messages && messages.length > 0
+          ? messages.slice(0, sliceEnd)
+          : messages;
       regenerate({
         body: {
           mode: chatMode,
