@@ -340,6 +340,21 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
   }
 
   /**
+   * Convert Unix-style paths (e.g. /tmp/hackerai-upload/file.png) to
+   * Windows-native paths when running on a Windows sandbox.
+   * Paths are generated before the sandbox platform is known, so they
+   * always arrive in Unix form and need translating here.
+   */
+  private toNativePath(path: string): string {
+    if (!this.isWindows()) return path;
+    if (path.startsWith("/tmp/")) {
+      return "C:\\temp" + path.slice(4).replace(/\//g, "\\");
+    }
+    // Translate any remaining absolute Unix paths to Windows-style
+    return path.replace(/\//g, "\\");
+  }
+
+  /**
    * Escape a value for the target platform's shell.
    * Uses double quotes on Windows (cmd.exe), single quotes on POSIX.
    */
@@ -408,10 +423,11 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
   files = {
     write: async (
-      path: string,
+      rawPath: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
-      const fileName = path.split("/").pop() || "file";
+      const path = this.toNativePath(rawPath);
+      const fileName = path.split(/[/\\]/).pop() || "file";
 
       // Ensure parent directory exists
       const dir = CentrifugoSandbox.parentDir(path);
@@ -526,8 +542,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       }
     },
 
-    read: async (path: string): Promise<string> => {
-      const fileName = path.split("/").pop() || "file";
+    read: async (rawPath: string): Promise<string> => {
+      const path = this.toNativePath(rawPath);
+      const fileName = path.split(/[/\\]/).pop() || "file";
       // cmd.exe uses `type`, POSIX uses `cat`
       const escaped = this.isWindows()
         ? this.escapeForTarget(path)
@@ -542,8 +559,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       return result.stdout;
     },
 
-    remove: async (path: string): Promise<void> => {
-      const fileName = path.split("/").pop() || "file";
+    remove: async (rawPath: string): Promise<void> => {
+      const path = this.toNativePath(rawPath);
+      const fileName = path.split(/[/\\]/).pop() || "file";
       const escaped = this.isWindows()
         ? this.escapeForTarget(path)
         : CentrifugoSandbox.escapePath(path);
@@ -560,8 +578,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       }
     },
 
-    list: async (path: string = "/"): Promise<{ name: string }[]> => {
-      const dirName = path.split("/").pop() || path;
+    list: async (rawPath: string = "/"): Promise<{ name: string }[]> => {
+      const path = this.toNativePath(rawPath);
+      const dirName = path.split(/[/\\]/).pop() || path;
       const escaped = this.isWindows()
         ? this.escapeForTarget(path)
         : CentrifugoSandbox.escapePath(path);
@@ -587,11 +606,12 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         });
     },
 
-    downloadFromUrl: async (url: string, path: string): Promise<void> => {
+    downloadFromUrl: async (url: string, rawPath: string): Promise<void> => {
       validateDownloadUrl(url);
+      const path = this.toNativePath(rawPath);
       const dir = CentrifugoSandbox.parentDir(path);
       const httpClient = await this.detectHttpClient();
-      const fileName = path.split("/").pop() || "file";
+      const fileName = path.split(/[/\\]/).pop() || "file";
 
       // Use platform-aware escaping: double quotes on Windows (cmd.exe),
       // single quotes on POSIX to prevent shell expansion
@@ -638,10 +658,11 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     },
 
     uploadToUrl: async (
-      path: string,
+      rawPath: string,
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
+      const path = this.toNativePath(rawPath);
       const httpClient = await this.detectHttpClient();
 
       if (httpClient === "wget") {
@@ -656,7 +677,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         }
       }
 
-      const fileName = path.split("/").pop() || "file";
+      const fileName = path.split(/[/\\]/).pop() || "file";
 
       // Use platform-aware escaping for Windows (cmd.exe) vs POSIX
       const escapedPath = this.isWindows()
