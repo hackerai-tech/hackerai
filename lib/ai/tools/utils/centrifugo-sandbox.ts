@@ -611,7 +611,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       const path = this.toNativePath(rawPath);
       const dir = CentrifugoSandbox.parentDir(path);
       const httpClient = await this.detectHttpClient();
-      const fileName = path.split("/").pop() || "file";
+      const fileName = path.split(/[/\\]/).pop() || "file";
 
       // Use platform-aware escaping: double quotes on Windows (cmd.exe),
       // single quotes on POSIX to prevent shell expansion
