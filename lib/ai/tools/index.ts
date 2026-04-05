@@ -131,6 +131,9 @@ export const createTools = (
       web_search: createWebSearch(context),
     }),
     ...(caidoEnabled && createProxyTools(context)),
+    ...(process.env.JINA_API_KEY && {
+      open_url: createOpenUrlTool(),
+    }),
   };
 
   // Filter tools based on mode
