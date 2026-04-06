@@ -415,14 +415,16 @@ export const createBillingPortalSession = action({
 
       const stripe = getStripe();
 
-      const sessionParams: Stripe.BillingPortal.SessionCreateParams = {
+      const sessionParams: Parameters<
+        typeof stripe.billingPortal.sessions.create
+      >[0] = {
         customer: stripeCustomerId,
         return_url: args.baseUrl,
       };
 
       // If flow=payment_method, direct user to update payment method
       if (args.flow === "payment_method") {
-        sessionParams.flow_data = {
+        sessionParams!.flow_data = {
           type: "payment_method_update",
         };
       }
