@@ -6,8 +6,7 @@ import { template } from "./template";
 config({ path: resolve(__dirname, "../.env.local") });
 
 async function main() {
-  await Template.build(template, {
-    alias: "terminal-agent-sandbox",
+  await Template.build(template, "terminal-agent-sandbox", {
     cpuCount: 4,
     memoryMB: 2048,
     onBuildLogs: defaultBuildLogger(),

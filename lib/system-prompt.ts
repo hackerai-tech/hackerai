@@ -87,7 +87,33 @@ before coming back to the user.\n"
     : "";
 };
 
-const getDefaultSandboxEnvironmentSection = (): string => `<sandbox_environment>
+const getProxySection = (
+  caidoEnabled: boolean,
+  isLocalSandbox: boolean,
+): string => {
+  if (!caidoEnabled) {
+    return `<proxy_interception>
+Caido proxy is DISABLED by the user. Proxy tools (list_requests, send_request, etc.) are not available.
+All HTTP requests from terminal commands go directly to the target without interception.
+</proxy_interception>`;
+  }
+  const uiLine = isLocalSandbox
+    ? `- The user can view captured traffic in Caido's UI at http://127.0.0.1:48080 (local sandbox only).`
+    : `- The Caido proxy UI is NOT accessible to users in this environment. NEVER share any proxy URL, sandbox URL, or Caido URL. Users interact with proxy data exclusively through the proxy tools.`;
+  const runningLine = `Caido CLI — a modern web security proxy — starts automatically when proxy tools are first used. Once started, it intercepts all HTTP/HTTPS traffic.`;
+  return `<proxy_interception>
+${runningLine}
+- Use proxy tools (list_requests, view_request, send_request, repeat_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
+- If you see proxy errors (50x HTML error pages) when sending requests, it usually means the target URL, host, or port is incorrect — ignore Caido-generated error pages.
+- All terminal commands automatically route through the proxy via HTTP_PROXY env vars.
+${uiLine}
+- If the user experiences proxy-related issues or doesn't need traffic interception, they can disable the Caido proxy in Settings > Agent.
+</proxy_interception>`;
+};
+
+const getDefaultSandboxEnvironmentSection = (
+  caidoEnabled: boolean,
+): string => `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
 
 If the user wants to connect HackerAI to their local machine, they have two options:
@@ -108,11 +134,14 @@ Development Environment:
 - Golang 1.24.2 (commands: go)
 
 ${PREINSTALLED_PENTESTING_TOOLS}
+
+${getProxySection(caidoEnabled, false)}
 </sandbox_environment>`;
 
 const getAgentModeSection = (
   mode: ChatMode,
   sandboxContext?: string | null,
+  caidoEnabled: boolean = true,
 ): string => {
   const agentSpecificNote =
     mode === "agent"
@@ -212,7 +241,7 @@ When running security scans:
 - Chain scan results intelligently — use output from reconnaissance to inform targeted exploitation
 </scan_methodology>
 
-${sandboxContext || getDefaultSandboxEnvironmentSection()}
+${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled, true) : getDefaultSandboxEnvironmentSection(caidoEnabled)}
 
 ${getProductQuestionsSection()}
 
@@ -334,7 +363,8 @@ The current date is ${currentDateTime}.`;
   if (mode === "ask") {
     sections.push(getAskModeSection(modelName, subscription, isTemporary));
   } else {
-    sections.push(getAgentModeSection(mode, sandboxContext));
+    const caidoEnabled = userCustomization?.caido_enabled ?? true;
+    sections.push(getAgentModeSection(mode, sandboxContext, caidoEnabled));
   }
 
   sections.push(getSecurityInstructions());

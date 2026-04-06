@@ -21,17 +21,29 @@ import {
   getEffectiveGuardrails,
   checkCommandGuardrails,
 } from "./utils/guardrails";
+import { CAIDO_DEFAULTS, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
+import { ensureCaido } from "./utils/proxy-manager";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
-  const { sandboxManager, writer, backgroundProcessTracker, guardrailsConfig } =
-    context;
+  const {
+    sandboxManager,
+    writer,
+    backgroundProcessTracker,
+    guardrailsConfig,
+    caidoEnabled,
+  } = context;
 
   // Parse user guardrail configuration and get effective guardrails
   const userGuardrailConfig = parseGuardrailConfig(guardrailsConfig);
   const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
+
+  // Caido proxy env vars — injected into every command on non-E2B sandboxes when enabled.
+  const caidoEnvVars = caidoEnabled
+    ? buildCaidoProxyEnvVars(CAIDO_DEFAULTS)
+    : undefined;
 
   return tool({
     description: `Execute a command on behalf of the user.
@@ -236,6 +248,22 @@ If you are generating files:
         return executeCommand(sandbox);
 
         async function executeCommand(sandboxInstance: typeof sandbox) {
+          // Ensure Caido proxy is running + authenticated before commands route through it.
+          // This is a no-op after the first successful call (cached per session).
+          // If setup fails, clear caidoEnvVars so commands don't route to a dead proxy.
+          let effectiveCaidoEnvVars = caidoEnvVars;
+          if (effectiveCaidoEnvVars) {
+            try {
+              await ensureCaido(context);
+            } catch (e) {
+              console.warn(
+                "[Terminal Command] Caido setup failed, disabling proxy env vars for this command:",
+                e,
+              );
+              effectiveCaidoEnvVars = undefined;
+            }
+          }
+
           const terminalSessionId = `terminal-${randomUUID()}`;
           let outputCounter = 0;
 
@@ -378,6 +406,7 @@ If you are generating files:
                     onStdout: handler!.stdout,
                     onStderr: handler!.stderr,
                   },
+              effectiveCaidoEnvVars,
             );
 
             // Determine if an error is a permanent command failure (don't retry)

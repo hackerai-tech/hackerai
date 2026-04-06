@@ -20,10 +20,12 @@ export function buildSandboxCommandOptions(
     onStdout?: (data: string) => void;
     onStderr?: (data: string) => void;
   },
+  extraEnvVars?: Record<string, string>,
 ): {
   timeoutMs: number;
   user?: "root";
   cwd?: string;
+  envVars?: Record<string, string>;
   onStdout?: (data: string) => void;
   onStderr?: (data: string) => void;
 } {
@@ -35,6 +37,7 @@ export function buildSandboxCommandOptions(
       user: "root" as const,
       cwd: "/home/user",
     }),
+    ...(extraEnvVars && { envVars: extraEnvVars }),
     ...(handlers && {
       onStdout: handlers.onStdout,
       onStderr: handlers.onStderr,

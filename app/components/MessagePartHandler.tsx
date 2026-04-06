@@ -9,6 +9,7 @@ import { WebToolHandler } from "./tools/WebToolHandler";
 import { TodoToolHandler } from "./tools/TodoToolHandler";
 import { MemoryToolHandler } from "./tools/MemoryToolHandler";
 import { NotesToolHandler } from "./tools/NotesToolHandler";
+import { ProxyToolHandler } from "./tools/ProxyToolHandler";
 import { GetTerminalFilesHandler } from "./tools/GetTerminalFilesHandler";
 import { SummarizationHandler } from "./tools/SummarizationHandler";
 import { CodexToolHandler } from "./tools/CodexToolHandler";
@@ -241,6 +242,47 @@ export const MessagePartHandler = memo(function MessagePartHandler({
     case "tool-delete_note":
       return (
         <NotesToolHandler part={part} status={status} toolName="delete_note" />
+      );
+
+    case "tool-list_requests":
+      return (
+        <ProxyToolHandler
+          part={part}
+          status={status}
+          toolName="list_requests"
+        />
+      );
+    case "tool-view_request":
+      return (
+        <ProxyToolHandler part={part} status={status} toolName="view_request" />
+      );
+    case "tool-send_request":
+      return (
+        <ProxyToolHandler part={part} status={status} toolName="send_request" />
+      );
+    case "tool-repeat_request":
+      return (
+        <ProxyToolHandler
+          part={part}
+          status={status}
+          toolName="repeat_request"
+        />
+      );
+    case "tool-scope_rules":
+      return (
+        <ProxyToolHandler part={part} status={status} toolName="scope_rules" />
+      );
+    case "tool-list_sitemap":
+      return (
+        <ProxyToolHandler part={part} status={status} toolName="list_sitemap" />
+      );
+    case "tool-view_sitemap_entry":
+      return (
+        <ProxyToolHandler
+          part={part}
+          status={status}
+          toolName="view_sitemap_entry"
+        />
       );
 
     default:
