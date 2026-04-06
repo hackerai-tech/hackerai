@@ -174,6 +174,35 @@ const AgentsTab = () => {
               />
             </div>
           </div>
+
+          <div className="flex items-center justify-between py-3 border-b">
+            <div className="flex-1 pr-4">
+              <Label
+                htmlFor="caido-proxy"
+                className="font-medium cursor-pointer"
+              >
+                Caido Proxy
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                Intercept and inspect all HTTP/HTTPS traffic through Caido
+              </p>
+            </div>
+            <Switch
+              id="caido-proxy"
+              checked={userCustomization?.caido_enabled ?? true}
+              onCheckedChange={async (checked) => {
+                try {
+                  await saveCustomization({ caido_enabled: checked });
+                  toast.success(
+                    checked ? "Caido proxy enabled" : "Caido proxy disabled",
+                  );
+                } catch {
+                  toast.error("Failed to update Caido setting");
+                }
+              }}
+              aria-label="Toggle Caido proxy"
+            />
+          </div>
         </div>
       )}
 

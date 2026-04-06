@@ -7,6 +7,7 @@ import {
 import {
   isSidebarFile,
   isSidebarTerminal,
+  isSidebarProxy,
   isSidebarWebSearch,
   type SidebarContent,
 } from "@/types/chat";
@@ -48,6 +49,9 @@ export const useSidebarNavigation = ({
           item.command === sidebarContent.command &&
           item.toolCallId === sidebarContent.toolCallId
         );
+      }
+      if (isSidebarProxy(item) && isSidebarProxy(sidebarContent)) {
+        return item.toolCallId === sidebarContent.toolCallId;
       }
       if (isSidebarFile(item) && isSidebarFile(sidebarContent)) {
         return (

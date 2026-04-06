@@ -6,10 +6,12 @@ import {
   FolderSearch,
   StickyNote,
   FileDown,
+  Radar,
 } from "lucide-react";
 import {
   isSidebarFile,
   isSidebarTerminal,
+  isSidebarProxy,
   isSidebarWebSearch,
   isSidebarNotes,
   isSidebarSharedFiles,
@@ -17,6 +19,10 @@ import {
   type NoteCategory,
 } from "@/types/chat";
 import { getShellActionLabel, formatSendInput } from "./tools/shell-tool-utils";
+import {
+  PROXY_ACTION_LABELS,
+  PROXY_COMPLETED_LABELS,
+} from "./tools/ProxyToolHandler";
 
 // ---------------------------------------------------------------------------
 // Generic helpers
@@ -109,6 +115,13 @@ export function getActionText(content: SidebarContent): string {
     return completedActionMap[content.action || "reading"];
   }
 
+  if (isSidebarProxy(content)) {
+    if (content.isExecuting) {
+      return PROXY_ACTION_LABELS[content.proxyAction] || "Proxying";
+    }
+    return PROXY_COMPLETED_LABELS[content.proxyAction] || "Executed";
+  }
+
   if (isSidebarTerminal(content)) {
     return getShellActionLabel({
       isShellTool: !!content.shellAction,
@@ -166,6 +179,7 @@ export function getSidebarIcon(content: SidebarContent): React.ReactNode {
     }
     return <Edit className={iconClass} />;
   }
+  if (isSidebarProxy(content)) return <Radar className={iconClass} />;
   if (isSidebarTerminal(content)) return <Terminal className={iconClass} />;
   if (isSidebarWebSearch(content)) return <Search className={iconClass} />;
   if (isSidebarNotes(content)) return <StickyNote className={iconClass} />;
@@ -177,6 +191,7 @@ export function getToolName(content: SidebarContent): string {
   if (isSidebarFile(content)) {
     return content.action === "searching" ? "File Search" : "Editor";
   }
+  if (isSidebarProxy(content)) return "Proxy";
   if (isSidebarTerminal(content)) return "Terminal";
   if (isSidebarWebSearch(content)) return "Search";
   if (isSidebarNotes(content)) return "Notes";
@@ -187,6 +202,11 @@ export function getToolName(content: SidebarContent): string {
 export function getDisplayTarget(content: SidebarContent): string {
   if (isSidebarFile(content)) {
     return content.path.split("/").pop() || content.path;
+  }
+  if (isSidebarProxy(content)) {
+    // Strip the tool name prefix (e.g. "send_request POST https://...") to avoid repeating the action
+    const spaceIndex = content.command.indexOf(" ");
+    return spaceIndex !== -1 ? content.command.slice(spaceIndex + 1) : "";
   }
   if (isSidebarTerminal(content)) {
     if (content.shellAction === "send" && content.input) {

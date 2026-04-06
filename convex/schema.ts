@@ -125,6 +125,7 @@ export default defineSchema({
     updated_at: v.number(),
     include_memory_entries: v.optional(v.boolean()),
     guardrails_config: v.optional(v.string()),
+    caido_enabled: v.optional(v.boolean()),
     extra_usage_enabled: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
 

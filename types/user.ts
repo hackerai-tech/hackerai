@@ -5,6 +5,7 @@ export interface UserCustomization {
   readonly traits?: string;
   readonly additional_info?: string;
   readonly include_memory_entries?: boolean;
+  readonly caido_enabled?: boolean;
   readonly updated_at: number;
   readonly extra_usage_enabled?: boolean;
 }
