@@ -41,7 +41,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   const effectiveGuardrails = getEffectiveGuardrails(userGuardrailConfig);
 
   // Caido proxy env vars — injected into every command on non-E2B sandboxes when enabled.
-  const caidoEnvVars = caidoEnabled
+  // Permanently disabled on first setup failure (e.g. Windows sandbox) to avoid
+  // retrying and logging warnings on every subsequent command.
+  let caidoEnvVars = caidoEnabled
     ? buildCaidoProxyEnvVars(CAIDO_DEFAULTS)
     : undefined;
 
@@ -250,17 +252,16 @@ If you are generating files:
         async function executeCommand(sandboxInstance: typeof sandbox) {
           // Ensure Caido proxy is running + authenticated before commands route through it.
           // This is a no-op after the first successful call (cached per session).
-          // If setup fails, clear caidoEnvVars so commands don't route to a dead proxy.
-          let effectiveCaidoEnvVars = caidoEnvVars;
-          if (effectiveCaidoEnvVars) {
+          // If setup fails, permanently disable proxy env vars for all future commands.
+          if (caidoEnvVars) {
             try {
               await ensureCaido(context);
             } catch (e) {
               console.warn(
-                "[Terminal Command] Caido setup failed, disabling proxy env vars for this command:",
-                e,
+                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
+                e instanceof Error ? e.message : e,
               );
-              effectiveCaidoEnvVars = undefined;
+              caidoEnvVars = undefined;
             }
           }
 
@@ -406,7 +407,7 @@ If you are generating files:
                     onStdout: handler!.stdout,
                     onStderr: handler!.stderr,
                   },
-              effectiveCaidoEnvVars,
+              caidoEnvVars,
             );
 
             // Determine if an error is a permanent command failure (don't retry)

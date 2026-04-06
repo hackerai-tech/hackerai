@@ -335,7 +335,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
    * Whether the target machine is Windows in dangerous mode.
    * Docker containers are always Linux regardless of host OS.
    */
-  private isWindows(): boolean {
+  isWindows(): boolean {
     return this.connectionInfo.osInfo?.platform === "win32";
   }
 
