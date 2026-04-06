@@ -33,12 +33,19 @@ const sanitizeFilenameForTerminal = (filename: string): string => {
   const name = hasExtension ? basename.substring(0, lastDotIndex) : basename;
   const ext = hasExtension ? basename.substring(lastDotIndex) : "";
 
-  const sanitized =
+  let sanitized =
     name
       .replace(/\s+/g, "_")
       .replace(/[^\w.-]/g, "")
       .replace(/_{2,}/g, "_")
       .replace(/^[._-]+|[._-]+$/g, "") || "file";
+
+  // Truncate long filenames to stay within Windows MAX_PATH (260 chars).
+  // Upload base path + separator ≈ 30 chars, so cap the name portion.
+  const MAX_NAME_LEN = 80;
+  if (sanitized.length > MAX_NAME_LEN) {
+    sanitized = sanitized.slice(0, MAX_NAME_LEN);
+  }
 
   return sanitized + ext.replace(/[^\w.]/g, "");
 };

@@ -68,6 +68,10 @@ async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
  * Uses a Promise-based lock: parallel tool calls await the same setup instead of racing.
  */
 export async function ensureCaido(context: ToolContext): Promise<void> {
+  // Caido setup uses POSIX shell scripts — skip on Windows sandboxes
+  const { sandbox } = await context.sandboxManager.getSandbox();
+  if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) return;
+
   const existing = caidoLock.get(context.sandboxManager);
   if (existing) return existing;
 
