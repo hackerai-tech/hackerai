@@ -567,6 +567,7 @@ export const createChatHandler = (
             "ask-model",
             "ask-model-free",
             "agent-model",
+            "agent-model-free",
           ].includes(selectedModel);
           const fallbackModel =
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
