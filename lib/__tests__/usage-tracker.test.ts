@@ -195,8 +195,8 @@ describe("UsageTracker", () => {
       tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
 
       const cost = tracker.computeCostDollars("model-default");
-      // 1M input tokens at $0.50/1M * 1.1x = 5500 points / 10000 = 0.55
-      expect(cost).toBe(0.55);
+      // 1M input tokens at $0.50/1M * 1.2x = 6000 points / 10000 = 0.60
+      expect(cost).toBe(0.6);
     });
   });
 

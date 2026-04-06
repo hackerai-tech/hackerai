@@ -111,6 +111,15 @@ export interface SidebarTerminal {
   input?: string;
 }
 
+export interface SidebarProxy {
+  /** The proxy tool name, e.g. "list_requests", "send_request" */
+  proxyAction: string;
+  command: string;
+  output: string;
+  isExecuting: boolean;
+  toolCallId: string;
+}
+
 export interface WebSearchResult {
   title: string;
   url: string;
@@ -187,6 +196,7 @@ export interface SidebarSharedFiles {
 export type SidebarContent =
   | SidebarFile
   | SidebarTerminal
+  | SidebarProxy
   | SidebarWebSearch
   | SidebarNotes
   | SidebarSharedFiles;
@@ -200,7 +210,13 @@ export const isSidebarFile = (
 export const isSidebarTerminal = (
   content: SidebarContent,
 ): content is SidebarTerminal => {
-  return "command" in content;
+  return "command" in content && !("proxyAction" in content);
+};
+
+export const isSidebarProxy = (
+  content: SidebarContent,
+): content is SidebarProxy => {
+  return "proxyAction" in content;
 };
 
 export const isSidebarWebSearch = (

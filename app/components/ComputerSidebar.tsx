@@ -15,6 +15,7 @@ import {
 import {
   isSidebarFile,
   isSidebarTerminal,
+  isSidebarProxy,
   isSidebarWebSearch,
   isSidebarNotes,
   isSidebarSharedFiles,
@@ -78,6 +79,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
       (item) =>
         isSidebarTerminal(item) &&
         item.toolCallId === sidebarContent.toolCallId,
+    );
+    return (live ?? sidebarContent) as typeof sidebarContent;
+  }, [sidebarContent, toolExecutions]);
+
+  // When showing a proxy tool, use live data from toolExecutions so streaming output updates in real time
+  const resolvedProxy = useMemo(() => {
+    if (!sidebarContent || !isSidebarProxy(sidebarContent)) return null;
+    const live = toolExecutions.find(
+      (item) =>
+        isSidebarProxy(item) && item.toolCallId === sidebarContent.toolCallId,
     );
     return (live ?? sidebarContent) as typeof sidebarContent;
   }, [sidebarContent, toolExecutions]);
@@ -172,6 +183,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
 
   const isFile = isSidebarFile(sidebarContent);
   const isTerminal = isSidebarTerminal(sidebarContent);
+  const isProxy = isSidebarProxy(sidebarContent);
   const isWebSearch = isSidebarWebSearch(sidebarContent);
   const isNotes = isSidebarNotes(sidebarContent);
   const isSharedFiles = isSidebarSharedFiles(sidebarContent);
@@ -180,12 +192,16 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
   const displayContent =
     (isFile && resolvedFile) ||
     (isTerminal && resolvedTerminal) ||
+    (isProxy && resolvedProxy) ||
     sidebarContent;
 
   const actionText = getActionText(displayContent);
   const icon = getSidebarIcon(displayContent);
   const toolName = getToolName(displayContent);
   const displayTarget = getDisplayTarget(displayContent);
+  const headerTitle = isProxy
+    ? "HackerAI\u2019s Proxy"
+    : "HackerAI\u2019s Computer";
 
   const handleClose = () => {
     closeSidebar();
@@ -209,7 +225,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
             {/* Header */}
             <div className="flex items-center gap-2 w-full">
               <div className="text-foreground text-lg font-semibold flex-1">
-                HackerAI&apos;s Computer
+                {headerTitle}
               </div>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -256,7 +272,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
               <div className="h-[36px] flex items-center justify-between px-3 w-full bg-muted/30 border-b border-border rounded-t-lg shadow-[inset_0px_1px_0px_0px_rgba(255,255,255,0.1)]">
                 {/* Title - far left */}
                 <div className="flex items-center gap-2">
-                  {isTerminal ? (
+                  {isProxy ? (
+                    <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
+                      Proxy
+                    </div>
+                  ) : isTerminal ? (
                     sidebarContent.session || sidebarContent.pid ? (
                       <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
                         {sidebarContent.session ?? `PID ${sidebarContent.pid}`}
@@ -300,7 +320,11 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           ? resolvedTerminal.output
                             ? `$ ${resolvedTerminal.command}\n${resolvedTerminal.output}`
                             : `$ ${resolvedTerminal.command}`
-                          : ""
+                          : isProxy && resolvedProxy
+                            ? resolvedProxy.output
+                              ? `$ ${resolvedProxy.command}\n${resolvedProxy.output}`
+                              : `$ ${resolvedProxy.command}`
+                            : ""
                     }
                     filename={
                       isFile
@@ -376,6 +400,19 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           isBackground={resolvedTerminal.isBackground}
                           status={
                             resolvedTerminal.isExecuting ? "streaming" : "ready"
+                          }
+                          variant="sidebar"
+                          wrap={isWrapped}
+                        />
+                      )}
+                      {isProxy && resolvedProxy && (
+                        <TerminalCodeBlock
+                          command={resolvedProxy.command}
+                          output={resolvedProxy.output}
+                          isExecuting={resolvedProxy.isExecuting}
+                          isBackground={false}
+                          status={
+                            resolvedProxy.isExecuting ? "streaming" : "ready"
                           }
                           variant="sidebar"
                           wrap={isWrapped}

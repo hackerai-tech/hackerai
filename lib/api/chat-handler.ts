@@ -416,6 +416,7 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
+            userCustomization?.caido_enabled ?? true,
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;
@@ -556,6 +557,11 @@ export const createChatHandler = (
           let streamUsage: Record<string, unknown> | undefined;
           let responseModel: string | undefined;
           let isRetryWithFallback = false;
+          const isAutoModel = [
+            "ask-model",
+            "ask-model-free",
+            "agent-model",
+          ].includes(selectedModel);
           const fallbackModel =
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
 
@@ -804,8 +810,7 @@ export const createChatHandler = (
                     ...extractErrorDetails(error),
                   });
                 }
-                // Refund credits on streaming errors (idempotent - only refunds once)
-                await usageRefundTracker.refund();
+                // No refund on streaming errors - usage is still charged
               },
             });
 
@@ -814,7 +819,11 @@ export const createChatHandler = (
             result = await createStream(selectedModel);
           } catch (error) {
             // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback
-            if (isProviderApiError(error) && !isRetryWithFallback) {
+            if (
+              isProviderApiError(error) &&
+              !isRetryWithFallback &&
+              isAutoModel
+            ) {
               nextJsAxiomLogger.error(
                 "Provider API error, retrying with fallback",
                 {
@@ -875,8 +884,8 @@ export const createChatHandler = (
                     },
                   );
 
-                  // Retry with fallback model if not already retrying
-                  if (!isRetryWithFallback && !isAborted) {
+                  // Retry with fallback model if not already retrying (only for auto models)
+                  if (!isRetryWithFallback && !isAborted && isAutoModel) {
                     isRetryWithFallback = true;
                     lastStepInputTokens = 0;
                     stoppedDueToTokenExhaustion = false;
@@ -1351,8 +1360,7 @@ export const createChatHandler = (
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
 
-      // Refund credits if any were deducted (idempotent - only refunds once)
-      await usageRefundTracker.refund();
+      // No refund on errors - usage is still charged
 
       // Handle ChatSDKErrors (including authentication errors)
       if (error instanceof ChatSDKError) {

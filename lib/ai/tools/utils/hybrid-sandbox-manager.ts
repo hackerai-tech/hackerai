@@ -353,6 +353,11 @@ export class HybridSandboxManager implements SandboxManager {
       const { platform, arch, release, hostname } = osInfo;
       const platformName = getPlatformDisplayName(platform);
 
+      const uploadPath =
+        platform === "win32"
+          ? "C:\\temp\\hackerai-upload"
+          : "/tmp/hackerai-upload";
+
       return `<sandbox_environment>
 IMPORTANT: You are connected to a LOCAL machine in DANGEROUS MODE. Commands run directly on the host OS without Docker isolation.
 
@@ -360,7 +365,7 @@ System Environment:
 - OS: ${platformName} ${release} (${arch})
 - Hostname: ${hostname}
 - Mode: DANGEROUS (no Docker isolation)
-- User attachments: /tmp/hackerai-upload
+- User attachments: ${uploadPath}
 
 Security Warning:
 - File system operations affect the host directly

@@ -209,6 +209,25 @@ RUN set -eux; \
     rm -rf /tmp/httpx_extracted /tmp/httpx.zip
 
 # ============================================================================
+# Caido CLI — Web Security Proxy (free, headless, GraphQL API)
+# ============================================================================
+RUN set -eux; \
+    arch=$(uname -m); \
+    if [ "$arch" = "x86_64" ]; then CAIDO_ARCH="x86_64"; \
+    elif [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then CAIDO_ARCH="aarch64"; \
+    else echo "Unsupported architecture: $arch" && exit 1; fi; \
+    CAIDO_VERSION=$(curl -s https://api.github.com/repos/caido/caido/releases/latest \
+      | grep '"tag_name"' | cut -d'"' -f4); \
+    echo "Installing caido-cli ${CAIDO_VERSION} for ${CAIDO_ARCH}"; \
+    wget -qO /tmp/caido-cli.tar.gz \
+      "https://caido.download/releases/${CAIDO_VERSION}/caido-cli-${CAIDO_VERSION}-linux-${CAIDO_ARCH}.tar.gz" && \
+    tar -xzf /tmp/caido-cli.tar.gz -C /tmp && \
+    chmod +x /tmp/caido-cli && \
+    mv /tmp/caido-cli /usr/local/bin/caido-cli && \
+    rm /tmp/caido-cli.tar.gz && \
+    mkdir -p /app/certs
+
+# ============================================================================
 # Create Wrapper Scripts for Python Tools
 # ============================================================================
 RUN set -eux; \
@@ -277,6 +296,7 @@ RUN set -eux; \
     which trivy && echo "✓ trivy" && \
     which zaproxy && echo "✓ zaproxy" && \
     which httpx && echo "✓ httpx" && \
+    which caido-cli && echo "✓ caido-cli" && \
     which rg && echo "✓ ripgrep" && \
     which go && echo "✓ go" && \
     which python3 && echo "✓ python3" && \
@@ -308,6 +328,3 @@ RUN apt-get clean && \
 # Default shell
 SHELL ["/bin/bash", "-c"]
 
-
-# Keep container running
-CMD ["tail", "-f", "/dev/null"]
