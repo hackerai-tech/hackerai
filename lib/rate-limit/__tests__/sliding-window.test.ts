@@ -104,4 +104,50 @@ describe("sliding-window", () => {
       }
     });
   });
+
+  describe("checkFreeAgentRateLimit", () => {
+    it("should throw error when Redis unavailable", async () => {
+      const { checkFreeAgentRateLimit } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue(null);
+
+      try {
+        await checkFreeAgentRateLimit("user-123");
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error.cause).toContain("temporarily unavailable");
+      }
+    });
+
+    it("should use fixed window for free agent users", async () => {
+      const { checkFreeAgentRateLimit } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({});
+
+      const result = await checkFreeAgentRateLimit("user-123");
+
+      expect(mockLimitFn).toHaveBeenCalled();
+      expect(result.remaining).toBe(5);
+    });
+
+    it("should throw ChatSDKError when agent rate limit exceeded", async () => {
+      const { checkFreeAgentRateLimit } = getIsolatedModule();
+
+      mockCreateRedisClient.mockReturnValue({});
+      mockLimitFn.mockResolvedValue({
+        success: false,
+        remaining: 0,
+        reset: Date.now() + 3600000,
+      });
+
+      try {
+        await checkFreeAgentRateLimit("user-123");
+        expect.fail("Should have thrown");
+      } catch (error: any) {
+        expect(error.cause).toContain("daily agent responses");
+        expect(error.cause).toContain("midnight UTC");
+        expect(error.cause).toContain("Upgrade to Pro");
+      }
+    });
+  });
 });

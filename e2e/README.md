@@ -18,7 +18,7 @@ The chat e2e tests cover core chat features, file attachments, Agent mode operat
 e2e/
 ├── chat-free.spec.ts               # Free tier simple chat tests
 ├── chat-files-pro.spec.ts         # File attachments (Pro/Ultra)
-├── chat-agent.spec.ts             # Agent mode operations (Pro/Ultra)
+├── chat-agent.spec.ts             # Agent mode operations (all tiers, cloud sandbox Pro/Ultra)
 ├── constants.ts                   # Centralized timeouts and test data
 ├── page-objects/
 │   ├── BasePage.ts                # Base page object class
@@ -73,20 +73,21 @@ e2e/
 - Remove attached files
 - Send message with file attachment
 
-**Agent Mode (Pro/Ultra):**
+**Agent Mode:**
 
 - Switch between Ask and Agent modes
 - Generate markdown description from image
 - Resize image to 100x100px
 - Perform file operations (read/write)
 - Handle multiple operations in sequence
+- Free users: local sandbox only, auto model enforced
+- Paid users: cloud sandbox + custom model selection
 
 **Free Tier Restrictions:**
 
 - Show upgrade popover when attempting file attachment
-- Show upgrade dialog when switching to Agent mode
-- Display PRO badge on Agent mode option
-- Redirect to pricing page on upgrade button click
+- Show connect dialog when switching to Agent mode without local sandbox
+- Cloud sandbox gated behind Pro badge
 - Allow text-only messages in Ask mode
 
 **Chat Title Management:**
@@ -339,7 +340,7 @@ All authentication-related components have `data-testid` attributes:
 **Chat Modes:**
 
 - Ask/Agent mode dropdown with role="button"
-- Agent mode option displays "PRO" badge for free users
+- Cloud sandbox option displays "Pro" badge for free users
 
 **Sidebar:**
 

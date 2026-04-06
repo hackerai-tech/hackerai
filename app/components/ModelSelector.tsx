@@ -7,7 +7,6 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
-  Download,
   Loader2,
   Lock,
   Monitor,
@@ -202,7 +201,6 @@ const DesktopDownloadPrompt = () => {
               : detectedPlatform?.downloadUrl || "/download"
           }
         >
-          <Download className="h-4 w-4 mr-1.5" />
           {detectedPlatform && detectedPlatform.platform !== "unknown"
             ? `Download for ${detectedPlatform.displayName}`
             : "Download desktop app"}
@@ -498,7 +496,14 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
   const selected =
     allOptions.find((opt) => opt.id === effectiveValue) ?? options[0];
 
-  const triggerLabel = isFreeUser ? "Model" : isAuto ? "Auto" : selected.label;
+  const isFreeAgent = isFreeUser && isAgentMode(mode);
+  const triggerLabel = isFreeAgent
+    ? "Auto"
+    : isFreeUser
+      ? "Model"
+      : isAuto
+        ? "Auto"
+        : selected.label;
 
   const handleAutoToggle = (checked: boolean) => {
     if (isFreeUser) {

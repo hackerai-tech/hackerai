@@ -10,7 +10,6 @@ import {
   ChevronDown,
   ChevronRight,
   Plus,
-  Download,
 } from "lucide-react";
 import {
   Popover,
@@ -23,6 +22,7 @@ import { toast } from "sonner";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 import { useTauri } from "@/app/hooks/useTauri";
 import { detectPlatform } from "@/app/download/DownloadSection";
+import { useGlobalState } from "@/app/contexts/GlobalState";
 
 interface SandboxSelectorProps {
   value: string;
@@ -47,6 +47,8 @@ export function SandboxSelector({
   const [open, setOpen] = useState(false);
   const [connectHovered, setConnectHovered] = useState(false);
   const { isTauri } = useTauri();
+  const { subscription } = useGlobalState();
+  const isFreeUser = subscription === "free";
 
   const detectedPlatform = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -91,6 +93,10 @@ export function SandboxSelector({
   const valueMatchesOption = options.some((opt) => opt.id === value);
   useEffect(() => {
     if (connections !== undefined && !valueMatchesOption && value !== "e2b") {
+      // Free users can't fall back to Cloud — leave preference as-is,
+      // the ChatInput effect will switch them to ask mode
+      if (isFreeUser) return;
+
       onChange?.("e2b");
       // Only show toast for remote disconnects, not when Desktop is hidden
       const wasHiddenDesktop = value === "desktop";
@@ -100,7 +106,15 @@ export function SandboxSelector({
         });
       }
     }
-  }, [connections, valueMatchesOption, value, onChange]);
+  }, [connections, valueMatchesOption, value, onChange, isFreeUser]);
+
+  // Auto-select first local option for free users who default to Cloud
+  useEffect(() => {
+    if (!isFreeUser || value !== "e2b" || !connections?.length) return;
+    const desktop = connections.find((c) => c.isDesktop);
+    onChange?.(desktop ? "desktop" : connections[0].connectionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isFreeUser, value, connections]);
 
   const selectedOption = options.find((opt) => opt.id === value) || options[0];
   const Icon = selectedOption?.icon || Cloud;
@@ -135,13 +149,22 @@ export function SandboxSelector({
           <button
             key={cloudOption.id}
             onClick={() => {
+              if (isFreeUser) {
+                toast.info("Cloud sandbox requires a Pro plan", {
+                  description:
+                    "Use a local sandbox or upgrade to Pro for cloud access.",
+                });
+                return;
+              }
               onChange?.(cloudOption.id);
               setOpen(false);
             }}
             className={`w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors ${
-              value === cloudOption.id
-                ? "bg-accent text-accent-foreground"
-                : "hover:bg-muted"
+              isFreeUser
+                ? "opacity-60 cursor-not-allowed"
+                : value === cloudOption.id
+                  ? "bg-accent text-accent-foreground"
+                  : "hover:bg-muted"
             }`}
           >
             <Cloud className="h-4 w-4 shrink-0" />
@@ -150,7 +173,13 @@ export function SandboxSelector({
                 {cloudOption.label}
               </div>
             </div>
-            {value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />}
+            {isFreeUser ? (
+              <span className="text-[10px] font-semibold bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                Pro
+              </span>
+            ) : (
+              value === cloudOption.id && <Check className="h-4 w-4 shrink-0" />
+            )}
           </button>
 
           {desktopOptions.map((option) => {
@@ -182,7 +211,11 @@ export function SandboxSelector({
           {!isTauri && desktopOptions.length === 0 && (
             <Popover open={connectHovered} onOpenChange={setConnectHovered}>
               <PopoverTrigger asChild>
-                <button className="w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors hover:bg-muted">
+                <button
+                  onMouseEnter={() => setConnectHovered(true)}
+                  onMouseLeave={() => setConnectHovered(false)}
+                  className="w-full flex items-center gap-2.5 p-2 rounded-md text-left transition-colors hover:bg-muted"
+                >
                   <Monitor className="h-4 w-4 shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium truncate">
@@ -196,6 +229,8 @@ export function SandboxSelector({
                 side="top"
                 sideOffset={8}
                 className="w-[240px] p-4"
+                onMouseEnter={() => setConnectHovered(true)}
+                onMouseLeave={() => setConnectHovered(false)}
               >
                 <div className="flex items-center justify-center rounded-md border bg-gradient-to-b from-muted/50 to-muted py-5 mb-3">
                   <Monitor className="h-10 w-10 text-muted-foreground/70" />
@@ -213,7 +248,6 @@ export function SandboxSelector({
                         : detectedPlatform?.downloadUrl || "/download"
                     }
                   >
-                    <Download className="h-4 w-4 mr-1.5" />
                     {detectedPlatform && detectedPlatform.platform !== "unknown"
                       ? `Download for ${detectedPlatform.displayName}`
                       : "Download desktop"}

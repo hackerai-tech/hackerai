@@ -9,12 +9,12 @@
  *    - Single monthly bucket: credits = subscription price, refills every 30 days
  *    - Supports extra usage (prepaid balance) when limits exceeded
  *
- * 2. Fixed Window (Free users - Ask mode only):
+ * 2. Fixed Window (Free users):
  *    - Simple request counting within a daily fixed window (resets at midnight UTC)
- *    - Agent mode is blocked for free users in checkRateLimit()
+ *    - Ask mode: 10/day (FREE_RATE_LIMIT_REQUESTS)
+ *    - Agent mode (local sandbox only): 5/day (FREE_AGENT_RATE_LIMIT_REQUESTS)
  */
 
-import { ChatSDKError } from "@/lib/errors";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type {
   ChatMode,
@@ -44,7 +44,10 @@ export {
 } from "./token-bucket";
 
 // Re-export sliding window functions
-export { checkFreeUserRateLimit } from "./sliding-window";
+export {
+  checkFreeUserRateLimit,
+  checkFreeAgentRateLimit,
+} from "./sliding-window";
 
 // Re-export utilities
 export { createRedisClient, formatTimeRemaining } from "./redis";
@@ -52,7 +55,10 @@ export { UsageRefundTracker } from "./refund";
 
 // Import for internal use
 import { checkTokenBucketLimit } from "./token-bucket";
-import { checkFreeUserRateLimit } from "./sliding-window";
+import {
+  checkFreeUserRateLimit,
+  checkFreeAgentRateLimit,
+} from "./sliding-window";
 
 /**
  * Check rate limit for a user.
@@ -79,12 +85,9 @@ export const checkRateLimit = async (
 ): Promise<RateLimitInfo> => {
   // Free users: fixed daily window
   if (subscription === "free") {
-    // Block agent mode for free users
     if (isAgentMode(mode)) {
-      throw new ChatSDKError(
-        "rate_limit:chat",
-        "Agent mode is not available on the free tier. Upgrade to Pro for agent mode access.",
-      );
+      // Free agent mode (local sandbox only) has a separate daily budget
+      return checkFreeAgentRateLimit(userId);
     }
     return checkFreeUserRateLimit(userId);
   }

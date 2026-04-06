@@ -64,8 +64,8 @@ Two different strategies are used based on subscription tier:
 
 **Free tier — Fixed daily window (resets at midnight UTC):**
 
-- 10 requests per day (Ask mode only, Agent mode blocked)
-- Configure via `FREE_RATE_LIMIT_REQUESTS` env var
+- Ask mode: 10 requests per day (configure via `FREE_RATE_LIMIT_REQUESTS`)
+- Agent mode (local sandbox only): 5 requests per day (configure via `FREE_AGENT_RATE_LIMIT_REQUESTS`)
 
 **Paid tiers — Cost-based token bucket (monthly, shared across all modes):**
 

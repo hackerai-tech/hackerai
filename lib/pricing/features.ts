@@ -42,13 +42,15 @@ export const PLAN_HEADERS = {
 export const freeFeatures: Array<PricingFeature> = [
   { icon: Check, text: "Access to basic AI model" },
   { icon: Check, text: "Limited responses" },
+  { icon: Check, text: "Agent mode with local sandbox" },
 ];
 
 export const proFeatures: Array<PricingFeature> = [
   { icon: Check, text: "Access to the best AI models for pentesting" },
   { icon: Check, text: "Extended limits" },
   { icon: Check, text: "File uploads" },
-  { icon: Check, text: "Agent mode with terminal" },
+  { icon: Check, text: "Cloud agents" },
+  { icon: Check, text: "Custom model selection" },
   { icon: Check, text: "Maximum context window" },
 ];
 

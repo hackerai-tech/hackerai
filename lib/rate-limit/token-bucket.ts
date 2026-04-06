@@ -167,7 +167,7 @@ export const checkTokenBucketLimit = async (
     if (subscription === "free" || monthlyLimit === 0) {
       throw new ChatSDKError(
         "rate_limit:chat",
-        "Agent mode is not available on the free tier. Upgrade to Pro for agent mode access.",
+        "Cloud sandbox is not available on the free tier. Use a local sandbox or upgrade to Pro.",
       );
     }
 

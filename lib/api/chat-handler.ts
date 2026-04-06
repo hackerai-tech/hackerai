@@ -189,10 +189,22 @@ export const createChatHandler = (
       });
 
       if (isAgentMode(mode) && subscription === "free") {
-        throw new ChatSDKError(
-          "forbidden:chat",
-          "Agent mode is only available for Pro users. Please upgrade to access this feature.",
-        );
+        // Gate 1: Free agent requires a local sandbox preference (not E2B)
+        const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
+        if (!isLocalSandbox) {
+          throw new ChatSDKError(
+            "forbidden:chat",
+            "Agent mode on the free plan requires a local sandbox. Install the desktop app or upgrade to Pro for cloud access.",
+          );
+        }
+
+        // Gate 2: Free agent must use auto model selection (no model override)
+        if (rawSelectedModel && rawSelectedModel !== "auto") {
+          throw new ChatSDKError(
+            "forbidden:chat",
+            "Custom model selection in agent mode requires a Pro plan. Free agent mode uses the default model.",
+          );
+        }
       }
 
       // Set up pre-emptive abort before Vercel timeout (moved early to cover entire request)
@@ -416,6 +428,7 @@ export const createChatHandler = (
               usageTracker.providerCost += costDollars;
               chatLogger?.getBuilder().addToolCost(costDollars);
             },
+            subscription,
           );
 
           // Helper to send file metadata via stream for resumable stream clients

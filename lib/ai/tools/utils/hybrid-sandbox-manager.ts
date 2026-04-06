@@ -1,5 +1,5 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxManager, SandboxType } from "@/types";
+import type { SandboxManager, SandboxType, SubscriptionTier } from "@/types";
 import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
 import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
@@ -51,6 +51,7 @@ export class HybridSandboxManager implements SandboxManager {
     private sandboxPreference: SandboxPreference = "e2b",
     private serviceKey: string,
     initialSandbox?: Sandbox | null,
+    private subscription?: SubscriptionTier,
   ) {
     this.sandbox = initialSandbox || null;
     const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -192,8 +193,11 @@ export class HybridSandboxManager implements SandboxManager {
   }
 
   async getSandbox(): Promise<{ sandbox: SandboxInstance }> {
-    // If preference is E2B, always use E2B
+    // If preference is E2B, always use E2B (but block for free users)
     if (this.sandboxPreference === "e2b") {
+      if (this.subscription === "free") {
+        throw new Error("Cloud sandbox requires a paid plan.");
+      }
       return this.getE2BSandbox();
     }
 
@@ -237,7 +241,14 @@ export class HybridSandboxManager implements SandboxManager {
       return { sandbox: this.sandbox! };
     }
 
-    // Fall back to E2B if no local connections available
+    // Free users cannot fall back to E2B — must use local sandbox
+    if (this.subscription === "free") {
+      throw new Error(
+        "Local sandbox disconnected. Reconnect your desktop app or upgrade to Pro for cloud sandbox.",
+      );
+    }
+
+    // Fall back to E2B if no local connections available (paid users only)
     // Record fallback info for notification
     this.pendingFallbackInfo = {
       occurred: true,

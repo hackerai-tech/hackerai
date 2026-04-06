@@ -58,3 +58,54 @@ export const checkFreeUserRateLimit = async (
     );
   }
 };
+
+/**
+ * Check rate limit for free users in agent mode (local sandbox only).
+ * Separate daily budget from ask mode. Resets at midnight UTC.
+ */
+export const checkFreeAgentRateLimit = async (
+  userId: string,
+): Promise<RateLimitInfo> => {
+  const redis = createRedisClient();
+
+  if (!redis) {
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      "Rate limiting service is temporarily unavailable. Please try again in a few moments.",
+    );
+  }
+
+  const requestLimit = parseInt(
+    process.env.FREE_AGENT_RATE_LIMIT_REQUESTS || "5",
+  );
+
+  try {
+    const ratelimit = new Ratelimit({
+      redis,
+      limiter: Ratelimit.fixedWindow(requestLimit, "1 d"),
+      prefix: "free_agent_limit",
+    });
+
+    const rateLimitKey = `${userId}:free_agent`;
+    const { success, reset, remaining } = await ratelimit.limit(rateLimitKey);
+
+    if (!success) {
+      throw new ChatSDKError(
+        "rate_limit:chat",
+        `You've used all your daily agent responses. Daily responses reset at midnight UTC.\n\nUpgrade to Pro for higher limits and cloud sandbox access.`,
+      );
+    }
+
+    return {
+      remaining,
+      resetTime: new Date(reset),
+      limit: requestLimit,
+    };
+  } catch (error) {
+    if (error instanceof ChatSDKError) throw error;
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      `Rate limiting service unavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
+    );
+  }
+};
