@@ -90,7 +90,7 @@ export const saveUserCustomization = mutation({
             ? args.include_memory_entries
             : true, // Default to enabled
         guardrails_config: args.guardrails_config?.trim() || undefined,
-        caido_enabled: args.caido_enabled ?? true,
+        caido_enabled: args.caido_enabled ?? false,
         extra_usage_enabled:
           args.extra_usage_enabled !== undefined
             ? args.extra_usage_enabled
@@ -165,7 +165,7 @@ export const getUserCustomization = query({
         additional_info: customization.additional_info,
         include_memory_entries: customization.include_memory_entries ?? true,
         guardrails_config: customization.guardrails_config,
-        caido_enabled: customization.caido_enabled ?? true,
+        caido_enabled: customization.caido_enabled ?? false,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         updated_at: customization.updated_at,
       };
@@ -220,7 +220,7 @@ export const getUserCustomizationForBackend = query({
         additional_info: customization.additional_info,
         include_memory_entries: customization.include_memory_entries ?? true,
         guardrails_config: customization.guardrails_config,
-        caido_enabled: customization.caido_enabled ?? true,
+        caido_enabled: customization.caido_enabled ?? false,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         updated_at: customization.updated_at,
       };

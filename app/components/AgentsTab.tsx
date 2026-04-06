@@ -189,7 +189,7 @@ const AgentsTab = () => {
             </div>
             <Switch
               id="caido-proxy"
-              checked={userCustomization?.caido_enabled ?? true}
+              checked={userCustomization?.caido_enabled ?? false}
               onCheckedChange={async (checked) => {
                 try {
                   await saveCustomization({ caido_enabled: checked });
