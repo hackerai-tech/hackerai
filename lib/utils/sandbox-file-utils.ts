@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { UIMessage } from "ai";
 import type { SandboxPreference } from "@/types";
 
@@ -42,9 +43,12 @@ const sanitizeFilenameForTerminal = (filename: string): string => {
 
   // Truncate long filenames to stay within Windows MAX_PATH (260 chars).
   // Upload base path + separator ≈ 30 chars, so cap the name portion.
+  // Append a short hash of the full name to avoid collisions between
+  // different long filenames that share the same prefix.
   const MAX_NAME_LEN = 80;
   if (sanitized.length > MAX_NAME_LEN) {
-    sanitized = sanitized.slice(0, MAX_NAME_LEN);
+    const hash = createHash("sha256").update(name).digest("hex").slice(0, 8);
+    sanitized = sanitized.slice(0, MAX_NAME_LEN - 9) + "_" + hash;
   }
 
   return sanitized + ext.replace(/[^\w.]/g, "");
