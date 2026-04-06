@@ -25,6 +25,9 @@ let cachedCaidoToken: string | null = null;
  */
 const caidoLock = new WeakMap<object, Promise<void>>();
 
+/** Tracks sandboxes we've already warned about Windows incompatibility. */
+const windowsWarned = new WeakSet<object>();
+
 /** Detects Caido's broken-database error in response content. */
 export function isCaidoBroken(text: string): boolean {
   return (
@@ -68,9 +71,31 @@ async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
  * Uses a Promise-based lock: parallel tool calls await the same setup instead of racing.
  */
 export async function ensureCaido(context: ToolContext): Promise<void> {
-  // Caido setup uses POSIX shell scripts — skip on Windows sandboxes
+  // Caido proxy requires a POSIX shell — not available on Windows sandboxes.
+  // Cache the rejection so we throw once per session, not on every command.
   const { sandbox } = await context.sandboxManager.getSandbox();
-  if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) return;
+  if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) {
+    const cached = caidoLock.get(context.sandboxManager);
+    if (cached) return cached; // re-throws the cached rejection
+
+    const rejection = Promise.reject(
+      new Error(
+        "Caido proxy is not supported on Windows sandboxes. " +
+          "HTTP traffic interception is only available on Linux and macOS.",
+      ),
+    );
+    // Prevent unhandled rejection when no one is awaiting this particular ref
+    rejection.catch(() => {});
+    caidoLock.set(context.sandboxManager, rejection);
+
+    if (!windowsWarned.has(context.sandboxManager)) {
+      windowsWarned.add(context.sandboxManager);
+      console.info(
+        "[Caido] Skipping setup — Caido proxy is not supported on Windows sandboxes.",
+      );
+    }
+    return rejection;
+  }
 
   const existing = caidoLock.get(context.sandboxManager);
   if (existing) return existing;
