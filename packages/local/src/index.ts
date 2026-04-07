@@ -17,7 +17,12 @@ import { Centrifuge, Subscription, PublicationContext } from "centrifuge";
 import WebSocket from "ws";
 import { spawn, ChildProcess } from "child_process";
 import os from "os";
-import { truncateOutput, MAX_OUTPUT_SIZE, getDefaultShell } from "./utils";
+import {
+  truncateOutput,
+  MAX_OUTPUT_SIZE,
+  getDefaultShell,
+  buildShellSpawn,
+} from "./utils";
 
 const DEFAULT_SHELL = getDefaultShell(os.platform());
 
@@ -59,8 +64,10 @@ function runShellCommand(
     let killed = false;
     let timeoutId: NodeJS.Timeout | undefined;
 
-    const proc: ChildProcess = spawn(shell, [shellFlag, command], {
+    const spawnSpec = buildShellSpawn(shell, shellFlag, command);
+    const proc: ChildProcess = spawn(shell, spawnSpec.args, {
       stdio: ["ignore", "pipe", "pipe"],
+      ...spawnSpec.options,
     });
 
     // Set up timeout
@@ -475,13 +482,15 @@ class LocalSandboxClient {
       let killed = false;
       let timeoutId: NodeJS.Timeout | undefined;
 
-      const proc = spawn(
+      const spawnSpec = buildShellSpawn(
         DEFAULT_SHELL.shell,
-        [DEFAULT_SHELL.shellFlag, fullCommand],
-        {
-          stdio: ["ignore", "pipe", "pipe"],
-        },
+        DEFAULT_SHELL.shellFlag,
+        fullCommand,
       );
+      const proc = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        ...spawnSpec.options,
+      });
 
       if (commandTimeout > 0) {
         timeoutId = setTimeout(() => {
@@ -615,14 +624,16 @@ class LocalSandboxClient {
   }
 
   private async spawnBackground(fullCommand: string): Promise<number> {
-    const child = spawn(
+    const spawnSpec = buildShellSpawn(
       DEFAULT_SHELL.shell,
-      [DEFAULT_SHELL.shellFlag, fullCommand],
-      {
-        detached: os.platform() !== "win32",
-        stdio: "ignore",
-      },
+      DEFAULT_SHELL.shellFlag,
+      fullCommand,
     );
+    const child = spawn(DEFAULT_SHELL.shell, spawnSpec.args, {
+      detached: os.platform() !== "win32",
+      stdio: "ignore",
+      ...spawnSpec.options,
+    });
     child.unref();
     return child.pid ?? -1;
   }
