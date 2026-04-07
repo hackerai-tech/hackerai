@@ -1,4 +1,4 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { v } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { convexLogger } from "./lib/logger";
@@ -688,9 +688,8 @@ export const updateExtraUsageSettings = mutation({
  */
 const MAX_AUTO_RELOAD_FAILURES = 2;
 
-export const recordAutoReloadOutcome = mutation({
+export const recordAutoReloadOutcome = internalMutation({
   args: {
-    serviceKey: v.string(),
     userId: v.string(),
     success: v.boolean(),
     failureReason: v.optional(v.string()),
@@ -700,8 +699,6 @@ export const recordAutoReloadOutcome = mutation({
     consecutiveFailures: v.number(),
   }),
   handler: async (ctx, args) => {
-    validateServiceKey(args.serviceKey);
-
     const settings = await ctx.db
       .query("extra_usage")
       .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
