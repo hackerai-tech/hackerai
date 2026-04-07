@@ -12,6 +12,9 @@ import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
+  elapsedTimeExceeds,
+  PREEMPTIVE_TIMEOUT_FINISH_REASON,
+  AGENT_MAX_STREAM_DURATION_MS,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -197,11 +200,14 @@ export const createChatHandler = (
 
       // Set up pre-emptive abort before Vercel timeout (moved early to cover entire request)
       const userStopSignal = new AbortController();
-      preemptiveTimeout = createPreemptiveTimeout({
-        chatId,
-        endpoint,
-        abortController: userStopSignal,
-      });
+      // Agent mode uses elapsedTimeExceeds stop condition instead
+      if (!isAgentMode(mode)) {
+        preemptiveTimeout = createPreemptiveTimeout({
+          chatId,
+          endpoint,
+          abortController: userStopSignal,
+        });
+      }
 
       const { truncatedMessages, chat, isNewChat, fileTokens } =
         await getMessagesByChatId({
@@ -539,6 +545,7 @@ export const createChatHandler = (
 
           const hasSummarized = () => summarizationTracker.hasSummarized;
           let stoppedDueToTokenExhaustion = false;
+          let stoppedDueToPreemptiveTimeout = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
 
@@ -733,6 +740,13 @@ export const createChatHandler = (
                         stoppedDueToTokenExhaustion = true;
                       },
                     }),
+                    elapsedTimeExceeds({
+                      maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
+                      getStartTime: () => streamStartTime,
+                      onFired: () => {
+                        stoppedDueToPreemptiveTimeout = true;
+                      },
+                    }),
                   ]
                 : stepCountIs(getMaxStepsForUser(mode, subscription)),
               onChunk: async (chunk) => {
@@ -765,6 +779,8 @@ export const createChatHandler = (
                 // If preemptive timeout triggered, use "timeout" as finish reason
                 if (preemptiveTimeout?.isPreemptive()) {
                   streamFinishReason = "timeout";
+                } else if (stoppedDueToPreemptiveTimeout) {
+                  streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
                 } else if (stoppedDueToTokenExhaustion) {
                   streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
                 } else {
@@ -828,6 +844,7 @@ export const createChatHandler = (
               isRetryWithFallback = true;
               lastStepInputTokens = 0;
               stoppedDueToTokenExhaustion = false;
+              stoppedDueToPreemptiveTimeout = false;
               preFallbackCacheRead = usageTracker.cacheReadTokens;
               preFallbackCacheWrite = usageTracker.cacheWriteTokens;
               result = await createStream(fallbackModel);
@@ -872,6 +889,7 @@ export const createChatHandler = (
                     isRetryWithFallback = true;
                     lastStepInputTokens = 0;
                     stoppedDueToTokenExhaustion = false;
+                    stoppedDueToPreemptiveTimeout = false;
                     const fallbackStartTime = Date.now();
 
                     const retryResult = await createStream(fallbackModel);
@@ -1292,7 +1310,8 @@ export const createChatHandler = (
                 }
 
                 if (
-                  stoppedDueToTokenExhaustion &&
+                  (stoppedDueToTokenExhaustion ||
+                    stoppedDueToPreemptiveTimeout) &&
                   isAgentMode(mode) &&
                   !temporary
                 ) {

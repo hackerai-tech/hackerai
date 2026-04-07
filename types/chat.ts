@@ -259,7 +259,8 @@ export interface TodoWriteInput {
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
 export const messageMetadataSchema = z.object({
-  feedbackType: z.enum(["positive", "negative"]),
+  feedbackType: z.enum(["positive", "negative"]).optional(),
+  isAutoContinue: z.boolean().optional(),
 });
 
 export type MessageMetadata = z.infer<typeof messageMetadataSchema>;
