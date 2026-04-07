@@ -147,6 +147,10 @@ export default defineSchema({
     first_successful_charge_at: v.optional(v.number()), // Timestamp of first successful charge
     cumulative_spend_dollars: v.optional(v.number()), // Total of all successful charges
     override_monthly_cap_dollars: v.optional(v.number()), // Manual override set by support team
+    // Auto-reload health tracking — disable after consecutive failures so a
+    // broken saved card does not keep retrying and trip card-testing fraud rules.
+    auto_reload_consecutive_failures: v.optional(v.number()),
+    auto_reload_disabled_reason: v.optional(v.string()),
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 

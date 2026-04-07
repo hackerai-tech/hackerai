@@ -532,6 +532,9 @@ export const getExtraUsageSettings = query({
       // Trust-based spending cap
       trustCapDollars: v.union(v.null(), v.number()), // null = uncapped
       trustReason: v.string(),
+      // If auto-reload was auto-disabled because the saved card kept failing,
+      // surface a human-readable reason so the UI can prompt the user to fix it.
+      autoReloadDisabledReason: v.optional(v.string()),
     }),
   ),
   handler: async (ctx) => {
@@ -564,6 +567,7 @@ export const getExtraUsageSettings = query({
       monthlySpentDollars: pointsToDollars(settings.monthly_spent_points ?? 0),
       trustCapDollars: capDollars,
       trustReason,
+      autoReloadDisabledReason: settings.auto_reload_disabled_reason,
     };
   },
 });
@@ -634,6 +638,12 @@ export const updateExtraUsageSettings = mutation({
 
     if (args.autoReloadEnabled !== undefined) {
       updateData.auto_reload_enabled = args.autoReloadEnabled;
+      // When the user re-enables auto-reload, clear the prior failure state so
+      // the auto-disable banner goes away and the failure counter restarts.
+      if (args.autoReloadEnabled) {
+        updateData.auto_reload_disabled_reason = undefined;
+        updateData.auto_reload_consecutive_failures = 0;
+      }
     }
     if (args.autoReloadThresholdDollars !== undefined) {
       updateData.auto_reload_threshold_points = dollarsToPoints(
@@ -664,5 +674,76 @@ export const updateExtraUsageSettings = mutation({
     }
 
     return null;
+  },
+});
+
+/**
+ * Record the outcome of an auto-reload attempt.
+ *
+ * On success: reset the consecutive-failure counter.
+ * On failure: increment the counter, and after MAX_AUTO_RELOAD_FAILURES
+ * consecutive failures auto-disable auto-reload and store a human-readable
+ * reason. This prevents a broken saved card from retrying every overage
+ * request and getting flagged as card-testing fraud.
+ */
+const MAX_AUTO_RELOAD_FAILURES = 2;
+
+export const recordAutoReloadOutcome = mutation({
+  args: {
+    serviceKey: v.string(),
+    userId: v.string(),
+    success: v.boolean(),
+    failureReason: v.optional(v.string()),
+  },
+  returns: v.object({
+    autoReloadDisabled: v.boolean(),
+    consecutiveFailures: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    validateServiceKey(args.serviceKey);
+
+    const settings = await ctx.db
+      .query("extra_usage")
+      .withIndex("by_user_id", (q) => q.eq("user_id", args.userId))
+      .first();
+
+    if (!settings) {
+      return { autoReloadDisabled: false, consecutiveFailures: 0 };
+    }
+
+    if (args.success) {
+      if ((settings.auto_reload_consecutive_failures ?? 0) === 0) {
+        return { autoReloadDisabled: false, consecutiveFailures: 0 };
+      }
+      await ctx.db.patch(settings._id, {
+        auto_reload_consecutive_failures: 0,
+        updated_at: Date.now(),
+      });
+      return { autoReloadDisabled: false, consecutiveFailures: 0 };
+    }
+
+    const next = (settings.auto_reload_consecutive_failures ?? 0) + 1;
+    const shouldDisable = next >= MAX_AUTO_RELOAD_FAILURES;
+
+    await ctx.db.patch(settings._id, {
+      auto_reload_consecutive_failures: next,
+      ...(shouldDisable
+        ? {
+            auto_reload_enabled: false,
+            auto_reload_disabled_reason: args.failureReason ?? "payment_failed",
+          }
+        : {}),
+      updated_at: Date.now(),
+    });
+
+    convexLogger.info("auto_reload_outcome", {
+      user_id: args.userId,
+      success: false,
+      failure_reason: args.failureReason,
+      consecutive_failures: next,
+      auto_reload_disabled: shouldDisable,
+    });
+
+    return { autoReloadDisabled: shouldDisable, consecutiveFailures: next };
   },
 });

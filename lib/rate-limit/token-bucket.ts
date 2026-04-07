@@ -240,6 +240,27 @@ export const checkTokenBucketLimit = async (
         if (deductResult.insufficientFunds) {
           const resetTime = formatTimeRemaining(new Date(monthlyCheck.reset));
 
+          // If we tried auto-reload and it failed, give the user a precise
+          // message naming the card decline reason instead of the generic
+          // "balance is empty" copy. This is their first signal that something
+          // is wrong with their saved card — the auto-disable banner only
+          // appears after the 2nd consecutive failure.
+          if (
+            deductResult.autoReloadTriggered &&
+            deductResult.autoReloadResult &&
+            deductResult.autoReloadResult.success === false
+          ) {
+            const reason =
+              deductResult.autoReloadResult.reason ?? "payment_failed";
+            const msg = `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+              autoReloadFailed: true,
+              autoReloadFailureReason: reason,
+            });
+          }
+
           if (deductResult.trustCapExceeded) {
             const capAmount = deductResult.trustCapDollars ?? 100;
             const msg = `You've reached your extra usage limit of $${capAmount}/month. This limit grows automatically with your payment history. Need a higher limit? Chat with us through our Help Center.`;

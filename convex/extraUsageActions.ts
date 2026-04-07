@@ -615,6 +615,22 @@ export const deductWithAutoReload = action({
       }
     }
 
+    // Record outcome of auto-reload attempt for failure tracking / auto-disable.
+    // Skipped for "amount_to_charge_below_minimum" since that is not a payment
+    // failure — the threshold/amount config just produced a no-op.
+    if (
+      autoReloadTriggered &&
+      autoReloadResult &&
+      autoReloadResult.reason !== "amount_to_charge_below_minimum"
+    ) {
+      await ctx.runMutation(api.extraUsage.recordAutoReloadOutcome, {
+        serviceKey: args.serviceKey,
+        userId: args.userId,
+        success: autoReloadResult.success,
+        failureReason: autoReloadResult.reason,
+      });
+    }
+
     // Now deduct from balance using points directly (no precision loss)
     const deductResult: {
       success: boolean;
