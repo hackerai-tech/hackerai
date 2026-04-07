@@ -3,6 +3,7 @@
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { deleteS3Object } from "./s3Utils";
+import { convexLogger } from "./lib/logger";
 
 /**
  * Delete a single S3 object by key
@@ -23,7 +24,13 @@ export const deleteS3ObjectAction = internalAction({
       await deleteS3Object(args.s3Key);
       // console.log(`Successfully deleted S3 object: ${args.s3Key}`);
     } catch (error) {
-      console.error(`Failed to delete S3 object: ${args.s3Key}`, error);
+      convexLogger.error("s3_object_delete_failed", {
+        s3Key: args.s3Key,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message, stack: error.stack }
+            : String(error),
+      });
       // Don't throw - we don't want to block other operations
     }
     return null;
@@ -49,9 +56,24 @@ export const deleteS3ObjectsBatchAction = internalAction({
       args.s3Keys.map((key) => deleteS3Object(key)),
     );
 
-    const failed = results.filter((r) => r.status === "rejected");
+    const failed = results.filter(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
     if (failed.length > 0) {
-      console.error(`Failed to delete ${failed.length} S3 objects`);
+      convexLogger.error("s3_object_batch_delete_failed", {
+        totalCount: args.s3Keys.length,
+        failedCount: failed.length,
+        failedKeys: args.s3Keys.filter(
+          (_, i) => results[i].status === "rejected",
+        ),
+        firstError:
+          failed[0].reason instanceof Error
+            ? {
+                name: failed[0].reason.name,
+                message: failed[0].reason.message,
+              }
+            : String(failed[0].reason),
+      });
     }
     return null;
   },

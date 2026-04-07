@@ -11,6 +11,7 @@ import WordExtractor from "word-extractor";
 import { isBinaryFile } from "isbinaryfile";
 import { internal } from "./_generated/api";
 import { generateS3DownloadUrl } from "./s3Utils";
+import { convexLogger } from "./lib/logger";
 import type {
   FileItemChunk,
   SupportedFileType,
@@ -120,7 +121,13 @@ export const checkFileUploadRateLimit = async (
       throw error;
     }
     // Log and allow for other errors (fail-open)
-    console.warn("File upload rate limit check failed:", error);
+    convexLogger.warn("file_upload_rate_limit_check_failed", {
+      userId,
+      error:
+        error instanceof Error
+          ? { name: error.name, message: error.message }
+          : String(error),
+    });
     return null;
   }
 };
@@ -675,10 +682,17 @@ export const saveFile = action({
           await ctx.storage.delete(args.storageId);
         }
       } catch (deleteError) {
-        console.warn(
-          `Failed to delete storage for oversized file "${args.name}":`,
-          deleteError,
-        );
+        convexLogger.warn("file_upload_storage_cleanup_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          stage: "oversized",
+          s3Key: args.s3Key,
+          storageId: args.storageId,
+          error:
+            deleteError instanceof Error
+              ? { name: deleteError.name, message: deleteError.message }
+              : String(deleteError),
+        });
       }
       throw new ConvexError({
         code: "FILE_SIZE_EXCEEDED",
@@ -751,9 +765,15 @@ export const saveFile = action({
       // Check if this is a ConvexError (including token limit errors) - re-throw as-is
       if (error instanceof ConvexError) {
         // Best-effort cleanup: delete storage before re-throwing
-        console.error(
-          `Error processing file "${args.name}". Deleting storage object.`,
-        );
+        convexLogger.error("file_upload_processing_convex_error", {
+          userId: actingUserId,
+          fileName: args.name,
+          size: args.size,
+          mediaType: args.mediaType,
+          mode: args.mode,
+          errorCode: (error.data as { code?: string })?.code,
+          errorMessage: (error.data as { message?: string })?.message,
+        });
         try {
           if (args.s3Key) {
             await ctx.scheduler.runAfter(
@@ -765,10 +785,17 @@ export const saveFile = action({
             await ctx.storage.delete(args.storageId);
           }
         } catch (cleanupError) {
-          console.warn(
-            `Failed to cleanup storage for file "${args.name}":`,
-            cleanupError,
-          );
+          convexLogger.warn("file_upload_storage_cleanup_failed", {
+            userId: actingUserId,
+            fileName: args.name,
+            stage: "post_processing_error",
+            s3Key: args.s3Key,
+            storageId: args.storageId,
+            error:
+              cleanupError instanceof Error
+                ? { name: cleanupError.name, message: cleanupError.message }
+                : String(cleanupError),
+          });
         }
         throw error; // Re-throw ConvexError as-is
       }
@@ -778,9 +805,14 @@ export const saveFile = action({
         error instanceof Error &&
         error.message.includes("exceeds the maximum token limit")
       ) {
-        console.error(
-          `Token limit exceeded for file "${args.name}". Deleting storage object.`,
-        );
+        convexLogger.error("file_upload_token_limit_exceeded", {
+          userId: actingUserId,
+          fileName: args.name,
+          size: args.size,
+          mediaType: args.mediaType,
+          mode: args.mode,
+          errorMessage: error.message,
+        });
         // Best-effort cleanup before throwing standardized error
         try {
           if (args.s3Key) {
@@ -793,10 +825,17 @@ export const saveFile = action({
             await ctx.storage.delete(args.storageId);
           }
         } catch (cleanupError) {
-          console.warn(
-            `Failed to cleanup storage for file "${args.name}":`,
-            cleanupError,
-          );
+          convexLogger.warn("file_upload_storage_cleanup_failed", {
+            userId: actingUserId,
+            fileName: args.name,
+            stage: "post_processing_error",
+            s3Key: args.s3Key,
+            storageId: args.storageId,
+            error:
+              cleanupError instanceof Error
+                ? { name: cleanupError.name, message: cleanupError.message }
+                : String(cleanupError),
+          });
         }
         // Convert to ConvexError for consistent error handling
         throw new ConvexError({
@@ -806,9 +845,17 @@ export const saveFile = action({
       }
 
       // For any other unexpected errors, delete storage and wrap with file name
-      console.error(
-        `Unexpected error processing file "${args.name}". Deleting storage object.`,
-      );
+      convexLogger.error("file_upload_processing_unexpected_error", {
+        userId: actingUserId,
+        fileName: args.name,
+        size: args.size,
+        mediaType: args.mediaType,
+        mode: args.mode,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message, stack: error.stack }
+            : String(error),
+      });
       // Best-effort cleanup before throwing standardized error
       try {
         if (args.s3Key) {
@@ -821,10 +868,17 @@ export const saveFile = action({
           await ctx.storage.delete(args.storageId);
         }
       } catch (cleanupError) {
-        console.warn(
-          `Failed to cleanup storage for file "${args.name}":`,
-          cleanupError,
-        );
+        convexLogger.warn("file_upload_storage_cleanup_failed", {
+          userId: actingUserId,
+          fileName: args.name,
+          stage: "post_unexpected_error",
+          s3Key: args.s3Key,
+          storageId: args.storageId,
+          error:
+            cleanupError instanceof Error
+              ? { name: cleanupError.name, message: cleanupError.message }
+              : String(cleanupError),
+        });
       }
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
       throw new ConvexError({
