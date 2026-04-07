@@ -336,6 +336,20 @@ export async function getMessagesByChatId({
           }
         }
 
+        // In regenerate mode the conversation must end with a user message.
+        // The client should have deleted the last assistant message before
+        // calling regenerate, but if that hasn't propagated yet we must
+        // strip it here so all return paths below (summary early-return,
+        // no-summary early-return, and the fallthrough) stay consistent.
+        if (regenerate && !isTemporary && truncatedFromLoop) {
+          while (
+            truncatedFromLoop.length > 0 &&
+            truncatedFromLoop[truncatedFromLoop.length - 1].role === "assistant"
+          ) {
+            truncatedFromLoop = truncatedFromLoop.slice(0, -1);
+          }
+        }
+
         // If loop didn't run or didn't set, fall back to whatever we accumulated
         if (!fetchedDesc.length && !truncatedFromLoop) {
           existingMessages = [];
