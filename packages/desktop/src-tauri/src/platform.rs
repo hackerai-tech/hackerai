@@ -33,7 +33,26 @@ pub fn build_command(
 ) -> tokio::process::Command {
     let config = get_shell_config();
     let mut cmd = tokio::process::Command::new(config.shell);
-    cmd.arg(config.flag).arg(command);
+
+    #[cfg(windows)]
+    {
+        // cmd.exe does not understand MSVCRT-style `\"` escaping that
+        // Rust's std `Command::arg` applies on Windows. Passing a command
+        // containing quoted paths (e.g. `"C:\temp\foo"`) through `arg`
+        // produces `\"C:\temp\foo\"` on the command line, which cmd.exe
+        // parses as a literal backslash followed by an opening quote —
+        // mangling the path and triggering "The filename, directory name,
+        // or volume label syntax is incorrect.". Use `raw_arg` to pass the
+        // command line through verbatim, wrapped in the outer quotes that
+        // `cmd /C` expects.
+        use std::os::windows::process::CommandExt;
+        cmd.arg(config.flag);
+        cmd.raw_arg(format!("\"{}\"", command));
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.arg(config.flag).arg(command);
+    }
 
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);

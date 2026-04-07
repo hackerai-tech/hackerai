@@ -50,3 +50,25 @@ export function getDefaultShell(platform: string): ShellConfig {
   // Unix-like systems (Linux, macOS, etc.)
   return { shell: "/bin/bash", shellFlag: "-c" };
 }
+
+/**
+ * Build the args array and spawn options for invoking a shell command,
+ * working around Node's MSVCRT-style `\"` escaping which cmd.exe doesn't
+ * understand. On cmd.exe we use `windowsVerbatimArguments: true` and wrap
+ * the command in the outer quotes that `cmd /C` expects, so embedded
+ * quoted Windows paths (e.g. `"C:\temp\foo\bar.png"`) survive intact.
+ */
+export function buildShellSpawn(
+  shell: string,
+  shellFlag: string,
+  command: string,
+): { args: string[]; options: { windowsVerbatimArguments?: boolean } } {
+  const isCmd = shell.toLowerCase().includes("cmd");
+  if (isCmd) {
+    return {
+      args: [shellFlag, `"${command}"`],
+      options: { windowsVerbatimArguments: true },
+    };
+  }
+  return { args: [shellFlag, command], options: {} };
+}
