@@ -78,7 +78,10 @@ import {
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
-import { createTrackedProvider } from "@/lib/ai/providers";
+import {
+  createTrackedProvider,
+  getModelMaxOutputTokens,
+} from "@/lib/ai/providers";
 import {
   uploadSandboxFiles,
   getUploadBasePath,
@@ -618,7 +621,9 @@ export const createChatHandler = (
           const createStream = async (modelName: string) =>
             streamText({
               model: trackedProvider.languageModel(modelName),
-              maxOutputTokens: 32000,
+              maxOutputTokens: maxModeEnabled
+                ? getModelMaxOutputTokens(modelName)
+                : 30000,
               system: currentSystemPrompt,
               messages: filterEmptyAssistantMessages(
                 await convertToModelMessages(finalMessages),
