@@ -86,6 +86,33 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-codex-local": "OpenAI Codex (Your Account)",
 };
 
+/**
+ * Maximum context window (in tokens) per model, as advertised by the provider.
+ * Used when "Max Mode" is enabled to unlock the model's full native context.
+ * Sourced from OpenRouter model pages.
+ */
+export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
+  Record<string, number> = {
+  // Routed "auto" buckets — use conservative 200k default.
+  "ask-model": 1_000_000, // resolves to Gemini 3 Flash
+  "ask-model-free": 2_000_000, // resolves to Grok 4.1 Fast
+  "agent-model": 256_000, // resolves to Kimi K2.5
+  "model-sonnet-4.6": 1_000_000, // Claude Sonnet 4.6 with 1M context beta
+  "model-grok-4.1": 2_000_000, // Grok 4.1 Fast
+  "model-gemini-3-flash": 1_000_000, // Gemini 3 Flash
+  // "model-opus-4.6": 200_000,
+  "model-gpt-5.4": 400_000, // GPT-5.4
+  "model-kimi-k2.5": 256_000, // Kimi K2.5
+  "fallback-agent-model": 2_000_000,
+  "fallback-ask-model": 2_000_000,
+  "title-generator-model": 2_000_000,
+  "model-codex-local": 400_000,
+};
+
+export const getModelContextWindow = (modelName: string): number => {
+  return MODEL_CONTEXT_WINDOWS[modelName] ?? 200_000;
+};
+
 export const getModelDisplayName = (modelName: ModelName): string => {
   return modelDisplayNames[modelName];
 };

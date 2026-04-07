@@ -233,6 +233,8 @@ export async function getMessagesByChatId({
   subscription,
   isTemporary,
   mode,
+  maxMode,
+  modelName,
 }: {
   chatId: string;
   userId: string;
@@ -241,6 +243,8 @@ export async function getMessagesByChatId({
   regenerate?: boolean;
   isTemporary?: boolean;
   mode?: "ask" | "agent";
+  maxMode?: boolean;
+  modelName?: string;
 }) {
   // For temporary chats, skip database operations
   let chat = undefined;
@@ -305,7 +309,11 @@ export async function getMessagesByChatId({
             }
           }
 
-          const maxTokens = getMaxTokensForSubscription(subscription);
+          const maxTokens = getMaxTokensForSubscription(
+            subscription,
+            maxMode,
+            modelName,
+          );
           const truncatedMessages = truncateMessagesToTokenLimit(
             candidate,
             fileTokensFromLoop,
@@ -366,7 +374,11 @@ export async function getMessagesByChatId({
             };
 
             // Re-truncate real messages to leave room for the summary message
-            const maxTokens = getMaxTokensForSubscription(subscription);
+            const maxTokens = getMaxTokensForSubscription(
+              subscription,
+              maxMode,
+              modelName,
+            );
             const summaryTokens = countMessagesTokens(
               [summaryMessage],
               fileTokensFromLoop,
@@ -433,6 +445,8 @@ export async function getMessagesByChatId({
     allMessages,
     subscription,
     mode === "agent", // Skip file tokens for agent mode (files go to sandbox)
+    maxMode,
+    modelName,
   );
   const truncatedMessages = truncateResult.messages;
   const fileTokens = truncateResult.fileTokens;
@@ -442,7 +456,11 @@ export async function getMessagesByChatId({
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any);
-      const maxTokens = getMaxTokensForSubscription(subscription);
+      const maxTokens = getMaxTokensForSubscription(
+        subscription,
+        maxMode,
+        modelName,
+      );
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
       console.error("chat-truncation-empty", {
         chatId,

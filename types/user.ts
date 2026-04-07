@@ -8,6 +8,7 @@ export interface UserCustomization {
   readonly caido_enabled?: boolean;
   readonly updated_at: number;
   readonly extra_usage_enabled?: boolean;
+  readonly max_mode_enabled?: boolean;
 }
 
 export type PersonalityType = "cynic" | "robot" | "listener" | "nerd";

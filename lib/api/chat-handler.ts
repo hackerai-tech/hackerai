@@ -77,7 +77,7 @@ import {
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   uploadSandboxFiles,
@@ -203,6 +203,20 @@ export const createChatHandler = (
         abortController: userStopSignal,
       });
 
+      // Fetch user customization early so max_mode_enabled can influence
+      // context truncation (before messages are fetched from DB).
+      const userCustomization = await getUserCustomization({ userId });
+      // Max Mode only applies when a specific model is selected — not in Auto.
+      const isAutoModelSelection =
+        !selectedModelOverride || selectedModelOverride === "auto";
+      const maxModeEnabled =
+        !isAutoModelSelection && (userCustomization?.max_mode_enabled ?? false);
+      const resolvedModelName = selectModel(
+        mode,
+        subscription,
+        selectedModelOverride,
+      );
+
       const { truncatedMessages, chat, isNewChat, fileTokens } =
         await getMessagesByChatId({
           chatId,
@@ -212,6 +226,8 @@ export const createChatHandler = (
           regenerate,
           isTemporary: temporary,
           mode,
+          maxMode: maxModeEnabled,
+          modelName: resolvedModelName,
         });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -260,8 +276,6 @@ export const createChatHandler = (
         );
       }
 
-      // Fetch user customization early (needed for memory settings)
-      const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled =
         subscription !== "free" &&
         (userCustomization?.include_memory_entries ?? true);
@@ -493,7 +507,11 @@ export const createChatHandler = (
           const contextUsageOn = isContextUsageEnabled(subscription);
           const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageOn
-            ? getMaxTokensForSubscription(subscription)
+            ? getMaxTokensForSubscription(
+                subscription,
+                maxModeEnabled,
+                selectedModel,
+              )
             : 0;
           let ctxUsage = contextUsageOn
             ? computeContextUsage(
@@ -611,8 +629,11 @@ export const createChatHandler = (
                 try {
                   const stepNumber = steps.length;
                   const threshold = Math.floor(
-                    getMaxTokensForSubscription(subscription) *
-                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    getMaxTokensForSubscription(
+                      subscription,
+                      maxModeEnabled,
+                      selectedModel,
+                    ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                   );
 
                   // Prune old tool outputs to stay within rolling token budget
@@ -724,8 +745,11 @@ export const createChatHandler = (
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
                       threshold: Math.floor(
-                        getMaxTokensForSubscription(subscription) *
-                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                        getMaxTokensForSubscription(
+                          subscription,
+                          maxModeEnabled,
+                          selectedModel,
+                        ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: hasSummarized,
