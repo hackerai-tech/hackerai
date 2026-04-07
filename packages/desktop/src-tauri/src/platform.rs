@@ -2,26 +2,99 @@ use std::time::Duration;
 
 /// Shell configuration for cross-platform command execution.
 pub struct ShellConfig {
-    pub shell: &'static str,
+    pub shell: String,
     pub flag: &'static str,
+    /// True when `shell` is `cmd.exe` and requires the verbatim-arg workaround
+    /// for its non-MSVCRT quoting rules. Only consulted on Windows.
+    #[allow(dead_code)]
+    pub is_cmd: bool,
 }
 
-/// Get the shell and argument flag for the current platform.
-/// Windows uses `cmd /C`, Unix uses the user's default shell as a login shell
-/// so that PATH from `.zshrc` / `.bashrc` / `.profile` is available — needed to
-/// find globally-installed CLIs like `codex`.
+/// Get the shell for the current platform.
+///
+/// - **Windows:** prefer `bash.exe` from Git for Windows (POSIX semantics, no
+///   cmd.exe quoting quirks). Override with `HACKERAI_BASH_PATH`. Falls back
+///   to `cmd /C` when git-bash is not installed.
+/// - **Unix:** the user's `$SHELL` as a login shell so PATH from
+///   `.zshrc` / `.bashrc` / `.profile` is sourced — needed to find
+///   globally-installed CLIs like `codex`.
 pub fn get_shell_config() -> ShellConfig {
-    if cfg!(target_os = "windows") {
-        ShellConfig { shell: "cmd", flag: "/C" }
-    } else {
-        // Prefer the user's shell so login-shell init files are sourced.
-        // Falls back to /bin/sh if $SHELL is unset.
+    #[cfg(windows)]
+    {
+        static WIN_SHELL: std::sync::OnceLock<(String, &'static str, bool)> =
+            std::sync::OnceLock::new();
+        let (shell, flag, is_cmd) = WIN_SHELL.get_or_init(|| {
+            if let Some(bash) = find_git_bash() {
+                (bash, "-c", false)
+            } else {
+                ("cmd".to_string(), "/C", true)
+            }
+        });
+        return ShellConfig {
+            shell: shell.clone(),
+            flag,
+            is_cmd: *is_cmd,
+        };
+    }
+    #[cfg(not(windows))]
+    {
         static USER_SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         let shell = USER_SHELL.get_or_init(|| {
             std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
         });
-        ShellConfig { shell: shell.as_str(), flag: "-lc" }
+        ShellConfig {
+            shell: shell.clone(),
+            flag: "-lc",
+            is_cmd: false,
+        }
     }
+}
+
+/// Locate `bash.exe` from Git for Windows. Tries:
+///   1. `HACKERAI_BASH_PATH` env override
+///   2. Common install locations
+///   3. `where git` → `<gitDir>/../../bin/bash.exe`
+#[cfg(windows)]
+fn find_git_bash() -> Option<String> {
+    use std::path::PathBuf;
+    use std::process::Command as StdCommand;
+
+    if let Ok(p) = std::env::var("HACKERAI_BASH_PATH") {
+        if PathBuf::from(&p).exists() {
+            return Some(p);
+        }
+    }
+
+    let candidates = [
+        "C:\\Program Files\\Git\\bin\\bash.exe",
+        "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    ];
+    for c in &candidates {
+        if PathBuf::from(c).exists() {
+            return Some((*c).to_string());
+        }
+    }
+
+    if let Ok(out) = StdCommand::new("where").arg("git").output() {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            for line in stdout.lines() {
+                let line = line.trim();
+                if line.to_lowercase().ends_with("git.exe") {
+                    // <gitDir>/cmd/git.exe → <gitDir>/bin/bash.exe
+                    let p = PathBuf::from(line);
+                    if let Some(git_dir) = p.parent().and_then(|d| d.parent()) {
+                        let bash = git_dir.join("bin").join("bash.exe");
+                        if bash.exists() {
+                            return bash.to_str().map(|s| s.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Build a `tokio::process::Command` from an exec request.
@@ -32,22 +105,23 @@ pub fn build_command(
     env: Option<&std::collections::HashMap<String, String>>,
 ) -> tokio::process::Command {
     let config = get_shell_config();
-    let mut cmd = tokio::process::Command::new(config.shell);
+    let mut cmd = tokio::process::Command::new(&config.shell);
 
     #[cfg(windows)]
     {
-        // cmd.exe does not understand MSVCRT-style `\"` escaping that
-        // Rust's std `Command::arg` applies on Windows. Passing a command
-        // containing quoted paths (e.g. `"C:\temp\foo"`) through `arg`
-        // produces `\"C:\temp\foo\"` on the command line, which cmd.exe
-        // parses as a literal backslash followed by an opening quote —
-        // mangling the path and triggering "The filename, directory name,
-        // or volume label syntax is incorrect.". Use `raw_arg` to pass the
-        // command line through verbatim, wrapped in the outer quotes that
-        // `cmd /C` expects.
-        use std::os::windows::process::CommandExt;
-        cmd.arg(config.flag);
-        cmd.raw_arg(format!("\"{}\"", command));
+        if config.is_cmd {
+            // cmd.exe does not understand MSVCRT-style `\"` escaping that
+            // Rust's std `Command::arg` applies on Windows. Use `raw_arg`
+            // to pass the command line through verbatim, wrapped in the
+            // outer quotes that `cmd /C` expects, so embedded quoted paths
+            // like `"C:\temp\foo"` survive intact.
+            use std::os::windows::process::CommandExt;
+            cmd.arg(config.flag);
+            cmd.raw_arg(format!("\"{}\"", command));
+        } else {
+            // git-bash and other POSIX shells handle their own quoting fine.
+            cmd.arg(config.flag).arg(command);
+        }
     }
     #[cfg(not(windows))]
     {
