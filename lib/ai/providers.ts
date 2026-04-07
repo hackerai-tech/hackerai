@@ -41,7 +41,7 @@ const baseProviders = {
   "model-sonnet-4.6": openrouter("anthropic/claude-sonnet-4-6"),
   "model-grok-4.1": openrouter("x-ai/grok-4.1-fast"),
   "model-gemini-3-flash": openrouter("google/gemini-3-flash-preview"),
-  // "model-opus-4.6": openrouter("anthropic/claude-opus-4.6"),
+  "model-opus-4.6": openrouter("anthropic/claude-opus-4-6"),
   "model-gpt-5.4": openrouter("openai/gpt-5.4"),
   "model-kimi-k2.5": openrouter("moonshotai/kimi-k2.5"),
   "fallback-agent-model": openrouter("x-ai/grok-4.1-fast"),
@@ -59,7 +59,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.1": "November 2024",
   "model-gemini-3-flash": "January 2025",
-  // "model-opus-4.6": "May 2025",
+  "model-opus-4.6": "May 2025",
   "model-gpt-5.4": "August 2025",
   "model-kimi-k2.5": "April 2024",
   "fallback-agent-model": "January 2025",
@@ -76,7 +76,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-sonnet-4.6": "Anthropic Claude Sonnet 4.6",
   "model-grok-4.1": "xAI Grok 4.1 Fast",
   "model-gemini-3-flash": "Google Gemini 3 Flash",
-  // "model-opus-4.6": "Anthropic Claude Opus 4.6",
+  "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-gpt-5.4": "OpenAI GPT-5.4",
   "model-kimi-k2.5": "Moonshot Kimi K2.5",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
@@ -84,6 +84,58 @@ export const modelDisplayNames: Record<ModelName, string> &
   "title-generator-model":
     "Auto, an intelligent model router built by HackerAI",
   "model-codex-local": "OpenAI Codex (Your Account)",
+};
+
+/**
+ * Maximum context window (in tokens) per model, as advertised by the provider.
+ * Used when "Max Mode" is enabled to unlock the model's full native context.
+ * Sourced from OpenRouter model pages.
+ */
+export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
+  Record<string, number> = {
+  "ask-model": 1_048_576, // resolves to Gemini 3 Flash
+  "ask-model-free": 2_000_000, // resolves to Grok 4.1 Fast
+  "agent-model": 262_144, // resolves to Kimi K2.5
+  "model-sonnet-4.6": 1_000_000, // Claude Sonnet 4.6 with 1M context beta
+  "model-grok-4.1": 2_000_000, // Grok 4.1 Fast
+  "model-gemini-3-flash": 1_048_576, // Gemini 3 Flash
+  "model-opus-4.6": 1_000_000, // Claude Opus 4.6 with 1M context beta
+  "model-gpt-5.4": 1_050_000, // GPT-5.4 (922k input + 128k output)
+  "model-kimi-k2.5": 262_144, // Kimi K2.5
+  "fallback-agent-model": 2_000_000,
+  "fallback-ask-model": 2_000_000,
+  "title-generator-model": 2_000_000,
+  "model-codex-local": 400_000,
+};
+
+/**
+ * Maximum output tokens per model, as advertised by OpenRouter's
+ * `max_completion_tokens` field. Used when "Max Mode" is enabled to let
+ * the model generate much longer responses than the default 32k cap.
+ */
+export const MODEL_MAX_OUTPUT_TOKENS: Record<ModelName, number> &
+  Record<string, number> = {
+  "ask-model": 65_536, // Gemini 3 Flash
+  "ask-model-free": 30_000, // Grok 4.1 Fast
+  "agent-model": 262_144, // Kimi K2.5
+  "model-sonnet-4.6": 128_000,
+  "model-grok-4.1": 30_000,
+  "model-gemini-3-flash": 65_536,
+  "model-opus-4.6": 128_000,
+  "model-gpt-5.4": 128_000,
+  "model-kimi-k2.5": 262_144,
+  "fallback-agent-model": 30_000,
+  "fallback-ask-model": 30_000,
+  "title-generator-model": 30_000,
+  "model-codex-local": 128_000,
+};
+
+export const getModelContextWindow = (modelName: string): number => {
+  return MODEL_CONTEXT_WINDOWS[modelName] ?? 200_000;
+};
+
+export const getModelMaxOutputTokens = (modelName: string): number => {
+  return MODEL_MAX_OUTPUT_TOKENS[modelName] ?? 32_000;
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {

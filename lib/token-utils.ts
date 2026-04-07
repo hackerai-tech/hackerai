@@ -2,6 +2,7 @@ import { UIMessage, UIMessagePart } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
 import type { Id } from "@/convex/_generated/dataModel";
+import { getModelContextWindow } from "@/lib/ai/providers";
 
 export const MAX_TOKENS_FREE = 32000;
 export const MAX_TOKENS_PAID = 200000;
@@ -11,10 +12,23 @@ export const MAX_TOKENS_PAID = 200000;
  */
 export const FILE_TOKEN_PERCENT = 0.5;
 
+/**
+ * Returns the context token budget for a user.
+ *
+ * When `maxMode` is enabled for a paid user, we unlock the selected model's
+ * full native context window (via MODEL_CONTEXT_WINDOWS). Otherwise we use
+ * the conservative default (200k paid / 32k free) so token accounting,
+ * pricing, and cache behavior stay predictable for typical conversations.
+ */
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
+  maxMode?: boolean,
+  modelName?: string,
 ): number => {
   if (subscription === "free") return MAX_TOKENS_FREE;
+  if (maxMode && modelName) {
+    return Math.max(MAX_TOKENS_PAID, getModelContextWindow(modelName));
+  }
   return MAX_TOKENS_PAID;
 };
 
@@ -22,9 +36,14 @@ export const getMaxTokensForSubscription = (
  * Maximum total tokens allowed across all uploaded files in Ask mode.
  * Scales with the subscription's context window budget.
  */
-export const getMaxFileTokens = (subscription: SubscriptionTier): number => {
+export const getMaxFileTokens = (
+  subscription: SubscriptionTier,
+  maxMode?: boolean,
+  modelName?: string,
+): number => {
   return Math.floor(
-    getMaxTokensForSubscription(subscription) * FILE_TOKEN_PERCENT,
+    getMaxTokensForSubscription(subscription, maxMode, modelName) *
+      FILE_TOKEN_PERCENT,
   );
 };
 

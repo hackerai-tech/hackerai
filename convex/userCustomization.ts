@@ -16,6 +16,7 @@ export const saveUserCustomization = mutation({
     guardrails_config: v.optional(v.string()),
     caido_enabled: v.optional(v.boolean()),
     extra_usage_enabled: v.optional(v.boolean()),
+    max_mode_enabled: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -95,6 +96,10 @@ export const saveUserCustomization = mutation({
           args.extra_usage_enabled !== undefined
             ? args.extra_usage_enabled
             : false, // Default to disabled
+        max_mode_enabled:
+          args.max_mode_enabled !== undefined
+            ? args.max_mode_enabled
+            : (existing?.max_mode_enabled ?? false),
         updated_at: Date.now(),
       };
 
@@ -138,6 +143,7 @@ export const getUserCustomization = query({
       guardrails_config: v.optional(v.string()),
       caido_enabled: v.boolean(),
       extra_usage_enabled: v.boolean(),
+      max_mode_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -167,6 +173,7 @@ export const getUserCustomization = query({
         guardrails_config: customization.guardrails_config,
         caido_enabled: customization.caido_enabled ?? false,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
+        max_mode_enabled: customization.max_mode_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {
@@ -196,6 +203,7 @@ export const getUserCustomizationForBackend = query({
       guardrails_config: v.optional(v.string()),
       caido_enabled: v.boolean(),
       extra_usage_enabled: v.boolean(),
+      max_mode_enabled: v.boolean(),
       updated_at: v.number(),
     }),
   ),
@@ -222,6 +230,7 @@ export const getUserCustomizationForBackend = query({
         guardrails_config: customization.guardrails_config,
         caido_enabled: customization.caido_enabled ?? false,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
+        max_mode_enabled: customization.max_mode_enabled ?? false,
         updated_at: customization.updated_at,
       };
     } catch (error) {

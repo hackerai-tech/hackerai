@@ -127,6 +127,7 @@ export default defineSchema({
     guardrails_config: v.optional(v.string()),
     caido_enabled: v.optional(v.boolean()),
     extra_usage_enabled: v.optional(v.boolean()),
+    max_mode_enabled: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)
