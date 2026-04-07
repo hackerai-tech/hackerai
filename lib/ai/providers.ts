@@ -108,34 +108,8 @@ export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
   "model-codex-local": 400_000,
 };
 
-/**
- * Maximum output tokens per model, as advertised by OpenRouter's
- * `max_completion_tokens` field. Used when "Max Mode" is enabled to let
- * the model generate much longer responses than the default 32k cap.
- */
-export const MODEL_MAX_OUTPUT_TOKENS: Record<ModelName, number> &
-  Record<string, number> = {
-  "ask-model": 65_536, // Gemini 3 Flash
-  "ask-model-free": 30_000, // Grok 4.1 Fast
-  "agent-model": 262_144, // Kimi K2.5
-  "model-sonnet-4.6": 128_000,
-  "model-grok-4.1": 30_000,
-  "model-gemini-3-flash": 65_536,
-  "model-opus-4.6": 128_000,
-  "model-gpt-5.4": 128_000,
-  "model-kimi-k2.5": 262_144,
-  "fallback-agent-model": 30_000,
-  "fallback-ask-model": 30_000,
-  "title-generator-model": 30_000,
-  "model-codex-local": 128_000,
-};
-
 export const getModelContextWindow = (modelName: string): number => {
   return MODEL_CONTEXT_WINDOWS[modelName] ?? 200_000;
-};
-
-export const getModelMaxOutputTokens = (modelName: string): number => {
-  return MODEL_MAX_OUTPUT_TOKENS[modelName] ?? 32_000;
 };
 
 export const getModelDisplayName = (modelName: ModelName): string => {
