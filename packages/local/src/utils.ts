@@ -3,6 +3,10 @@
  * Extracted for testability.
  */
 
+import { existsSync } from "fs";
+import { execSync } from "child_process";
+import { join, dirname } from "path";
+
 // Align with LLM context limits (~4096 tokens ≈ 12288 chars)
 export const MAX_OUTPUT_SIZE = 12288;
 
@@ -45,10 +49,54 @@ export interface ShellConfig {
  */
 export function getDefaultShell(platform: string): ShellConfig {
   if (platform === "win32") {
+    // Prefer git-bash when available: it gives POSIX semantics (&&, pipes,
+    // quoting) and sidesteps cmd.exe's quoting quirks entirely. Falls back
+    // to cmd.exe when git-bash isn't installed. Override with HACKERAI_BASH_PATH.
+    const bash = findGitBash();
+    if (bash) {
+      return { shell: bash, shellFlag: "-c" };
+    }
     return { shell: "cmd.exe", shellFlag: "/C" };
   }
   // Unix-like systems (Linux, macOS, etc.)
   return { shell: "/bin/bash", shellFlag: "-c" };
+}
+
+/**
+ * Locate `bash.exe` from Git for Windows. Tries, in order:
+ *   1. `HACKERAI_BASH_PATH` environment override
+ *   2. Common install locations
+ *   3. `where git` → resolve `<gitDir>/../../bin/bash.exe`
+ * Returns null if not found.
+ */
+export function findGitBash(): string | null {
+  const override = process.env.HACKERAI_BASH_PATH;
+  if (override && existsSync(override)) return override;
+
+  const candidates = [
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+
+  try {
+    const out = execSync("where git", {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const gitExe = out.split(/\r?\n/).find((l) => l.trim().endsWith("git.exe"));
+    if (gitExe) {
+      // <gitDir>/cmd/git.exe → <gitDir>/bin/bash.exe
+      const bash = join(dirname(dirname(gitExe.trim())), "bin", "bash.exe");
+      if (existsSync(bash)) return bash;
+    }
+  } catch {
+    // `where` not found or no git installed — fall through
+  }
+
+  return null;
 }
 
 /**
@@ -63,7 +111,10 @@ export function buildShellSpawn(
   shellFlag: string,
   command: string,
 ): { args: string[]; options: { windowsVerbatimArguments?: boolean } } {
-  const isCmd = shell.toLowerCase().includes("cmd");
+  // Match the cmd.exe basename exactly — substring check would false-positive
+  // on paths like `C:\tools\cmdrunner\bash.exe`.
+  const base = shell.toLowerCase().replace(/\\/g, "/").split("/").pop() ?? "";
+  const isCmd = base === "cmd" || base === "cmd.exe";
   if (isCmd) {
     return {
       args: [shellFlag, `"${command}"`],
