@@ -258,6 +258,27 @@ export const checkTokenBucketLimit = async (
             });
           }
 
+          // If we tried auto-reload and Stripe declined the card, give the
+          // user a precise message naming the decline reason instead of the
+          // generic "balance is empty" copy. Checked AFTER the cap branches
+          // so capped users still see the cap message (deductPoints returns
+          // insufficientFunds: true alongside the cap flags).
+          if (
+            deductResult.autoReloadTriggered &&
+            deductResult.autoReloadResult &&
+            deductResult.autoReloadResult.success === false
+          ) {
+            const reason =
+              deductResult.autoReloadResult.reason ?? "payment_failed";
+            const msg = `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+              autoReloadFailed: true,
+              autoReloadFailureReason: reason,
+            });
+          }
+
           const msg = `You've hit your usage limit and your extra usage balance is empty.\n\nYour limit resets ${resetTime}. To keep going now, add credits in Settings${upgradeHint}.`;
           throw new ChatSDKError("rate_limit:chat", msg, {
             resetTimestamp: monthlyCheck.reset,

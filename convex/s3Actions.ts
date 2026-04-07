@@ -5,6 +5,7 @@ import { v, ConvexError } from "convex/values";
 import { generateS3UploadUrl, generateS3DownloadUrl } from "./s3Utils";
 import { internal } from "./_generated/api";
 import { validateServiceKey } from "./lib/utils";
+import { convexLogger } from "./lib/logger";
 import { checkFileUploadRateLimit } from "./fileActions";
 import { Doc } from "./_generated/dataModel";
 
@@ -100,7 +101,15 @@ export const generateS3UploadUrlAction = action({
           : undefined,
       };
     } catch (error) {
-      console.error("Failed to generate S3 upload URL:", error);
+      convexLogger.error("file_upload_url_generation_failed", {
+        userId,
+        fileName: args.fileName,
+        contentType: args.contentType,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message, stack: error.stack }
+            : String(error),
+      });
       throw new Error(
         "Failed to generate upload URL: " +
           (error instanceof Error ? error.message : "Unknown error"),
@@ -182,7 +191,14 @@ export const getFileUrlAction = action({
         return url;
       }
     } catch (error) {
-      console.error("Failed to get file URL:", error);
+      convexLogger.error("file_get_url_failed", {
+        userId: identity.subject,
+        fileId: args.fileId,
+        error:
+          error instanceof Error
+            ? { name: error.name, message: error.message, stack: error.stack }
+            : String(error),
+      });
       throw new Error(
         "Failed to get file URL: " +
           (error instanceof Error ? error.message : "Unknown error"),
@@ -245,7 +261,14 @@ export const getFileUrlsByFileIdsAction = action({
 
           return null;
         } catch (error) {
-          console.error(`Failed to generate URL for file ${fileId}:`, error);
+          convexLogger.error("file_batch_url_generation_failed", {
+            fileId,
+            caller: "service",
+            error:
+              error instanceof Error
+                ? { name: error.name, message: error.message }
+                : String(error),
+          });
           return null;
         }
       }),
@@ -341,7 +364,15 @@ export const getFileUrlsBatchAction = action({
         }
       } catch (error) {
         // Log error but continue processing other files (partial failure handling)
-        console.error(`Failed to generate URL for file ${fileId}:`, error);
+        convexLogger.error("file_batch_url_generation_failed", {
+          userId: identity.subject,
+          fileId,
+          caller: "user",
+          error:
+            error instanceof Error
+              ? { name: error.name, message: error.message }
+              : String(error),
+        });
         continue;
       }
     }
