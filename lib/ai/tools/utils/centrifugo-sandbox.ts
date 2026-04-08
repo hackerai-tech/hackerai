@@ -363,18 +363,87 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
   }
 
   /**
-   * Ensure a directory exists on the target, using the correct command for the platform.
+   * Convert a Windows path (`C:\temp\foo`) to its MSYS/git-bash form
+   * (`/c/temp/foo`). Leaves POSIX paths untouched. Used when the remote
+   * shell is git-bash on Windows — since PR #346, that's the default, so
+   * cmd.exe syntax like `if not exist` and backslash paths break.
+   */
+  private static toBashPath(path: string): string {
+    const drive = path.match(/^([A-Za-z]):[\\/](.*)$/);
+    if (drive) {
+      return `/${drive[1].toLowerCase()}/${drive[2].replace(/\\/g, "/")}`;
+    }
+    return path.replace(/\\/g, "/");
+  }
+
+  // Cache for detected remote shell (git-bash vs cmd.exe on Windows)
+  private shellKind: "bash" | "cmd" | null = null;
+
+  /**
+   * Detect whether the remote shell is bash (git-bash on Windows, or any
+   * POSIX host) or cmd.exe. Cached per sandbox instance.
+   *
+   * Probe: `echo $BASH_VERSION` — bash substitutes the version string,
+   * cmd.exe echoes the literal `$BASH_VERSION`.
+   */
+  private async detectShell(): Promise<"bash" | "cmd"> {
+    if (this.shellKind) return this.shellKind;
+    if (!this.isWindows()) {
+      this.shellKind = "bash";
+      return "bash";
+    }
+    const probe = await this.commands.run("echo $BASH_VERSION", {
+      displayName: "",
+    });
+    this.shellKind = /^\d/.test(probe.stdout.trim()) ? "bash" : "cmd";
+    return this.shellKind;
+  }
+
+  /**
+   * Shell-aware context bundle for file operations: resolves the remote
+   * shell kind, converts a raw path to the form that shell expects, and
+   * returns escaping helpers for paths and arbitrary shell values.
+   *
+   * Centralizes the branching that used to be duplicated across every
+   * `files.*` method and `ensureDirectory`.
+   */
+  private async shellContext(rawPath: string): Promise<{
+    useBash: boolean;
+    path: string;
+    escapePath: (value: string) => string;
+    escapeValue: (value: string) => string;
+  }> {
+    const shell = await this.detectShell();
+    const useBash = shell === "bash";
+    const nativePath = this.toNativePath(rawPath);
+    const path = useBash
+      ? CentrifugoSandbox.toBashPath(nativePath)
+      : nativePath;
+    const escapePath = useBash
+      ? (v: string) => CentrifugoSandbox.escapePath(v)
+      : (v: string) => this.escapeForTarget(v);
+    const escapeValue = useBash
+      ? (v: string) => `'${v.replace(/'/g, "'\\''")}'`
+      : (v: string) => this.escapeForTarget(v);
+    return { useBash, path, escapePath, escapeValue };
+  }
+
+  /**
+   * Ensure a directory exists on the target, using the correct command for the shell.
    */
   private async ensureDirectory(dir: string): Promise<void> {
     if (!dir) return;
-    const escaped = this.isWindows()
-      ? this.escapeForTarget(dir)
-      : CentrifugoSandbox.escapePath(dir);
+    const {
+      useBash,
+      path: shellDir,
+      escapePath,
+    } = await this.shellContext(dir);
+    const escaped = escapePath(shellDir);
     // cmd.exe mkdir creates parent dirs by default; use `if not exist` to
     // skip gracefully when it already exists without swallowing real errors.
-    const command = this.isWindows()
-      ? `if not exist ${escaped} mkdir ${escaped}`
-      : `mkdir -p ${escaped}`;
+    const command = useBash
+      ? `mkdir -p ${escaped}`
+      : `if not exist ${escaped} mkdir ${escaped}`;
     const result = await this.commands.run(command, { displayName: "" });
     if (result.exitCode !== 0) {
       throw new Error(`Failed to create directory ${dir}: ${result.stderr}`);
@@ -426,11 +495,12 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       rawPath: string,
       content: string | Buffer | ArrayBuffer,
     ): Promise<void> => {
-      const path = this.toNativePath(rawPath);
+      const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";
 
-      // Ensure parent directory exists
-      const dir = CentrifugoSandbox.parentDir(path);
+      // Ensure parent directory exists. Pass the native (unconverted) dir
+      // so ensureDirectory re-applies its own shell-aware path handling.
+      const dir = CentrifugoSandbox.parentDir(this.toNativePath(rawPath));
       if (dir) {
         await this.ensureDirectory(dir);
       }
@@ -448,9 +518,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         isBinary = true;
       }
 
-      if (this.isWindows()) {
+      if (!useBash) {
         // Windows cmd.exe: use certutil to decode base64
-        const escapedPath = this.escapeForTarget(path);
+        const escapedPath = escapePath(path);
         const b64 = isBinary
           ? contentStr
           : Buffer.from(contentStr).toString("base64");
@@ -510,7 +580,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
           );
         }
 
-        const escapedPath = CentrifugoSandbox.escapePath(path);
+        const escapedPath = escapePath(path);
         for (let i = 0; i < chunks.length; i++) {
           const operator = i === 0 ? ">" : ">>";
           const result = await this.commands.run(
@@ -522,7 +592,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
           }
         }
       } else {
-        const escapedPath = CentrifugoSandbox.escapePath(path);
+        const escapedPath = escapePath(path);
         // Docker containers and Unix dangerous-mode hosts use cat heredoc
         // (more efficient — no ~33% base64 inflation or arg length limits).
         let command: string;
@@ -543,13 +613,11 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     },
 
     read: async (rawPath: string): Promise<string> => {
-      const path = this.toNativePath(rawPath);
+      const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";
-      // cmd.exe uses `type`, POSIX uses `cat`
-      const escaped = this.isWindows()
-        ? this.escapeForTarget(path)
-        : CentrifugoSandbox.escapePath(path);
-      const command = this.isWindows() ? `type ${escaped}` : `cat ${escaped}`;
+      const escaped = escapePath(path);
+      // cmd.exe uses `type`, bash uses `cat`
+      const command = useBash ? `cat ${escaped}` : `type ${escaped}`;
       const result = await this.commands.run(command, {
         displayName: `Reading: ${fileName}`,
       });
@@ -560,34 +628,30 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     },
 
     remove: async (rawPath: string): Promise<void> => {
-      const path = this.toNativePath(rawPath);
+      const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const fileName = path.split(/[/\\]/).pop() || "file";
-      const escaped = this.isWindows()
-        ? this.escapeForTarget(path)
-        : CentrifugoSandbox.escapePath(path);
+      const escaped = escapePath(path);
       // cmd.exe: try both del (files) and rmdir (dirs) to handle either case
-      const command = this.isWindows()
-        ? `del /q /f ${escaped} 2>nul & rmdir /s /q ${escaped} 2>nul`
-        : `rm -rf ${escaped}`;
+      const command = useBash
+        ? `rm -rf ${escaped}`
+        : `del /q /f ${escaped} 2>nul & rmdir /s /q ${escaped} 2>nul`;
       const result = await this.commands.run(command, {
         displayName: `Removing: ${fileName}`,
       });
-      // On Windows, if both del and rmdir fail the path didn't exist — that's OK for rm -rf semantics
-      if (!this.isWindows() && result.exitCode !== 0) {
+      // Under cmd.exe, if both del and rmdir fail the path didn't exist — that's OK for rm -rf semantics
+      if (useBash && result.exitCode !== 0) {
         throw new Error(`Failed to remove file: ${result.stderr}`);
       }
     },
 
     list: async (rawPath: string = "/"): Promise<{ name: string }[]> => {
-      const path = this.toNativePath(rawPath);
+      const { useBash, path, escapePath } = await this.shellContext(rawPath);
       const dirName = path.split(/[/\\]/).pop() || path;
-      const escaped = this.isWindows()
-        ? this.escapeForTarget(path)
-        : CentrifugoSandbox.escapePath(path);
+      const escaped = escapePath(path);
       // cmd.exe: `dir /b /a-d` lists files only (no dirs), one per line
-      const command = this.isWindows()
-        ? `dir /b /a-d ${escaped} 2>nul`
-        : `find ${escaped} -maxdepth 1 -type f 2>/dev/null || true`;
+      const command = useBash
+        ? `find ${escaped} -maxdepth 1 -type f 2>/dev/null || true`
+        : `dir /b /a-d ${escaped} 2>nul`;
       const result = await this.commands.run(command, {
         displayName: `Listing: ${dirName}`,
       });
@@ -597,8 +661,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         .split("\n")
         .filter(Boolean)
         .map((name) => {
-          // dir /b returns relative names; prepend the directory path
-          if (this.isWindows() && !name.startsWith(path)) {
+          // cmd.exe `dir /b` returns relative names; prepend the directory path.
+          // bash `find` already returns full paths, so only rewrite under cmd.
+          if (!useBash && !name.startsWith(path)) {
             const sep = path.endsWith("/") || path.endsWith("\\") ? "" : "/";
             return { name: `${path}${sep}${name.trim()}` };
           }
@@ -608,29 +673,26 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
     downloadFromUrl: async (url: string, rawPath: string): Promise<void> => {
       validateDownloadUrl(url);
-      const path = this.toNativePath(rawPath);
-      const dir = CentrifugoSandbox.parentDir(path);
+      // When the shell is git-bash (default on Windows since PR #346),
+      // emit POSIX syntax with MSYS-form paths. cmd.exe syntax like
+      // `if not exist` breaks under bash and leaves the target dir missing,
+      // causing curl to fail with the Windows "invalid filename syntax" error.
+      const { useBash, path, escapePath, escapeValue } =
+        await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
+      const dir = CentrifugoSandbox.parentDir(path);
       const fileName = path.split(/[/\\]/).pop() || "file";
 
-      // Use platform-aware escaping: double quotes on Windows (cmd.exe),
-      // single quotes on POSIX to prevent shell expansion
-      const escapedPath = this.isWindows()
-        ? this.escapeForTarget(path)
-        : CentrifugoSandbox.escapePath(path);
-      const escapedUrl = this.isWindows()
-        ? this.escapeForTarget(url)
-        : `'${url.replace(/'/g, "'\\''")}'`;
+      const escapedPath = escapePath(path);
+      const escapedUrl = escapeValue(url);
+      const escapedDir = escapePath(dir);
 
       // Combine mkdir + download into a single command to avoid separate
       // round-trips through the sandbox bridge (e.g. Tauri desktop app),
       // ensuring the directory exists in the same shell session as the download.
-      const escapedDir = this.isWindows()
-        ? this.escapeForTarget(dir)
-        : CentrifugoSandbox.escapePath(dir);
-      const mkdirPart = this.isWindows()
-        ? `if not exist ${escapedDir} mkdir ${escapedDir} &&`
-        : `mkdir -p ${escapedDir} &&`;
+      const mkdirPart = useBash
+        ? `mkdir -p ${escapedDir} &&`
+        : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
       const downloadPart =
         httpClient === "curl"
           ? `curl -fsSL -o ${escapedPath} ${escapedUrl}`
@@ -642,9 +704,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       });
       if (result.exitCode !== 0) {
         // Gather diagnostic info to help debug write failures (e.g. curl exit 23)
-        const diagCmd = this.isWindows()
-          ? `dir ${escapedDir} 2>&1`
-          : `ls -la ${escapedDir} 2>&1; df -h /tmp 2>&1`;
+        const diagCmd = useBash
+          ? `ls -la ${escapedDir} 2>&1; df -h /tmp 2>&1`
+          : `dir ${escapedDir} 2>&1`;
         const diag = await this.commands.run(diagCmd, { displayName: "" });
         throw new Error(
           `Failed to download file: ${result.stderr}\n` +
@@ -662,7 +724,8 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       uploadUrl: string,
       contentType: string,
     ): Promise<void> => {
-      const path = this.toNativePath(rawPath);
+      const { path, escapePath, escapeValue } =
+        await this.shellContext(rawPath);
       const httpClient = await this.detectHttpClient();
 
       if (httpClient === "wget") {
@@ -678,17 +741,9 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
       }
 
       const fileName = path.split(/[/\\]/).pop() || "file";
-
-      // Use platform-aware escaping for Windows (cmd.exe) vs POSIX
-      const escapedPath = this.isWindows()
-        ? this.escapeForTarget(path)
-        : CentrifugoSandbox.escapePath(path);
-      const escapedUrl = this.isWindows()
-        ? this.escapeForTarget(uploadUrl)
-        : `'${uploadUrl.replace(/'/g, "'\\''")}'`;
-      const escapedContentType = this.isWindows()
-        ? this.escapeForTarget(`Content-Type: ${contentType}`)
-        : `'Content-Type: ${contentType.replace(/'/g, "'\\''")}'`;
+      const escapedPath = escapePath(path);
+      const escapedUrl = escapeValue(uploadUrl);
+      const escapedContentType = escapeValue(`Content-Type: ${contentType}`);
 
       const command =
         httpClient === "curl"
