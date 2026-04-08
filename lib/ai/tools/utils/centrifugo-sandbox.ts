@@ -685,14 +685,18 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
       const escapedPath = escapePath(path);
       const escapedUrl = escapeValue(url);
-      const escapedDir = escapePath(dir);
+      const escapedDir = dir ? escapePath(dir) : "";
 
       // Combine mkdir + download into a single command to avoid separate
       // round-trips through the sandbox bridge (e.g. Tauri desktop app),
       // ensuring the directory exists in the same shell session as the download.
-      const mkdirPart = useBash
-        ? `mkdir -p ${escapedDir} &&`
-        : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
+      // Skip mkdir entirely for root-level destinations (parentDir returns "")
+      // to avoid `mkdir -p ''` / `mkdir "C:"` on valid drive-root paths.
+      const mkdirPart = !dir
+        ? ""
+        : useBash
+          ? `mkdir -p ${escapedDir} &&`
+          : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
       const downloadPart =
         httpClient === "curl"
           ? `curl -fsSL -o ${escapedPath} ${escapedUrl}`
@@ -703,10 +707,13 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         displayName: `Downloading: ${fileName}`,
       });
       if (result.exitCode !== 0) {
-        // Gather diagnostic info to help debug write failures (e.g. curl exit 23)
+        // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
+        // Fall back to the target's own directory context when the destination
+        // is a drive root and `dir` is empty.
+        const diagDir = escapedDir || (useBash ? "/" : '"."');
         const diagCmd = useBash
-          ? `ls -la ${escapedDir} 2>&1; df -h /tmp 2>&1`
-          : `dir ${escapedDir} 2>&1`;
+          ? `ls -la ${diagDir} 2>&1; df -h /tmp 2>&1`
+          : `dir ${diagDir} 2>&1`;
         const diag = await this.commands.run(diagCmd, { displayName: "" });
         throw new Error(
           `Failed to download file: ${result.stderr}\n` +
