@@ -153,9 +153,18 @@ const downloadFileToSandbox = async (
     // ignore probe failures
   }
 
+  // Redact signed query params (e.g. S3 X-Amz-Signature) before logging.
+  let safeUrl = url;
+  try {
+    const parsed = new URL(url);
+    safeUrl = `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    safeUrl = url.split("?")[0];
+  }
+
   throw new Error(
     `Failed to download file: ${result.stderr}\n` +
-      `  url: ${url.substring(0, 120)}${url.length > 120 ? "..." : ""}\n` +
+      `  url: ${safeUrl}\n` +
       `  path: ${localPath}\n` +
       `  exitCode: ${result.exitCode}` +
       (diagnostics ? `\n  diagnostics:\n${diagnostics}` : ""),
@@ -187,12 +196,21 @@ export const uploadSandboxFiles = async (
     console.error("Failed uploading files to sandbox:", e);
     console.error(
       "Sandbox file details:",
-      sandboxFiles.map((f) => ({
-        url: f.url.substring(0, 120),
-        urlLength: f.url.length,
-        localPath: f.localPath,
-        protocol: f.url.split("://")[0],
-      })),
+      sandboxFiles.map((f) => {
+        let safeUrl: string;
+        try {
+          const parsed = new URL(f.url);
+          safeUrl = `${parsed.origin}${parsed.pathname}`;
+        } catch {
+          safeUrl = f.url.split("?")[0];
+        }
+        return {
+          url: safeUrl,
+          urlLength: f.url.length,
+          localPath: f.localPath,
+          protocol: f.url.split("://")[0],
+        };
+      }),
     );
   }
 };
