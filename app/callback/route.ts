@@ -39,7 +39,9 @@ const buildRecoveryResponse = async (
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
   const hasVerifierCookie = request.cookies.has("wos-auth-verifier");
-  if (redirectPath) cookieStore.delete("post_login_redirect");
+  if (redirectPath) {
+    cookieStore.delete({ name: "post_login_redirect", path: "/" });
+  }
 
   const bucket = classifyCallbackError(error);
   const rawReferer = request.headers.get("referer");
@@ -92,25 +94,12 @@ const buildRecoveryResponse = async (
   return loginResponse;
 };
 
-// AsyncLocalStorage-free handoff: the onError handler runs synchronously
-// within the same request's authHandler invocation, so stashing the current
-// request on a module-level variable immediately before the call is safe
-// for a single in-flight request per isolate.
-let currentRequest: NextRequest | null = null;
-
+// Authkit catches all callback errors and, by default, logs them via
+// console.error and returns a generic 500. Override that path via onError so
+// we can classify and redirect users to a recoverable flow instead.
 const authHandler = handleAuth({
-  onError: async ({ error }) => {
-    // Authkit catches all callback errors and, by default, logs them via
-    // console.error and returns a generic 500. Override that path so we can
-    // classify and redirect users to a recoverable flow instead.
-    if (!currentRequest) {
-      console.error("[AuthKit callback error]", error);
-      return new Response(null, {
-        status: 302,
-        headers: { Location: "/auth-error?code=500" },
-      });
-    }
-    return buildRecoveryResponse(currentRequest, error);
+  onError: async ({ error, request }) => {
+    return buildRecoveryResponse(request as NextRequest, error);
   },
 });
 
@@ -118,7 +107,6 @@ export async function GET(request: NextRequest) {
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
 
-  currentRequest = request;
   let response: Response;
   try {
     response = await authHandler(request);
@@ -126,8 +114,6 @@ export async function GET(request: NextRequest) {
     // Defensive: handleAuth shouldn't throw when onError is provided, but if
     // it ever does, fall back to the same recovery pipeline.
     return buildRecoveryResponse(request, error);
-  } finally {
-    currentRequest = null;
   }
 
   // On success, honor post_login_redirect.
@@ -136,7 +122,7 @@ export async function GET(request: NextRequest) {
     isValidLocalPath(redirectPath) &&
     [302, 307].includes(response.status)
   ) {
-    cookieStore.delete("post_login_redirect");
+    cookieStore.delete({ name: "post_login_redirect", path: "/" });
     return NextResponse.redirect(new URL(redirectPath, request.url));
   }
 
