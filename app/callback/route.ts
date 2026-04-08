@@ -44,11 +44,20 @@ export async function GET(request: NextRequest) {
     response = await authHandler(request);
   } catch (error) {
     const bucket = classifyCallbackError(error);
+    const rawReferer = request.headers.get("referer");
+    let refererOrigin: string | null = null;
+    if (rawReferer) {
+      try {
+        refererOrigin = new URL(rawReferer).origin;
+      } catch {
+        refererOrigin = null;
+      }
+    }
     const logPayload = {
       bucket,
       hasVerifierCookie,
       userAgent: request.headers.get("user-agent"),
-      referer: request.headers.get("referer"),
+      refererOrigin,
       secFetchSite: request.headers.get("sec-fetch-site"),
     };
 
@@ -61,15 +70,17 @@ export async function GET(request: NextRequest) {
 
     console.warn("[AuthKit callback recovery]", logPayload);
 
-    // Verifier cookie present but invalid → genuine corruption / tampering;
-    // don't bounce back into a login loop.
-    if (hasVerifierCookie) {
+    // Only verifier_missing with the cookie still present indicates genuine
+    // corruption/tampering worth surfacing as an error. state_mismatch with a
+    // cookie present is almost always a multi-tab overwrite — still recoverable
+    // via /login. Everything else → bounce to /login for one-click retry.
+    if (bucket === "verifier_missing" && hasVerifierCookie) {
       return NextResponse.redirect(
         new URL("/auth-error?code=400&reason=verifier_invalid", request.url),
       );
     }
 
-    // Verifier cookie missing (stale flow, multi-tab, scanner prefetch, ITP,
+    // Recoverable cases (stale flow, multi-tab, scanner prefetch, ITP,
     // cross-device link, embedded webview): one-click recovery via /login.
     // Preserve post_login_redirect intent so the retry lands where they wanted.
     const loginUrl = new URL("/login", request.url);
