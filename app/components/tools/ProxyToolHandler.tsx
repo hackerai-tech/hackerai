@@ -16,7 +16,6 @@ export const PROXY_ACTION_LABELS: Record<string, string> = {
   list_requests: "Listing requests",
   view_request: "Viewing request",
   send_request: "Sending request",
-  repeat_request: "Repeating request",
   scope_rules: "Managing scope rules",
   list_sitemap: "Listing sitemap",
   view_sitemap_entry: "Viewing sitemap entry",
@@ -26,7 +25,6 @@ export const PROXY_COMPLETED_LABELS: Record<string, string> = {
   list_requests: "Listed requests",
   view_request: "Viewed request",
   send_request: "Sent request",
-  repeat_request: "Repeated request",
   scope_rules: "Managed scope rules",
   list_sitemap: "Listed sitemap",
   view_sitemap_entry: "Viewed sitemap entry",
@@ -112,21 +110,6 @@ function formatSendRequest(r: any): string {
   }
 
   return lines.join("\n");
-}
-
-function formatRepeatRequest(r: any): string {
-  const base = formatSendRequest(r);
-  const mods = r.modifications_applied ?? {};
-  const modKeys = Object.keys(mods).filter((k) => mods[k] != null);
-
-  if (!modKeys.length) return base;
-
-  const modLine = `Modified: ${modKeys.join(", ")}`;
-  const origLine = r.original_request_id
-    ? `Original request: ${r.original_request_id}`
-    : "";
-
-  return [modLine, origLine, "", base].filter(Boolean).join("\n");
 }
 
 function formatScopeRules(r: any): string {
@@ -221,8 +204,6 @@ export function formatProxyOutput(toolName: string, result: any): string {
         return formatViewRequest(result);
       case "send_request":
         return formatSendRequest(result);
-      case "repeat_request":
-        return formatRepeatRequest(result);
       case "scope_rules":
         return formatScopeRules(result);
       case "list_sitemap":
@@ -250,7 +231,6 @@ export const ProxyToolHandler = ({
       case "send_request":
         return input.method && input.url ? `${input.method} ${input.url}` : "";
       case "view_request":
-      case "repeat_request":
         return input.request_id ? `Request ${input.request_id}` : "";
       case "list_requests":
         return input.httpql_filter || "";

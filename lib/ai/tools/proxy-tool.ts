@@ -5,7 +5,6 @@ import {
   listRequests,
   viewRequest,
   sendRequest,
-  repeatRequest,
   scopeRules,
   listSitemap,
   viewSitemapEntry,
@@ -152,7 +151,7 @@ export const createSendRequestTool = (context: ToolContext) =>
   tool({
     description: `Send an HTTP request through the proxy. Traffic is captured automatically for replay/inspection.
 
-Prefer this over curl in terminal — captured traffic can be replayed with repeat_request.`,
+Prefer this over curl in terminal.`,
     inputSchema: z.object({
       method: z.string().describe("HTTP method (GET, POST, PUT, DELETE, etc.)"),
       url: z.string().describe("Target URL"),
@@ -175,44 +174,6 @@ Prefer this over curl in terminal — captured traffic can be replayed with repe
           headers,
           body,
           timeout,
-        });
-        return { result };
-      } catch (error) {
-        return {
-          result: {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        };
-      }
-    },
-  });
-
-export const createRepeatRequestTool = (context: ToolContext) =>
-  tool({
-    description: `Repeat an existing proxy request with optional modifications for pentesting.
-
-Workflow: browse target → list_requests to see traffic → repeat_request to modify and test.`,
-    inputSchema: z.object({
-      request_id: z
-        .string()
-        .describe("ID of the original request to repeat (from list_requests)"),
-      modifications: z
-        .object({
-          url: z.string().optional(),
-          params: z.record(z.string(), z.string()).optional(),
-          headers: z.record(z.string(), z.string()).optional(),
-          body: z.string().optional(),
-          cookies: z.record(z.string(), z.string()).optional(),
-        })
-        .optional()
-        .describe("Changes to apply: url, params, headers, body, cookies"),
-      explanation: z.string().describe("Why this action is being taken"),
-    }),
-    execute: async ({ request_id, modifications }) => {
-      try {
-        const result = await repeatRequest(context, {
-          requestId: request_id,
-          modifications,
         });
         return { result };
       } catch (error) {
@@ -360,7 +321,6 @@ export const createProxyTools = (context: ToolContext) => ({
   list_requests: createListRequestsTool(context),
   view_request: createViewRequestTool(context),
   send_request: createSendRequestTool(context),
-  repeat_request: createRepeatRequestTool(context),
   scope_rules: createScopeRulesTool(context),
   list_sitemap: createListSitemapTool(context),
   view_sitemap_entry: createViewSitemapEntryTool(context),

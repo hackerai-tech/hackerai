@@ -187,7 +187,6 @@ export const SharedMessagePartHandler = ({
     part.type === "tool-list_requests" ||
     part.type === "tool-view_request" ||
     part.type === "tool-send_request" ||
-    part.type === "tool-repeat_request" ||
     part.type === "tool-scope_rules" ||
     part.type === "tool-list_sitemap" ||
     part.type === "tool-view_sitemap_entry"
@@ -617,7 +616,6 @@ function renderProxyTool(
           ? `${proxyInput.method} ${proxyInput.url}`
           : "";
       case "view_request":
-      case "repeat_request":
         return proxyInput.request_id ? `Request ${proxyInput.request_id}` : "";
       case "list_requests":
         return proxyInput.httpql_filter || "";
