@@ -103,9 +103,41 @@ const authHandler = handleAuth({
   },
 });
 
+/**
+ * Pre-flight check that mirrors authkit's own PKCE/state validation.
+ * Running it before authHandler lets us short-circuit into recovery
+ * *without* triggering authkit's unconditional console.error.
+ */
+const PKCE_COOKIE_NAME = "wos-auth-verifier";
+
+function preflightCallbackError(request: NextRequest): Error | null {
+  const url = request.nextUrl;
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  if (!code || !state) {
+    return new Error("Missing required auth parameter");
+  }
+  const pkceCookie = request.cookies.get(PKCE_COOKIE_NAME)?.value;
+  if (!pkceCookie) {
+    return new Error(
+      "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
+    );
+  }
+  if (state !== pkceCookie) {
+    return new Error("OAuth state mismatch");
+  }
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
+
+  // Catch known failures before authkit so its internal console.error is avoided.
+  const preflightError = preflightCallbackError(request);
+  if (preflightError) {
+    return buildRecoveryResponse(request, preflightError);
+  }
 
   let response: Response;
   try {
