@@ -24,6 +24,8 @@ export class UsageTracker {
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
+  /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
+  nonModelCost = 0;
   lastStepInputTokens = 0;
   /** Output tokens from summarization (not from assistant responses) */
   summarizationOutputTokens = 0;
