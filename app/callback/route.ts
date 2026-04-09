@@ -1,4 +1,5 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
+import { unsealData } from "iron-session";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -110,7 +111,9 @@ const authHandler = handleAuth({
  */
 const PKCE_COOKIE_NAME = "wos-auth-verifier";
 
-function preflightCallbackError(request: NextRequest): Error | null {
+async function preflightCallbackError(
+  request: NextRequest,
+): Promise<Error | null> {
   const url = request.nextUrl;
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
@@ -126,6 +129,26 @@ function preflightCallbackError(request: NextRequest): Error | null {
   if (state !== pkceCookie) {
     return new Error("OAuth state mismatch");
   }
+
+  // Verify the sealed cookie can be decrypted and contains the required PKCE
+  // fields. If WORKOS_COOKIE_PASSWORD rotated between the login initiation and
+  // the callback (e.g. due to a redeployment), unseal will produce an empty
+  // object and AuthKit would throw a ValiError internally.
+  try {
+    const unsealed = await unsealData<Record<string, unknown>>(pkceCookie, {
+      password: process.env.WORKOS_COOKIE_PASSWORD ?? "",
+    });
+    if (!unsealed.nonce || !unsealed.codeVerifier) {
+      return new Error(
+        "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
+      );
+    }
+  } catch {
+    return new Error(
+      "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
+    );
+  }
+
   return null;
 }
 
@@ -134,7 +157,7 @@ export async function GET(request: NextRequest) {
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
 
   // Catch known failures before authkit so its internal console.error is avoided.
-  const preflightError = preflightCallbackError(request);
+  const preflightError = await preflightCallbackError(request);
   if (preflightError) {
     return buildRecoveryResponse(request, preflightError);
   }
