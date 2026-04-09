@@ -453,6 +453,7 @@ export const createChatHandler = (
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;
+              usageTracker.nonModelCost += costDollars;
               chatLogger?.getBuilder().addToolCost(costDollars);
             },
           );
@@ -614,6 +615,7 @@ export const createChatHandler = (
             const sandboxCost = getSandboxSessionCost();
             if (sandboxCost > 0) {
               usageTracker.providerCost += sandboxCost;
+              usageTracker.nonModelCost += sandboxCost;
               chatLogger?.getBuilder().addToolCost(sandboxCost);
             }
 
@@ -623,8 +625,11 @@ export const createChatHandler = (
             }
             hasDeductedUsage = true;
 
-            // On clean completion: trust OpenRouter's raw cost (includes cache discounts)
-            // On error/abort/timeout: use our own token-based calculation (provider cost may be incomplete)
+            // On clean completion: trust OpenRouter's raw cost (includes cache discounts
+            // and sandbox/tool costs already accumulated in providerCost).
+            // On error/abort/timeout: the model's raw cost may be incomplete, so fall
+            // back to token-based calculation for model costs. Sandbox/tool costs are
+            // always accurate and passed separately so they're never dropped.
             const providerCost =
               streamSuccess && usageTracker.providerCost > 0
                 ? usageTracker.providerCost
@@ -639,6 +644,7 @@ export const createChatHandler = (
               extraUsageConfig,
               providerCost,
               selectedModel,
+              usageTracker.nonModelCost,
             );
             usageTracker.log({
               userId,

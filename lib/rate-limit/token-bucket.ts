@@ -324,7 +324,11 @@ export const checkTokenBucketLimit = async (
  * If extra usage was used for input (bucket at 0), also deducts output from extra usage.
  * If we over-estimated input cost, refunds the difference back to the bucket.
  *
- * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation
+ * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation.
+ *   On clean completions this includes model + sandbox + tool costs.
+ *   On non-clean completions this is undefined; nonModelCostDollars covers sandbox/tool costs.
+ * @param nonModelCostDollars - Sandbox session and tool costs (always accurate). When providerCostDollars
+ *   is undefined (non-clean streams), this is added on top of token-based model cost.
  */
 export const deductUsage = async (
   userId: string,
@@ -335,6 +339,7 @@ export const deductUsage = async (
   extraUsageConfig?: ExtraUsageConfig,
   providerCostDollars?: number,
   modelName?: string,
+  nonModelCostDollars: number = 0,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -354,7 +359,9 @@ export const deductUsage = async (
       modelName,
     );
 
-    // Calculate actual cost - prefer provider cost if available
+    // Calculate actual cost - prefer provider cost if available.
+    // Provider cost already includes non-model costs (sandbox/tools) when present.
+    // When absent (non-clean streams), add non-model costs on top of token-based estimate.
     let actualCostPoints: number;
 
     if (providerCostDollars !== undefined && providerCostDollars > 0) {
@@ -370,7 +377,11 @@ export const deductUsage = async (
         "output",
         modelName,
       );
-      actualCostPoints = actualInputCost + outputCost;
+      const nonModelCostPoints =
+        nonModelCostDollars > 0
+          ? Math.ceil(nonModelCostDollars * POINTS_PER_DOLLAR)
+          : 0;
+      actualCostPoints = actualInputCost + outputCost + nonModelCostPoints;
     }
 
     // Calculate the difference between what we pre-deducted and actual cost
@@ -728,6 +739,34 @@ export const applyTeamSeatDebt = async (
     }
   } catch (error) {
     console.error(`[applyTeamSeatDebt] Failed for user ${userId}:`, error);
+  }
+};
+
+// =============================================================================
+// Subscription Cancellation
+// =============================================================================
+
+/**
+ * Delete a user's paid-tier rate limit bucket.
+ * Called when a subscription is canceled (e.g. renewal payment failure) to
+ * immediately revoke access — the user falls back to the free tier on their
+ * next request once the WorkOS entitlement sync completes, but deleting the
+ * bucket closes the window between Stripe cancellation and entitlement sync.
+ */
+export const deletePaidTierBucket = async (
+  userId: string,
+  tier: SubscriptionTier,
+): Promise<void> => {
+  const redis = createRedisClient();
+  if (!redis) return;
+
+  try {
+    await redis.del(monthlyBucketKey(userId, tier));
+  } catch (error) {
+    console.error(
+      `[deletePaidTierBucket] Failed for user ${userId}, tier ${tier}:`,
+      error,
+    );
   }
 };
 
