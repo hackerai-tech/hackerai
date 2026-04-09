@@ -743,34 +743,6 @@ export const applyTeamSeatDebt = async (
 };
 
 // =============================================================================
-// Subscription Cancellation
-// =============================================================================
-
-/**
- * Delete a user's paid-tier rate limit bucket.
- * Called when a subscription is canceled (e.g. renewal payment failure) to
- * immediately revoke access — the user falls back to the free tier on their
- * next request once the WorkOS entitlement sync completes, but deleting the
- * bucket closes the window between Stripe cancellation and entitlement sync.
- */
-export const deletePaidTierBucket = async (
-  userId: string,
-  tier: SubscriptionTier,
-): Promise<void> => {
-  const redis = createRedisClient();
-  if (!redis) return;
-
-  try {
-    await redis.del(monthlyBucketKey(userId, tier));
-  } catch (error) {
-    console.error(
-      `[deletePaidTierBucket] Failed for user ${userId}, tier ${tier}:`,
-      error,
-    );
-  }
-};
-
-// =============================================================================
 // Refund
 // =============================================================================
 
