@@ -371,6 +371,86 @@ describe("CentrifugoSandbox", () => {
     }, 15000);
   });
 
+  describe("git-bash on Windows", () => {
+    // When the Windows remote runs git-bash (default since PR #346),
+    // every file op must emit POSIX syntax with MSYS-form paths
+    // (`/c/temp/...`), not cmd.exe syntax with backslash paths.
+    // Regression test for the S3 download → "Die Syntax ... ist falsch" error.
+
+    function createWindowsBashSandbox() {
+      const sandbox = createSandbox({
+        osInfo: {
+          platform: "win32",
+          arch: "x86_64",
+          release: "10.0.19045",
+          hostname: "WIN-DEV",
+        },
+      });
+      // Short-circuit caches so commands.run isn't invoked for detection.
+      (sandbox as any).shellKind = "bash";
+      (sandbox as any).httpClient = "curl";
+      const runs: string[] = [];
+      (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
+        runs.push(cmd);
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+      return { sandbox, runs };
+    }
+
+    it("downloadFromUrl emits POSIX mkdir + curl with MSYS paths", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      // Mock validateDownloadUrl is real; use an https URL it accepts.
+      await sandbox.files.downloadFromUrl(
+        "https://example.com/image.png",
+        "/tmp/hackerai-upload/image.png",
+      );
+      const cmd = runs[0];
+      expect(cmd).toContain("mkdir -p '/c/temp/hackerai-upload'");
+      expect(cmd).toContain(
+        "curl -fsSL -o '/c/temp/hackerai-upload/image.png'",
+      );
+      expect(cmd).not.toContain("if not exist");
+      expect(cmd).not.toContain("\\");
+    });
+
+    it("ensureDirectory emits mkdir -p with MSYS path", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      await (sandbox as any).ensureDirectory("C:\\temp\\hackerai-upload");
+      expect(runs[0]).toBe("mkdir -p '/c/temp/hackerai-upload'");
+    });
+
+    it("files.read uses cat with MSYS path", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      await sandbox.files.read("/tmp/foo/bar.txt");
+      expect(runs[0]).toBe("cat '/c/temp/foo/bar.txt'");
+    });
+
+    it("files.remove uses rm -rf with MSYS path", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      await sandbox.files.remove("/tmp/foo/bar.txt");
+      expect(runs[0]).toBe("rm -rf '/c/temp/foo/bar.txt'");
+    });
+
+    it("files.list uses find with MSYS path", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      await sandbox.files.list("/tmp/foo");
+      expect(runs[0]).toContain("find '/c/temp/foo'");
+      expect(runs[0]).toContain("-maxdepth 1 -type f");
+    });
+
+    it("files.write for text content uses heredoc with MSYS path", async () => {
+      const { sandbox, runs } = createWindowsBashSandbox();
+      await sandbox.files.write("/tmp/foo/bar.txt", "hello");
+      // First call is the ensureDirectory mkdir -p, second is the write itself.
+      expect(runs[0]).toBe("mkdir -p '/c/temp/foo'");
+      expect(runs[1]).toContain("cat > '/c/temp/foo/bar.txt'");
+      expect(runs[1]).toContain("<<'HACKERAI_EOF_");
+      expect(runs[1]).toContain("hello");
+      // No certutil / cmd.exe artifacts.
+      expect(runs[1]).not.toContain("certutil");
+    });
+  });
+
   describe("getSandboxContext", () => {
     it("returns context with OS info", () => {
       const sandbox = createSandbox({
