@@ -177,6 +177,13 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
         const maxWaitTime = timeout + 5000; // Add 5s buffer for network
 
+        // Timing diagnostics — track which phase we reached before timeout
+        const t0 = Date.now();
+        let tConnected = 0;
+        let tSubscribed = 0;
+        let tPublished = 0;
+        let tFirstMessage = 0;
+
         const cleanup = () => {
           if (timeoutId) {
             clearTimeout(timeoutId);
@@ -206,7 +213,18 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
           if (!settled) {
             settled = true;
             cleanup();
-            reject(new Error(`Command timeout after ${maxWaitTime}ms`));
+            const phases = [
+              `connected: ${tConnected ? `${tConnected - t0}ms` : "no"}`,
+              `subscribed: ${tSubscribed ? `${tSubscribed - t0}ms` : "no"}`,
+              `published: ${tPublished ? `${tPublished - t0}ms` : "no"}`,
+              `firstMsg: ${tFirstMessage ? `${tFirstMessage - t0}ms` : "no"}`,
+            ].join(", ");
+            reject(
+              new Error(
+                `Command timeout after ${maxWaitTime}ms [${phases}]` +
+                  ` connectionId=${this.connectionInfo.connectionId}`,
+              ),
+            );
           }
         }, maxWaitTime);
 
@@ -215,6 +233,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
 
         subscription.on("publication", (ctx) => {
           if (settled) return;
+          if (!tFirstMessage) tFirstMessage = Date.now();
 
           const message = parseSandboxMessage(ctx.data);
           if (!message) return;
@@ -267,6 +286,7 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         // "subscribed" fires after the server confirms the subscription,
         // ensuring we receive messages published to the channel.
         subscription.on("subscribed", () => {
+          tSubscribed = Date.now();
           const commandMessage: CommandMessage = {
             type: "command",
             commandId,
@@ -279,21 +299,30 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
             targetConnectionId: this.connectionInfo.connectionId,
           };
 
-          subscription!.publish(commandMessage).catch((err: unknown) => {
-            if (!settled) {
-              settled = true;
-              cleanup();
-              reject(
-                new Error(
-                  `Failed to publish command: ${err instanceof Error ? err.message : String(err)}`,
-                ),
-              );
-            }
-          });
+          subscription!
+            .publish(commandMessage)
+            .then(() => {
+              tPublished = Date.now();
+            })
+            .catch((err: unknown) => {
+              if (!settled) {
+                settled = true;
+                cleanup();
+                reject(
+                  new Error(
+                    `Failed to publish command: ${err instanceof Error ? err.message : String(err)}`,
+                  ),
+                );
+              }
+            });
         });
 
         subscription.subscribe();
         client.connect();
+
+        client.on("connected", () => {
+          tConnected = Date.now();
+        });
 
         client.on("error", (ctx) => {
           if (!settled) {
