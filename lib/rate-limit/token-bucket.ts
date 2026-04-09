@@ -378,8 +378,7 @@ export const deductUsage = async (
 
     // If we over-estimated (pre-deducted more than actual), refund the difference
     if (costDifference < 0) {
-      const refundAmount = Math.abs(costDifference);
-      await refundBucketTokens(userId, subscription, refundAmount);
+      await refundBucketTokens(userId, subscription, Math.abs(costDifference));
       return;
     }
 

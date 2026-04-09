@@ -290,10 +290,29 @@ export const createChatHandler = (
       // Token bucket requires estimated token count for cost calculation
       // Note: File tokens are not included because counts are inaccurate (especially PDFs)
       // and deductUsage reconciles with actual provider cost anyway
-      const estimatedInputTokens =
-        isAgentMode(mode) || subscription !== "free"
-          ? countMessagesTokens(truncatedMessages)
-          : 0;
+      let estimatedInputTokens = 0;
+      if (isAgentMode(mode) || subscription !== "free") {
+        const messageTokens = countMessagesTokens(truncatedMessages);
+        // Compute system prompt tokens early (without sandboxContext) for a more
+        // accurate pre-flight estimate. The real prompt is built later with sandbox
+        // context, but the difference is small (~200-500 tokens).
+        const estimatedSystemPrompt = await systemPrompt(
+          userId,
+          mode,
+          subscription,
+          selectedModel,
+          userCustomization,
+          temporary,
+          null, // sandboxContext not available yet
+        );
+        const systemTokens = countTokens(estimatedSystemPrompt);
+        // Tool schemas are sent alongside the request but can't be computed here
+        // (they depend on sandboxManager). Agent mode has ~8 tools (~1500 tokens),
+        // ask mode has ~4 tools (~500 tokens).
+        const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;
+        estimatedInputTokens =
+          messageTokens + systemTokens + toolSchemaOverhead;
+      }
 
       // Add chat context to logger
       const fileCounts = countFileAttachments(truncatedMessages);
@@ -598,7 +617,10 @@ export const createChatHandler = (
               chatLogger?.getBuilder().addToolCost(sandboxCost);
             }
 
-            if (!usageTracker.hasUsage) return;
+            if (!usageTracker.hasUsage) {
+              // No usage data reported — skip deduction
+              return;
+            }
             hasDeductedUsage = true;
 
             // On clean completion: trust OpenRouter's raw cost (includes cache discounts)
