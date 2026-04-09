@@ -589,7 +589,7 @@ export const createChatHandler = (
           let preFallbackCacheRead = 0;
           let preFallbackCacheWrite = 0;
 
-          const deductAccumulatedUsage = async () => {
+          const deductAccumulatedUsage = async (streamSuccess = false) => {
             if (hasDeductedUsage || subscription === "free") return;
             // Add E2B sandbox session cost (duration-based)
             const sandboxCost = getSandboxSessionCost();
@@ -597,8 +597,17 @@ export const createChatHandler = (
               usageTracker.providerCost += sandboxCost;
               chatLogger?.getBuilder().addToolCost(sandboxCost);
             }
+
             if (!usageTracker.hasUsage) return;
             hasDeductedUsage = true;
+
+            // On clean completion: trust OpenRouter's raw cost (includes cache discounts)
+            // On error/abort/timeout: use our own token-based calculation (provider cost may be incomplete)
+            const providerCost =
+              streamSuccess && usageTracker.providerCost > 0
+                ? usageTracker.providerCost
+                : undefined;
+
             await deductUsage(
               userId,
               subscription,
@@ -606,9 +615,7 @@ export const createChatHandler = (
               usageTracker.inputTokens,
               usageTracker.outputTokens,
               extraUsageConfig,
-              usageTracker.providerCost > 0
-                ? usageTracker.providerCost
-                : undefined,
+              providerCost,
               selectedModel,
             );
             usageTracker.log({
@@ -1071,7 +1078,8 @@ export const createChatHandler = (
                           });
 
                           // Deduct accumulated usage (includes both original + retry streams)
-                          await deductAccumulatedUsage();
+                          // Fallback completed successfully — trust provider cost
+                          await deductAccumulatedUsage(true);
                         },
                         sendReasoning: true,
                       }),
@@ -1246,7 +1254,8 @@ export const createChatHandler = (
                         !hasIncompleteToolCalls &&
                         !hasUsageToRecord))
                   ) {
-                    await deductAccumulatedUsage();
+                    // User aborted — use token-based cost (provider cost may be incomplete)
+                    await deductAccumulatedUsage(false);
                     return;
                   }
 
@@ -1342,7 +1351,14 @@ export const createChatHandler = (
                   writeAutoContinue(writer);
                 }
 
-                await deductAccumulatedUsage();
+                // Trust provider cost only on clean completion;
+                // on timeout/abort/error use our own token-based calculation
+                const isCleanCompletion =
+                  !isAborted &&
+                  !stoppedDueToPreemptiveTimeout &&
+                  !stoppedDueToTokenExhaustion &&
+                  streamFinishReason === "stop";
+                await deductAccumulatedUsage(isCleanCompletion);
               },
               sendReasoning: true,
             }),
