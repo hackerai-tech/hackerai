@@ -1078,8 +1078,12 @@ export const createChatHandler = (
                           });
 
                           // Deduct accumulated usage (includes both original + retry streams)
-                          // Fallback completed successfully — trust provider cost
-                          await deductAccumulatedUsage(true);
+                          const isFallbackClean =
+                            !retryAborted &&
+                            !stoppedDueToPreemptiveTimeout &&
+                            !stoppedDueToTokenExhaustion &&
+                            streamFinishReason === "stop";
+                          await deductAccumulatedUsage(isFallbackClean);
                         },
                         sendReasoning: true,
                       }),
