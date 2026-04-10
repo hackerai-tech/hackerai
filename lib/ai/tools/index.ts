@@ -59,7 +59,7 @@ export const createTools = (
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
   guardrailsConfig?: string,
-  caidoEnabled: boolean = true,
+  caidoEnabled: boolean = false,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
   subscription?: SubscriptionTier,
