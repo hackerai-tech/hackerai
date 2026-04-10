@@ -87,8 +87,8 @@ export function sendRateLimitWarnings(
 
   if (subscription === "free") {
     // Free users: sliding window (remaining count)
-    // Always show warning when rate limiting is skipped (Redis not configured)
-    if (rateLimitInfo.rateLimitSkipped || rateLimitInfo.remaining <= 5) {
+    // Skip warning when rate limiting is not configured (no Redis)
+    if (!rateLimitInfo.rateLimitSkipped && rateLimitInfo.remaining <= 5) {
       writeRateLimitWarning(writer, {
         warningType: "sliding-window",
         remaining: rateLimitInfo.remaining,
