@@ -681,18 +681,29 @@ export const deleteLastAssistantMessage = mutation({
     }
 
     try {
-      const lastAssistantMessage = await ctx.db
+      // Walk backwards from newest message and collect the entire trailing chain:
+      // assistant messages + hidden (auto-continue) user messages.
+      // Stop at the first non-hidden user message so regenerate targets the original request.
+      const trailingMessages = await ctx.db
         .query("messages")
         .withIndex("by_chat_id", (q) => q.eq("chat_id", args.chatId))
-        .filter((q) => q.eq(q.field("role"), "assistant"))
         .order("desc")
-        .first();
+        .collect();
 
-      if (lastAssistantMessage) {
-        if (
-          lastAssistantMessage.user_id &&
-          lastAssistantMessage.user_id !== user.subject
-        ) {
+      const messagesToDelete: typeof trailingMessages = [];
+      for (const msg of trailingMessages) {
+        if (msg.role === "assistant") {
+          messagesToDelete.push(msg);
+        } else if (msg.role === "user" && msg.is_hidden) {
+          messagesToDelete.push(msg);
+        } else {
+          break;
+        }
+      }
+
+      if (messagesToDelete.length > 0) {
+        const firstMsg = messagesToDelete[0];
+        if (firstMsg.user_id && firstMsg.user_id !== user.subject) {
           throw new Error(
             "Unauthorized: User not allowed to delete this message",
           );
@@ -711,43 +722,42 @@ export const deleteLastAssistantMessage = mutation({
           }
         }
 
-        // Check summary invalidation before deleting the message
-        await checkAndInvalidateSummary(ctx, args.chatId, [
-          {
-            id: lastAssistantMessage.id,
-            creationTime: lastAssistantMessage._creationTime,
-          },
-        ]);
+        // Check summary invalidation for all messages being deleted
+        await checkAndInvalidateSummary(
+          ctx,
+          args.chatId,
+          messagesToDelete.map((m) => ({
+            id: m.id,
+            creationTime: m._creationTime,
+          })),
+        );
 
-        if (
-          lastAssistantMessage.file_ids &&
-          lastAssistantMessage.file_ids.length > 0
-        ) {
-          for (const storageId of lastAssistantMessage.file_ids) {
-            try {
-              const file = await ctx.db.get(storageId);
-              if (file) {
-                // Delete from appropriate storage
-                if (file.s3_key) {
-                  await ctx.scheduler.runAfter(
-                    0,
-                    internal.s3Cleanup.deleteS3ObjectAction,
-                    { s3Key: file.s3_key },
-                  );
-                } else if (file.storage_id) {
-                  await ctx.storage.delete(file.storage_id);
+        // Delete files and messages
+        for (const msg of messagesToDelete) {
+          if (msg.file_ids && msg.file_ids.length > 0) {
+            for (const storageId of msg.file_ids) {
+              try {
+                const file = await ctx.db.get(storageId);
+                if (file) {
+                  if (file.s3_key) {
+                    await ctx.scheduler.runAfter(
+                      0,
+                      internal.s3Cleanup.deleteS3ObjectAction,
+                      { s3Key: file.s3_key },
+                    );
+                  } else if (file.storage_id) {
+                    await ctx.storage.delete(file.storage_id);
+                  }
+                  await fileCountAggregate.deleteIfExists(ctx, file);
+                  await ctx.db.delete(file._id);
                 }
-                // Delete from aggregate
-                await fileCountAggregate.deleteIfExists(ctx, file);
-                await ctx.db.delete(file._id);
+              } catch (error) {
+                console.error(`Failed to delete file ${storageId}:`, error);
               }
-            } catch (error) {
-              console.error(`Failed to delete file ${storageId}:`, error);
             }
           }
+          await ctx.db.delete(msg._id);
         }
-
-        await ctx.db.delete(lastAssistantMessage._id);
       }
 
       // Update todos in the same transaction if provided

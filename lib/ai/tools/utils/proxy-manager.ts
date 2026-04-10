@@ -25,6 +25,9 @@ let cachedCaidoToken: string | null = null;
  */
 const caidoLock = new WeakMap<object, Promise<void>>();
 
+/** Tracks sandboxes we've already warned about Windows incompatibility. */
+const windowsWarned = new WeakSet<object>();
+
 /** Detects Caido's broken-database error in response content. */
 export function isCaidoBroken(text: string): boolean {
   return (
@@ -68,6 +71,32 @@ async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
  * Uses a Promise-based lock: parallel tool calls await the same setup instead of racing.
  */
 export async function ensureCaido(context: ToolContext): Promise<void> {
+  // Caido proxy requires a POSIX shell — not available on Windows sandboxes.
+  // Cache the rejection so we throw once per session, not on every command.
+  const { sandbox } = await context.sandboxManager.getSandbox();
+  if (isCentrifugoSandbox(sandbox) && sandbox.isWindows()) {
+    const cached = caidoLock.get(context.sandboxManager);
+    if (cached) return cached; // re-throws the cached rejection
+
+    const rejection = Promise.reject(
+      new Error(
+        "Caido proxy is not supported on Windows sandboxes. " +
+          "HTTP traffic interception is only available on Linux and macOS.",
+      ),
+    );
+    // Prevent unhandled rejection when no one is awaiting this particular ref
+    rejection.catch(() => {});
+    caidoLock.set(context.sandboxManager, rejection);
+
+    if (!windowsWarned.has(context.sandboxManager)) {
+      windowsWarned.add(context.sandboxManager);
+      console.info(
+        "[Caido] Skipping setup — Caido proxy is not supported on Windows sandboxes.",
+      );
+    }
+    return rejection;
+  }
+
   const existing = caidoLock.get(context.sandboxManager);
   if (existing) return existing;
 
@@ -933,109 +962,6 @@ export async function sendRequest(
     url: curlMeta.url_effective,
     message:
       "Request sent through Caido proxy — check list_requests for captured traffic",
-  };
-}
-
-// ─── repeat_request ───────────────────────────────────────────────────────────
-
-export async function repeatRequest(
-  context: ToolContext,
-  opts: {
-    requestId: string;
-    modifications?: {
-      url?: string;
-      params?: Record<string, string>;
-      headers?: Record<string, string>;
-      body?: string;
-      cookies?: Record<string, string>;
-    };
-  },
-) {
-  const { requestId, modifications = {} } = opts;
-
-  // Fetch raw request bytes + isTls/port for accurate protocol detection
-  const data = (await runGql(
-    context,
-    `query GetRequest($id: ID!) { request(id: $id) { raw isTls port host } }`,
-    { id: requestId },
-  )) as {
-    request?: { raw?: string; isTls?: boolean; port?: number; host?: string };
-  };
-
-  if (!data.request?.raw) return { error: `Request ${requestId} not found` };
-
-  const rawContent = Buffer.from(data.request.raw, "base64").toString("utf-8");
-  if (!rawContent) return { error: "No raw request content found" };
-
-  // Parse request line + headers + body
-  const lines = rawContent.split("\n");
-  const [reqMethod = "GET", urlPath = "/"] = (lines[0] ?? "").trim().split(" ");
-  const reqHeaders: Record<string, string> = {};
-  let bodyStart = lines.length;
-
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i]?.trim() === "") {
-      bodyStart = i + 1;
-      break;
-    }
-    const colonIdx = lines[i]!.indexOf(":");
-    if (colonIdx > 0) {
-      reqHeaders[lines[i]!.slice(0, colonIdx).trim().toLowerCase()] = lines[
-        i
-      ]!.slice(colonIdx + 1).trim();
-    }
-  }
-
-  const reqBody = lines.slice(bodyStart).join("\n").trim();
-  const host = reqHeaders["host"] || data.request!.host || "";
-  if (!host) return { error: "No Host header in original request" };
-
-  const protocol = data.request!.isTls ? "https" : "http";
-  let fullUrl = modifications.url ?? `${protocol}://${host}${urlPath}`;
-
-  // Apply param modifications
-  if (modifications.params) {
-    const url = new URL(fullUrl);
-    for (const [k, v] of Object.entries(modifications.params)) {
-      url.searchParams.set(k, v);
-    }
-    fullUrl = url.toString();
-  }
-
-  const finalHeaders = { ...reqHeaders, ...(modifications.headers ?? {}) };
-
-  if (modifications.cookies) {
-    const cookies: Record<string, string> = {};
-    if (finalHeaders["cookie"]) {
-      for (const part of finalHeaders["cookie"].split(";")) {
-        const [k, v] = part.split("=");
-        if (k && v) cookies[k.trim()] = v.trim();
-      }
-    }
-    Object.assign(cookies, modifications.cookies);
-    finalHeaders["cookie"] = Object.entries(cookies)
-      .map(([k, v]) => `${k}=${v}`)
-      .join("; ");
-  }
-
-  const finalBody = modifications.body ?? reqBody;
-  const sendResult = await sendRequest(context, {
-    method: reqMethod,
-    url: fullUrl,
-    headers: finalHeaders,
-    body: finalBody,
-  });
-
-  return {
-    ...sendResult,
-    original_request_id: requestId,
-    modifications_applied: modifications,
-    request: {
-      method: reqMethod,
-      url: fullUrl,
-      headers: finalHeaders,
-      has_body: Boolean(finalBody),
-    },
   };
 }
 

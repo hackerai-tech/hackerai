@@ -115,20 +115,22 @@ export const MessageActions = ({
       {shouldShowActions ? (
         <>
           <div className="flex items-center space-x-2">
-            <WithTooltip
-              display={copied ? "Copied!" : "Copy message"}
-              trigger={
-                <button
-                  onClick={handleCopy}
-                  className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                  aria-label={copied ? "Copied!" : "Copy message"}
-                >
-                  {copied ? <Check size={16} /> : <Copy size={16} />}
-                </button>
-              }
-              side="bottom"
-              delayDuration={300}
-            />
+            {(isUser || isLastAssistantMessage) && (
+              <WithTooltip
+                display={copied ? "Copied!" : "Copy message"}
+                trigger={
+                  <button
+                    onClick={handleCopy}
+                    className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                    aria-label={copied ? "Copied!" : "Copy message"}
+                  >
+                    {copied ? <Check size={16} /> : <Copy size={16} />}
+                  </button>
+                }
+                side="bottom"
+                delayDuration={300}
+              />
+            )}
 
             {/* Show edit only for user messages */}
             {isUser && (
@@ -149,27 +151,59 @@ export const MessageActions = ({
             )}
 
             {/* Show feedback buttons only for assistant messages and not in temporary chats */}
-            {!isUser && onFeedback && !isTemporaryChat && (
-              <>
-                {/* Hide positive feedback button when awaiting negative feedback details */}
-                {!isAwaitingFeedbackDetails && (
+            {!isUser &&
+              isLastAssistantMessage &&
+              onFeedback &&
+              !isTemporaryChat && (
+                <>
+                  {/* Hide positive feedback button when awaiting negative feedback details */}
+                  {!isAwaitingFeedbackDetails && (
+                    <WithTooltip
+                      display={"Good response"}
+                      trigger={
+                        <button
+                          type="button"
+                          onClick={() => handleFeedback("positive")}
+                          className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
+                            existingFeedback === "positive"
+                              ? "opacity-100 text-primary-foreground"
+                              : "opacity-70 hover:opacity-100 text-muted-foreground"
+                          }`}
+                          aria-label="Good response"
+                        >
+                          <ThumbsUp
+                            size={16}
+                            fill={
+                              existingFeedback === "positive"
+                                ? "currentColor"
+                                : "none"
+                            }
+                          />
+                        </button>
+                      }
+                      side="bottom"
+                      delayDuration={300}
+                    />
+                  )}
                   <WithTooltip
-                    display={"Good response"}
+                    display={"Poor response"}
                     trigger={
                       <button
                         type="button"
-                        onClick={() => handleFeedback("positive")}
+                        onClick={() => handleFeedback("negative")}
                         className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
-                          existingFeedback === "positive"
+                          existingFeedback === "negative" ||
+                          isAwaitingFeedbackDetails
                             ? "opacity-100 text-primary-foreground"
                             : "opacity-70 hover:opacity-100 text-muted-foreground"
                         }`}
-                        aria-label="Good response"
+                        aria-label="Poor response"
                       >
-                        <ThumbsUp
+                        <ThumbsDown
                           size={16}
                           fill={
-                            existingFeedback === "positive"
+                            existingFeedback === "negative" ||
+                            isAwaitingFeedbackDetails
                               ? "currentColor"
                               : "none"
                           }
@@ -179,37 +213,8 @@ export const MessageActions = ({
                     side="bottom"
                     delayDuration={300}
                   />
-                )}
-                <WithTooltip
-                  display={"Poor response"}
-                  trigger={
-                    <button
-                      type="button"
-                      onClick={() => handleFeedback("negative")}
-                      className={`p-1.5 transition-opacity rounded hover:bg-secondary ${
-                        existingFeedback === "negative" ||
-                        isAwaitingFeedbackDetails
-                          ? "opacity-100 text-primary-foreground"
-                          : "opacity-70 hover:opacity-100 text-muted-foreground"
-                      }`}
-                      aria-label="Poor response"
-                    >
-                      <ThumbsDown
-                        size={16}
-                        fill={
-                          existingFeedback === "negative" ||
-                          isAwaitingFeedbackDetails
-                            ? "currentColor"
-                            : "none"
-                        }
-                      />
-                    </button>
-                  }
-                  side="bottom"
-                  delayDuration={300}
-                />
-              </>
-            )}
+                </>
+              )}
 
             {/* Show regenerate only for the last assistant message */}
             {!isUser && isLastAssistantMessage && (
@@ -232,23 +237,26 @@ export const MessageActions = ({
             )}
 
             {/* Show branch only for assistant messages and not in temporary chats */}
-            {!isUser && onBranch && !isTemporaryChat && (
-              <WithTooltip
-                display={"Branch in new chat"}
-                trigger={
-                  <button
-                    type="button"
-                    onClick={onBranch}
-                    className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
-                    aria-label="Branch in new chat"
-                  >
-                    <Split size={16} />
-                  </button>
-                }
-                side="bottom"
-                delayDuration={300}
-              />
-            )}
+            {!isUser &&
+              isLastAssistantMessage &&
+              onBranch &&
+              !isTemporaryChat && (
+                <WithTooltip
+                  display={"Branch in new chat"}
+                  trigger={
+                    <button
+                      type="button"
+                      onClick={onBranch}
+                      className="p-1.5 opacity-70 hover:opacity-100 transition-opacity rounded hover:bg-secondary text-muted-foreground"
+                      aria-label="Branch in new chat"
+                    >
+                      <Split size={16} />
+                    </button>
+                  }
+                  side="bottom"
+                  delayDuration={300}
+                />
+              )}
           </div>
 
           {/* Sources (only for assistant messages with web results) - positioned at the end */}

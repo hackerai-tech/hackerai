@@ -84,10 +84,16 @@ describe("s3Cleanup", () => {
         deleteS3ObjectAction.handler(mockCtx, args),
       ).resolves.not.toThrow();
 
-      expect(console.error).toHaveBeenCalledWith(
-        `Failed to delete S3 object: ${args.s3Key}`,
-        mockError,
+      expect(console.error).toHaveBeenCalledTimes(1);
+      const logged = JSON.parse(
+        (console.error as jest.Mock).mock.calls[0][0] as string,
       );
+      expect(logged).toMatchObject({
+        level: "error",
+        event: "s3_object_delete_failed",
+        s3Key: args.s3Key,
+        error: { name: "Error", message: mockError.message },
+      });
     });
   });
 
@@ -147,9 +153,16 @@ describe("s3Cleanup", () => {
       await deleteS3ObjectsBatchAction.handler(mockCtx, args);
 
       expect(mockDeleteS3Object).toHaveBeenCalledTimes(3);
-      expect(console.error).toHaveBeenCalledWith(
-        "Failed to delete 1 S3 objects",
+      const logged = JSON.parse(
+        (console.error as jest.Mock).mock.calls[0][0] as string,
       );
+      expect(logged).toMatchObject({
+        level: "error",
+        event: "s3_object_batch_delete_failed",
+        totalCount: 3,
+        failedCount: 1,
+        failedKeys: ["users/user123/file3.pdf"],
+      });
     });
 
     it("should handle all deletions failing", async () => {
@@ -172,9 +185,15 @@ describe("s3Cleanup", () => {
       await deleteS3ObjectsBatchAction.handler(mockCtx, args);
 
       expect(mockDeleteS3Object).toHaveBeenCalledTimes(2);
-      expect(console.error).toHaveBeenCalledWith(
-        "Failed to delete 2 S3 objects",
+      const logged = JSON.parse(
+        (console.error as jest.Mock).mock.calls[0][0] as string,
       );
+      expect(logged).toMatchObject({
+        level: "error",
+        event: "s3_object_batch_delete_failed",
+        totalCount: 2,
+        failedCount: 2,
+      });
     });
 
     it("should handle empty array gracefully", async () => {

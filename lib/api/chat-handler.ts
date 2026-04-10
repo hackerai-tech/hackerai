@@ -12,6 +12,9 @@ import { getResumeSection } from "@/lib/system-prompt/resume";
 import {
   tokenExhaustedAfterSummarization,
   TOKEN_EXHAUSTION_FINISH_REASON,
+  elapsedTimeExceeds,
+  PREEMPTIVE_TIMEOUT_FINISH_REASON,
+  AGENT_MAX_STREAM_DURATION_MS,
 } from "@/lib/chat/stop-conditions";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
@@ -77,7 +80,7 @@ import {
   createPreemptiveTimeout,
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
-import { processChatMessages } from "@/lib/chat/chat-processor";
+import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
 import { createTrackedProvider } from "@/lib/ai/providers";
 import {
   uploadSandboxFiles,
@@ -209,11 +212,28 @@ export const createChatHandler = (
 
       // Set up pre-emptive abort before Vercel timeout (moved early to cover entire request)
       const userStopSignal = new AbortController();
-      preemptiveTimeout = createPreemptiveTimeout({
-        chatId,
-        endpoint,
-        abortController: userStopSignal,
-      });
+      // Agent mode uses elapsedTimeExceeds stop condition instead
+      if (!isAgentMode(mode)) {
+        preemptiveTimeout = createPreemptiveTimeout({
+          chatId,
+          endpoint,
+          abortController: userStopSignal,
+        });
+      }
+
+      // Fetch user customization early so max_mode_enabled can influence
+      // context truncation (before messages are fetched from DB).
+      const userCustomization = await getUserCustomization({ userId });
+      // Max Mode only applies when a specific model is selected — not in Auto.
+      const isAutoModelSelection =
+        !selectedModelOverride || selectedModelOverride === "auto";
+      const maxModeEnabled =
+        !isAutoModelSelection && (userCustomization?.max_mode_enabled ?? false);
+      const resolvedModelName = selectModel(
+        mode,
+        subscription,
+        selectedModelOverride,
+      );
 
       const { truncatedMessages, chat, isNewChat, fileTokens } =
         await getMessagesByChatId({
@@ -224,6 +244,8 @@ export const createChatHandler = (
           regenerate,
           isTemporary: temporary,
           mode,
+          maxMode: maxModeEnabled,
+          modelName: resolvedModelName,
         });
 
       const baseTodos: Todo[] = getBaseTodosForRequest(
@@ -272,8 +294,6 @@ export const createChatHandler = (
         );
       }
 
-      // Fetch user customization early (needed for memory settings)
-      const userCustomization = await getUserCustomization({ userId });
       const memoryEnabled =
         subscription !== "free" &&
         (userCustomization?.include_memory_entries ?? true);
@@ -282,10 +302,29 @@ export const createChatHandler = (
       // Token bucket requires estimated token count for cost calculation
       // Note: File tokens are not included because counts are inaccurate (especially PDFs)
       // and deductUsage reconciles with actual provider cost anyway
-      const estimatedInputTokens =
-        isAgentMode(mode) || subscription !== "free"
-          ? countMessagesTokens(truncatedMessages)
-          : 0;
+      let estimatedInputTokens = 0;
+      if (isAgentMode(mode) || subscription !== "free") {
+        const messageTokens = countMessagesTokens(truncatedMessages);
+        // Compute system prompt tokens early (without sandboxContext) for a more
+        // accurate pre-flight estimate. The real prompt is built later with sandbox
+        // context, but the difference is small (~200-500 tokens).
+        const estimatedSystemPrompt = await systemPrompt(
+          userId,
+          mode,
+          subscription,
+          selectedModel,
+          userCustomization,
+          temporary,
+          null, // sandboxContext not available yet
+        );
+        const systemTokens = countTokens(estimatedSystemPrompt);
+        // Tool schemas are sent alongside the request but can't be computed here
+        // (they depend on sandboxManager). Agent mode has ~8 tools (~1500 tokens),
+        // ask mode has ~4 tools (~500 tokens).
+        const toolSchemaOverhead = isAgentMode(mode) ? 1500 : 500;
+        estimatedInputTokens =
+          messageTokens + systemTokens + toolSchemaOverhead;
+      }
 
       // Add chat context to logger
       const fileCounts = countFileAttachments(truncatedMessages);
@@ -426,6 +465,7 @@ export const createChatHandler = (
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;
+              usageTracker.nonModelCost += costDollars;
               chatLogger?.getBuilder().addToolCost(costDollars);
             },
             subscription,
@@ -506,7 +546,11 @@ export const createChatHandler = (
           const contextUsageOn = isContextUsageEnabled(subscription);
           const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageOn
-            ? getMaxTokensForSubscription(subscription)
+            ? getMaxTokensForSubscription(
+                subscription,
+                maxModeEnabled,
+                selectedModel,
+              )
             : 0;
           let ctxUsage = contextUsageOn
             ? computeContextUsage(
@@ -552,6 +596,7 @@ export const createChatHandler = (
 
           const hasSummarized = () => summarizationTracker.hasSummarized;
           let stoppedDueToTokenExhaustion = false;
+          let stoppedDueToPreemptiveTimeout = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
 
@@ -578,16 +623,32 @@ export const createChatHandler = (
           let preFallbackCacheRead = 0;
           let preFallbackCacheWrite = 0;
 
-          const deductAccumulatedUsage = async () => {
+          const deductAccumulatedUsage = async (streamSuccess = false) => {
             if (hasDeductedUsage || subscription === "free") return;
             // Add E2B sandbox session cost (duration-based)
             const sandboxCost = getSandboxSessionCost();
             if (sandboxCost > 0) {
               usageTracker.providerCost += sandboxCost;
+              usageTracker.nonModelCost += sandboxCost;
               chatLogger?.getBuilder().addToolCost(sandboxCost);
             }
-            if (!usageTracker.hasUsage) return;
+
+            if (!usageTracker.hasUsage) {
+              // No usage data reported — skip deduction
+              return;
+            }
             hasDeductedUsage = true;
+
+            // On clean completion: trust OpenRouter's raw cost (includes cache discounts
+            // and sandbox/tool costs already accumulated in providerCost).
+            // On error/abort/timeout: the model's raw cost may be incomplete, so fall
+            // back to token-based calculation for model costs. Sandbox/tool costs are
+            // always accurate and passed separately so they're never dropped.
+            const providerCost =
+              streamSuccess && usageTracker.providerCost > 0
+                ? usageTracker.providerCost
+                : undefined;
+
             await deductUsage(
               userId,
               subscription,
@@ -595,10 +656,9 @@ export const createChatHandler = (
               usageTracker.inputTokens,
               usageTracker.outputTokens,
               extraUsageConfig,
-              usageTracker.providerCost > 0
-                ? usageTracker.providerCost
-                : undefined,
+              providerCost,
               selectedModel,
+              usageTracker.nonModelCost,
             );
             usageTracker.log({
               userId,
@@ -614,7 +674,7 @@ export const createChatHandler = (
           const createStream = async (modelName: string) =>
             streamText({
               model: trackedProvider.languageModel(modelName),
-              maxOutputTokens: 32000,
+              maxOutputTokens: 30000,
               system: currentSystemPrompt,
               messages: filterEmptyAssistantMessages(
                 await convertToModelMessages(finalMessages),
@@ -625,8 +685,11 @@ export const createChatHandler = (
                 try {
                   const stepNumber = steps.length;
                   const threshold = Math.floor(
-                    getMaxTokensForSubscription(subscription) *
-                      SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    getMaxTokensForSubscription(
+                      subscription,
+                      maxModeEnabled,
+                      selectedModel,
+                    ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                   );
 
                   // Prune old tool outputs to stay within rolling token budget
@@ -738,13 +801,23 @@ export const createChatHandler = (
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
                       threshold: Math.floor(
-                        getMaxTokensForSubscription(subscription) *
-                          SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                        getMaxTokensForSubscription(
+                          subscription,
+                          maxModeEnabled,
+                          selectedModel,
+                        ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: hasSummarized,
                       onFired: () => {
                         stoppedDueToTokenExhaustion = true;
+                      },
+                    }),
+                    elapsedTimeExceeds({
+                      maxDurationMs: AGENT_MAX_STREAM_DURATION_MS,
+                      getStartTime: () => streamStartTime,
+                      onFired: () => {
+                        stoppedDueToPreemptiveTimeout = true;
                       },
                     }),
                   ]
@@ -779,6 +852,8 @@ export const createChatHandler = (
                 // If preemptive timeout triggered, use "timeout" as finish reason
                 if (preemptiveTimeout?.isPreemptive()) {
                   streamFinishReason = "timeout";
+                } else if (stoppedDueToPreemptiveTimeout) {
+                  streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
                 } else if (stoppedDueToTokenExhaustion) {
                   streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
                 } else {
@@ -842,6 +917,7 @@ export const createChatHandler = (
               isRetryWithFallback = true;
               lastStepInputTokens = 0;
               stoppedDueToTokenExhaustion = false;
+              stoppedDueToPreemptiveTimeout = false;
               preFallbackCacheRead = usageTracker.cacheReadTokens;
               preFallbackCacheWrite = usageTracker.cacheWriteTokens;
               result = await createStream(fallbackModel);
@@ -886,6 +962,7 @@ export const createChatHandler = (
                     isRetryWithFallback = true;
                     lastStepInputTokens = 0;
                     stoppedDueToTokenExhaustion = false;
+                    stoppedDueToPreemptiveTimeout = false;
                     const fallbackStartTime = Date.now();
 
                     const retryResult = await createStream(fallbackModel);
@@ -1043,7 +1120,12 @@ export const createChatHandler = (
                           });
 
                           // Deduct accumulated usage (includes both original + retry streams)
-                          await deductAccumulatedUsage();
+                          const isFallbackClean =
+                            !retryAborted &&
+                            !stoppedDueToPreemptiveTimeout &&
+                            !stoppedDueToTokenExhaustion &&
+                            streamFinishReason === "stop";
+                          await deductAccumulatedUsage(isFallbackClean);
                         },
                         sendReasoning: true,
                       }),
@@ -1218,7 +1300,8 @@ export const createChatHandler = (
                         !hasIncompleteToolCalls &&
                         !hasUsageToRecord))
                   ) {
-                    await deductAccumulatedUsage();
+                    // User aborted — use token-based cost (provider cost may be incomplete)
+                    await deductAccumulatedUsage(false);
                     return;
                   }
 
@@ -1306,14 +1389,22 @@ export const createChatHandler = (
                 }
 
                 if (
-                  stoppedDueToTokenExhaustion &&
+                  (stoppedDueToTokenExhaustion ||
+                    stoppedDueToPreemptiveTimeout) &&
                   isAgentMode(mode) &&
                   !temporary
                 ) {
                   writeAutoContinue(writer);
                 }
 
-                await deductAccumulatedUsage();
+                // Trust provider cost only on clean completion;
+                // on timeout/abort/error use our own token-based calculation
+                const isCleanCompletion =
+                  !isAborted &&
+                  !stoppedDueToPreemptiveTimeout &&
+                  !stoppedDueToTokenExhaustion &&
+                  streamFinishReason === "stop";
+                await deductAccumulatedUsage(isCleanCompletion);
               },
               sendReasoning: true,
             }),

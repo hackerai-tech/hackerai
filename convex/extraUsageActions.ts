@@ -1,7 +1,7 @@
 "use node";
 
 import { action } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import Stripe from "stripe";
 import { WorkOS } from "@workos-inc/node";
@@ -415,14 +415,16 @@ export const createBillingPortalSession = action({
 
       const stripe = getStripe();
 
-      const sessionParams: Stripe.BillingPortal.SessionCreateParams = {
+      const sessionParams: Parameters<
+        typeof stripe.billingPortal.sessions.create
+      >[0] = {
         customer: stripeCustomerId,
         return_url: args.baseUrl,
       };
 
       // If flow=payment_method, direct user to update payment method
       if (args.flow === "payment_method") {
-        sessionParams.flow_data = {
+        sessionParams!.flow_data = {
           type: "payment_method_update",
         };
       }
@@ -611,6 +613,34 @@ export const deductWithAutoReload = action({
           };
         }
       }
+    }
+
+    // Record outcome of auto-reload attempt for failure tracking / auto-disable.
+    // Only count *real charge outcomes*: a successful charge, or a charge that
+    // was actually attempted and declined by Stripe. Pre-charge configuration
+    // / lookup problems (no_stripe_customer, customer_blocked,
+    // no_default_payment_method, stripe_lookup_failed,
+    // amount_to_charge_below_minimum) must NOT increment the consecutive
+    // failure counter — they aren't card declines and shouldn't auto-disable
+    // auto-reload.
+    const PRE_CHARGE_REASONS = new Set([
+      "no_stripe_customer",
+      "customer_blocked",
+      "no_default_payment_method",
+      "stripe_lookup_failed",
+      "amount_to_charge_below_minimum",
+    ]);
+    if (
+      autoReloadTriggered &&
+      autoReloadResult &&
+      (autoReloadResult.success ||
+        !PRE_CHARGE_REASONS.has(autoReloadResult.reason ?? ""))
+    ) {
+      await ctx.runMutation(internal.extraUsage.recordAutoReloadOutcome, {
+        userId: args.userId,
+        success: autoReloadResult.success,
+        failureReason: autoReloadResult.reason,
+      });
     }
 
     // Now deduct from balance using points directly (no precision loss)

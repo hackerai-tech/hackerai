@@ -48,8 +48,15 @@ export function selectModel(
   // }
 
   // Agent mode: allow model override for paid users; free users get agent-model-free
+  // Block expensive models (Sonnet/Opus) in agent mode — fall back to auto
+  const BLOCKED_AGENT_MODELS = ["sonnet-4.6", "opus-4.6"];
   if (isAgentMode(mode)) {
-    if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
+    if (
+      selectedModel &&
+      selectedModel !== "auto" &&
+      subscription !== "free" &&
+      !BLOCKED_AGENT_MODELS.includes(selectedModel)
+    ) {
       return `model-${selectedModel}` as ModelName;
     }
     return subscription === "free" ? "agent-model-free" : "agent-model";

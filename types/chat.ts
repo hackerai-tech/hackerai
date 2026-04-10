@@ -16,7 +16,7 @@ export type SelectedModel =
   | "sonnet-4.6"
   | "grok-4.1"
   | "gemini-3-flash"
-  // | "opus-4.6"
+  | "opus-4.6"
   | "kimi-k2.5";
 // | "codex-local"
 // | `codex-local:${string}`;
@@ -26,7 +26,7 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "sonnet-4.6",
   "grok-4.1",
   "gemini-3-flash",
-  // "opus-4.6",
+  "opus-4.6",
   "kimi-k2.5",
   // "codex-local",
 ];
@@ -259,7 +259,8 @@ export interface TodoWriteInput {
 export type ChatStatus = "submitted" | "streaming" | "ready" | "error";
 
 export const messageMetadataSchema = z.object({
-  feedbackType: z.enum(["positive", "negative"]),
+  feedbackType: z.enum(["positive", "negative"]).optional(),
+  isAutoContinue: z.boolean().optional(),
 });
 
 export type MessageMetadata = z.infer<typeof messageMetadataSchema>;

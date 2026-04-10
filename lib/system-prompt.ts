@@ -103,7 +103,7 @@ All HTTP requests from terminal commands go directly to the target without inter
   const runningLine = `Caido CLI — a modern web security proxy — starts automatically when proxy tools are first used. Once started, it intercepts all HTTP/HTTPS traffic.`;
   return `<proxy_interception>
 ${runningLine}
-- Use proxy tools (list_requests, view_request, send_request, repeat_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
+- Use proxy tools (list_requests, view_request, send_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
 - If you see proxy errors (50x HTML error pages) when sending requests, it usually means the target URL, host, or port is incorrect — ignore Caido-generated error pages.
 - All terminal commands automatically route through the proxy via HTTP_PROXY env vars.
 ${uiLine}

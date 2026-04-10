@@ -104,37 +104,6 @@ describe("Proxy Tool Output Formatters", () => {
     });
   });
 
-  describe("repeat_request", () => {
-    it("should show modifications and original request ID", () => {
-      const result = formatProxyOutput("repeat_request", {
-        status_code: 200,
-        response_time_ms: 50,
-        url: "https://example.com",
-        headers: {},
-        body: "ok",
-        original_request_id: "5",
-        modifications_applied: { headers: { "X-Test": "1" }, body: "new" },
-      });
-
-      expect(result).toContain("Modified: headers, body");
-      expect(result).toContain("Original request: 5");
-      expect(result).toContain("HTTP 200");
-    });
-
-    it("should skip modification line when no modifications", () => {
-      const result = formatProxyOutput("repeat_request", {
-        status_code: 200,
-        response_time_ms: 50,
-        url: "https://example.com",
-        headers: {},
-        body: "ok",
-        modifications_applied: {},
-      });
-
-      expect(result).not.toContain("Modified:");
-    });
-  });
-
   describe("scope_rules", () => {
     it("should format a single scope with allow/deny lists", () => {
       const result = formatProxyOutput("scope_rules", {

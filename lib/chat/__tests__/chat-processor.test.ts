@@ -179,17 +179,16 @@ describe("selectModel", () => {
 
   // Agent mode allows model override for paid users
   describe("model override in agent mode", () => {
-    it("should use selected model override for paid users in agent mode", () => {
-      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe(
-        "model-sonnet-4.6",
-      );
-    });
-
-    it("should use all selectable models for paid users in agent mode", () => {
+    it("should use allowed model override for paid users in agent mode", () => {
       expect(selectModel("agent", "pro", "grok-4.1")).toBe("model-grok-4.1");
       expect(selectModel("agent", "pro", "gemini-3-flash")).toBe(
         "model-gemini-3-flash",
       );
+    });
+
+    it("should block expensive models (Sonnet/Opus) in agent mode", () => {
+      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe("agent-model");
+      expect(selectModel("agent", "pro", "opus-4.6")).toBe("agent-model");
     });
 
     it("should default to agent-model when no model selected", () => {

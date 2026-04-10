@@ -78,11 +78,17 @@ export const truncateMessagesWithFileTokens = async (
   messages: UIMessage[],
   subscription: SubscriptionTier = "pro",
   skipFileTokens: boolean = false,
+  maxMode?: boolean,
+  modelName?: string,
 ): Promise<{
   messages: UIMessage[];
   fileTokens: Record<Id<"files">, number>;
 }> => {
-  const maxTokens = getMaxTokensForSubscription(subscription);
+  const maxTokens = getMaxTokensForSubscription(
+    subscription,
+    maxMode,
+    modelName,
+  );
   const fileTokens = skipFileTokens
     ? {}
     : await getFileTokensByIds(extractAllFileIdsFromMessages(messages));

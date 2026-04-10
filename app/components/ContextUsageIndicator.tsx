@@ -12,6 +12,11 @@ export interface ContextUsageData {
 }
 
 function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) {
+    const m = n / 1_000_000;
+    if (m >= 10) return `${Math.round(m)}M`;
+    return Number.isInteger(m) ? `${m}M` : `${m.toFixed(1)}M`;
+  }
   if (n >= 1000) {
     const k = n / 1000;
     return k >= 10 ? `${Math.round(k)}k` : `${k.toFixed(1)}k`;

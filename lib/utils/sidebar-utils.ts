@@ -567,7 +567,6 @@ export function extractSidebarContentFromMessage(
       "tool-list_requests",
       "tool-view_request",
       "tool-send_request",
-      "tool-repeat_request",
       "tool-scope_rules",
       "tool-list_sitemap",
       "tool-view_sitemap_entry",

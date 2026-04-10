@@ -1,5 +1,15 @@
-import { describe, it, expect, jest } from "@jest/globals";
-import { tokenExhaustedAfterSummarization } from "../stop-conditions";
+import {
+  describe,
+  it,
+  expect,
+  jest,
+  beforeEach,
+  afterEach,
+} from "@jest/globals";
+import {
+  tokenExhaustedAfterSummarization,
+  elapsedTimeExceeds,
+} from "../stop-conditions";
 
 function makeState(overrides: {
   threshold: number;
@@ -121,5 +131,126 @@ describe("tokenExhaustedAfterSummarization", () => {
     condition();
     condition();
     expect(onFired).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("elapsedTimeExceeds", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  describe("returns false when elapsed time is below threshold", () => {
+    it.each([
+      {
+        scenario: "0ms elapsed, 5000ms threshold",
+        startOffset: 0,
+        maxDurationMs: 5000,
+      },
+      {
+        scenario: "1000ms elapsed, 5000ms threshold",
+        startOffset: 1000,
+        maxDurationMs: 5000,
+      },
+      {
+        scenario: "4999ms elapsed, 5000ms threshold",
+        startOffset: 4999,
+        maxDurationMs: 5000,
+      },
+    ])("$scenario", ({ startOffset, maxDurationMs }) => {
+      const now = Date.now();
+      const onFired = jest.fn();
+      const condition = elapsedTimeExceeds({
+        maxDurationMs,
+        getStartTime: () => now - startOffset,
+        onFired,
+      });
+      expect(condition()).toBe(false);
+    });
+  });
+
+  it("returns true when elapsed time equals threshold", () => {
+    const now = Date.now();
+    const onFired = jest.fn();
+    const condition = elapsedTimeExceeds({
+      maxDurationMs: 5000,
+      getStartTime: () => now - 5000,
+      onFired,
+    });
+    expect(condition()).toBe(true);
+  });
+
+  describe("returns true when elapsed time exceeds threshold", () => {
+    it.each([
+      {
+        scenario: "5001ms elapsed, 5000ms threshold",
+        startOffset: 5001,
+        maxDurationMs: 5000,
+      },
+      {
+        scenario: "10000ms elapsed, 5000ms threshold",
+        startOffset: 10000,
+        maxDurationMs: 5000,
+      },
+      {
+        scenario: "60001ms elapsed, 60000ms threshold",
+        startOffset: 60001,
+        maxDurationMs: 60000,
+      },
+    ])("$scenario", ({ startOffset, maxDurationMs }) => {
+      const now = Date.now();
+      const onFired = jest.fn();
+      const condition = elapsedTimeExceeds({
+        maxDurationMs,
+        getStartTime: () => now - startOffset,
+        onFired,
+      });
+      expect(condition()).toBe(true);
+    });
+  });
+
+  it("calls onFired when it fires", () => {
+    const now = Date.now();
+    const onFired = jest.fn();
+    const condition = elapsedTimeExceeds({
+      maxDurationMs: 5000,
+      getStartTime: () => now - 6000,
+      onFired,
+    });
+    condition();
+    expect(onFired).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT call onFired when below threshold", () => {
+    const now = Date.now();
+    const onFired = jest.fn();
+    const condition = elapsedTimeExceeds({
+      maxDurationMs: 5000,
+      getStartTime: () => now - 1000,
+      onFired,
+    });
+    condition();
+    condition();
+    condition();
+    expect(onFired).not.toHaveBeenCalled();
+  });
+
+  it("uses dynamic getStartTime() value (not cached)", () => {
+    const onFired = jest.fn();
+    let startTime = Date.now();
+    const condition = elapsedTimeExceeds({
+      maxDurationMs: 5000,
+      getStartTime: () => startTime,
+      onFired,
+    });
+
+    expect(condition()).toBe(false);
+
+    startTime = Date.now() - 6000;
+    expect(condition()).toBe(true);
+    expect(onFired).toHaveBeenCalledTimes(1);
   });
 });

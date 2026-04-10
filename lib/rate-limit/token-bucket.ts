@@ -18,7 +18,7 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-sonnet-4.6": { input: 3.0, output: 15.0 },
   "model-grok-4.1": { input: 0.2, output: 0.5 },
   "model-gemini-3-flash": { input: 0.5, output: 3.0 },
-  // "model-opus-4.6": { input: 5.0, output: 25.0 },
+  "model-opus-4.6": { input: 5.0, output: 25.0 },
   "model-gpt-5.4": { input: 2.5, output: 15.0 },
 };
 
@@ -258,6 +258,27 @@ export const checkTokenBucketLimit = async (
             });
           }
 
+          // If we tried auto-reload and Stripe declined the card, give the
+          // user a precise message naming the decline reason instead of the
+          // generic "balance is empty" copy. Checked AFTER the cap branches
+          // so capped users still see the cap message (deductPoints returns
+          // insufficientFunds: true alongside the cap flags).
+          if (
+            deductResult.autoReloadTriggered &&
+            deductResult.autoReloadResult &&
+            deductResult.autoReloadResult.success === false
+          ) {
+            const reason =
+              deductResult.autoReloadResult.reason ?? "payment_failed";
+            const msg = `Auto-reload couldn't charge your card (${reason}). Update your payment method in Settings, then try again.`;
+            throw new ChatSDKError("rate_limit:chat", msg, {
+              resetTimestamp: monthlyCheck.reset,
+              subscription,
+              autoReloadFailed: true,
+              autoReloadFailureReason: reason,
+            });
+          }
+
           const msg = `You've hit your usage limit and your extra usage balance is empty.\n\nYour limit resets ${resetTime}. To keep going now, add credits in Settings${upgradeHint}.`;
           throw new ChatSDKError("rate_limit:chat", msg, {
             resetTimestamp: monthlyCheck.reset,
@@ -303,7 +324,11 @@ export const checkTokenBucketLimit = async (
  * If extra usage was used for input (bucket at 0), also deducts output from extra usage.
  * If we over-estimated input cost, refunds the difference back to the bucket.
  *
- * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation
+ * @param providerCostDollars - If provided (from usage.raw.cost), uses this instead of token calculation.
+ *   On clean completions this includes model + sandbox + tool costs.
+ *   On non-clean completions this is undefined; nonModelCostDollars covers sandbox/tool costs.
+ * @param nonModelCostDollars - Sandbox session and tool costs (always accurate). When providerCostDollars
+ *   is undefined (non-clean streams), this is added on top of token-based model cost.
  */
 export const deductUsage = async (
   userId: string,
@@ -314,6 +339,7 @@ export const deductUsage = async (
   extraUsageConfig?: ExtraUsageConfig,
   providerCostDollars?: number,
   modelName?: string,
+  nonModelCostDollars: number = 0,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -333,7 +359,9 @@ export const deductUsage = async (
       modelName,
     );
 
-    // Calculate actual cost - prefer provider cost if available
+    // Calculate actual cost - prefer provider cost if available.
+    // Provider cost already includes non-model costs (sandbox/tools) when present.
+    // When absent (non-clean streams), add non-model costs on top of token-based estimate.
     let actualCostPoints: number;
 
     if (providerCostDollars !== undefined && providerCostDollars > 0) {
@@ -349,7 +377,11 @@ export const deductUsage = async (
         "output",
         modelName,
       );
-      actualCostPoints = actualInputCost + outputCost;
+      const nonModelCostPoints =
+        nonModelCostDollars > 0
+          ? Math.ceil(nonModelCostDollars * POINTS_PER_DOLLAR)
+          : 0;
+      actualCostPoints = actualInputCost + outputCost + nonModelCostPoints;
     }
 
     // Calculate the difference between what we pre-deducted and actual cost
@@ -357,8 +389,7 @@ export const deductUsage = async (
 
     // If we over-estimated (pre-deducted more than actual), refund the difference
     if (costDifference < 0) {
-      const refundAmount = Math.abs(costDifference);
-      await refundBucketTokens(userId, subscription, refundAmount);
+      await refundBucketTokens(userId, subscription, Math.abs(costDifference));
       return;
     }
 

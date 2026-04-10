@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { SubscriptionTier } from "@/types/chat";
 import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
+import { getSuspensionMessage } from "@/lib/suspensionMessage";
 
 const convex = new ConvexHttpClient(process.env.NEXT_PUBLIC_CONVEX_URL!);
 
@@ -57,8 +58,7 @@ export const POST = async (req: NextRequest) => {
     if (matchingCustomer.metadata.blocked === "true") {
       return NextResponse.json(
         {
-          error:
-            "Your account has been suspended. Please contact support via chat at https://help.hackerai.co/ to resolve this.",
+          error: getSuspensionMessage(matchingCustomer.metadata.blocked_reason),
         },
         { status: 403 },
       );

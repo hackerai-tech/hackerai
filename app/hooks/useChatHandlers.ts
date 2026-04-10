@@ -15,6 +15,10 @@ import { toast } from "sonner";
 import { removeTodosBySourceMessages } from "@/lib/utils/todo-utils";
 import { useDataStreamDispatch } from "@/app/components/DataStreamProvider";
 import { normalizeMessages } from "@/lib/utils/message-processor";
+import {
+  getAutoContinueChainAssistantIds,
+  getMessagesUpToLastRealUser,
+} from "@/lib/utils/message-utils";
 
 interface UseChatHandlersProps {
   chatId: string;
@@ -346,30 +350,31 @@ export const useChatHandlers = ({
 
   const handleRegenerate = async () => {
     setIsAutoResuming(false);
+    resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (status === "streaming") {
       await stopActiveStream({ skipSave: true });
     }
 
-    // Remove only todos from the last assistant message being regenerated.
-    // This ensures that if the new run yields no todos, old assistant todos won't persist,
-    // while preserving todos from previous assistant messages.
-    const lastAssistant = [...messages]
-      .reverse()
-      .find((m) => m.role === "assistant");
-    const lastAssistantId = lastAssistant?.id;
-    const cleanedTodos = lastAssistantId
-      ? removeTodosBySourceMessages(todos, [lastAssistantId])
-      : todos;
+    // Remove todos from all assistant messages in the auto-continue chain.
+    const chainAssistantIds = getAutoContinueChainAssistantIds(messages);
+    const cleanedTodos =
+      chainAssistantIds.length > 0
+        ? removeTodosBySourceMessages(todos, chainAssistantIds)
+        : todos;
     if (cleanedTodos !== todos) setTodos(cleanedTodos);
 
+    // Trim client-side message state to the last real user message.
+    // Without this, the SDK's regenerate() only removes the last assistant,
+    // leaving old auto-continue chain messages visible in the UI.
+    const trimmedMessages = getMessagesUpToLastRealUser(messages);
+    setMessages(trimmedMessages);
+
     if (!temporaryChatsEnabled) {
-      // Always delete the last assistant message when regenerating
-      // This prevents accumulation of empty messages when user aborts quickly multiple times
-      // The deleteLastAssistantMessage mutation queries DB for the last assistant message,
-      // so it will only delete if one exists
-      if (lastAssistant) {
+      // Delete the entire trailing auto-continue chain (all assistant + hidden user messages)
+      // back to the last real user message, so regeneration starts from the original request
+      if (chainAssistantIds.length > 0) {
         await deleteLastAssistantMessage({
           chatId,
           todos: cleanedTodos,
@@ -388,13 +393,10 @@ export const useChatHandlers = ({
         },
       });
     } else {
-      // For temporary chats, send all messages except the last assistant message
-      const messagesForRegenerate =
-        messages && messages.length > 0 ? messages.slice(0, -1) : messages;
       regenerate({
         body: {
           mode: chatMode,
-          messages: messagesForRegenerate,
+          messages: trimmedMessages,
           todos: cleanedTodos,
           regenerate: true,
           temporary: true,
@@ -407,6 +409,7 @@ export const useChatHandlers = ({
 
   const handleRetry = async () => {
     setIsAutoResuming(false);
+    resetAutoContinueCount?.();
 
     // Stop any active stream first to prevent message order issues and wasted tokens
     if (status === "streaming") {

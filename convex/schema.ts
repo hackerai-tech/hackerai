@@ -127,6 +127,7 @@ export default defineSchema({
     guardrails_config: v.optional(v.string()),
     caido_enabled: v.optional(v.boolean()),
     extra_usage_enabled: v.optional(v.boolean()),
+    max_mode_enabled: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)
@@ -146,6 +147,10 @@ export default defineSchema({
     first_successful_charge_at: v.optional(v.number()), // Timestamp of first successful charge
     cumulative_spend_dollars: v.optional(v.number()), // Total of all successful charges
     override_monthly_cap_dollars: v.optional(v.number()), // Manual override set by support team
+    // Auto-reload health tracking — disable after consecutive failures so a
+    // broken saved card does not keep retrying and trip card-testing fraud rules.
+    auto_reload_consecutive_failures: v.optional(v.number()),
+    auto_reload_disabled_reason: v.optional(v.string()),
     updated_at: v.number(),
   }).index("by_user_id", ["user_id"]),
 

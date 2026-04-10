@@ -86,22 +86,28 @@ export const Messages = ({
   // Prefetch and cache image URLs for better performance
   const { getCachedUrl, setCachedUrl } = useFileUrlCache(messages);
 
+  // Filter out auto-continue messages for rendering
+  const visibleMessages = useMemo(
+    () => messages.filter((msg) => !msg.metadata?.isAutoContinue),
+    [messages],
+  );
+
   // Memoize expensive calculations
   const lastAssistantMessageIndex = useMemo(() => {
-    return findLastAssistantMessageIndex(messages);
-  }, [messages]);
+    return findLastAssistantMessageIndex(visibleMessages);
+  }, [visibleMessages]);
 
   // Check if last assistant message has any content (text or files)
   const lastAssistantHasContent = useMemo(() => {
     if (lastAssistantMessageIndex === undefined) return false;
-    const lastAssistantMsg = messages[lastAssistantMessageIndex];
+    const lastAssistantMsg = visibleMessages[lastAssistantMessageIndex];
     if (!lastAssistantMsg) return false;
     const hasText = hasTextContent(lastAssistantMsg.parts);
     const hasFiles = lastAssistantMsg.parts.some(
       (part) => part.type === "file",
     );
     return hasText || hasFiles;
-  }, [lastAssistantMessageIndex, messages]);
+  }, [lastAssistantMessageIndex, visibleMessages]);
 
   // Check if we should show loading dots (streaming with no content yet, or submitted for local providers)
   const shouldShowLoadingDots = useMemo(() => {
@@ -116,7 +122,7 @@ export const Messages = ({
     // Check if last assistant message has text content
     const lastAssistantMsg =
       lastAssistantMessageIndex !== undefined
-        ? messages[lastAssistantMessageIndex]
+        ? visibleMessages[lastAssistantMessageIndex]
         : undefined;
     if (!lastAssistantMsg) return true; // No message yet, show dots
     return !hasTextContent(lastAssistantMsg.parts);
@@ -126,7 +132,7 @@ export const Messages = ({
     summarizationStatus,
     uploadStatus,
     lastAssistantMessageIndex,
-    messages,
+    visibleMessages,
   ]);
 
   // Determine if summarization status should be shown as a separate element vs inline
@@ -289,12 +295,12 @@ export const Messages = ({
               <Loading size={6} />
             </div>
           )}
-          {messages.map((message, index) => (
+          {visibleMessages.map((message, index) => (
             <MessageItem
               key={message.id}
               message={message}
               index={index}
-              messagesLength={messages.length}
+              messagesLength={visibleMessages.length}
               lastAssistantMessageIndex={lastAssistantMessageIndex}
               status={status}
               isHovered={hoveredMessageId === message.id}

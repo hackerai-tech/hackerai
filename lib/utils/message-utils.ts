@@ -96,3 +96,49 @@ export const extractWebSourcesFromMessage = (message: {
 
   return sources;
 };
+
+/**
+ * Collects assistant message IDs in the trailing auto-continue chain.
+ * Walks backwards from the end of the messages array, collecting assistant IDs
+ * until a real (non-auto-continue) user message is hit.
+ */
+export const getAutoContinueChainAssistantIds = (
+  messages: Array<{
+    id: string;
+    role: string;
+    metadata?: { isAutoContinue?: boolean };
+  }>,
+): string[] => {
+  const chainAssistantIds: string[] = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "assistant") {
+      chainAssistantIds.push(msg.id);
+    } else if (msg.role === "user" && msg.metadata?.isAutoContinue) {
+      continue;
+    } else {
+      break;
+    }
+  }
+  return chainAssistantIds;
+};
+
+/**
+ * Finds the last real (non-auto-continue) user message and returns
+ * messages up to and including it, discarding the trailing auto-continue chain.
+ */
+export const getMessagesUpToLastRealUser = <
+  T extends { role: string; metadata?: { isAutoContinue?: boolean } },
+>(
+  messages: T[],
+): T[] => {
+  let lastRealUserIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.role === "user" && !msg.metadata?.isAutoContinue) {
+      lastRealUserIdx = i;
+      break;
+    }
+  }
+  return lastRealUserIdx >= 0 ? messages.slice(0, lastRealUserIdx + 1) : [];
+};

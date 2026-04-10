@@ -42,6 +42,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { useState } from "react";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import { isCodexLocal, type ChatMode, type SelectedModel } from "@/types/chat";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { useGlobalState } from "@/app/contexts/GlobalState";
@@ -69,6 +71,60 @@ interface ModelSelectorProps {
   mode: ChatMode;
 }
 
+const SwitchRow = ({
+  label,
+  description,
+  checked,
+  onToggle,
+  ariaLabel,
+  mobile = false,
+}: {
+  label: string;
+  description?: string;
+  checked: boolean;
+  onToggle: (checked: boolean) => void;
+  ariaLabel: string;
+  mobile?: boolean;
+}) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onToggle(!checked);
+    }
+  };
+
+  return (
+    <div
+      role="button"
+      onClick={() => onToggle(!checked)}
+      onKeyDown={handleKeyDown}
+      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-muted/50 ${
+        mobile ? "py-2.5" : "py-2"
+      }`}
+      aria-label={ariaLabel}
+      tabIndex={0}
+    >
+      <div className="flex-1 min-w-0">
+        <span className="text-sm font-medium text-foreground">{label}</span>
+        {description && (
+          <p className="text-xs text-muted-foreground leading-snug mt-0.5">
+            {description}
+          </p>
+        )}
+      </div>
+      <Switch
+        checked={checked}
+        onCheckedChange={onToggle}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+        aria-label={ariaLabel}
+        className="shrink-0"
+      />
+    </div>
+  );
+};
+
 const AutoToggle = ({
   isAuto,
   onToggle,
@@ -77,45 +133,20 @@ const AutoToggle = ({
   isAuto: boolean;
   onToggle: (checked: boolean) => void;
   mobile?: boolean;
-}) => {
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.target !== e.currentTarget) return;
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      onToggle(!isAuto);
+}) => (
+  <SwitchRow
+    label="Auto"
+    description={
+      isAuto
+        ? "Balanced quality and speed, recommended for most tasks"
+        : undefined
     }
-  };
-
-  return (
-    <div
-      role="button"
-      onClick={() => onToggle(!isAuto)}
-      onKeyDown={handleKeyDown}
-      className={`group w-full flex items-center gap-2.5 px-2.5 rounded-lg text-left transition-colors select-none cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring hover:bg-muted/50 ${
-        mobile ? "py-2.5" : "py-2"
-      }`}
-      aria-label="Toggle auto model selection"
-      tabIndex={0}
-    >
-      <div className="flex-1 min-w-0">
-        <span className="text-sm font-medium text-foreground">Auto</span>
-        {isAuto && (
-          <p className="text-xs text-muted-foreground leading-snug mt-0.5">
-            Balanced quality and speed, recommended for most tasks
-          </p>
-        )}
-      </div>
-      <Switch
-        checked={isAuto}
-        onCheckedChange={onToggle}
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-        aria-label="Auto model selection"
-        className="shrink-0"
-      />
-    </div>
-  );
-};
+    checked={isAuto}
+    onToggle={onToggle}
+    ariaLabel="Toggle auto model selection"
+    mobile={mobile}
+  />
+);
 
 const ModelOptionButton = ({
   option,
@@ -358,6 +389,8 @@ const ModelOptionList = ({
   isAuto,
   isFreeUser,
   isTauri = false,
+  isMaxMode,
+  onMaxModeToggle,
   onAutoToggle,
   onSelect,
   onClose,
@@ -369,6 +402,8 @@ const ModelOptionList = ({
   isAuto: boolean;
   isFreeUser: boolean;
   isTauri?: boolean;
+  isMaxMode: boolean;
+  onMaxModeToggle: (checked: boolean) => void;
   onAutoToggle: (checked: boolean) => void;
   onSelect: (option: ModelOption) => void;
   onClose: () => void;
@@ -465,6 +500,38 @@ const ModelOptionList = ({
             />
           </>
         )}
+
+        {!isFreeUser && (
+          <>
+            <div className="my-1 border-b border-border/50" />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <SwitchRow
+                    label="Max Mode"
+                    checked={isMaxMode}
+                    onToggle={onMaxModeToggle}
+                    ariaLabel="Toggle max mode"
+                    mobile={mobile}
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent
+                side="right"
+                sideOffset={12}
+                className="bg-popover text-popover-foreground border border-border shadow-lg rounded-xl px-4 py-3 max-w-[240px] [&_svg]:!hidden"
+              >
+                <p className="text-sm font-semibold text-foreground leading-snug">
+                  Max Mode
+                </p>
+                <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                  Use the selected model&apos;s full native context window (up
+                  to 1M+ tokens) instead of the default 200k.
+                </p>
+              </TooltipContent>
+            </Tooltip>
+          </>
+        )}
       </>
     )}
   </div>
@@ -488,6 +555,23 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
 
   const isAuto = value === "auto";
   const isFreeUser = subscription === "free";
+
+  const userCustomization = useQuery(
+    api.userCustomization.getUserCustomization,
+    isFreeUser ? "skip" : {},
+  );
+  const saveCustomization = useMutation(
+    api.userCustomization.saveUserCustomization,
+  );
+  const isMaxMode = userCustomization?.max_mode_enabled ?? false;
+
+  const handleMaxModeToggle = async (checked: boolean) => {
+    try {
+      await saveCustomization({ max_mode_enabled: checked });
+    } catch {
+      // Silent; toggle will revert on next query refresh
+    }
+  };
   const options = isAgentMode(mode) ? AGENT_MODEL_OPTIONS : ASK_MODEL_OPTIONS;
   const codexOptions = CODEX_LOCAL_OPTIONS;
   const allOptions = [...options, ...codexOptions];
@@ -659,6 +743,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
               isAuto={isAuto}
               isFreeUser={isFreeUser}
               isTauri={isTauri}
+              isMaxMode={isMaxMode}
+              onMaxModeToggle={handleMaxModeToggle}
               onAutoToggle={handleAutoToggle}
               onSelect={handleModelSelect}
               onClose={() => setOpen(false)}
@@ -683,6 +769,8 @@ export function ModelSelector({ value, onChange, mode }: ModelSelectorProps) {
             isAuto={isAuto}
             isFreeUser={isFreeUser}
             isTauri={isTauri}
+            isMaxMode={isMaxMode}
+            onMaxModeToggle={handleMaxModeToggle}
             onAutoToggle={handleAutoToggle}
             onSelect={handleModelSelect}
             onClose={() => setOpen(false)}

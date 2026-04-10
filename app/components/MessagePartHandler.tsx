@@ -260,14 +260,6 @@ export const MessagePartHandler = memo(function MessagePartHandler({
       return (
         <ProxyToolHandler part={part} status={status} toolName="send_request" />
       );
-    case "tool-repeat_request":
-      return (
-        <ProxyToolHandler
-          part={part}
-          status={status}
-          toolName="repeat_request"
-        />
-      );
     case "tool-scope_rules":
       return (
         <ProxyToolHandler part={part} status={status} toolName="scope_rules" />

@@ -305,6 +305,37 @@ async function handlePaymentFailed(
     paymentIntent.last_payment_error?.code ??
     "unknown";
 
+  // Auto-reload charges run against a single saved payment method the user
+  // already validated, so they cannot represent card-testing by construction.
+  // We must NOT feed these failures into the multi-signal fraud detector or a
+  // legitimate user with an expired card will get auto-blocked. The
+  // createAutoReloadPayment helper tags the invoice with metadata.type =
+  // "extra_usage_auto_reload"; skip recording when the PI is tied to one.
+  // Auto-disable + user notification of broken auto-reload is handled
+  // separately in convex/extraUsage.ts:recordAutoReloadOutcome.
+  const invoiceRef = (
+    paymentIntent as unknown as { invoice?: string | { id: string } | null }
+  ).invoice;
+  const invoiceId =
+    typeof invoiceRef === "string" ? invoiceRef : (invoiceRef?.id ?? null);
+  if (invoiceId) {
+    try {
+      const invoice = await stripe.invoices.retrieve(invoiceId);
+      if (invoice.metadata?.type === "extra_usage_auto_reload") {
+        console.log(
+          `[Fraud Webhook] Skipping fraud tracking for auto-reload payment failure ${paymentIntent.id} (customer ${customerId}, decline=${declineCode})`,
+        );
+        return;
+      }
+    } catch (err) {
+      console.warn(
+        `[Fraud Webhook] Failed to retrieve invoice ${invoiceId} while checking auto-reload metadata:`,
+        err,
+      );
+      // Fall through to normal fraud tracking on lookup failure.
+    }
+  }
+
   const chargeId =
     typeof paymentIntent.latest_charge === "string"
       ? paymentIntent.latest_charge
