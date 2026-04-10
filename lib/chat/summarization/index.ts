@@ -78,7 +78,12 @@ const saveTranscriptToSandbox = async (
       : "/tmp/agent-transcripts";
     const path = `${dir}/${transcriptId}.json`;
 
-    await sandbox.commands.run(`mkdir -p ${dir}`, { timeoutMs: 5000 });
+    // E2B needs an explicit mkdir since its files.write doesn't create parents.
+    // CentrifugoSandbox's files.write already calls ensureDirectory internally
+    // with proper Windows path/shell handling, so skip the raw mkdir for it.
+    if (isE2BSandbox(sandbox)) {
+      await sandbox.commands.run(`mkdir -p ${dir}`, { timeoutMs: 5000 });
+    }
 
     // Save as structured JSON — model messages (mid-stream, with separate
     // tool-call/tool-result parts) when available, otherwise UI messages
