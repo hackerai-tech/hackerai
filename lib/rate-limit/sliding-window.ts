@@ -19,14 +19,17 @@ export const checkFreeUserRateLimit = async (
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
-  if (!redis) {
-    throw new ChatSDKError(
-      "rate_limit:chat",
-      "Rate limiting service is temporarily unavailable. Please try again in a few moments.",
-    );
-  }
-
   const requestLimit = parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10");
+
+  if (!redis) {
+    // Skip rate limiting if Redis is not configured (e.g. local dev)
+    return {
+      remaining: requestLimit,
+      resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      limit: requestLimit,
+      rateLimitSkipped: true,
+    };
+  }
 
   try {
     const ratelimit = new Ratelimit({
@@ -68,16 +71,19 @@ export const checkFreeAgentRateLimit = async (
 ): Promise<RateLimitInfo> => {
   const redis = createRedisClient();
 
-  if (!redis) {
-    throw new ChatSDKError(
-      "rate_limit:chat",
-      "Rate limiting service is temporarily unavailable. Please try again in a few moments.",
-    );
-  }
-
   const requestLimit = parseInt(
     process.env.FREE_AGENT_RATE_LIMIT_REQUESTS || "5",
   );
+
+  if (!redis) {
+    // Skip rate limiting if Redis is not configured (e.g. local dev)
+    return {
+      remaining: requestLimit,
+      resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      limit: requestLimit,
+      rateLimitSkipped: true,
+    };
+  }
 
   try {
     const ratelimit = new Ratelimit({

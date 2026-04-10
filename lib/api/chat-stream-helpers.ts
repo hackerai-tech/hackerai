@@ -79,6 +79,7 @@ export function sendRateLimitWarnings(
       resetTime: Date;
       monthly?: { remaining: number; limit: number; resetTime: Date };
       extraUsagePointsDeducted?: number;
+      rateLimitSkipped?: boolean;
     };
   },
 ): void {
@@ -86,7 +87,8 @@ export function sendRateLimitWarnings(
 
   if (subscription === "free") {
     // Free users: sliding window (remaining count)
-    if (rateLimitInfo.remaining <= 5) {
+    // Always show warning when rate limiting is skipped (Redis not configured)
+    if (rateLimitInfo.rateLimitSkipped || rateLimitInfo.remaining <= 5) {
       writeRateLimitWarning(writer, {
         warningType: "sliding-window",
         remaining: rateLimitInfo.remaining,
@@ -211,8 +213,12 @@ export function computeContextUsage(
   return { usedTokens, maxTokens };
 }
 
-export function isContextUsageEnabled(subscription: SubscriptionTier): boolean {
-  return subscription !== "free";
+export function isContextUsageEnabled(
+  subscription: SubscriptionTier,
+  mode?: "ask" | "agent",
+): boolean {
+  if (subscription !== "free") return true;
+  return mode === "agent";
 }
 
 /**
@@ -276,7 +282,7 @@ export async function runSummarizationStep(options: {
     return { needsSummarization: false };
   }
 
-  const contextUsage = isContextUsageEnabled(options.subscription)
+  const contextUsage = isContextUsageEnabled(options.subscription, options.mode)
     ? computeContextUsage(
         summarizedMessages,
         options.fileTokens,

@@ -45,17 +45,16 @@ describe("sliding-window", () => {
   };
 
   describe("checkFreeUserRateLimit", () => {
-    it("should throw error when Redis unavailable", async () => {
+    it("should skip rate limiting when Redis unavailable", async () => {
       const { checkFreeUserRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue(null);
 
-      try {
-        await checkFreeUserRateLimit("user-123");
-        expect.fail("Should have thrown");
-      } catch (error: any) {
-        expect(error.cause).toContain("temporarily unavailable");
-      }
+      const result = await checkFreeUserRateLimit("user-123");
+      expect(result.remaining).toBe(10);
+      expect(result.limit).toBe(10);
+      expect(result.rateLimitSkipped).toBe(true);
+      expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
     it("should use fixed window for free users", async () => {
@@ -106,17 +105,16 @@ describe("sliding-window", () => {
   });
 
   describe("checkFreeAgentRateLimit", () => {
-    it("should throw error when Redis unavailable", async () => {
+    it("should skip rate limiting when Redis unavailable", async () => {
       const { checkFreeAgentRateLimit } = getIsolatedModule();
 
       mockCreateRedisClient.mockReturnValue(null);
 
-      try {
-        await checkFreeAgentRateLimit("user-123");
-        expect.fail("Should have thrown");
-      } catch (error: any) {
-        expect(error.cause).toContain("temporarily unavailable");
-      }
+      const result = await checkFreeAgentRateLimit("user-123");
+      expect(result.remaining).toBe(5);
+      expect(result.limit).toBe(5);
+      expect(result.rateLimitSkipped).toBe(true);
+      expect(mockLimitFn).not.toHaveBeenCalled();
     });
 
     it("should use fixed window for free agent users", async () => {

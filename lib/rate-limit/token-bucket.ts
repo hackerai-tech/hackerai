@@ -140,10 +140,14 @@ export const checkTokenBucketLimit = async (
   const redis = createRedisClient();
 
   if (!redis) {
-    throw new ChatSDKError(
-      "rate_limit:chat",
-      "Rate limiting service is temporarily unavailable. Please try again in a few moments.",
-    );
+    // Skip rate limiting if Redis is not configured (e.g. local dev)
+    const { monthly } = getBudgetLimits(subscription);
+    return {
+      remaining: monthly,
+      resetTime: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      limit: monthly,
+      rateLimitSkipped: true,
+    };
   }
 
   try {

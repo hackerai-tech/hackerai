@@ -88,7 +88,9 @@ export function ChatInputTextarea({
       }
 
       const tokenCount = countInputTokens(pastedText, []);
-      const maxTokens = getMaxTokensForSubscription(subscription);
+      const maxTokens = getMaxTokensForSubscription(subscription, {
+        mode: chatMode,
+      });
       if (tokenCount > maxTokens) {
         e.preventDefault();
         const planText = subscription !== "free" ? "" : " (Free plan limit)";

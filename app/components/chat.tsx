@@ -451,8 +451,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             ) {
               const maxTokens = getMaxTokensForSubscription(
                 subscriptionRef.current,
-                userCustomizationRef.current?.max_mode_enabled ?? false,
-                selectedModelRef.current ?? undefined,
+                {
+                  maxMode:
+                    userCustomizationRef.current?.max_mode_enabled ?? false,
+                  modelName: selectedModelRef.current ?? undefined,
+                  mode: chatModeRef.current as "ask" | "agent",
+                },
               );
               const context = serializeConversation(currentMessages, maxTokens);
               if (context) {

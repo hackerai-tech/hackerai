@@ -92,7 +92,9 @@ export const ChatInput = ({
 
   const isGenerating = status === "submitted" || status === "streaming";
   const showContextIndicator =
-    !isMobile && subscription !== "free" && !!contextUsage;
+    !isMobile &&
+    (subscription !== "free" || isAgentMode(chatMode)) &&
+    !!contextUsage;
   const isAgent = isAgentMode(chatMode);
 
   const draftId = isNewChat ? "new" : chatId || NULL_THREAD_DRAFT_ID;

@@ -461,7 +461,7 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
-            userCustomization?.caido_enabled ?? true,
+            userCustomization?.caido_enabled ?? false,
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;
@@ -542,15 +542,15 @@ export const createChatHandler = (
 
           const systemPromptTokens = countTokens(currentSystemPrompt);
 
-          // Compute and stream context usage breakdown for paid users
-          const contextUsageOn = isContextUsageEnabled(subscription);
+          // Compute and stream context usage breakdown
+          const contextUsageOn = isContextUsageEnabled(subscription, mode);
           const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageOn
-            ? getMaxTokensForSubscription(
-                subscription,
-                maxModeEnabled,
-                selectedModel,
-              )
+            ? getMaxTokensForSubscription(subscription, {
+                maxMode: maxModeEnabled,
+                modelName: selectedModel,
+                mode,
+              })
             : 0;
           let ctxUsage = contextUsageOn
             ? computeContextUsage(
@@ -685,11 +685,11 @@ export const createChatHandler = (
                 try {
                   const stepNumber = steps.length;
                   const threshold = Math.floor(
-                    getMaxTokensForSubscription(
-                      subscription,
-                      maxModeEnabled,
-                      selectedModel,
-                    ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    getMaxTokensForSubscription(subscription, {
+                      maxMode: maxModeEnabled,
+                      modelName: selectedModel,
+                      mode,
+                    }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                   );
 
                   // Prune old tool outputs to stay within rolling token budget
@@ -801,11 +801,11 @@ export const createChatHandler = (
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
                       threshold: Math.floor(
-                        getMaxTokensForSubscription(
-                          subscription,
-                          maxModeEnabled,
-                          selectedModel,
-                        ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                        getMaxTokensForSubscription(subscription, {
+                          maxMode: maxModeEnabled,
+                          modelName: selectedModel,
+                          mode,
+                        }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: hasSummarized,
