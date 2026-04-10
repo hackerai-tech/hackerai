@@ -55,13 +55,14 @@ const SettingsDialog = ({
     { id: "Data controls", label: "Data controls", icon: Database },
   ];
 
-  // Tabs only for paid users (Pro/Ultra/Team)
+  // Shared tabs for all users with agent mode access
   const agentsTab = { id: "Agents", label: "Agents", icon: Infinity };
   const localSandboxTab = {
     id: "Remote Control",
     label: "Remote Control",
     icon: Server,
   };
+  // Tabs only for paid users
   const usageTab = { id: "Usage", label: "Usage", icon: ChartNoAxesCombined };
   const extraUsageTab = {
     id: "Extra Usage",
@@ -83,7 +84,7 @@ const SettingsDialog = ({
             extraUsageTab,
             accountTab,
           ]
-        : [...baseTabs, accountTab];
+        : [...baseTabs, agentsTab, localSandboxTab, accountTab];
 
   const [prevInitialTab, setPrevInitialTab] = useState<string | null>(null);
 

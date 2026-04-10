@@ -115,17 +115,12 @@ function streamingReducer(
     case "SET_CONTEXT_USAGE":
       return { ...state, contextUsage: action.payload };
     case "RESET_ON_FINISH":
-      if (
-        state.uploadStatus === null &&
-        state.summarizationStatus === null &&
-        state.rateLimitWarning === null
-      )
+      if (state.uploadStatus === null && state.summarizationStatus === null)
         return state;
       return {
         ...state,
         uploadStatus: null,
         summarizationStatus: null,
-        rateLimitWarning: null,
       };
     default:
       return state;
@@ -451,8 +446,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
             ) {
               const maxTokens = getMaxTokensForSubscription(
                 subscriptionRef.current,
-                userCustomizationRef.current?.max_mode_enabled ?? false,
-                selectedModelRef.current ?? undefined,
+                {
+                  maxMode:
+                    userCustomizationRef.current?.max_mode_enabled ?? false,
+                  modelName: selectedModelRef.current ?? undefined,
+                  mode: chatModeRef.current as "ask" | "agent",
+                },
               );
               const context = serializeConversation(currentMessages, maxTokens);
               if (context) {
@@ -739,6 +738,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       // don't feed into useAutoResume/useAutoContinue in the next conversation.
       setDataStream([]);
       setIsAutoResuming(false);
+      setHasUserDismissedRateLimitWarning(false);
       resetAutoContinueCount();
     };
     setChatReset(reset);

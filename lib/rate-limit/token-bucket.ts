@@ -140,10 +140,14 @@ export const checkTokenBucketLimit = async (
   const redis = createRedisClient();
 
   if (!redis) {
-    throw new ChatSDKError(
-      "rate_limit:chat",
-      "Rate limiting service is temporarily unavailable. Please try again in a few moments.",
-    );
+    // Skip rate limiting if Redis is not configured (e.g. local dev)
+    const { monthly } = getBudgetLimits(subscription);
+    return {
+      remaining: monthly,
+      resetTime: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      limit: monthly,
+      rateLimitSkipped: true,
+    };
   }
 
   try {
@@ -167,7 +171,7 @@ export const checkTokenBucketLimit = async (
     if (subscription === "free" || monthlyLimit === 0) {
       throw new ChatSDKError(
         "rate_limit:chat",
-        "Agent mode is not available on the free tier. Upgrade to Pro for agent mode access.",
+        "Cloud sandbox is not available on the free tier. Use a local sandbox or upgrade to Pro.",
       );
     }
 

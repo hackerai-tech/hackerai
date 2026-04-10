@@ -72,9 +72,9 @@ async function getXaiApiKey(): Promise<string> {
 }
 
 async function getE2bApiKey(): Promise<string> {
-  console.log(`\n${chalk.bold("Getting E2B API Key for Agent mode")}`);
+  console.log(`\n${chalk.bold("Getting E2B API Key for cloud sandbox")}`);
   console.log(
-    "E2B provides the sandbox environment required for agent mode to execute commands",
+    "E2B provides the cloud sandbox environment for agent mode (paid feature, free users use local sandbox)",
   );
   console.log("You can find your E2B API Key at: https://e2b.dev/dashboard");
   const key = await question("Enter your E2B API Key: ");

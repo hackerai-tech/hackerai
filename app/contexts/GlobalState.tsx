@@ -6,6 +6,7 @@ import React, {
   useState,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   ReactNode,
 } from "react";
@@ -33,6 +34,8 @@ import { useIsMobile } from "@/hooks/use-mobile";
 import { useSandboxPreference } from "@/app/hooks/useSandboxPreference";
 import { chatSidebarStorage } from "@/lib/utils/sidebar-storage";
 import type { Id } from "@/convex/_generated/dataModel";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api";
 import type { SubscriptionTier } from "@/types";
 import { v4 as uuidv4 } from "uuid";
 import { toast } from "sonner";
@@ -116,6 +119,12 @@ interface GlobalStateType {
 
   // Desktop bridge active (Centrifugo-based desktop sandbox)
   desktopBridgeActive: boolean;
+
+  // Whether a local sandbox (desktop or remote) is available
+  hasLocalSandbox: boolean;
+
+  // The sandbox preference to use for free agent mode (desktop or first remote connection ID)
+  defaultLocalSandboxPreference: SandboxPreference | null;
 
   // Model selection
   selectedModel: SelectedModel;
@@ -228,6 +237,23 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
   // Tauri detection + sandbox preference (co-located in a custom hook)
   const { sandboxPreference, setSandboxPreference, desktopBridgeActive } =
     useSandboxPreference(!!user);
+
+  // Check for available local sandbox connections
+  const localConnections = useQuery(api.localSandbox.listConnections);
+  const hasLocalSandbox = useMemo(
+    () => desktopBridgeActive || (localConnections?.length ?? 0) > 0,
+    [desktopBridgeActive, localConnections],
+  );
+
+  const defaultLocalSandboxPreference =
+    useMemo<SandboxPreference | null>(() => {
+      if (desktopBridgeActive) return "desktop";
+      const firstRemote = localConnections?.find((c) => !c.isDesktop);
+      if (firstRemote) return firstRemote.connectionId;
+      const firstDesktop = localConnections?.find((c) => c.isDesktop);
+      if (firstDesktop) return "desktop";
+      return null;
+    }, [desktopBridgeActive, localConnections]);
 
   // Persist queue behavior to localStorage
   useEffect(() => {
@@ -746,6 +772,8 @@ export const GlobalStateProvider: React.FC<GlobalStateProviderProps> = ({
     sandboxPreference,
     setSandboxPreference,
     desktopBridgeActive,
+    hasLocalSandbox,
+    defaultLocalSandboxPreference,
 
     selectedModel,
     setSelectedModel: setSelectedModelState,

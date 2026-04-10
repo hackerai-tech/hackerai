@@ -66,13 +66,18 @@ export class UsageTracker {
     );
   }
 
-  computeCostDollars(selectedModel: string): number {
+  computeModelCostDollars(selectedModel: string): number {
     if (this.providerCost > 0) return this.providerCost;
     return (
       (calculateTokenCost(this.inputTokens, "input", selectedModel) +
         calculateTokenCost(this.outputTokens, "output", selectedModel)) /
       POINTS_PER_DOLLAR
     );
+  }
+
+  computeCostDollars(selectedModel: string): number {
+    if (this.providerCost > 0) return this.providerCost;
+    return this.computeModelCostDollars(selectedModel) + this.nonModelCost;
   }
 
   resolveUsageType(rateLimitInfo: RateLimitInfo): "included" | "extra" {

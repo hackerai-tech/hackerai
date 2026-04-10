@@ -30,7 +30,9 @@ import type {
   Todo,
   AnySandbox,
   AppendMetadataStreamFn,
+  SubscriptionTier,
 } from "@/types";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
@@ -57,9 +59,10 @@ export const createTools = (
   sandboxPreference?: SandboxPreference,
   serviceKey?: string,
   guardrailsConfig?: string,
-  caidoEnabled: boolean = true,
+  caidoEnabled: boolean = false,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
+  subscription?: SubscriptionTier,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -74,6 +77,15 @@ export const createTools = (
     }
   };
 
+  // E2B protection: free agent users must never use DefaultSandboxManager (always E2B)
+  if (subscription === "free" && isAgentMode(mode)) {
+    if (!sandboxPreference || sandboxPreference === "e2b") {
+      throw new Error(
+        "Free agent mode requires a local sandbox. E2B is not available on the free plan.",
+      );
+    }
+  }
+
   // Use HybridSandboxManager if sandboxPreference and serviceKey are provided
   const sandboxManager =
     sandboxPreference && serviceKey
@@ -83,6 +95,7 @@ export const createTools = (
           sandboxPreference,
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
+          subscription,
         )
       : new DefaultSandboxManager(
           userID,

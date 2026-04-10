@@ -200,7 +200,9 @@ describe("selectModel", () => {
   // Free user guard
   describe("free user guard", () => {
     it("should ignore model override for free users in agent mode", () => {
-      expect(selectModel("agent", "free", "sonnet-4.6")).toBe("agent-model");
+      expect(selectModel("agent", "free", "sonnet-4.6")).toBe(
+        "agent-model-free",
+      );
     });
 
     it("should ignore model override for free users in ask mode", () => {

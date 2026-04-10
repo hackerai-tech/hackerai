@@ -2,26 +2,20 @@
 
 import { DropdownMenuContent } from "@/components/ui/dropdown-menu";
 import { MessageSquare, Infinity } from "lucide-react";
-import type { ChatMode, SubscriptionTier } from "@/types/chat";
+import type { ChatMode } from "@/types/chat";
 import { ModeOptionItem } from "./ModeOptionItem";
 
 export interface ModeSelectorContentProps {
   setChatMode: (mode: ChatMode) => void;
   onAgentModeClick: () => void;
-  subscription: SubscriptionTier;
-  isCheckingProPlan: boolean;
   temporaryChatsEnabled: boolean;
 }
 
 export function ModeSelectorContent({
   setChatMode,
   onAgentModeClick,
-  subscription,
-  isCheckingProPlan,
   temporaryChatsEnabled,
 }: ModeSelectorContentProps) {
-  const hasPro = subscription !== "free" || isCheckingProPlan;
-
   return (
     <DropdownMenuContent align="start" className="w-54">
       <ModeOptionItem
@@ -38,7 +32,6 @@ export function ModeSelectorContent({
         onClick={onAgentModeClick}
         data-testid="mode-agent"
         showLock={temporaryChatsEnabled}
-        showProBadge={!hasPro && !temporaryChatsEnabled}
       />
     </DropdownMenuContent>
   );

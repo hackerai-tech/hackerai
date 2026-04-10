@@ -230,7 +230,9 @@ export const useChatHandlers = ({
       }
       // Check token limit before sending based on user plan
       const tokenCount = countInputTokens(input, uploadedFiles);
-      const maxTokens = getMaxTokensForSubscription(subscription);
+      const maxTokens = getMaxTokensForSubscription(subscription, {
+        mode: chatMode,
+      });
 
       // Additional validation for Ask mode: ensure files don't exceed Ask mode token limits
       // This prevents uploading files in Agent mode then switching to Ask mode to send them

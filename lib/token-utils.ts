@@ -19,15 +19,17 @@ export const FILE_TOKEN_PERCENT = 0.5;
  * full native context window (via MODEL_CONTEXT_WINDOWS). Otherwise we use
  * the conservative default (200k paid / 32k free) so token accounting,
  * pricing, and cache behavior stay predictable for typical conversations.
+ * Free agent users get the same 200k budget as paid users.
  */
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
-  maxMode?: boolean,
-  modelName?: string,
+  opts?: { maxMode?: boolean; modelName?: string; mode?: "ask" | "agent" },
 ): number => {
-  if (subscription === "free") return MAX_TOKENS_FREE;
-  if (maxMode && modelName) {
-    return Math.max(MAX_TOKENS_PAID, getModelContextWindow(modelName));
+  if (subscription === "free") {
+    return opts?.mode === "agent" ? MAX_TOKENS_PAID : MAX_TOKENS_FREE;
+  }
+  if (opts?.maxMode && opts.modelName) {
+    return Math.max(MAX_TOKENS_PAID, getModelContextWindow(opts.modelName));
   }
   return MAX_TOKENS_PAID;
 };
@@ -38,12 +40,10 @@ export const getMaxTokensForSubscription = (
  */
 export const getMaxFileTokens = (
   subscription: SubscriptionTier,
-  maxMode?: boolean,
-  modelName?: string,
+  opts?: { maxMode?: boolean; modelName?: string; mode?: "ask" | "agent" },
 ): number => {
   return Math.floor(
-    getMaxTokensForSubscription(subscription, maxMode, modelName) *
-      FILE_TOKEN_PERCENT,
+    getMaxTokensForSubscription(subscription, opts) * FILE_TOKEN_PERCENT,
   );
 };
 

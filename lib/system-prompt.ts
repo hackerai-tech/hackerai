@@ -141,7 +141,7 @@ ${getProxySection(caidoEnabled, false)}
 const getAgentModeSection = (
   mode: ChatMode,
   sandboxContext?: string | null,
-  caidoEnabled: boolean = true,
+  caidoEnabled: boolean = false,
 ): string => {
   const agentSpecificNote =
     mode === "agent"
@@ -363,7 +363,7 @@ The current date is ${currentDateTime}.`;
   if (mode === "ask") {
     sections.push(getAskModeSection(modelName, subscription, isTemporary));
   } else {
-    const caidoEnabled = userCustomization?.caido_enabled ?? true;
+    const caidoEnabled = userCustomization?.caido_enabled ?? false;
     sections.push(getAgentModeSection(mode, sandboxContext, caidoEnabled));
   }
 

@@ -309,11 +309,11 @@ export async function getMessagesByChatId({
             }
           }
 
-          const maxTokens = getMaxTokensForSubscription(
-            subscription,
+          const maxTokens = getMaxTokensForSubscription(subscription, {
             maxMode,
             modelName,
-          );
+            mode,
+          });
           const truncatedMessages = truncateMessagesToTokenLimit(
             candidate,
             fileTokensFromLoop,
@@ -388,11 +388,11 @@ export async function getMessagesByChatId({
             };
 
             // Re-truncate real messages to leave room for the summary message
-            const maxTokens = getMaxTokensForSubscription(
-              subscription,
+            const maxTokens = getMaxTokensForSubscription(subscription, {
               maxMode,
               modelName,
-            );
+              mode,
+            });
             const summaryTokens = countMessagesTokens(
               [summaryMessage],
               fileTokensFromLoop,
@@ -470,11 +470,11 @@ export async function getMessagesByChatId({
     try {
       const fileIds = extractAllFileIdsFromMessages(allMessages);
       const fileTokens = await getFileTokensByIds(fileIds as any);
-      const maxTokens = getMaxTokensForSubscription(
-        subscription,
+      const maxTokens = getMaxTokensForSubscription(subscription, {
         maxMode,
         modelName,
-      );
+        mode,
+      });
       const totalTokensBefore = countMessagesTokens(allMessages, fileTokens);
       console.error("chat-truncation-empty", {
         chatId,

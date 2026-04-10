@@ -4,7 +4,6 @@ import { useState } from "react";
 import { DropdownMenu } from "@/components/ui/dropdown-menu";
 import { ModeSelectorTrigger, ModeSelectorContent } from "./ModeSelectorMenu";
 import { useGlobalState } from "@/app/contexts/GlobalState";
-import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { toast } from "sonner";
 import { AgentUpgradeDialog } from "./AgentUpgradeDialog";
 
@@ -17,8 +16,13 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     chatMode,
     setChatMode,
     subscription,
-    isCheckingProPlan,
     temporaryChatsEnabled,
+    hasLocalSandbox,
+    defaultLocalSandboxPreference,
+    sandboxPreference,
+    setSandboxPreference,
+    selectedModel,
+    setSelectedModel,
   } = useGlobalState();
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
 
@@ -31,14 +35,19 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     }
     if (subscription !== "free") {
       setChatMode("agent");
+    } else if (hasLocalSandbox) {
+      setChatMode("agent");
+      if (sandboxPreference === "e2b" || !sandboxPreference) {
+        if (defaultLocalSandboxPreference) {
+          setSandboxPreference(defaultLocalSandboxPreference);
+        }
+      }
+      if (selectedModel !== "auto") {
+        setSelectedModel("auto");
+      }
     } else {
       setAgentUpgradeDialogOpen(true);
     }
-  };
-
-  const handleUpgradeClick = () => {
-    setAgentUpgradeDialogOpen(false);
-    redirectToPricing();
   };
 
   return (
@@ -51,8 +60,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
           <ModeSelectorContent
             setChatMode={setChatMode}
             onAgentModeClick={handleAgentModeClick}
-            subscription={subscription}
-            isCheckingProPlan={isCheckingProPlan}
             temporaryChatsEnabled={temporaryChatsEnabled}
           />
         </DropdownMenu>
@@ -61,7 +68,6 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
       <AgentUpgradeDialog
         open={agentUpgradeDialogOpen}
         onOpenChange={setAgentUpgradeDialogOpen}
-        onUpgradeClick={handleUpgradeClick}
       />
     </>
   );

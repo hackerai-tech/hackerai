@@ -198,6 +198,13 @@ describe("UsageTracker", () => {
       // 1M input tokens at $0.50/1M * 1.2x = 6000 points / 10000 = 0.60
       expect(cost).toBe(0.6);
     });
+
+    it("should include non-model costs when provider cost is unavailable", () => {
+      tracker.accumulateStep({ inputTokens: 1_000_000, outputTokens: 0 });
+      tracker.nonModelCost = 0.25;
+
+      expect(tracker.computeCostDollars("model-default")).toBe(0.85);
+    });
   });
 
   describe("resolveUsageType", () => {

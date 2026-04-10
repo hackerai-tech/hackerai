@@ -7,7 +7,7 @@ import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
 import type { ModelName } from "@/lib/ai/providers";
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
- * Agent mode: Paid: 100 steps
+ * Agent mode: 100 steps (all tiers)
  * Ask mode: Free: 5 steps, Paid: 15 steps
  */
 export const getMaxStepsForUser = (
@@ -47,7 +47,7 @@ export function selectModel(
   //   );
   // }
 
-  // Agent mode: allow model override for paid users, default to agent-model
+  // Agent mode: allow model override for paid users; free users get agent-model-free
   // Block expensive models (Sonnet/Opus) in agent mode — fall back to auto
   const BLOCKED_AGENT_MODELS = ["sonnet-4.6", "opus-4.6"];
   if (isAgentMode(mode)) {
@@ -59,7 +59,7 @@ export function selectModel(
     ) {
       return `model-${selectedModel}` as ModelName;
     }
-    return "agent-model";
+    return subscription === "free" ? "agent-model-free" : "agent-model";
   }
 
   // Ask mode: allow user-selected model override for paid users

@@ -43,8 +43,10 @@ import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import {
+  captureFreeAgentRequest,
   captureToolCalls,
   createChatLogger,
+  shutdownPostHog,
   type ChatLogger,
 } from "@/lib/api/chat-logger";
 import {
@@ -192,10 +194,22 @@ export const createChatHandler = (
       });
 
       if (isAgentMode(mode) && subscription === "free") {
-        throw new ChatSDKError(
-          "forbidden:chat",
-          "Agent mode is only available for Pro users. Please upgrade to access this feature.",
-        );
+        // Gate 1: Free agent requires a local sandbox preference (not E2B)
+        const isLocalSandbox = sandboxPreference && sandboxPreference !== "e2b";
+        if (!isLocalSandbox) {
+          throw new ChatSDKError(
+            "forbidden:chat",
+            "Agent mode on the free plan requires a local sandbox. Install the desktop app or upgrade to Pro for cloud access.",
+          );
+        }
+
+        // Gate 2: Free agent must use auto model selection (no model override)
+        if (rawSelectedModel && rawSelectedModel !== "auto") {
+          throw new ChatSDKError(
+            "forbidden:chat",
+            "Custom model selection in agent mode requires a Pro plan. Free agent mode uses the default model.",
+          );
+        }
       }
 
       // Set up pre-emptive abort before Vercel timeout (moved early to cover entire request)
@@ -449,13 +463,14 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
-            userCustomization?.caido_enabled ?? true,
+            userCustomization?.caido_enabled ?? false,
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;
               usageTracker.nonModelCost += costDollars;
               chatLogger?.getBuilder().addToolCost(costDollars);
             },
+            subscription,
           );
 
           // Helper to send file metadata via stream for resumable stream clients
@@ -529,15 +544,15 @@ export const createChatHandler = (
 
           const systemPromptTokens = countTokens(currentSystemPrompt);
 
-          // Compute and stream context usage breakdown for paid users
-          const contextUsageOn = isContextUsageEnabled(subscription);
+          // Compute and stream context usage breakdown
+          const contextUsageOn = isContextUsageEnabled(subscription, mode);
           const ctxSystemTokens = contextUsageOn ? systemPromptTokens : 0;
           const ctxMaxTokens = contextUsageOn
-            ? getMaxTokensForSubscription(
-                subscription,
-                maxModeEnabled,
-                selectedModel,
-              )
+            ? getMaxTokensForSubscription(subscription, {
+                maxMode: maxModeEnabled,
+                modelName: selectedModel,
+                mode,
+              })
             : 0;
           let ctxUsage = contextUsageOn
             ? computeContextUsage(
@@ -599,6 +614,7 @@ export const createChatHandler = (
             "ask-model",
             "ask-model-free",
             "agent-model",
+            "agent-model-free",
           ].includes(selectedModel);
           const fallbackModel =
             mode === "agent" ? "fallback-agent-model" : "fallback-ask-model";
@@ -671,11 +687,11 @@ export const createChatHandler = (
                 try {
                   const stepNumber = steps.length;
                   const threshold = Math.floor(
-                    getMaxTokensForSubscription(
-                      subscription,
-                      maxModeEnabled,
-                      selectedModel,
-                    ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                    getMaxTokensForSubscription(subscription, {
+                      maxMode: maxModeEnabled,
+                      modelName: selectedModel,
+                      mode,
+                    }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                   );
 
                   // Prune old tool outputs to stay within rolling token budget
@@ -787,11 +803,11 @@ export const createChatHandler = (
                     stepCountIs(getMaxStepsForUser(mode, subscription)),
                     tokenExhaustedAfterSummarization({
                       threshold: Math.floor(
-                        getMaxTokensForSubscription(
-                          subscription,
-                          maxModeEnabled,
-                          selectedModel,
-                        ) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
+                        getMaxTokensForSubscription(subscription, {
+                          maxMode: maxModeEnabled,
+                          modelName: selectedModel,
+                          mode,
+                        }) * SUMMARIZATION_THRESHOLD_PERCENTAGE,
                       ),
                       getLastStepInputTokens: () => lastStepInputTokens,
                       getHasSummarized: hasSummarized,
@@ -994,6 +1010,26 @@ export const createChatHandler = (
                             userId,
                             mode,
                           });
+                          if (mode === "agent" && subscription === "free") {
+                            captureFreeAgentRequest({
+                              posthog,
+                              chatLogger,
+                              userId,
+                              estimatedInputTokens,
+                              selectedModel,
+                              selectedModelOverride,
+                              configuredModelId,
+                              responseModel,
+                              usageTracker,
+                              finishReason: streamFinishReason,
+                              wasAborted: retryAborted,
+                              wasPreemptiveTimeout: false,
+                              hadSummarization: hasSummarized(),
+                              isTemporary: !!temporary,
+                              isRegenerate: !!regenerate,
+                            });
+                          }
+                          shutdownPostHog(posthog);
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
                             wasAborted: retryAborted,
@@ -1183,6 +1219,26 @@ export const createChatHandler = (
                   cacheWriteTokens: usageTracker.cacheWriteTokens,
                 });
                 captureToolCalls({ posthog, chatLogger, userId, mode });
+                if (mode === "agent" && subscription === "free") {
+                  captureFreeAgentRequest({
+                    posthog,
+                    chatLogger,
+                    userId,
+                    estimatedInputTokens,
+                    selectedModel,
+                    selectedModelOverride,
+                    configuredModelId,
+                    responseModel,
+                    usageTracker,
+                    finishReason: streamFinishReason,
+                    wasAborted: isAborted,
+                    wasPreemptiveTimeout: isPreemptiveAbort,
+                    hadSummarization: hasSummarized(),
+                    isTemporary: !!temporary,
+                    isRegenerate: !!regenerate,
+                  });
+                }
+                shutdownPostHog(posthog);
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
                   wasAborted: isAborted,
