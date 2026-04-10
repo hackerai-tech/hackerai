@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { TodoPanel } from "../TodoPanel";
 import type { ChatStatus } from "@/types";
@@ -106,14 +106,22 @@ export const ChatInput = ({
   const isFreeAgent =
     !isCheckingProPlan && subscription === "free" && isAgentMode(chatMode);
 
+  const prevHasLocalSandboxRef = useRef(hasLocalSandbox);
   useEffect(() => {
+    const wasConnected = prevHasLocalSandboxRef.current;
+    prevHasLocalSandboxRef.current = hasLocalSandbox;
+
     if (!isFreeAgent) return;
+    // Only show toast on actual disconnect (true → false), not on
+    // initial mount or logout where hasLocalSandbox starts as false.
     if (!hasLocalSandbox) {
       setChatMode("ask");
-      toast.info("Local sandbox disconnected. Switched to Ask mode.", {
-        description: "Reconnect your sandbox to use Agent mode.",
-        duration: 5000,
-      });
+      if (wasConnected) {
+        toast.info("Local sandbox disconnected. Switched to Ask mode.", {
+          description: "Reconnect your sandbox to use Agent mode.",
+          duration: 5000,
+        });
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFreeAgent, hasLocalSandbox]);
