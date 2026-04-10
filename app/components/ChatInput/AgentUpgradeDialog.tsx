@@ -94,11 +94,11 @@ export function AgentUpgradeDialog({
             className="w-full flex items-center gap-3 p-3 rounded-lg border text-left hover:bg-muted/50 transition-colors"
             data-testid="agent-upgrade-button"
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-primary/10">
-              <Cloud className="h-4 w-4 text-primary" />
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md">
+              <Cloud className="h-4 w-4 text-white" />
             </div>
             <div className="flex-1 min-w-0">
-              <div className="text-sm font-medium">Upgrade to Pro</div>
+              <div className="text-sm font-medium">Upgrade</div>
               <div className="text-xs text-muted-foreground">
                 Cloud sandbox, custom models, higher limits
               </div>
