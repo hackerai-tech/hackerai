@@ -22,13 +22,19 @@ export const checkFreeUserRateLimit = async (
   const requestLimit = parseInt(process.env.FREE_RATE_LIMIT_REQUESTS || "10");
 
   if (!redis) {
-    // Skip rate limiting if Redis is not configured (e.g. local dev)
-    return {
-      remaining: requestLimit,
-      resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      limit: requestLimit,
-      rateLimitSkipped: true,
-    };
+    if (process.env.NODE_ENV !== "production") {
+      // Skip rate limiting in local dev/test when Redis is not configured
+      return {
+        remaining: requestLimit,
+        resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        limit: requestLimit,
+        rateLimitSkipped: true,
+      };
+    }
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      "Rate limiting service is not configured",
+    );
   }
 
   try {
@@ -76,13 +82,19 @@ export const checkFreeAgentRateLimit = async (
   );
 
   if (!redis) {
-    // Skip rate limiting if Redis is not configured (e.g. local dev)
-    return {
-      remaining: requestLimit,
-      resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
-      limit: requestLimit,
-      rateLimitSkipped: true,
-    };
+    if (process.env.NODE_ENV !== "production") {
+      // Skip rate limiting in local dev/test when Redis is not configured
+      return {
+        remaining: requestLimit,
+        resetTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        limit: requestLimit,
+        rateLimitSkipped: true,
+      };
+    }
+    throw new ChatSDKError(
+      "rate_limit:chat",
+      "Rate limiting service is not configured",
+    );
   }
 
   try {

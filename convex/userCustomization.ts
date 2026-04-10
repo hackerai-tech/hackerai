@@ -79,36 +79,47 @@ export const saveUserCustomization = mutation({
         .withIndex("by_user_id", (q) => q.eq("user_id", identity.subject))
         .first();
 
-      const customizationData = {
-        user_id: identity.subject,
-        nickname: args.nickname?.trim() || undefined,
-        occupation: args.occupation?.trim() || undefined,
-        personality: args.personality?.trim() || undefined,
-        traits: args.traits?.trim() || undefined,
-        additional_info: args.additional_info?.trim() || undefined,
-        include_memory_entries:
-          args.include_memory_entries !== undefined
-            ? args.include_memory_entries
-            : true, // Default to enabled
-        guardrails_config: args.guardrails_config?.trim() || undefined,
-        caido_enabled: args.caido_enabled ?? false,
-        extra_usage_enabled:
-          args.extra_usage_enabled !== undefined
-            ? args.extra_usage_enabled
-            : false, // Default to disabled
-        max_mode_enabled:
-          args.max_mode_enabled !== undefined
-            ? args.max_mode_enabled
-            : (existing?.max_mode_enabled ?? false),
-        updated_at: Date.now(),
-      };
-
       if (existing) {
-        // Update existing customization
-        await ctx.db.patch(existing._id, customizationData);
+        // Partial update: only overwrite fields that were explicitly passed
+        const patch: Record<string, unknown> = { updated_at: Date.now() };
+        if (args.nickname !== undefined)
+          patch.nickname = args.nickname.trim() || undefined;
+        if (args.occupation !== undefined)
+          patch.occupation = args.occupation.trim() || undefined;
+        if (args.personality !== undefined)
+          patch.personality = args.personality.trim() || undefined;
+        if (args.traits !== undefined)
+          patch.traits = args.traits.trim() || undefined;
+        if (args.additional_info !== undefined)
+          patch.additional_info = args.additional_info.trim() || undefined;
+        if (args.include_memory_entries !== undefined)
+          patch.include_memory_entries = args.include_memory_entries;
+        if (args.guardrails_config !== undefined)
+          patch.guardrails_config = args.guardrails_config.trim() || undefined;
+        if (args.caido_enabled !== undefined)
+          patch.caido_enabled = args.caido_enabled;
+        if (args.extra_usage_enabled !== undefined)
+          patch.extra_usage_enabled = args.extra_usage_enabled;
+        if (args.max_mode_enabled !== undefined)
+          patch.max_mode_enabled = args.max_mode_enabled;
+
+        await ctx.db.patch(existing._id, patch);
       } else {
-        // Create new customization
-        await ctx.db.insert("user_customization", customizationData);
+        // Create new customization with defaults for unset fields
+        await ctx.db.insert("user_customization", {
+          user_id: identity.subject,
+          nickname: args.nickname?.trim() || undefined,
+          occupation: args.occupation?.trim() || undefined,
+          personality: args.personality?.trim() || undefined,
+          traits: args.traits?.trim() || undefined,
+          additional_info: args.additional_info?.trim() || undefined,
+          include_memory_entries: args.include_memory_entries ?? true,
+          guardrails_config: args.guardrails_config?.trim() || undefined,
+          caido_enabled: args.caido_enabled ?? false,
+          extra_usage_enabled: args.extra_usage_enabled ?? false,
+          max_mode_enabled: args.max_mode_enabled ?? false,
+          updated_at: Date.now(),
+        });
       }
 
       return null;
