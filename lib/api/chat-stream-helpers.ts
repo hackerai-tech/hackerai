@@ -76,6 +76,7 @@ export function sendRateLimitWarnings(
     mode: ChatMode;
     rateLimitInfo: {
       remaining: number;
+      limit: number;
       resetTime: Date;
       monthly?: { remaining: number; limit: number; resetTime: Date };
       extraUsagePointsDeducted?: number;
@@ -86,9 +87,12 @@ export function sendRateLimitWarnings(
   const { subscription, mode, rateLimitInfo } = options;
 
   if (subscription === "free") {
-    // Free users: sliding window (remaining count)
-    // Skip warning when rate limiting is not configured (no Redis)
-    if (!rateLimitInfo.rateLimitSkipped && rateLimitInfo.remaining <= 5) {
+    // Warn when roughly 30% of daily limit remains (minimum threshold of 1)
+    const warningThreshold = Math.max(1, Math.ceil(rateLimitInfo.limit * 0.3));
+    if (
+      !rateLimitInfo.rateLimitSkipped &&
+      rateLimitInfo.remaining <= warningThreshold
+    ) {
       writeRateLimitWarning(writer, {
         warningType: "sliding-window",
         remaining: rateLimitInfo.remaining,
