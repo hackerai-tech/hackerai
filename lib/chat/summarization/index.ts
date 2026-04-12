@@ -103,9 +103,13 @@ const saveTranscriptToSandbox = async (
 
       return path;
     } catch (error) {
-      const isPublishError =
-        error instanceof Error && error.message.includes("Failed to publish");
-      if (isPublishError && attempt < maxRetries) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const isPublishError = errorMsg.includes("Failed to publish");
+      const isUnrecoverable =
+        errorMsg.includes("connection closed") ||
+        errorMsg.includes("connection lost") ||
+        errorMsg.includes("program not found");
+      if (isPublishError && !isUnrecoverable && attempt < maxRetries) {
         console.warn(
           `[Summarization] Transcript save failed (attempt ${attempt + 1}/${maxRetries + 1}), retrying...`,
           error,
