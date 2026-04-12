@@ -942,7 +942,7 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  nextJsAxiomLogger.error(
+                  nextJsAxiomLogger.warn(
                     "Stream finished incomplete - triggering fallback",
                     {
                       chatId,
