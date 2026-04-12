@@ -15,7 +15,13 @@ import {
   elapsedTimeExceeds,
   PREEMPTIVE_TIMEOUT_FINISH_REASON,
   AGENT_MAX_STREAM_DURATION_MS,
+  doomLoopDetected,
+  DOOM_LOOP_FINISH_REASON,
 } from "@/lib/chat/stop-conditions";
+import {
+  detectDoomLoop,
+  generateDoomLoopNudge,
+} from "@/lib/chat/doom-loop-detection";
 import { createTools } from "@/lib/ai/tools";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
@@ -600,6 +606,7 @@ export const createChatHandler = (
           const hasSummarized = () => summarizationTracker.hasSummarized;
           let stoppedDueToTokenExhaustion = false;
           let stoppedDueToPreemptiveTimeout = false;
+          let stoppedDueToDoomLoop = false;
           let lastStepInputTokens = 0;
           const isReasoningModel = isAgentMode(mode);
 
@@ -769,10 +776,31 @@ export const createChatHandler = (
                       (lastStep as { toolResults?: unknown[] }).toolResults) ||
                     [];
 
-                  const updatedMessages = await applyPrepareStepReminders(
+                  let updatedMessages = await applyPrepareStepReminders(
                     currentMessages,
                     { toolResults, noteInjectionOpts },
                   );
+
+                  // Doom loop detection: inject nudge as trailing user message
+                  const loopCheck = detectDoomLoop(
+                    steps as unknown as Parameters<typeof detectDoomLoop>[0],
+                  );
+                  if (loopCheck.severity !== "none") {
+                    console.log(
+                      `[doom-loop] severity=${loopCheck.severity} tools=${loopCheck.toolNames.join(",")} count=${loopCheck.consecutiveCount} step=${steps.length}`,
+                    );
+
+                    if (loopCheck.severity === "warning") {
+                      const nudge = generateDoomLoopNudge(loopCheck);
+                      console.log(
+                        `[doom-loop] Injecting nudge as last user message`,
+                      );
+                      updatedMessages = [
+                        ...updatedMessages,
+                        { role: "user", content: nudge },
+                      ] as typeof updatedMessages;
+                    }
+                  }
 
                   return {
                     messages: filterEmptyAssistantMessages(
@@ -823,6 +851,11 @@ export const createChatHandler = (
                         stoppedDueToPreemptiveTimeout = true;
                       },
                     }),
+                    doomLoopDetected({
+                      onFired: () => {
+                        stoppedDueToDoomLoop = true;
+                      },
+                    }),
                   ]
                 : stepCountIs(getMaxStepsForUser(mode, subscription)),
               onChunk: async (chunk) => {
@@ -859,6 +892,8 @@ export const createChatHandler = (
                   streamFinishReason = PREEMPTIVE_TIMEOUT_FINISH_REASON;
                 } else if (stoppedDueToTokenExhaustion) {
                   streamFinishReason = TOKEN_EXHAUSTION_FINISH_REASON;
+                } else if (stoppedDueToDoomLoop) {
+                  streamFinishReason = DOOM_LOOP_FINISH_REASON;
                 } else {
                   streamFinishReason = finishReason;
                 }
@@ -921,6 +956,7 @@ export const createChatHandler = (
               lastStepInputTokens = 0;
               stoppedDueToTokenExhaustion = false;
               stoppedDueToPreemptiveTimeout = false;
+              stoppedDueToDoomLoop = false;
               preFallbackCacheRead = usageTracker.cacheReadTokens;
               preFallbackCacheWrite = usageTracker.cacheWriteTokens;
               result = await createStream(fallbackModel);
@@ -966,6 +1002,7 @@ export const createChatHandler = (
                     lastStepInputTokens = 0;
                     stoppedDueToTokenExhaustion = false;
                     stoppedDueToPreemptiveTimeout = false;
+                    stoppedDueToDoomLoop = false;
                     const fallbackStartTime = Date.now();
 
                     const retryResult = await createStream(fallbackModel);
@@ -1147,6 +1184,7 @@ export const createChatHandler = (
                             !retryAborted &&
                             !stoppedDueToPreemptiveTimeout &&
                             !stoppedDueToTokenExhaustion &&
+                            !stoppedDueToDoomLoop &&
                             streamFinishReason === "stop";
                           await deductAccumulatedUsage(isFallbackClean);
                         },
@@ -1446,6 +1484,7 @@ export const createChatHandler = (
                   !isAborted &&
                   !stoppedDueToPreemptiveTimeout &&
                   !stoppedDueToTokenExhaustion &&
+                  !stoppedDueToDoomLoop &&
                   streamFinishReason === "stop";
                 await deductAccumulatedUsage(isCleanCompletion);
               },
