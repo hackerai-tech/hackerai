@@ -1,5 +1,14 @@
 use std::time::Duration;
 
+/// Check if a path is executable (Unix: has execute permission).
+#[cfg(not(windows))]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 /// Shell configuration for cross-platform command execution.
 pub struct ShellConfig {
     pub shell: String,
@@ -49,7 +58,8 @@ pub fn get_shell_config() -> ShellConfig {
                 Some("/usr/bin/bash".to_string()),
             ];
             for candidate in candidates.into_iter().flatten() {
-                if Path::new(&candidate).exists() {
+                let p = Path::new(&candidate);
+                if p.is_file() && is_executable(p) {
                     return candidate;
                 }
             }
