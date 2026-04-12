@@ -68,9 +68,14 @@ export async function GET(
   });
 
   if (recentStreamId) {
-    const stream = await streamContext.resumableStream(recentStreamId, () =>
-      emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
-    );
+    let stream: ReadableStream | null = null;
+    try {
+      stream = await streamContext.resumableStream(recentStreamId, () =>
+        emptyDataStream.pipeThrough(new JsonToSseTransformStream()),
+      );
+    } catch {
+      // Producer is gone (ack timeout) — fall through to replay fallback
+    }
 
     if (stream) {
       const abortController = new AbortController();
