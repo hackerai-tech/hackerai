@@ -4,6 +4,31 @@ import { isE2BSandbox } from "./sandbox-types";
 export const MAX_COMMAND_EXECUTION_TIME = 10 * 60 * 1000; // 10 minutes
 
 /**
+ * Common directories where user-installed CLI tools live (Go, Rust, Homebrew, etc.).
+ * Shell-expanded at runtime via `$HOME`.
+ */
+const LOCAL_EXTRA_PATH_DIRS = [
+  "$HOME/go/bin",
+  "$HOME/.local/bin",
+  "$HOME/.cargo/bin",
+  "/usr/local/bin",
+  "/opt/homebrew/bin",
+  "/usr/local/go/bin",
+].join(":");
+
+/**
+ * Prepend common tool directories to PATH for local (non-E2B) sandboxes.
+ * E2B sandboxes have their own pre-configured PATH and are left untouched.
+ */
+export function augmentCommandPath(
+  command: string,
+  sandbox: AnySandbox,
+): string {
+  if (isE2BSandbox(sandbox)) return command;
+  return `export PATH="${LOCAL_EXTRA_PATH_DIRS}:$PATH" && ${command}`;
+}
+
+/**
  * Build command options for sandbox execution.
  *
  * E2B sandbox requires user: "root" and cwd: "/home/user" for network tools

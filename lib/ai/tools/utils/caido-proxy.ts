@@ -3,8 +3,19 @@ export const CAIDO_DEFAULTS = {
   port: 48080,
 } as const;
 
+/** Resolve Caido config: use custom port if provided, otherwise defaults. */
+export function getCaidoConfig(caidoPort?: number): {
+  host: string;
+  port: number;
+} {
+  return {
+    host: CAIDO_DEFAULTS.host,
+    port: caidoPort || CAIDO_DEFAULTS.port,
+  };
+}
+
 export function buildCaidoProxyEnvVars(
-  config: typeof CAIDO_DEFAULTS = CAIDO_DEFAULTS,
+  config: { host: string; port: number } = CAIDO_DEFAULTS,
 ): Record<string, string> {
   const proxyUrl = `http://${config.host}:${config.port}`;
   return {

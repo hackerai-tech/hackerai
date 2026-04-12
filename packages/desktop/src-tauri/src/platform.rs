@@ -1,5 +1,14 @@
 use std::time::Duration;
 
+/// Check if a path is executable (Unix: has execute permission).
+#[cfg(not(windows))]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
 /// Shell configuration for cross-platform command execution.
 pub struct ShellConfig {
     pub shell: String,
@@ -40,7 +49,22 @@ pub fn get_shell_config() -> ShellConfig {
     {
         static USER_SHELL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         let shell = USER_SHELL.get_or_init(|| {
-            std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string())
+            use std::path::Path;
+            let candidates = [
+                std::env::var("SHELL").ok(),
+                Some("/bin/sh".to_string()),
+                Some("/bin/bash".to_string()),
+                Some("/usr/bin/sh".to_string()),
+                Some("/usr/bin/bash".to_string()),
+            ];
+            for candidate in candidates.into_iter().flatten() {
+                let p = Path::new(&candidate);
+                if p.is_file() && is_executable(p) {
+                    return candidate;
+                }
+            }
+            // Last resort — hope the OS can resolve "sh" via PATH
+            "sh".to_string()
         });
         ShellConfig {
             shell: shell.clone(),

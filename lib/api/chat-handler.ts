@@ -464,6 +464,7 @@ export const createChatHandler = (
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
             userCustomization?.caido_enabled ?? false,
+            userCustomization?.caido_port,
             undefined, // appendMetadataStream
             (costDollars: number) => {
               usageTracker.providerCost += costDollars;
@@ -942,7 +943,7 @@ export const createChatHandler = (
                   lastAssistantMessage.parts[0]?.type === "step-start";
 
                 if (hasOnlyStepStart) {
-                  nextJsAxiomLogger.error(
+                  nextJsAxiomLogger.warn(
                     "Stream finished incomplete - triggering fallback",
                     {
                       chatId,
