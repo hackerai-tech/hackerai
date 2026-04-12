@@ -7,7 +7,7 @@
  */
 
 import type { ToolContext } from "@/types";
-import { CAIDO_DEFAULTS } from "./caido-proxy";
+import { CAIDO_DEFAULTS, getCaidoConfig } from "./caido-proxy";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { isCentrifugoSandbox } from "./sandbox-types";
 import { truncateContent, TRUNCATION_MESSAGE } from "@/lib/token-utils";
@@ -45,6 +45,20 @@ export function isCaidoBroken(text: string): boolean {
 async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
   caidoLock.delete(context.sandboxManager);
   cachedCaidoToken = null;
+
+  // When using a custom port, the user manages their own Caido instance —
+  // only clear the lock and token, don't kill their process.
+  if (context.caidoPort) {
+    try {
+      const { sandbox } = await context.sandboxManager.getSandbox();
+      const options = buildSandboxCommandOptions(sandbox);
+      await sandbox.commands.run(`rm -f ${CAIDO_TOKEN_FILE}`, options);
+    } catch {
+      /* best effort */
+    }
+    return;
+  }
+
   try {
     const { sandbox } = await context.sandboxManager.getSandbox();
     const options = buildSandboxCommandOptions(sandbox);
@@ -112,11 +126,86 @@ export async function ensureCaido(context: ToolContext): Promise<void> {
   }
 }
 
+/**
+ * Fast path for user-managed Caido instances (custom port).
+ * Only health-checks and authenticates — never installs or starts Caido.
+ */
+async function doEnsureExternalCaido(
+  sandbox: {
+    commands: {
+      run: (
+        cmd: string,
+        opts: Record<string, unknown>,
+      ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+    };
+    getHost: (port: number) => string;
+  },
+  config: { host: string; port: number },
+  options: Record<string, unknown>,
+): Promise<void> {
+  const baseUrl = `http://${config.host}:${config.port}`;
+
+  // Health check — is the user's Caido reachable?
+  const healthCheck =
+    `curl -s --noproxy '*' -o /dev/null -w "%{http_code}" -X POST "${baseUrl}/graphql"` +
+    ` -H "Content-Type: application/json" -d '{"query":"{ __typename }"}' --max-time 5 2>/dev/null`;
+
+  const healthResult = await sandbox.commands.run(healthCheck, {
+    ...options,
+    timeoutMs: 10000,
+  });
+  const status = healthResult.stdout.trim();
+
+  if (status !== "200" && status !== "400") {
+    throw new Error(
+      `Could not connect to your Caido instance on port ${config.port}. ` +
+        `Ensure Caido is running and listening on ${baseUrl}. ` +
+        `Got HTTP status: ${status || "no response"}.`,
+    );
+  }
+
+  // Authenticate as guest if we don't have a cached token
+  if (!cachedCaidoToken) {
+    const authBody = JSON.stringify({
+      query: "mutation LoginAsGuest { loginAsGuest { token { accessToken } } }",
+    });
+    const authB64 = Buffer.from(authBody).toString("base64");
+    const authResult = await sandbox.commands.run(
+      `echo '${authB64}' | base64 -d | curl -sL --noproxy '*' -X POST "${baseUrl}/graphql" ` +
+        `-H "Content-Type: application/json" --max-time 10 --data @-`,
+      { ...options, timeoutMs: 15000 },
+    );
+    const token = authResult.stdout.match(/"accessToken":"([^"]+)"/)?.[1];
+    if (!token) {
+      throw new Error(
+        `Could not authenticate with Caido on port ${config.port}. ` +
+          `Ensure Caido is running with --allow-guests.`,
+      );
+    }
+    cachedCaidoToken = token;
+    const tokenB64 = Buffer.from(token).toString("base64");
+    await sandbox.commands.run(
+      `echo '${tokenB64}' | base64 -d > ${CAIDO_TOKEN_FILE}`,
+      options,
+    );
+  }
+
+  console.log(
+    `[Caido] Connected to user's existing Caido on port ${config.port}`,
+  );
+}
+
 async function doEnsureCaido(context: ToolContext): Promise<void> {
   const { sandbox } = await context.sandboxManager.getSandbox();
-  const config = CAIDO_DEFAULTS;
+  const config = getCaidoConfig(context.caidoPort);
   const baseUrl = `http://${config.host}:${config.port}`;
   const options = buildSandboxCommandOptions(sandbox);
+
+  // External Caido fast path: when the user specified a custom port, they manage
+  // their own Caido instance. Skip install/start — only health-check + authenticate.
+  if (context.caidoPort) {
+    return doEnsureExternalCaido(sandbox, config, options);
+  }
 
   const authB64 = Buffer.from(
     JSON.stringify({

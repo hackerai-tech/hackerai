@@ -90,6 +90,7 @@ before coming back to the user.\n"
 const getProxySection = (
   caidoEnabled: boolean,
   isLocalSandbox: boolean,
+  caidoPort?: number,
 ): string => {
   if (!caidoEnabled) {
     return `<proxy_interception>
@@ -97,10 +98,13 @@ Caido proxy is DISABLED by the user. Proxy tools (list_requests, send_request, e
 All HTTP requests from terminal commands go directly to the target without interception.
 </proxy_interception>`;
   }
+  const effectivePort = caidoPort || 48080;
   const uiLine = isLocalSandbox
-    ? `- The user can view captured traffic in Caido's UI at http://127.0.0.1:48080 (local sandbox only).`
+    ? `- The user can view captured traffic in Caido's UI at http://127.0.0.1:${effectivePort} (local sandbox only).`
     : `- The Caido proxy UI is NOT accessible to users in this environment. NEVER share any proxy URL, sandbox URL, or Caido URL. Users interact with proxy data exclusively through the proxy tools.`;
-  const runningLine = `Caido CLI — a modern web security proxy — starts automatically when proxy tools are first used. Once started, it intercepts all HTTP/HTTPS traffic.`;
+  const runningLine = caidoPort
+    ? `Connected to the user's existing Caido instance on port ${caidoPort}. Do NOT attempt to install or start Caido — the user manages it themselves.`
+    : `Caido CLI — a modern web security proxy — starts automatically when proxy tools are first used. Once started, it intercepts all HTTP/HTTPS traffic.`;
   return `<proxy_interception>
 ${runningLine}
 - Use proxy tools (list_requests, view_request, send_request, scope_rules, list_sitemap, view_sitemap_entry) to inspect, replay, and modify captured traffic.
@@ -113,6 +117,7 @@ ${uiLine}
 
 const getDefaultSandboxEnvironmentSection = (
   caidoEnabled: boolean,
+  caidoPort?: number,
 ): string => `<sandbox_environment>
 IMPORTANT: All tools operate in an isolated sandbox environment that is individual to each user. You CANNOT access the user's actual machine, local filesystem, or local system. Tools can ONLY interact with the sandbox environment described below.
 
@@ -135,13 +140,14 @@ Development Environment:
 
 ${PREINSTALLED_PENTESTING_TOOLS}
 
-${getProxySection(caidoEnabled, false)}
+${getProxySection(caidoEnabled, false, caidoPort)}
 </sandbox_environment>`;
 
 const getAgentModeSection = (
   mode: ChatMode,
   sandboxContext?: string | null,
   caidoEnabled: boolean = false,
+  caidoPort?: number,
 ): string => {
   const agentSpecificNote =
     mode === "agent"
@@ -241,7 +247,7 @@ When running security scans:
 - Chain scan results intelligently — use output from reconnaissance to inform targeted exploitation
 </scan_methodology>
 
-${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled, true) : getDefaultSandboxEnvironmentSection(caidoEnabled)}
+${sandboxContext ? sandboxContext + "\n\n" + getProxySection(caidoEnabled, true, caidoPort) : getDefaultSandboxEnvironmentSection(caidoEnabled, caidoPort)}
 
 ${getProductQuestionsSection()}
 
@@ -364,7 +370,10 @@ The current date is ${currentDateTime}.`;
     sections.push(getAskModeSection(modelName, subscription, isTemporary));
   } else {
     const caidoEnabled = userCustomization?.caido_enabled ?? false;
-    sections.push(getAgentModeSection(mode, sandboxContext, caidoEnabled));
+    const caidoPort = userCustomization?.caido_port;
+    sections.push(
+      getAgentModeSection(mode, sandboxContext, caidoEnabled, caidoPort),
+    );
   }
 
   sections.push(getSecurityInstructions());

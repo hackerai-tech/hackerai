@@ -15,13 +15,16 @@ import {
   getSandboxDiagnostics,
 } from "./utils/sandbox-health";
 import { isE2BSandbox } from "./utils/sandbox-types";
-import { buildSandboxCommandOptions } from "./utils/sandbox-command-options";
+import {
+  buildSandboxCommandOptions,
+  augmentCommandPath,
+} from "./utils/sandbox-command-options";
 import {
   parseGuardrailConfig,
   getEffectiveGuardrails,
   checkCommandGuardrails,
 } from "./utils/guardrails";
-import { CAIDO_DEFAULTS, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
+import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
@@ -34,6 +37,7 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     backgroundProcessTracker,
     guardrailsConfig,
     caidoEnabled,
+    caidoPort,
   } = context;
 
   // Parse user guardrail configuration and get effective guardrails
@@ -43,8 +47,9 @@ export const createRunTerminalCmd = (context: ToolContext) => {
   // Caido proxy env vars — injected into every command on non-E2B sandboxes when enabled.
   // Permanently disabled on first setup failure (e.g. Windows sandbox) to avoid
   // retrying and logging warnings on every subsequent command.
+  const caidoConfig = getCaidoConfig(caidoPort);
   let caidoEnvVars = caidoEnabled
-    ? buildCaidoProxyEnvVars(CAIDO_DEFAULTS)
+    ? buildCaidoProxyEnvVars(caidoConfig)
     : undefined;
 
   return tool({
@@ -437,6 +442,14 @@ If you are generating files:
               return false;
             };
 
+            // Augment PATH for local sandboxes so user-installed tools
+            // (e.g. ~/go/bin/waybackurls) are found without full paths.
+            // Keep the original `command` for PID discovery (findProcessPid).
+            const effectiveCommand = augmentCommandPath(
+              command,
+              sandboxInstance,
+            );
+
             // Execute command with retry logic for transient failures
             // Sandbox readiness already checked, so these retries handle race conditions
             // Retries: 6 attempts with exponential backoff (500ms, 1s, 2s, 4s, 8s, 16s) + jitter (±50ms)
@@ -448,10 +461,13 @@ If you are generating files:
             }> = is_background
               ? retryWithBackoff(
                   async () => {
-                    const result = await sandboxInstance.commands.run(command, {
-                      ...commonOptions,
-                      background: true,
-                    });
+                    const result = await sandboxInstance.commands.run(
+                      effectiveCommand,
+                      {
+                        ...commonOptions,
+                        background: true,
+                      },
+                    );
                     // Normalize the result to include exitCode
                     return {
                       stdout: result.stdout,
@@ -470,7 +486,11 @@ If you are generating files:
                   },
                 )
               : retryWithBackoff(
-                  () => sandboxInstance.commands.run(command, commonOptions),
+                  () =>
+                    sandboxInstance.commands.run(
+                      effectiveCommand,
+                      commonOptions,
+                    ),
                   {
                     maxRetries: 6,
                     baseDelayMs: 500,

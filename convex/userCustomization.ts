@@ -15,6 +15,7 @@ export const saveUserCustomization = mutation({
     include_memory_entries: v.optional(v.boolean()),
     guardrails_config: v.optional(v.string()),
     caido_enabled: v.optional(v.boolean()),
+    caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
     max_mode_enabled: v.optional(v.boolean()),
   },
@@ -98,6 +99,8 @@ export const saveUserCustomization = mutation({
           patch.guardrails_config = args.guardrails_config.trim() || undefined;
         if (args.caido_enabled !== undefined)
           patch.caido_enabled = args.caido_enabled;
+        if (args.caido_port !== undefined)
+          patch.caido_port = args.caido_port || undefined;
         if (args.extra_usage_enabled !== undefined)
           patch.extra_usage_enabled = args.extra_usage_enabled;
         if (args.max_mode_enabled !== undefined)
@@ -116,6 +119,7 @@ export const saveUserCustomization = mutation({
           include_memory_entries: args.include_memory_entries ?? true,
           guardrails_config: args.guardrails_config?.trim() || undefined,
           caido_enabled: args.caido_enabled ?? false,
+          caido_port: args.caido_port || undefined,
           extra_usage_enabled: args.extra_usage_enabled ?? false,
           max_mode_enabled: args.max_mode_enabled ?? false,
           updated_at: Date.now(),
@@ -153,6 +157,7 @@ export const getUserCustomization = query({
       include_memory_entries: v.boolean(),
       guardrails_config: v.optional(v.string()),
       caido_enabled: v.boolean(),
+      caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
       max_mode_enabled: v.boolean(),
       updated_at: v.number(),
@@ -183,6 +188,7 @@ export const getUserCustomization = query({
         include_memory_entries: customization.include_memory_entries ?? true,
         guardrails_config: customization.guardrails_config,
         caido_enabled: customization.caido_enabled ?? false,
+        caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         max_mode_enabled: customization.max_mode_enabled ?? false,
         updated_at: customization.updated_at,
@@ -213,6 +219,7 @@ export const getUserCustomizationForBackend = query({
       include_memory_entries: v.boolean(),
       guardrails_config: v.optional(v.string()),
       caido_enabled: v.boolean(),
+      caido_port: v.optional(v.number()),
       extra_usage_enabled: v.boolean(),
       max_mode_enabled: v.boolean(),
       updated_at: v.number(),
@@ -240,6 +247,7 @@ export const getUserCustomizationForBackend = query({
         include_memory_entries: customization.include_memory_entries ?? true,
         guardrails_config: customization.guardrails_config,
         caido_enabled: customization.caido_enabled ?? false,
+        caido_port: customization.caido_port,
         extra_usage_enabled: customization.extra_usage_enabled ?? false,
         max_mode_enabled: customization.max_mode_enabled ?? false,
         updated_at: customization.updated_at,

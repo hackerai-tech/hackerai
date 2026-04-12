@@ -60,6 +60,7 @@ export const createTools = (
   serviceKey?: string,
   guardrailsConfig?: string,
   caidoEnabled: boolean = false,
+  caidoPort?: number,
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
   subscription?: SubscriptionTier,
@@ -121,6 +122,7 @@ export const createTools = (
     isE2BSandbox,
     guardrailsConfig,
     caidoEnabled,
+    caidoPort,
     appendMetadataStream,
     onToolCost,
   };

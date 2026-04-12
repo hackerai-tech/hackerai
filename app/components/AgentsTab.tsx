@@ -175,6 +175,54 @@ const AgentsTab = () => {
             aria-label="Toggle Caido proxy"
           />
         </div>
+        {(userCustomization?.caido_enabled ?? false) && (
+          <div className="flex items-center justify-between py-3 border-b pl-4">
+            <div className="flex-1 pr-4">
+              <Label
+                htmlFor="caido-port"
+                className="font-medium cursor-pointer"
+              >
+                Custom Port
+              </Label>
+              <p className="text-sm text-muted-foreground">
+                Connect to your own Caido instance (local sandbox only). Leave
+                empty for default (48080).
+              </p>
+            </div>
+            <input
+              id="caido-port"
+              type="number"
+              min={1}
+              max={65535}
+              placeholder="48080"
+              className="w-24 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+              defaultValue={userCustomization?.caido_port ?? ""}
+              onBlur={async (e) => {
+                const raw = e.target.value.trim();
+                const port = raw ? Number(raw) : 0;
+                if (raw && (isNaN(port) || port < 1 || port > 65535)) {
+                  toast.error("Port must be between 1 and 65535");
+                  return;
+                }
+                try {
+                  await saveCustomization({ caido_port: port || undefined });
+                  toast.success(
+                    port
+                      ? `Caido port set to ${port}`
+                      : "Caido port reset to default",
+                  );
+                } catch {
+                  toast.error("Failed to update Caido port");
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Queue Messages - Only show for Pro/Ultra/Team users */}
