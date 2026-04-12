@@ -310,7 +310,17 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
                 cleanup();
                 reject(
                   new Error(
-                    `Failed to publish command: ${err instanceof Error ? err.message : JSON.stringify(err)}`,
+                    `Failed to publish command: ${
+                      err instanceof Error
+                        ? err.message
+                        : (() => {
+                            try {
+                              return JSON.stringify(err);
+                            } catch {
+                              return String(err);
+                            }
+                          })()
+                    }`,
                   ),
                 );
               }
