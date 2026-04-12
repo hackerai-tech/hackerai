@@ -200,8 +200,14 @@ const AgentsTab = () => {
               onBlur={async (e) => {
                 const raw = e.target.value.trim();
                 const port = raw ? Number(raw) : 0;
-                if (raw && (isNaN(port) || port < 1 || port > 65535)) {
-                  toast.error("Port must be between 1 and 65535");
+                if (
+                  raw &&
+                  (isNaN(port) ||
+                    !Number.isInteger(port) ||
+                    port < 1 ||
+                    port > 65535)
+                ) {
+                  toast.error("Port must be an integer between 1 and 65535");
                   return;
                 }
                 try {
