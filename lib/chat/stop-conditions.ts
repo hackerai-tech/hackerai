@@ -1,4 +1,8 @@
 import type { StopCondition } from "ai";
+import {
+  detectDoomLoop,
+  type MinimalStep,
+} from "@/lib/chat/doom-loop-detection";
 
 export const TOKEN_EXHAUSTION_FINISH_REASON = "context-limit";
 
@@ -32,5 +36,20 @@ export function elapsedTimeExceeds(state: {
     const shouldStop = elapsed >= state.maxDurationMs;
     if (shouldStop) state.onFired();
     return shouldStop;
+  };
+}
+
+export const DOOM_LOOP_FINISH_REASON = "doom-loop";
+
+export function doomLoopDetected(state: {
+  onFired: () => void;
+}): StopCondition<any> {
+  return ({ steps }) => {
+    const result = detectDoomLoop(steps as unknown as MinimalStep[]);
+    if (result.severity === "halt") {
+      state.onFired();
+      return true;
+    }
+    return false;
   };
 }
