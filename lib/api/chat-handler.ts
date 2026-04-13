@@ -733,6 +733,7 @@ export const createChatHandler = (
                         isReasoningModel,
                         subscription,
                         userId,
+                        modelName,
                       ),
                     });
 
@@ -826,6 +827,7 @@ export const createChatHandler = (
                 isReasoningModel,
                 subscription,
                 userId,
+                modelName,
               ),
               stopWhen: isAgentMode(mode)
                 ? [

@@ -4,7 +4,7 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import { UIMessage } from "ai";
 import { processMessageFiles } from "@/lib/utils/file-transform-utils";
 import { isSupportedImageMediaType } from "@/lib/utils/file-utils";
-import type { ModelName } from "@/lib/ai/providers";
+import { isAnthropicModel, type ModelName } from "@/lib/ai/providers";
 /**
  * Get maximum steps allowed for a user based on mode and subscription tier
  * Agent mode: 100 steps (all tiers)
@@ -395,13 +395,8 @@ export function limitImageParts(messages: UIMessage[]): UIMessage[] {
   });
 }
 
-/**
- * Checks if the selected model is an Anthropic model (Claude).
- * Anthropic models have strict signature validation on thinking blocks.
- */
-function isAnthropicModel(modelName: ModelName): boolean {
-  return modelName.includes("sonnet");
-}
+// isAnthropicModel is imported from @/lib/ai/providers
+// (covers both Sonnet and Opus)
 
 /**
  * Strips providerMetadata from all parts in all messages.

@@ -12,6 +12,7 @@ import type {
   ModelMessage,
 } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
+import { isAnthropicModel } from "@/lib/ai/providers";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -366,7 +367,9 @@ export function buildProviderOptions(
   isReasoningModel: boolean,
   subscription: SubscriptionTier,
   userId?: string,
+  modelName?: string,
 ) {
+  const isAnthropic = modelName ? isAnthropicModel(modelName) : false;
   return {
     openrouter: {
       ...(isReasoningModel
@@ -376,6 +379,10 @@ export function buildProviderOptions(
       provider: {
         ...(subscription === "free" ? { sort: "price" } : { sort: "latency" }),
       },
+      // Enable Anthropic automatic prompt caching via OpenRouter.
+      // Anthropic auto-applies the cache breakpoint to the last cacheable block
+      // and advances it forward as conversations grow.
+      ...(isAnthropic && { cacheControl: { type: "ephemeral" as const } }),
     },
   } as const;
 }
