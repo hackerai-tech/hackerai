@@ -439,7 +439,7 @@ class LocalSandboxClient {
           .map(([k, v]) => {
             if (useCmd) {
               // cmd.exe: use `set` with no trailing space inside quotes
-              const escaped = v.replace(/"/g, '""');
+              const escaped = v.replace(/%/g, "%%").replace(/"/g, '""');
               return `set "${k}=${escaped}"`;
             }
             const escaped = v
