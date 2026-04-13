@@ -69,6 +69,8 @@ import {
   appendSystemReminderToLastUserMessage,
   injectNotesIntoMessages,
   applyPrepareStepReminders,
+  buildSystemPrompt,
+  addCacheBreakpointToLastUserMessage,
 } from "@/lib/api/chat-stream-helpers";
 import { geolocation } from "@vercel/functions";
 import { NextRequest } from "next/server";
@@ -685,7 +687,7 @@ export const createChatHandler = (
             streamText({
               model: trackedProvider.languageModel(modelName),
               maxOutputTokens: 30000,
-              system: currentSystemPrompt,
+              system: buildSystemPrompt(currentSystemPrompt, modelName),
               messages: filterEmptyAssistantMessages(
                 await convertToModelMessages(finalMessages),
               ),
@@ -804,7 +806,10 @@ export const createChatHandler = (
 
                   return {
                     messages: filterEmptyAssistantMessages(
-                      updatedMessages,
+                      addCacheBreakpointToLastUserMessage(
+                        updatedMessages,
+                        modelName,
+                      ),
                     ) as typeof messages,
                   };
                 } catch (error) {

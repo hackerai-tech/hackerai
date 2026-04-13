@@ -10,8 +10,10 @@ import type {
   UIMessageStreamWriter,
   ToolSet,
   ModelMessage,
+  SystemModelMessage,
 } from "ai";
 import type { ChatMode, SubscriptionTier, Todo } from "@/types";
+import { isAnthropicModel } from "@/lib/ai/providers";
 import type { ContextUsageData } from "@/app/components/ContextUsageIndicator";
 import type { Id } from "@/convex/_generated/dataModel";
 import type { UIMessagePart } from "ai";
@@ -378,6 +380,51 @@ export function buildProviderOptions(
       },
     },
   } as const;
+}
+
+const ANTHROPIC_CACHE_BREAKPOINT = {
+  openrouter: { cacheControl: { type: "ephemeral" as const } },
+};
+
+/**
+ * Build a system prompt with an Anthropic cache breakpoint.
+ * Returns a structured system message for Anthropic models, plain string otherwise.
+ */
+export function buildSystemPrompt(
+  systemPrompt: string,
+  modelName: string,
+): string | SystemModelMessage {
+  if (!isAnthropicModel(modelName)) return systemPrompt;
+  return {
+    role: "system",
+    content: systemPrompt,
+    providerOptions: ANTHROPIC_CACHE_BREAKPOINT,
+  } satisfies SystemModelMessage;
+}
+
+/**
+ * Add an Anthropic cache breakpoint to the last user message.
+ * This tells Anthropic to cache everything up to and including that message,
+ * maximizing cache hits on subsequent agentic steps.
+ */
+export function addCacheBreakpointToLastUserMessage<
+  T extends Array<Record<string, unknown>>,
+>(messages: T, modelName: string): T {
+  if (!isAnthropicModel(modelName)) return messages;
+  const result = [...messages] as T;
+  for (let i = result.length - 1; i >= 0; i--) {
+    if (result[i].role === "user") {
+      result[i] = {
+        ...result[i],
+        providerOptions: {
+          ...((result[i].providerOptions as Record<string, unknown>) || {}),
+          ...ANTHROPIC_CACHE_BREAKPOINT,
+        },
+      };
+      break;
+    }
+  }
+  return result;
 }
 
 /**

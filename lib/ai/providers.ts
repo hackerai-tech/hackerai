@@ -123,6 +123,10 @@ export const getModelCutoffDate = (modelName: ModelName): string => {
   return modelCutoffDates[modelName];
 };
 
+export function isAnthropicModel(modelName: string): boolean {
+  return modelName.includes("sonnet") || modelName.includes("opus");
+}
+
 export const myProvider = customProvider({
   languageModels: baseProviders,
 });
