@@ -150,8 +150,7 @@ export const ChatInput = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const canSubmit =
-      (status === "ready" ||
-        (status === "streaming" && isAgentMode(chatMode))) &&
+      (status === "ready" || status === "streaming") &&
       !isUploadingFiles &&
       (input.trim() || uploadedFiles.length > 0);
 
@@ -176,7 +175,7 @@ export const ChatInput = ({
 
         <TodoPanel status={status} />
 
-        {messageQueue.length > 0 && chatMode === "agent" && (
+        {messageQueue.length > 0 && (
           <QueuedMessagesPanel
             messages={messageQueue}
             onSendNow={onSendNow}

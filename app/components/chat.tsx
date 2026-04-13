@@ -970,13 +970,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     messageQueueRef.current = messageQueue;
   }, [messageQueue]);
 
-  // Clear queue when switching from Agent to Ask mode
-  useEffect(() => {
-    if (chatMode === "ask" && messageQueueRef.current.length > 0) {
-      clearQueue();
-    }
-  }, [chatMode, clearQueue]);
-
   // Clear queue when navigating to a different chat
   useEffect(() => {
     return () => {
@@ -1002,7 +995,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       !isProcessingQueue &&
       !isSendingNowRef.current &&
       !hasManuallyStoppedRef.current &&
-      chatMode === "agent" &&
       queueBehavior === "queue"
     ) {
       setIsProcessingQueue(true);
@@ -1039,7 +1031,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     status,
     messageQueue.length,
     isProcessingQueue,
-    chatMode,
     dequeueNext,
     sendMessage,
     queueBehavior,
