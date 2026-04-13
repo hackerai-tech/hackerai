@@ -118,7 +118,7 @@ const saveTranscriptToSandbox = async (
         await new Promise((resolve) => setTimeout(resolve, 1000));
         continue;
       }
-      console.error("[Summarization] Failed to save transcript:", error);
+      console.warn("[Summarization] Failed to save transcript:", error);
       return null;
     }
   }
