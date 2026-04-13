@@ -179,7 +179,7 @@ export const useChatHandlers = ({
     const hasValidFiles = uploadedFiles.some((f) => f.uploaded && f.url);
     if (input.trim() || hasValidFiles) {
       // If streaming in Agent mode, check queue behavior
-      if (status === "streaming" && chatMode === "agent") {
+      if (status === "streaming") {
         const validFiles = uploadedFiles.filter(
           (file) => file.uploaded && file.url && file.fileId,
         );
