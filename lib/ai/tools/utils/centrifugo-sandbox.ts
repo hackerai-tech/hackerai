@@ -361,8 +361,12 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
     return `'${path.replace(/'/g, "'\\''")}'`;
   }
 
-  // Max chunk size ~500KB base64 to stay under size limits
+  // Max chunk size ~500KB base64 to stay under size limits (bash path)
   private static readonly MAX_CHUNK_SIZE = 500 * 1024;
+
+  // cmd.exe has an ~8191 character command line limit. Reserve room for
+  // `echo `, redirect operator, and file path — keep data under 7000 chars.
+  private static readonly MAX_CMD_CHUNK_SIZE = 7000;
 
   /** Extract parent directory from a path, handling both `/` and `\` separators. */
   private static parentDir(path: string): string {
@@ -564,15 +568,12 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
           ? contentStr
           : Buffer.from(contentStr).toString("base64");
 
-        // Chunk if needed
+        // Chunk to stay within cmd.exe's ~8191 char command line limit.
+        const chunkSize = CentrifugoSandbox.MAX_CMD_CHUNK_SIZE;
         const chunks: string[] = [];
-        if (b64.length > CentrifugoSandbox.MAX_CHUNK_SIZE) {
-          for (
-            let i = 0;
-            i < b64.length;
-            i += CentrifugoSandbox.MAX_CHUNK_SIZE
-          ) {
-            chunks.push(b64.slice(i, i + CentrifugoSandbox.MAX_CHUNK_SIZE));
+        if (b64.length > chunkSize) {
+          for (let i = 0; i < b64.length; i += chunkSize) {
+            chunks.push(b64.slice(i, i + chunkSize));
           }
         } else {
           chunks.push(b64);

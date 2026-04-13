@@ -418,13 +418,30 @@ class LocalSandboxClient {
     try {
       let fullCommand = command;
 
+      // Detect whether the default shell is cmd.exe so we emit the
+      // correct syntax for cd and environment variable injection.
+      const shellBase =
+        DEFAULT_SHELL.shell
+          .toLowerCase()
+          .replace(/\\/g, "/")
+          .split("/")
+          .pop() ?? "";
+      const useCmd = shellBase === "cmd" || shellBase === "cmd.exe";
+
       if (cwd && cwd.trim() !== "") {
-        fullCommand = `cd "${cwd}" 2>/dev/null && ${fullCommand}`;
+        fullCommand = useCmd
+          ? `cd /d "${cwd}" && ${fullCommand}`
+          : `cd "${cwd}" 2>/dev/null && ${fullCommand}`;
       }
 
       if (env) {
         const envString = Object.entries(env)
           .map(([k, v]) => {
+            if (useCmd) {
+              // cmd.exe: use `set` with no trailing space inside quotes
+              const escaped = v.replace(/"/g, '""');
+              return `set "${k}=${escaped}"`;
+            }
             const escaped = v
               .replace(/\\/g, "\\\\")
               .replace(/"/g, '\\"')
@@ -432,8 +449,10 @@ class LocalSandboxClient {
               .replace(/`/g, "\\`");
             return `export ${k}="${escaped}"`;
           })
-          .join("; ");
-        fullCommand = `${envString}; ${fullCommand}`;
+          .join(useCmd ? " && " : "; ");
+        fullCommand = useCmd
+          ? `${envString} && ${fullCommand}`
+          : `${envString}; ${fullCommand}`;
       }
 
       if (background) {
