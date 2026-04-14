@@ -37,6 +37,8 @@ function getFeaturesForTier(tier: SubscriptionTier) {
       return [...proFeatures, ...teamFeatures];
     case "pro":
       return proFeatures;
+    case "free":
+      return [];
     default:
       return proFeatures;
   }
@@ -52,6 +54,8 @@ function getPlanDisplayName(tier: SubscriptionTier) {
       return "Team";
     case "pro":
       return "Pro";
+    case "free":
+      return "Free";
     default:
       return "Pro";
   }
@@ -70,13 +74,16 @@ export const CancelSubscriptionDialog = ({
       const url = await redirectToBillingPortalAction();
       if (url) {
         window.location.href = url;
+        return;
       }
+      toast.error("Failed to open billing portal");
     } catch (error) {
       toast.error(
         error instanceof Error
           ? error.message
           : "Failed to open billing portal",
       );
+    } finally {
       setIsProcessing(false);
     }
   }, []);
