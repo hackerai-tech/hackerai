@@ -496,6 +496,34 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
   // Cache for detected HTTP client (curl or wget)
   private httpClient: "curl" | "wget" | null = null;
 
+  // Cache for detected curl capabilities (probed once per sandbox).
+  // --retry-all-errors requires curl >= 7.71.0
+  // --retry-connrefused requires curl >= 7.52.0
+  private curlCaps: {
+    retryAllErrors: boolean;
+    retryConnrefused: boolean;
+  } | null = null;
+
+  private async detectCurlCaps(): Promise<{
+    retryAllErrors: boolean;
+    retryConnrefused: boolean;
+  }> {
+    if (this.curlCaps) return this.curlCaps;
+    try {
+      const probe = await this.commands.run("curl --help all 2>&1", {
+        displayName: "",
+      });
+      const help = probe.stdout || "";
+      this.curlCaps = {
+        retryAllErrors: help.includes("--retry-all-errors"),
+        retryConnrefused: help.includes("--retry-connrefused"),
+      };
+    } catch {
+      this.curlCaps = { retryAllErrors: false, retryConnrefused: false };
+    }
+    return this.curlCaps;
+  }
+
   /**
    * Detect available HTTP client (curl or wget).
    * Alpine Linux uses wget by default, most other distros have curl.
@@ -737,10 +765,22 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         : useBash
           ? `mkdir -p ${escapedDir} &&`
           : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
-      const downloadPart =
-        httpClient === "curl"
-          ? `curl -fsSL --retry 3 --retry-all-errors --retry-delay 1 --retry-connrefused -o ${escapedPath} ${escapedUrl}`
-          : `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
+      let downloadPart: string;
+      if (httpClient === "curl") {
+        const caps = await this.detectCurlCaps();
+        const curlFlags = [
+          "-fsSL",
+          "--retry 3",
+          "--retry-delay 1",
+          caps.retryAllErrors ? "--retry-all-errors" : "",
+          caps.retryConnrefused ? "--retry-connrefused" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
+      } else {
+        downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
+      }
       const command = `${mkdirPart} ${downloadPart}`;
 
       // JS-level retry safety net on top of curl's --retry, for transient
