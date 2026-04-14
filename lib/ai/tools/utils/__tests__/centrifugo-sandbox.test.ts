@@ -406,9 +406,9 @@ describe("CentrifugoSandbox", () => {
       );
       const cmd = runs[0];
       expect(cmd).toContain("mkdir -p '/c/temp/hackerai-upload'");
-      expect(cmd).toContain(
-        "curl -fsSL -o '/c/temp/hackerai-upload/image.png'",
-      );
+      expect(cmd).toContain("curl -fsSL");
+      expect(cmd).toContain("--retry");
+      expect(cmd).toContain("-o '/c/temp/hackerai-upload/image.png'");
       expect(cmd).not.toContain("if not exist");
       expect(cmd).not.toContain("\\");
     });

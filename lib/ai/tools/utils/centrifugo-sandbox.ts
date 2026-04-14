@@ -739,13 +739,41 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
           : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
       const downloadPart =
         httpClient === "curl"
-          ? `curl -fsSL -o ${escapedPath} ${escapedUrl}`
-          : `wget -q -O ${escapedPath} ${escapedUrl}`;
+          ? `curl -fsSL --retry 3 --retry-all-errors --retry-delay 1 --retry-connrefused -o ${escapedPath} ${escapedUrl}`
+          : `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
       const command = `${mkdirPart} ${downloadPart}`;
 
-      const result = await this.commands.run(command, {
+      // JS-level retry safety net on top of curl's --retry, for transient
+      // network/TLS errors that can survive curl's own retry loop:
+      //   7  = couldn't connect
+      //   18 = partial transfer
+      //   23 = write error
+      //   28 = operation timeout
+      //   35 = TLS handshake/read error (e.g. S3 "unexpected eof")
+      //   56 = failure receiving network data
+      //   92 = HTTP/2 stream error
+      const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92]);
+      const MAX_ATTEMPTS = 3;
+
+      let result = await this.commands.run(command, {
         displayName: `Downloading: ${fileName}`,
       });
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (result.exitCode === 0) break;
+        if (
+          attempt === MAX_ATTEMPTS ||
+          !TRANSIENT_EXIT_CODES.has(result.exitCode)
+        ) {
+          break;
+        }
+        console.warn(
+          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying`,
+        );
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+        result = await this.commands.run(command, {
+          displayName: `Downloading: ${fileName} (retry ${attempt})`,
+        });
+      }
       if (result.exitCode !== 0) {
         // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
         // Fall back to the target's own directory context when the destination
