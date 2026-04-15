@@ -125,7 +125,11 @@ const UsageLogsTable = () => {
     ];
     const rows = results.map((log) => [
       new Date(log._creationTime).toISOString(),
-      log.byok ? "BYOK" : log.type === "included" ? "Included" : "Extra Usage",
+      log.byok
+        ? "User API Key"
+        : log.type === "included"
+          ? "Included"
+          : "Extra Usage",
       log.model,
       log.max_mode ? "Yes" : "No",
       (log.cache_read_tokens ?? 0).toString(),
@@ -281,7 +285,7 @@ const UsageLogsTable = () => {
                   </td>
                   <td className="px-3 py-2.5 text-muted-foreground whitespace-nowrap">
                     {log.byok
-                      ? "BYOK"
+                      ? "User API Key"
                       : log.type === "included"
                         ? "Included"
                         : "Extra"}

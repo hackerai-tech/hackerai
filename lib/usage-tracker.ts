@@ -137,7 +137,12 @@ export class UsageTracker {
       totalTokens: this.totalTokens || this.inputTokens + this.outputTokens,
       cacheReadTokens: this.cacheReadTokens || undefined,
       cacheWriteTokens: this.cacheWriteTokens || undefined,
-      costDollars: this.computeCostDollars(selectedModel),
+      // For BYOK rows the LLM cost is on the user's OpenRouter account, not
+      // the subscription bucket. Log only what the subscription actually paid
+      // (sandbox + tools) so the Cost column reconciles against the bucket.
+      costDollars: byok
+        ? this.nonModelCost
+        : this.computeCostDollars(selectedModel),
       byok,
       maxMode,
     });
