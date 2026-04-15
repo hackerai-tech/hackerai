@@ -135,6 +135,7 @@ export const getUserUsageLogs = query({
         cache_write_tokens: log.cache_write_tokens,
         total_tokens: log.total_tokens,
         cost_dollars: log.cost_dollars,
+        byok: !!log.byok,
       })),
     };
   },
