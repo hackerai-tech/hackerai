@@ -375,9 +375,9 @@ export function buildProviderOptions(
         ? { reasoning: { enabled: true } }
         : { reasoning: { enabled: false } }),
       ...(userId && { user: userId }),
-      provider: {
-        ...(subscription === "free" ? { sort: "price" } : { sort: "latency" }),
-      },
+      // provider: {
+      //   ...(subscription === "free" ? { sort: "price" } : { sort: "latency" }),
+      // },
     },
   } as const;
 }
