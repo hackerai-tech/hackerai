@@ -24,27 +24,37 @@ interface SaveByokRequest {
   apiKey?: string;
 }
 
+type ValidationResult =
+  | { ok: true }
+  | { ok: false; status: 400 | 502 | 504; error: string };
+
 async function validateOpenRouterKey(
   apiKey: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<ValidationResult> {
   try {
     const res = await fetch("https://openrouter.ai/api/v1/auth/key", {
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, error: "Invalid OpenRouter API key" };
+      // Genuine client error — the key is bad.
+      return { ok: false, status: 400, error: "Invalid OpenRouter API key" };
     }
     if (!res.ok) {
+      // OpenRouter is up but returned an error we don't understand. Bubble
+      // up as 502 so clients/CDNs can apply 5xx retry semantics.
       return {
         ok: false,
+        status: 502,
         error: `OpenRouter returned ${res.status}. Try again.`,
       };
     }
     return { ok: true };
   } catch {
+    // Network error or timeout reaching OpenRouter — gateway timeout.
     return {
       ok: false,
+      status: 504,
       error: "Could not reach OpenRouter. Try again.",
     };
   }
@@ -142,7 +152,7 @@ export async function POST(req: NextRequest) {
     if (!validation.ok) {
       return NextResponse.json(
         { success: false, error: validation.error },
-        { status: 400 },
+        { status: validation.status },
       );
     }
 
