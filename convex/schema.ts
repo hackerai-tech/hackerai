@@ -129,6 +129,7 @@ export default defineSchema({
     caido_port: v.optional(v.number()),
     extra_usage_enabled: v.optional(v.boolean()),
     max_mode_enabled: v.optional(v.boolean()),
+    byok_enabled: v.optional(v.boolean()),
   }).index("by_user_id", ["user_id"]),
 
   // Extra usage (created when user enables extra usage)
@@ -239,6 +240,11 @@ export default defineSchema({
     cache_write_tokens: v.optional(v.number()),
     total_tokens: v.number(),
     cost_dollars: v.number(),
+    // True when the user's own OpenRouter key was used (BYOK). Subscription
+    // bucket only paid for sandbox/tool costs for this row.
+    byok: v.optional(v.boolean()),
+    // True when Max mode was active for this request (larger context window).
+    max_mode: v.optional(v.boolean()),
   })
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"]),

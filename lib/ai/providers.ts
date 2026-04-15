@@ -8,47 +8,52 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 // When reasoning mode is enabled, Kimi's API requires a `reasoning` field
 // on every assistant message with tool_calls, but the AI SDK doesn't always
 // include it (e.g. model made a tool call without emitting reasoning tokens).
-const openrouter = createOpenRouter({
-  fetch: async (url, init) => {
-    if (init?.body && typeof init.body === "string") {
-      try {
-        const body = JSON.parse(init.body);
-        if (Array.isArray(body.messages) && body.reasoning?.enabled === true) {
-          for (const msg of body.messages) {
-            if (
-              msg.role === "assistant" &&
-              Array.isArray(msg.tool_calls) &&
-              msg.tool_calls.length > 0 &&
-              !msg.reasoning
-            ) {
-              msg.reasoning = ".";
-            }
+const kimiReasoningPatchFetch: typeof fetch = async (url, init) => {
+  if (init?.body && typeof init.body === "string") {
+    try {
+      const body = JSON.parse(init.body);
+      if (Array.isArray(body.messages) && body.reasoning?.enabled === true) {
+        for (const msg of body.messages) {
+          if (
+            msg.role === "assistant" &&
+            Array.isArray(msg.tool_calls) &&
+            msg.tool_calls.length > 0 &&
+            !msg.reasoning
+          ) {
+            msg.reasoning = ".";
           }
-          init = { ...init, body: JSON.stringify(body) };
         }
-      } catch {
-        // If parsing fails, send the request as-is
+        init = { ...init, body: JSON.stringify(body) };
       }
+    } catch {
+      // If parsing fails, send the request as-is
     }
-    return globalThis.fetch(url, init);
-  },
-});
+  }
+  return globalThis.fetch(url, init);
+};
 
-const baseProviders = {
-  "ask-model": openrouter("google/gemini-3-flash-preview"),
-  "ask-model-free": openrouter("x-ai/grok-4.1-fast"),
-  "agent-model": openrouter("moonshotai/kimi-k2.5"),
-  "agent-model-free": openrouter("z-ai/glm-5.1"),
-  "model-sonnet-4.6": openrouter("anthropic/claude-sonnet-4-6"),
-  "model-grok-4.1": openrouter("x-ai/grok-4.1-fast"),
-  "model-gemini-3-flash": openrouter("google/gemini-3-flash-preview"),
-  "model-opus-4.6": openrouter("anthropic/claude-opus-4-6"),
-  "model-gpt-5.4": openrouter("openai/gpt-5.4"),
-  "model-kimi-k2.5": openrouter("moonshotai/kimi-k2.5"),
-  "fallback-agent-model": openrouter("x-ai/grok-4.1-fast"),
-  "fallback-ask-model": openrouter("x-ai/grok-4.1-fast"),
-  "title-generator-model": openrouter("x-ai/grok-4.1-fast"),
-} as Record<string, any>;
+const openrouter = createOpenRouter({ fetch: kimiReasoningPatchFetch });
+
+type OpenRouterInstance = typeof openrouter;
+
+const buildProviderMap = (or: OpenRouterInstance) =>
+  ({
+    "ask-model": or("google/gemini-3-flash-preview"),
+    "ask-model-free": or("x-ai/grok-4.1-fast"),
+    "agent-model": or("moonshotai/kimi-k2.5"),
+    "agent-model-free": or("z-ai/glm-5.1"),
+    "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
+    "model-grok-4.1": or("x-ai/grok-4.1-fast"),
+    "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
+    "model-opus-4.6": or("anthropic/claude-opus-4-6"),
+    "model-gpt-5.4": or("openai/gpt-5.4"),
+    "model-kimi-k2.5": or("moonshotai/kimi-k2.5"),
+    "fallback-agent-model": or("x-ai/grok-4.1-fast"),
+    "fallback-ask-model": or("x-ai/grok-4.1-fast"),
+    "title-generator-model": or("x-ai/grok-4.1-fast"),
+  }) as Record<string, any>;
+
+const baseProviders = buildProviderMap(openrouter);
 
 export type ModelName = keyof typeof baseProviders;
 
@@ -131,6 +136,20 @@ export function isAnthropicModel(modelName: string): boolean {
 export const myProvider = customProvider({
   languageModels: baseProviders,
 });
+
+/**
+ * Create an OpenRouter provider using a user-supplied API key (BYOK).
+ * Routes through the same model map as the default provider, so existing
+ * model selection logic works unchanged. LLM costs bill to the user's
+ * OpenRouter account instead of HackerAI's.
+ */
+export function createByokTrackedProvider(apiKey: string) {
+  const byokOpenRouter = createOpenRouter({
+    apiKey,
+    fetch: kimiReasoningPatchFetch,
+  });
+  return customProvider({ languageModels: buildProviderMap(byokOpenRouter) });
+}
 
 export const createTrackedProvider = () =>
   // userId?: string,
