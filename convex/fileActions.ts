@@ -1,5 +1,16 @@
 "use node";
 
+// Polyfill Promise.try for the Convex Node runtime (not yet available there).
+// pdfjs-serverless >=0.7.0 uses Promise.try and crashes without this.
+if (typeof (Promise as unknown as { try?: unknown }).try !== "function") {
+  (Promise as unknown as { try: unknown }).try = function <T>(
+    fn: (...args: unknown[]) => T | PromiseLike<T>,
+    ...args: unknown[]
+  ): Promise<T> {
+    return new Promise<T>((resolve) => resolve(fn(...args)));
+  };
+}
+
 import { action } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { countTokens } from "gpt-tokenizer";
