@@ -3,7 +3,12 @@ import { ConvexHttpClient } from "convex/browser";
 import { api } from "@/convex/_generated/api";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import { isUnauthorizedError } from "@/lib/api/response";
-import { clearByokApiKey, setByokApiKey } from "@/lib/auth/byok";
+import {
+  clearByokApiKey,
+  getByokApiKeyHint,
+  hasByokApiKey,
+  setByokApiKey,
+} from "@/lib/auth/byok";
 import { getUserCustomization } from "@/lib/db/actions";
 
 async function setByokEnabled(userId: string, enabled: boolean): Promise<void> {
@@ -49,12 +54,26 @@ export async function GET(req: NextRequest) {
   try {
     const { userId, subscription } = await getUserIDAndPro(req);
     if (subscription === "free") {
-      return NextResponse.json({ hasKey: false });
+      return NextResponse.json({
+        hasKey: false,
+        enabled: false,
+        keyHint: null,
+      });
     }
-    // Source of truth is the Convex flag — avoids a WorkOS Vault round-trip
-    // just to answer "does this user have a BYOK key?"
-    const customization = await getUserCustomization({ userId });
-    return NextResponse.json({ hasKey: !!customization?.byok_enabled });
+    // `hasKey` reflects Vault presence (source of truth for whether a key
+    // exists); `enabled` reflects the user's toggle preference. The two are
+    // independent: a user can disable BYOK without deleting their key.
+    // `keyHint` is a redacted preview (e.g. "sk-or-v1-78d...308") so the
+    // user can confirm which key is saved without exposing the full value.
+    const [customization, keyHint] = await Promise.all([
+      getUserCustomization({ userId }),
+      getByokApiKeyHint(userId),
+    ]);
+    return NextResponse.json({
+      hasKey: !!keyHint,
+      enabled: !!customization?.byok_enabled,
+      keyHint: keyHint ?? null,
+    });
   } catch (error) {
     const status = isUnauthorizedError(error) ? 401 : 500;
     return NextResponse.json(
@@ -127,6 +146,52 @@ export async function POST(req: NextRequest) {
     const status = isUnauthorizedError(error) ? 401 : 500;
     return NextResponse.json(
       { error: status === 401 ? "Unauthorized" : "Failed to save API key" },
+      { status },
+    );
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const { userId, subscription } = await getUserIDAndPro(req);
+
+    if (subscription === "free") {
+      return NextResponse.json(
+        { error: "A paid plan is required to use a custom API key" },
+        { status: 403 },
+      );
+    }
+
+    let body: { enabled?: boolean };
+    try {
+      body = await req.json();
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+    }
+
+    if (typeof body.enabled !== "boolean") {
+      return NextResponse.json(
+        { error: "enabled (boolean) is required" },
+        { status: 400 },
+      );
+    }
+
+    // When enabling, require a key already exists in the vault.
+    if (body.enabled && !(await hasByokApiKey(userId))) {
+      return NextResponse.json(
+        { error: "Add an API key before enabling BYOK" },
+        { status: 400 },
+      );
+    }
+
+    await setByokEnabled(userId, body.enabled);
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    const status = isUnauthorizedError(error) ? 401 : 500;
+    return NextResponse.json(
+      {
+        error: status === 401 ? "Unauthorized" : "Failed to update BYOK state",
+      },
       { status },
     );
   }

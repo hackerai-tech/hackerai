@@ -52,3 +52,17 @@ export async function clearByokApiKey(userId: string): Promise<void> {
 export async function hasByokApiKey(userId: string): Promise<boolean> {
   return !!(await getByokApiKey(userId));
 }
+
+/**
+ * Build a redacted preview of the saved key for UI display, e.g.
+ * "sk-or-v1-78d...308". Returns undefined if no key exists. The full key
+ * is never returned to the caller.
+ */
+export async function getByokApiKeyHint(
+  userId: string,
+): Promise<string | undefined> {
+  const key = await getByokApiKey(userId);
+  if (!key) return undefined;
+  if (key.length <= 16) return `${key.slice(0, 4)}...${key.slice(-3)}`;
+  return `${key.slice(0, 12)}...${key.slice(-3)}`;
+}
