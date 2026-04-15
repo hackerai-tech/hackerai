@@ -31,6 +31,7 @@ import type {
   SandboxPreference,
   ExtraUsageConfig,
   SelectedModel,
+  RateLimitInfo,
 } from "@/types";
 import { isSelectedModel } from "@/types";
 import { getBaseTodosForRequest } from "@/lib/utils/todo-utils";
@@ -91,7 +92,11 @@ import {
 } from "@/lib/utils/stream-cancellation";
 import { v4 as uuidv4 } from "uuid";
 import { processChatMessages, selectModel } from "@/lib/chat/chat-processor";
-import { createTrackedProvider } from "@/lib/ai/providers";
+import {
+  createByokTrackedProvider,
+  createTrackedProvider,
+} from "@/lib/ai/providers";
+import { getByokApiKey } from "@/lib/auth/byok";
 import {
   uploadSandboxFiles,
   getUploadBasePath,
@@ -234,6 +239,16 @@ export const createChatHandler = (
       // Fetch user customization early so max_mode_enabled can influence
       // context truncation (before messages are fetched from DB).
       const userCustomization = await getUserCustomization({ userId });
+
+      // BYOK: if the user enabled their own OpenRouter API key, route LLM calls
+      // through their key and bypass our rate limiter. Sandbox/tool costs are
+      // still billed to their subscription. The Convex flag gates the Vault
+      // lookup so non-BYOK users pay zero WorkOS round-trips.
+      const byokApiKey =
+        subscription !== "free" && userCustomization?.byok_enabled
+          ? await getByokApiKey(userId)
+          : undefined;
+      const isByok = !!byokApiKey;
       // Max Mode only applies when a specific model is selected — not in Auto.
       const isAutoModelSelection =
         !selectedModelOverride || selectedModelOverride === "auto";
@@ -387,20 +402,30 @@ export const createChatHandler = (
         }
       }
 
-      const rateLimitInfo =
-        freeAskRateLimitInfo ??
-        (await checkRateLimit(
-          userId,
-          mode,
-          subscription,
-          estimatedInputTokens,
-          extraUsageConfig,
-          selectedModel,
-          organizationId,
-        ));
+      const rateLimitInfo: RateLimitInfo = isByok
+        ? {
+            remaining: Number.POSITIVE_INFINITY,
+            resetTime: new Date(0),
+            limit: Number.POSITIVE_INFINITY,
+            pointsDeducted: 0,
+            extraUsagePointsDeducted: 0,
+            rateLimitSkipped: true,
+          }
+        : (freeAskRateLimitInfo ??
+          (await checkRateLimit(
+            userId,
+            mode,
+            subscription,
+            estimatedInputTokens,
+            extraUsageConfig,
+            selectedModel,
+            organizationId,
+          )));
 
-      // Track deductions for potential refund on error
-      usageRefundTracker.recordDeductions(rateLimitInfo);
+      // Track deductions for potential refund on error (no-op for BYOK)
+      if (!isByok) {
+        usageRefundTracker.recordDeductions(rateLimitInfo);
+      }
 
       // Add rate limit and extra usage context to logger
       chatLogger.setRateLimit(
@@ -539,7 +564,9 @@ export const createChatHandler = (
                 )
               : Promise.resolve(undefined);
 
-          const trackedProvider = createTrackedProvider();
+          const trackedProvider = isByok
+            ? createByokTrackedProvider(byokApiKey!)
+            : createTrackedProvider();
 
           let currentSystemPrompt = await systemPrompt(
             userId,
@@ -643,6 +670,35 @@ export const createChatHandler = (
               usageTracker.providerCost += sandboxCost;
               usageTracker.nonModelCost += sandboxCost;
               chatLogger?.getBuilder().addToolCost(sandboxCost);
+            }
+
+            // BYOK: LLM cost is on the user's OpenRouter account. Still charge
+            // sandbox/tool costs to the subscription bucket, and still log usage.
+            if (isByok) {
+              if (sandboxCost > 0) {
+                hasDeductedUsage = true;
+                await deductUsage(
+                  userId,
+                  subscription,
+                  0,
+                  0,
+                  0,
+                  extraUsageConfig,
+                  sandboxCost,
+                  selectedModel,
+                  sandboxCost,
+                );
+              }
+              usageTracker.log({
+                userId,
+                selectedModel,
+                selectedModelOverride,
+                responseModel,
+                configuredModelId,
+                rateLimitInfo,
+                byok: isByok,
+              });
+              return;
             }
 
             if (!usageTracker.hasUsage) {
@@ -934,7 +990,9 @@ export const createChatHandler = (
           try {
             result = await createStream(selectedModel);
           } catch (error) {
-            // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback
+            // If provider returns error (e.g., INVALID_ARGUMENT from Gemini), retry with fallback.
+            // For BYOK users this still uses the user's key because trackedProvider is the BYOK
+            // provider — only the model name changes.
             if (
               isProviderApiError(error) &&
               !isRetryWithFallback &&
