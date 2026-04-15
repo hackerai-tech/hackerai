@@ -60,18 +60,28 @@ export async function GET(req: NextRequest) {
         keyHint: null,
       });
     }
-    // `hasKey` reflects Vault presence (source of truth for whether a key
-    // exists); `enabled` reflects the user's toggle preference. The two are
-    // independent: a user can disable BYOK without deleting their key.
+    // `hasKey` is derived from Vault presence (source of truth); `enabled`
+    // is the user's toggle preference. They're stored separately so a user
+    // can disable BYOK without deleting their key, but they must stay
+    // consistent: enabled cannot be true without a key.
     // `keyHint` is a redacted preview (e.g. "sk-or-v1-78d...308") so the
     // user can confirm which key is saved without exposing the full value.
     const [customization, keyHint] = await Promise.all([
       getUserCustomization({ userId }),
       getByokApiKeyHint(userId),
     ]);
+    const hasKey = !!keyHint;
+    let enabled = !!customization?.byok_enabled;
+    // Self-heal: if the flag is true but no key exists in Vault (e.g. someone
+    // deleted it externally), clear the flag so the UI never shows "enabled"
+    // without a key behind it.
+    if (enabled && !hasKey) {
+      await setByokEnabled(userId, false);
+      enabled = false;
+    }
     return NextResponse.json({
-      hasKey: !!keyHint,
-      enabled: !!customization?.byok_enabled,
+      hasKey,
+      enabled,
       keyHint: keyHint ?? null,
     });
   } catch (error) {

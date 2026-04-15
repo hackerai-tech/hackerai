@@ -21,6 +21,7 @@ const ByokSection = () => {
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -66,6 +67,26 @@ const ByokSection = () => {
       toast.error(err instanceof Error ? err.message : "Failed to update");
     } finally {
       setToggling(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    if (removing) return;
+    setRemoving(true);
+    try {
+      const res = await fetch("/api/byok", { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || "Failed to remove API key");
+        return;
+      }
+      toast.success("API key removed");
+      setApiKey("");
+      await refresh();
+    } catch {
+      toast.error("Failed to remove API key");
+    } finally {
+      setRemoving(false);
     }
   };
 
@@ -139,28 +160,43 @@ const ByokSection = () => {
         />
       </div>
 
-      <div className="flex items-center gap-2">
-        <Input
-          type="password"
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-          placeholder={
-            hasKey
-              ? (keyHint ?? "Enter a new key to replace the saved one")
-              : "Enter your OpenRouter API Key"
-          }
-          autoComplete="off"
-          spellCheck={false}
-          disabled={saving}
-          data-testid="byok-input"
-        />
-        <Button
-          onClick={handleSave}
-          disabled={saving || !apiKey.trim()}
-          data-testid="byok-save-button"
-        >
-          {saving ? "Validating…" : "Save"}
-        </Button>
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Input
+            type="password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={
+              hasKey
+                ? (keyHint ?? "Enter a new key to replace the saved one")
+                : "Enter your OpenRouter API Key"
+            }
+            autoComplete="off"
+            spellCheck={false}
+            disabled={saving || removing}
+            data-testid="byok-input"
+          />
+          <Button
+            onClick={handleSave}
+            disabled={saving || removing || !apiKey.trim()}
+            data-testid="byok-save-button"
+          >
+            {saving ? "Validating…" : "Save"}
+          </Button>
+        </div>
+        {hasKey && (
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleRemove}
+              disabled={removing || saving}
+              className="text-xs text-muted-foreground underline hover:text-foreground disabled:opacity-50"
+              data-testid="byok-remove-button"
+            >
+              {removing ? "Removing…" : "Remove key"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

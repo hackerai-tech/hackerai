@@ -243,7 +243,9 @@ export const createChatHandler = (
       // BYOK: if the user enabled their own OpenRouter API key, route LLM calls
       // through their key and bypass our rate limiter. Sandbox/tool costs are
       // still billed to their subscription. The Convex flag gates the Vault
-      // lookup so non-BYOK users pay zero WorkOS round-trips.
+      // lookup so non-BYOK users pay zero WorkOS round-trips. Removing the key
+      // (whether via UI DELETE or the GET self-heal path) also clears the
+      // flag, so an orphan flag-without-key state isn't reachable from the UI.
       const byokApiKey =
         subscription !== "free" && userCustomization?.byok_enabled
           ? await getByokApiKey(userId)
