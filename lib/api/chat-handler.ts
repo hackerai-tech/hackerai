@@ -673,9 +673,12 @@ export const createChatHandler = (
             }
 
             // BYOK: LLM cost is on the user's OpenRouter account. Still charge
-            // sandbox/tool costs to the subscription bucket, and still log usage.
+            // the full non-model spend (sandbox session fee + any tool charges
+            // accumulated during the stream) to the subscription bucket, and
+            // still log usage.
             if (isByok) {
-              if (sandboxCost > 0) {
+              const byokNonModelCost = usageTracker.nonModelCost;
+              if (byokNonModelCost > 0) {
                 hasDeductedUsage = true;
                 await deductUsage(
                   userId,
@@ -684,9 +687,9 @@ export const createChatHandler = (
                   0,
                   0,
                   extraUsageConfig,
-                  sandboxCost,
+                  byokNonModelCost,
                   selectedModel,
-                  sandboxCost,
+                  byokNonModelCost,
                 );
               }
               usageTracker.log({
