@@ -389,6 +389,10 @@ describe("CentrifugoSandbox", () => {
       // Short-circuit caches so commands.run isn't invoked for detection.
       (sandbox as any).shellKind = "bash";
       (sandbox as any).httpClient = "curl";
+      (sandbox as any).curlCaps = {
+        retryAllErrors: true,
+        retryConnrefused: true,
+      };
       const runs: string[] = [];
       (sandbox as any).commands.run = jest.fn(async (cmd: string) => {
         runs.push(cmd);
@@ -406,9 +410,12 @@ describe("CentrifugoSandbox", () => {
       );
       const cmd = runs[0];
       expect(cmd).toContain("mkdir -p '/c/temp/hackerai-upload'");
-      expect(cmd).toContain(
-        "curl -fsSL -o '/c/temp/hackerai-upload/image.png'",
-      );
+      expect(cmd).toContain("curl -fsSL");
+      expect(cmd).toContain("--retry 3");
+      expect(cmd).toContain("--retry-delay 1");
+      expect(cmd).toContain("--retry-all-errors");
+      expect(cmd).toContain("--retry-connrefused");
+      expect(cmd).toContain("-o '/c/temp/hackerai-upload/image.png'");
       expect(cmd).not.toContain("if not exist");
       expect(cmd).not.toContain("\\");
     });

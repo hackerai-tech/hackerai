@@ -496,6 +496,34 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
   // Cache for detected HTTP client (curl or wget)
   private httpClient: "curl" | "wget" | null = null;
 
+  // Cache for detected curl capabilities (probed once per sandbox).
+  // --retry-all-errors requires curl >= 7.71.0
+  // --retry-connrefused requires curl >= 7.52.0
+  private curlCaps: {
+    retryAllErrors: boolean;
+    retryConnrefused: boolean;
+  } | null = null;
+
+  private async detectCurlCaps(): Promise<{
+    retryAllErrors: boolean;
+    retryConnrefused: boolean;
+  }> {
+    if (this.curlCaps) return this.curlCaps;
+    try {
+      const probe = await this.commands.run("curl --help all 2>&1", {
+        displayName: "",
+      });
+      const help = probe.stdout || "";
+      this.curlCaps = {
+        retryAllErrors: help.includes("--retry-all-errors"),
+        retryConnrefused: help.includes("--retry-connrefused"),
+      };
+    } catch {
+      this.curlCaps = { retryAllErrors: false, retryConnrefused: false };
+    }
+    return this.curlCaps;
+  }
+
   /**
    * Detect available HTTP client (curl or wget).
    * Alpine Linux uses wget by default, most other distros have curl.
@@ -737,15 +765,55 @@ Commands run directly on the host OS "${hostname}" without Docker isolation. Be 
         : useBash
           ? `mkdir -p ${escapedDir} &&`
           : `if not exist ${escapedDir} mkdir ${escapedDir} &&`;
-      const downloadPart =
-        httpClient === "curl"
-          ? `curl -fsSL -o ${escapedPath} ${escapedUrl}`
-          : `wget -q -O ${escapedPath} ${escapedUrl}`;
+      let downloadPart: string;
+      if (httpClient === "curl") {
+        const caps = await this.detectCurlCaps();
+        const curlFlags = [
+          "-fsSL",
+          "--retry 3",
+          "--retry-delay 1",
+          caps.retryAllErrors ? "--retry-all-errors" : "",
+          caps.retryConnrefused ? "--retry-connrefused" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        downloadPart = `curl ${curlFlags} -o ${escapedPath} ${escapedUrl}`;
+      } else {
+        downloadPart = `wget -q --tries=3 --waitretry=1 -O ${escapedPath} ${escapedUrl}`;
+      }
       const command = `${mkdirPart} ${downloadPart}`;
 
-      const result = await this.commands.run(command, {
+      // JS-level retry safety net on top of curl's --retry, for transient
+      // network/TLS errors that can survive curl's own retry loop:
+      //   7  = couldn't connect
+      //   18 = partial transfer
+      //   23 = write error
+      //   28 = operation timeout
+      //   35 = TLS handshake/read error (e.g. S3 "unexpected eof")
+      //   56 = failure receiving network data
+      //   92 = HTTP/2 stream error
+      const TRANSIENT_EXIT_CODES = new Set([7, 18, 23, 28, 35, 56, 92]);
+      const MAX_ATTEMPTS = 3;
+
+      let result = await this.commands.run(command, {
         displayName: `Downloading: ${fileName}`,
       });
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (result.exitCode === 0) break;
+        if (
+          attempt === MAX_ATTEMPTS ||
+          !TRANSIENT_EXIT_CODES.has(result.exitCode)
+        ) {
+          break;
+        }
+        console.warn(
+          `[centrifugo-download] ${httpClient} exit ${result.exitCode} on attempt ${attempt}/${MAX_ATTEMPTS} for ${path}, retrying`,
+        );
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+        result = await this.commands.run(command, {
+          displayName: `Downloading: ${fileName} (retry ${attempt})`,
+        });
+      }
       if (result.exitCode !== 0) {
         // Gather diagnostic info to help debug write failures (e.g. curl exit 23).
         // Fall back to the target's own directory context when the destination

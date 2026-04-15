@@ -186,8 +186,13 @@ describe("selectModel", () => {
       );
     });
 
-    it("should block expensive models (Sonnet/Opus) in agent mode", () => {
-      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe("agent-model");
+    it("should allow Sonnet 4.6 in agent mode for paid users", () => {
+      expect(selectModel("agent", "pro", "sonnet-4.6")).toBe(
+        "model-sonnet-4.6",
+      );
+    });
+
+    it("should block Opus 4.6 in agent mode", () => {
       expect(selectModel("agent", "pro", "opus-4.6")).toBe("agent-model");
     });
 

@@ -4,8 +4,10 @@ import { useState } from "react";
 import { DropdownMenu } from "@/components/ui/dropdown-menu";
 import { ModeSelectorTrigger, ModeSelectorContent } from "./ModeSelectorMenu";
 import { useGlobalState } from "@/app/contexts/GlobalState";
+import { useAuth } from "@workos-inc/authkit-nextjs/components";
 import { toast } from "sonner";
 import { AgentUpgradeDialog } from "./AgentUpgradeDialog";
+import { navigateToAuth } from "@/app/hooks/useTauri";
 
 export interface ChatModeSelectorProps {
   className?: string;
@@ -24,9 +26,14 @@ export function ChatModeSelector({ className }: ChatModeSelectorProps) {
     selectedModel,
     setSelectedModel,
   } = useGlobalState();
+  const { user } = useAuth();
   const [agentUpgradeDialogOpen, setAgentUpgradeDialogOpen] = useState(false);
 
   const handleAgentModeClick = () => {
+    if (!user) {
+      navigateToAuth("/login");
+      return;
+    }
     if (temporaryChatsEnabled) {
       toast.info("Agent mode requires chat history", {
         description: "Turn off temporary chat to use Agent mode.",

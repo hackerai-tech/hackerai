@@ -21,11 +21,13 @@ import {
   teamFeatures,
 } from "@/lib/pricing/features";
 import DeleteAccountDialog from "./DeleteAccountDialog";
+import CancelSubscriptionDialog from "./CancelSubscriptionDialog";
 import redirectToBillingPortalAction from "@/lib/actions/billing-portal";
 
 const AccountTab = () => {
   const { subscription, setMigrateFromPentestgptDialogOpen } = useGlobalState();
   const [showDeleteAccount, setShowDeleteAccount] = useState(false);
+  const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [isTeamAdmin, setIsTeamAdmin] = useState<boolean | null>(null);
   const { isMigrating } = usePentestgptMigration();
 
@@ -70,7 +72,7 @@ const AccountTab = () => {
   };
 
   const handleCancelSubscription = () => {
-    redirectToBillingPortal();
+    setShowCancelDialog(true);
   };
 
   const handleOpenMigrateConfirm = () => {
@@ -228,6 +230,11 @@ const AccountTab = () => {
       <DeleteAccountDialog
         open={showDeleteAccount}
         onOpenChange={setShowDeleteAccount}
+      />
+
+      <CancelSubscriptionDialog
+        open={showCancelDialog}
+        onOpenChange={setShowCancelDialog}
       />
     </div>
   );
