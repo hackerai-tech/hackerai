@@ -931,6 +931,7 @@ export async function logUsageRecord({
   cacheWriteTokens,
   costDollars,
   byok,
+  maxMode,
 }: {
   userId: string;
   model: string;
@@ -942,6 +943,7 @@ export async function logUsageRecord({
   cacheWriteTokens?: number;
   costDollars: number;
   byok?: boolean;
+  maxMode?: boolean;
 }) {
   try {
     await convex.mutation(api.usageLogs.logUsage, {
@@ -956,6 +958,7 @@ export async function logUsageRecord({
       total_tokens: totalTokens,
       cost_dollars: costDollars,
       byok,
+      max_mode: maxMode,
     });
   } catch (error) {
     console.error("Failed to log usage record:", {

@@ -243,6 +243,8 @@ export default defineSchema({
     // True when the user's own OpenRouter key was used (BYOK). Subscription
     // bucket only paid for sandbox/tool costs for this row.
     byok: v.optional(v.boolean()),
+    // True when Max mode was active for this request (larger context window).
+    max_mode: v.optional(v.boolean()),
   })
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"]),

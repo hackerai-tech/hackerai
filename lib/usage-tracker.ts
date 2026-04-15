@@ -112,6 +112,7 @@ export class UsageTracker {
     configuredModelId,
     rateLimitInfo,
     byok,
+    maxMode,
   }: {
     userId: string;
     selectedModel: string;
@@ -120,6 +121,7 @@ export class UsageTracker {
     configuredModelId: string;
     rateLimitInfo: RateLimitInfo;
     byok?: boolean;
+    maxMode?: boolean;
   }) {
     logUsageRecord({
       userId,
@@ -137,6 +139,7 @@ export class UsageTracker {
       cacheWriteTokens: this.cacheWriteTokens || undefined,
       costDollars: this.computeCostDollars(selectedModel),
       byok,
+      maxMode,
     });
   }
 }

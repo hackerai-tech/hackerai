@@ -700,6 +700,7 @@ export const createChatHandler = (
                 configuredModelId,
                 rateLimitInfo,
                 byok: isByok,
+                maxMode: maxModeEnabled,
               });
               return;
             }
@@ -738,6 +739,7 @@ export const createChatHandler = (
               responseModel,
               configuredModelId,
               rateLimitInfo,
+              maxMode: maxModeEnabled,
             });
           };
 
