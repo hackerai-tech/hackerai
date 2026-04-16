@@ -68,6 +68,9 @@ export interface ChatWideEvent {
     actual?: string;
   };
 
+  // BYOK (Bring Your Own Key)
+  byok?: boolean;
+
   // Stream execution
   stream?: {
     duration_ms: number;
@@ -237,6 +240,14 @@ export class WideEventBuilder {
     } else {
       this.event.model = { configured: actual, actual };
     }
+    return this;
+  }
+
+  /**
+   * Set BYOK (Bring Your Own Key) flag
+   */
+  setByok(byok: boolean): this {
+    this.event.byok = byok;
     return this;
   }
 

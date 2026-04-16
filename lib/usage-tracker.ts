@@ -24,6 +24,10 @@ export class UsageTracker {
   cacheReadTokens = 0;
   cacheWriteTokens = 0;
   providerCost = 0;
+  /** Model-only cost from per-step usage.raw.cost (excludes tool/sandbox spend). Used to
+   * decide whether the provider reported an authoritative model cost; if zero, fall back
+   * to token-based model cost calculation. */
+  modelProviderCost = 0;
   /** Costs from sandbox sessions and tool usage (always accurate, even on non-clean streams) */
   nonModelCost = 0;
   lastStepInputTokens = 0;
@@ -40,6 +44,7 @@ export class UsageTracker {
     const stepCost = usage.raw?.cost;
     if (stepCost) {
       this.providerCost += stepCost;
+      this.modelProviderCost += stepCost;
     }
   }
 
