@@ -222,12 +222,19 @@ async function handleDisputeCreated(dispute: Stripe.Dispute): Promise<void> {
 /** Decline codes that warrant an immediate block — no threshold needed. */
 const IMMEDIATE_BLOCK_CODES = new Set(["stolen_card", "fraudulent"]);
 
-/** Decline codes from legitimate financial issues — don't count toward fraud. */
+/** Decline codes from legitimate financial issues — don't count toward fraud.
+ *  do_not_honor and generic_decline are the bank's catch-all "we won't tell you
+ *  why" codes — commonly returned for legit users hitting the bank's own risk
+ *  rules (new merchant, velocity limits, temporary holds). Real card-testers
+ *  produce structural signals (incorrect_number, card diversity) that are still
+ *  tracked. */
 const IGNORED_CODES = new Set([
   "insufficient_funds",
   "expired_card",
   "processing_error",
   "reenter_transaction",
+  "do_not_honor",
+  "generic_decline",
 ]);
 
 /** 24 hours in milliseconds — accounts newer than this get a lower block threshold. */
@@ -259,6 +266,36 @@ async function extractCardFingerprint(
   }
 
   return null;
+}
+
+/**
+ * Check whether the payment was authenticated via 3D Secure.
+ *
+ * 3DS "authenticated" (or "exempted") means the cardholder proved identity
+ * with the issuing bank — card-testers can't pass this because they don't
+ * control the cardholder's banking app. A subsequent decline on an
+ * authenticated payment is almost always the bank's own risk rules rejecting
+ * a legitimate user, not card testing.
+ */
+async function wasAuthenticatedVia3DS(
+  paymentIntent: Stripe.PaymentIntent,
+): Promise<boolean> {
+  const chargeRef = paymentIntent.latest_charge;
+  if (!chargeRef) return false;
+
+  let charge: Stripe.Charge;
+  if (typeof chargeRef === "string") {
+    try {
+      charge = await stripe.charges.retrieve(chargeRef);
+    } catch {
+      return false;
+    }
+  } else {
+    charge = chargeRef;
+  }
+
+  const result = charge.payment_method_details?.card?.three_d_secure?.result;
+  return result === "authenticated" || result === "exempted";
 }
 
 /**
@@ -365,6 +402,16 @@ async function handlePaymentFailed(
 
   // Skip tracking for legitimate financial failures
   if (IGNORED_CODES.has(declineCode)) {
+    return;
+  }
+
+  // Skip tracking when the cardholder already authenticated via 3DS on this
+  // attempt — they proved identity with the issuing bank, so any subsequent
+  // decline is the bank's risk decision, not card testing.
+  if (await wasAuthenticatedVia3DS(paymentIntent)) {
+    console.log(
+      `[Fraud Webhook] Skipping fraud tracking for 3DS-authenticated failure ${paymentIntent.id} (customer ${customerId}, decline=${declineCode})`,
+    );
     return;
   }
 
