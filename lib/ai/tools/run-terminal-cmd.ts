@@ -53,6 +53,11 @@ const NON_SGR_CSI = /\x1b\[\??[0-9;]*[A-HJKSTfGnsulh]/g;
 const OSC_SEQ = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
 function cleanPtyForUI(text: string): string {
   const stripped = text
+    // Convert cursor-to-column-1 (+ optional clear) to newline BEFORE
+    // stripping CSI — preserves line structure that interactive CLIs
+    // like npm init use instead of real \n between prompts.
+    .replace(/\x1b\[1G\x1b\[0J/g, "\n")
+    .replace(/\x1b\[1G/g, "\n")
     .replace(NON_SGR_CSI, "")
     .replace(OSC_SEQ, "")
     .replace(/\r\n/g, "\n");
