@@ -75,16 +75,21 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
 
   const isExecuting = state === "input-available" && status === "streaming";
 
-  const displayCommand = isShellTool
-    ? getShellDisplayCommand(input)
-    : terminalInput?.command || "";
-  const displayTarget = isShellTool
-    ? getShellDisplayTarget(input)
-    : displayCommand;
-
   const shellAction = isShellTool
     ? (input as { action?: string })?.action
     : undefined;
+  const isInteractiveAction =
+    shellAction === "send" ||
+    shellAction === "wait" ||
+    shellAction === "view" ||
+    shellAction === "kill";
+  const displayCommand = isShellTool
+    ? getShellDisplayCommand(input) || (isInteractiveAction ? shellAction : "")
+    : terminalInput?.command || "";
+  const displayTarget = isShellTool
+    ? getShellDisplayTarget(input) || displayCommand
+    : displayCommand;
+
   const shellPid = (input as { pid?: number })?.pid ?? terminalOutput?.pid;
   const shellSession =
     (input as { session?: string })?.session ?? terminalOutput?.session;
@@ -98,7 +103,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     });
 
   const sidebarContent = useMemo((): SidebarTerminal | null => {
-    if (!displayCommand) return null;
+    if (!displayCommand && !isInteractiveAction) return null;
     return {
       command: displayCommand,
       output: finalOutput,
@@ -114,6 +119,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     displayCommand,
     finalOutput,
     isExecuting,
+    isInteractiveAction,
     terminalInput?.is_background,
     toolCallId,
     shellAction,

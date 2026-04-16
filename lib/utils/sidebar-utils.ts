@@ -96,8 +96,14 @@ export function extractSidebarContentFromMessage(
 
   message.parts.forEach((part) => {
     // Terminal (including Codex local commands)
-    if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
-      const command = part.input.command;
+    if (part.type === "tool-run_terminal_cmd" && part.input) {
+      const action = part.input.action || "exec";
+      const isInteractive = action !== "exec" || part.input.interactive;
+      const command =
+        part.input.command ||
+        part.input.brief ||
+        (action === "send" ? part.input.input : "") ||
+        action;
 
       // Get streaming output from data-terminal parts
       const streamingOutput = terminalDataMap.get(part.toolCallId || "") || "";
@@ -132,6 +138,14 @@ export function extractSidebarContentFromMessage(
           part.state === "input-available" || part.state === "running",
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
+        ...(isInteractive
+          ? {
+              shellAction: action,
+              pid: part.input.pid ?? part.output?.result?.pid,
+              session: part.input.session ?? part.output?.result?.session,
+              input: part.input.input,
+            }
+          : {}),
       });
     }
 
