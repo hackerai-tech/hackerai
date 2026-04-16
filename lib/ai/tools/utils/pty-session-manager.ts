@@ -1,9 +1,6 @@
 /**
  * Per-chat PTY session store.
  *
- * Spec: /Users/fkesheh/.claude/plans/fluffy-splashing-hoare.md
- *   "Session store" and "Limits" sections.
- *
  * Lifetime model for M1: sessions live only for the duration of a single
  * assistant streaming response. `chat-handler.onFinish` calls `closeAll(chatId)`
  * to tear everything down. The real source of truth lives inside the E2B
@@ -122,14 +119,18 @@ export class PtySessionManager {
       }, SESSION_MAX_LIFETIME_MS);
 
       // Natural exit — clean up
-      handle.exited.then(
-        () => {
-          this.removeSession(session);
-        },
-        () => {
-          this.removeSession(session);
-        },
-      );
+      handle.exited
+        .then(
+          () => {
+            this.removeSession(session);
+          },
+          () => {
+            this.removeSession(session);
+          },
+        )
+        .catch((err) =>
+          console.error("[pty-session-manager] exited handler failed:", err),
+        );
 
       // Register
       let chatMap = this.chats.get(chatId);
@@ -145,8 +146,11 @@ export class PtySessionManager {
       // leaking a live PTY in the sandbox.
       try {
         await handle.kill();
-      } catch {
-        // swallow — we're already on the error path
+      } catch (killErr) {
+        console.error(
+          "[pty-session-manager] orphan kill failed pid=" + handle.pid + ":",
+          killErr,
+        );
       }
       throw wiringErr;
     }
@@ -210,10 +214,7 @@ export class PtySessionManager {
   private onData(session: InternalSession, bytes: Uint8Array): void {
     if (session.closing) return;
     // Copy into an owned Uint8Array so callers can recycle buffers
-    const chunk =
-      bytes instanceof Uint8Array && bytes.buffer instanceof ArrayBuffer
-        ? new Uint8Array(bytes)
-        : new Uint8Array(bytes);
+    const chunk = new Uint8Array(bytes);
     session.buffer.push(chunk);
     session.lastActivityAt = Date.now();
     this.enforceRing(session);
@@ -305,8 +306,11 @@ export class PtySessionManager {
 
     try {
       await session.handle.kill();
-    } catch {
-      // swallow — we're tearing down anyway
+    } catch (err) {
+      console.error(
+        "[pty-session-manager] kill failed pid=" + session.pid + ":",
+        err,
+      );
     }
 
     await Promise.race([
@@ -323,8 +327,8 @@ export class PtySessionManager {
     if (session.unsubscribe) {
       try {
         session.unsubscribe();
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error("[pty-session-manager] unsubscribe failed:", err);
       }
       session.unsubscribe = null;
     }

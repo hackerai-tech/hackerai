@@ -142,6 +142,7 @@ export const createChatHandler = (
 
     // Wide event logger for structured logging
     let chatLogger: ChatLogger | undefined;
+    let outerChatId: string | undefined;
 
     try {
       const {
@@ -165,6 +166,7 @@ export const createChatHandler = (
         selectedModel?: string;
         isAutoContinue?: boolean;
       } = await req.json();
+      outerChatId = chatId;
 
       const selectedModelOverride: SelectedModel | undefined =
         rawSelectedModel && isSelectedModel(rawSelectedModel)
@@ -954,7 +956,7 @@ export const createChatHandler = (
               onAbort: async () => {
                 // Mirror the onError cleanup for client-initiated aborts.
                 // If this hook is not supported by the current ai SDK it will
-                // simply be ignored; the .finally() below is the hard backstop.
+                // simply be ignored; the outer catch block is the hard backstop.
                 await ptySessionManager
                   .closeAll(chatId)
                   .catch((err) =>
@@ -1568,6 +1570,18 @@ export const createChatHandler = (
     } catch (error) {
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
+
+      // Best-effort PTY cleanup — the stream may never have reached onFinish.
+      if (outerChatId) {
+        await ptySessionManager
+          .closeAll(outerChatId)
+          .catch((err) =>
+            console.error(
+              "[chat-handler] PTY closeAll (outer catch) failed:",
+              err,
+            ),
+          );
+      }
 
       // No refund on errors - usage is still charged
 

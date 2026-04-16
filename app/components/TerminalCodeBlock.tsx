@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Terminal } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { Shimmer } from "@/components/ai-elements/shimmer";
+import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
 
 interface TerminalCodeBlockProps {
   command: string;
@@ -210,11 +211,7 @@ export const TerminalCodeBlock = ({
     setIsWrapped(wrap);
   }, [wrap]);
 
-  const isInteractiveAction =
-    shellAction === "send" ||
-    shellAction === "wait" ||
-    shellAction === "view" ||
-    shellAction === "kill";
+  const isInteractiveAction = isInteractiveShellAction(shellAction);
   const commandPrefix = shellAction === "send" ? ">" : "$";
 
   // For interactive actions the output already contains the full session
@@ -228,7 +225,7 @@ export const TerminalCodeBlock = ({
     : output
       ? `${commandPrefix} ${command}\n${output}`
       : `${commandPrefix} ${command}`;
-  const displayContent = isInteractiveAction ? output || "" : output || "";
+  const displayContent = output || "";
 
   // For non-sidebar variant, keep the original terminal look
   if (variant !== "sidebar") {

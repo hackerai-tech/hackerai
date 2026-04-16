@@ -35,6 +35,19 @@ export interface ShellToolOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Interactive action check
+// ---------------------------------------------------------------------------
+
+export function isInteractiveShellAction(action?: string): boolean {
+  return (
+    action === "send" ||
+    action === "wait" ||
+    action === "view" ||
+    action === "kill"
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Action label
 // ---------------------------------------------------------------------------
 

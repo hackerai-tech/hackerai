@@ -34,16 +34,13 @@ export function isCentrifugoSandbox(
 /**
  * Type guard to check if a sandbox is an E2B Sandbox.
  *
- * Requires POSITIVE evidence of E2B shape: either `jupyterUrl` (string) or a
- * `pty` object. A partial mock lacking both signals is treated as non-E2B
- * rather than being misclassified by the negative `isCentrifugoSandbox` check
- * alone.
+ * Any non-Centrifugo sandbox is treated as E2B. PTY availability should be
+ * checked at the call site via `sandbox.pty`, not in this discriminator.
  */
 export function isE2BSandbox(sandbox: AnySandbox | null): sandbox is Sandbox {
   if (sandbox === null) return false;
   if (isCentrifugoSandbox(sandbox)) return false;
-  const sb = sandbox as unknown as { pty?: unknown; jupyterUrl?: unknown };
-  return typeof sb.jupyterUrl === "string" || typeof sb.pty === "object";
+  return true; // any non-Centrifugo sandbox is E2B
 }
 
 /**

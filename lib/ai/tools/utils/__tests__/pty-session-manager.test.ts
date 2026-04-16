@@ -466,6 +466,81 @@ describe("PtySessionManager", () => {
     });
   });
 
+  describe("readCursor clamping on ring eviction", () => {
+    it("clamps readCursor when chunks before cursor are evicted, and consumeDelta returns valid bytes", async () => {
+      const handle = makeFakeHandle();
+      const session = await manager.create("chat-1", {
+        createHandle: makeCreateHandleFactory(handle),
+        cols: 80,
+        rows: 24,
+      });
+
+      // Fill buffer with 4 chunks of size MAX_BUFFER_BYTES/4 each
+      const chunkSize = MAX_BUFFER_BYTES / 4;
+      const makeChunk = (fill: number) => new Uint8Array(chunkSize).fill(fill);
+
+      handle.__emit(makeChunk(0x01));
+      handle.__emit(makeChunk(0x02));
+      handle.__emit(makeChunk(0x03));
+      handle.__emit(makeChunk(0x04));
+
+      // Consume all — readCursor now equals total buffer size
+      const delta1 = manager.consumeDelta(session);
+      expect(delta1.byteLength).toBe(chunkSize * 4);
+      expect(session.readCursor).toBe(chunkSize * 4);
+
+      // Push two more chunks to force eviction of chunks before readCursor
+      handle.__emit(makeChunk(0x05));
+      handle.__emit(makeChunk(0x06));
+
+      // Ring should have dropped at least the first two chunks.
+      // readCursor must have been clamped (not pointing at garbage offsets).
+      const totalNow = session.buffer.reduce((sum, c) => sum + c.byteLength, 0);
+      expect(session.readCursor).toBeLessThanOrEqual(totalNow);
+      expect(session.readCursor).toBeGreaterThanOrEqual(0);
+      expect(session.bufferTruncated).toBe(true);
+
+      // consumeDelta after eviction must return valid bytes (the new chunks
+      // that arrived after the cursor was clamped), NOT garbage.
+      const delta2 = manager.consumeDelta(session);
+      expect(delta2.byteLength).toBeGreaterThan(0);
+      // Verify the returned bytes are valid (should contain 0x05 and/or 0x06)
+      const allValues = new Set(Array.from(delta2));
+      expect(allValues.has(0x05) || allValues.has(0x06)).toBe(true);
+      // readCursor should now equal the total buffer size
+      expect(session.readCursor).toBe(totalNow);
+    });
+  });
+
+  describe("concurrent killAndRemove re-entry guard", () => {
+    it("calling close() twice concurrently invokes handle.kill exactly once and removes the session", async () => {
+      const handle = makeFakeHandle();
+      const session = await manager.create("chat-1", {
+        createHandle: makeCreateHandleFactory(handle),
+        cols: 80,
+        rows: 24,
+      });
+
+      // Start two concurrent close() calls before the first resolves
+      const p1 = manager.close("chat-1", session.sessionId);
+      const p2 = manager.close("chat-1", session.sessionId);
+
+      // Resolve the handle exit so both close paths can complete
+      handle.__exit(0);
+
+      // Let the 2s fallback fire if needed
+      jest.advanceTimersByTime(2500);
+
+      await p1;
+      await p2;
+
+      // kill must have been called exactly once — the re-entry guard prevents the second call
+      expect(handle.kill).toHaveBeenCalledTimes(1);
+      // Session must be removed after both resolve
+      expect(manager.get("chat-1", session.sessionId)).toBeUndefined();
+    });
+  });
+
   // Reference to satisfy TS import for the PtySession type.
   it("PtySession shape is exported", () => {
     const s = null as unknown as PtySession | null;

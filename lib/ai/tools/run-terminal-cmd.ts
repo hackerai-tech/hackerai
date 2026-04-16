@@ -34,7 +34,6 @@ const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
-// Plan: /Users/fkesheh/.claude/plans/fluffy-splashing-hoare.md ("Limits" section)
 export const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
 export const MODEL_OUTPUT_CAP_BYTES = 8 * 1024;
 const DEFAULT_WAIT_IDLE_MS = 800;
@@ -130,8 +129,8 @@ async function waitForOutput(
       if (settled) return;
       try {
         onChunk(bytes);
-      } catch {
-        // UI emit is best-effort
+      } catch (err) {
+        console.error("[run-terminal-cmd] emitTerminal failed:", err);
       }
       if (regex) {
         accumulated += stripAnsi(decoder.decode(bytes, { stream: true }));
@@ -154,8 +153,8 @@ async function waitForOutput(
       clearTimeout(hardTimer);
       try {
         unsubscribe();
-      } catch {
-        // ignore
+      } catch (err) {
+        console.error("[run-terminal-cmd] unsubscribe failed:", err);
       }
       signal?.removeEventListener("abort", onAbort);
       resolve(consume(session));

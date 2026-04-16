@@ -10,6 +10,7 @@ import {
   getShellDisplayCommand,
   getShellDisplayTarget,
   getShellOutput,
+  isInteractiveShellAction,
   type ShellToolOutput,
 } from "./shell-tool-utils";
 
@@ -71,15 +72,11 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   // For interactive actions (send/wait/view/kill) the streaming output
   // contains the full session snapshot replayed via data-terminal events,
   // so prefer it over the tool result's stripped delta.
-  const actionType = isShellTool
+  const shellAction = isShellTool
     ? (input as { action?: string })?.action
     : undefined;
   const hasInteractiveStream =
-    streamingOutput &&
-    (actionType === "send" ||
-      actionType === "wait" ||
-      actionType === "view" ||
-      actionType === "kill");
+    streamingOutput && isInteractiveShellAction(shellAction);
   const finalOutput = useMemo(
     () =>
       hasInteractiveStream
@@ -90,16 +87,10 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
 
   const isExecuting = state === "input-available" && status === "streaming";
 
-  const shellAction = isShellTool
-    ? (input as { action?: string })?.action
-    : undefined;
-  const isInteractiveAction =
-    shellAction === "send" ||
-    shellAction === "wait" ||
-    shellAction === "view" ||
-    shellAction === "kill";
+  const isInteractiveAction = isInteractiveShellAction(shellAction);
   const displayCommand = isShellTool
-    ? getShellDisplayCommand(input) || (isInteractiveAction ? shellAction : "")
+    ? getShellDisplayCommand(input) ||
+      (isInteractiveAction ? shellAction || "" : "")
     : terminalInput?.command || "";
   const displayTarget = isShellTool
     ? getShellDisplayTarget(input) || displayCommand

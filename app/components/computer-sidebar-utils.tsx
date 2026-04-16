@@ -18,7 +18,11 @@ import {
   type SidebarContent,
   type NoteCategory,
 } from "@/types/chat";
-import { getShellActionLabel, formatSendInput } from "./tools/shell-tool-utils";
+import {
+  getShellActionLabel,
+  formatSendInput,
+  isInteractiveShellAction,
+} from "./tools/shell-tool-utils";
 import {
   PROXY_ACTION_LABELS,
   PROXY_COMPLETED_LABELS,
@@ -194,8 +198,7 @@ export function getToolName(content: SidebarContent): string {
   if (isSidebarProxy(content)) return "Proxy";
   if (isSidebarTerminal(content)) {
     const interactive =
-      content.session ||
-      (content.shellAction && content.shellAction !== "exec");
+      content.session || isInteractiveShellAction(content.shellAction);
     return interactive ? "Interactive Terminal" : "Terminal";
   }
   if (isSidebarWebSearch(content)) return "Search";

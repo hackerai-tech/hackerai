@@ -37,6 +37,39 @@ describe("chat-handler — PTY closeAll wired to streamText onFinish", () => {
     );
   });
 
+  test("closeAll is called inside the onError handler", () => {
+    // Find the onError block in the source
+    const onErrorIdx = src.indexOf("onError:");
+    expect(onErrorIdx).toBeGreaterThan(-1);
+
+    // Find a closeAll call after the onError block starts
+    const closeAllAfterOnError = src.indexOf(".closeAll(chatId)", onErrorIdx);
+    expect(closeAllAfterOnError).toBeGreaterThan(onErrorIdx);
+
+    // Verify the closeAll in onError also has a .catch guard
+    expect(src.substring(onErrorIdx)).toMatch(
+      /closeAll\(\s*chatId\s*\)\s*\.\s*catch\s*\(/,
+    );
+  });
+
+  test("closeAll is called inside the onAbort handler", () => {
+    const onAbortIdx = src.indexOf("onAbort:");
+    expect(onAbortIdx).toBeGreaterThan(-1);
+
+    // Find a closeAll call after the onAbort block starts
+    const closeAllAfterOnAbort = src.indexOf(".closeAll(chatId)", onAbortIdx);
+    expect(closeAllAfterOnAbort).toBeGreaterThan(onAbortIdx);
+
+    // Verify the closeAll in onAbort also has a .catch guard
+    expect(src.substring(onAbortIdx)).toMatch(
+      /closeAll\(\s*chatId\s*\)\s*\.\s*catch\s*\(/,
+    );
+  });
+
+  test("closeAll appears in the outer catch block as a hard backstop", () => {
+    expect(src).toMatch(/closeAll.*outer catch/);
+  });
+
   test("closeAll is called inside the streamText onFinish (not toUIMessageStream onFinish)", () => {
     const streamTextOnFinishIdx = src.indexOf(
       "onFinish: async ({ finishReason, usage, response })",

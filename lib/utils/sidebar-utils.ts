@@ -5,6 +5,7 @@ import {
   SidebarNotes,
   WebSearchResult,
 } from "@/types/chat";
+import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
 
 /** Parse a unified git diff into original and modified content for diff view. */
 function parseGitDiff(diff: string): {
@@ -98,7 +99,8 @@ export function extractSidebarContentFromMessage(
     // Terminal (including Codex local commands)
     if (part.type === "tool-run_terminal_cmd" && part.input) {
       const action = part.input.action || "exec";
-      const isInteractive = action !== "exec" || part.input.interactive;
+      const isInteractive =
+        isInteractiveShellAction(action) || !!part.input.interactive;
       const command =
         part.input.command ||
         part.input.brief ||

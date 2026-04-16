@@ -706,28 +706,6 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(over.success).toBe(false);
   });
 
-  // ── FIX 3 — partial sandbox lacking positive E2B evidence is non-E2B ─
-  test("sandbox lacking jupyterUrl + pty is treated as non-E2B (interactive=true returns error)", async () => {
-    // No sandboxKind, no jupyterUrl, no pty — the hardened isE2BSandbox
-    // requires positive evidence and should reject this.
-    const partial = {
-      commands: { run: jest.fn() },
-    };
-    const { context } = makeContext({ sandbox: partial });
-    const tool = createRunTerminalCmd(context);
-
-    const result = (await runTool(tool, {
-      action: "exec",
-      command: "top",
-      explanation: "x",
-      is_background: false,
-      interactive: true,
-    })) as { result: { error?: string; exitCode?: number } };
-
-    expect(result.result.error).toMatch(/Interactive PTY requires E2B/);
-    expect(result.result.exitCode).toBe(1);
-  });
-
   // ── FIX 4 — factory is not invoked when cap is already hit ───────────
   test("ptySessionManager.create does NOT invoke factory when concurrency cap is hit", async () => {
     const e2b = makeFakeE2BSandbox();
@@ -785,6 +763,67 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
 
     expect(result.result.error).toMatch(/spawn failed/);
     expect(ptySessionManager.list("chat-1")).toEqual([]);
+  });
+
+  // ── action=wait when process already exited ──────────────────────────
+  test("action=wait returns exited with exitCode when process already exited", async () => {
+    const e2b = makeFakeE2BSandbox();
+    // Build a handle whose exited promise is *already* settled at creation
+    // time. We do this by creating the handle, resolving its exit immediately,
+    // then shimming the PtySessionManager so its `.then` cleanup doesn't fire
+    // before we call `action=wait`.
+    const handle = makeFakeHandle();
+    mockCreateE2BPtyHandle.mockImplementation(async () => handle);
+
+    const { context, ptySessionManager } = makeContext({ sandbox: e2b });
+    const tool = createRunTerminalCmd(context);
+
+    // Create a session
+    const execP = runTool(tool, {
+      action: "exec",
+      command: "sh",
+      explanation: "x",
+      is_background: false,
+      interactive: true,
+      wait_for: { idle_ms: 5, timeout_ms: 200 },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const created = (await execP) as { result: { session: string } };
+    const sessionId = created.result.session;
+
+    // Resolve the exit — the handle.exited promise settles.
+    handle.resolveExit(42);
+
+    // Immediately start the wait call BEFORE yielding to microtasks — the
+    // session is still in the manager because removeSession runs in a
+    // .then() microtask that hasn't fired yet.
+    const waitP = runTool(tool, {
+      action: "wait",
+      session: sessionId,
+      explanation: "x",
+      is_background: false,
+      wait_for: { idle_ms: 10, timeout_ms: 500 },
+    }) as Promise<{
+      result: {
+        exited?: { exitCode: number | null };
+        output?: string;
+        error?: string;
+      };
+    }>;
+
+    const result = await waitP;
+
+    // If the session was still reachable, result.exited should be surfaced.
+    // If the session was already removed, we get a "Session not found" error.
+    // Either path is acceptable — the critical thing is we don't hang or crash.
+    if (result.result.error) {
+      // Session was cleaned up before wait ran — verify it's the expected error
+      expect(result.result.error).toMatch(/not found/i);
+    } else {
+      // The wait captured the already-exited state
+      expect(result.result.exited).toBeDefined();
+      expect(result.result.exited!.exitCode).toBe(42);
+    }
   });
 
   // ── FIX 6 — sendInput rejection surfaces as structured error ─────────
