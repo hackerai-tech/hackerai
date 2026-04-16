@@ -120,7 +120,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const sidebarContent = useMemo((): SidebarTerminal | null => {
     if (!displayCommand && !isInteractiveAction) return null;
     return {
-      command: displayCommand,
+      command: isInteractiveAction ? displayTarget : displayCommand,
       output: finalOutput,
       isExecuting,
       isBackground: terminalInput?.is_background,
@@ -132,6 +132,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     };
   }, [
     displayCommand,
+    displayTarget,
     finalOutput,
     isExecuting,
     isInteractiveAction,

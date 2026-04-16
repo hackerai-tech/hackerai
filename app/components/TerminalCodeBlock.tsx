@@ -219,8 +219,12 @@ export const TerminalCodeBlock = ({
 
   // For interactive actions the output already contains the full session
   // snapshot — don't prepend the command prefix above it.
+  // For send actions, append the input at the bottom so the user sees
+  // what the model typed after the session context.
   const terminalContent = isInteractiveAction
-    ? output || command
+    ? shellAction === "send" && command
+      ? `${output || ""}\n> ${command}`
+      : output || command
     : output
       ? `${commandPrefix} ${command}\n${output}`
       : `${commandPrefix} ${command}`;
