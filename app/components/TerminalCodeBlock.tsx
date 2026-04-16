@@ -13,6 +13,7 @@ interface TerminalCodeBlockProps {
   isBackground?: boolean;
   variant?: "default" | "sidebar";
   wrap?: boolean;
+  shellAction?: string;
 }
 
 interface AnsiCodeBlockProps {
@@ -200,6 +201,7 @@ export const TerminalCodeBlock = ({
   isBackground = false,
   variant = "default",
   wrap = false,
+  shellAction,
 }: TerminalCodeBlockProps) => {
   const [isWrapped, setIsWrapped] = useState(wrap);
 
@@ -208,8 +210,17 @@ export const TerminalCodeBlock = ({
     setIsWrapped(wrap);
   }, [wrap]);
 
+  const isInteractiveAction =
+    shellAction === "send" ||
+    shellAction === "wait" ||
+    shellAction === "view" ||
+    shellAction === "kill";
+  const commandPrefix = shellAction === "send" ? ">" : "$";
+
   // Combine command and output for full terminal session
-  const terminalContent = output ? `$ ${command}\n${output}` : `$ ${command}`;
+  const terminalContent = output
+    ? `${commandPrefix} ${command}\n${output}`
+    : `${commandPrefix} ${command}`;
   const displayContent = output || "";
 
   // For non-sidebar variant, keep the original terminal look
@@ -241,7 +252,11 @@ export const TerminalCodeBlock = ({
           <div className="flex-1 min-h-0 overflow-hidden">
             {isExecuting && !output && status === "streaming" ? (
               <div className="px-4 py-4 text-muted-foreground">
-                <Shimmer>Executing command</Shimmer>
+                <Shimmer>
+                  {isInteractiveAction
+                    ? "Waiting for output"
+                    : "Executing command"}
+                </Shimmer>
               </div>
             ) : (
               <AnsiCodeBlock
@@ -265,7 +280,9 @@ export const TerminalCodeBlock = ({
       <div className="h-full w-full overflow-auto bg-background">
         {isExecuting && !output && status === "streaming" ? (
           <div className="px-4 py-4 text-muted-foreground h-full flex items-start">
-            <Shimmer>Executing command</Shimmer>
+            <Shimmer>
+              {isInteractiveAction ? "Waiting for output" : "Executing command"}
+            </Shimmer>
           </div>
         ) : (
           <AnsiCodeBlock

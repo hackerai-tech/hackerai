@@ -229,6 +229,8 @@ export function extractSidebarContentFromMessage(
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,
         pid: part.input.pid ?? part.output?.pid,
+        session: part.input.session ?? part.output?.session,
+        input: part.input.input,
       });
     }
 

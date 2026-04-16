@@ -192,7 +192,12 @@ export function getToolName(content: SidebarContent): string {
     return content.action === "searching" ? "File Search" : "Editor";
   }
   if (isSidebarProxy(content)) return "Proxy";
-  if (isSidebarTerminal(content)) return "Terminal";
+  if (isSidebarTerminal(content)) {
+    const interactive =
+      content.session ||
+      (content.shellAction && content.shellAction !== "exec");
+    return interactive ? "Interactive Terminal" : "Terminal";
+  }
   if (isSidebarWebSearch(content)) return "Search";
   if (isSidebarNotes(content)) return "Notes";
   if (isSidebarSharedFiles(content)) return "Downloads";
