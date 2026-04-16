@@ -72,7 +72,6 @@ export function getShellActionLabel(opts: {
   const label = isActive ? active : done;
   if (action && SESSION_LABEL_ACTIONS.has(action as ShellAction)) {
     if (pid) return `${label} [PID: ${pid}]`;
-    if (session) return `${label} [${session}]`;
   }
   return label;
 }
