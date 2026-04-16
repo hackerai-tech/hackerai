@@ -48,6 +48,18 @@ const ANSI_REGEX =
   /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
 const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
 
+// Lighter strip for UI: remove cursor movement / erase / mode sequences
+// but keep SGR (color codes ending in 'm') that Shiki can render.
+const NON_SGR_CSI = /\x1b\[\??[0-9;]*[A-HJKSTfGnsulh]/g;
+const OSC_SEQ = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
+function cleanPtyForUI(text: string): string {
+  return text
+    .replace(NON_SGR_CSI, "")
+    .replace(OSC_SEQ, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "");
+}
+
 interface WaitPolicy {
   pattern?: string;
   idle_ms: number;
@@ -391,7 +403,7 @@ If you are generating files:
       // and `session` fields at runtime. This cast is intentional — keep
       // the minimal typed surface while carrying the extra metadata.
       const emitTerminal = (bytes: Uint8Array) => {
-        const text = new TextDecoder().decode(bytes);
+        const text = cleanPtyForUI(new TextDecoder().decode(bytes));
         writer.write({
           type: "data-terminal",
           id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
