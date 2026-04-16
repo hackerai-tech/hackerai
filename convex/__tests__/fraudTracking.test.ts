@@ -500,6 +500,97 @@ describe("recordPaymentFailure", () => {
     expect(r3.failureCount).toBe(3);
   });
 
+  it("does NOT stack weight from repeated retries of the same card", async () => {
+    // Legit user hitting do_not_honor on the same card 4x — with fingerprint
+    // dedup, weighted score = max(weight) = 2, not 8. Does not block even
+    // on the new-account lower threshold of 3.
+    const now = Date.now();
+    const entries = [
+      makeEntry({
+        timestamp: now - 4000,
+        declineCode: "incorrect_number",
+        fingerprint: "fp_same",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - 3000,
+        declineCode: "incorrect_number",
+        fingerprint: "fp_same",
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - 2000,
+        declineCode: "incorrect_number",
+        fingerprint: "fp_same",
+        weight: 2,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
+    const { ctx } = makeCtx(existing);
+
+    const result = await recordPaymentFailure.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      stripeCustomerId: CUSTOMER_ID,
+      declineCode: "incorrect_number",
+      cardFingerprint: "fp_same",
+      isNewAccount: true,
+    });
+
+    expect(result.shouldBlock).toBe(false);
+  });
+
+  it("still blocks on distinct-fingerprint test across cards", async () => {
+    // Card-tester using 3 different cards — fingerprint dedup shouldn't save
+    // them; Signal 2 (distinct_cards) fires at 3 fingerprints.
+    const now = Date.now();
+    const entries = [
+      makeEntry({ timestamp: now - 2000, fingerprint: "fp_a", weight: 1 }),
+      makeEntry({ timestamp: now - 1000, fingerprint: "fp_b", weight: 1 }),
+    ];
+    const existing = makeRecord({}, entries);
+    const { ctx } = makeCtx(existing);
+
+    const result = await recordPaymentFailure.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      stripeCustomerId: CUSTOMER_ID,
+      declineCode: "card_declined",
+      cardFingerprint: "fp_c",
+    });
+
+    expect(result.shouldBlock).toBe(true);
+    expect(result.blockReason).toContain("distinct_cards");
+  });
+
+  it("null-fingerprint entries still count individually in weighted score", async () => {
+    // Can't bypass detection by stripping fingerprint data.
+    const now = Date.now();
+    const entries = [
+      makeEntry({
+        timestamp: now - 2000,
+        declineCode: "incorrect_number",
+        fingerprint: null,
+        weight: 2,
+      }),
+      makeEntry({
+        timestamp: now - 1000,
+        declineCode: "incorrect_number",
+        fingerprint: null,
+        weight: 2,
+      }),
+    ];
+    const existing = makeRecord({}, entries);
+    const { ctx } = makeCtx(existing);
+
+    const result = await recordPaymentFailure.handler(ctx, {
+      serviceKey: SERVICE_KEY,
+      stripeCustomerId: CUSTOMER_ID,
+      declineCode: "incorrect_number", // 2 + 2 + 2 = 6 >= 5
+    });
+
+    expect(result.shouldBlock).toBe(true);
+    expect(result.blockReason).toContain("weighted_score");
+  });
+
   it("legitimate user: 2 card_declined failures do not trigger block", async () => {
     const { ctx: ctx1 } = makeCtx(null);
     const r1 = await recordPaymentFailure.handler(ctx1, {

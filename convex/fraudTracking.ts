@@ -86,8 +86,26 @@ function evaluateWindow(
   const windowStart = now - WINDOW_MS;
   const recent = entries.filter((e) => e.timestamp >= windowStart);
 
-  // Signal 1: Weighted score
-  const score = recent.reduce((sum, e) => sum + e.weight, 0);
+  // Signal 1: Weighted score — dedupe by fingerprint so that a legit user
+  // retrying the same card (bank throwing do_not_honor, etc.) doesn't stack
+  // weight. Card-testers iterate cards, which is already caught by Signal 2
+  // (distinct fingerprints). Entries without a fingerprint still count
+  // individually so detection can't be bypassed by stripping card data.
+  const bestPerFingerprint = new Map<string, FailureEntry>();
+  const noFingerprint: FailureEntry[] = [];
+  for (const e of recent) {
+    if (e.fingerprint) {
+      const existing = bestPerFingerprint.get(e.fingerprint);
+      if (!existing || e.weight > existing.weight) {
+        bestPerFingerprint.set(e.fingerprint, e);
+      }
+    } else {
+      noFingerprint.push(e);
+    }
+  }
+  const score =
+    [...bestPerFingerprint.values()].reduce((sum, e) => sum + e.weight, 0) +
+    noFingerprint.reduce((sum, e) => sum + e.weight, 0);
   if (score >= threshold) {
     return {
       shouldBlock: true,
