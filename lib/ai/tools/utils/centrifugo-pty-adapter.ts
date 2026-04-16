@@ -173,10 +173,23 @@ export async function createCentrifugoPtyHandle(
     }
   };
 
-  // Helper to publish a message on the subscription
+  // Helper to publish a message on the subscription. Wraps Centrifuge
+  // errors (which may be plain objects) as Error instances so callers
+  // don't see "[object Object]" from String(err).
   const publish = async (payload: PtyOutgoingPayload): Promise<void> => {
     if (!subscription) throw new Error(`${LOG_PREFIX} subscription not ready`);
-    await subscription.publish(payload);
+    try {
+      await subscription.publish(payload);
+    } catch (err) {
+      if (err instanceof Error) throw err;
+      const msg =
+        typeof err === "string"
+          ? err
+          : (err as { message?: string })?.message ||
+            JSON.stringify(err) ||
+            "publish failed";
+      throw new Error(`${LOG_PREFIX} ${payload.type} publish failed: ${msg}`);
+    }
   };
 
   // Build the handle that will be returned once pty_ready arrives

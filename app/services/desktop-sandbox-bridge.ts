@@ -382,10 +382,17 @@ export class DesktopSandboxBridge {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("execute_pty_input", { sessionId, data });
     } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : JSON.stringify(err) || "unknown pty_input error";
+      console.error("[desktop-bridge] execute_pty_input failed:", err);
       await this.publishResult({
         type: "pty_error",
         sessionId,
-        message: err instanceof Error ? err.message : String(err),
+        message,
       });
     }
   }

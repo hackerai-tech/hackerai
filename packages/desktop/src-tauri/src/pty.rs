@@ -15,6 +15,7 @@ const OUTPUT_BUFFER_MAX_BYTES: usize = 32 * 1024;
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    writer: Box<dyn Write + Send>,
     reader_shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -102,9 +103,18 @@ impl PtyManager {
             pty_reader_thread(reader, on_data, shutdown_clone, session_id_clone);
         });
 
+        // Take the writer ONCE at creation time and cache it. Calling
+        // take_writer() on every send_input duplicates the fd each time,
+        // which was causing sendInput failures and eventual resource issues.
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
+
         let session = PtySession {
             master: pair.master,
             child,
+            writer,
             reader_shutdown: shutdown_flag,
         };
 
@@ -124,16 +134,13 @@ impl PtyManager {
             .get_mut(session_id)
             .ok_or_else(|| format!("Session '{}' not found", session_id))?;
 
-        let mut writer = session
-            .master
-            .take_writer()
-            .map_err(|e| format!("Failed to get PTY writer: {}", e))?;
-
-        writer
+        session
+            .writer
             .write_all(data.as_bytes())
             .map_err(|e| format!("Failed to write to PTY: {}", e))?;
 
-        writer
+        session
+            .writer
             .flush()
             .map_err(|e| format!("Failed to flush PTY writer: {}", e))?;
 
