@@ -23,6 +23,7 @@ import {
   generateDoomLoopNudge,
 } from "@/lib/chat/doom-loop-detection";
 import { createTools } from "@/lib/ai/tools";
+import { ptySessionManager } from "@/lib/ai/tools/utils/pty-session-manager";
 import { generateTitleFromUserMessageWithWriter } from "@/lib/actions";
 import { getUserIDAndPro } from "@/lib/auth/get-user-id";
 import type {
@@ -908,6 +909,15 @@ export const createChatHandler = (
 
                 // Update logger with model and usage
                 chatLogger!.setStreamResponse(responseModel, streamUsage);
+
+                // Tear down any PTY sessions the model left open at end of
+                // turn. M1 policy: PTYs don't survive a turn. Best-effort —
+                // must never block or throw into the finish path.
+                await ptySessionManager
+                  .closeAll(chatId)
+                  .catch((err) =>
+                    console.error("[chat-handler] PTY closeAll failed:", err),
+                  );
               },
               onError: async (error) => {
                 // Suppress xAI safety check errors from logging (they're expected for certain content)
@@ -926,7 +936,33 @@ export const createChatHandler = (
                     ...extractErrorDetails(error),
                   });
                 }
-                // No refund on streaming errors - usage is still charged
+                // No refund on streaming errors - usage is still charged.
+
+                // Tear down any PTY sessions left open — streamText.onFinish
+                // may not fire on error/abort paths. `closeAll` is idempotent;
+                // calling it here + in onFinish is safe. Best-effort only —
+                // must never propagate back into the stream.
+                await ptySessionManager
+                  .closeAll(chatId)
+                  .catch((err) =>
+                    console.error(
+                      "[chat-handler] PTY closeAll (onError) failed:",
+                      err,
+                    ),
+                  );
+              },
+              onAbort: async () => {
+                // Mirror the onError cleanup for client-initiated aborts.
+                // If this hook is not supported by the current ai SDK it will
+                // simply be ignored; the .finally() below is the hard backstop.
+                await ptySessionManager
+                  .closeAll(chatId)
+                  .catch((err) =>
+                    console.error(
+                      "[chat-handler] PTY closeAll (onAbort) failed:",
+                      err,
+                    ),
+                  );
               },
             });
 

@@ -26,9 +26,165 @@ import {
 } from "./utils/guardrails";
 import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
+import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
+import type { PtySession } from "./utils/pty-session-manager";
+import { translateInput } from "./utils/pty-keys";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
+
+// ─── Interactive PTY constants ──────────────────────────────────────────
+// Plan: /Users/fkesheh/.claude/plans/fluffy-splashing-hoare.md ("Limits" section)
+export const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
+export const MODEL_OUTPUT_CAP_BYTES = 8 * 1024;
+const DEFAULT_WAIT_IDLE_MS = 800;
+const DEFAULT_WAIT_TIMEOUT_MS = 15_000;
+
+// Strip CSI + OSC ANSI escape sequences from model-facing output. Keeping a
+// small inline helper avoids pulling in `strip-ansi` which isn't currently a
+// dep. UI-side consumers still get the raw bytes via `data-terminal` events.
+ 
+const ANSI_REGEX =
+  /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
+const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
+
+interface WaitPolicy {
+  pattern?: string;
+  idle_ms: number;
+  timeout_ms: number;
+}
+
+/**
+ * Thrown by `waitForOutput` when `policy.pattern` cannot be compiled to a
+ * RegExp. Callers translate this into a structured tool error rather than
+ * letting the JS SyntaxError bubble out of `execute()`.
+ */
+export class InvalidWaitPatternError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidWaitPatternError";
+  }
+}
+
+/**
+ * Resolve once any of:
+ *   - `policy.pattern` matches the ANSI-stripped accumulated delta (if set)
+ *   - `policy.idle_ms` of no new onData chunks (if pattern unset)
+ *   - `policy.timeout_ms` absolute cap
+ *   - `signal` aborts
+ *
+ * Streams every raw chunk through `onChunk` for the UI writer before
+ * consuming the session delta and returning.
+ *
+ * Throws `InvalidWaitPatternError` synchronously if `policy.pattern` is set
+ * but cannot be compiled. We throw BEFORE any timers / listeners are armed
+ * so nothing needs to be cleaned up on the error path.
+ */
+async function waitForOutput(
+  session: PtySession,
+  policy: WaitPolicy,
+  signal: AbortSignal | undefined,
+  onChunk: (chunk: Uint8Array) => void,
+  consume: (s: PtySession) => Uint8Array,
+): Promise<Uint8Array> {
+  // Compile the regex FIRST so invalid patterns surface as a synchronous
+  // throw before any timers or listeners are armed — nothing to clean up.
+  let regex: RegExp | null = null;
+  if (policy.pattern) {
+    try {
+      regex = new RegExp(policy.pattern);
+    } catch (err) {
+      throw new InvalidWaitPatternError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
+  return new Promise<Uint8Array>((resolve) => {
+    let settled = false;
+    let accumulated = "";
+    const decoder = new TextDecoder();
+
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const hardTimer = setTimeout(() => finish(), policy.timeout_ms);
+
+    const armIdle = () => {
+      if (regex) return; // pattern mode doesn't use idle timer
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => finish(), policy.idle_ms);
+    };
+
+    const unsubscribe = session.handle.onData((bytes) => {
+      if (settled) return;
+      try {
+        onChunk(bytes);
+      } catch {
+        // UI emit is best-effort
+      }
+      if (regex) {
+        accumulated += stripAnsi(decoder.decode(bytes, { stream: true }));
+        if (regex.test(accumulated)) {
+          finish();
+          return;
+        }
+      } else {
+        armIdle();
+      }
+    });
+
+    const onAbort = () => finish();
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(hardTimer);
+      try {
+        unsubscribe();
+      } catch {
+        // ignore
+      }
+      signal?.removeEventListener("abort", onAbort);
+      resolve(consume(session));
+    }
+
+    // Arm the idle timer up front — covers the case where no new bytes arrive
+    // at all, which is still a valid "idle resolve" outcome.
+    if (!regex) armIdle();
+  });
+}
+
+/** Truncate model-visible output with a head/tail marker. */
+function capOutput(text: string): string {
+  if (text.length <= MODEL_OUTPUT_CAP_BYTES) return text;
+  const head = Math.floor(MODEL_OUTPUT_CAP_BYTES * 0.7);
+  const tail = MODEL_OUTPUT_CAP_BYTES - head - 64;
+  return (
+    text.slice(0, head) +
+    `\n…[truncated ${text.length - head - tail} bytes]…\n` +
+    text.slice(-tail)
+  );
+}
+
+/**
+ * Peek at `session.handle.exited` without blocking. Returns the resolved
+ * value if already settled, otherwise `null`.
+ */
+async function peekExited(
+  session: PtySession,
+): Promise<{ exitCode: number | null } | null> {
+  const sentinel: { exitCode: number | null } = { exitCode: -0xdeadbeef };
+  const result = await Promise.race([
+    session.handle.exited,
+    new Promise<typeof sentinel>((r) => {
+      // Queue a microtask — if `exited` is already settled it'll win the race.
+      Promise.resolve().then(() => r(sentinel));
+    }),
+  ]);
+  if (result === sentinel) return null;
+  return result;
+}
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
@@ -38,6 +194,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     guardrailsConfig,
     caidoEnabled,
     caidoPort,
+    ptySessionManager,
+    chatId,
   } = context;
 
   // Parse user guardrail configuration and get effective guardrails
@@ -105,7 +263,16 @@ If you are generating files:
 - If you are to use pypandoc, you are only allowed to call the method pypandoc.convert_text and you MUST include the parameter extra_args=['--standalone']. Otherwise the file will be corrupt/incomplete
     - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])`,
     inputSchema: z.object({
-      command: z.string().describe("The terminal command to execute"),
+      action: z
+        .enum(["exec", "wait", "send", "kill", "view"])
+        .default("exec")
+        .describe(
+          "exec=run new command (default). wait=wait for output from existing interactive session. send=send keystrokes to existing session (raw input — NOT filtered by command guardrails). kill=terminate session. view=snapshot current buffer without advancing the read cursor.",
+        ),
+      command: z
+        .string()
+        .optional()
+        .describe("The terminal command to execute. Required for action=exec."),
       explanation: z
         .string()
         .describe(
@@ -113,29 +280,286 @@ If you are generating files:
         ),
       is_background: z
         .boolean()
+        .optional()
+        .default(false)
         .describe(
-          "Whether the command should be run in the background. Set to FALSE if you need to retrieve output files immediately after with get_terminal_files. Only use TRUE for indefinite processes where you don't need immediate file access.",
+          "Whether the command should be run in the background. Set to FALSE if you need to retrieve output files immediately after with get_terminal_files. Only use TRUE for indefinite processes where you don't need immediate file access. Ignored unless action=exec and interactive=false.",
         ),
       timeout: z
         .number()
         .optional()
         .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command execution. On timeout, command continues running in background. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Timeout in seconds to wait for command execution. On timeout, command continues running in background. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds. Only applies to non-interactive exec.`,
+        ),
+      session: z
+        .string()
+        .optional()
+        .describe(
+          "Session id returned by a prior exec with interactive=true. Required for action in {wait, send, kill, view}.",
+        ),
+      interactive: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "On action=exec: open a PTY and return a reusable session id instead of blocking until exit. E2B sandboxes only.",
+        ),
+      input: z
+        .string()
+        .optional()
+        .describe(
+          "For action=send: keystrokes. Supports tmux-style names ('Enter', 'Tab', 'C-c', 'Up', 'M-x', 'C-S-A') via pty-keys. Plain text is sent verbatim as UTF-8 — include your own '\\n' if needed.",
+        ),
+      cols: z.number().int().optional().default(120),
+      rows: z.number().int().optional().default(30),
+      wait_for: z
+        .object({
+          pattern: z
+            .string()
+            .optional()
+            .describe(
+              "JS regex; resolves as soon as accumulated (ANSI-stripped) output matches. Invalid regex returns a structured error instead of crashing the tool call.",
+            ),
+          idle_ms: z
+            .number()
+            .int()
+            .min(50)
+            .max(60_000)
+            .optional()
+            .default(DEFAULT_WAIT_IDLE_MS)
+            .describe(
+              "Resolve after N ms of no new bytes. Range: [50, 60000] (1 min cap).",
+            ),
+          timeout_ms: z
+            .number()
+            .int()
+            .min(100)
+            .max(300_000)
+            .optional()
+            .default(DEFAULT_WAIT_TIMEOUT_MS)
+            .describe(
+              "Absolute cap on the wait. Range: [100, 300000] (5 min cap).",
+            ),
+        })
+        .optional()
+        .describe(
+          "Wait policy applied after exec+interactive / send / wait. Default: {idle_ms: 800, timeout_ms: 15000}. Caps: idle_ms<=60000, timeout_ms<=300000.",
         ),
     }),
     execute: async (
       {
+        action,
         command,
         is_background,
         timeout,
+        session: sessionId,
+        interactive,
+        input,
+        cols,
+        rows,
+        wait_for,
       }: {
-        command: string;
+        action: "exec" | "wait" | "send" | "kill" | "view";
+        command?: string;
         is_background: boolean;
         timeout?: number;
+        session?: string;
+        interactive: boolean;
+        input?: string;
+        cols: number;
+        rows: number;
+        wait_for?: {
+          pattern?: string;
+          idle_ms: number;
+          timeout_ms: number;
+        };
       },
       { toolCallId, abortSignal },
     ) => {
+      // Default wait policy shared across interactive action branches.
+      const waitPolicy: WaitPolicy = {
+        pattern: wait_for?.pattern,
+        idle_ms: wait_for?.idle_ms ?? DEFAULT_WAIT_IDLE_MS,
+        timeout_ms: wait_for?.timeout_ms ?? DEFAULT_WAIT_TIMEOUT_MS,
+      };
+
+      // Helper: emit a raw-byte chunk to the UI terminal stream.
+      // The `data-terminal` part shape in `UIMessageStreamWriter` only types
+      // the minimal `{terminal, toolCallId}` fields, but the frontend
+      // (`TerminalToolHandler`/`ComputerSidebar`) reads the extra `action`
+      // and `session` fields at runtime. This cast is intentional — keep
+      // the minimal typed surface while carrying the extra metadata.
+      const emitTerminal = (bytes: Uint8Array) => {
+        const text = new TextDecoder().decode(bytes);
+        writer.write({
+          type: "data-terminal",
+          id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          data: {
+            terminal: text,
+            toolCallId,
+            action,
+            session: sessionId,
+          } as unknown as { terminal: string; toolCallId: string },
+        });
+      };
+
+      // ─── Non-exec actions (session lookup required) ────────────────────
+      if (action === "send") {
+        if (!sessionId) {
+          return {
+            result: { output: "", error: "action=send requires `session`." },
+          };
+        }
+        const session = ptySessionManager.get(chatId, sessionId);
+        if (!session) {
+          return {
+            result: { output: "", error: `Session ${sessionId} not found.` },
+          };
+        }
+        const bytes = translateInput(input ?? "");
+        if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
+          return {
+            result: {
+              output: "",
+              error: `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
+            },
+          };
+        }
+        try {
+          await session.handle.sendInput(bytes);
+        } catch (err) {
+          return {
+            result: {
+              output: "",
+              error: `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          };
+        }
+        session.lastActivityAt = Date.now();
+        try {
+          const delta = await waitForOutput(
+            session,
+            waitPolicy,
+            abortSignal,
+            emitTerminal,
+            (s) => ptySessionManager.consumeDelta(s),
+          );
+          return {
+            result: {
+              // TODO(M2): capOutput truncates for model-facing output only.
+              // `saveTruncatedOutput` for interactive PTY deltas is out of
+              // scope for M1 per plan — revisit when ring persistence lands.
+              output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+              ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+            },
+          };
+        } catch (err) {
+          if (err instanceof InvalidWaitPatternError) {
+            return {
+              result: {
+                output: "",
+                error: `Invalid wait_for.pattern: ${err.message}`,
+              },
+            };
+          }
+          throw err;
+        }
+      }
+
+      if (action === "wait") {
+        if (!sessionId) {
+          return {
+            result: { output: "", error: "action=wait requires `session`." },
+          };
+        }
+        const session = ptySessionManager.get(chatId, sessionId);
+        if (!session) {
+          return {
+            result: { output: "", error: `Session ${sessionId} not found.` },
+          };
+        }
+        // If process already exited, surface immediately without waiting.
+        const alreadyExited = await peekExited(session);
+        try {
+          const delta = await waitForOutput(
+            session,
+            waitPolicy,
+            abortSignal,
+            emitTerminal,
+            (s) => ptySessionManager.consumeDelta(s),
+          );
+          const out: Record<string, unknown> = {
+            // TODO(M2): see note above — `saveTruncatedOutput` for interactive
+            // PTY deltas deferred.
+            output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+          };
+          if (session.bufferTruncated) out.bufferTruncated = true;
+          if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
+          return { result: out };
+        } catch (err) {
+          if (err instanceof InvalidWaitPatternError) {
+            return {
+              result: {
+                output: "",
+                error: `Invalid wait_for.pattern: ${err.message}`,
+              },
+            };
+          }
+          throw err;
+        }
+      }
+
+      if (action === "view") {
+        if (!sessionId) {
+          return {
+            result: { output: "", error: "action=view requires `session`." },
+          };
+        }
+        const session = ptySessionManager.get(chatId, sessionId);
+        if (!session) {
+          return {
+            result: { output: "", error: `Session ${sessionId} not found.` },
+          };
+        }
+        const snapshot = ptySessionManager.snapshot(session);
+        return {
+          result: {
+            output: capOutput(stripAnsi(new TextDecoder().decode(snapshot))),
+            ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+          },
+        };
+      }
+
+      if (action === "kill") {
+        if (!sessionId) {
+          return {
+            result: { output: "", error: "action=kill requires `session`." },
+          };
+        }
+        const session = ptySessionManager.get(chatId, sessionId);
+        if (!session) {
+          return {
+            result: { output: "", error: `Session ${sessionId} not found.` },
+          };
+        }
+        const exitPromise = session.handle.exited;
+        await ptySessionManager.close(chatId, sessionId);
+        const exit = await exitPromise.catch(() => ({ exitCode: null }));
+        return { result: { exitCode: exit.exitCode } };
+      }
+
+      // action === "exec" — validate command is present.
+      if (!command || command.length === 0) {
+        return {
+          result: {
+            output: "",
+            exitCode: 1,
+            error: "action=exec requires `command`.",
+          },
+        };
+      }
+      const commandNonEmpty: string = command;
       // Calculate effective stream timeout (capped at MAX_TIMEOUT_SECONDS)
       // This controls how long we wait for output, not how long the command runs
       const effectiveStreamTimeout = Math.min(
@@ -157,7 +581,85 @@ If you are generating files:
         };
       }
 
+      // ─── Interactive PTY exec branch ─────────────────────────────────
+      if (interactive) {
+        try {
+          const { sandbox } = await sandboxManager.getSandbox();
+          if (!isE2BSandbox(sandbox)) {
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error:
+                  "Interactive PTY requires E2B sandbox. Use action=exec without interactive for one-shot commands.",
+              },
+            };
+          }
+          // Factory is invoked BY `ptySessionManager.create` — this ensures
+          // that if the concurrency cap is hit, the factory is never called
+          // and no E2B PTY is spawned (see FIX 4).
+          const session = await ptySessionManager.create(chatId, {
+            cols,
+            rows,
+            createHandle: () =>
+              createE2BPtyHandle(sandbox, {
+                cols,
+                rows,
+                envs: caidoEnvVars,
+              }),
+          });
+          // Fire the command + Enter so the shell actually runs it.
+          await session.handle.sendInput(
+            new TextEncoder().encode(command + "\n"),
+          );
+          session.lastActivityAt = Date.now();
+
+          const delta = await waitForOutput(
+            session,
+            waitPolicy,
+            abortSignal,
+            emitTerminal,
+            (s) => ptySessionManager.consumeDelta(s),
+          );
+          return {
+            result: {
+              session: session.sessionId,
+              pid: session.pid,
+              // TODO(M2): `saveTruncatedOutput` integration for interactive
+              // PTY deltas is deferred per plan (fluffy-splashing-hoare.md).
+              output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+              ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+            },
+          };
+        } catch (err) {
+          if (err instanceof InvalidWaitPatternError) {
+            return {
+              result: {
+                output: "",
+                error: `Invalid wait_for.pattern: ${err.message}`,
+              },
+            };
+          }
+          return {
+            result: {
+              output: "",
+              exitCode: 1,
+              error:
+                err instanceof Error
+                  ? err.message
+                  : "Failed to create interactive PTY session.",
+            },
+          };
+        }
+      }
+
       try {
+        // Narrow the optional schema param: past this point `command` is a
+        // guaranteed non-empty string. Shadowing keeps the existing closure
+        // body (written when `command` was always required) type-correct
+        // without rewriting every reference.
+         
+        const command: string = commandNonEmpty;
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await sandboxManager.getSandbox();
 
