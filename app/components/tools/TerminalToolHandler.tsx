@@ -67,10 +67,25 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       .join("");
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
 
-  // Memoize final output computation
+  // Memoize final output computation.
+  // For interactive actions (send/wait/view/kill) the streaming output
+  // contains the full session snapshot replayed via data-terminal events,
+  // so prefer it over the tool result's stripped delta.
+  const actionType = isShellTool
+    ? (input as { action?: string })?.action
+    : undefined;
+  const hasInteractiveStream =
+    streamingOutput &&
+    (actionType === "send" ||
+      actionType === "wait" ||
+      actionType === "view" ||
+      actionType === "kill");
   const finalOutput = useMemo(
-    () => getShellOutput(terminalOutput, { streamingOutput, errorText }),
-    [terminalOutput, streamingOutput, errorText],
+    () =>
+      hasInteractiveStream
+        ? streamingOutput
+        : getShellOutput(terminalOutput, { streamingOutput, errorText }),
+    [hasInteractiveStream, terminalOutput, streamingOutput, errorText],
   );
 
   const isExecuting = state === "input-available" && status === "streaming";
