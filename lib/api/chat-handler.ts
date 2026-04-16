@@ -366,6 +366,7 @@ export const createChatHandler = (
         },
         selectedModel,
       );
+      chatLogger.setByok(isByok);
 
       // Build extra usage config (paid users only, works for both agent and ask modes)
       // extra_usage_enabled is in userCustomization, balance is in extra_usage
