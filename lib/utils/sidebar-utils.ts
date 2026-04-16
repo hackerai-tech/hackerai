@@ -127,9 +127,11 @@ export function extractSidebarContentFromMessage(
         }
       }
 
-      // Fallback to streaming output or direct output property
-      const finalOutput =
-        output || streamingOutput || part.output?.output || "";
+      // For interactive actions, streaming output contains the full session
+      // snapshot and should take priority over the tool result's delta.
+      const finalOutput = isInteractive
+        ? streamingOutput || output || part.output?.output || ""
+        : output || streamingOutput || part.output?.output || "";
 
       contentList.push({
         command,
