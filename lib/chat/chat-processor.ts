@@ -48,15 +48,8 @@ export function selectModel(
   // }
 
   // Agent mode: allow model override for paid users; free users get agent-model-free
-  // Block expensive models (Opus) in agent mode — fall back to auto
-  const BLOCKED_AGENT_MODELS = ["opus-4.6"];
   if (isAgentMode(mode)) {
-    if (
-      selectedModel &&
-      selectedModel !== "auto" &&
-      subscription !== "free" &&
-      !BLOCKED_AGENT_MODELS.includes(selectedModel)
-    ) {
+    if (selectedModel && selectedModel !== "auto" && subscription !== "free") {
       return `model-${selectedModel}` as ModelName;
     }
     return subscription === "free" ? "agent-model-free" : "agent-model";

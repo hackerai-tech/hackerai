@@ -21,6 +21,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "kimi-k2.5", label: "Kimi K2.5", thinking: true },
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", censored: true },
+  { id: "opus-4.6", label: "Claude Opus 4.6", censored: true },
 ];
 
 // export const CODEX_LOCAL_OPTIONS: ModelOption[] = [
