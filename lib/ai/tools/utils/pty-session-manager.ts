@@ -64,6 +64,8 @@ interface InternalSession extends PtySession {
   unsubscribe: (() => void) | null;
   /** True once close() has been initiated — prevents re-entry. */
   closing: boolean;
+  /** Set when the process exits naturally — session stays around for view/wait. */
+  exitedNaturally: { exitCode: number | null } | null;
 }
 
 export class PtySessionManager {
@@ -105,6 +107,7 @@ export class PtySessionManager {
         lifetimeTimer: null,
         unsubscribe: null,
         closing: false,
+        exitedNaturally: null,
       };
 
       // Subscribe to handle output
@@ -118,14 +121,16 @@ export class PtySessionManager {
         void this.killAndRemove(session, "lifetime");
       }, SESSION_MAX_LIFETIME_MS);
 
-      // Natural exit — clean up
+      // Natural exit — mark as exited but keep session around so the model
+      // can still call view/wait to read the final output. closeAll() or
+      // kill will do the actual cleanup.
       handle.exited
         .then(
-          () => {
-            this.removeSession(session);
+          (info) => {
+            session.exitedNaturally = { exitCode: info.exitCode };
           },
           () => {
-            this.removeSession(session);
+            session.exitedNaturally = { exitCode: null };
           },
         )
         .catch((err) =>

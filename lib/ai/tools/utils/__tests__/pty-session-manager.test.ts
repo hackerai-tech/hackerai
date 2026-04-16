@@ -210,9 +210,7 @@ describe("PtySessionManager", () => {
       jest.advanceTimersByTime(SESSION_IDLE_TIMEOUT_MS + 1);
       // Let microtasks (the async kill/exited chain) resolve
       handle.__exit(null);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
 
       expect(handle.kill).toHaveBeenCalled();
       expect(manager.get("chat-1", session.sessionId)).toBeUndefined();
@@ -237,9 +235,7 @@ describe("PtySessionManager", () => {
       // Now cross lifetime cap
       jest.advanceTimersByTime(SESSION_MAX_LIFETIME_MS - elapsed + 1);
       handle.__exit(null);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
 
       expect(handle.kill).toHaveBeenCalled();
       expect(manager.get("chat-1", session.sessionId)).toBeUndefined();
@@ -247,7 +243,7 @@ describe("PtySessionManager", () => {
   });
 
   describe("exited", () => {
-    it("removes the session when handle.exited resolves naturally", async () => {
+    it("marks session as exited but keeps it around for view/wait", async () => {
       const handle = makeFakeHandle();
       const session = await manager.create("chat-1", {
         createHandle: makeCreateHandleFactory(handle),
@@ -260,7 +256,10 @@ describe("PtySessionManager", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      expect(manager.get("chat-1", session.sessionId)).toBeUndefined();
+      // Session still accessible — not removed
+      expect(manager.get("chat-1", session.sessionId)).toBe(session);
+      // But marked as exited
+      expect((session as any).exitedNaturally).toEqual({ exitCode: 0 });
     });
   });
 

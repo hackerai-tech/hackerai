@@ -36,7 +36,7 @@ const MAX_TIMEOUT_SECONDS = 600;
 // ─── Interactive PTY constants ──────────────────────────────────────────
 export const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
 export const MODEL_OUTPUT_CAP_BYTES = 8 * 1024;
-const DEFAULT_WAIT_IDLE_MS = 800;
+const DEFAULT_WAIT_IDLE_MS = 1500;
 const DEFAULT_WAIT_TIMEOUT_MS = 15_000;
 
 // Strip CSI + OSC ANSI escape sequences from model-facing output. Keeping a
@@ -461,6 +461,9 @@ If you are generating files:
           };
         }
         session.lastActivityAt = Date.now();
+        // Small stabilization delay so the CLI's readline has time to
+        // process the input before we start collecting output.
+        await new Promise((r) => setTimeout(r, 150));
         try {
           const delta = await waitForOutput(
             session,
@@ -555,11 +558,17 @@ If you are generating files:
         }
         const snapshot = ptySessionManager.snapshot(session);
         if (snapshot.byteLength > 0) emitTerminal(snapshot);
+        const internal = session as {
+          exitedNaturally?: { exitCode: number | null } | null;
+        };
         return {
           result: {
             output: capOutput(stripAnsi(new TextDecoder().decode(snapshot))),
             sessionSnapshot: cleanPtyForUI(new TextDecoder().decode(snapshot)),
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+            ...(internal.exitedNaturally
+              ? { exited: internal.exitedNaturally }
+              : {}),
           },
         };
       }
