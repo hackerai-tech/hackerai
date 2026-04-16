@@ -26,6 +26,7 @@ export interface ShellToolOutput {
     stdout?: string;
     stderr?: string;
     error?: string;
+    sessionSnapshot?: string;
   };
   output?: string;
   exitCode?: number | null;

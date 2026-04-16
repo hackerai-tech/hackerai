@@ -75,14 +75,24 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const shellAction = isShellTool
     ? (input as { action?: string })?.action
     : undefined;
-  const hasInteractiveStream =
-    streamingOutput && isInteractiveShellAction(shellAction);
+  const isInteractive = isInteractiveShellAction(shellAction);
+  const sessionSnapshot = isInteractive
+    ? terminalOutput?.result?.sessionSnapshot
+    : undefined;
   const finalOutput = useMemo(
     () =>
-      hasInteractiveStream
+      isInteractive && streamingOutput
         ? streamingOutput
-        : getShellOutput(terminalOutput, { streamingOutput, errorText }),
-    [hasInteractiveStream, terminalOutput, streamingOutput, errorText],
+        : isInteractive && sessionSnapshot
+          ? sessionSnapshot
+          : getShellOutput(terminalOutput, { streamingOutput, errorText }),
+    [
+      isInteractive,
+      sessionSnapshot,
+      terminalOutput,
+      streamingOutput,
+      errorText,
+    ],
   );
 
   const isExecuting = state === "input-available" && status === "streaming";

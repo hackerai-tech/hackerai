@@ -59,6 +59,14 @@ function cleanPtyForUI(text: string): string {
     .replace(/\r/g, "");
 }
 
+function getSessionSnapshot(
+  mgr: typeof import("./utils/pty-session-manager").ptySessionManager,
+  session: { sessionId: string; chatId: string },
+): string {
+  const bytes = mgr.snapshot(session as any);
+  return cleanPtyForUI(new TextDecoder().decode(bytes));
+}
+
 interface WaitPolicy {
   pattern?: string;
   idle_ms: number;
@@ -467,6 +475,7 @@ If you are generating files:
               // `saveTruncatedOutput` for interactive PTY deltas is out of
               // scope for M1 per plan — revisit when ring persistence lands.
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+              sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             },
           };
@@ -514,6 +523,7 @@ If you are generating files:
             // TODO(M2): see note above — `saveTruncatedOutput` for interactive
             // PTY deltas deferred.
             output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+            sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
           };
           if (session.bufferTruncated) out.bufferTruncated = true;
           if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
@@ -548,6 +558,7 @@ If you are generating files:
         return {
           result: {
             output: capOutput(stripAnsi(new TextDecoder().decode(snapshot))),
+            sessionSnapshot: cleanPtyForUI(new TextDecoder().decode(snapshot)),
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
           },
         };
@@ -652,6 +663,7 @@ If you are generating files:
               // TODO(M2): `saveTruncatedOutput` integration for interactive
               // PTY deltas is deferred per plan (M2).
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+              sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             },
           };

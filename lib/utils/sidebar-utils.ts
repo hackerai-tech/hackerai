@@ -129,10 +129,15 @@ export function extractSidebarContentFromMessage(
         }
       }
 
-      // For interactive actions, streaming output contains the full session
-      // snapshot and should take priority over the tool result's delta.
+      // For interactive actions, prefer streaming output (live snapshot) or
+      // the persisted sessionSnapshot (DB reload) over the stripped delta.
+      const sessionSnapshot = result?.sessionSnapshot || "";
       const finalOutput = isInteractive
-        ? streamingOutput || output || part.output?.output || ""
+        ? streamingOutput ||
+          sessionSnapshot ||
+          output ||
+          part.output?.output ||
+          ""
         : output || streamingOutput || part.output?.output || "";
 
       contentList.push({
