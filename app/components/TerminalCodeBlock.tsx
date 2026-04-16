@@ -217,11 +217,14 @@ export const TerminalCodeBlock = ({
     shellAction === "kill";
   const commandPrefix = shellAction === "send" ? ">" : "$";
 
-  // Combine command and output for full terminal session
-  const terminalContent = output
-    ? `${commandPrefix} ${command}\n${output}`
-    : `${commandPrefix} ${command}`;
-  const displayContent = output || "";
+  // For interactive actions the output already contains the full session
+  // snapshot — don't prepend the command prefix above it.
+  const terminalContent = isInteractiveAction
+    ? output || command
+    : output
+      ? `${commandPrefix} ${command}\n${output}`
+      : `${commandPrefix} ${command}`;
+  const displayContent = isInteractiveAction ? output || "" : output || "";
 
   // For non-sidebar variant, keep the original terminal look
   if (variant !== "sidebar") {
