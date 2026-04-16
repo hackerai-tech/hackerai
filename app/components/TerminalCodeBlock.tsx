@@ -215,13 +215,10 @@ export const TerminalCodeBlock = ({
   const commandPrefix = shellAction === "send" ? ">" : "$";
 
   // For interactive actions the output already contains the full session
-  // snapshot — don't prepend the command prefix above it.
-  // For send actions, append the input at the bottom so the user sees
-  // what the model typed after the session context.
+  // snapshot (with the PTY echo of the model's input inline). The ToolBlock
+  // chip shows "Sent input X" so no prefix/append needed here.
   const terminalContent = isInteractiveAction
-    ? shellAction === "send" && command
-      ? `${output || ""}\n> ${command}`
-      : output || command
+    ? output || command
     : output
       ? `${commandPrefix} ${command}\n${output}`
       : `${commandPrefix} ${command}`;
