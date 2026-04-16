@@ -717,10 +717,13 @@ export const createChatHandler = (
             // Trust accumulated provider cost (sum of per-step usage.raw.cost) even on
             // non-clean streams. Each completed step reports authoritative cost with
             // cache discounts baked in, so summing them is more accurate than the
-            // token-based fallback (which ignores cache reads and overcharges). Fall
-            // back to token calc only when no step reported any cost.
+            // token-based fallback (which ignores cache reads and overcharges).
+            // Gate on modelProviderCost (not providerCost) because providerCost also
+            // includes tool/sandbox spend — if the model never reported raw.cost,
+            // tool/sandbox cost alone would incorrectly suppress the token fallback
+            // and drop the model portion entirely.
             const providerCost =
-              usageTracker.providerCost > 0
+              usageTracker.modelProviderCost > 0
                 ? usageTracker.providerCost
                 : undefined;
 
