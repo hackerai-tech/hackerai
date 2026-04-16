@@ -1,6 +1,6 @@
 /**
  * Tests for `run_terminal_cmd` — focusing on the interactive PTY action
- * dispatch added by the PTY MVP (/Users/fkesheh/.claude/plans/fluffy-splashing-hoare.md).
+ * dispatch added by the PTY MVP.
  *
  * The non-interactive (`action=exec`, `interactive=false`) path is already
  * covered by higher-level integration tests. Here we verify:

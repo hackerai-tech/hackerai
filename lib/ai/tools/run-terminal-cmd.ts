@@ -650,7 +650,7 @@ If you are generating files:
               session: session.sessionId,
               pid: session.pid,
               // TODO(M2): `saveTruncatedOutput` integration for interactive
-              // PTY deltas is deferred per plan (fluffy-splashing-hoare.md).
+              // PTY deltas is deferred per plan (M2).
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             },

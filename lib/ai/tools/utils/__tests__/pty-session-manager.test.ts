@@ -1,14 +1,12 @@
 /**
  * Tests for PtySessionManager — the per-chat PTY session store for interactive
- * shells. See /Users/fkesheh/.claude/plans/fluffy-splashing-hoare.md "Session
- * store" and "Limits" sections.
+ * shells.
  */
 
 import {
   MAX_BUFFER_BYTES,
   MAX_CONCURRENT_PTYS_PER_CHAT,
   PtyHandle,
-  PtySession,
   PtySessionManager,
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_MAX_LIFETIME_MS,
@@ -539,11 +537,5 @@ describe("PtySessionManager", () => {
       // Session must be removed after both resolve
       expect(manager.get("chat-1", session.sessionId)).toBeUndefined();
     });
-  });
-
-  // Reference to satisfy TS import for the PtySession type.
-  it("PtySession shape is exported", () => {
-    const s = null as unknown as PtySession | null;
-    expect(s).toBeNull();
   });
 });
