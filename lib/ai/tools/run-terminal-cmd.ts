@@ -43,7 +43,7 @@ const DEFAULT_WAIT_TIMEOUT_MS = 15_000;
 // Strip CSI + OSC ANSI escape sequences from model-facing output. Keeping a
 // small inline helper avoids pulling in `strip-ansi` which isn't currently a
 // dep. UI-side consumers still get the raw bytes via `data-terminal` events.
- 
+
 const ANSI_REGEX =
   /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
 const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
@@ -417,6 +417,11 @@ If you are generating files:
             result: { output: "", error: `Session ${sessionId} not found.` },
           };
         }
+        // Replay the full session buffer so the sidebar shows the complete
+        // terminal state, not just this action's delta.
+        const prior = ptySessionManager.snapshot(session);
+        if (prior.byteLength > 0) emitTerminal(prior);
+
         const bytes = translateInput(input ?? "");
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return {
@@ -479,6 +484,11 @@ If you are generating files:
             result: { output: "", error: `Session ${sessionId} not found.` },
           };
         }
+        // Replay the full session buffer so the sidebar shows the complete
+        // terminal state, not just this action's delta.
+        const priorWait = ptySessionManager.snapshot(session);
+        if (priorWait.byteLength > 0) emitTerminal(priorWait);
+
         // If process already exited, surface immediately without waiting.
         const alreadyExited = await peekExited(session);
         try {
@@ -523,6 +533,7 @@ If you are generating files:
           };
         }
         const snapshot = ptySessionManager.snapshot(session);
+        if (snapshot.byteLength > 0) emitTerminal(snapshot);
         return {
           result: {
             output: capOutput(stripAnsi(new TextDecoder().decode(snapshot))),
@@ -543,6 +554,8 @@ If you are generating files:
             result: { output: "", error: `Session ${sessionId} not found.` },
           };
         }
+        const killSnapshot = ptySessionManager.snapshot(session);
+        if (killSnapshot.byteLength > 0) emitTerminal(killSnapshot);
         const exitPromise = session.handle.exited;
         await ptySessionManager.close(chatId, sessionId);
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
@@ -658,7 +671,7 @@ If you are generating files:
         // guaranteed non-empty string. Shadowing keeps the existing closure
         // body (written when `command` was always required) type-correct
         // without rewriting every reference.
-         
+
         const command: string = commandNonEmpty;
         // Get fresh sandbox and verify it's ready
         const { sandbox } = await sandboxManager.getSandbox();
