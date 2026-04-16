@@ -52,11 +52,21 @@ const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
 const NON_SGR_CSI = /\x1b\[\??[0-9;]*[A-HJKSTfGnsulh]/g;
 const OSC_SEQ = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
 function cleanPtyForUI(text: string): string {
-  return text
+  const stripped = text
     .replace(NON_SGR_CSI, "")
     .replace(OSC_SEQ, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "");
+    .replace(/\r\n/g, "\n");
+  // Simulate \r line rewrites (spinners, progress bars): split each line
+  // by \r, keep only the last segment. This collapses ⠙⠹⠸⠼ spinner
+  // frames into just the final state.
+  return stripped
+    .split("\n")
+    .map((line) => {
+      if (!line.includes("\r")) return line;
+      const parts = line.split("\r");
+      return parts[parts.length - 1];
+    })
+    .join("\n");
 }
 
 function getSessionSnapshot(
