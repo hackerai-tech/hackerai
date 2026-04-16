@@ -84,6 +84,7 @@
     "@vercel/functions": "^3.4.3",
     "@workos-inc/authkit-nextjs": "^3.0.0",
     "@workos-inc/node": "^8.12.1",
+    "@xterm/headless": "^6.0.0",
     "ai": "^6.0.158",
     "ai-elements": "^1.9.0",
     "centrifuge": "^5.5.3",

@@ -49,30 +49,62 @@ const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
 
 // Lighter strip for UI: remove cursor movement / erase / mode sequences
 // but keep SGR (color codes ending in 'm') that Shiki can render.
-const NON_SGR_CSI = /\x1b\[\??[0-9;]*[A-HJKSTfGnsulh]/g;
-const OSC_SEQ = /\x1b\][\s\S]*?(?:\x07|\x1b\\)/g;
-function cleanPtyForUI(text: string): string {
-  const stripped = text
-    // Preserve line structure from cursor/clear sequences BEFORE generic
-    // CSI stripping. Interactive CLIs use these instead of real \n.
-    // ESC[0J (clear to end of display) = start of new content area → \n
-    // ESC[1G (cursor to column 1) = carriage return → \r
-    .replace(/\x1b\[0J/g, "\n")
-    .replace(/\x1b\[1G/g, "\r")
-    .replace(NON_SGR_CSI, "")
-    .replace(OSC_SEQ, "")
-    .replace(/\r\n/g, "\n");
-  // Simulate \r line rewrites (spinners, progress bars): split each line
-  // by \r, keep only the last segment. This collapses ⠙⠹⠸⠼ spinner
-  // frames into just the final state.
-  return stripped
-    .split("\n")
-    .map((line) => {
-      if (!line.includes("\r")) return line;
-      const parts = line.split("\r");
-      return parts[parts.length - 1];
+// Headless terminal emulator — feeds raw PTY bytes through a virtual
+// terminal and extracts the actual display state as clean text.
+// Falls back to basic ANSI stripping if @xterm/headless isn't available
+// (e.g. in jest/jsdom test environment).
+let TerminalCtor:
+  | (new (opts: { cols: number; rows: number; scrollback: number }) => {
+      write: (data: string) => void;
+      buffer: {
+        active: {
+          length: number;
+          getLine: (
+            i: number,
+          ) =>
+            | { translateToString: (trimRight: boolean) => string }
+            | undefined;
+        };
+      };
+      dispose: () => void;
     })
-    .join("\n");
+  | null = null;
+
+try {
+   
+  TerminalCtor = require("@xterm/headless").Terminal;
+} catch {
+  // Not available (test env, missing dep) — fallback below
+}
+
+const FALLBACK_ANSI =
+  /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
+
+function cleanPtyForUI(text: string): string {
+  if (TerminalCtor) {
+    try {
+      const term = new TerminalCtor({ cols: 120, rows: 500, scrollback: 5000 });
+      term.write(text);
+      const buf = term.buffer.active;
+      const lines: string[] = [];
+      let lastNonEmpty = -1;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        const str = line ? line.translateToString(true) : "";
+        lines.push(str);
+        if (str.trim()) lastNonEmpty = i;
+      }
+      term.dispose();
+      return lines.slice(0, lastNonEmpty + 1).join("\n");
+    } catch {
+      // Fall through to regex fallback
+    }
+  }
+  // Fallback: strip all ANSI sequences
+  return text
+    .replace(FALLBACK_ANSI, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "");
 }
 
 function getSessionSnapshot(
