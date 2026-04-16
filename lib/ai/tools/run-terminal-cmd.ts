@@ -27,7 +27,6 @@ import {
 import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
-import { createCentrifugoPtyHandle } from "./utils/centrifugo-pty-adapter";
 import type { PtySession } from "./utils/pty-session-manager";
 import { translateInput } from "./utils/pty-keys";
 
@@ -641,19 +640,23 @@ If you are generating files:
           const session = await ptySessionManager.create(chatId, {
             cols,
             rows,
-            createHandle: () =>
-              isCentrifugo
-                ? createCentrifugoPtyHandle(sandbox, {
-                    command,
-                    cols,
-                    rows,
-                    envs: caidoEnvVars,
-                  })
-                : createE2BPtyHandle(sandbox, {
-                    cols,
-                    rows,
-                    envs: caidoEnvVars,
-                  }),
+            createHandle: async () => {
+              if (isCentrifugo) {
+                const { createCentrifugoPtyHandle } =
+                  await import("./utils/centrifugo-pty-adapter");
+                return createCentrifugoPtyHandle(sandbox, {
+                  command,
+                  cols,
+                  rows,
+                  envs: caidoEnvVars,
+                });
+              }
+              return createE2BPtyHandle(sandbox, {
+                cols,
+                rows,
+                envs: caidoEnvVars,
+              });
+            },
           });
 
           // For E2B, the PTY starts a bare shell — fire the command + Enter
