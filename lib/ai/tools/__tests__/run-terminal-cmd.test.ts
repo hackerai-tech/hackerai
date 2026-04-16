@@ -57,6 +57,16 @@ const mockCreateE2BPtyHandle = createE2BPtyHandle as jest.MockedFunction<
   typeof createE2BPtyHandle
 >;
 
+jest.mock("../utils/centrifugo-pty-adapter", () => ({
+  createCentrifugoPtyHandle: jest.fn(),
+}));
+
+import { createCentrifugoPtyHandle } from "../utils/centrifugo-pty-adapter";
+const mockCreateCentrifugoPtyHandle =
+  createCentrifugoPtyHandle as jest.MockedFunction<
+    typeof createCentrifugoPtyHandle
+  >;
+
 // ── Fake PTY handle factory ──────────────────────────────────────────
 
 interface FakeHandle extends PtyHandle {
@@ -186,6 +196,7 @@ async function runTool(
 describe("run_terminal_cmd — PTY action dispatch", () => {
   beforeEach(() => {
     mockCreateE2BPtyHandle.mockReset();
+    mockCreateCentrifugoPtyHandle.mockReset();
   });
 
   test("regression: legacy schema {command, explanation, is_background, timeout} still works", async () => {
@@ -262,14 +273,26 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     expect(result.result.exitCode).toBe(0);
   });
 
-  test("exec + interactive=true on non-E2B sandbox returns a structured error", async () => {
-    // `isE2BSandbox` checks `sandboxKind === "centrifugo"` to negate.
-    const nonE2B = {
+  test("exec + interactive=true on Centrifugo sandbox invokes createCentrifugoPtyHandle", async () => {
+    const fakeHandle = makeFakeHandle();
+    mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
+
+    const centrifugoSandbox = {
       sandboxKind: "centrifugo" as const,
       commands: { run: jest.fn() },
+      getUserId: () => "user-1",
+      getConnectionId: () => "conn-1",
+      getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      isWindows: () => false,
     };
-    const { context } = makeContext({ sandbox: nonE2B });
+    const { context } = makeContext({ sandbox: centrifugoSandbox });
     const tool = createRunTerminalCmd(context);
+
+    // Emit some data so waitForOutput resolves
+    setTimeout(() => {
+      fakeHandle.emit(new TextEncoder().encode("$ top\n"));
+      fakeHandle.resolveExit(0);
+    }, 50);
 
     const result = (await runTool(tool, {
       action: "exec",
@@ -277,10 +300,44 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
       explanation: "x",
       is_background: false,
       interactive: true,
-    })) as { result: { error?: string; exitCode?: number } };
+    })) as { result: { output?: string; session?: string; pid?: number } };
 
-    expect(result.result.error).toMatch(/Interactive PTY requires E2B/);
-    expect(result.result.exitCode).toBe(1);
+    expect(mockCreateCentrifugoPtyHandle).toHaveBeenCalledTimes(1);
+    expect(result.result.session).toBeDefined();
+    expect(result.result.pid).toBe(fakeHandle.pid);
+  });
+
+  test("exec + interactive=true on Centrifugo sandbox does NOT send initial command via sendInput", async () => {
+    const fakeHandle = makeFakeHandle();
+    mockCreateCentrifugoPtyHandle.mockResolvedValue(fakeHandle);
+
+    const centrifugoSandbox = {
+      sandboxKind: "centrifugo" as const,
+      commands: { run: jest.fn() },
+      getUserId: () => "user-1",
+      getConnectionId: () => "conn-1",
+      getConfig: () => ({ wsUrl: "ws://fake", tokenSecret: "secret" }),
+      isWindows: () => false,
+    };
+    const { context } = makeContext({ sandbox: centrifugoSandbox });
+    const tool = createRunTerminalCmd(context);
+
+    setTimeout(() => {
+      fakeHandle.emit(new TextEncoder().encode("output\n"));
+      fakeHandle.resolveExit(0);
+    }, 50);
+
+    await runTool(tool, {
+      action: "exec",
+      command: "top",
+      explanation: "x",
+      is_background: false,
+      interactive: true,
+    });
+
+    // Centrifugo PTY sends the command in pty_create, so sendInput
+    // must NOT be called with the initial "command\n".
+    expect(fakeHandle.sendInputCalls).toHaveLength(0);
   });
 
   test("exec + interactive=true on E2B creates a session and returns {session, pid, output}", async () => {

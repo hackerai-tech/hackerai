@@ -14,7 +14,7 @@ import {
   waitForSandboxReady,
   getSandboxDiagnostics,
 } from "./utils/sandbox-health";
-import { isE2BSandbox } from "./utils/sandbox-types";
+import { isE2BSandbox, isCentrifugoSandbox } from "./utils/sandbox-types";
 import {
   buildSandboxCommandOptions,
   augmentCommandPath,
@@ -27,6 +27,7 @@ import {
 import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
+import { createCentrifugoPtyHandle } from "./utils/centrifugo-pty-adapter";
 import type { PtySession } from "./utils/pty-session-manager";
 import { translateInput } from "./utils/pty-keys";
 
@@ -620,33 +621,49 @@ If you are generating files:
       if (interactive) {
         try {
           const { sandbox } = await sandboxManager.getSandbox();
-          if (!isE2BSandbox(sandbox)) {
+          const isCentrifugo = isCentrifugoSandbox(sandbox);
+          const isE2B = isE2BSandbox(sandbox);
+
+          if (!isE2B && !isCentrifugo) {
             return {
               result: {
                 output: "",
                 exitCode: 1,
                 error:
-                  "Interactive PTY requires E2B sandbox. Use action=exec without interactive for one-shot commands.",
+                  "Interactive PTY requires E2B or local (Centrifugo) sandbox.",
               },
             };
           }
+
           // Factory is invoked BY `ptySessionManager.create` — this ensures
           // that if the concurrency cap is hit, the factory is never called
-          // and no E2B PTY is spawned (see FIX 4).
+          // and no PTY is spawned (see FIX 4).
           const session = await ptySessionManager.create(chatId, {
             cols,
             rows,
             createHandle: () =>
-              createE2BPtyHandle(sandbox, {
-                cols,
-                rows,
-                envs: caidoEnvVars,
-              }),
+              isCentrifugo
+                ? createCentrifugoPtyHandle(sandbox, {
+                    command,
+                    cols,
+                    rows,
+                    envs: caidoEnvVars,
+                  })
+                : createE2BPtyHandle(sandbox, {
+                    cols,
+                    rows,
+                    envs: caidoEnvVars,
+                  }),
           });
-          // Fire the command + Enter so the shell actually runs it.
-          await session.handle.sendInput(
-            new TextEncoder().encode(command + "\n"),
-          );
+
+          // For E2B, the PTY starts a bare shell — fire the command + Enter
+          // so the shell actually runs it. For Centrifugo, the command is
+          // passed in pty_create and the local runner spawns it directly.
+          if (!isCentrifugo) {
+            await session.handle.sendInput(
+              new TextEncoder().encode(command + "\n"),
+            );
+          }
           session.lastActivityAt = Date.now();
 
           const delta = await waitForOutput(

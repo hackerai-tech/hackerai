@@ -104,6 +104,14 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.connectionInfo.name;
   }
 
+  getUserId(): string {
+    return this.userId;
+  }
+
+  getConfig(): CentrifugoConfig {
+    return this.config;
+  }
+
   /**
    * Get sandbox context for AI based on mode
    */
