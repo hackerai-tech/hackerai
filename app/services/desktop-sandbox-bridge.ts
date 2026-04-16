@@ -3,6 +3,10 @@ import {
   sandboxChannel,
   type SandboxMessage,
   type CommandMessage,
+  type PtyCreateMessage,
+  type PtyInputMessage,
+  type PtyResizeMessage,
+  type PtyKillMessage,
 } from "@/lib/centrifugo/types";
 
 interface StreamChunk {
@@ -88,17 +92,46 @@ export class DesktopSandboxBridge {
 
     this.subscription.on("publication", (ctx) => {
       const message = ctx.data as SandboxMessage;
-      if (message.type === "command") {
-        const cmd = message as CommandMessage;
-        if (
-          cmd.targetConnectionId &&
-          cmd.targetConnectionId !== this.connectionId
-        ) {
-          return;
-        }
-        this.handleCommand(cmd).catch((err) => {
-          console.error("[DesktopSandboxBridge] Command handling failed:", err);
-        });
+
+      // Gate on targetConnectionId for all message types that carry it
+      const targetId = (message as { targetConnectionId?: string })
+        .targetConnectionId;
+      if (targetId && targetId !== this.connectionId) {
+        return;
+      }
+
+      switch (message.type) {
+        case "command":
+          this.handleCommand(message as CommandMessage).catch((err) => {
+            console.error(
+              "[DesktopSandboxBridge] Command handling failed:",
+              err,
+            );
+          });
+          break;
+
+        case "pty_create":
+          this.handlePtyCreate(message as PtyCreateMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] PTY create failed:", err);
+          });
+          break;
+
+        case "pty_input":
+          this.handlePtyInput(message as PtyInputMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] PTY input failed:", err);
+          });
+          break;
+
+        case "pty_resize":
+          this.handlePtyResize(message as PtyResizeMessage).catch(() => {});
+          break;
+
+        case "pty_kill":
+          this.handlePtyKill(message as PtyKillMessage).catch(() => {});
+          break;
+
+        default:
+          break;
       }
     });
 
@@ -273,6 +306,102 @@ export class DesktopSandboxBridge {
       console.error("[DesktopSandboxBridge] Failed to publish result:", error);
       throw error;
     }
+  }
+
+  private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
+    const { sessionId, command, cols, rows, cwd, env } = msg;
+
+    try {
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
+
+      const channel = new Channel<string>();
+      channel.onmessage = (chunk: string) => {
+        // The Tauri PTY backend sends raw output strings and a final JSON
+        // exit message: {"type":"exit","exitCode":N,"sessionId":"..."}
+        try {
+          const parsed = JSON.parse(chunk) as {
+            type?: string;
+            exitCode?: number;
+          };
+          if (parsed.type === "exit") {
+            this.publishResult({
+              type: "pty_exit",
+              sessionId,
+              exitCode: parsed.exitCode ?? -1,
+            }).catch((err) => {
+              console.error(
+                "[DesktopSandboxBridge] Failed to publish pty_exit:",
+                err,
+              );
+            });
+            return;
+          }
+        } catch {
+          // Not JSON — regular PTY output
+        }
+
+        this.publishResult({
+          type: "pty_data",
+          sessionId,
+          data: chunk,
+        }).catch((err) => {
+          console.error(
+            "[DesktopSandboxBridge] Failed to publish pty_data:",
+            err,
+          );
+        });
+      };
+
+      const result = (await invoke("execute_pty_create", {
+        sessionId,
+        command,
+        cols: cols ?? 120,
+        rows: rows ?? 30,
+        cwd,
+        env,
+        onData: channel,
+      })) as { pid: number; session_id: string };
+
+      await this.publishResult({
+        type: "pty_ready",
+        sessionId,
+        pid: result.pid,
+      });
+    } catch (err) {
+      await this.publishResult({
+        type: "pty_error",
+        sessionId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async handlePtyInput(msg: PtyInputMessage): Promise<void> {
+    const { sessionId, data } = msg;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("execute_pty_input", { sessionId, data });
+    } catch (err) {
+      await this.publishResult({
+        type: "pty_error",
+        sessionId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async handlePtyResize(msg: PtyResizeMessage): Promise<void> {
+    const { sessionId, cols, rows } = msg;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("execute_pty_resize", { sessionId, cols, rows }).catch(
+      () => {},
+    );
+  }
+
+  private async handlePtyKill(msg: PtyKillMessage): Promise<void> {
+    const { sessionId } = msg;
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("execute_pty_kill", { sessionId }).catch(() => {});
   }
 
   async stop(): Promise<void> {

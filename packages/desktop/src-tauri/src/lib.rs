@@ -1,4 +1,5 @@
 mod platform;
+mod pty;
 
 use std::collections::HashMap;
 use std::fs;
@@ -1337,10 +1338,59 @@ async fn check_for_updates(app: tauri::AppHandle, silent: bool) {
     }
 }
 
+// ── PTY Commands ─────────────────────────────────────────────────────
+
+type PtyState = std::sync::Arc<std::sync::Mutex<pty::PtyManager>>;
+
+#[tauri::command]
+async fn execute_pty_create(
+    state: tauri::State<'_, PtyState>,
+    session_id: String,
+    command: String,
+    cols: u16,
+    rows: u16,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    on_data: tauri::ipc::Channel<String>,
+) -> Result<pty::PtyCreateResult, String> {
+    let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+    manager.create(session_id, command, cols, rows, cwd, env, on_data)
+}
+
+#[tauri::command]
+async fn execute_pty_input(
+    state: tauri::State<'_, PtyState>,
+    session_id: String,
+    data: String,
+) -> Result<(), String> {
+    let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+    manager.send_input(&session_id, &data)
+}
+
+#[tauri::command]
+async fn execute_pty_resize(
+    state: tauri::State<'_, PtyState>,
+    session_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+    manager.resize(&session_id, cols, rows)
+}
+
+#[tauri::command]
+async fn execute_pty_kill(
+    state: tauri::State<'_, PtyState>,
+    session_id: String,
+) -> Result<(), String> {
+    let mut manager = state.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+    manager.kill(&session_id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, start_codex_app_server, codex_rpc_send, get_codex_app_server_info, set_convex_auth])
+        .invoke_handler(tauri::generate_handler![get_dev_auth_port, get_cmd_server_info, execute_command, execute_stream_command, start_codex_app_server, codex_rpc_send, get_codex_app_server_info, set_convex_auth, execute_pty_create, execute_pty_input, execute_pty_resize, execute_pty_kill])
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -1364,6 +1414,7 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        .manage(std::sync::Arc::new(std::sync::Mutex::new(pty::PtyManager::new())) as PtyState)
         .setup(|app| {
             #[cfg(desktop)]
             {
@@ -1424,9 +1475,14 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|_app, event| {
+        .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 codex_kill();
+                if let Some(pty_state) = app.try_state::<PtyState>() {
+                    if let Ok(mut manager) = pty_state.lock() {
+                        manager.stop_all();
+                    }
+                }
             }
         });
 }

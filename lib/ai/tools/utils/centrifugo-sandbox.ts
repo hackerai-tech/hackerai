@@ -4,7 +4,7 @@ import { Centrifuge, type Subscription } from "centrifuge";
 import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import {
   sandboxChannel,
-  type SandboxMessage,
+  type CommandResponseMessage,
   type CommandMessage,
 } from "@/lib/centrifugo/types";
 import { getPlatformDisplayName, escapeShellValue } from "./platform-utils";
@@ -19,7 +19,7 @@ const VALID_MESSAGE_TYPES = new Set([
   "error",
 ]);
 
-function parseSandboxMessage(data: unknown): SandboxMessage | null {
+function parseSandboxMessage(data: unknown): CommandResponseMessage | null {
   if (typeof data !== "object" || data === null) {
     console.warn("Invalid sandbox message: not an object", data);
     return null;
@@ -65,7 +65,7 @@ function parseSandboxMessage(data: unknown): SandboxMessage | null {
       break;
   }
 
-  return data as SandboxMessage;
+  return data as CommandResponseMessage;
 }
 
 interface CommandResult {
