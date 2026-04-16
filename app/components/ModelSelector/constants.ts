@@ -19,7 +19,6 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "kimi-k2.5", label: "Kimi K2.5", thinking: true },
-  { id: "glm-5.1", label: "GLM 5.1", thinking: true },
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", censored: true },
 ];
