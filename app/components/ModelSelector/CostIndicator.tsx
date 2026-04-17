@@ -11,6 +11,7 @@ const MODEL_COST_TIER: Record<string, CostTier> = {
   "grok-4.1": "low",
   "sonnet-4.6": "high",
   "opus-4.6": "very-high",
+  "opus-4.7": "very-high",
   "kimi-k2.5": "low",
 };
 

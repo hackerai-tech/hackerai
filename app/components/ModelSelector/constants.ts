@@ -15,6 +15,7 @@ export const ASK_MODEL_OPTIONS: ModelOption[] = [
   { id: "grok-4.1", label: "Grok 4.1" },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", censored: true },
   { id: "opus-4.6", label: "Claude Opus 4.6", censored: true },
+  { id: "opus-4.7", label: "Claude Opus 4.7", censored: true },
 ];
 
 export const AGENT_MODEL_OPTIONS: ModelOption[] = [
@@ -22,6 +23,7 @@ export const AGENT_MODEL_OPTIONS: ModelOption[] = [
   { id: "grok-4.1", label: "Grok 4.1", thinking: true },
   { id: "sonnet-4.6", label: "Claude Sonnet 4.6", censored: true },
   { id: "opus-4.6", label: "Claude Opus 4.6", censored: true },
+  { id: "opus-4.7", label: "Claude Opus 4.7", censored: true },
 ];
 
 // export const CODEX_LOCAL_OPTIONS: ModelOption[] = [
