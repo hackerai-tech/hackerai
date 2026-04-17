@@ -322,7 +322,7 @@ export const createChatHandler = (
       }
 
       const memoryEnabled =
-        subscription !== "free" &&
+        (subscription !== "free" || isAgentMode(mode)) &&
         (userCustomization?.include_memory_entries ?? true);
 
       // Agent mode and paid ask mode: check rate limit with model-specific pricing after knowing the model
