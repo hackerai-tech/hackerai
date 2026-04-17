@@ -10,6 +10,7 @@ import {
   getShellDisplayCommand,
   getShellDisplayTarget,
   getShellOutput,
+  getStreamingTerminalOutput,
   isInteractiveShellAction,
   type ShellToolOutput,
 } from "./shell-tool-utils";
@@ -58,14 +59,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const streamingOutput = useMemo(() => {
     if (precomputedStreamingOutput !== undefined)
       return precomputedStreamingOutput;
-    const terminalDataParts = message.parts.filter(
-      (p) =>
-        p.type === "data-terminal" &&
-        (p as any).data?.toolCallId === effectiveToolCallId,
-    );
-    return terminalDataParts
-      .map((p) => (p as any).data?.terminal || "")
-      .join("");
+    return getStreamingTerminalOutput(message.parts, effectiveToolCallId);
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
 
   // Memoize final output computation.

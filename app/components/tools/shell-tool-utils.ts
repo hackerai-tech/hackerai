@@ -157,6 +157,37 @@ export function getShellDisplayTarget(
 }
 
 // ---------------------------------------------------------------------------
+// Streaming terminal output — concat `data-terminal` parts for a toolCallId
+// ---------------------------------------------------------------------------
+
+interface DataTerminalPart {
+  type: "data-terminal";
+  data?: { toolCallId?: string; terminal?: string };
+}
+
+function isDataTerminalPart(part: unknown): part is DataTerminalPart {
+  return (
+    typeof part === "object" &&
+    part !== null &&
+    (part as { type?: unknown }).type === "data-terminal"
+  );
+}
+
+export function getStreamingTerminalOutput(
+  parts: readonly unknown[] | undefined,
+  toolCallId: string,
+): string {
+  if (!parts) return "";
+  let out = "";
+  for (const part of parts) {
+    if (!isDataTerminalPart(part)) continue;
+    if (part.data?.toolCallId !== toolCallId) continue;
+    out += part.data.terminal ?? "";
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Output extraction — unified fallback chain for shell + legacy formats
 // ---------------------------------------------------------------------------
 

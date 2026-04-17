@@ -29,6 +29,11 @@ import { ensureCaido } from "./utils/proxy-manager";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
 import type { PtySession } from "./utils/pty-session-manager";
 import { translateInput } from "./utils/pty-keys";
+import {
+  cleanPtyForUI,
+  lastNLinesBytes,
+  getSessionSnapshot,
+} from "./utils/pty-output-formatter";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
@@ -46,81 +51,6 @@ const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const ANSI_REGEX =
   /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
 const stripAnsi = (text: string): string => text.replace(ANSI_REGEX, "");
-
-// Lighter strip for UI: remove cursor movement / erase / mode sequences
-// but keep SGR (color codes ending in 'm') that Shiki can render.
-// Headless terminal emulator — feeds raw PTY bytes through a virtual
-// terminal and extracts the actual display state as clean text.
-// Falls back to basic ANSI stripping if @xterm/headless isn't available
-// (e.g. in jest/jsdom test environment).
-let TerminalCtor:
-  | (new (opts: { cols: number; rows: number; scrollback: number }) => {
-      write: (data: string) => void;
-      buffer: {
-        active: {
-          length: number;
-          getLine: (
-            i: number,
-          ) =>
-            | { translateToString: (trimRight: boolean) => string }
-            | undefined;
-        };
-      };
-      dispose: () => void;
-    })
-  | null = null;
-
-try {
-  TerminalCtor = require("@xterm/headless").Terminal;
-} catch {
-  // Not available (test env, missing dep) — fallback below
-}
-
-const FALLBACK_ANSI =
-  /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
-
-function cleanPtyForUI(text: string): string {
-  if (TerminalCtor) {
-    try {
-      const term = new TerminalCtor({ cols: 120, rows: 500, scrollback: 5000 });
-      term.write(text);
-      const buf = term.buffer.active;
-      const lines: string[] = [];
-      let lastNonEmpty = -1;
-      for (let i = 0; i < buf.length; i++) {
-        const line = buf.getLine(i);
-        const str = line ? line.translateToString(true) : "";
-        lines.push(str);
-        if (str.trim()) lastNonEmpty = i;
-      }
-      term.dispose();
-      return lines.slice(0, lastNonEmpty + 1).join("\n");
-    } catch {
-      // Fall through to regex fallback
-    }
-  }
-  // Fallback: strip all ANSI sequences
-  return text
-    .replace(FALLBACK_ANSI, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "");
-}
-
-/** Return last N lines of a PTY snapshot as raw bytes for streaming context. */
-function lastNLinesBytes(bytes: Uint8Array, n: number): Uint8Array {
-  const text = cleanPtyForUI(new TextDecoder().decode(bytes));
-  const lines = text.split("\n");
-  if (lines.length <= n) return new TextEncoder().encode(text);
-  return new TextEncoder().encode(lines.slice(-n).join("\n"));
-}
-
-function getSessionSnapshot(
-  mgr: typeof import("./utils/pty-session-manager").ptySessionManager,
-  session: { sessionId: string; chatId: string },
-): string {
-  const bytes = mgr.snapshot(session as any);
-  return cleanPtyForUI(new TextDecoder().decode(bytes));
-}
 
 interface WaitPolicy {
   pattern?: string;

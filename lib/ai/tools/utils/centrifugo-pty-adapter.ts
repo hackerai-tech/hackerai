@@ -22,6 +22,7 @@ import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxChannel } from "@/lib/centrifugo/types";
 import type { PtyHandle, CreatePtyOptions } from "./e2b-pty-adapter";
 import type { CentrifugoSandbox } from "./centrifugo-sandbox";
+import { createResolvableExited } from "./pty-exited-promise";
 
 // ── Options ────────────────────────────────────────────────────────────
 
@@ -151,17 +152,8 @@ export async function createCentrifugoPtyHandle(
   let subscription: Subscription | undefined;
   let settled = false;
   let cleanedUp = false;
-  let exitedResolved = false;
 
-  let resolveExited!: (value: { exitCode: number | null }) => void;
-  const exited = new Promise<{ exitCode: number | null }>((resolve) => {
-    resolveExited = resolve;
-  });
-  const resolveExitedOnce = (value: { exitCode: number | null }): void => {
-    if (exitedResolved) return;
-    exitedResolved = true;
-    resolveExited(value);
-  };
+  const { exited, resolveOnce: resolveExitedOnce } = createResolvableExited();
 
   const cleanup = () => {
     if (cleanedUp) return;
