@@ -102,7 +102,6 @@ const checkAndInvalidateSummary = async (
 
       await ctx.db.patch(chat._id, {
         latest_summary_id: undefined,
-        update_time: Date.now(),
       });
       try {
         await ctx.db.delete(chat.latest_summary_id);
@@ -127,7 +126,6 @@ const checkAndInvalidateSummary = async (
 
       await ctx.db.patch(chat._id, {
         latest_summary_id: undefined,
-        update_time: Date.now(),
       });
       try {
         await ctx.db.delete(chat.latest_summary_id);
@@ -779,7 +777,6 @@ export const deleteLastAssistantMessage = mutation({
         if (chat && chat.user_id === user.subject) {
           await ctx.db.patch(chat._id, {
             todos: args.todos,
-            update_time: Date.now(),
           });
         }
       }
