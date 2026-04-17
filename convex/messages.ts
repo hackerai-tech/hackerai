@@ -290,18 +290,24 @@ export const saveMessage = mutation({
           if (newFileIds.length > 0) {
             patch.file_ids = [...currentFileIds, ...newFileIds];
 
-            // Mark new files as linked
-            for (const fileId of newFileIds) {
-              try {
-                const file = await ctx.db.get(fileId);
-                if (file && !file.is_attached) {
-                  await ctx.db.patch(file._id, { is_attached: true });
-                }
-              } catch (error) {
-                console.error(
-                  `Failed to mark file ${fileId} as attached:`,
-                  error,
-                );
+            // Batch-read files in parallel, then only patch those that still
+            // need the attached flag set. Skipping no-op patches avoids
+            // invalidating the `by_is_attached` index for already-attached
+            // files that just got referenced from another message.
+            const files = await Promise.all(
+              newFileIds.map((fileId) =>
+                ctx.db.get(fileId).catch((error) => {
+                  console.error(
+                    `Failed to read file ${fileId} while attaching:`,
+                    error,
+                  );
+                  return null;
+                }),
+              ),
+            );
+            for (const file of files) {
+              if (file && !file.is_attached) {
+                await ctx.db.patch(file._id, { is_attached: true });
               }
             }
           }
@@ -371,22 +377,25 @@ export const saveMessage = mutation({
         is_hidden: args.isHidden,
       });
 
-      // Mark attached files as linked so purge won't remove them
+      // Mark attached files as linked so purge won't remove them.
+      // Batch-read in parallel, skip no-op patches when already attached.
       if (args.fileIds && args.fileIds.length > 0) {
-        for (const fileId of args.fileIds) {
-          try {
-            const file = await ctx.db.get(fileId);
-            if (!file) {
-              console.warn("File not found while marking attached:", fileId);
-              continue;
-            }
-            if (file.user_id !== args.userId) {
-              console.warn("Skipping file not owned by user:", fileId);
-              continue;
-            }
-            await ctx.db.patch(fileId, { is_attached: true });
-          } catch (e) {
-            console.warn("Failed to mark file as attached:", fileId, e);
+        const files = await Promise.all(
+          args.fileIds.map((fileId) =>
+            ctx.db.get(fileId).catch((e) => {
+              console.warn("Failed to read file while attaching:", fileId, e);
+              return null;
+            }),
+          ),
+        );
+        for (const file of files) {
+          if (!file) continue;
+          if (file.user_id !== args.userId) {
+            console.warn("Skipping file not owned by user:", file._id);
+            continue;
+          }
+          if (!file.is_attached) {
+            await ctx.db.patch(file._id, { is_attached: true });
           }
         }
       }
@@ -937,21 +946,24 @@ export const searchMessages = query({
     }
 
     try {
-      // Search messages by content
-      const messageResults = await ctx.db
-        .query("messages")
-        .withSearchIndex("search_content", (q) =>
-          q.search("content", args.searchQuery).eq("user_id", user.subject),
-        )
-        .collect();
+      // Cap raw result sets to keep bandwidth predictable. Search relevance
+      // ordering means the top 200 per index covers any realistic page.
+      const SEARCH_RESULT_CAP = 200;
 
-      // Search chats by title
-      const chatResults = await ctx.db
-        .query("chats")
-        .withSearchIndex("search_title", (q) =>
-          q.search("title", args.searchQuery).eq("user_id", user.subject),
-        )
-        .collect();
+      const [messageResults, chatResults] = await Promise.all([
+        ctx.db
+          .query("messages")
+          .withSearchIndex("search_content", (q) =>
+            q.search("content", args.searchQuery).eq("user_id", user.subject),
+          )
+          .take(SEARCH_RESULT_CAP),
+        ctx.db
+          .query("chats")
+          .withSearchIndex("search_title", (q) =>
+            q.search("title", args.searchQuery).eq("user_id", user.subject),
+          )
+          .take(SEARCH_RESULT_CAP),
+      ]);
 
       // Filter out hidden messages from search results
       const visibleMessageResults = messageResults.filter(
@@ -962,6 +974,36 @@ export const searchMessages = query({
       const messageChatIds = new Set(
         visibleMessageResults.map((msg) => msg.chat_id),
       );
+
+      // Resolve chat metadata for every unique chat referenced by a message
+      // match in a single batch, replacing N+1 per-message lookups.
+      const chatById = new Map<string, { title: string; update_time: number }>(
+        chatResults.map((c) => [
+          c.id,
+          { title: c.title, update_time: c.update_time },
+        ]),
+      );
+      const missingChatIds = [...messageChatIds].filter(
+        (id) => !chatById.has(id),
+      );
+      if (missingChatIds.length > 0) {
+        const fetched = await Promise.all(
+          missingChatIds.map((id) =>
+            ctx.db
+              .query("chats")
+              .withIndex("by_chat_id", (q) => q.eq("id", id))
+              .first(),
+          ),
+        );
+        for (const chat of fetched) {
+          if (chat) {
+            chatById.set(chat.id, {
+              title: chat.title,
+              update_time: chat.update_time,
+            });
+          }
+        }
+      }
 
       // Combine and deduplicate results
       const combinedResults: Array<{
@@ -977,10 +1019,7 @@ export const searchMessages = query({
 
       // Add message results
       for (const msg of visibleMessageResults) {
-        const chat = await ctx.db
-          .query("chats")
-          .withIndex("by_chat_id", (q) => q.eq("id", msg.chat_id))
-          .first();
+        const chat = chatById.get(msg.chat_id);
 
         combinedResults.push({
           id: msg.id,
@@ -994,7 +1033,9 @@ export const searchMessages = query({
         });
       }
 
-      // Add chat title results (only if not already added via message)
+      // Add chat title results (only if not already added via message).
+      // We skip the "recent message preview" lookup to avoid an N+1 per
+      // title-only match — clients render the chat title itself in that row.
       for (const chat of chatResults) {
         const hasMessageMatch = messageChatIds.has(chat.id);
 
@@ -1009,18 +1050,11 @@ export const searchMessages = query({
             existingResult.updated_at = chat.update_time; // Use chat's update time
           }
         } else {
-          // Get the most recent message for content preview
-          const recentMessage = await ctx.db
-            .query("messages")
-            .withIndex("by_chat_id", (q) => q.eq("chat_id", chat.id))
-            .order("desc")
-            .first();
-
           combinedResults.push({
             id: `title-${chat.id}`,
             chat_id: chat.id,
-            content: recentMessage?.content || "",
-            created_at: recentMessage?._creationTime || chat._creationTime,
+            content: "",
+            created_at: chat._creationTime,
             updated_at: chat.update_time,
             chat_title: chat.title,
             match_type: "title",

@@ -1,8 +1,38 @@
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { validateServiceKey } from "./lib/utils";
 import { DatabaseReader } from "./_generated/server";
 import { SignJWT } from "jose";
+
+/**
+ * Internal mutation: purge disconnected sandbox connections older than cutoff.
+ * Disconnected rows accumulate otherwise since they're never garbage-collected
+ * on normal client shutdown flows. Uses the `by_status_and_created_at` index
+ * to walk the oldest disconnected rows first.
+ */
+export const purgeStaleDisconnectedConnections = internalMutation({
+  args: {
+    cutoffTimeMs: v.number(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({ deletedCount: v.number() }),
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 100;
+
+    const rows = await ctx.db
+      .query("local_sandbox_connections")
+      .withIndex("by_status_and_created_at", (q) =>
+        q.eq("status", "disconnected").lt("created_at", args.cutoffTimeMs),
+      )
+      .order("asc")
+      .take(limit);
+
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deletedCount: rows.length };
+  },
+});
 
 // ============================================================================
 // TOKEN MANAGEMENT
