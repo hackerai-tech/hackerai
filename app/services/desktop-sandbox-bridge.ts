@@ -406,16 +406,28 @@ export class DesktopSandboxBridge {
 
   private async handlePtyResize(msg: PtyResizeMessage): Promise<void> {
     const { sessionId, cols, rows } = msg;
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("execute_pty_resize", { sessionId, cols, rows }).catch(
-      () => {},
-    );
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("execute_pty_resize", { sessionId, cols, rows });
+    } catch (err) {
+      console.warn(
+        `[DesktopSandboxBridge] pty_resize failed sessionId=${sessionId}:`,
+        err,
+      );
+    }
   }
 
   private async handlePtyKill(msg: PtyKillMessage): Promise<void> {
     const { sessionId } = msg;
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("execute_pty_kill", { sessionId }).catch(() => {});
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("execute_pty_kill", { sessionId });
+    } catch (err) {
+      console.warn(
+        `[DesktopSandboxBridge] pty_kill failed sessionId=${sessionId}:`,
+        err,
+      );
+    }
   }
 
   async stop(): Promise<void> {

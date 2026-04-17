@@ -231,12 +231,20 @@ fn pty_reader_thread(
                 // after the idle timer had already fired.
                 if !output_buffer.is_empty() {
                     let chunk = String::from_utf8_lossy(&output_buffer).to_string();
-                    let _ = on_data.send(chunk);
+                    if on_data.send(chunk).is_err() {
+                        // IPC channel closed (window gone / subscription dropped):
+                        // no point reading further — bail so the thread exits.
+                        log::debug!(
+                            "PTY reader channel closed for session '{}', exiting reader",
+                            session_id
+                        );
+                        break;
+                    }
                     output_buffer.clear();
                 }
             }
             Err(e) => {
-                log::debug!("PTY reader error for session '{}': {}", session_id, e);
+                log::warn!("PTY reader error for session '{}': {}", session_id, e);
                 if !output_buffer.is_empty() {
                     let chunk = String::from_utf8_lossy(&output_buffer).to_string();
                     let _ = on_data.send(chunk);

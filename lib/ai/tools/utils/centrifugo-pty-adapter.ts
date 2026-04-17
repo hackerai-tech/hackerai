@@ -150,14 +150,22 @@ export async function createCentrifugoPtyHandle(
   let pid = 0;
   let subscription: Subscription | undefined;
   let settled = false;
+  let cleanedUp = false;
+  let exitedResolved = false;
 
-  // exited promise — resolved when pty_exit arrives
-  let resolveExited: (value: { exitCode: number | null }) => void;
+  let resolveExited!: (value: { exitCode: number | null }) => void;
   const exited = new Promise<{ exitCode: number | null }>((resolve) => {
     resolveExited = resolve;
   });
+  const resolveExitedOnce = (value: { exitCode: number | null }): void => {
+    if (exitedResolved) return;
+    exitedResolved = true;
+    resolveExited(value);
+  };
 
   const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
     if (subscription) {
       try {
         subscription.unsubscribe();
@@ -225,7 +233,22 @@ export async function createCentrifugoPtyHandle(
         sessionId,
         targetConnectionId: connectionId,
       };
-      await publish(payload);
+      try {
+        await publish(payload);
+      } catch (err) {
+        // Publish can fail if the PTY is already gone; don't mask the rest
+        // of kill(), but do log so silent IPC errors stay visible.
+        console.warn(`${LOG_PREFIX} pty_kill publish failed:`, err);
+      }
+      // Give the local runner a short window to emit pty_exit so callers
+      // awaiting `exited` see the real exit code. Fall back to null if it
+      // doesn't arrive — cleanup would otherwise tear down the subscription
+      // and the reply would be dropped.
+      await Promise.race([
+        exited,
+        new Promise<void>((resolve) => setTimeout(resolve, 1500)),
+      ]);
+      resolveExitedOnce({ exitCode: null });
       cleanup();
     },
 
@@ -284,7 +307,7 @@ export async function createCentrifugoPtyHandle(
         }
 
         case "pty_exit":
-          resolveExited({ exitCode: msg.exitCode });
+          resolveExitedOnce({ exitCode: msg.exitCode });
           cleanup();
           break;
 
@@ -295,11 +318,10 @@ export async function createCentrifugoPtyHandle(
             cleanup();
             reject(new Error(`${LOG_PREFIX} pty_error: ${msg.message}`));
           } else {
-            // Post-creation error — resolve exited with null exitCode
             console.error(
               `${LOG_PREFIX} pty_error after ready: ${msg.message}`,
             );
-            resolveExited({ exitCode: null });
+            resolveExitedOnce({ exitCode: null });
             cleanup();
           }
           break;

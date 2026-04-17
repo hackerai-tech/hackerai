@@ -9,10 +9,7 @@
  * `action=wait` / `action=view`.
  */
 
-// `PtyHandle` is canonicalized in `e2b-pty-adapter.ts` and re-exported here
-// for existing consumers that import it from the session manager.
 import type { PtyHandle } from "./e2b-pty-adapter";
-export type { PtyHandle } from "./e2b-pty-adapter";
 
 export const MAX_CONCURRENT_PTYS_PER_CHAT = 2;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;

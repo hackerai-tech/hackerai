@@ -340,3 +340,65 @@ describe("forwardChunk", () => {
     warnSpy.mockRestore();
   });
 });
+
+// ── pty_data publish ordering ─────────────────────────────────────────
+//
+// Regression guard for the publishQueue serialization in handlePtyCreate.
+// Rust flushes per-read (often per-char on interactive echo); firing N
+// unawaited publishes at Centrifuge reordered arrivals server-side, which
+// produced garbled terminal rendering. The chain through `publishQueue`
+// must preserve FIFO order even when earlier publishes take longer.
+
+describe("pty_data publish ordering", () => {
+  it("serializes rapid pty_data publishes to preserve FIFO order", async () => {
+    const config = buildConfig();
+    const bridge = new DesktopSandboxBridge(config);
+    await bridge.start();
+
+    const handler = getPublicationHandler();
+
+    const publishOrder: string[] = [];
+    let dataIdx = 0;
+    mockSubscription.publish.mockImplementation(async (msg: unknown) => {
+      const m = msg as { type: string; data?: string };
+      if (m.type === "pty_data") {
+        const idx = dataIdx++;
+        // Decreasing delay — first chunk waits longest. Without the
+        // publishQueue chain, later chunks (shorter delay) would land first.
+        const delay = Math.max(0, 20 - idx * 2);
+        await new Promise((r) => setTimeout(r, delay));
+        publishOrder.push(m.data ?? "");
+      }
+    });
+
+    mockInvokeHandler = async (cmd: string) => {
+      if (cmd === "execute_pty_create") {
+        return { pid: 9999, session_id: "sess-x" };
+      }
+      return undefined;
+    };
+
+    handler({
+      data: {
+        type: "pty_create",
+        sessionId: "sess-x",
+        command: "bash",
+        cols: 80,
+        rows: 24,
+        targetConnectionId: "conn-123",
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 20));
+    expect(capturedChannel?.onmessage).toBeDefined();
+
+    const chunks = Array.from({ length: 10 }, (_, i) => `chunk-${i}`);
+    for (const c of chunks) {
+      capturedChannel!.onmessage!(c);
+    }
+
+    await new Promise((r) => setTimeout(r, 400));
+
+    expect(publishOrder).toEqual(chunks);
+  });
+});
