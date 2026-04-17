@@ -116,7 +116,13 @@ export async function createE2BPtyHandle(
       await pty.resize(pid, { cols, rows });
     },
     async kill(): Promise<void> {
-      await pty.kill(pid);
+      // E2B's `pty.kill` returns a boolean — `false` when the PTY was not
+      // found (already exited, wrong pid, torn-down sandbox). Surface that
+      // as an error so callers don't see a silent success.
+      const killed = await pty.kill(pid);
+      if (!killed) {
+        throw new Error(`Failed to kill PTY process: pid=${pid}`);
+      }
     },
     onData(cb: (bytes: Uint8Array) => void): () => void {
       listeners.add(cb);

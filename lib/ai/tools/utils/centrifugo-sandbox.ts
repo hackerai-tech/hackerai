@@ -108,8 +108,16 @@ export class CentrifugoSandbox extends EventEmitter {
     return this.userId;
   }
 
-  getConfig(): CentrifugoConfig {
-    return this.config;
+  getWsUrl(): string {
+    return this.config.wsUrl;
+  }
+
+  /**
+   * Mint a short-lived Centrifugo JWT for this sandbox's user. Keeps the
+   * signing secret encapsulated — callers never see `tokenSecret`.
+   */
+  async issueToken(ttlSeconds: number): Promise<string> {
+    return generateCentrifugoToken(this.userId, ttlSeconds);
   }
 
   /**

@@ -212,6 +212,14 @@ describe("createE2BPtyHandle", () => {
     expect(mock.kill).toHaveBeenCalledWith(5555);
   });
 
+  it("kill throws when sandbox.pty.kill returns false (PTY not found)", async () => {
+    const { sandbox, mock } = buildMockSandbox(5555);
+    mock.kill.mockResolvedValueOnce(false);
+    const handle = await createE2BPtyHandle(sandbox, defaultOpts);
+
+    await expect(handle.kill()).rejects.toThrow(/pid=5555/);
+  });
+
   it("exited resolves with {exitCode: 0} when wait() resolves with 0", async () => {
     const { sandbox, resolveWait } = buildMockSandbox();
     const handle = await createE2BPtyHandle(sandbox, defaultOpts);

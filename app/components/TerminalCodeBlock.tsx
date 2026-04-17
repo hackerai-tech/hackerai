@@ -216,9 +216,11 @@ export const TerminalCodeBlock = ({
 
   // For interactive actions the output already contains the full session
   // snapshot (with the PTY echo of the model's input inline). The ToolBlock
-  // chip shows "Sent input X" so no prefix/append needed here.
+  // chip shows "Sent input X" so no prefix/append needed here. Use `??` so
+  // an intentionally empty snapshot (e.g. a fresh session that hasn't echoed
+  // yet) renders as a blank terminal instead of falling back to the command.
   const terminalContent = isInteractiveAction
-    ? output || command
+    ? (output ?? command)
     : output
       ? `${commandPrefix} ${command}\n${output}`
       : `${commandPrefix} ${command}`;

@@ -18,7 +18,6 @@
 
 import { Centrifuge, type Subscription } from "centrifuge";
 
-import { generateCentrifugoToken } from "@/lib/centrifugo/jwt";
 import { sandboxChannel } from "@/lib/centrifugo/types";
 import type { PtyHandle, CreatePtyOptions } from "./e2b-pty-adapter";
 import type { CentrifugoSandbox } from "./centrifugo-sandbox";
@@ -139,10 +138,9 @@ export async function createCentrifugoPtyHandle(
 
   // Long-lived token: PTY sessions can last minutes.
   const tokenExpSeconds = 600;
-  const token = await generateCentrifugoToken(userId, tokenExpSeconds);
+  const token = await sandbox.issueToken(tokenExpSeconds);
 
-  const centrifugoConfig = sandbox.getConfig();
-  const client = new Centrifuge(centrifugoConfig.wsUrl, { token });
+  const client = new Centrifuge(sandbox.getWsUrl(), { token });
 
   const listeners = new Set<(bytes: Uint8Array) => void>();
   const encoder = new TextEncoder();

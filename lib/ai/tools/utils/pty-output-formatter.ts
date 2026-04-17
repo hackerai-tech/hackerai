@@ -9,7 +9,7 @@
 
 let TerminalCtor:
   | (new (opts: { cols: number; rows: number; scrollback: number }) => {
-      write: (data: string) => void;
+      write: (data: string, callback?: () => void) => void;
       buffer: {
         active: {
           length: number;
@@ -33,11 +33,22 @@ try {
 const FALLBACK_ANSI =
   /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
 
-export function cleanPtyForUI(text: string): string {
+function fallbackClean(text: string): string {
+  return text
+    .replace(FALLBACK_ANSI, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "");
+}
+
+export async function cleanPtyForUI(text: string): Promise<string> {
   if (TerminalCtor) {
     try {
       const term = new TerminalCtor({ cols: 120, rows: 500, scrollback: 5000 });
-      term.write(text);
+      // `@xterm/headless` Terminal.write is asynchronous — it enqueues into a
+      // WriteBuffer and processes on a later tick. Without the callback, the
+      // buffer we read below is still empty. Await parsing completion before
+      // snapshotting buffer.active.
+      await new Promise<void>((resolve) => term.write(text, resolve));
       const buf = term.buffer.active;
       const lines: string[] = [];
       let lastNonEmpty = -1;
@@ -53,15 +64,15 @@ export function cleanPtyForUI(text: string): string {
       // Fall through to regex fallback.
     }
   }
-  return text
-    .replace(FALLBACK_ANSI, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "");
+  return fallbackClean(text);
 }
 
 /** Return last N lines of a PTY snapshot as raw bytes (for streaming context). */
-export function lastNLinesBytes(bytes: Uint8Array, n: number): Uint8Array {
-  const text = cleanPtyForUI(new TextDecoder().decode(bytes));
+export async function lastNLinesBytes(
+  bytes: Uint8Array,
+  n: number,
+): Promise<Uint8Array> {
+  const text = await cleanPtyForUI(new TextDecoder().decode(bytes));
   const lines = text.split("\n");
   if (lines.length <= n) return new TextEncoder().encode(text);
   return new TextEncoder().encode(lines.slice(-n).join("\n"));
@@ -71,10 +82,10 @@ interface SnapshotSource {
   snapshot(session: { sessionId: string; chatId: string }): Uint8Array;
 }
 
-export function getSessionSnapshot(
+export async function getSessionSnapshot(
   mgr: SnapshotSource,
   session: { sessionId: string; chatId: string },
-): string {
+): Promise<string> {
   const bytes = mgr.snapshot(session);
   return cleanPtyForUI(new TextDecoder().decode(bytes));
 }

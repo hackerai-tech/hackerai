@@ -438,19 +438,32 @@ If you are generating files:
       // (`TerminalToolHandler`/`ComputerSidebar`) reads the extra `action`
       // and `session` fields at runtime. This cast is intentional — keep
       // the minimal typed surface while carrying the extra metadata.
-      const emitTerminal = (bytes: Uint8Array) => {
-        const text = cleanPtyForUI(new TextDecoder().decode(bytes));
-        writer.write({
-          type: "data-terminal",
-          id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          data: {
-            terminal: text,
-            toolCallId,
-            action,
-            session: sessionId,
-          } as unknown as { terminal: string; toolCallId: string },
-        });
+      //
+      // `cleanPtyForUI` is async (it awaits xterm-headless parsing). To keep
+      // emitTerminal fire-and-forget from sync onData callbacks while
+      // preserving FIFO order of writer.write, we chain the formatting +
+      // write calls through a per-invocation promise queue.
+      let emitQueue: Promise<void> = Promise.resolve();
+      const emitTerminal = (bytes: Uint8Array): void => {
+        emitQueue = emitQueue
+          .then(async () => {
+            const text = await cleanPtyForUI(new TextDecoder().decode(bytes));
+            writer.write({
+              type: "data-terminal",
+              id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              data: {
+                terminal: text,
+                toolCallId,
+                action,
+                session: sessionId,
+              } as unknown as { terminal: string; toolCallId: string },
+            });
+          })
+          .catch((err) =>
+            console.error("[run-terminal-cmd] emitTerminal failed:", err),
+          );
       };
+      const drainEmitQueue = () => emitQueue;
 
       // ─── Non-exec actions (session lookup required) ────────────────────
       type ActionResult = { result: Record<string, unknown> };
@@ -475,8 +488,11 @@ If you are generating files:
         return { session: found };
       };
 
-      const emitPriorContext = (session: PtySession) => {
-        const prior = lastNLinesBytes(ptySessionManager.snapshot(session), 100);
+      const emitPriorContext = async (session: PtySession) => {
+        const prior = await lastNLinesBytes(
+          ptySessionManager.snapshot(session),
+          100,
+        );
         if (prior.byteLength > 0) emitTerminal(prior);
       };
 
@@ -490,7 +506,7 @@ If you are generating files:
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
-        emitPriorContext(session);
+        await emitPriorContext(session);
 
         const bytes = translateInput(input ?? "");
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
@@ -519,7 +535,10 @@ If you are generating files:
           return {
             result: {
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-              sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
+              sessionSnapshot: await getSessionSnapshot(
+                ptySessionManager,
+                session,
+              ),
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             },
           };
@@ -535,7 +554,7 @@ If you are generating files:
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
-        emitPriorContext(session);
+        await emitPriorContext(session);
 
         const alreadyExited = await peekExited(session);
         try {
@@ -548,7 +567,10 @@ If you are generating files:
           );
           const out: Record<string, unknown> = {
             output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-            sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
+            sessionSnapshot: await getSessionSnapshot(
+              ptySessionManager,
+              session,
+            ),
           };
           if (session.bufferTruncated) out.bufferTruncated = true;
           if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
@@ -573,7 +595,9 @@ If you are generating files:
         return {
           result: {
             output: capOutput(stripAnsi(new TextDecoder().decode(snapshot))),
-            sessionSnapshot: cleanPtyForUI(new TextDecoder().decode(snapshot)),
+            sessionSnapshot: await cleanPtyForUI(
+              new TextDecoder().decode(snapshot),
+            ),
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             ...(internal.exitedNaturally
               ? { exited: internal.exitedNaturally }
@@ -702,7 +726,10 @@ If you are generating files:
               session: session.sessionId,
               pid: session.pid,
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-              sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
+              sessionSnapshot: await getSessionSnapshot(
+                ptySessionManager,
+                session,
+              ),
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             },
           };

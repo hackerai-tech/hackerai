@@ -334,17 +334,25 @@ export class DesktopSandboxBridge {
 
       channel.onmessage = (chunk: string) => {
         // The Tauri PTY backend sends raw output strings and a final JSON
-        // exit message: {"type":"exit","exitCode":N,"sessionId":"..."}
+        // exit sentinel: {"type":"exit","exitCode":N,"sessionId":"..."}.
+        // We require ALL three sentinel fields before treating a chunk as an
+        // exit — otherwise a program that legitimately prints
+        // `{"type":"exit",...}` would be swallowed and never reach pty_data.
         try {
           const parsed = JSON.parse(chunk) as {
-            type?: string;
-            exitCode?: number;
+            type?: unknown;
+            exitCode?: unknown;
+            sessionId?: unknown;
           };
-          if (parsed.type === "exit") {
+          if (
+            parsed.type === "exit" &&
+            parsed.sessionId === sessionId &&
+            typeof parsed.exitCode === "number"
+          ) {
             enqueuePublish({
               type: "pty_exit",
               sessionId,
-              exitCode: parsed.exitCode ?? -1,
+              exitCode: parsed.exitCode,
             });
             return;
           }
@@ -367,7 +375,16 @@ export class DesktopSandboxBridge {
         cwd,
         env,
         onData: channel,
-      })) as { pid: number; session_id: string };
+      })) as { pid: number | null; session_id: string };
+
+      // Rust's PtyCreateResult.pid is Option<u32> — serializes to `null` when
+      // the child didn't expose a pid. Reject that case explicitly so the
+      // server doesn't get a pty_ready with a bogus pid cast.
+      if (typeof result.pid !== "number") {
+        throw new Error(
+          `execute_pty_create returned no pid for sessionId=${sessionId}`,
+        );
+      }
 
       await this.publishResult({
         type: "pty_ready",
