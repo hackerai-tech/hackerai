@@ -377,49 +377,57 @@ If you are generating files:
         .enum(["exec", "wait", "send", "kill", "view"])
         .default("exec")
         .describe(
-          "exec=run new command (default). wait=wait for output from existing interactive session. send=send keystrokes to existing session (raw input — NOT filtered by command guardrails). kill=terminate session. view=snapshot current buffer without advancing the read cursor.",
+          "Pick based on intent:\n" +
+            "  - exec (DEFAULT): run a NEW command. REQUIRES `command`. Pair with `interactive=true` to open a reusable PTY session.\n" +
+            "  - send: feed keystrokes to an existing session. REQUIRES `session` + `input`. BYPASSES command guardrails — treat `input` as raw bytes.\n" +
+            "  - wait: block until new output arrives from an existing session. REQUIRES `session`.\n" +
+            "  - view: snapshot the session's full buffer without consuming it. REQUIRES `session`.\n" +
+            "  - kill: terminate an existing session. REQUIRES `session`.\n" +
+            'Omitting `action` silently defaults to `exec` — always set it explicitly when continuing a session, otherwise the call will fail with "action=exec requires command".',
         ),
       command: z
         .string()
         .optional()
-        .describe("The terminal command to execute. Required for action=exec."),
+        .describe(
+          "Shell command to execute. REQUIRED whenever action=exec (including when `action` is omitted, since it defaults to exec). MUST be omitted for session-continuation actions (wait/send/view/kill) — those operate on an already-running `session` that was started by a previous exec call.",
+        ),
       explanation: z
         .string()
         .describe(
-          "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
+          "One sentence on why this call is being made and how it advances the goal. Shown to the user.",
         ),
       is_background: z
         .boolean()
         .optional()
         .default(false)
         .describe(
-          "Whether the command should be run in the background. Set to FALSE if you need to retrieve output files immediately after with get_terminal_files. Only use TRUE for indefinite processes where you don't need immediate file access. Ignored unless action=exec and interactive=false.",
+          "Run the command in the background. Only meaningful when action=exec AND interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
         ),
       timeout: z
         .number()
         .optional()
         .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command execution. On timeout, command continues running in background. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds. Only applies to non-interactive exec.`,
+          `Seconds to wait for non-interactive command output before returning (the command keeps running in background on timeout). Capped at ${MAX_TIMEOUT_SECONDS}s; default ${DEFAULT_STREAM_TIMEOUT_SECONDS}s. Applies ONLY to action=exec with interactive=false — interactive sessions use \`wait_for\` instead.`,
         ),
       session: z
         .string()
         .optional()
         .describe(
-          "Session id returned by a prior exec with interactive=true. Required for action in {wait, send, kill, view}.",
+          "Session id returned by a prior action=exec+interactive=true call. REQUIRED for wait/send/view/kill. Ignored for exec (a fresh session is always created).",
         ),
       interactive: z
         .boolean()
         .optional()
         .default(false)
         .describe(
-          "On action=exec: open a PTY and return a reusable session id instead of blocking until exit. E2B sandboxes only.",
+          "Only valid with action=exec. When true, opens a PTY and returns a reusable `session` id instead of blocking until the command exits. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. Follow up with action=send/wait/view/kill using the returned session id. E2B and local (Centrifugo) sandboxes only.",
         ),
       input: z
         .string()
         .optional()
         .describe(
-          "For action=send: keystrokes. Supports tmux-style names ('Enter', 'Tab', 'C-c', 'Up', 'M-x', 'C-S-A') via pty-keys. Plain text is sent verbatim as UTF-8 — include your own '\\n' if needed.",
+          "ONLY for action=send. Keystrokes to feed to the session's stdin. Supports tmux-style names ('Enter', 'Tab', 'C-c', 'C-d', 'Up', 'Down', 'M-x', 'C-S-A'); everything else is sent verbatim as UTF-8 — include your own '\\n' when you need a newline. Raw keystrokes BYPASS command guardrails; never paste untrusted content.",
         ),
       cols: z.number().int().optional().default(120),
       rows: z.number().int().optional().default(30),
@@ -429,7 +437,7 @@ If you are generating files:
             .string()
             .optional()
             .describe(
-              "JS regex; resolves as soon as accumulated (ANSI-stripped) output matches. Invalid regex returns a structured error instead of crashing the tool call.",
+              "JS regex. Resolves as soon as accumulated (ANSI-stripped) output matches — use this when you know the shell prompt or marker you're waiting for (e.g. '>>> $' for python, '# $' for a root shell). Invalid regex returns a structured error rather than crashing the call.",
             ),
           idle_ms: z
             .number()
@@ -439,7 +447,7 @@ If you are generating files:
             .optional()
             .default(DEFAULT_WAIT_IDLE_MS)
             .describe(
-              "Resolve after N ms of no new bytes. Range: [50, 60000] (1 min cap).",
+              "Resolve after N ms with no new output bytes. Good default for prompts that don't have a predictable marker. Range: [50, 60000].",
             ),
           timeout_ms: z
             .number()
@@ -449,12 +457,12 @@ If you are generating files:
             .optional()
             .default(DEFAULT_WAIT_TIMEOUT_MS)
             .describe(
-              "Absolute cap on the wait. Range: [100, 300000] (5 min cap).",
+              "Hard cap on the wait. Fires even if neither pattern nor idle_ms triggered. Range: [100, 300000].",
             ),
         })
         .optional()
         .describe(
-          "Wait policy applied after exec+interactive / send / wait. Default: {idle_ms: 800, timeout_ms: 10000}. Caps: idle_ms<=60000, timeout_ms<=300000.",
+          "Wait policy applied after action=exec+interactive=true, action=send, and action=wait. Resolves on the FIRST of: `pattern` match, `idle_ms` of silence, or `timeout_ms` elapsed. Default: {idle_ms: 800, timeout_ms: 10000}.",
         ),
     }),
     execute: async (
