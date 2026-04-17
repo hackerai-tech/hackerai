@@ -11,7 +11,7 @@
 
 import type { PtyHandle } from "./e2b-pty-adapter";
 
-export const MAX_CONCURRENT_PTYS_PER_CHAT = 2;
+export const MAX_CONCURRENT_PTYS_PER_CHAT = 10;
 export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
 export const SESSION_MAX_LIFETIME_MS = 60 * 60_000;
 export const MAX_BUFFER_BYTES = 256 * 1024;

@@ -40,7 +40,10 @@ jest.mock("../utils/proxy-manager", () => ({
 
 import { createRunTerminalCmd } from "../run-terminal-cmd";
 import type { PtyHandle } from "../utils/e2b-pty-adapter";
-import { PtySessionManager } from "../utils/pty-session-manager";
+import {
+  PtySessionManager,
+  MAX_CONCURRENT_PTYS_PER_CHAT,
+} from "../utils/pty-session-manager";
 
 // ── Mock hybrid-sandbox-manager so we can return a fake sandbox ──────
 jest.mock("../utils/e2b-pty-adapter", () => {
@@ -768,21 +771,18 @@ describe("run_terminal_cmd — PTY action dispatch", () => {
     const e2b = makeFakeE2BSandbox();
 
     const { context, ptySessionManager } = makeContext({ sandbox: e2b });
-    // Seed the manager with 2 existing sessions (MAX=2) against the same chat.
-    const h1 = makeFakeHandle(1);
-    const h2 = makeFakeHandle(2);
-    await ptySessionManager.create("chat-1", {
-      createHandle: async () => h1,
-      cols: 80,
-      rows: 24,
-    });
-    await ptySessionManager.create("chat-1", {
-      createHandle: async () => h2,
-      cols: 80,
-      rows: 24,
-    });
+    // Seed the manager with MAX_CONCURRENT_PTYS_PER_CHAT existing sessions
+    // against the same chat so the next create must reject.
+    for (let i = 0; i < MAX_CONCURRENT_PTYS_PER_CHAT; i++) {
+      const h = makeFakeHandle(i + 1);
+      await ptySessionManager.create("chat-1", {
+        createHandle: async () => h,
+        cols: 80,
+        rows: 24,
+      });
+    }
 
-    // Now attempt a 3rd through the tool — factory must NOT be invoked.
+    // Now attempt one over the cap through the tool — factory must NOT be invoked.
     const factory = jest.fn();
     mockCreateE2BPtyHandle.mockImplementation(factory as never);
 

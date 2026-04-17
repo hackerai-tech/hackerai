@@ -101,32 +101,26 @@ describe("PtySessionManager", () => {
       expect(factory).toHaveBeenCalledTimes(1);
     });
 
-    it("rejects the 3rd concurrent session in the same chat", async () => {
-      const h1 = makeFakeHandle();
-      const h2 = makeFakeHandle();
-      const h3 = makeFakeHandle();
+    it("rejects sessions beyond MAX_CONCURRENT_PTYS_PER_CHAT in the same chat", async () => {
+      for (let i = 0; i < MAX_CONCURRENT_PTYS_PER_CHAT; i++) {
+        await manager.create("chat-1", {
+          createHandle: makeCreateHandleFactory(makeFakeHandle()),
+          cols: 80,
+          rows: 24,
+        });
+      }
 
-      await manager.create("chat-1", {
-        createHandle: makeCreateHandleFactory(h1),
-        cols: 80,
-        rows: 24,
-      });
-      await manager.create("chat-1", {
-        createHandle: makeCreateHandleFactory(h2),
-        cols: 80,
-        rows: 24,
-      });
-
+      const overflow = makeFakeHandle();
       await expect(
         manager.create("chat-1", {
-          createHandle: makeCreateHandleFactory(h3),
+          createHandle: makeCreateHandleFactory(overflow),
           cols: 80,
           rows: 24,
         }),
       ).rejects.toThrow(/MAX_CONCURRENT_PTYS_PER_CHAT|concurrent|limit/i);
 
-      // third handle must NOT have been created
-      expect(h3.kill).not.toHaveBeenCalled();
+      // overflow handle must NOT have been created
+      expect(overflow.kill).not.toHaveBeenCalled();
     });
 
     it("allows two sessions in different chatIds", async () => {
@@ -446,7 +440,7 @@ describe("PtySessionManager", () => {
 
   describe("constants", () => {
     it("exposes the documented limits", () => {
-      expect(MAX_CONCURRENT_PTYS_PER_CHAT).toBe(2);
+      expect(MAX_CONCURRENT_PTYS_PER_CHAT).toBe(10);
       expect(SESSION_IDLE_TIMEOUT_MS).toBe(10 * 60_000);
       expect(SESSION_MAX_LIFETIME_MS).toBe(60 * 60_000);
       expect(MAX_BUFFER_BYTES).toBe(256 * 1024);
