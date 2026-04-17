@@ -425,9 +425,6 @@ If you are generating files:
       },
       { toolCallId, abortSignal },
     ) => {
-      console.log(
-        `[PTY-DIAG] execute() entry: toolCallId=${toolCallId} action=${action} session=${sessionId ?? "-"} interactive=${interactive} command=${JSON.stringify((command ?? "").slice(0, 60))}`,
-      );
       // Default wait policy shared across interactive action branches.
       const waitPolicy: WaitPolicy = {
         pattern: wait_for?.pattern,
@@ -441,15 +438,8 @@ If you are generating files:
       // (`TerminalToolHandler`/`ComputerSidebar`) reads the extra `action`
       // and `session` fields at runtime. This cast is intentional — keep
       // the minimal typed surface while carrying the extra metadata.
-      let emitCount = 0;
       const emitTerminal = (bytes: Uint8Array) => {
         const text = cleanPtyForUI(new TextDecoder().decode(bytes));
-        emitCount += 1;
-        if (emitCount <= 3 || emitCount % 10 === 0) {
-          console.log(
-            `[PTY-DIAG] emitTerminal: toolCallId=${toolCallId} action=${action} session=${sessionId ?? "-"} emit#${emitCount} bytes=${bytes.byteLength}`,
-          );
-        }
         writer.write({
           type: "data-terminal",
           id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
