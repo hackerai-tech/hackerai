@@ -36,8 +36,8 @@ const MAX_TIMEOUT_SECONDS = 600;
 // ─── Interactive PTY constants ──────────────────────────────────────────
 export const MAX_INPUT_BYTES_PER_SEND = 8 * 1024;
 export const MODEL_OUTPUT_CAP_BYTES = 8 * 1024;
-const DEFAULT_WAIT_IDLE_MS = 1500;
-const DEFAULT_WAIT_TIMEOUT_MS = 15_000;
+const DEFAULT_WAIT_IDLE_MS = 800;
+const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 
 // Strip CSI + OSC ANSI escape sequences from model-facing output. Keeping a
 // small inline helper avoids pulling in `strip-ansi` which isn't currently a
@@ -71,7 +71,6 @@ let TerminalCtor:
   | null = null;
 
 try {
-   
   TerminalCtor = require("@xterm/headless").Terminal;
 } catch {
   // Not available (test env, missing dep) — fallback below
@@ -105,6 +104,14 @@ function cleanPtyForUI(text: string): string {
     .replace(FALLBACK_ANSI, "")
     .replace(/\r\n/g, "\n")
     .replace(/\r/g, "");
+}
+
+/** Return last N lines of a PTY snapshot as raw bytes for streaming context. */
+function lastNLinesBytes(bytes: Uint8Array, n: number): Uint8Array {
+  const text = cleanPtyForUI(new TextDecoder().decode(bytes));
+  const lines = text.split("\n");
+  if (lines.length <= n) return new TextEncoder().encode(text);
+  return new TextEncoder().encode(lines.slice(-n).join("\n"));
 }
 
 function getSessionSnapshot(
@@ -172,6 +179,22 @@ async function waitForOutput(
     let accumulated = "";
     const decoder = new TextDecoder();
 
+    // Capture any bytes already buffered before subscription (e.g. data that
+    // arrived during await sendInput's network RTT on E2B). Without this,
+    // pre-subscription bytes reach only the buffer listener and are never
+    // streamed to the UI.
+    const preBuffered = consume(session);
+    if (preBuffered.byteLength > 0) {
+      try {
+        onChunk(preBuffered);
+      } catch (err) {
+        console.error("[run-terminal-cmd] emitTerminal failed:", err);
+      }
+      if (regex) {
+        accumulated += stripAnsi(decoder.decode(preBuffered, { stream: true }));
+      }
+    }
+
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     const hardTimer = setTimeout(() => finish(), policy.timeout_ms);
 
@@ -180,6 +203,24 @@ async function waitForOutput(
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(() => finish(), policy.idle_ms);
     };
+
+    // Pattern may already match from pre-buffered bytes
+    if (regex && regex.test(accumulated)) {
+      settled = true;
+      clearTimeout(hardTimer);
+      const finalDelta = consume(session);
+      const combined = new Uint8Array(
+        preBuffered.byteLength + finalDelta.byteLength,
+      );
+      combined.set(preBuffered, 0);
+      combined.set(finalDelta, preBuffered.byteLength);
+      resolve(combined);
+      return;
+    }
+
+    // If we already have pre-buffered data and no pattern, reset idle to
+    // give subsequent chunks time to arrive.
+    armIdle();
 
     const unsubscribe = session.handle.onData((bytes) => {
       if (settled) return;
@@ -213,12 +254,14 @@ async function waitForOutput(
         console.error("[run-terminal-cmd] unsubscribe failed:", err);
       }
       signal?.removeEventListener("abort", onAbort);
-      resolve(consume(session));
+      const finalDelta = consume(session);
+      const combined = new Uint8Array(
+        preBuffered.byteLength + finalDelta.byteLength,
+      );
+      combined.set(preBuffered, 0);
+      combined.set(finalDelta, preBuffered.byteLength);
+      resolve(combined);
     }
-
-    // Arm the idle timer up front — covers the case where no new bytes arrive
-    // at all, which is still a valid "idle resolve" outcome.
-    if (!regex) armIdle();
   });
 }
 
@@ -411,7 +454,7 @@ If you are generating files:
         })
         .optional()
         .describe(
-          "Wait policy applied after exec+interactive / send / wait. Default: {idle_ms: 800, timeout_ms: 15000}. Caps: idle_ms<=60000, timeout_ms<=300000.",
+          "Wait policy applied after exec+interactive / send / wait. Default: {idle_ms: 800, timeout_ms: 10000}. Caps: idle_ms<=60000, timeout_ms<=300000.",
         ),
     }),
     execute: async (
@@ -484,10 +527,13 @@ If you are generating files:
             result: { output: "", error: `Session ${sessionId} not found.` },
           };
         }
-        // Replay the full session buffer so the sidebar shows the complete
-        // terminal state, not just this action's delta.
-        const prior = ptySessionManager.snapshot(session);
-        if (prior.byteLength > 0) emitTerminal(prior);
+
+        // Emit last 100 lines as context so UI shows prior state
+        const priorContext = lastNLinesBytes(
+          ptySessionManager.snapshot(session),
+          100,
+        );
+        if (priorContext.byteLength > 0) emitTerminal(priorContext);
 
         const bytes = translateInput(input ?? "");
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
@@ -509,10 +555,10 @@ If you are generating files:
           };
         }
         session.lastActivityAt = Date.now();
-        // Small stabilization delay so the CLI's readline has time to
-        // process the input before we start collecting output.
-        await new Promise((r) => setTimeout(r, 150));
+        // Brief delay for CLI readline to process input
+        await new Promise((r) => setTimeout(r, 50));
         try {
+          // Stream output chunks as they arrive
           const delta = await waitForOutput(
             session,
             waitPolicy,
@@ -522,9 +568,6 @@ If you are generating files:
           );
           return {
             result: {
-              // TODO(M2): capOutput truncates for model-facing output only.
-              // `saveTruncatedOutput` for interactive PTY deltas is out of
-              // scope for M1 per plan — revisit when ring persistence lands.
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
               sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
@@ -555,14 +598,18 @@ If you are generating files:
             result: { output: "", error: `Session ${sessionId} not found.` },
           };
         }
-        // Replay the full session buffer so the sidebar shows the complete
-        // terminal state, not just this action's delta.
-        const priorWait = ptySessionManager.snapshot(session);
-        if (priorWait.byteLength > 0) emitTerminal(priorWait);
+
+        // Emit last 100 lines as context so UI shows prior state
+        const priorContext = lastNLinesBytes(
+          ptySessionManager.snapshot(session),
+          100,
+        );
+        if (priorContext.byteLength > 0) emitTerminal(priorContext);
 
         // If process already exited, surface immediately without waiting.
         const alreadyExited = await peekExited(session);
         try {
+          // Stream output chunks as they arrive
           const delta = await waitForOutput(
             session,
             waitPolicy,
@@ -571,8 +618,6 @@ If you are generating files:
             (s) => ptySessionManager.consumeDelta(s),
           );
           const out: Record<string, unknown> = {
-            // TODO(M2): see note above — `saveTruncatedOutput` for interactive
-            // PTY deltas deferred.
             output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
             sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
           };
@@ -726,6 +771,7 @@ If you are generating files:
           }
           session.lastActivityAt = Date.now();
 
+          // Stream output chunks as they arrive
           const delta = await waitForOutput(
             session,
             waitPolicy,
@@ -737,8 +783,6 @@ If you are generating files:
             result: {
               session: session.sessionId,
               pid: session.pid,
-              // TODO(M2): `saveTruncatedOutput` integration for interactive
-              // PTY deltas is deferred per plan (M2).
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
               sessionSnapshot: getSessionSnapshot(ptySessionManager, session),
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),

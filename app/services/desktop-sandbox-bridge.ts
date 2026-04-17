@@ -315,6 +315,23 @@ export class DesktopSandboxBridge {
       const { invoke, Channel } = await import("@tauri-apps/api/core");
 
       const channel = new Channel<string>();
+      // Serialize publishes: Rust now flushes per-read (could be per-char on
+      // interactive echo). Firing 12 unawaited publishes at the Centrifuge
+      // client caused reordered arrival at the server, producing garbled
+      // terminal rendering. Chain through this promise to preserve order.
+      let publishQueue: Promise<void> = Promise.resolve();
+      const enqueuePublish = (msg: SandboxMessage) => {
+        publishQueue = publishQueue.then(() =>
+          this.publishResult(msg).catch((err) => {
+            console.error(
+              "[DesktopSandboxBridge] Failed to publish",
+              msg.type,
+              err,
+            );
+          }),
+        );
+      };
+
       channel.onmessage = (chunk: string) => {
         // The Tauri PTY backend sends raw output strings and a final JSON
         // exit message: {"type":"exit","exitCode":N,"sessionId":"..."}
@@ -324,15 +341,10 @@ export class DesktopSandboxBridge {
             exitCode?: number;
           };
           if (parsed.type === "exit") {
-            this.publishResult({
+            enqueuePublish({
               type: "pty_exit",
               sessionId,
               exitCode: parsed.exitCode ?? -1,
-            }).catch((err) => {
-              console.error(
-                "[DesktopSandboxBridge] Failed to publish pty_exit:",
-                err,
-              );
             });
             return;
           }
@@ -340,15 +352,10 @@ export class DesktopSandboxBridge {
           // Not JSON — regular PTY output
         }
 
-        this.publishResult({
+        enqueuePublish({
           type: "pty_data",
           sessionId,
           data: chunk,
-        }).catch((err) => {
-          console.error(
-            "[DesktopSandboxBridge] Failed to publish pty_data:",
-            err,
-          );
         });
       };
 

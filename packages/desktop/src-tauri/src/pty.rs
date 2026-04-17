@@ -4,12 +4,10 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
 use tauri::ipc::Channel;
 
 use crate::platform;
 
-const OUTPUT_BUFFER_FLUSH_MS: u64 = 16;
 const OUTPUT_BUFFER_MAX_BYTES: usize = 32 * 1024;
 
 struct PtySession {
@@ -204,7 +202,6 @@ fn pty_reader_thread(
 ) {
     let mut buf = [0u8; 4096];
     let mut output_buffer = Vec::with_capacity(OUTPUT_BUFFER_MAX_BYTES);
-    let mut last_flush = Instant::now();
 
     loop {
         if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
@@ -228,14 +225,14 @@ fn pty_reader_thread(
             Ok(n) => {
                 output_buffer.extend_from_slice(&buf[..n]);
 
-                let should_flush = output_buffer.len() >= OUTPUT_BUFFER_MAX_BYTES
-                    || last_flush.elapsed() >= Duration::from_millis(OUTPUT_BUFFER_FLUSH_MS);
-
-                if should_flush {
+                // For interactive PTY, flush immediately after every read to
+                // minimize latency. The server's idle timer needs to see output
+                // as soon as it arrives. Batching caused prompts to arrive late,
+                // after the idle timer had already fired.
+                if !output_buffer.is_empty() {
                     let chunk = String::from_utf8_lossy(&output_buffer).to_string();
                     let _ = on_data.send(chunk);
                     output_buffer.clear();
-                    last_flush = Instant::now();
                 }
             }
             Err(e) => {
