@@ -46,7 +46,6 @@ export const getChatByIdFromClient = query({
       share_date: v.optional(v.number()),
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
-      active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
       codex_thread_id: v.optional(v.string()),
@@ -137,7 +136,6 @@ export const getChatById = query({
       share_date: v.optional(v.number()),
       update_time: v.number(),
       pinned_at: v.optional(v.number()),
-      active_trigger_run_id: v.optional(v.string()),
       sandbox_type: v.optional(v.string()),
       selected_model: v.optional(v.string()),
       codex_thread_id: v.optional(v.string()),
@@ -307,7 +305,11 @@ export const updateChat = mutation({
         });
       }
 
-      // Prepare update object with only provided fields
+      // Prepare update object with only provided fields.
+      // update_time is only bumped for user-visible changes (title, model,
+      // sandbox) so that background writes (todos, stream-state cleanup,
+      // finish_reason) don't invalidate the sidebar's by_user_and_updated
+      // query on every agent turn.
       const updateData: {
         title?: string;
         finish_reason?: string;
@@ -322,9 +324,8 @@ export const updateChat = mutation({
         selected_model?: string;
         active_stream_id?: undefined;
         canceled_at?: undefined;
-        update_time: number;
+        update_time?: number;
       } = {
-        update_time: Date.now(),
         // Always clear stream state when updating chat (stream is finished)
         active_stream_id: undefined,
         canceled_at: undefined,
@@ -352,6 +353,16 @@ export const updateChat = mutation({
 
       if (args.selectedModel !== undefined) {
         updateData.selected_model = args.selectedModel;
+      }
+
+      // Bump update_time only when a sidebar-visible field actually changed.
+      if (
+        args.title !== undefined ||
+        args.defaultModelSlug !== undefined ||
+        args.sandboxType !== undefined ||
+        args.selectedModel !== undefined
+      ) {
+        updateData.update_time = Date.now();
       }
 
       // Update the chat
@@ -1025,7 +1036,6 @@ export const saveLatestSummary = mutation({
           }
           await ctx.db.patch(chat._id, {
             latest_summary_id: undefined,
-            update_time: Date.now(),
           });
           await ctx.db.delete(chat.latest_summary_id);
         } catch (error) {
@@ -1055,10 +1065,10 @@ export const saveLatestSummary = mutation({
         previous_summaries: previousSummaries,
       });
 
-      // Update chat to reference the latest summary (fast ID lookup)
+      // Update chat to reference the latest summary (fast ID lookup).
+      // Not a sidebar-visible change, so don't bump update_time.
       await ctx.db.patch(chat._id, {
         latest_summary_id: summaryId,
-        update_time: Date.now(),
       });
 
       return null;

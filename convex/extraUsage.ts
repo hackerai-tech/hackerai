@@ -93,6 +93,36 @@ export function computeExtraUsageCap(settings: {
 // =============================================================================
 
 /**
+ * Internal mutation: purge processed_webhooks rows older than cutoff.
+ * Stripe only retries within ~72h, so retention of a week is plenty.
+ * Iterates oldest-first via the implicit by_creation_time ordering.
+ */
+export const purgeOldProcessedWebhooks = internalMutation({
+  args: {
+    cutoffTimeMs: v.number(),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({ deletedCount: v.number() }),
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 100;
+
+    const rows = await ctx.db
+      .query("processed_webhooks")
+      .order("asc")
+      .take(limit);
+
+    let deletedCount = 0;
+    for (const row of rows) {
+      if (row.processed_at < args.cutoffTimeMs) {
+        await ctx.db.delete(row._id);
+        deletedCount++;
+      }
+    }
+    return { deletedCount };
+  },
+});
+
+/**
  * Check-and-mark a webhook event as processed (idempotency guard).
  * Returns { alreadyProcessed: true } if the event was already recorded.
  * Pass checkOnly: true to only check without marking (mark after successful processing).
