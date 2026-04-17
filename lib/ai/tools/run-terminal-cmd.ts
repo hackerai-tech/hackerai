@@ -453,50 +453,62 @@ If you are generating files:
       };
 
       // ─── Non-exec actions (session lookup required) ────────────────────
-      if (action === "send") {
-        if (!sessionId) {
-          return {
-            result: { output: "", error: "action=send requires `session`." },
-          };
-        }
-        const session = ptySessionManager.get(chatId, sessionId);
-        if (!session) {
-          return {
-            result: { output: "", error: `Session ${sessionId} not found.` },
-          };
-        }
+      type ActionResult = { result: Record<string, unknown> };
 
-        // Emit last 100 lines as context so UI shows prior state
-        const priorContext = lastNLinesBytes(
-          ptySessionManager.snapshot(session),
-          100,
-        );
-        if (priorContext.byteLength > 0) emitTerminal(priorContext);
+      const errorResult = (error: string): ActionResult => ({
+        result: { output: "", error },
+      });
+
+      const getSessionOrError = (
+        actionName: string,
+        sid: string | undefined,
+      ): { session: PtySession } | { error: ActionResult } => {
+        if (!sid) {
+          return {
+            error: errorResult(`action=${actionName} requires \`session\`.`),
+          };
+        }
+        const found = ptySessionManager.get(chatId, sid);
+        if (!found) {
+          return { error: errorResult(`Session ${sid} not found.`) };
+        }
+        return { session: found };
+      };
+
+      const emitPriorContext = (session: PtySession) => {
+        const prior = lastNLinesBytes(ptySessionManager.snapshot(session), 100);
+        if (prior.byteLength > 0) emitTerminal(prior);
+      };
+
+      const translateWaitError = (err: unknown): ActionResult | null =>
+        err instanceof InvalidWaitPatternError
+          ? errorResult(`Invalid wait_for.pattern: ${err.message}`)
+          : null;
+
+      const handleSend = async (): Promise<ActionResult> => {
+        const lookup = getSessionOrError("send", sessionId);
+        if ("error" in lookup) return lookup.error;
+        const { session } = lookup;
+
+        emitPriorContext(session);
 
         const bytes = translateInput(input ?? "");
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
-          return {
-            result: {
-              output: "",
-              error: `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
-            },
-          };
+          return errorResult(
+            `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
+          );
         }
         try {
           await session.handle.sendInput(bytes);
         } catch (err) {
-          return {
-            result: {
-              output: "",
-              error: `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
-            },
-          };
+          return errorResult(
+            `Failed to send input: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
         session.lastActivityAt = Date.now();
         // Brief delay for CLI readline to process input
         await new Promise((r) => setTimeout(r, 50));
         try {
-          // Stream output chunks as they arrive
           const delta = await waitForOutput(
             session,
             waitPolicy,
@@ -512,42 +524,21 @@ If you are generating files:
             },
           };
         } catch (err) {
-          if (err instanceof InvalidWaitPatternError) {
-            return {
-              result: {
-                output: "",
-                error: `Invalid wait_for.pattern: ${err.message}`,
-              },
-            };
-          }
+          const translated = translateWaitError(err);
+          if (translated) return translated;
           throw err;
         }
-      }
+      };
 
-      if (action === "wait") {
-        if (!sessionId) {
-          return {
-            result: { output: "", error: "action=wait requires `session`." },
-          };
-        }
-        const session = ptySessionManager.get(chatId, sessionId);
-        if (!session) {
-          return {
-            result: { output: "", error: `Session ${sessionId} not found.` },
-          };
-        }
+      const handleWait = async (): Promise<ActionResult> => {
+        const lookup = getSessionOrError("wait", sessionId);
+        if ("error" in lookup) return lookup.error;
+        const { session } = lookup;
 
-        // Emit last 100 lines as context so UI shows prior state
-        const priorContext = lastNLinesBytes(
-          ptySessionManager.snapshot(session),
-          100,
-        );
-        if (priorContext.byteLength > 0) emitTerminal(priorContext);
+        emitPriorContext(session);
 
-        // If process already exited, surface immediately without waiting.
         const alreadyExited = await peekExited(session);
         try {
-          // Stream output chunks as they arrive
           const delta = await waitForOutput(
             session,
             waitPolicy,
@@ -563,30 +554,17 @@ If you are generating files:
           if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
           return { result: out };
         } catch (err) {
-          if (err instanceof InvalidWaitPatternError) {
-            return {
-              result: {
-                output: "",
-                error: `Invalid wait_for.pattern: ${err.message}`,
-              },
-            };
-          }
+          const translated = translateWaitError(err);
+          if (translated) return translated;
           throw err;
         }
-      }
+      };
 
-      if (action === "view") {
-        if (!sessionId) {
-          return {
-            result: { output: "", error: "action=view requires `session`." },
-          };
-        }
-        const session = ptySessionManager.get(chatId, sessionId);
-        if (!session) {
-          return {
-            result: { output: "", error: `Session ${sessionId} not found.` },
-          };
-        }
+      const handleView = async (): Promise<ActionResult> => {
+        const lookup = getSessionOrError("view", sessionId);
+        if ("error" in lookup) return lookup.error;
+        const { session } = lookup;
+
         const snapshot = ptySessionManager.snapshot(session);
         if (snapshot.byteLength > 0) emitTerminal(snapshot);
         const internal = session as {
@@ -602,27 +580,29 @@ If you are generating files:
               : {}),
           },
         };
-      }
+      };
 
-      if (action === "kill") {
-        if (!sessionId) {
-          return {
-            result: { output: "", error: "action=kill requires `session`." },
-          };
-        }
-        const session = ptySessionManager.get(chatId, sessionId);
-        if (!session) {
-          return {
-            result: { output: "", error: `Session ${sessionId} not found.` },
-          };
-        }
+      const handleKill = async (): Promise<ActionResult> => {
+        const lookup = getSessionOrError("kill", sessionId);
+        if ("error" in lookup) return lookup.error;
+        const { session } = lookup;
+
         const killSnapshot = ptySessionManager.snapshot(session);
         if (killSnapshot.byteLength > 0) emitTerminal(killSnapshot);
         const exitPromise = session.handle.exited;
-        await ptySessionManager.close(chatId, sessionId);
+        await ptySessionManager.close(chatId, session.sessionId);
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
         return { result: { exitCode: exit.exitCode } };
-      }
+      };
+
+      const sessionHandlers: Record<string, () => Promise<ActionResult>> = {
+        send: handleSend,
+        wait: handleWait,
+        view: handleView,
+        kill: handleKill,
+      };
+      const sessionHandler = sessionHandlers[action];
+      if (sessionHandler) return sessionHandler();
 
       // action === "exec" — validate command is present.
       if (!command || command.length === 0) {

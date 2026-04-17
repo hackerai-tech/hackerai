@@ -130,7 +130,7 @@ impl PtyManager {
         let session = self
             .sessions
             .get_mut(session_id)
-            .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+            .ok_or_else(|| session_not_found_err(session_id))?;
 
         session
             .writer
@@ -149,7 +149,7 @@ impl PtyManager {
         let session = self
             .sessions
             .get(session_id)
-            .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+            .ok_or_else(|| session_not_found_err(session_id))?;
 
         session
             .master
@@ -168,7 +168,7 @@ impl PtyManager {
         let mut session = self
             .sessions
             .remove(session_id)
-            .ok_or_else(|| format!("Session '{}' not found", session_id))?;
+            .ok_or_else(|| session_not_found_err(session_id))?;
 
         session
             .reader_shutdown
@@ -211,15 +211,8 @@ fn pty_reader_thread(
         match reader.read(&mut buf) {
             Ok(0) => {
                 // EOF -- flush remaining buffer and send exit
-                if !output_buffer.is_empty() {
-                    let chunk = String::from_utf8_lossy(&output_buffer).to_string();
-                    let _ = on_data.send(chunk);
-                    output_buffer.clear();
-                }
-                let exit_msg =
-                    serde_json::json!({"type": "exit", "exitCode": 0, "sessionId": session_id})
-                        .to_string();
-                let _ = on_data.send(exit_msg);
+                flush_buffer(&on_data, &mut output_buffer);
+                send_exit(&on_data, 0, &session_id);
                 break;
             }
             Ok(n) => {
@@ -245,19 +238,35 @@ fn pty_reader_thread(
             }
             Err(e) => {
                 log::warn!("PTY reader error for session '{}': {}", session_id, e);
-                if !output_buffer.is_empty() {
-                    let chunk = String::from_utf8_lossy(&output_buffer).to_string();
-                    let _ = on_data.send(chunk);
-                    output_buffer.clear();
-                }
-                let exit_msg =
-                    serde_json::json!({"type": "exit", "exitCode": -1, "sessionId": session_id})
-                        .to_string();
-                let _ = on_data.send(exit_msg);
+                flush_buffer(&on_data, &mut output_buffer);
+                send_exit(&on_data, -1, &session_id);
                 break;
             }
         }
     }
+}
+
+fn session_not_found_err(id: &str) -> String {
+    format!("Session '{}' not found", id)
+}
+
+fn flush_buffer(on_data: &Channel<String>, buf: &mut Vec<u8>) {
+    if buf.is_empty() {
+        return;
+    }
+    let chunk = String::from_utf8_lossy(buf).to_string();
+    let _ = on_data.send(chunk);
+    buf.clear();
+}
+
+fn send_exit(on_data: &Channel<String>, exit_code: i32, session_id: &str) {
+    let msg = serde_json::json!({
+        "type": "exit",
+        "exitCode": exit_code,
+        "sessionId": session_id,
+    })
+    .to_string();
+    let _ = on_data.send(msg);
 }
 
 /// Get the default shell for the current platform.
