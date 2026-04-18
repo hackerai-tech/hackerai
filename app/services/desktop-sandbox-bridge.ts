@@ -390,12 +390,19 @@ export class DesktopSandboxBridge {
         );
       }
 
-      await this.publishResult({
+      // Route pty_ready through the same publishQueue that pty_data/pty_exit
+      // use. Direct publishResult can arrive AFTER already-queued pty_data
+      // chunks on fast-starting commands — the server-side adapter would then
+      // see pty_data with no matching pty_ready and drop the output.
+      enqueuePublish({
         type: "pty_ready",
         sessionId,
         pid: result.pid,
       });
     } catch (err) {
+      // The failure path never reaches the channel.onmessage listener, so
+      // no pty_data was queued for this session — publishResult direct is
+      // safe here. (enqueuePublish is also out of scope in this catch.)
       await this.publishResult({
         type: "pty_error",
         sessionId,
@@ -444,10 +451,21 @@ export class DesktopSandboxBridge {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("execute_pty_kill", { sessionId });
     } catch (err) {
-      console.warn(
-        `[DesktopSandboxBridge] pty_kill failed sessionId=${sessionId}:`,
-        err,
-      );
+      const message =
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : JSON.stringify(err) || "unknown pty_kill error";
+      console.error("[desktop-bridge] execute_pty_kill failed:", err);
+      // Surface the failure to the server so the adapter's failTransport()
+      // path can resolve `exited` — otherwise awaiters of handle.exited
+      // would only escape via the 1500ms kill-timeout fallback.
+      await this.publishResult({
+        type: "pty_error",
+        sessionId,
+        message,
+      });
     }
   }
 
