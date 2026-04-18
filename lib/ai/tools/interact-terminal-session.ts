@@ -305,12 +305,16 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         }
       }
 
-      // Emit raw-byte chunks to the UI terminal stream
+      // Emit raw bytes to UI terminal stream - no cleaning during streaming.
+      // The sessionSnapshot in the final result is properly cleaned via xterm
+      // headless, and the UI prefers it once the tool completes.
       let emitQueue: Promise<void> = Promise.resolve();
       const emitTerminal = (bytes: Uint8Array): void => {
         emitQueue = emitQueue
-          .then(async () => {
-            const text = await cleanPtyForUI(new TextDecoder().decode(bytes));
+          .then(() => {
+            // Send raw text - UI will show progress, then switch to clean
+            // sessionSnapshot when tool completes
+            const text = new TextDecoder().decode(bytes);
             writer.write({
               type: "data-terminal",
               id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,

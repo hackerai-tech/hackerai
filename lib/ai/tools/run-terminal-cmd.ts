@@ -32,10 +32,7 @@ import {
   DEFAULT_PTY_ROWS,
   type PtySession,
 } from "./utils/pty-session-manager";
-import {
-  cleanPtyForUI,
-  getSessionSnapshot,
-} from "./utils/pty-output-formatter";
+import { getSessionSnapshot } from "./utils/pty-output-formatter";
 import {
   waitForOutput,
   capOutput,
@@ -249,21 +246,22 @@ If you are generating files:
       // and `session` fields at runtime. This cast is intentional — keep
       // the minimal typed surface while carrying the extra metadata.
       //
-      // `cleanPtyForUI` is async (it awaits xterm-headless parsing). To keep
-      // emitTerminal fire-and-forget from sync onData callbacks while
-      // preserving FIFO order of writer.write, we chain the formatting +
-      // write calls through a per-invocation promise queue.
+      // To keep emitTerminal fire-and-forget from sync onData callbacks while
+      // preserving FIFO order of writer.write, we chain the write calls
+      // through a per-invocation promise queue. Raw bytes are sent during
+      // streaming; sessionSnapshot in the result is cleaned via xterm headless.
       //
       // `activePtySessionId` tracks the session id that should be attached
       // to data-terminal events. For interactive exec the id is only known
       // AFTER create, so the exec branch updates it before emitting anything.
+      // Send raw bytes during streaming - sessionSnapshot in result is cleaned
       let activePtySessionId: string | undefined;
       let emitQueue: Promise<void> = Promise.resolve();
       const emitTerminal = (bytes: Uint8Array): void => {
         const emitSessionId = activePtySessionId;
         emitQueue = emitQueue
-          .then(async () => {
-            const text = await cleanPtyForUI(new TextDecoder().decode(bytes));
+          .then(() => {
+            const text = new TextDecoder().decode(bytes);
             writer.write({
               type: "data-terminal",
               id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
