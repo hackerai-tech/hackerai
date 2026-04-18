@@ -100,7 +100,11 @@ export function extractSidebarContentFromMessage(
 
   message.parts.forEach((part) => {
     // Terminal (including Codex local commands)
-    if (part.type === "tool-run_terminal_cmd" && part.input) {
+    if (
+      (part.type === "tool-run_terminal_cmd" ||
+        part.type === "tool-interact_terminal_session") &&
+      part.input
+    ) {
       const action = part.input.action || "exec";
       const isInteractive =
         isInteractiveShellAction(action) || !!part.input.interactive;

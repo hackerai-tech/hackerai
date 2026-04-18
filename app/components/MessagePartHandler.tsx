@@ -187,7 +187,8 @@ export const MessagePartHandler = memo(function MessagePartHandler({
 
     case "data-terminal":
     case "tool-shell":
-    case "tool-run_terminal_cmd": {
+    case "tool-run_terminal_cmd":
+    case "tool-interact_terminal_session": {
       const effectiveToolCallId =
         (part as any).data?.toolCallId ?? part.toolCallId;
       const precomputedStreamingOutput = effectiveToolCallId

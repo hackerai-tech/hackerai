@@ -121,7 +121,8 @@ export const SharedMessagePartHandler = ({
   if (
     part.type === "data-terminal" ||
     part.type === "tool-shell" ||
-    part.type === "tool-run_terminal_cmd"
+    part.type === "tool-run_terminal_cmd" ||
+    part.type === "tool-interact_terminal_session"
   ) {
     return renderTerminalTool(part, idx, openSidebar);
   }
