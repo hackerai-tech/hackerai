@@ -218,6 +218,9 @@ export function getDisplayTarget(content: SidebarContent): string {
   }
   if (isSidebarTerminal(content)) {
     if (content.shellAction === "send" && content.input) {
+      if (Array.isArray(content.input)) {
+        return content.input.map((t) => formatSendInput(t)).join(" ");
+      }
       return formatSendInput(content.input);
     }
     return content.command;

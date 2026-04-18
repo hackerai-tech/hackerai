@@ -101,11 +101,16 @@ export function extractSidebarContentFromMessage(
       const action = part.input.action || "exec";
       const isInteractive =
         isInteractiveShellAction(action) || !!part.input.interactive;
+      // For action=send, `input` may be a string OR an array of tokens —
+      // join the array for display so the sidebar shows a readable line.
+      const sendDisplay =
+        action === "send"
+          ? Array.isArray(part.input.input)
+            ? part.input.input.join(" ")
+            : part.input.input
+          : "";
       const command =
-        part.input.command ||
-        part.input.brief ||
-        (action === "send" ? part.input.input : "") ||
-        action;
+        part.input.command || part.input.brief || sendDisplay || action;
 
       // Get streaming output from data-terminal parts
       const streamingOutput = terminalDataMap.get(part.toolCallId || "") || "";

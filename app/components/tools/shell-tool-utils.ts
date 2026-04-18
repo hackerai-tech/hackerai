@@ -15,7 +15,7 @@ export interface ShellToolInput {
   command?: string;
   action?: string;
   brief?: string;
-  input?: string;
+  input?: string | string[];
   pid?: number;
   session?: string;
 }
@@ -151,6 +151,9 @@ export function getShellDisplayTarget(
   input: ShellToolInput | undefined,
 ): string {
   if (input?.action === "send" && input.input) {
+    if (Array.isArray(input.input)) {
+      return input.input.map((t) => formatSendInput(t)).join(" ");
+    }
     return formatSendInput(input.input);
   }
   return getShellDisplayCommand(input);

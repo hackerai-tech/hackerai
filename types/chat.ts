@@ -107,8 +107,8 @@ export interface SidebarTerminal {
   session?: string | null;
   toolCallId: string;
   shellAction?: string;
-  /** The raw input text sent via the `send` action. */
-  input?: string;
+  /** The raw input sent via the `send` action — string or array of tokens. */
+  input?: string | string[];
 }
 
 export interface SidebarProxy {

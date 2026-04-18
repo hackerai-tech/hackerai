@@ -32,7 +32,7 @@ import {
   DEFAULT_PTY_ROWS,
   type PtySession,
 } from "./utils/pty-session-manager";
-import { translateInput } from "./utils/pty-keys";
+import { translateInput, translateInputSequence } from "./utils/pty-keys";
 import {
   cleanPtyForUI,
   lastNLinesBytes,
@@ -375,20 +375,17 @@ If you are generating files:
           "Only valid with action=exec. When true, opens a PTY and returns a reusable `session` id instead of blocking until the command exits. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. Follow up with action=send/wait/view/kill using the returned session id. E2B and local (Centrifugo) sandboxes only.",
         ),
       input: z
-        .string()
+        .union([z.string(), z.array(z.string()).min(1).max(100)])
         .optional()
         .describe(
           [
             "ONLY for action=send. Keystrokes to feed to the session's stdin.",
             "",
-            "How input is interpreted:",
-            "- If the WHOLE input matches a tmux-style key name, it's translated to the matching byte sequence: 'Enter' (submit line), 'Tab', 'Esc', 'BSpace', 'C-c' (Ctrl+C), 'C-d' (EOF), 'Up'/'Down'/'Left'/'Right', 'Home'/'End', 'M-x' (Alt+x), 'C-S-A' (Ctrl+Shift+A), etc.",
-            '- Otherwise the input is sent verbatim as UTF-8. A literal backslash-n (e.g. "foo\\n") is NOT converted to a newline — it goes through as two characters.',
+            "Two equivalent forms — pick whichever is clearer:",
             "",
-            "Correct idiom to type a response and submit it:",
-            '  1) action=send, input: "hackerai-test-project"   // types the text',
-            '  2) action=send, input: "Enter"                    // submits the line',
-            "Do NOT try to combine them with '\\n'; use a second send with input='Enter'.",
+            "1) Single string. If the WHOLE string matches a tmux-style key name it's translated: 'Enter', 'Tab', 'Esc', 'BSpace', 'C-c' (Ctrl+C), 'C-d' (EOF), 'Up'/'Down'/'Left'/'Right', 'Home'/'End', 'M-x' (Alt+x), 'C-S-A' (Ctrl+Shift+A), 'F1'..'F12'. Otherwise the string goes through verbatim as UTF-8, with one shortcut: a trailing real newline ('\\n', '\\r', or '\\r\\n') is normalized to Enter so `input: \"my answer\\n\"` submits the line.",
+            "",
+            '2) Array of tokens. Each element is either a key name (as above) or literal text. Bytes are concatenated in order, so you can mix typing and keys in ONE call: `input: ["hackerai-test-project", "Enter"]`, or `input: ["cd /tmp", "Enter", "ls", "Enter"]`, or `input: ["C-c"]` to send Ctrl+C. Up to 100 tokens.',
             "",
             "Raw keystrokes BYPASS command guardrails; never paste untrusted content.",
           ].join("\n"),
@@ -444,7 +441,7 @@ If you are generating files:
         timeout?: number;
         session?: string;
         interactive: boolean;
-        input?: string;
+        input?: string | string[];
         wait_for?: {
           pattern?: string;
           idle_ms: number;
@@ -565,13 +562,18 @@ If you are generating files:
         if (input === undefined) {
           return errorResult("action=send requires `input`.");
         }
+        if (Array.isArray(input) && input.length === 0) {
+          return errorResult("action=send `input` array must be non-empty.");
+        }
         const lookup = getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
         await emitPriorContext(session);
 
-        const bytes = translateInput(input);
+        const bytes = Array.isArray(input)
+          ? translateInputSequence(input)
+          : translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
