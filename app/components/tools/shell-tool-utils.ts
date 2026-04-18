@@ -139,21 +139,19 @@ export function formatSendInput(raw: string): string {
   if (!display) return "Enter";
 
   // Map literal escape sequences to readable names for display
-  const literalEscapes: Array<[RegExp, string]> = [
-    [/\\x03/g, "[Ctrl+C]"],
-    [/\\x04/g, "[Ctrl+D]"],
-    // Arrow keys: handle both \x1b[X and standalone [X (after \x1b was stripped)
-    [/\\x1b\[A|\x1b\[A|\[A/g, "↑"],
-    [/\\x1b\[B|\x1b\[B|\[B/g, "↓"],
-    [/\\x1b\[C|\x1b\[C|\[C/g, "→"],
-    [/\\x1b\[D|\x1b\[D|\[D/g, "←"],
-    [/\\t/g, "[Tab]"],
-    [/\\e|\x1b/g, "[Esc]"],
-  ];
-
-  for (const [pattern, name] of literalEscapes) {
-    display = display.replace(pattern, name);
-  }
+  // Order matters: process hex escapes first, then arrow sequences
+  display = display
+    // Control characters first (before arrow patterns match [C/[D inside them)
+    .replace(/\\x03/g, "⌃C")
+    .replace(/\\x04/g, "⌃D")
+    .replace(/\\t/g, "⇥")
+    // Arrow keys: \x1b[X or actual escape+[X or standalone [X
+    .replace(/\\x1b\[A|\x1b\[A/g, "↑")
+    .replace(/\\x1b\[B|\x1b\[B/g, "↓")
+    .replace(/\\x1b\[C|\x1b\[C/g, "→")
+    .replace(/\\x1b\[D|\x1b\[D/g, "←")
+    // Escape character
+    .replace(/\\e|\x1b/g, "⎋");
 
   // Clean up extra spaces
   display = display.replace(/\s+/g, " ").trim();
