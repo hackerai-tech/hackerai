@@ -7,6 +7,15 @@
  * don't have `@xterm/headless` (test / jsdom).
  */
 
+import { DEFAULT_PTY_COLS } from "./pty-session-manager";
+
+// The headless parser needs to see the SAME column count as the runtime PTY
+// so ANSI line-wrapping/cursor math lines up. Rows + scrollback are
+// intentionally much larger than runtime geometry — they're sizing the
+// in-memory scrollback replay, not the live terminal.
+const PARSER_ROWS = 500;
+const PARSER_SCROLLBACK = 5000;
+
 let TerminalCtor:
   | (new (opts: { cols: number; rows: number; scrollback: number }) => {
       write: (data: string, callback?: () => void) => void;
@@ -42,7 +51,11 @@ function fallbackClean(text: string): string {
 
 export async function cleanPtyForUI(text: string): Promise<string> {
   if (TerminalCtor) {
-    const term = new TerminalCtor({ cols: 120, rows: 500, scrollback: 5000 });
+    const term = new TerminalCtor({
+      cols: DEFAULT_PTY_COLS,
+      rows: PARSER_ROWS,
+      scrollback: PARSER_SCROLLBACK,
+    });
     try {
       // `@xterm/headless` Terminal.write is asynchronous — it enqueues into a
       // WriteBuffer and processes on a later tick. Without the callback, the

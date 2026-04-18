@@ -13,6 +13,7 @@
 
 import type { Sandbox } from "@e2b/code-interpreter";
 import { createE2BPtyHandle, type CreatePtyOptions } from "../e2b-pty-adapter";
+import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "../pty-session-manager";
 
 // ── Mock helpers ─────────────────────────────────────────────────────
 
@@ -98,7 +99,10 @@ function buildMockSandbox(pid = 4242): MockSandboxResult {
   };
 }
 
-const defaultOpts: CreatePtyOptions = { cols: 120, rows: 30 };
+const defaultOpts: CreatePtyOptions = {
+  cols: DEFAULT_PTY_COLS,
+  rows: DEFAULT_PTY_ROWS,
+};
 
 // ── Tests ────────────────────────────────────────────────────────────
 
