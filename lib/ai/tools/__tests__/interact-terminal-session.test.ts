@@ -285,14 +285,16 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     const ctrlC = await sendAndGet("\x03");
     expect(Array.from(ctrlC)).toEqual([0x03]);
 
+    // \n is normalized to \r (carriage return) for terminal Enter
     const enter = await sendAndGet("\n");
-    expect(Array.from(enter)).toEqual([0x0a]);
+    expect(Array.from(enter)).toEqual([0x0d]);
 
     const plain = await sendAndGet("hello");
     expect(new TextDecoder().decode(plain)).toBe("hello");
 
+    // Command with \n gets \n normalized to \r
     const commandWithEnter = await sendAndGet("echo hello\n");
-    expect(new TextDecoder().decode(commandWithEnter)).toBe("echo hello\n");
+    expect(new TextDecoder().decode(commandWithEnter)).toBe("echo hello\r");
   });
 
   test("wait resolves early when wait_for.pattern matches", async () => {

@@ -222,7 +222,7 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         .optional()
         .describe(
           "ONLY for action=send. Raw input to send to terminal stdin. " +
-            "Use standard escape sequences: \\n for Enter, \\t for Tab, " +
+            "Use \\n for Enter (auto-converted to \\r), \\t for Tab, " +
             "\\x03 for Ctrl+C (SIGINT), \\x04 for Ctrl+D (EOF), " +
             "\\x1b[A/B/C/D for Up/Down/Right/Left arrows. " +
             "Example: 'echo hello\\n' sends command and presses Enter. " +
@@ -378,8 +378,10 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
 
         await emitPriorContext(session);
 
-        // Send raw input directly - model uses escape sequences (\n, \x03, etc.)
-        const bytes = new TextEncoder().encode(input);
+        // Normalize newlines: terminals expect \r (carriage return) for Enter, not \n
+        // Also handle \r\n (CRLF) → \r to avoid double-submit
+        const normalized = input.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
+        const bytes = new TextEncoder().encode(normalized);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
