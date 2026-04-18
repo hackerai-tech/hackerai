@@ -2,7 +2,6 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { ToolContext } from "@/types";
 import type { PtySession } from "./utils/pty-session-manager";
-import { translateInput, translateInputSequence } from "./utils/pty-keys";
 import {
   cleanPtyForUI,
   lastNLinesBytes,
@@ -219,18 +218,16 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
             "  - kill: Terminate the session.",
         ),
       input: z
-        .union([z.string(), z.array(z.string()).min(1).max(100)])
+        .string()
         .optional()
         .describe(
-          [
-            "ONLY for action=send. Keystrokes to feed to the session's stdin.",
-            "",
-            'Accepts an array of tokens OR a single string. Each element is either a tmux-style key name OR literal text; bytes are concatenated in order. Batch keystrokes for ONE logical step (command + Enter), then observe output before the next step — e.g. `["echo hello", "Enter"]`, `["username", "Tab", "password", "Enter"]`, `["y", "Enter"]` (confirm prompt), or `["C-c"]`. Do NOT chain independent commands in one call; you need to see each result before deciding the next input.',
-            "",
-            "Recognized key names: 'Enter'/'Return', 'Tab', 'Esc'/'Escape', 'BSpace'/'Backspace', 'Space', 'C-a'..'C-z' (Ctrl+letter; 'C-c'=SIGINT, 'C-d'=EOF), 'Up'/'Down'/'Left'/'Right', 'Home'/'End', 'PageUp'/'PageDown', 'DC' (Delete), 'M-x' (Alt+x), 'C-S-A' (Ctrl+Shift+A), 'F1'..'F12'. Anything else is sent verbatim as UTF-8. A trailing real newline in a string value is auto-translated to Enter.",
-            "",
-            "Raw keystrokes BYPASS command guardrails; never paste untrusted content.",
-          ].join("\n"),
+          "ONLY for action=send. Raw input to send to terminal stdin. " +
+            "Use standard escape sequences: \\n for Enter, \\t for Tab, " +
+            "\\x03 for Ctrl+C (SIGINT), \\x04 for Ctrl+D (EOF), " +
+            "\\x1b[A/B/C/D for Up/Down/Right/Left arrows. " +
+            "Example: 'echo hello\\n' sends command and presses Enter. " +
+            "Send ONE command per call, observe output before the next. " +
+            "Raw input BYPASSES command guardrails; never paste untrusted content.",
         ),
       wait_for: z
         .object({
@@ -275,7 +272,7 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
       }: {
         session: string;
         action: "send" | "wait" | "view" | "kill";
-        input?: string | string[];
+        input?: string;
         wait_for?: {
           pattern?: string;
           idle_ms: number;
@@ -372,11 +369,8 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
 
       // ─── Handler: send ─────────────────────────────────────────────────────
       const handleSend = async (): Promise<ActionResult> => {
-        if (input === undefined) {
-          return errorResult("action=send requires `input`.");
-        }
-        if (Array.isArray(input) && input.length === 0) {
-          return errorResult("action=send `input` array must be non-empty.");
+        if (input === undefined || input.length === 0) {
+          return errorResult("action=send requires non-empty `input`.");
         }
         const lookup = getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
@@ -384,9 +378,8 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
 
         await emitPriorContext(session);
 
-        const bytes = Array.isArray(input)
-          ? translateInputSequence(input)
-          : translateInput(input);
+        // Send raw input directly - model uses escape sequences (\n, \x03, etc.)
+        const bytes = new TextEncoder().encode(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,

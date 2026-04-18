@@ -259,7 +259,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     expect(handle.sendInputCalls.length).toBe(before);
   });
 
-  test("send decodes tmux-style keys: C-c -> \\x03, Enter -> \\r, plain text verbatim", async () => {
+  test("send passes raw escape sequences directly: \\x03 for Ctrl+C, \\n for Enter, plain text verbatim", async () => {
     const e2b = makeFakeE2BSandbox();
     const handle = makeFakeHandle();
 
@@ -268,7 +268,7 @@ describe("interact_terminal_session — PTY action dispatch", () => {
 
     const tool = createInteractTerminalSession(context);
 
-    const sendAndGet = async (input: string | string[]) => {
+    const sendAndGet = async (input: string) => {
       const beforeLen = handle.sendInputCalls.length;
       void runTool(tool, {
         action: "send",
@@ -282,14 +282,17 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       return handle.sendInputCalls[beforeLen];
     };
 
-    const ctrlC = await sendAndGet("C-c");
+    const ctrlC = await sendAndGet("\x03");
     expect(Array.from(ctrlC)).toEqual([0x03]);
 
-    const enter = await sendAndGet("Enter");
-    expect(Array.from(enter)).toEqual([0x0d]);
+    const enter = await sendAndGet("\n");
+    expect(Array.from(enter)).toEqual([0x0a]);
 
     const plain = await sendAndGet("hello");
     expect(new TextDecoder().decode(plain)).toBe("hello");
+
+    const commandWithEnter = await sendAndGet("echo hello\n");
+    expect(new TextDecoder().decode(commandWithEnter)).toBe("echo hello\n");
   });
 
   test("wait resolves early when wait_for.pattern matches", async () => {
