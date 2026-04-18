@@ -330,8 +330,8 @@ If you are generating files:
         .describe(
           "Pick based on intent:\n" +
             "  - exec (DEFAULT): run a NEW command. REQUIRES `command`. Pair with `interactive=true` to open a reusable PTY session.\n" +
-            "  - send: feed keystrokes to an existing session. REQUIRES `session` + `input`. BYPASSES command guardrails — treat `input` as raw bytes.\n" +
-            "  - wait: block until new output arrives from an existing session. REQUIRES `session`.\n" +
+            "  - send: feed input (one or many tokens in a single call) to an existing session and wait for the reply. REQUIRES `session` + `input`. BYPASSES command guardrails — treat `input` as raw bytes.\n" +
+            "  - wait: only if you need MORE output after a send already returned (e.g. long-running step still producing output). REQUIRES `session`.\n" +
             "  - view: snapshot the session's full buffer without consuming it. REQUIRES `session`.\n" +
             "  - kill: terminate an existing session. REQUIRES `session`.\n" +
             'Omitting `action` silently defaults to `exec` — always set it explicitly when continuing a session, otherwise the call will fail with "action=exec requires command".',
@@ -372,7 +372,7 @@ If you are generating files:
         .optional()
         .default(false)
         .describe(
-          "Only valid with action=exec. When true, opens a PTY and returns a reusable `session` id instead of blocking until the command exits. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. Follow up with action=send/wait/view/kill using the returned session id. E2B and local (Centrifugo) sandboxes only.",
+          "Only valid with action=exec. When true, opens a PTY and returns a reusable `session` id instead of blocking until the command exits. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. Continue the session with action=send (drives input AND awaits output) or action=kill; view/wait are only needed for inspection. E2B and local (Centrifugo) sandboxes only.",
         ),
       input: z
         .union([z.string(), z.array(z.string()).min(1).max(100)])
@@ -381,11 +381,9 @@ If you are generating files:
           [
             "ONLY for action=send. Keystrokes to feed to the session's stdin.",
             "",
-            "Two equivalent forms — pick whichever is clearer:",
+            'Accepts an array of tokens OR a single string. Each element is either a tmux-style key name OR literal text; bytes are concatenated in order. Batch keystrokes for ONE logical step (command + Enter), then observe output before the next step — e.g. `["echo hello", "Enter"]`, `["username", "Tab", "password", "Enter"]`, `["y", "Enter"]` (confirm prompt), or `["C-c"]`. Do NOT chain independent commands in one call; you need to see each result before deciding the next input.',
             "",
-            "1) Single string. If the WHOLE string matches a tmux-style key name it's translated: 'Enter', 'Tab', 'Esc', 'BSpace', 'C-c' (Ctrl+C), 'C-d' (EOF), 'Up'/'Down'/'Left'/'Right', 'Home'/'End', 'M-x' (Alt+x), 'C-S-A' (Ctrl+Shift+A), 'F1'..'F12'. Otherwise the string goes through verbatim as UTF-8, with one shortcut: a trailing real newline ('\\n', '\\r', or '\\r\\n') is normalized to Enter so `input: \"my answer\\n\"` submits the line.",
-            "",
-            '2) Array of tokens. Each element is either a key name (as above) or literal text. Bytes are concatenated in order, so you can mix typing and keys in ONE call: `input: ["hackerai-test-project", "Enter"]`, or `input: ["cd /tmp", "Enter", "ls", "Enter"]`, or `input: ["C-c"]` to send Ctrl+C. Up to 100 tokens.',
+            "Recognized key names: 'Enter'/'Return', 'Tab', 'Esc'/'Escape', 'BSpace'/'Backspace', 'Space', 'C-a'..'C-z' (Ctrl+letter; 'C-c'=SIGINT, 'C-d'=EOF), 'Up'/'Down'/'Left'/'Right', 'Home'/'End', 'PageUp'/'PageDown', 'DC' (Delete), 'M-x' (Alt+x), 'C-S-A' (Ctrl+Shift+A), 'F1'..'F12'. Anything else is sent verbatim as UTF-8. A trailing real newline in a string value is auto-translated to Enter.",
             "",
             "Raw keystrokes BYPASS command guardrails; never paste untrusted content.",
           ].join("\n"),
