@@ -73,16 +73,22 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const sessionSnapshot = isInteractive
     ? terminalOutput?.result?.sessionSnapshot
     : undefined;
+  // For interactive actions, prefer sessionSnapshot (cleanly processed via xterm
+  // headless) over raw streamingOutput when both are available (tool complete).
+  const hasResult = state === "output-available";
   const finalOutput = useMemo(
     () =>
-      isInteractive && streamingOutput
-        ? streamingOutput
-        : isInteractive && sessionSnapshot
-          ? sessionSnapshot
-          : getShellOutput(terminalOutput, { streamingOutput, errorText }),
+      isInteractive && sessionSnapshot && hasResult
+        ? sessionSnapshot
+        : isInteractive && streamingOutput
+          ? streamingOutput
+          : isInteractive && sessionSnapshot
+            ? sessionSnapshot
+            : getShellOutput(terminalOutput, { streamingOutput, errorText }),
     [
       isInteractive,
       sessionSnapshot,
+      hasResult,
       terminalOutput,
       streamingOutput,
       errorText,
