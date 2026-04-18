@@ -35,18 +35,32 @@ let TerminalCtor:
 
 try {
   TerminalCtor = require("@xterm/headless").Terminal;
-} catch {
-  // Not available (test env, missing dep) — regex fallback below.
+} catch (err) {
+  console.warn(
+    "[pty-output-formatter] xterm/headless not available, using regex fallback:",
+    err,
+  );
 }
 
-const FALLBACK_ANSI =
-  /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(?:\x07|\x1B\\)|[@-Z\\-_])/g;
+// Comprehensive ANSI/VT100 escape sequence patterns
+const ANSI_PATTERNS = [
+  /\x1B\[[0-9;]*[A-Za-z]/g, // CSI sequences: cursor, colors, clear
+  /\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g, // OSC sequences
+  /\x1B[PX^_][^\x1B]*\x1B\\/g, // DCS, SOS, PM, APC
+  /\x1B[@-Z\\-_]/g, // Single-char escapes (Fe)
+  /\x1B\[[\x30-\x3F]*[\x20-\x2F]*[\x40-\x7E]/g, // Full CSI
+  /\x9B[0-9;]*[A-Za-z]/g, // 8-bit CSI (C1)
+];
 
 function fallbackClean(text: string): string {
-  return text
-    .replace(FALLBACK_ANSI, "")
+  let result = text;
+  for (const pattern of ANSI_PATTERNS) {
+    result = result.replace(pattern, "");
+  }
+  return result
     .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "");
+    .replace(/\r(?!\n)/g, "") // CR without LF (overwrite mode)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ""); // Other control chars
 }
 
 export async function cleanPtyForUI(text: string): Promise<string> {
@@ -72,8 +86,11 @@ export async function cleanPtyForUI(text: string): Promise<string> {
         if (str.trim()) lastNonEmpty = i;
       }
       return lines.slice(0, lastNonEmpty + 1).join("\n");
-    } catch {
-      // Fall through to regex fallback.
+    } catch (err) {
+      console.warn(
+        "[pty-output-formatter] xterm parsing failed, using fallback:",
+        err,
+      );
     } finally {
       term.dispose();
     }
