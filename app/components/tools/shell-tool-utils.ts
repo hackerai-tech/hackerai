@@ -108,28 +108,65 @@ import { RAW_TO_KEY_NAME } from "@/lib/ai/tools/utils/pty-keys";
 
 /**
  * Format raw `send` input for UI display.
+ * - Literal escape sequences (\\n, \\t, \\xNN) → readable names
  * - ANSI escape sequences → tmux key name (e.g. "Up", "F1")
  * - Raw control characters → tmux key name (e.g. "C-d", "C-c")
- * - Plain text ending with `\n` → text without the trailing newline
- * - Already-readable tmux names like "C-c" pass through unchanged
+ * - Plain text ending with newline → text without the trailing newline
  */
 export function formatSendInput(raw: string): string {
-  // Bare newline → display as "Enter"
-  if (raw === "\n" || raw === "\r\n" || raw === "\r") {
+  // Bare literal or actual newline → display as "Enter"
+  if (
+    raw === "\\n" ||
+    raw === "\\r" ||
+    raw === "\\r\\n" ||
+    raw === "\n" ||
+    raw === "\r\n" ||
+    raw === "\r"
+  ) {
     return "Enter";
   }
 
-  const stripped = raw.replace(/\n$/, "");
+  // Strip trailing literal or actual newlines for display
+  let display = raw
+    .replace(/\\r\\n$/, "")
+    .replace(/\\n$/, "")
+    .replace(/\\r$/, "")
+    .replace(/\r\n$/, "")
+    .replace(/\n$/, "")
+    .replace(/\r$/, "");
 
-  // Exact match on known key / escape sequence
-  if (RAW_TO_KEY_NAME[stripped]) {
-    return RAW_TO_KEY_NAME[stripped];
+  // If nothing left after stripping, it was just Enter
+  if (!display) return "Enter";
+
+  // Map literal escape sequences to readable names for display
+  // (Keep the text, just append readable key names at the end if needed)
+  const literalEscapes: Array<[RegExp, string]> = [
+    [/\\x03/g, "Ctrl+C"],
+    [/\\x04/g, "Ctrl+D"],
+    [/\\x1b\[A/g, "↑"],
+    [/\\x1b\[B/g, "↓"],
+    [/\\x1b\[C/g, "→"],
+    [/\\x1b\[D/g, "←"],
+    [/\\t/g, "Tab"],
+    [/\\e/g, "Esc"],
+  ];
+
+  for (const [pattern, name] of literalEscapes) {
+    display = display.replace(pattern, ` [${name}] `);
+  }
+
+  // Clean up extra spaces
+  display = display.replace(/\s+/g, " ").trim();
+
+  // Exact match on known key / escape sequence (actual bytes)
+  if (RAW_TO_KEY_NAME[display]) {
+    return RAW_TO_KEY_NAME[display];
   }
 
   // Multiple non-printable characters → map each
   // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — detecting raw control chars
-  if (stripped.length > 0 && /^[\x00-\x1f\x7f]+$/.test(stripped)) {
-    const names = [...stripped]
+  if (display.length > 0 && /^[\x00-\x1f\x7f]+$/.test(display)) {
+    const names = [...display]
       .map(
         (ch) =>
           RAW_TO_KEY_NAME[ch] ??
@@ -139,8 +176,7 @@ export function formatSendInput(raw: string): string {
     return names;
   }
 
-  // Regular text — strip trailing newline for display
-  return stripped || raw;
+  return display;
 }
 
 // ---------------------------------------------------------------------------
