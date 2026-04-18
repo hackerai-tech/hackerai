@@ -27,7 +27,11 @@ import {
 import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
 import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
-import type { PtySession } from "./utils/pty-session-manager";
+import {
+  DEFAULT_PTY_COLS,
+  DEFAULT_PTY_ROWS,
+  type PtySession,
+} from "./utils/pty-session-manager";
 import { translateInput } from "./utils/pty-keys";
 import {
   cleanPtyForUI,
@@ -84,6 +88,32 @@ export class InvalidWaitPatternError extends Error {
  * but cannot be compiled. We throw BEFORE any timers / listeners are armed
  * so nothing needs to be cleaned up on the error path.
  */
+/** Upper bound on `wait_for.pattern` length to blunt ReDoS via pathological input. */
+const MAX_WAIT_PATTERN_LENGTH = 256;
+
+/**
+ * Compile `policy.pattern` into a RegExp, returning `null` when no pattern is
+ * configured. Throws `InvalidWaitPatternError` synchronously when the pattern
+ * is too long or cannot be compiled — callers should invoke this BEFORE any
+ * side-effects (PTY spawn, timers, listeners) so nothing leaks on the error
+ * path.
+ */
+function compileWaitPattern(policy: WaitPolicy): RegExp | null {
+  if (!policy.pattern) return null;
+  if (policy.pattern.length > MAX_WAIT_PATTERN_LENGTH) {
+    throw new InvalidWaitPatternError(
+      `pattern exceeds ${MAX_WAIT_PATTERN_LENGTH} characters`,
+    );
+  }
+  try {
+    return new RegExp(policy.pattern);
+  } catch (err) {
+    throw new InvalidWaitPatternError(
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 async function waitForOutput(
   session: PtySession,
   policy: WaitPolicy,
@@ -93,16 +123,7 @@ async function waitForOutput(
 ): Promise<Uint8Array> {
   // Compile the regex FIRST so invalid patterns surface as a synchronous
   // throw before any timers or listeners are armed — nothing to clean up.
-  let regex: RegExp | null = null;
-  if (policy.pattern) {
-    try {
-      regex = new RegExp(policy.pattern);
-    } catch (err) {
-      throw new InvalidWaitPatternError(
-        err instanceof Error ? err.message : String(err),
-      );
-    }
-  }
+  const regex = compileWaitPattern(policy);
 
   return new Promise<Uint8Array>((resolve) => {
     let settled = false;
@@ -359,8 +380,6 @@ If you are generating files:
         .describe(
           "ONLY for action=send. Keystrokes to feed to the session's stdin. Supports tmux-style names ('Enter', 'Tab', 'C-c', 'C-d', 'Up', 'Down', 'M-x', 'C-S-A'); everything else is sent verbatim as UTF-8 — include your own '\\n' when you need a newline. Raw keystrokes BYPASS command guardrails; never paste untrusted content.",
         ),
-      cols: z.number().int().optional().default(120),
-      rows: z.number().int().optional().default(30),
       wait_for: z
         .object({
           pattern: z
@@ -404,8 +423,6 @@ If you are generating files:
         session: sessionId,
         interactive,
         input,
-        cols,
-        rows,
         wait_for,
       }: {
         action: "exec" | "wait" | "send" | "kill" | "view";
@@ -415,8 +432,6 @@ If you are generating files:
         session?: string;
         interactive: boolean;
         input?: string;
-        cols: number;
-        rows: number;
         wait_for?: {
           pattern?: string;
           idle_ms: number;
@@ -425,12 +440,37 @@ If you are generating files:
       },
       { toolCallId, abortSignal },
     ) => {
+      // PTY geometry is fixed server-side (DEFAULT_PTY_COLS / DEFAULT_PTY_ROWS).
+      // The model intentionally has no knob for this — a terminal size should
+      // match a real display, not a model-chosen value. UIs that render the
+      // PTY can call `PtyHandle.resize()` directly.
+      const cols = DEFAULT_PTY_COLS;
+      const rows = DEFAULT_PTY_ROWS;
       // Default wait policy shared across interactive action branches.
       const waitPolicy: WaitPolicy = {
         pattern: wait_for?.pattern,
         idle_ms: wait_for?.idle_ms ?? DEFAULT_WAIT_IDLE_MS,
         timeout_ms: wait_for?.timeout_ms ?? DEFAULT_WAIT_TIMEOUT_MS,
       };
+
+      // Validate the regex BEFORE any PTY session is spawned so an invalid
+      // pattern on interactive `exec` cannot leak a session that later errors
+      // out in waitForOutput. `translateWaitError` is defined further down —
+      // inline the InvalidWaitPatternError translation here to avoid forward
+      // references.
+      try {
+        compileWaitPattern(waitPolicy);
+      } catch (err) {
+        if (err instanceof InvalidWaitPatternError) {
+          return {
+            result: {
+              output: "",
+              error: `Invalid wait_for.pattern: ${err.message}`,
+            },
+          };
+        }
+        throw err;
+      }
 
       // Helper: emit a raw-byte chunk to the UI terminal stream.
       // The `data-terminal` part shape in `UIMessageStreamWriter` only types
@@ -443,8 +483,15 @@ If you are generating files:
       // emitTerminal fire-and-forget from sync onData callbacks while
       // preserving FIFO order of writer.write, we chain the formatting +
       // write calls through a per-invocation promise queue.
+      //
+      // `activePtySessionId` tracks the session id that should be attached
+      // to data-terminal events. For send/wait/view/kill it's the sessionId
+      // arg; for interactive `exec` the id is only known AFTER create, so
+      // the exec branch updates it before emitting anything.
+      let activePtySessionId: string | undefined = sessionId;
       let emitQueue: Promise<void> = Promise.resolve();
       const emitTerminal = (bytes: Uint8Array): void => {
+        const emitSessionId = activePtySessionId;
         emitQueue = emitQueue
           .then(async () => {
             const text = await cleanPtyForUI(new TextDecoder().decode(bytes));
@@ -455,7 +502,7 @@ If you are generating files:
                 terminal: text,
                 toolCallId,
                 action,
-                session: sessionId,
+                session: emitSessionId,
               } as unknown as { terminal: string; toolCallId: string },
             });
           })
@@ -502,13 +549,16 @@ If you are generating files:
           : null;
 
       const handleSend = async (): Promise<ActionResult> => {
+        if (input === undefined) {
+          return errorResult("action=send requires `input`.");
+        }
         const lookup = getSessionOrError("send", sessionId);
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
         await emitPriorContext(session);
 
-        const bytes = translateInput(input ?? "");
+        const bytes = translateInput(input);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
@@ -532,6 +582,7 @@ If you are generating files:
             emitTerminal,
             (s) => ptySessionManager.consumeDelta(s),
           );
+          await drainEmitQueue();
           return {
             result: {
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
@@ -565,6 +616,7 @@ If you are generating files:
             emitTerminal,
             (s) => ptySessionManager.consumeDelta(s),
           );
+          await drainEmitQueue();
           const out: Record<string, unknown> = {
             output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
             sessionSnapshot: await getSessionSnapshot(
@@ -589,6 +641,7 @@ If you are generating files:
 
         const snapshot = ptySessionManager.snapshot(session);
         if (snapshot.byteLength > 0) emitTerminal(snapshot);
+        await drainEmitQueue();
         const internal = session as {
           exitedNaturally?: { exitCode: number | null } | null;
         };
@@ -613,6 +666,7 @@ If you are generating files:
 
         const killSnapshot = ptySessionManager.snapshot(session);
         if (killSnapshot.byteLength > 0) emitTerminal(killSnapshot);
+        await drainEmitQueue();
         const exitPromise = session.handle.exited;
         await ptySessionManager.close(chatId, session.sessionId);
         const exit = await exitPromise.catch(() => ({ exitCode: null }));
@@ -703,6 +757,10 @@ If you are generating files:
             },
           });
 
+          // Now that the session exists, tag subsequent data-terminal events
+          // with its sessionId (was undefined at emitTerminal definition time).
+          activePtySessionId = session.sessionId;
+
           // For E2B, the PTY starts a bare shell — fire the command + Enter
           // so the shell actually runs it. For Centrifugo, the command is
           // passed in pty_create and the local runner spawns it directly.
@@ -721,6 +779,7 @@ If you are generating files:
             emitTerminal,
             (s) => ptySessionManager.consumeDelta(s),
           );
+          await drainEmitQueue();
           return {
             result: {
               session: session.sessionId,

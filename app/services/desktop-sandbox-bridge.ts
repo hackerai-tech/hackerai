@@ -8,6 +8,10 @@ import {
   type PtyResizeMessage,
   type PtyKillMessage,
 } from "@/lib/centrifugo/types";
+import {
+  DEFAULT_PTY_COLS,
+  DEFAULT_PTY_ROWS,
+} from "@/lib/ai/tools/utils/pty-session-manager";
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -370,8 +374,8 @@ export class DesktopSandboxBridge {
       const result = (await invoke("execute_pty_create", {
         sessionId,
         command,
-        cols: cols ?? 120,
-        rows: rows ?? 30,
+        cols: cols ?? DEFAULT_PTY_COLS,
+        rows: rows ?? DEFAULT_PTY_ROWS,
         cwd,
         env,
         onData: channel,

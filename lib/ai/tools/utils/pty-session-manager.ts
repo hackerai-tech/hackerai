@@ -16,6 +16,15 @@ export const SESSION_IDLE_TIMEOUT_MS = 10 * 60_000;
 export const SESSION_MAX_LIFETIME_MS = 60 * 60_000;
 export const MAX_BUFFER_BYTES = 256 * 1024;
 
+/**
+ * Fixed PTY geometry. We DO NOT let the AI model pick these — a terminal
+ * size should match a real display, not a model-chosen value. UIs that
+ * render the PTY elsewhere (xterm.js in the sidebar, a real TTY on the
+ * Tauri side) can still call `PtyHandle.resize()` directly.
+ */
+export const DEFAULT_PTY_COLS = 120;
+export const DEFAULT_PTY_ROWS = 30;
+
 const CLOSE_EXIT_FALLBACK_MS = 2_000;
 
 export interface PtySession {

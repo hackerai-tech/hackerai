@@ -42,8 +42,8 @@ function fallbackClean(text: string): string {
 
 export async function cleanPtyForUI(text: string): Promise<string> {
   if (TerminalCtor) {
+    const term = new TerminalCtor({ cols: 120, rows: 500, scrollback: 5000 });
     try {
-      const term = new TerminalCtor({ cols: 120, rows: 500, scrollback: 5000 });
       // `@xterm/headless` Terminal.write is asynchronous — it enqueues into a
       // WriteBuffer and processes on a later tick. Without the callback, the
       // buffer we read below is still empty. Await parsing completion before
@@ -58,10 +58,11 @@ export async function cleanPtyForUI(text: string): Promise<string> {
         lines.push(str);
         if (str.trim()) lastNonEmpty = i;
       }
-      term.dispose();
       return lines.slice(0, lastNonEmpty + 1).join("\n");
     } catch {
       // Fall through to regex fallback.
+    } finally {
+      term.dispose();
     }
   }
   return fallbackClean(text);

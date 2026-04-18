@@ -102,21 +102,44 @@ type PtyIncomingMsg = PtyReadyMsg | PtyDataMsg | PtyExitMsg | PtyErrorMsg;
 
 const LOG_PREFIX = "[centrifugo-pty]";
 
-const PTY_INCOMING_TYPES = new Set([
-  "pty_ready",
-  "pty_data",
-  "pty_exit",
-  "pty_error",
-]);
-
 function parsePtyMessage(data: unknown): PtyIncomingMsg | null {
   if (typeof data !== "object" || data === null) return null;
   const msg = data as Record<string, unknown>;
-  if (typeof msg.type !== "string" || !PTY_INCOMING_TYPES.has(msg.type)) {
-    return null;
-  }
+  if (typeof msg.type !== "string") return null;
   if (typeof msg.sessionId !== "string") return null;
-  return data as PtyIncomingMsg;
+
+  switch (msg.type) {
+    case "pty_ready":
+      if (typeof msg.pid !== "number") return null;
+      return {
+        type: "pty_ready",
+        sessionId: msg.sessionId,
+        pid: msg.pid,
+      };
+    case "pty_data":
+      if (typeof msg.data !== "string") return null;
+      return {
+        type: "pty_data",
+        sessionId: msg.sessionId,
+        data: msg.data,
+      };
+    case "pty_exit":
+      if (typeof msg.exitCode !== "number") return null;
+      return {
+        type: "pty_exit",
+        sessionId: msg.sessionId,
+        exitCode: msg.exitCode,
+      };
+    case "pty_error":
+      if (typeof msg.message !== "string") return null;
+      return {
+        type: "pty_error",
+        sessionId: msg.sessionId,
+        message: msg.message,
+      };
+    default:
+      return null;
+  }
 }
 
 // ── Public factory ─────────────────────────────────────────────────────
@@ -267,6 +290,22 @@ export async function createCentrifugoPtyHandle(
       }
     }, TIMEOUT_MS);
 
+    // Transport failure handler: pre-ready we reject the create promise;
+    // post-ready we resolve `exited` with a null exitCode so awaiters of
+    // handle.exited don't hang forever on a dropped subscription.
+    const failTransport = (message: string) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeoutId);
+        cleanup();
+        reject(new Error(`${LOG_PREFIX} ${message}`));
+      } else {
+        console.error(`${LOG_PREFIX} transport failed after ready: ${message}`);
+        resolveExitedOnce({ exitCode: null });
+        cleanup();
+      }
+    };
+
     subscription = client.newSubscription(channel);
 
     subscription.on("publication", (ctx) => {
@@ -319,16 +358,7 @@ export async function createCentrifugoPtyHandle(
     });
 
     subscription.on("error", (ctx) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timeoutId);
-        cleanup();
-        reject(
-          new Error(
-            `${LOG_PREFIX} subscription error: ${ctx.error?.message ?? "unknown"}`,
-          ),
-        );
-      }
+      failTransport(`subscription error: ${ctx.error?.message ?? "unknown"}`);
     });
 
     subscription.on("subscribed", () => {
@@ -345,16 +375,9 @@ export async function createCentrifugoPtyHandle(
       };
 
       subscription!.publish(createPayload).catch((err: unknown) => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeoutId);
-          cleanup();
-          reject(
-            new Error(
-              `${LOG_PREFIX} failed to publish pty_create: ${err instanceof Error ? err.message : String(err)}`,
-            ),
-          );
-        }
+        failTransport(
+          `failed to publish pty_create: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
     });
 
@@ -362,16 +385,7 @@ export async function createCentrifugoPtyHandle(
     client.connect();
 
     client.on("error", (ctx) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timeoutId);
-        cleanup();
-        reject(
-          new Error(
-            `${LOG_PREFIX} client error: ${ctx.error?.message ?? "unknown"}`,
-          ),
-        );
-      }
+      failTransport(`client error: ${ctx.error?.message ?? "unknown"}`);
     });
   });
 }
