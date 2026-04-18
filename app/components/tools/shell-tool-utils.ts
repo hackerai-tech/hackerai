@@ -139,20 +139,20 @@ export function formatSendInput(raw: string): string {
   if (!display) return "Enter";
 
   // Map literal escape sequences to readable names for display
-  // (Keep the text, just append readable key names at the end if needed)
   const literalEscapes: Array<[RegExp, string]> = [
-    [/\\x03/g, "Ctrl+C"],
-    [/\\x04/g, "Ctrl+D"],
-    [/\\x1b\[A/g, "↑"],
-    [/\\x1b\[B/g, "↓"],
-    [/\\x1b\[C/g, "→"],
-    [/\\x1b\[D/g, "←"],
-    [/\\t/g, "Tab"],
-    [/\\e/g, "Esc"],
+    [/\\x03/g, "[Ctrl+C]"],
+    [/\\x04/g, "[Ctrl+D]"],
+    // Arrow keys: handle both \x1b[X and standalone [X (after \x1b was stripped)
+    [/\\x1b\[A|\x1b\[A|\[A/g, "↑"],
+    [/\\x1b\[B|\x1b\[B|\[B/g, "↓"],
+    [/\\x1b\[C|\x1b\[C|\[C/g, "→"],
+    [/\\x1b\[D|\x1b\[D|\[D/g, "←"],
+    [/\\t/g, "[Tab]"],
+    [/\\e|\x1b/g, "[Esc]"],
   ];
 
   for (const [pattern, name] of literalEscapes) {
-    display = display.replace(pattern, ` [${name}] `);
+    display = display.replace(pattern, name);
   }
 
   // Clean up extra spaces
