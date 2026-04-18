@@ -465,21 +465,29 @@ If you are generating files:
 
       // Validate the regex BEFORE any PTY session is spawned so an invalid
       // pattern on interactive `exec` cannot leak a session that later errors
-      // out in waitForOutput. `translateWaitError` is defined further down —
-      // inline the InvalidWaitPatternError translation here to avoid forward
-      // references.
-      try {
-        compileWaitPattern(waitPolicy);
-      } catch (err) {
-        if (err instanceof InvalidWaitPatternError) {
-          return {
-            result: {
-              output: "",
-              error: `Invalid wait_for.pattern: ${err.message}`,
-            },
-          };
+      // out in waitForOutput. Skip for actions that never consume wait_for
+      // (view/kill, and non-interactive exec) so a stray pattern on those
+      // calls doesn't get falsely rejected. `translateWaitError` is defined
+      // further down — inline the InvalidWaitPatternError translation here
+      // to avoid forward references.
+      const consumesWaitFor =
+        action === "send" ||
+        action === "wait" ||
+        (action === "exec" && interactive);
+      if (consumesWaitFor) {
+        try {
+          compileWaitPattern(waitPolicy);
+        } catch (err) {
+          if (err instanceof InvalidWaitPatternError) {
+            return {
+              result: {
+                output: "",
+                error: `Invalid wait_for.pattern: ${err.message}`,
+              },
+            };
+          }
+          throw err;
         }
-        throw err;
       }
 
       // Helper: emit a raw-byte chunk to the UI terminal stream.
@@ -745,6 +753,23 @@ If you are generating files:
                   "Interactive PTY requires E2B or local (Centrifugo) sandbox.",
               },
             };
+          }
+
+          // If Caido proxy env vars are configured, make sure Caido is up
+          // before spawning the PTY — otherwise the session gets env vars
+          // pointing at a proxy that isn't running. The non-interactive
+          // branch does this too (see executeCommand); interactive needs
+          // the same guarantee.
+          if (caidoEnvVars) {
+            try {
+              await ensureCaido(context);
+            } catch (e) {
+              console.warn(
+                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
+                e instanceof Error ? e.message : e,
+              );
+              caidoEnvVars = undefined;
+            }
           }
 
           // Factory is invoked BY `ptySessionManager.create` — this ensures

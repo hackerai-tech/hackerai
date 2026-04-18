@@ -37,12 +37,16 @@ export const SPECIAL_KEYS: Record<string, string> = {
   "C-w": "\x17",
   "C-x": "\x18",
   "C-y": "\x19",
-  // Named keys
-  Enter: "\r",
+  // Named keys — aliases come FIRST so the canonical name wins the reverse
+  // lookup in RAW_TO_KEY_NAME (last-one-wins; see comment on that map).
+  Return: "\r", // alias
+  Enter: "\r", // canonical
   Tab: "\t",
-  Escape: "\x1b",
+  Esc: "\x1b", // alias (also what the tool describe advertises)
+  Escape: "\x1b", // canonical
   Space: " ",
-  BSpace: "\x7f",
+  Backspace: "\x7f", // alias
+  BSpace: "\x7f", // canonical (tmux name)
   // Arrow keys
   Up: "\x1b[A",
   Down: "\x1b[B",

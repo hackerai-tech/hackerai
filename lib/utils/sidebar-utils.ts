@@ -5,7 +5,10 @@ import {
   SidebarNotes,
   WebSearchResult,
 } from "@/types/chat";
-import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
+import {
+  formatSendInput,
+  isInteractiveShellAction,
+} from "@/app/components/tools/shell-tool-utils";
 
 /** Parse a unified git diff into original and modified content for diff view. */
 function parseGitDiff(diff: string): {
@@ -101,13 +104,16 @@ export function extractSidebarContentFromMessage(
       const action = part.input.action || "exec";
       const isInteractive =
         isInteractiveShellAction(action) || !!part.input.interactive;
-      // For action=send, `input` may be a string OR an array of tokens —
-      // join the array for display so the sidebar shows a readable line.
+      // For action=send, format each token through formatSendInput (same
+      // helper the main UI uses) so raw control bytes / escape sequences
+      // render as readable tmux names and trailing newlines collapse to
+      // "Enter", never landing verbatim in the sidebar label.
+      const sendInput = part.input.input;
       const sendDisplay =
-        action === "send"
-          ? Array.isArray(part.input.input)
-            ? part.input.input.join(" ")
-            : part.input.input
+        action === "send" && sendInput
+          ? Array.isArray(sendInput)
+            ? sendInput.map((t) => formatSendInput(t)).join(" ")
+            : formatSendInput(sendInput)
           : "";
       const command =
         part.input.command || part.input.brief || sendDisplay || action;
