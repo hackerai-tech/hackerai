@@ -378,7 +378,20 @@ If you are generating files:
         .string()
         .optional()
         .describe(
-          "ONLY for action=send. Keystrokes to feed to the session's stdin. Supports tmux-style names ('Enter', 'Tab', 'C-c', 'C-d', 'Up', 'Down', 'M-x', 'C-S-A'); everything else is sent verbatim as UTF-8 — include your own '\\n' when you need a newline. Raw keystrokes BYPASS command guardrails; never paste untrusted content.",
+          [
+            "ONLY for action=send. Keystrokes to feed to the session's stdin.",
+            "",
+            "How input is interpreted:",
+            "- If the WHOLE input matches a tmux-style key name, it's translated to the matching byte sequence: 'Enter' (submit line), 'Tab', 'Esc', 'BSpace', 'C-c' (Ctrl+C), 'C-d' (EOF), 'Up'/'Down'/'Left'/'Right', 'Home'/'End', 'M-x' (Alt+x), 'C-S-A' (Ctrl+Shift+A), etc.",
+            '- Otherwise the input is sent verbatim as UTF-8. A literal backslash-n (e.g. "foo\\n") is NOT converted to a newline — it goes through as two characters.',
+            "",
+            "Correct idiom to type a response and submit it:",
+            '  1) action=send, input: "hackerai-test-project"   // types the text',
+            '  2) action=send, input: "Enter"                    // submits the line',
+            "Do NOT try to combine them with '\\n'; use a second send with input='Enter'.",
+            "",
+            "Raw keystrokes BYPASS command guardrails; never paste untrusted content.",
+          ].join("\n"),
         ),
       wait_for: z
         .object({
