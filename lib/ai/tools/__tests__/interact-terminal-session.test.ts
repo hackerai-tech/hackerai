@@ -282,19 +282,28 @@ describe("interact_terminal_session — PTY action dispatch", () => {
       return handle.sendInputCalls[beforeLen];
     };
 
-    const ctrlC = await sendAndGet("\x03");
+    // Model sends literal \x03 string, parsed to Ctrl+C byte
+    const ctrlC = await sendAndGet("\\x03");
     expect(Array.from(ctrlC)).toEqual([0x03]);
 
-    // \n is normalized to \r (carriage return) for terminal Enter
-    const enter = await sendAndGet("\n");
+    // Literal \n parsed to \r (Enter for terminal)
+    const enter = await sendAndGet("\\n");
     expect(Array.from(enter)).toEqual([0x0d]);
 
     const plain = await sendAndGet("hello");
     expect(new TextDecoder().decode(plain)).toBe("hello");
 
-    // Command with \n gets \n normalized to \r
-    const commandWithEnter = await sendAndGet("echo hello\n");
+    // Command with literal \n
+    const commandWithEnter = await sendAndGet("echo hello\\n");
     expect(new TextDecoder().decode(commandWithEnter)).toBe("echo hello\r");
+
+    // Literal \t parsed to Tab
+    const tab = await sendAndGet("\\t");
+    expect(Array.from(tab)).toEqual([0x09]);
+
+    // Literal \x03 parsed to Ctrl+C
+    const ctrlCHex = await sendAndGet("\\x03");
+    expect(Array.from(ctrlCHex)).toEqual([0x03]);
   });
 
   test("wait resolves early when wait_for.pattern matches", async () => {

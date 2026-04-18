@@ -378,10 +378,23 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
 
         await emitPriorContext(session);
 
-        // Normalize newlines: terminals expect \r (carriage return) for Enter, not \n
-        // Also handle \r\n (CRLF) → \r to avoid double-submit
-        const normalized = input.replace(/\r\n/g, "\r").replace(/\n/g, "\r");
-        const bytes = new TextEncoder().encode(normalized);
+        // Parse escape sequences: model sends raw strings like "echo\n" or "\x03"
+        // Convert literal escape sequences to actual bytes
+        const parsed = input
+          // Handle \xNN hex escapes (e.g., \x03 for Ctrl+C, \x1b for Escape)
+          .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
+            String.fromCharCode(parseInt(hex, 16)),
+          )
+          // Handle common escape sequences
+          .replace(/\\n/g, "\r") // \n → CR (Enter for terminal)
+          .replace(/\\r/g, "\r") // \r → CR
+          .replace(/\\t/g, "\t") // \t → Tab
+          .replace(/\\e/g, "\x1b") // \e → Escape
+          .replace(/\\\\/g, "\\") // \\ → literal backslash
+          // Also normalize actual newlines if present
+          .replace(/\r\n/g, "\r")
+          .replace(/\n/g, "\r");
+        const bytes = new TextEncoder().encode(parsed);
         if (bytes.byteLength > MAX_INPUT_BYTES_PER_SEND) {
           return errorResult(
             `Input exceeds MAX_INPUT_BYTES_PER_SEND=${MAX_INPUT_BYTES_PER_SEND} (got ${bytes.byteLength}).`,
