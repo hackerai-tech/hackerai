@@ -399,6 +399,9 @@ describe("pty_data publish ordering", () => {
 
     await new Promise((r) => setTimeout(r, 400));
 
-    expect(publishOrder).toEqual(chunks);
+    // With debounce buffering, rapid chunks are batched into fewer publishes.
+    // Verify the concatenated content preserves order (FIFO).
+    const receivedContent = publishOrder.join("");
+    expect(receivedContent).toEqual(chunks.join(""));
   });
 });

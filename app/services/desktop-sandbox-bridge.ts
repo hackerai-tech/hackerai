@@ -336,6 +336,24 @@ export class DesktopSandboxBridge {
         );
       };
 
+      // Debounce buffer for PTY output - accumulate chunks before publishing
+      // to reduce RPC overhead from node-pty's per-character callbacks.
+      const PTY_DEBOUNCE_MS = 8;
+      let ptyBuffer = "";
+      let ptyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushPtyBuffer = () => {
+        if (ptyBuffer) {
+          enqueuePublish({
+            type: "pty_data",
+            sessionId,
+            data: ptyBuffer,
+          });
+          ptyBuffer = "";
+        }
+        ptyDebounceTimer = null;
+      };
+
       channel.onmessage = (chunk: string) => {
         // The Tauri PTY backend sends raw output strings and a final JSON
         // exit sentinel: {"type":"exit","exitCode":N,"sessionId":"..."}.
@@ -353,6 +371,11 @@ export class DesktopSandboxBridge {
             parsed.sessionId === sessionId &&
             typeof parsed.exitCode === "number"
           ) {
+            // Flush any buffered data before exit
+            if (ptyDebounceTimer) {
+              clearTimeout(ptyDebounceTimer);
+              flushPtyBuffer();
+            }
             enqueuePublish({
               type: "pty_exit",
               sessionId,
@@ -364,11 +387,11 @@ export class DesktopSandboxBridge {
           // Not JSON — regular PTY output
         }
 
-        enqueuePublish({
-          type: "pty_data",
-          sessionId,
-          data: chunk,
-        });
+        // Accumulate chunks and debounce publish
+        ptyBuffer += chunk;
+        if (!ptyDebounceTimer) {
+          ptyDebounceTimer = setTimeout(flushPtyBuffer, PTY_DEBOUNCE_MS);
+        }
       };
 
       const result = (await invoke("execute_pty_create", {
