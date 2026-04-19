@@ -361,17 +361,19 @@ describe("interact_terminal_session — PTY action dispatch", () => {
     const view1 = (await runTool(tool, {
       action: "view",
       session: sessionId,
-    })) as { result: { output: string } };
+    })) as { result: { output: string; sessionSnapshot: string } };
 
-    // subsequent wait should still see same bytes (view did not consume them)
+    // subsequent wait should still see same bytes in sessionSnapshot (view did not consume them)
+    // Note: wait.output only contains NEW delta since emitPriorContext consumes prior bytes
     const waitRes = (await runTool(tool, {
       action: "wait",
       session: sessionId,
       wait_for: { idle_ms: 5, timeout_ms: 200 },
-    })) as { result: { output: string } };
+    })) as { result: { output: string; sessionSnapshot: string } };
 
     expect(view1.result.output).toContain("hello");
-    expect(waitRes.result.output).toContain("hello");
+    // wait.sessionSnapshot contains full state, output only has new delta
+    expect(waitRes.result.sessionSnapshot).toContain("hello");
   });
 
   test("kill closes the session and returns exitCode", async () => {

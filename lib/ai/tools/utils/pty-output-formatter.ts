@@ -17,7 +17,12 @@ const PARSER_ROWS = 500;
 const PARSER_SCROLLBACK = 5000;
 
 let TerminalCtor:
-  | (new (opts: { cols: number; rows: number; scrollback: number }) => {
+  | (new (opts: {
+      cols: number;
+      rows: number;
+      scrollback: number;
+      allowProposedApi?: boolean;
+    }) => {
       write: (data: string, callback?: () => void) => void;
       buffer: {
         active: {
@@ -69,6 +74,7 @@ export async function cleanPtyForUI(text: string): Promise<string> {
       cols: DEFAULT_PTY_COLS,
       rows: PARSER_ROWS,
       scrollback: PARSER_SCROLLBACK,
+      allowProposedApi: true,
     });
     try {
       // `@xterm/headless` Terminal.write is asynchronous — it enqueues into a
@@ -119,4 +125,15 @@ export async function getSessionSnapshot(
 ): Promise<string> {
   const bytes = mgr.snapshot(session);
   return cleanPtyForUI(new TextDecoder().decode(bytes));
+}
+
+/** Returns both raw and cleaned snapshots for persistence. */
+export async function getSessionSnapshots(
+  mgr: SnapshotSource,
+  session: { sessionId: string; chatId: string },
+): Promise<{ raw: string; cleaned: string }> {
+  const bytes = mgr.snapshot(session);
+  const raw = new TextDecoder().decode(bytes);
+  const cleaned = await cleanPtyForUI(raw);
+  return { raw, cleaned };
 }

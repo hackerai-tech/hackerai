@@ -144,16 +144,27 @@ export function extractSidebarContentFromMessage(
         }
       }
 
-      // For interactive actions, prefer streaming output (live snapshot) or
-      // the persisted sessionSnapshot (DB reload) over the stripped delta.
+      // sessionSnapshot is cleaned via xterm headless - prefer it when available.
+      // For streaming, show live output for responsiveness.
       const sessionSnapshot = result?.sessionSnapshot || "";
-      const finalOutput = isInteractive
-        ? streamingOutput ||
-          sessionSnapshot ||
-          output ||
-          part.output?.output ||
-          ""
-        : output || streamingOutput || part.output?.output || "";
+      const finalOutput =
+        // Prefer cleaned sessionSnapshot when available (works for all action types)
+        sessionSnapshot ||
+        // For interactive actions, prefer live streaming output
+        (isInteractive ? streamingOutput : null) ||
+        // Fallback chain
+        output ||
+        streamingOutput ||
+        part.output?.output ||
+        "";
+
+      // Prefer rawSnapshot when tool is complete, streaming during execution
+      const rawSnapshot = result?.rawSnapshot || "";
+      const isComplete = part.state === "output-available";
+      const effectiveRawBytes =
+        isComplete && rawSnapshot
+          ? rawSnapshot
+          : streamingOutput || rawSnapshot || undefined;
 
       contentList.push({
         command,
@@ -162,6 +173,7 @@ export function extractSidebarContentFromMessage(
           part.state === "input-available" || part.state === "running",
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
+        rawBytes: effectiveRawBytes,
         ...(isInteractive
           ? {
               shellAction: action,
@@ -258,6 +270,14 @@ export function extractSidebarContentFromMessage(
 
       const finalOutput = directOutput || streamingOutput || "";
 
+      // Prefer rawSnapshot when tool is complete, streaming during execution
+      const rawSnapshot = part.output?.rawSnapshot || "";
+      const isComplete = part.state === "output-available";
+      const effectiveRawBytes =
+        isComplete && rawSnapshot
+          ? rawSnapshot
+          : streamingOutput || rawSnapshot || undefined;
+
       contentList.push({
         command,
         output: finalOutput,
@@ -269,6 +289,7 @@ export function extractSidebarContentFromMessage(
         pid: part.input.pid ?? part.output?.pid,
         session: part.input.session ?? part.output?.session,
         input: part.input.input,
+        rawBytes: effectiveRawBytes,
       });
     }
 

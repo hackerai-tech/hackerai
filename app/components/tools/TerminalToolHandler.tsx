@@ -63,32 +63,32 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
 
   // Memoize final output computation.
-  // For interactive actions (send/wait/view/kill) the streaming output
-  // contains the full session snapshot replayed via data-terminal events,
-  // so prefer it over the tool result's stripped delta.
+  // sessionSnapshot is cleaned via xterm headless - use it when available.
+  // During streaming, show raw streamingOutput for responsiveness.
+  // On completion, prefer the cleaned sessionSnapshot.
   const shellAction = isShellTool
     ? (input as { action?: string })?.action
     : undefined;
   const isInteractive = isInteractiveShellAction(shellAction);
-  const sessionSnapshot = isInteractive
-    ? terminalOutput?.result?.sessionSnapshot
-    : undefined;
-  // For interactive actions, prefer sessionSnapshot (cleanly processed via xterm
-  // headless) over raw streamingOutput when both are available (tool complete).
+  // Extract sessionSnapshot regardless of action type - if it exists, it's clean
+  const sessionSnapshot = terminalOutput?.result?.sessionSnapshot;
   const hasResult = state === "output-available";
   const finalOutput = useMemo(
     () =>
-      isInteractive && sessionSnapshot && hasResult
+      // On completion, prefer cleaned sessionSnapshot if available
+      sessionSnapshot && hasResult
         ? sessionSnapshot
-        : isInteractive && streamingOutput
+        : // During streaming for interactive sessions, show live output
+          isInteractive && streamingOutput
           ? streamingOutput
-          : isInteractive && sessionSnapshot
+          : // Fallback to sessionSnapshot if no streaming
+            sessionSnapshot
             ? sessionSnapshot
             : getShellOutput(terminalOutput, { streamingOutput, errorText }),
     [
-      isInteractive,
       sessionSnapshot,
       hasResult,
+      isInteractive,
       terminalOutput,
       streamingOutput,
       errorText,
@@ -118,6 +118,13 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       isActive,
     });
 
+  // Prefer rawSnapshot when tool is complete (has final state), streaming during execution
+  const rawSnapshot = terminalOutput?.result?.rawSnapshot;
+  const effectiveRawBytes =
+    hasResult && rawSnapshot
+      ? rawSnapshot
+      : streamingOutput || rawSnapshot || undefined;
+
   const sidebarContent = useMemo((): SidebarTerminal | null => {
     if (!displayCommand && !isInteractiveAction) return null;
     return {
@@ -130,6 +137,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       pid: shellPid,
       session: shellSession,
       input: (input as { input?: string })?.input,
+      rawBytes: effectiveRawBytes,
     };
   }, [
     displayCommand,
@@ -143,6 +151,7 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
     shellPid,
     shellSession,
     input,
+    effectiveRawBytes,
   ]);
 
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({

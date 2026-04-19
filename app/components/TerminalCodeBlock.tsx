@@ -1,10 +1,16 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import { Terminal } from "lucide-react";
 import { codeToHtml } from "shiki";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { isInteractiveShellAction } from "@/app/components/tools/shell-tool-utils";
+
+const XtermRenderer = dynamic(
+  () => import("./XtermRenderer").then((m) => m.XtermRenderer),
+  { ssr: false },
+);
 
 interface TerminalCodeBlockProps {
   command: string;
@@ -15,6 +21,7 @@ interface TerminalCodeBlockProps {
   variant?: "default" | "sidebar";
   wrap?: boolean;
   shellAction?: string;
+  rawBytes?: string; // Raw PTY bytes for xterm rendering
 }
 
 interface AnsiCodeBlockProps {
@@ -203,6 +210,7 @@ export const TerminalCodeBlock = ({
   variant = "default",
   wrap = false,
   shellAction,
+  rawBytes,
 }: TerminalCodeBlockProps) => {
   const [isWrapped, setIsWrapped] = useState(wrap);
 
@@ -277,6 +285,9 @@ export const TerminalCodeBlock = ({
   }
 
   // For sidebar variant, use file block style (no floating buttons since header handles them)
+  // Use XtermRenderer when rawBytes is available (interactive exec or session actions)
+  const useXterm = rawBytes !== undefined;
+
   return (
     <div className="shiki not-prose relative h-full w-full bg-transparent overflow-hidden">
       {/* Terminal content - takes full available space */}
@@ -287,6 +298,12 @@ export const TerminalCodeBlock = ({
               {isInteractiveAction ? "Waiting for output" : "Executing command"}
             </Shimmer>
           </div>
+        ) : useXterm ? (
+          <XtermRenderer
+            bytes={rawBytes}
+            isStreaming={status === "streaming" || isExecuting}
+            className="h-full w-full"
+          />
         ) : (
           <AnsiCodeBlock
             code={terminalContent}

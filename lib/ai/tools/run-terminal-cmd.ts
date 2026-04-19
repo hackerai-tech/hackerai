@@ -32,7 +32,7 @@ import {
   DEFAULT_PTY_ROWS,
   type PtySession,
 } from "./utils/pty-session-manager";
-import { getSessionSnapshot } from "./utils/pty-output-formatter";
+import { getSessionSnapshots } from "./utils/pty-output-formatter";
 import {
   waitForOutput,
   capOutput,
@@ -382,15 +382,17 @@ If you are generating files:
             (s) => ptySessionManager.consumeDelta(s),
           );
           await drainEmitQueue();
+          const snapshots = await getSessionSnapshots(
+            ptySessionManager,
+            session,
+          );
           return {
             result: {
               session: session.sessionId,
               pid: session.pid,
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-              sessionSnapshot: await getSessionSnapshot(
-                ptySessionManager,
-                session,
-              ),
+              sessionSnapshot: snapshots.cleaned,
+              rawSnapshot: snapshots.raw,
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             },
           };

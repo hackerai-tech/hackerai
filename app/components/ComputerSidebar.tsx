@@ -415,6 +415,7 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           variant="sidebar"
                           wrap={isWrapped}
                           shellAction={resolvedTerminal.shellAction}
+                          rawBytes={resolvedTerminal.rawBytes}
                         />
                       )}
                       {isProxy && resolvedProxy && (

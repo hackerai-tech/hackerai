@@ -4,8 +4,7 @@ import type { ToolContext } from "@/types";
 import type { PtySession } from "./utils/pty-session-manager";
 import {
   cleanPtyForUI,
-  lastNLinesBytes,
-  getSessionSnapshot,
+  getSessionSnapshots,
 } from "./utils/pty-output-formatter";
 
 // ─── Interactive PTY constants ──────────────────────────────────────────
@@ -358,12 +357,12 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         return { session: found };
       };
 
-      const emitPriorContext = async (session: PtySession) => {
-        const prior = await lastNLinesBytes(
-          ptySessionManager.snapshot(session),
-          100,
-        );
+      const emitPriorContext = (session: PtySession) => {
+        // Send raw snapshot bytes to preserve ANSI colors for xterm.js rendering
+        const prior = ptySessionManager.snapshot(session);
         if (prior.byteLength > 0) emitTerminal(prior);
+        // Mark snapshot as consumed so subsequent consumeDelta calls don't repeat it
+        ptySessionManager.consumeDelta(session);
       };
 
       const translateWaitError = (err: unknown): ActionResult | null =>
@@ -380,7 +379,7 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
-        await emitPriorContext(session);
+        emitPriorContext(session);
 
         // Parse escape sequences: model sends raw strings like "echo\n" or "\x03"
         // Convert literal escape sequences to actual bytes
@@ -423,13 +422,15 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
             (s) => ptySessionManager.consumeDelta(s),
           );
           await drainEmitQueue();
+          const snapshots = await getSessionSnapshots(
+            ptySessionManager,
+            session,
+          );
           return {
             result: {
               output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-              sessionSnapshot: await getSessionSnapshot(
-                ptySessionManager,
-                session,
-              ),
+              sessionSnapshot: snapshots.cleaned,
+              rawSnapshot: snapshots.raw,
               ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             },
           };
@@ -446,7 +447,7 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         if ("error" in lookup) return lookup.error;
         const { session } = lookup;
 
-        await emitPriorContext(session);
+        emitPriorContext(session);
 
         const alreadyExited = await peekExited(session);
         try {
@@ -458,12 +459,14 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
             (s) => ptySessionManager.consumeDelta(s),
           );
           await drainEmitQueue();
+          const snapshots = await getSessionSnapshots(
+            ptySessionManager,
+            session,
+          );
           const out: Record<string, unknown> = {
             output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
-            sessionSnapshot: await getSessionSnapshot(
-              ptySessionManager,
-              session,
-            ),
+            sessionSnapshot: snapshots.cleaned,
+            rawSnapshot: snapshots.raw,
           };
           if (session.bufferTruncated) out.bufferTruncated = true;
           if (alreadyExited) out.exited = { exitCode: alreadyExited.exitCode };
@@ -484,15 +487,15 @@ IMPORTANT: You must first create a session using run_terminal_cmd with interacti
         const snapshot = ptySessionManager.snapshot(session);
         if (snapshot.byteLength > 0) emitTerminal(snapshot);
         await drainEmitQueue();
+        const rawText = new TextDecoder().decode(snapshot);
         const internal = session as {
           exitedNaturally?: { exitCode: number | null } | null;
         };
         return {
           result: {
-            output: capOutput(stripAnsi(new TextDecoder().decode(snapshot))),
-            sessionSnapshot: await cleanPtyForUI(
-              new TextDecoder().decode(snapshot),
-            ),
+            output: capOutput(stripAnsi(rawText)),
+            sessionSnapshot: await cleanPtyForUI(rawText),
+            rawSnapshot: rawText,
             ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
             ...(internal.exitedNaturally
               ? { exited: internal.exitedNaturally }
