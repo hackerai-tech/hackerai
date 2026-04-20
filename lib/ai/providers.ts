@@ -41,7 +41,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "ask-model": or("google/gemini-3-flash-preview"),
     "ask-model-free": or("x-ai/grok-4.1-fast"),
     "agent-model": or("moonshotai/kimi-k2.5:exacto"),
-    "agent-model-free": or("moonshotai/kimi-k2.6"),
+    "agent-model-free": or("moonshotai/kimi-k2.6:exacto"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.1": or("x-ai/grok-4.1-fast"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
