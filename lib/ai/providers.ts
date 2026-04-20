@@ -41,7 +41,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "ask-model": or("google/gemini-3-flash-preview"),
     "ask-model-free": or("x-ai/grok-4.1-fast"),
     "agent-model": or("moonshotai/kimi-k2.5:exacto"),
-    "agent-model-free": or("moonshotai/kimi-k2.5:exacto"),
+    "agent-model-free": or("moonshotai/kimi-k2.6:exacto"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.1": or("x-ai/grok-4.1-fast"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
@@ -107,7 +107,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
   "ask-model": 1_048_576, // resolves to Gemini 3 Flash
   "ask-model-free": 2_000_000, // resolves to Grok 4.1 Fast
   "agent-model": 262_144, // resolves to Kimi K2.5
-  "agent-model-free": 262_144, // resolves to Kimi K2.5
+  "agent-model-free": 262_144, // resolves to Kimi K2.6
   "model-sonnet-4.6": 1_000_000, // Claude Sonnet 4.6 with 1M context beta
   "model-grok-4.1": 2_000_000, // Grok 4.1 Fast
   "model-gemini-3-flash": 1_048_576, // Gemini 3 Flash
