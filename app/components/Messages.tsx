@@ -22,6 +22,7 @@ import { toast } from "sonner";
 import { WandSparkles } from "lucide-react";
 import DotsSpinner from "@/components/ui/dots-spinner";
 import { hasTextContent } from "@/lib/utils/message-utils";
+import { useDataStreamState } from "./DataStreamProvider";
 
 interface MessagesProps {
   messages: ChatMessage[];
@@ -83,6 +84,7 @@ export const Messages = ({
   branchedFromChatTitle,
   isLocalProvider = false,
 }: MessagesProps) => {
+  const { isAutoResuming } = useDataStreamState();
   // Prefetch and cache image URLs for better performance
   const { getCachedUrl, setCachedUrl } = useFileUrlCache(messages);
 
@@ -111,6 +113,8 @@ export const Messages = ({
 
   // Check if we should show loading dots (streaming with no content yet, or submitted for local providers)
   const shouldShowLoadingDots = useMemo(() => {
+    // Show dots while resuming an interrupted stream until the first chunk arrives
+    if (isAutoResuming) return true;
     if (status === "submitted" && isLocalProvider) {
       // Show dots immediately for local providers during sidecar startup
       return true;
@@ -127,6 +131,7 @@ export const Messages = ({
     if (!lastAssistantMsg) return true; // No message yet, show dots
     return !hasTextContent(lastAssistantMsg.parts);
   }, [
+    isAutoResuming,
     status,
     isLocalProvider,
     summarizationStatus,
