@@ -18,7 +18,7 @@ export type SelectedModel =
   | "gemini-3-flash"
   | "opus-4.6"
   | "opus-4.7"
-  | "kimi-k2.5";
+  | "kimi-k2.6";
 // | "codex-local"
 // | `codex-local:${string}`;
 
@@ -29,7 +29,7 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "gemini-3-flash",
   "opus-4.6",
   "opus-4.7",
-  "kimi-k2.5",
+  "kimi-k2.6",
   // "codex-local",
 ];
 

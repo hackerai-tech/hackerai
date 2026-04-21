@@ -40,7 +40,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
   ({
     "ask-model": or("google/gemini-3-flash-preview"),
     "ask-model-free": or("x-ai/grok-4.1-fast"),
-    "agent-model": or("moonshotai/kimi-k2.5:exacto"),
+    "agent-model": or("moonshotai/kimi-k2.6:exacto"),
     "agent-model-free": or("moonshotai/kimi-k2.6:exacto"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.1": or("x-ai/grok-4.1-fast"),
@@ -48,7 +48,7 @@ const buildProviderMap = (or: OpenRouterInstance) =>
     "model-opus-4.6": or("anthropic/claude-opus-4-6"),
     "model-opus-4.7": or("anthropic/claude-opus-4-7"),
     "model-gpt-5.4": or("openai/gpt-5.4"),
-    "model-kimi-k2.5": or("moonshotai/kimi-k2.5:exacto"),
+    "model-kimi-k2.6": or("moonshotai/kimi-k2.6:exacto"),
     "fallback-agent-model": or("x-ai/grok-4.1-fast"),
     "fallback-ask-model": or("x-ai/grok-4.1-fast"),
     "title-generator-model": or("x-ai/grok-4.1-fast"),
@@ -70,7 +70,7 @@ export const modelCutoffDates: Record<ModelName, string> &
   "model-opus-4.6": "May 2025",
   "model-opus-4.7": "January 2026",
   "model-gpt-5.4": "August 2025",
-  "model-kimi-k2.5": "April 2024",
+  "model-kimi-k2.6": "April 2024",
   "fallback-agent-model": "January 2025",
   "fallback-ask-model": "January 2025",
   "title-generator-model": "November 2024",
@@ -89,7 +89,7 @@ export const modelDisplayNames: Record<ModelName, string> &
   "model-opus-4.6": "Anthropic Claude Opus 4.6",
   "model-opus-4.7": "Anthropic Claude Opus 4.7",
   "model-gpt-5.4": "OpenAI GPT-5.4",
-  "model-kimi-k2.5": "Moonshot Kimi K2.5",
+  "model-kimi-k2.6": "Moonshot Kimi K2.6",
   "fallback-agent-model": "Auto, an intelligent model router built by HackerAI",
   "fallback-ask-model": "Auto, an intelligent model router built by HackerAI",
   "title-generator-model":
@@ -114,7 +114,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<ModelName, number> &
   "model-opus-4.6": 1_000_000, // Claude Opus 4.6 with 1M context beta
   "model-opus-4.7": 1_000_000, // Claude Opus 4.7 with 1M context beta
   "model-gpt-5.4": 1_050_000, // GPT-5.4 (922k input + 128k output)
-  "model-kimi-k2.5": 262_144, // Kimi K2.5
+  "model-kimi-k2.6": 262_144, // Kimi K2.6
   "fallback-agent-model": 2_000_000,
   "fallback-ask-model": 2_000_000,
   "title-generator-model": 2_000_000,
