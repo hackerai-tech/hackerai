@@ -21,6 +21,7 @@ import Link from "next/link";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "../hooks/usePricingDialog";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsStandalone } from "@/hooks/use-is-standalone";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -116,6 +117,7 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
   const [isLoadingUsage, setIsLoadingUsage] = useState(false);
   const [usageFetchFailed, setUsageFetchFailed] = useState(false);
   const isMobile = useIsMobile();
+  const isStandalone = useIsStandalone();
   const isPaidUser = subscription !== "free";
 
   const getAgentRateLimitStatus = useAction(
@@ -445,12 +447,14 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             <span>Settings</span>
           </DropdownMenuItem>
 
-          <DropdownMenuItem asChild className="py-1.5">
-            <Link href="/download">
-              <Download className="mr-2 h-4 w-4 text-foreground" />
-              <span>{isMobile ? "Install App" : "Download App"}</span>
-            </Link>
-          </DropdownMenuItem>
+          {!isStandalone && (
+            <DropdownMenuItem asChild className="py-1.5">
+              <Link href="/download">
+                <Download className="mr-2 h-4 w-4 text-foreground" />
+                <span>{isMobile ? "Install App" : "Download App"}</span>
+              </Link>
+            </DropdownMenuItem>
+          )}
 
           <DropdownMenuSeparator />
 

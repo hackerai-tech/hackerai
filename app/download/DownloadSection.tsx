@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
+import { useIsStandalone } from "@/hooks/use-is-standalone";
 import { downloadLinks } from "./constants";
 import {
   AppleIcon,
@@ -14,30 +15,17 @@ import {
 
 type Platform = "macos" | "windows" | "linux" | "ios" | "android" | "unknown";
 type LinuxArch = "x64" | "arm64";
-type Browser = "safari" | "chrome" | "firefox" | "samsung" | "other";
 
 export interface DetectedPlatform {
   platform: Platform;
   linuxArch?: LinuxArch;
-  browser?: Browser;
   displayName: string;
   downloadUrl: string;
-}
-
-function detectBrowser(ua: string): Browser {
-  if (/samsungbrowser/.test(ua)) return "samsung";
-  if (/firefox|fxios/.test(ua)) return "firefox";
-  if (/safari/.test(ua) && !/crios|fxios|edgios|chrome|android/.test(ua)) {
-    return "safari";
-  }
-  if (/chrome|crios/.test(ua) && !/edg|opr/.test(ua)) return "chrome";
-  return "other";
 }
 
 export function detectPlatform(): DetectedPlatform {
   const userAgent = navigator.userAgent.toLowerCase();
   const platform = navigator.platform?.toLowerCase() || "";
-  const browser = detectBrowser(userAgent);
 
   const isIpadOS =
     navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1;
@@ -45,7 +33,6 @@ export function detectPlatform(): DetectedPlatform {
   if (/iphone|ipad|ipod/.test(userAgent) || isIpadOS) {
     return {
       platform: "ios",
-      browser,
       displayName: "iOS",
       downloadUrl: "",
     };
@@ -54,7 +41,6 @@ export function detectPlatform(): DetectedPlatform {
   if (/android/.test(userAgent)) {
     return {
       platform: "android",
-      browser,
       displayName: "Android",
       downloadUrl: "",
     };
@@ -67,7 +53,6 @@ export function detectPlatform(): DetectedPlatform {
   ) {
     return {
       platform: "macos",
-      browser,
       displayName: "macOS",
       downloadUrl: downloadLinks.macos,
     };
@@ -76,7 +61,6 @@ export function detectPlatform(): DetectedPlatform {
   if (userAgent.includes("win") || platform.includes("win")) {
     return {
       platform: "windows",
-      browser,
       displayName: "Windows",
       downloadUrl: downloadLinks.windows,
     };
@@ -97,7 +81,6 @@ export function detectPlatform(): DetectedPlatform {
       return {
         platform: "linux",
         linuxArch: "arm64",
-        browser,
         displayName: "Linux (ARM64)",
         downloadUrl: downloadLinks.linuxArm64Deb,
       };
@@ -106,7 +89,6 @@ export function detectPlatform(): DetectedPlatform {
     return {
       platform: "linux",
       linuxArch: "x64",
-      browser,
       displayName: "Linux",
       downloadUrl: downloadLinks.linuxDeb,
     };
@@ -114,7 +96,6 @@ export function detectPlatform(): DetectedPlatform {
 
   return {
     platform: "unknown",
-    browser,
     displayName: "your platform",
     downloadUrl: downloadLinks.macos,
   };
@@ -188,6 +169,7 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
   const [deferredPrompt, setDeferredPrompt] =
     useState<BeforeInstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(false);
+  const isStandalone = useIsStandalone();
 
   useEffect(() => {
     if (detected.platform !== "android") return;
@@ -226,6 +208,20 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
     }
   };
 
+  if (isStandalone) {
+    return (
+      <div className="rounded-md border bg-card p-8 text-center shadow-lg">
+        <MobilePlatformIcon platform={detected.platform} />
+        <h2 className="mt-4 text-2xl font-semibold text-card-foreground">
+          HackerAI is installed
+        </h2>
+        <p className="mt-2 text-sm text-muted-foreground">
+          You&apos;re already running HackerAI as an installed app.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="rounded-md border bg-card p-8 shadow-lg">
       <div className="mb-6 text-center">
@@ -262,53 +258,26 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
         </>
       )}
 
-      {!installed && <InstallInstructions detected={detected} />}
+      {!installed && <InstallInstructions platform={detected.platform} />}
     </div>
   );
 }
 
-function InstallInstructions({ detected }: { detected: DetectedPlatform }) {
-  if (detected.platform === "ios") {
-    if (detected.browser !== "safari") {
-      return (
-        <div className="rounded-md border bg-background p-4 text-sm text-muted-foreground">
-          <p className="mb-2 font-medium text-card-foreground">
-            Installing on iOS requires Safari
-          </p>
-          <p>Open this page in Safari to add HackerAI to your home screen.</p>
-        </div>
-      );
-    }
-
+function InstallInstructions({ platform }: { platform: Platform }) {
+  if (platform === "ios") {
     return (
       <StepsList
         steps={[
           <>
-            Tap the <strong>Share</strong> button at the bottom of Safari (the
-            square with an arrow pointing up).
+            Tap the <strong>Share</strong> button (the square with an arrow
+            pointing up). You may need to tap the three dots (⋯) menu first to
+            reveal it.
           </>,
           <>
             Scroll down and tap <strong>Add to Home Screen</strong>.
           </>,
           <>
             Tap <strong>Add</strong> in the top right corner.
-          </>,
-        ]}
-      />
-    );
-  }
-
-  // Android
-  if (detected.browser === "firefox") {
-    return (
-      <StepsList
-        steps={[
-          <>
-            Tap the <strong>menu</strong> (⋮).
-          </>,
-          <>
-            Tap <strong>Install</strong> (or <strong>Add to Home Screen</strong>
-            ).
           </>,
         ]}
       />
