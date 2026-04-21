@@ -6,7 +6,7 @@ import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Header from "@/app/components/Header";
 import { HackerAISVG } from "@/components/icons/hackerai-svg";
-import { DownloadSection } from "./DownloadSection";
+import { DownloadSection, useDetectedPlatform } from "./DownloadSection";
 import { downloadLinks } from "./constants";
 import { AppleIcon, WindowsIcon, LinuxIcon } from "./icons";
 
@@ -37,15 +37,21 @@ function AuthenticatedHeader() {
 }
 
 function DownloadContent() {
+  const detected = useDetectedPlatform();
+  const isMobile =
+    detected?.platform === "ios" || detected?.platform === "android";
+
   return (
     <div className="px-4 py-8 pb-16 md:px-0">
       <div className="container mx-auto max-w-3xl space-y-8">
         <div className="text-center">
           <h1 className="mb-4 text-4xl font-bold text-card-foreground">
-            Download HackerAI
+            {isMobile ? "Install HackerAI" : "Download HackerAI"}
           </h1>
           <p className="text-lg text-muted-foreground">
-            Get the desktop app for the best experience
+            {isMobile
+              ? "Add the app to your home screen"
+              : "Get the desktop app for the best experience"}
           </p>
         </div>
 
@@ -53,7 +59,7 @@ function DownloadContent() {
 
         <div className="rounded-md border bg-card p-6 shadow-lg">
           <h2 className="mb-4 text-xl font-semibold text-card-foreground">
-            All Downloads
+            Desktop Downloads
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <DownloadCard
