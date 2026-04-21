@@ -445,14 +445,12 @@ const SidebarUserNav = ({ isCollapsed = false }: { isCollapsed?: boolean }) => {
             <span>Settings</span>
           </DropdownMenuItem>
 
-          {!isMobile && (
-            <DropdownMenuItem asChild className="py-1.5">
-              <Link href="/download">
-                <Download className="mr-2 h-4 w-4 text-foreground" />
-                <span>Download App</span>
-              </Link>
-            </DropdownMenuItem>
-          )}
+          <DropdownMenuItem asChild className="py-1.5">
+            <Link href="/download">
+              <Download className="mr-2 h-4 w-4 text-foreground" />
+              <span>{isMobile ? "Install App" : "Download App"}</span>
+            </Link>
+          </DropdownMenuItem>
 
           <DropdownMenuSeparator />
 

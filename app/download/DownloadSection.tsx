@@ -314,14 +314,14 @@ function InstallInstructions({ detected }: { detected: DetectedPlatform }) {
     <StepsList
       steps={[
         <>
-          Tap the <strong>menu</strong> (⋮) in the top right.
+          Tap the <strong>menu</strong> button (three dots in the top right)
         </>,
         <>
-          Tap <strong>Install app</strong> (or{" "}
-          <strong>Add to Home screen</strong>).
+          Tap <strong>Install app</strong> or{" "}
+          <strong>Add to Home screen</strong>
         </>,
         <>
-          Tap <strong>Install</strong>.
+          Tap <strong>Install</strong> to confirm
         </>,
       ]}
     />

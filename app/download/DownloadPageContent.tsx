@@ -57,49 +57,51 @@ function DownloadContent() {
 
         <DownloadSection />
 
-        <div className="rounded-md border bg-card p-6 shadow-lg">
-          <h2 className="mb-4 text-xl font-semibold text-card-foreground">
-            Desktop Downloads
-          </h2>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <DownloadCard
-              title="macOS"
-              subtitle="Universal (Intel & Apple Silicon)"
-              href={downloadLinks.macos}
-              icon={<AppleIcon />}
-            />
-            <DownloadCard
-              title="Windows"
-              subtitle="64-bit"
-              href={downloadLinks.windows}
-              icon={<WindowsIcon />}
-            />
-            <DownloadCard
-              title="Linux"
-              subtitle="x64 (.deb)"
-              href={downloadLinks.linuxDeb}
-              icon={<LinuxIcon />}
-            />
-            <DownloadCard
-              title="Linux"
-              subtitle="ARM64 (.deb)"
-              href={downloadLinks.linuxArm64Deb}
-              icon={<LinuxIcon />}
-            />
-            <DownloadCard
-              title="Linux"
-              subtitle="x64 (.AppImage)"
-              href={downloadLinks.linuxAppImage}
-              icon={<LinuxIcon />}
-            />
-            <DownloadCard
-              title="Linux"
-              subtitle="ARM64 (.AppImage)"
-              href={downloadLinks.linuxArm64AppImage}
-              icon={<LinuxIcon />}
-            />
+        {!isMobile && (
+          <div className="rounded-md border bg-card p-6 shadow-lg">
+            <h2 className="mb-4 text-xl font-semibold text-card-foreground">
+              Desktop Downloads
+            </h2>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <DownloadCard
+                title="macOS"
+                subtitle="Universal (Intel & Apple Silicon)"
+                href={downloadLinks.macos}
+                icon={<AppleIcon />}
+              />
+              <DownloadCard
+                title="Windows"
+                subtitle="64-bit"
+                href={downloadLinks.windows}
+                icon={<WindowsIcon />}
+              />
+              <DownloadCard
+                title="Linux"
+                subtitle="x64 (.deb)"
+                href={downloadLinks.linuxDeb}
+                icon={<LinuxIcon />}
+              />
+              <DownloadCard
+                title="Linux"
+                subtitle="ARM64 (.deb)"
+                href={downloadLinks.linuxArm64Deb}
+                icon={<LinuxIcon />}
+              />
+              <DownloadCard
+                title="Linux"
+                subtitle="x64 (.AppImage)"
+                href={downloadLinks.linuxAppImage}
+                icon={<LinuxIcon />}
+              />
+              <DownloadCard
+                title="Linux"
+                subtitle="ARM64 (.AppImage)"
+                href={downloadLinks.linuxArm64AppImage}
+                icon={<LinuxIcon />}
+              />
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
