@@ -213,12 +213,17 @@ function MobileInstallCard({ detected }: { detected: DetectedPlatform }) {
 
   const handleInstallClick = async () => {
     if (!deferredPrompt) return;
-    await deferredPrompt.prompt();
-    const choice = await deferredPrompt.userChoice;
-    if (choice.outcome === "accepted") {
-      setInstalled(true);
+    try {
+      await deferredPrompt.prompt();
+      const choice = await deferredPrompt.userChoice;
+      if (choice.outcome === "accepted") {
+        setInstalled(true);
+      }
+    } catch {
+      // Prompt already shown or blocked by the browser — fall back to manual steps.
+    } finally {
+      setDeferredPrompt(null);
     }
-    setDeferredPrompt(null);
   };
 
   return (
