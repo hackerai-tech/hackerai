@@ -26,13 +26,29 @@ export function useVisualViewportHeight() {
       root.style.setProperty("--vvh", `${vv.height}px`);
     };
 
+    // Some Chromium Android builds don't fire visualViewport.resize when the
+    // keyboard closes via blur, so re-read on the next frame after focusout
+    // and on window resize.
+    let raf = 0;
+    const updateNextFrame = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(update);
+    };
+
     update();
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", updateNextFrame);
+    document.addEventListener("focusout", updateNextFrame);
 
     return () => {
+      cancelAnimationFrame(raf);
       vv.removeEventListener("resize", update);
       vv.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", updateNextFrame);
+      document.removeEventListener("focusout", updateNextFrame);
       root.style.removeProperty("--vvh");
       root.style.overflow = prevRootOverflow;
       body.style.overflow = prevBodyOverflow;
