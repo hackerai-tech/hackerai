@@ -50,7 +50,7 @@ export const FeedbackInput = ({ onSend, onCancel }: FeedbackInputProps) => {
             onChange={(e) => setDetails(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={"What went wrong?"}
-            className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-2 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-[15px] shadow-none resize-none min-h-[36px]"
+            className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-2 border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[36px]"
             rows={2}
             maxRows={6}
             autoFocus
