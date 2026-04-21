@@ -117,7 +117,7 @@ export function ChatInputTextarea({
             ? "Hack, test, secure anything"
             : "Ask, learn, brainstorm"
         }
-        className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-[15px] shadow-none resize-none min-h-[28px]"
+        className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base md:text-[15px] shadow-none resize-none min-h-[28px]"
         minRows={minRows}
         autoFocus
         disabled={disabled}
