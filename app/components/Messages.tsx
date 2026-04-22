@@ -29,6 +29,7 @@ interface MessagesProps {
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
   onRetry: () => void;
+  onReconnect?: () => void;
   onEditMessage: (
     messageId: string,
     newContent: string,
@@ -65,6 +66,7 @@ export const Messages = ({
   setMessages,
   onRegenerate,
   onRetry,
+  onReconnect,
   onEditMessage,
   onBranchMessage,
   status,
@@ -367,7 +369,11 @@ export const Messages = ({
 
           {/* Error state - hide if it was a graceful preemptive timeout */}
           {error && finishReason !== "timeout" && (
-            <MessageErrorState error={error} onRetry={onRetry} />
+            <MessageErrorState
+              error={error}
+              onRetry={onRetry}
+              onReconnect={onReconnect}
+            />
           )}
         </div>
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
-import { ChatSDKError } from "@/lib/errors";
+import { ChatSDKError, isNetworkStreamError } from "@/lib/errors";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
@@ -9,6 +9,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 interface MessageErrorStateProps {
   error: Error;
   onRetry: () => void;
+  onReconnect?: () => void;
 }
 
 const formatCountdown = (ms: number): string => {
@@ -28,10 +29,12 @@ const formatCountdown = (ms: number): string => {
 export const MessageErrorState = ({
   error,
   onRetry,
+  onReconnect,
 }: MessageErrorStateProps) => {
   const { subscription } = useGlobalState();
   const isRateLimitError =
     error instanceof ChatSDKError && error.type === "rate_limit";
+  const canReconnect = !!onReconnect && isNetworkStreamError(error);
 
   const metadata = error instanceof ChatSDKError ? error.metadata : undefined;
   const resetTimestamp = metadata?.resetTimestamp as number | undefined;
@@ -136,9 +139,16 @@ export const MessageErrorState = ({
             )}
           </>
         ) : (
-          <Button variant="destructive" size="sm" onClick={onRetry}>
-            Retry
-          </Button>
+          <>
+            {canReconnect && (
+              <Button variant="default" size="sm" onClick={onReconnect}>
+                Reconnect
+              </Button>
+            )}
+            <Button variant="destructive" size="sm" onClick={onRetry}>
+              Retry
+            </Button>
+          </>
         )}
       </div>
     </div>

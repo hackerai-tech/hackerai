@@ -1181,6 +1181,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}
                   onRetry={handleRetry}
+                  onReconnect={resumeStream}
                   onEditMessage={handleEditMessage}
                   onBranchMessage={handleBranchMessage}
                   status={status}
