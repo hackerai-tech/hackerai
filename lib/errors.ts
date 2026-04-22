@@ -129,10 +129,10 @@ export function isNetworkStreamError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   // User-initiated stops surface as AbortError — don't treat as network drop.
   if (error.name === "AbortError") return false;
-  if (error instanceof TypeError) return true;
   const msg = error.message.toLowerCase();
   return (
     msg.includes("failed to fetch") ||
+    msg.includes("fetch failed") ||
     msg.includes("network") ||
     msg.includes("load failed")
   );
