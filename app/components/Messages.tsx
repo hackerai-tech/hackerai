@@ -29,6 +29,7 @@ interface MessagesProps {
   setMessages: Dispatch<SetStateAction<ChatMessage[]>>;
   onRegenerate: () => void;
   onRetry: () => void;
+  onReconnect?: () => void;
   onEditMessage: (
     messageId: string,
     newContent: string,
@@ -37,6 +38,8 @@ interface MessagesProps {
   onBranchMessage?: (messageId: string) => Promise<void>;
   status: ChatStatus;
   error: Error | null;
+  isReconnecting?: boolean;
+  reconnectExhausted?: boolean;
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
   paginationStatus?:
@@ -65,10 +68,13 @@ export const Messages = ({
   setMessages,
   onRegenerate,
   onRetry,
+  onReconnect,
   onEditMessage,
   onBranchMessage,
   status,
   error,
+  isReconnecting = false,
+  reconnectExhausted = false,
   scrollRef,
   contentRef,
   paginationStatus,
@@ -365,9 +371,18 @@ export const Messages = ({
             </div>
           )}
 
+          {/* Reconnecting indicator — shown during silent retry of a dropped stream */}
+          {isReconnecting && (
+            <Shimmer className="text-sm">Reconnecting…</Shimmer>
+          )}
+
           {/* Error state - hide if it was a graceful preemptive timeout */}
-          {error && finishReason !== "timeout" && (
-            <MessageErrorState error={error} onRetry={onRetry} />
+          {error && finishReason !== "timeout" && !isReconnecting && (
+            <MessageErrorState
+              error={error}
+              onRetry={onRetry}
+              onReconnect={reconnectExhausted ? onReconnect : undefined}
+            />
           )}
         </div>
 

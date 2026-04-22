@@ -9,6 +9,7 @@ import { openSettingsDialog } from "@/lib/utils/settings-dialog";
 interface MessageErrorStateProps {
   error: Error;
   onRetry: () => void;
+  onReconnect?: () => void;
 }
 
 const formatCountdown = (ms: number): string => {
@@ -28,6 +29,7 @@ const formatCountdown = (ms: number): string => {
 export const MessageErrorState = ({
   error,
   onRetry,
+  onReconnect,
 }: MessageErrorStateProps) => {
   const { subscription } = useGlobalState();
   const isRateLimitError =
@@ -136,9 +138,16 @@ export const MessageErrorState = ({
             )}
           </>
         ) : (
-          <Button variant="destructive" size="sm" onClick={onRetry}>
-            Retry
-          </Button>
+          <>
+            {onReconnect && (
+              <Button variant="default" size="sm" onClick={onReconnect}>
+                Reconnect
+              </Button>
+            )}
+            <Button variant="destructive" size="sm" onClick={onRetry}>
+              Retry
+            </Button>
+          </>
         )}
       </div>
     </div>
