@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { MemoizedMarkdown } from "./MemoizedMarkdown";
-import { ChatSDKError } from "@/lib/errors";
+import { ChatSDKError, isNetworkStreamError } from "@/lib/errors";
 import { useGlobalState } from "@/app/contexts/GlobalState";
 import { redirectToPricing } from "@/app/hooks/usePricingDialog";
 import { openSettingsDialog } from "@/lib/utils/settings-dialog";
@@ -34,6 +34,7 @@ export const MessageErrorState = ({
   const { subscription } = useGlobalState();
   const isRateLimitError =
     error instanceof ChatSDKError && error.type === "rate_limit";
+  const canReconnect = !!onReconnect && isNetworkStreamError(error);
 
   const metadata = error instanceof ChatSDKError ? error.metadata : undefined;
   const resetTimestamp = metadata?.resetTimestamp as number | undefined;
@@ -139,7 +140,7 @@ export const MessageErrorState = ({
           </>
         ) : (
           <>
-            {onReconnect && (
+            {canReconnect && (
               <Button variant="default" size="sm" onClick={onReconnect}>
                 Reconnect
               </Button>

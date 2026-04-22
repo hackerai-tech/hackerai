@@ -124,6 +124,20 @@ export function getMessageByErrorCode(errorCode: ErrorCode): string {
   }
 }
 
+export function isNetworkStreamError(error: unknown): boolean {
+  if (error instanceof ChatSDKError) return error.type === "offline";
+  if (!(error instanceof Error)) return false;
+  // User-initiated stops surface as AbortError — don't treat as network drop.
+  if (error.name === "AbortError") return false;
+  if (error instanceof TypeError) return true;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes("failed to fetch") ||
+    msg.includes("network") ||
+    msg.includes("load failed")
+  );
+}
+
 function getStatusCodeByType(type: ErrorType) {
   switch (type) {
     case "bad_request":

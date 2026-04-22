@@ -49,10 +49,6 @@ import { useParams, useRouter } from "next/navigation";
 import { ConvexErrorBoundary } from "./ConvexErrorBoundary";
 import { useAutoResume } from "../hooks/useAutoResume";
 import { useAutoContinue } from "../hooks/useAutoContinue";
-import {
-  useStreamReconnect,
-  isNetworkStreamError,
-} from "../hooks/useStreamReconnect";
 import { useLatestRef } from "../hooks/useLatestRef";
 import {
   getCmdServerInfo,
@@ -481,10 +477,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // Ref for setMessages — needed by DefaultChatTransport which is created before useChat returns
   const setMessagesRef = useRef<(messages: any[]) => void>(() => {});
 
-  // Ref bridge — onData fires inside useChat callbacks, but resetReconnect
-  // comes from useStreamReconnect which must be constructed after useChat.
-  const resetReconnectRef = useRef<() => void>(() => {});
-
   // Default transport (OpenRouter) - stored in ref since it's created before useChat
   const defaultTransportRef = useRef(
     new DefaultChatTransport({
@@ -562,8 +554,6 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     transport,
 
     onData: (dataPart) => {
-      // Any server-sent data part means the stream is healthy again.
-      resetReconnectRef.current();
       setDataStream((ds) => (ds ? [...ds, dataPart] : []));
       switch (dataPart.type) {
         case "data-upload-status": {
@@ -706,56 +696,14 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       }
     },
     onError: (error) => {
+      setIsAutoResuming(false);
       setAwaitingServerChat(false);
       dispatchStreaming({ type: "RESET_ON_FINISH" });
-
-      // Network errors are handled by the auto-reconnect effect below —
-      // suppress the toast and keep the spinner via isAutoResuming flow.
-      if (isNetworkStreamError(error)) return;
-
-      setIsAutoResuming(false);
       if (error instanceof ChatSDKError && error.type !== "rate_limit") {
         toast.error(error.message);
       }
     },
   });
-
-  const {
-    isReconnecting,
-    exhausted: reconnectExhausted,
-    tryReconnect,
-    reset: resetReconnect,
-  } = useStreamReconnect({ resumeStream });
-  resetReconnectRef.current = resetReconnect;
-
-  // Auto-reconnect on network errors. Each failed attempt produces a new
-  // `error` identity, so this effect re-fires through the retry sequence
-  // until success (error clears) or exhaustion (tryReconnect returns false).
-  useEffect(() => {
-    if (status !== "error" || !error) return;
-    if (!isNetworkStreamError(error)) return;
-    // Skip paths that don't support resumable server streams.
-    const isTempChat =
-      !isExistingChatRef.current && temporaryChatsEnabledRef.current;
-    if (isCodexLocal(selectedModelRef.current) || isTempChat) return;
-    tryReconnect();
-  }, [status, error, tryReconnect]);
-
-  // Wrap send/regenerate so a new user action cancels any pending reconnect.
-  const sendMessageWithReset: typeof sendMessage = useCallback(
-    (...args) => {
-      resetReconnect();
-      return sendMessage(...args);
-    },
-    [sendMessage, resetReconnect],
-  );
-  const regenerateWithReset: typeof regenerate = useCallback(
-    (...args) => {
-      resetReconnect();
-      return regenerate(...args);
-    },
-    [regenerate, resetReconnect],
-  );
 
   // Keep refs in sync so closures read latest values
   setMessagesRef.current = setMessages;
@@ -1099,9 +1047,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   } = useChatHandlers({
     chatId,
     messages,
-    sendMessage: sendMessageWithReset,
+    sendMessage,
     stop,
-    regenerate: regenerateWithReset,
+    regenerate,
     setMessages,
     isExistingChat,
     status,
@@ -1233,16 +1181,11 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
                   setMessages={setMessages}
                   onRegenerate={handleRegenerate}
                   onRetry={handleRetry}
-                  onReconnect={() => {
-                    resetReconnect();
-                    resumeStream();
-                  }}
+                  onReconnect={resumeStream}
                   onEditMessage={handleEditMessage}
                   onBranchMessage={handleBranchMessage}
                   status={status}
                   error={error || null}
-                  isReconnecting={isReconnecting}
-                  reconnectExhausted={reconnectExhausted}
                   paginationStatus={paginatedMessages.status}
                   loadMore={paginatedMessages.loadMore}
                   isTemporaryChat={isTempChat}
