@@ -3,7 +3,15 @@ import {
   sandboxChannel,
   type SandboxMessage,
   type CommandMessage,
+  type PtyCreateMessage,
+  type PtyInputMessage,
+  type PtyResizeMessage,
+  type PtyKillMessage,
 } from "@/lib/centrifugo/types";
+import {
+  DEFAULT_PTY_COLS,
+  DEFAULT_PTY_ROWS,
+} from "@/lib/ai/tools/utils/pty-session-manager";
 
 interface StreamChunk {
   type: "stdout" | "stderr" | "exit" | "error";
@@ -88,17 +96,46 @@ export class DesktopSandboxBridge {
 
     this.subscription.on("publication", (ctx) => {
       const message = ctx.data as SandboxMessage;
-      if (message.type === "command") {
-        const cmd = message as CommandMessage;
-        if (
-          cmd.targetConnectionId &&
-          cmd.targetConnectionId !== this.connectionId
-        ) {
-          return;
-        }
-        this.handleCommand(cmd).catch((err) => {
-          console.error("[DesktopSandboxBridge] Command handling failed:", err);
-        });
+
+      // Gate on targetConnectionId for all message types that carry it
+      const targetId = (message as { targetConnectionId?: string })
+        .targetConnectionId;
+      if (targetId && targetId !== this.connectionId) {
+        return;
+      }
+
+      switch (message.type) {
+        case "command":
+          this.handleCommand(message as CommandMessage).catch((err) => {
+            console.error(
+              "[DesktopSandboxBridge] Command handling failed:",
+              err,
+            );
+          });
+          break;
+
+        case "pty_create":
+          this.handlePtyCreate(message as PtyCreateMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] PTY create failed:", err);
+          });
+          break;
+
+        case "pty_input":
+          this.handlePtyInput(message as PtyInputMessage).catch((err) => {
+            console.error("[DesktopSandboxBridge] PTY input failed:", err);
+          });
+          break;
+
+        case "pty_resize":
+          this.handlePtyResize(message as PtyResizeMessage).catch(() => {});
+          break;
+
+        case "pty_kill":
+          this.handlePtyKill(message as PtyKillMessage).catch(() => {});
+          break;
+
+        default:
+          break;
       }
     });
 
@@ -272,6 +309,186 @@ export class DesktopSandboxBridge {
     } catch (error) {
       console.error("[DesktopSandboxBridge] Failed to publish result:", error);
       throw error;
+    }
+  }
+
+  private async handlePtyCreate(msg: PtyCreateMessage): Promise<void> {
+    const { sessionId, command, cols, rows, cwd, env } = msg;
+
+    try {
+      const { invoke, Channel } = await import("@tauri-apps/api/core");
+
+      const channel = new Channel<string>();
+      // Serialize publishes: Rust now flushes per-read (could be per-char on
+      // interactive echo). Firing 12 unawaited publishes at the Centrifuge
+      // client caused reordered arrival at the server, producing garbled
+      // terminal rendering. Chain through this promise to preserve order.
+      let publishQueue: Promise<void> = Promise.resolve();
+      const enqueuePublish = (msg: SandboxMessage) => {
+        publishQueue = publishQueue.then(() =>
+          this.publishResult(msg).catch((err) => {
+            console.error(
+              "[DesktopSandboxBridge] Failed to publish",
+              msg.type,
+              err,
+            );
+          }),
+        );
+      };
+
+      // Debounce buffer for PTY output - accumulate chunks before publishing
+      // to reduce RPC overhead from node-pty's per-character callbacks.
+      const PTY_DEBOUNCE_MS = 8;
+      let ptyBuffer = "";
+      let ptyDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const flushPtyBuffer = () => {
+        if (ptyBuffer) {
+          enqueuePublish({
+            type: "pty_data",
+            sessionId,
+            data: ptyBuffer,
+          });
+          ptyBuffer = "";
+        }
+        ptyDebounceTimer = null;
+      };
+
+      channel.onmessage = (chunk: string) => {
+        // The Tauri PTY backend sends raw output strings and a final JSON
+        // exit sentinel: {"type":"exit","exitCode":N,"sessionId":"..."}.
+        // We require ALL three sentinel fields before treating a chunk as an
+        // exit — otherwise a program that legitimately prints
+        // `{"type":"exit",...}` would be swallowed and never reach pty_data.
+        try {
+          const parsed = JSON.parse(chunk) as {
+            type?: unknown;
+            exitCode?: unknown;
+            sessionId?: unknown;
+          };
+          if (
+            parsed.type === "exit" &&
+            parsed.sessionId === sessionId &&
+            typeof parsed.exitCode === "number"
+          ) {
+            // Flush any buffered data before exit
+            if (ptyDebounceTimer) {
+              clearTimeout(ptyDebounceTimer);
+              flushPtyBuffer();
+            }
+            enqueuePublish({
+              type: "pty_exit",
+              sessionId,
+              exitCode: parsed.exitCode,
+            });
+            return;
+          }
+        } catch {
+          // Not JSON — regular PTY output
+        }
+
+        // Accumulate chunks and debounce publish
+        ptyBuffer += chunk;
+        if (!ptyDebounceTimer) {
+          ptyDebounceTimer = setTimeout(flushPtyBuffer, PTY_DEBOUNCE_MS);
+        }
+      };
+
+      const result = (await invoke("execute_pty_create", {
+        sessionId,
+        command,
+        cols: cols ?? DEFAULT_PTY_COLS,
+        rows: rows ?? DEFAULT_PTY_ROWS,
+        cwd,
+        env,
+        onData: channel,
+      })) as { pid: number | null; session_id: string };
+
+      // Rust's PtyCreateResult.pid is Option<u32> — serializes to `null` when
+      // the child didn't expose a pid. Reject that case explicitly so the
+      // server doesn't get a pty_ready with a bogus pid cast.
+      if (typeof result.pid !== "number") {
+        throw new Error(
+          `execute_pty_create returned no pid for sessionId=${sessionId}`,
+        );
+      }
+
+      // Route pty_ready through the same publishQueue that pty_data/pty_exit
+      // use. Direct publishResult can arrive AFTER already-queued pty_data
+      // chunks on fast-starting commands — the server-side adapter would then
+      // see pty_data with no matching pty_ready and drop the output.
+      enqueuePublish({
+        type: "pty_ready",
+        sessionId,
+        pid: result.pid,
+      });
+    } catch (err) {
+      // The failure path never reaches the channel.onmessage listener, so
+      // no pty_data was queued for this session — publishResult direct is
+      // safe here. (enqueuePublish is also out of scope in this catch.)
+      await this.publishResult({
+        type: "pty_error",
+        sessionId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  private async handlePtyInput(msg: PtyInputMessage): Promise<void> {
+    const { sessionId, data } = msg;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("execute_pty_input", { sessionId, data });
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : JSON.stringify(err) || "unknown pty_input error";
+      console.error("[desktop-bridge] execute_pty_input failed:", err);
+      await this.publishResult({
+        type: "pty_error",
+        sessionId,
+        message,
+      });
+    }
+  }
+
+  private async handlePtyResize(msg: PtyResizeMessage): Promise<void> {
+    const { sessionId, cols, rows } = msg;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("execute_pty_resize", { sessionId, cols, rows });
+    } catch (err) {
+      console.warn(
+        `[DesktopSandboxBridge] pty_resize failed sessionId=${sessionId}:`,
+        err,
+      );
+    }
+  }
+
+  private async handlePtyKill(msg: PtyKillMessage): Promise<void> {
+    const { sessionId } = msg;
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("execute_pty_kill", { sessionId });
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : typeof err === "string"
+            ? err
+            : JSON.stringify(err) || "unknown pty_kill error";
+      console.error("[desktop-bridge] execute_pty_kill failed:", err);
+      // Surface the failure to the server so the adapter's failTransport()
+      // path can resolve `exited` — otherwise awaiters of handle.exited
+      // would only escape via the 1500ms kill-timeout fallback.
+      await this.publishResult({
+        type: "pty_error",
+        sessionId,
+        message,
+      });
     }
   }
 

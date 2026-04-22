@@ -1,4 +1,3 @@
-import { Sandbox } from "@e2b/code-interpreter";
 import { DefaultSandboxManager } from "./utils/sandbox-manager";
 import {
   HybridSandboxManager,
@@ -6,6 +5,7 @@ import {
 } from "./utils/hybrid-sandbox-manager";
 import { TodoManager } from "./utils/todo-manager";
 import { createRunTerminalCmd } from "./run-terminal-cmd";
+import { createInteractTerminalSession } from "./interact-terminal-session";
 import { createGetTerminalFiles } from "./get-terminal-files";
 import { createFile } from "./file";
 import { createWebSearch } from "./web-search";
@@ -36,14 +36,10 @@ import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
 import { FileAccumulator } from "./utils/file-accumulator";
 import { BackgroundProcessTracker } from "./utils/background-process-tracker";
+import { ptySessionManager } from "./utils/pty-session-manager";
+import { isE2BSandbox } from "./utils/sandbox-types";
 
-/**
- * Check if a sandbox instance is an E2B Sandbox (vs local CentrifugoSandbox)
- * E2B Sandbox has jupyterUrl property, CentrifugoSandbox does not
- */
-export const isE2BSandbox = (s: AnySandbox | null): s is Sandbox => {
-  return s !== null && "jupyterUrl" in s;
-};
+export { isE2BSandbox };
 
 // Factory function to create tools with context
 export const createTools = (
@@ -118,6 +114,7 @@ export const createTools = (
     assistantMessageId,
     fileAccumulator,
     backgroundProcessTracker,
+    ptySessionManager,
     mode,
     isE2BSandbox,
     guardrailsConfig,
@@ -130,6 +127,7 @@ export const createTools = (
   // Create all available tools
   const allTools = {
     run_terminal_cmd: createRunTerminalCmd(context),
+    interact_terminal_session: createInteractTerminalSession(context),
     get_terminal_files: createGetTerminalFiles(context),
     file: createFile(context),
     todo_write: createTodoWrite(context),

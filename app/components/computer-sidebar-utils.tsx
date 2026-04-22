@@ -18,7 +18,11 @@ import {
   type SidebarContent,
   type NoteCategory,
 } from "@/types/chat";
-import { getShellActionLabel, formatSendInput } from "./tools/shell-tool-utils";
+import {
+  getShellActionLabel,
+  formatSendInput,
+  isInteractiveShellAction,
+} from "./tools/shell-tool-utils";
 import {
   PROXY_ACTION_LABELS,
   PROXY_COMPLETED_LABELS,
@@ -192,7 +196,11 @@ export function getToolName(content: SidebarContent): string {
     return content.action === "searching" ? "File Search" : "Editor";
   }
   if (isSidebarProxy(content)) return "Proxy";
-  if (isSidebarTerminal(content)) return "Terminal";
+  if (isSidebarTerminal(content)) {
+    const interactive =
+      content.session || isInteractiveShellAction(content.shellAction);
+    return interactive ? "Interactive Terminal" : "Terminal";
+  }
   if (isSidebarWebSearch(content)) return "Search";
   if (isSidebarNotes(content)) return "Notes";
   if (isSidebarSharedFiles(content)) return "Downloads";
@@ -210,6 +218,9 @@ export function getDisplayTarget(content: SidebarContent): string {
   }
   if (isSidebarTerminal(content)) {
     if (content.shellAction === "send" && content.input) {
+      if (Array.isArray(content.input)) {
+        return content.input.map((t) => formatSendInput(t)).join(" ");
+      }
       return formatSendInput(content.input);
     }
     return content.command;

@@ -10,6 +10,8 @@ import {
   getShellDisplayCommand,
   getShellDisplayTarget,
   getShellOutput,
+  getStreamingTerminalOutput,
+  isInteractiveShellAction,
   type ShellToolOutput,
 } from "./shell-tool-utils";
 
@@ -57,34 +59,53 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
   const streamingOutput = useMemo(() => {
     if (precomputedStreamingOutput !== undefined)
       return precomputedStreamingOutput;
-    const terminalDataParts = message.parts.filter(
-      (p) =>
-        p.type === "data-terminal" &&
-        (p as any).data?.toolCallId === effectiveToolCallId,
-    );
-    return terminalDataParts
-      .map((p) => (p as any).data?.terminal || "")
-      .join("");
+    return getStreamingTerminalOutput(message.parts, effectiveToolCallId);
   }, [precomputedStreamingOutput, message.parts, effectiveToolCallId]);
 
-  // Memoize final output computation
+  // Memoize final output computation.
+  // sessionSnapshot is cleaned via xterm headless - use it when available.
+  // During streaming, show raw streamingOutput for responsiveness.
+  // On completion, prefer the cleaned sessionSnapshot.
+  const shellAction = isShellTool
+    ? (input as { action?: string })?.action
+    : undefined;
+  const isInteractive = isInteractiveShellAction(shellAction);
+  // Extract sessionSnapshot regardless of action type - if it exists, it's clean
+  const sessionSnapshot = terminalOutput?.result?.sessionSnapshot;
+  const hasResult = state === "output-available";
   const finalOutput = useMemo(
-    () => getShellOutput(terminalOutput, { streamingOutput, errorText }),
-    [terminalOutput, streamingOutput, errorText],
+    () =>
+      // On completion, prefer cleaned sessionSnapshot if available
+      sessionSnapshot && hasResult
+        ? sessionSnapshot
+        : // During streaming for interactive sessions, show live output
+          isInteractive && streamingOutput
+          ? streamingOutput
+          : // Fallback to sessionSnapshot if no streaming
+            sessionSnapshot
+            ? sessionSnapshot
+            : getShellOutput(terminalOutput, { streamingOutput, errorText }),
+    [
+      sessionSnapshot,
+      hasResult,
+      isInteractive,
+      terminalOutput,
+      streamingOutput,
+      errorText,
+    ],
   );
 
   const isExecuting = state === "input-available" && status === "streaming";
 
+  const isInteractiveAction = isInteractiveShellAction(shellAction);
   const displayCommand = isShellTool
-    ? getShellDisplayCommand(input)
+    ? getShellDisplayCommand(input) ||
+      (isInteractiveAction ? shellAction || "" : "")
     : terminalInput?.command || "";
   const displayTarget = isShellTool
-    ? getShellDisplayTarget(input)
+    ? getShellDisplayTarget(input) || displayCommand
     : displayCommand;
 
-  const shellAction = isShellTool
-    ? (input as { action?: string })?.action
-    : undefined;
   const shellPid = (input as { pid?: number })?.pid ?? terminalOutput?.pid;
   const shellSession =
     (input as { session?: string })?.session ?? terminalOutput?.session;
@@ -97,10 +118,17 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       isActive,
     });
 
+  // Prefer rawSnapshot when tool is complete (has final state), streaming during execution
+  const rawSnapshot = terminalOutput?.result?.rawSnapshot;
+  const effectiveRawBytes =
+    hasResult && rawSnapshot
+      ? rawSnapshot
+      : streamingOutput || rawSnapshot || undefined;
+
   const sidebarContent = useMemo((): SidebarTerminal | null => {
-    if (!displayCommand) return null;
+    if (!displayCommand && !isInteractiveAction) return null;
     return {
-      command: displayCommand,
+      command: isInteractiveAction ? displayTarget : displayCommand,
       output: finalOutput,
       isExecuting,
       isBackground: terminalInput?.is_background,
@@ -109,17 +137,21 @@ export const TerminalToolHandler = memo(function TerminalToolHandler({
       pid: shellPid,
       session: shellSession,
       input: (input as { input?: string })?.input,
+      rawBytes: effectiveRawBytes,
     };
   }, [
     displayCommand,
+    displayTarget,
     finalOutput,
     isExecuting,
+    isInteractiveAction,
     terminalInput?.is_background,
     toolCallId,
     shellAction,
     shellPid,
     shellSession,
     input,
+    effectiveRawBytes,
   ]);
 
   const { handleOpenInSidebar, handleKeyDown } = useToolSidebar({

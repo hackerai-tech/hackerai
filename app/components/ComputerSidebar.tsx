@@ -278,8 +278,19 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                     </div>
                   ) : isTerminal ? (
                     sidebarContent.session || sidebarContent.pid ? (
-                      <div className="max-w-[250px] truncate text-muted-foreground text-sm font-medium">
-                        {sidebarContent.session ?? `PID ${sidebarContent.pid}`}
+                      <div className="flex items-center gap-2 max-w-[250px]">
+                        <span
+                          className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                            resolvedTerminal?.isExecuting
+                              ? "bg-green-500 animate-pulse"
+                              : "bg-muted-foreground/50"
+                          }`}
+                        />
+                        <span className="truncate text-muted-foreground text-sm font-medium">
+                          {sidebarContent.pid
+                            ? `PID ${sidebarContent.pid}`
+                            : `Session ${String(sidebarContent.session).slice(0, 8)}`}
+                        </span>
                       </div>
                     ) : (
                       <Terminal
@@ -403,6 +414,8 @@ export const ComputerSidebarBase: React.FC<ComputerSidebarProps> = ({
                           }
                           variant="sidebar"
                           wrap={isWrapped}
+                          shellAction={resolvedTerminal.shellAction}
+                          rawBytes={resolvedTerminal.rawBytes}
                         />
                       )}
                       {isProxy && resolvedProxy && (

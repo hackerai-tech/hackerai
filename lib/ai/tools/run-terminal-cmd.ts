@@ -14,7 +14,7 @@ import {
   waitForSandboxReady,
   getSandboxDiagnostics,
 } from "./utils/sandbox-health";
-import { isE2BSandbox } from "./utils/sandbox-types";
+import { isE2BSandbox, isCentrifugoSandbox } from "./utils/sandbox-types";
 import {
   buildSandboxCommandOptions,
   augmentCommandPath,
@@ -26,9 +26,28 @@ import {
 } from "./utils/guardrails";
 import { getCaidoConfig, buildCaidoProxyEnvVars } from "./utils/caido-proxy";
 import { ensureCaido } from "./utils/proxy-manager";
+import { createE2BPtyHandle } from "./utils/e2b-pty-adapter";
+import {
+  DEFAULT_PTY_COLS,
+  DEFAULT_PTY_ROWS,
+  type PtySession,
+} from "./utils/pty-session-manager";
+import { getSessionSnapshots } from "./utils/pty-output-formatter";
+import {
+  waitForOutput,
+  capOutput,
+  stripAnsi,
+  compileWaitPattern,
+  InvalidWaitPatternError,
+  type WaitPolicy,
+} from "./utils/pty-wait-utils";
 
 const DEFAULT_STREAM_TIMEOUT_SECONDS = 60;
 const MAX_TIMEOUT_SECONDS = 600;
+
+// Interactive PTY wait defaults (duplicated from pty-wait-utils for schema use)
+const DEFAULT_WAIT_IDLE_MS = 800;
+const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 
 export const createRunTerminalCmd = (context: ToolContext) => {
   const {
@@ -38,6 +57,8 @@ export const createRunTerminalCmd = (context: ToolContext) => {
     guardrailsConfig,
     caidoEnabled,
     caidoPort,
+    ptySessionManager,
+    chatId,
   } = context;
 
   // Parse user guardrail configuration and get effective guardrails
@@ -105,23 +126,65 @@ If you are generating files:
 - If you are to use pypandoc, you are only allowed to call the method pypandoc.convert_text and you MUST include the parameter extra_args=['--standalone']. Otherwise the file will be corrupt/incomplete
     - For example: pypandoc.convert_text(text, 'rtf', format='md', outputfile='output.rtf', extra_args=['--standalone'])`,
     inputSchema: z.object({
-      command: z.string().describe("The terminal command to execute"),
+      command: z.string().describe("Shell command to execute."),
       explanation: z
         .string()
         .describe(
-          "One sentence explanation as to why this command needs to be run and how it contributes to the goal.",
+          "One sentence on why this call is being made and how it advances the goal. Shown to the user.",
         ),
       is_background: z
         .boolean()
+        .optional()
+        .default(false)
         .describe(
-          "Whether the command should be run in the background. Set to FALSE if you need to retrieve output files immediately after with get_terminal_files. Only use TRUE for indefinite processes where you don't need immediate file access.",
+          "Run the command in the background. Only meaningful when interactive=false; ignored otherwise. Use FALSE if you need output files immediately afterward via get_terminal_files; TRUE for long-running processes where you don't need immediate file access.",
         ),
       timeout: z
         .number()
         .optional()
         .default(DEFAULT_STREAM_TIMEOUT_SECONDS)
         .describe(
-          `Timeout in seconds to wait for command execution. On timeout, command continues running in background. Capped at ${MAX_TIMEOUT_SECONDS} seconds. Defaults to ${DEFAULT_STREAM_TIMEOUT_SECONDS} seconds.`,
+          `Seconds to wait for non-interactive command output before returning (the command keeps running in background on timeout). Capped at ${MAX_TIMEOUT_SECONDS}s; default ${DEFAULT_STREAM_TIMEOUT_SECONDS}s. Applies ONLY when interactive=false — interactive sessions use \`wait_for\` instead.`,
+        ),
+      interactive: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe(
+          "When true, opens a PTY and returns a reusable `session` ID. Use `interact_terminal_session` tool to continue the session with send/wait/view/kill actions. Use for anything that prompts: REPLs (python, node, mysql), SSH, sudo, confirmations, interactive installers. E2B and local (Centrifugo) sandboxes only.",
+        ),
+      wait_for: z
+        .object({
+          pattern: z
+            .string()
+            .optional()
+            .describe(
+              "JS regex. Resolves as soon as accumulated (ANSI-stripped) output matches — use this when you know the shell prompt or marker you're waiting for (e.g. '>>> $' for python, '# $' for a root shell). Invalid regex returns a structured error rather than crashing the call.",
+            ),
+          idle_ms: z
+            .number()
+            .int()
+            .min(50)
+            .max(60_000)
+            .optional()
+            .default(DEFAULT_WAIT_IDLE_MS)
+            .describe(
+              "Resolve after N ms with no new output bytes. Good default for prompts that don't have a predictable marker. Range: [50, 60000].",
+            ),
+          timeout_ms: z
+            .number()
+            .int()
+            .min(100)
+            .max(300_000)
+            .optional()
+            .default(DEFAULT_WAIT_TIMEOUT_MS)
+            .describe(
+              "Hard cap on the wait. Fires even if neither pattern nor idle_ms triggered. Range: [100, 300000].",
+            ),
+        })
+        .optional()
+        .describe(
+          "Wait policy applied after interactive=true exec. Resolves on the FIRST of: `pattern` match, `idle_ms` of silence, or `timeout_ms` elapsed. Default: {idle_ms: 800, timeout_ms: 10000}.",
         ),
     }),
     execute: async (
@@ -129,13 +192,92 @@ If you are generating files:
         command,
         is_background,
         timeout,
+        interactive,
+        wait_for,
       }: {
         command: string;
         is_background: boolean;
         timeout?: number;
+        interactive: boolean;
+        wait_for?: {
+          pattern?: string;
+          idle_ms: number;
+          timeout_ms: number;
+        };
       },
       { toolCallId, abortSignal },
     ) => {
+      // PTY geometry is fixed server-side (DEFAULT_PTY_COLS / DEFAULT_PTY_ROWS).
+      // The model intentionally has no knob for this — a terminal size should
+      // match a real display, not a model-chosen value. UIs that render the
+      // PTY can call `PtyHandle.resize()` directly.
+      const cols = DEFAULT_PTY_COLS;
+      const rows = DEFAULT_PTY_ROWS;
+      // Default wait policy shared across interactive action branches.
+      const waitPolicy: WaitPolicy = {
+        pattern: wait_for?.pattern,
+        idle_ms: wait_for?.idle_ms ?? DEFAULT_WAIT_IDLE_MS,
+        timeout_ms: wait_for?.timeout_ms ?? DEFAULT_WAIT_TIMEOUT_MS,
+      };
+
+      // Validate the regex BEFORE any PTY session is spawned so an invalid
+      // pattern on interactive exec cannot leak a session that later errors
+      // out in waitForOutput.
+      if (interactive) {
+        try {
+          compileWaitPattern(waitPolicy);
+        } catch (err) {
+          if (err instanceof InvalidWaitPatternError) {
+            return {
+              result: {
+                output: "",
+                error: `Invalid wait_for.pattern: ${err.message}`,
+              },
+            };
+          }
+          throw err;
+        }
+      }
+
+      // Helper: emit a raw-byte chunk to the UI terminal stream.
+      // The `data-terminal` part shape in `UIMessageStreamWriter` only types
+      // the minimal `{terminal, toolCallId}` fields, but the frontend
+      // (`TerminalToolHandler`/`ComputerSidebar`) reads the extra `action`
+      // and `session` fields at runtime. This cast is intentional — keep
+      // the minimal typed surface while carrying the extra metadata.
+      //
+      // To keep emitTerminal fire-and-forget from sync onData callbacks while
+      // preserving FIFO order of writer.write, we chain the write calls
+      // through a per-invocation promise queue. Raw bytes are sent during
+      // streaming; sessionSnapshot in the result is cleaned via xterm headless.
+      //
+      // `activePtySessionId` tracks the session id that should be attached
+      // to data-terminal events. For interactive exec the id is only known
+      // AFTER create, so the exec branch updates it before emitting anything.
+      // Send raw bytes during streaming - sessionSnapshot in result is cleaned
+      let activePtySessionId: string | undefined;
+      let emitQueue: Promise<void> = Promise.resolve();
+      const emitTerminal = (bytes: Uint8Array): void => {
+        const emitSessionId = activePtySessionId;
+        emitQueue = emitQueue
+          .then(() => {
+            const text = new TextDecoder().decode(bytes);
+            writer.write({
+              type: "data-terminal",
+              id: `pty-${toolCallId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              data: {
+                terminal: text,
+                toolCallId,
+                action: "exec",
+                session: emitSessionId,
+              } as unknown as { terminal: string; toolCallId: string },
+            });
+          })
+          .catch((err) =>
+            console.error("[run-terminal-cmd] emitTerminal failed:", err),
+          );
+      };
+      const drainEmitQueue = () => emitQueue;
       // Calculate effective stream timeout (capped at MAX_TIMEOUT_SECONDS)
       // This controls how long we wait for output, not how long the command runs
       const effectiveStreamTimeout = Math.min(
@@ -155,6 +297,125 @@ If you are generating files:
             error: `Command blocked by security guardrail "${guardrailResult.policyName}": ${guardrailResult.message}. This command pattern has been blocked for safety. If you believe this is a false positive, the user can adjust guardrail settings.`,
           },
         };
+      }
+
+      // ─── Interactive PTY exec branch ─────────────────────────────────
+      if (interactive) {
+        try {
+          const { sandbox } = await sandboxManager.getSandbox();
+          const isCentrifugo = isCentrifugoSandbox(sandbox);
+          const isE2B = isE2BSandbox(sandbox);
+
+          if (!isE2B && !isCentrifugo) {
+            return {
+              result: {
+                output: "",
+                exitCode: 1,
+                error:
+                  "Interactive PTY requires E2B or local (Centrifugo) sandbox.",
+              },
+            };
+          }
+
+          // If Caido proxy env vars are configured, make sure Caido is up
+          // before spawning the PTY — otherwise the session gets env vars
+          // pointing at a proxy that isn't running. The non-interactive
+          // branch does this too (see executeCommand); interactive needs
+          // the same guarantee.
+          if (caidoEnvVars) {
+            try {
+              await ensureCaido(context);
+            } catch (e) {
+              console.warn(
+                "[Terminal Command] Caido setup failed, disabling proxy env vars:",
+                e instanceof Error ? e.message : e,
+              );
+              caidoEnvVars = undefined;
+            }
+          }
+
+          // Factory is invoked BY `ptySessionManager.create` — this ensures
+          // that if the concurrency cap is hit, the factory is never called
+          // and no PTY is spawned (see FIX 4).
+          const session = await ptySessionManager.create(chatId, {
+            cols,
+            rows,
+            createHandle: async () => {
+              if (isCentrifugo) {
+                const { createCentrifugoPtyHandle } =
+                  await import("./utils/centrifugo-pty-adapter");
+                return createCentrifugoPtyHandle(sandbox, {
+                  command,
+                  cols,
+                  rows,
+                  envs: caidoEnvVars,
+                });
+              }
+              return createE2BPtyHandle(sandbox, {
+                cols,
+                rows,
+                envs: caidoEnvVars,
+              });
+            },
+          });
+
+          // Now that the session exists, tag subsequent data-terminal events
+          // with its sessionId (was undefined at emitTerminal definition time).
+          activePtySessionId = session.sessionId;
+
+          // For E2B, the PTY starts a bare shell — fire the command + Enter
+          // so the shell actually runs it. For Centrifugo, the command is
+          // passed in pty_create and the local runner spawns it directly.
+          if (!isCentrifugo) {
+            await session.handle.sendInput(
+              new TextEncoder().encode(command + "\n"),
+            );
+          }
+          session.lastActivityAt = Date.now();
+
+          // Stream output chunks as they arrive
+          const delta = await waitForOutput(
+            session,
+            waitPolicy,
+            abortSignal,
+            emitTerminal,
+            (s) => ptySessionManager.consumeDelta(s),
+          );
+          await drainEmitQueue();
+          const snapshots = await getSessionSnapshots(
+            ptySessionManager,
+            session,
+          );
+          return {
+            result: {
+              session: session.sessionId,
+              pid: session.pid,
+              output: capOutput(stripAnsi(new TextDecoder().decode(delta))),
+              sessionSnapshot: snapshots.cleaned,
+              rawSnapshot: snapshots.raw,
+              ...(session.bufferTruncated ? { bufferTruncated: true } : {}),
+            },
+          };
+        } catch (err) {
+          if (err instanceof InvalidWaitPatternError) {
+            return {
+              result: {
+                output: "",
+                error: `Invalid wait_for.pattern: ${err.message}`,
+              },
+            };
+          }
+          return {
+            result: {
+              output: "",
+              exitCode: 1,
+              error:
+                err instanceof Error
+                  ? err.message
+                  : "Failed to create interactive PTY session.",
+            },
+          };
+        }
       }
 
       try {

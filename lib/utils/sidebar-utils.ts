@@ -5,6 +5,10 @@ import {
   SidebarNotes,
   WebSearchResult,
 } from "@/types/chat";
+import {
+  formatSendInput,
+  isInteractiveShellAction,
+} from "@/app/components/tools/shell-tool-utils";
 
 /** Parse a unified git diff into original and modified content for diff view. */
 function parseGitDiff(diff: string): {
@@ -96,8 +100,27 @@ export function extractSidebarContentFromMessage(
 
   message.parts.forEach((part) => {
     // Terminal (including Codex local commands)
-    if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
-      const command = part.input.command;
+    if (
+      (part.type === "tool-run_terminal_cmd" ||
+        part.type === "tool-interact_terminal_session") &&
+      part.input
+    ) {
+      const action = part.input.action || "exec";
+      const isInteractive =
+        isInteractiveShellAction(action) || !!part.input.interactive;
+      // For action=send, format each token through formatSendInput (same
+      // helper the main UI uses) so raw control bytes / escape sequences
+      // render as readable tmux names and trailing newlines collapse to
+      // "Enter", never landing verbatim in the sidebar label.
+      const sendInput = part.input.input;
+      const sendDisplay =
+        action === "send" && sendInput
+          ? Array.isArray(sendInput)
+            ? sendInput.map((t) => formatSendInput(t)).join(" ")
+            : formatSendInput(sendInput)
+          : "";
+      const command =
+        part.input.command || part.input.brief || sendDisplay || action;
 
       // Get streaming output from data-terminal parts
       const streamingOutput = terminalDataMap.get(part.toolCallId || "") || "";
@@ -121,9 +144,27 @@ export function extractSidebarContentFromMessage(
         }
       }
 
-      // Fallback to streaming output or direct output property
+      // sessionSnapshot is cleaned via xterm headless - prefer it when available.
+      // For streaming, show live output for responsiveness.
+      const sessionSnapshot = result?.sessionSnapshot || "";
       const finalOutput =
-        output || streamingOutput || part.output?.output || "";
+        // Prefer cleaned sessionSnapshot when available (works for all action types)
+        sessionSnapshot ||
+        // For interactive actions, prefer live streaming output
+        (isInteractive ? streamingOutput : null) ||
+        // Fallback chain
+        output ||
+        streamingOutput ||
+        part.output?.output ||
+        "";
+
+      // Prefer rawSnapshot when tool is complete, streaming during execution
+      const rawSnapshot = result?.rawSnapshot || "";
+      const isComplete = part.state === "output-available";
+      const effectiveRawBytes =
+        isComplete && rawSnapshot
+          ? rawSnapshot
+          : streamingOutput || rawSnapshot || undefined;
 
       contentList.push({
         command,
@@ -132,6 +173,15 @@ export function extractSidebarContentFromMessage(
           part.state === "input-available" || part.state === "running",
         isBackground: part.input.is_background,
         toolCallId: part.toolCallId || "",
+        rawBytes: effectiveRawBytes,
+        ...(isInteractive
+          ? {
+              shellAction: action,
+              pid: part.input.pid ?? part.output?.result?.pid,
+              session: part.input.session ?? part.output?.result?.session,
+              input: part.input.input,
+            }
+          : {}),
       });
     }
 
@@ -220,6 +270,14 @@ export function extractSidebarContentFromMessage(
 
       const finalOutput = directOutput || streamingOutput || "";
 
+      // Prefer rawSnapshot when tool is complete, streaming during execution
+      const rawSnapshot = part.output?.rawSnapshot || "";
+      const isComplete = part.state === "output-available";
+      const effectiveRawBytes =
+        isComplete && rawSnapshot
+          ? rawSnapshot
+          : streamingOutput || rawSnapshot || undefined;
+
       contentList.push({
         command,
         output: finalOutput,
@@ -229,6 +287,9 @@ export function extractSidebarContentFromMessage(
         toolCallId: part.toolCallId || "",
         shellAction: part.input.action,
         pid: part.input.pid ?? part.output?.pid,
+        session: part.input.session ?? part.output?.session,
+        input: part.input.input,
+        rawBytes: effectiveRawBytes,
       });
     }
 

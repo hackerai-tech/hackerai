@@ -36,6 +36,7 @@ tokio = { version = "1", features = ["time", "net", "io-util", "process", "sync"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 reqwest = { version = "0.12", features = ["json"] }
+portable-pty = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
