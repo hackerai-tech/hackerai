@@ -50,7 +50,6 @@ import { countTokens } from "gpt-tokenizer";
 import { ChatSDKError } from "@/lib/errors";
 import PostHogClient from "@/app/posthog";
 import {
-  captureFreeAgentRequest,
   captureToolCalls,
   createChatLogger,
   shutdownPostHog,
@@ -1136,25 +1135,6 @@ export const createChatHandler = (
                             userId,
                             mode,
                           });
-                          if (mode === "agent" && subscription === "free") {
-                            captureFreeAgentRequest({
-                              posthog,
-                              chatLogger,
-                              userId,
-                              estimatedInputTokens,
-                              selectedModel,
-                              selectedModelOverride,
-                              configuredModelId,
-                              responseModel,
-                              usageTracker,
-                              finishReason: streamFinishReason,
-                              wasAborted: retryAborted,
-                              wasPreemptiveTimeout: false,
-                              hadSummarization: hasSummarized(),
-                              isTemporary: !!temporary,
-                              isRegenerate: !!regenerate,
-                            });
-                          }
                           shutdownPostHog(posthog);
                           chatLogger!.emitSuccess({
                             finishReason: streamFinishReason,
@@ -1340,25 +1320,6 @@ export const createChatHandler = (
                   cacheWriteTokens: usageTracker.cacheWriteTokens,
                 });
                 captureToolCalls({ posthog, chatLogger, userId, mode });
-                if (mode === "agent" && subscription === "free") {
-                  captureFreeAgentRequest({
-                    posthog,
-                    chatLogger,
-                    userId,
-                    estimatedInputTokens,
-                    selectedModel,
-                    selectedModelOverride,
-                    configuredModelId,
-                    responseModel,
-                    usageTracker,
-                    finishReason: streamFinishReason,
-                    wasAborted: isAborted,
-                    wasPreemptiveTimeout: isPreemptiveAbort,
-                    hadSummarization: hasSummarized(),
-                    isTemporary: !!temporary,
-                    isRegenerate: !!regenerate,
-                  });
-                }
                 shutdownPostHog(posthog);
                 chatLogger!.emitSuccess({
                   finishReason: streamFinishReason,
