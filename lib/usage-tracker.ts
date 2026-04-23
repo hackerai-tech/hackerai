@@ -91,7 +91,13 @@ export class UsageTracker {
   }
 
   computeModelCostDollars(selectedModel: string): number {
-    if (this.providerCost > 0) return this.providerCost;
+    // Use authoritative per-step provider cost only when the model itself
+    // reported one via raw.cost (tracked in modelProviderCost). providerCost
+    // also includes sandbox/tool spend and summarization cost, so subtract
+    // nonModelCost to isolate the model portion.
+    if (this.modelProviderCost > 0) {
+      return this.providerCost - this.nonModelCost;
+    }
     return (
       (calculateTokenCost(this.inputTokens, "input", selectedModel) +
         calculateTokenCost(this.outputTokens, "output", selectedModel)) /
@@ -100,7 +106,11 @@ export class UsageTracker {
   }
 
   computeCostDollars(selectedModel: string): number {
-    if (this.providerCost > 0) return this.providerCost;
+    // Mirror deductUsage's gate: providerCost is only authoritative for the
+    // total when modelProviderCost > 0. After resetModelLeg() (fallback retry)
+    // providerCost can be positive from nonModelCost alone, which would
+    // underreport the fallback's model tokens if we used it directly.
+    if (this.modelProviderCost > 0) return this.providerCost;
     return this.computeModelCostDollars(selectedModel) + this.nonModelCost;
   }
 

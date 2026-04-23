@@ -481,10 +481,21 @@ export const resetRateLimitBuckets = async (
 };
 
 /**
- * Delete all Redis keys associated with a user. Called during account deletion
- * so orphaned buckets, stashes, and sliding-window counters are purged
+ * Delete Redis keys associated with a user across every rate-limit namespace
+ * written by this codebase. Called during account deletion so orphaned
+ * buckets, stashes, sliding-window counters, and seat-debt flags are purged
  * immediately rather than waiting on the 30-day TTL. Best-effort — returns
  * the number of keys deleted, never throws.
+ *
+ * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
+ *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
+ *   - upgrade:carryover:<userId>     — upgrade proration stash
+ *   - free_limit:<userId>:*          — free-tier ask sliding window
+ *   - free_agent_limit:<userId>:*    — free-tier agent sliding window
+ *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
+ *
+ * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
+ * user-scoped) and any extra-usage balance records (stored in Convex, not Redis).
  */
 export const deleteUserRateLimitKeys = async (
   userId: string,
@@ -492,9 +503,20 @@ export const deleteUserRateLimitKeys = async (
   const redis = createRedisClient();
   if (!redis) return 0;
 
+  const patterns = [
+    `usage:monthly:${userId}:*`,
+    `upgrade:carryover:${userId}`,
+    `free_limit:${userId}:*`,
+    `free_agent_limit:${userId}:*`,
+    `team:debt_applied:*:${userId}`,
+  ];
+
   try {
-    const keys = await redis.keys(`*${userId}*`);
-    if (!keys || keys.length === 0) return 0;
+    const keyBatches = await Promise.all(
+      patterns.map((pattern) => redis.keys(pattern)),
+    );
+    const keys = Array.from(new Set(keyBatches.flat()));
+    if (keys.length === 0) return 0;
     await Promise.all(keys.map((key) => redis.del(key)));
     return keys.length;
   } catch (error) {
