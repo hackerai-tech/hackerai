@@ -625,12 +625,18 @@ export const calculateProratedCredits = (
  *
  * @param consumedCredits - Credits already consumed from the old tier this cycle.
  *   Deducted from the prorated allocation so users can't "double-dip".
+ * @param periodEndSeconds - Optional Stripe `current_period_end` (unix seconds).
+ *   When supplied, the bucket's internal `refilledAt` is rewritten so Upstash's
+ *   reported reset (`refilledAt + 30 d`) lands on the actual invoice date
+ *   instead of 30 days from now. Matters for mid-cycle upgrades, where the
+ *   remaining cycle is shorter than 30 days.
  */
 export const initProratedBucket = async (
   userId: string,
   newTier: SubscriptionTier,
   proratedRatio: number,
   consumedCredits: number = 0,
+  periodEndSeconds?: number,
 ): Promise<void> => {
   const redis = createRedisClient();
   if (!redis) return;
@@ -656,6 +662,21 @@ export const initProratedBucket = async (
     // Burn excess to bring bucket down to prorated level
     if (burnAmount > 0) {
       await monthly.limiter.limit(monthly.key, { rate: burnAmount });
+    }
+
+    // Align the UI-facing reset time with Stripe's billing cycle. Upstash's
+    // token bucket computes reset as `refilledAt + interval`; our interval is
+    // hardcoded to 30 d, so setting `refilledAt = periodEnd - 30 d` makes the
+    // reported reset land exactly on the next invoice date. `refilledAt` is
+    // an internal field of @upstash/ratelimit — re-verify on SDK upgrades.
+    if (
+      periodEndSeconds &&
+      Number.isFinite(periodEndSeconds) &&
+      periodEndSeconds > 0
+    ) {
+      const targetRefilledAtMs =
+        (periodEndSeconds - THIRTY_DAYS_SECONDS) * 1000;
+      await redis.hset(monthlyKey, { refilledAt: targetRefilledAtMs });
     }
 
     // Align TTL to 30 days from now

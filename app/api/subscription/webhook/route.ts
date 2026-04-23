@@ -213,7 +213,13 @@ async function handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
 
       await Promise.all(
         tierChangeUsers.map(({ uid, stash }) =>
-          initProratedBucket(uid, tier, proratedRatio, stash!.consumed),
+          initProratedBucket(
+            uid,
+            tier,
+            proratedRatio,
+            stash!.consumed,
+            periodEnd,
+          ),
         ),
       );
 
