@@ -22,6 +22,8 @@ export interface ChatInputTextareaProps {
   onEnterSubmit: (e: React.FormEvent) => void;
   disabled?: boolean;
   minRows?: number;
+  placeholder?: string;
+  autoFocus?: boolean;
 }
 
 export function ChatInputTextarea({
@@ -30,6 +32,8 @@ export function ChatInputTextarea({
   onEnterSubmit,
   disabled = false,
   minRows = 1,
+  placeholder,
+  autoFocus = true,
 }: ChatInputTextareaProps) {
   const { input, setInput, subscription } = useGlobalState();
   const { handlePasteEvent } = useFileUpload(chatMode);
@@ -113,13 +117,15 @@ export function ChatInputTextarea({
         value={input}
         onChange={(e) => setInput(e.target.value)}
         placeholder={
-          chatMode === "agent"
-            ? "Hack, test, secure anything"
-            : "Ask, learn, brainstorm"
+          placeholder !== undefined
+            ? placeholder
+            : chatMode === "agent"
+              ? "Hack, test, secure anything"
+              : "Ask, learn, brainstorm"
         }
         className="flex rounded-md border-input focus-visible:outline-none focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 overflow-hidden flex-1 bg-transparent p-0 pt-[1px] border-0 focus-visible:ring-0 focus-visible:ring-offset-0 w-full placeholder:text-muted-foreground text-base shadow-none resize-none min-h-[28px]"
         minRows={minRows}
-        autoFocus
+        autoFocus={autoFocus}
         disabled={disabled}
         data-testid="chat-input"
         onKeyDown={(e) => {

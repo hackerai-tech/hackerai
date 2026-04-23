@@ -42,6 +42,8 @@ interface ChatInputProps {
   rateLimitWarning?: RateLimitWarningData;
   onDismissRateLimitWarning?: () => void;
   contextUsage?: ContextUsageData;
+  placeholder?: string;
+  autoFocus?: boolean;
 }
 
 export const ChatInput = ({
@@ -60,6 +62,8 @@ export const ChatInput = ({
   rateLimitWarning,
   onDismissRateLimitWarning,
   contextUsage,
+  placeholder,
+  autoFocus,
 }: ChatInputProps) => {
   const {
     input,
@@ -229,6 +233,8 @@ export const ChatInput = ({
             chatMode={chatMode}
             onEnterSubmit={handleSubmit}
             minRows={isCentered ? 3 : 1}
+            placeholder={placeholder}
+            autoFocus={autoFocus}
           />
           <ChatInputToolbar
             onAttachClick={handleAttachClick}
