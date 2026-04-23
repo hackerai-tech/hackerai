@@ -1,4 +1,4 @@
-/* eslint-disable */
+ 
 /**
  * Generated `api` utility.
  *
@@ -18,7 +18,6 @@ import type * as feedback from "../feedback.js";
 import type * as fileActions from "../fileActions.js";
 import type * as fileAggregate from "../fileAggregate.js";
 import type * as fileStorage from "../fileStorage.js";
-import type * as fraudTracking from "../fraudTracking.js";
 import type * as lib_logger from "../lib/logger.js";
 import type * as lib_utils from "../lib/utils.js";
 import type * as localSandbox from "../localSandbox.js";
@@ -53,7 +52,6 @@ declare const fullApi: ApiFromModules<{
   fileActions: typeof fileActions;
   fileAggregate: typeof fileAggregate;
   fileStorage: typeof fileStorage;
-  fraudTracking: typeof fraudTracking;
   "lib/logger": typeof lib_logger;
   "lib/utils": typeof lib_utils;
   localSandbox: typeof localSandbox;

@@ -714,7 +714,7 @@ export const updateExtraUsageSettings = mutation({
  * On failure: increment the counter, and after MAX_AUTO_RELOAD_FAILURES
  * consecutive failures auto-disable auto-reload and store a human-readable
  * reason. This prevents a broken saved card from retrying every overage
- * request and getting flagged as card-testing fraud.
+ * request.
  */
 const MAX_AUTO_RELOAD_FAILURES = 2;
 
