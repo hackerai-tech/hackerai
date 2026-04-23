@@ -150,7 +150,7 @@ export default defineSchema({
     cumulative_spend_dollars: v.optional(v.number()), // Total of all successful charges
     override_monthly_cap_dollars: v.optional(v.number()), // Manual override set by support team
     // Auto-reload health tracking — disable after consecutive failures so a
-    // broken saved card does not keep retrying and trip card-testing fraud rules.
+    // broken saved card does not keep retrying.
     auto_reload_consecutive_failures: v.optional(v.number()),
     auto_reload_disabled_reason: v.optional(v.string()),
     updated_at: v.number(),
@@ -248,26 +248,6 @@ export default defineSchema({
   })
     .index("by_user", ["user_id"])
     .index("by_user_and_model", ["user_id", "model"]),
-
-  // Tracks rapid payment failures per Stripe customer for card-testing fraud detection.
-  // Uses a weighted sliding window (10 min) with multiple fraud signals:
-  // - Weighted scoring (incorrect_number counts double)
-  // - Distinct card fingerprints (3+ unique cards = instant block)
-  // - Decline code diversity (3+ distinct codes = instant block)
-  // - Account age factor (new accounts have lower threshold)
-  payment_failure_tracking: defineTable({
-    stripe_customer_id: v.string(),
-    failure_count: v.number(),
-    weighted_score: v.number(),
-    first_failure_at: v.number(),
-    last_failure_at: v.number(),
-    decline_codes: v.array(v.string()),
-    distinct_fingerprints: v.array(v.string()),
-    auto_blocked: v.boolean(),
-    // JSON-serialized array of {timestamp, declineCode, fingerprint, weight}
-    // for true sliding window evaluation (pruned on each write)
-    entries: v.optional(v.string()),
-  }).index("by_customer_id", ["stripe_customer_id"]),
 
   // Webhook idempotency (prevents double-crediting on Stripe retries)
   processed_webhooks: defineTable({
