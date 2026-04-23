@@ -12,7 +12,8 @@ const MODEL_COST_TIER: Record<string, CostTier> = {
   "sonnet-4.6": "high",
   "opus-4.6": "very-high",
   "opus-4.7": "very-high",
-  "kimi-k2.6": "low",
+  "gpt-5.4": "high",
+  "kimi-k2.6": "medium",
 };
 
 export function getCostTier(modelId: string): CostTier {
