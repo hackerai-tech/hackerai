@@ -993,7 +993,12 @@ export const createChatHandler = (
                     ...extractErrorDetails(error),
                   });
                 }
-                // No refund on streaming errors - usage is still charged
+                // Refund the upfront deduction only when the provider errored
+                // before producing any tokens. If hasUsage is true, the real
+                // cost will still be reconciled by deductAccumulatedUsage().
+                if (!usageTracker.hasUsage) {
+                  await usageRefundTracker.refund();
+                }
               },
             });
 
@@ -1033,6 +1038,10 @@ export const createChatHandler = (
               stoppedDueToDoomLoop = false;
               preFallbackCacheRead = usageTracker.cacheReadTokens;
               preFallbackCacheWrite = usageTracker.cacheWriteTokens;
+              // Discard the failed primary leg's model usage so the user is
+              // only billed for the fallback. Non-model spend (sandbox/tools)
+              // is preserved.
+              usageTracker.resetModelLeg();
               result = await createStream(fallbackModel);
             } else {
               throw error;
@@ -1078,6 +1087,11 @@ export const createChatHandler = (
                     stoppedDueToPreemptiveTimeout = false;
                     stoppedDueToDoomLoop = false;
                     const fallbackStartTime = Date.now();
+
+                    // Discard the failed primary leg's model usage so the
+                    // user is only billed for the fallback. Non-model spend
+                    // (sandbox/tools) is preserved.
+                    usageTracker.resetModelLeg();
 
                     const retryResult = await createStream(fallbackModel);
                     const retryMessageId = generateId();
@@ -1587,7 +1601,10 @@ export const createChatHandler = (
       // Clear timeout if error occurs before onFinish
       preemptiveTimeout?.clear();
 
-      // No refund on errors - usage is still charged
+      // Refund the upfront deduction when the request fails before any tokens
+      // were consumed. refund() is idempotent and only fires if deductions were
+      // recorded and nothing has been refunded yet.
+      await usageRefundTracker.refund();
 
       // Handle ChatSDKErrors (including authentication errors)
       if (error instanceof ChatSDKError) {

@@ -3,6 +3,7 @@ import { stripe } from "../stripe";
 import { workos } from "../workos";
 import { getUserIDWithFreshLogin } from "@/lib/auth/get-user-id";
 import { clearByokApiKey } from "@/lib/auth/byok";
+import { deleteUserRateLimitKeys } from "@/lib/rate-limit/token-bucket";
 import { ChatSDKError } from "@/lib/errors";
 
 export const POST = async (req: NextRequest) => {
@@ -94,15 +95,24 @@ export const POST = async (req: NextRequest) => {
       }),
     );
 
-    // Remove any stored BYOK OpenRouter key from WorkOS Vault. Best-effort:
-    // WorkOS user deletion proceeds even if vault cleanup fails so the account
-    // is not left in a half-deleted state.
-    await clearByokApiKey(userId).catch((err) => {
-      console.warn(
-        "Failed to clear BYOK vault entry during account deletion:",
-        err,
-      );
-    });
+    // Remove any stored BYOK OpenRouter key from WorkOS Vault and purge
+    // Redis rate-limit keys in parallel. Both are best-effort: WorkOS user
+    // deletion proceeds even if either fails so the account is not left in
+    // a half-deleted state.
+    await Promise.all([
+      clearByokApiKey(userId).catch((err) => {
+        console.warn(
+          "Failed to clear BYOK vault entry during account deletion:",
+          err,
+        );
+      }),
+      deleteUserRateLimitKeys(userId).catch((err) => {
+        console.warn(
+          "Failed to clear Redis rate-limit keys during account deletion:",
+          err,
+        );
+      }),
+    ]);
 
     // Finally, delete the WorkOS user
     await workos.userManagement.deleteUser(userId);

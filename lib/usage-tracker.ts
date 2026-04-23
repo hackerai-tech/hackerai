@@ -34,6 +34,25 @@ export class UsageTracker {
   /** Output tokens from summarization (not from assistant responses) */
   summarizationOutputTokens = 0;
 
+  /**
+   * Discard the model leg's accumulated usage before a fallback retry runs.
+   * Keeps nonModelCost (sandbox/tool spend already incurred) and summarization
+   * output tokens, so the final deduction only bills the fallback model.
+   */
+  resetModelLeg() {
+    this.providerCost -= this.modelProviderCost;
+    this.modelProviderCost = 0;
+    this.inputTokens = 0;
+    // Preserve summarization's contribution to outputTokens so the
+    // streamOutputTokens getter (outputTokens - summarizationOutputTokens)
+    // never goes negative.
+    this.outputTokens = this.summarizationOutputTokens;
+    this.totalTokens = this.outputTokens;
+    this.lastStepInputTokens = 0;
+    this.cacheReadTokens = 0;
+    this.cacheWriteTokens = 0;
+  }
+
   accumulateStep(usage: StepUsage) {
     this.inputTokens += usage.inputTokens || 0;
     this.outputTokens += usage.outputTokens || 0;
