@@ -21,6 +21,13 @@ const MODEL_PRICING_MAP: Record<string, { input: number; output: number }> = {
   "model-opus-4.6": { input: 5.0, output: 25.0 },
   "model-opus-4.7": { input: 5.0, output: 25.0 },
   "model-gpt-5.4": { input: 2.5, output: 15.0 },
+  // "agent-model", "agent-model-free", and "model-kimi-k2.6" all route to
+  // moonshotai/kimi-k2.6:exacto via lib/ai/providers.ts. Rates from Moonshot AI
+  // direct provider (int4): $0.95 in / $4.00 out per 1M tokens. Cache-read
+  // discount ($0.16/M) applies when provider cost is available via usage.raw.cost.
+  "agent-model": { input: 0.95, output: 4.0 },
+  "agent-model-free": { input: 0.95, output: 4.0 },
+  "model-kimi-k2.6": { input: 0.95, output: 4.0 },
 };
 
 const getModelPricing = (modelName?: string) =>
@@ -471,6 +478,54 @@ export const resetRateLimitBuckets = async (
   subscription: SubscriptionTier,
 ): Promise<void> => {
   await initProratedBucket(userId, subscription, 1.0, 0);
+};
+
+/**
+ * Delete Redis keys associated with a user across every rate-limit namespace
+ * written by this codebase. Called during account deletion so orphaned
+ * buckets, stashes, sliding-window counters, and seat-debt flags are purged
+ * immediately rather than waiting on the 30-day TTL. Best-effort — returns
+ * the number of keys deleted, never throws.
+ *
+ * Namespaces (keep in sync with key builders in this file and sliding-window.ts):
+ *   - usage:monthly:<userId>:*       — monthly token bucket (any tier)
+ *   - upgrade:carryover:<userId>     — upgrade proration stash
+ *   - free_limit:<userId>:*          — free-tier ask sliding window
+ *   - free_agent_limit:<userId>:*    — free-tier agent sliding window
+ *   - team:debt_applied:*:<userId>   — seat-debt idempotency flag (org-scoped)
+ *
+ * Deliberately NOT included: team:removed_usage:<orgId> (org counter, not
+ * user-scoped) and any extra-usage balance records (stored in Convex, not Redis).
+ */
+export const deleteUserRateLimitKeys = async (
+  userId: string,
+): Promise<number> => {
+  const redis = createRedisClient();
+  if (!redis) return 0;
+
+  const patterns = [
+    `usage:monthly:${userId}:*`,
+    `upgrade:carryover:${userId}`,
+    `free_limit:${userId}:*`,
+    `free_agent_limit:${userId}:*`,
+    `team:debt_applied:*:${userId}`,
+  ];
+
+  try {
+    const keyBatches = await Promise.all(
+      patterns.map((pattern) => redis.keys(pattern)),
+    );
+    const keys = Array.from(new Set(keyBatches.flat()));
+    if (keys.length === 0) return 0;
+    await Promise.all(keys.map((key) => redis.del(key)));
+    return keys.length;
+  } catch (error) {
+    console.error(
+      `[deleteUserRateLimitKeys] Failed for user ${userId}:`,
+      error,
+    );
+    return 0;
+  }
 };
 
 // =============================================================================
