@@ -1139,8 +1139,6 @@ export async function sendRequest(
       body_size: 0,
       response_time_ms: Math.round(curlMeta.time_ms * 1000),
       url: curlMeta.url_effective,
-      message:
-        "Caido proxy encountered a database error and will be restarted automatically",
     };
   }
 
@@ -1152,8 +1150,6 @@ export async function sendRequest(
     body_size: parsed.body_size,
     response_time_ms: Math.round(curlMeta.time_ms * 1000),
     url: curlMeta.url_effective,
-    message:
-      "Request sent through Caido proxy — check list_requests for captured traffic",
   };
 }
 
