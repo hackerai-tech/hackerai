@@ -56,6 +56,7 @@ export interface CaidoReadyInfo {
     | "external"
     | "locked_wait"
     | "locked_wait_error"
+    | "cached_ready"
     | "windows_unsupported"
     | "setup_error";
   duration_ms: number;

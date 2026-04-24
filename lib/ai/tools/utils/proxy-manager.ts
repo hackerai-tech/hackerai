@@ -25,6 +25,14 @@ let cachedCaidoToken: string | null = null;
  */
 const caidoLock = new WeakMap<object, Promise<void>>();
 
+/**
+ * Tracks which sandboxes currently have an *in-flight* setup (vs. a resolved
+ * cached Promise in caidoLock). Used only for telemetry — distinguishes a true
+ * concurrent wait (`locked_wait`) from hitting the post-success cache
+ * (`cached_ready`). Added on setup start, removed on setup settle.
+ */
+const caidoInFlight = new WeakSet<object>();
+
 /** Tracks sandboxes we've already warned about Windows incompatibility. */
 const windowsWarned = new WeakSet<object>();
 
@@ -78,6 +86,7 @@ export function isCaidoBroken(text: string): boolean {
  */
 async function invalidateAndKillCaido(context: ToolContext): Promise<void> {
   caidoLock.delete(context.sandboxManager);
+  caidoInFlight.delete(context.sandboxManager);
   cachedCaidoToken = null;
 
   // When using a custom port, the user manages their own Caido instance —
@@ -152,9 +161,12 @@ export async function ensureCaido(context: ToolContext): Promise<void> {
 
   const existing = caidoLock.get(context.sandboxManager);
   if (existing) {
+    // Distinguish a true concurrent wait from hitting the post-success cache:
+    // in-flight at observation time → `locked_wait`; already settled → `cached_ready`.
+    const wasInFlight = caidoInFlight.has(context.sandboxManager);
     try {
       await existing;
-      tracker.path = "locked_wait";
+      tracker.path = wasInFlight ? "locked_wait" : "cached_ready";
       reportCaidoReady(context, startedAt, tracker);
     } catch (e) {
       tracker.path = "locked_wait_error";
@@ -164,14 +176,17 @@ export async function ensureCaido(context: ToolContext): Promise<void> {
     return;
   }
 
+  caidoInFlight.add(context.sandboxManager);
   const setup = doEnsureCaido(context, tracker);
   caidoLock.set(context.sandboxManager, setup);
 
   try {
     await setup;
+    caidoInFlight.delete(context.sandboxManager);
     reportCaidoReady(context, startedAt, tracker);
   } catch (e) {
     console.warn("[Caido] Setup failed:", e);
+    caidoInFlight.delete(context.sandboxManager);
     caidoLock.delete(context.sandboxManager);
     if (!tracker.path) tracker.path = "setup_error";
     reportCaidoReady(context, startedAt, tracker, e);
