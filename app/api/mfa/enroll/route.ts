@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Enroll authentication factor with WorkOS
-    const result = await workos.userManagement.enrollAuthFactor({
+    const result = await workos.multiFactorAuth.createUserAuthFactor({
       userId: userId,
       type: "totp",
       totpIssuer: "HackerAI",

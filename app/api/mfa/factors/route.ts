@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
     }
 
     // Get user's MFA factors from WorkOS
-    const factors = await workos.userManagement.listAuthFactors({
+    const factors = await workos.multiFactorAuth.listUserAuthFactors({
       userId: userId,
     });
 
