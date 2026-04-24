@@ -133,21 +133,21 @@ export async function GET(request: NextRequest) {
     return buildRecoveryResponse(request, error);
   }
 
-  // On success, honor post_login_redirect by MUTATING the existing response's
-  // Location header rather than building a new one. Rebuilding drops the
-  // Set-Cookie headers authkit attached to expire the PKCE verifier, leaving
-  // the cookie in the browser — which then causes `invalid_grant` on any
-  // subsequent hit of the callback URL (refresh, back button, prefetcher).
-  if (
-    redirectPath &&
-    isValidLocalPath(redirectPath) &&
-    [302, 307].includes(response.status)
-  ) {
+  // On a successful redirect response, always clear post_login_redirect so a
+  // stale/malformed value can't survive and re-trigger the check on every
+  // subsequent callback. Only rewrite the Location header if the value is a
+  // safe local path. MUTATE authkit's response rather than building a new one
+  // — rebuilding drops the Set-Cookie headers authkit attached to expire the
+  // PKCE verifier, which causes `invalid_grant` on any subsequent hit of the
+  // callback URL (refresh, back button, prefetcher).
+  if (redirectPath && [302, 307].includes(response.status)) {
     cookieStore.delete({ name: "post_login_redirect", path: "/" });
-    response.headers.set(
-      "location",
-      new URL(redirectPath, request.url).toString(),
-    );
+    if (isValidLocalPath(redirectPath)) {
+      response.headers.set(
+        "location",
+        new URL(redirectPath, request.url).toString(),
+      );
+    }
     return response;
   }
 
