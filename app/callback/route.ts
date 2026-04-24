@@ -33,13 +33,28 @@ const classifyCallbackError = (error: unknown): RecoveryBucket => {
   return "unknown";
 };
 
+// AuthKit v4 scopes the PKCE cookie per-flow: `wos-auth-verifier-<hash(state)>`.
+// v3 used a single shared `wos-auth-verifier`. We treat either as "has verifier".
+const PKCE_COOKIE_PREFIX = "wos-auth-verifier";
+
+const findPkceCookie = (
+  request: NextRequest,
+): { name: string; value: string } | null => {
+  for (const cookie of request.cookies.getAll()) {
+    if (cookie.name.startsWith(PKCE_COOKIE_PREFIX)) {
+      return { name: cookie.name, value: cookie.value };
+    }
+  }
+  return null;
+};
+
 const buildRecoveryResponse = async (
   request: NextRequest,
   error: unknown,
 ): Promise<Response> => {
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
-  const hasVerifierCookie = request.cookies.has("wos-auth-verifier");
+  const hasVerifierCookie = findPkceCookie(request) !== null;
   if (redirectPath) {
     cookieStore.delete({ name: "post_login_redirect", path: "/" });
   }
@@ -108,9 +123,11 @@ const authHandler = handleAuth({
  * Pre-flight check that mirrors authkit's own PKCE/state validation.
  * Running it before authHandler lets us short-circuit into recovery
  * *without* triggering authkit's unconditional console.error.
+ *
+ * AuthKit v4+ scopes the PKCE cookie name per flow (hash of state). We accept
+ * any `wos-auth-verifier*` cookie — the sealed value itself is the CSRF token
+ * and must equal `state`, which is the only integrity check that matters.
  */
-const PKCE_COOKIE_NAME = "wos-auth-verifier";
-
 async function preflightCallbackError(
   request: NextRequest,
 ): Promise<Error | null> {
@@ -120,13 +137,13 @@ async function preflightCallbackError(
   if (!code || !state) {
     return new Error("Missing required auth parameter");
   }
-  const pkceCookie = request.cookies.get(PKCE_COOKIE_NAME)?.value;
+  const pkceCookie = findPkceCookie(request);
   if (!pkceCookie) {
     return new Error(
       "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
     );
   }
-  if (state !== pkceCookie) {
+  if (state !== pkceCookie.value) {
     return new Error("OAuth state mismatch");
   }
 
@@ -135,9 +152,12 @@ async function preflightCallbackError(
   // the callback (e.g. due to a redeployment), unseal will produce an empty
   // object and AuthKit would throw a ValiError internally.
   try {
-    const unsealed = await unsealData<Record<string, unknown>>(pkceCookie, {
-      password: process.env.WORKOS_COOKIE_PASSWORD ?? "",
-    });
+    const unsealed = await unsealData<Record<string, unknown>>(
+      pkceCookie.value,
+      {
+        password: process.env.WORKOS_COOKIE_PASSWORD ?? "",
+      },
+    );
     if (!unsealed.nonce || !unsealed.codeVerifier) {
       return new Error(
         "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
