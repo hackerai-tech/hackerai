@@ -6,7 +6,7 @@
  * This works identically for desktop and remote-connection sandboxes.
  */
 
-import type { CaidoReadyInfo, ToolContext } from "@/types";
+import type { CaidoErrorKind, CaidoReadyInfo, ToolContext } from "@/types";
 import { CAIDO_DEFAULTS, getCaidoConfig } from "./caido-proxy";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { isCentrifugoSandbox } from "./sandbox-types";
@@ -46,6 +46,26 @@ interface CaidoSetupTimings {
   reauth_script_ms?: number;
 }
 
+/**
+ * Classify a caido-setup error into a bounded kind for telemetry.
+ *
+ * Raw error messages can include local hostnames, ports, or caido-cli stderr
+ * — we never put those into the wide event. The message itself is still logged
+ * via console.warn at the catch site for debug purposes.
+ */
+function classifyCaidoError(error: unknown): CaidoErrorKind {
+  if (!(error instanceof Error)) return "unknown";
+  const msg = error.message;
+  if (msg.includes("could not be installed automatically"))
+    return "install_failed";
+  if (msg.includes("did not become ready")) return "start_timeout";
+  if (msg.includes("authentication failed")) return "auth_failed";
+  if (msg.includes("Could not connect to your Caido"))
+    return "external_unreachable";
+  if (msg.startsWith("Caido setup failed")) return "setup_failed";
+  return "unknown";
+}
+
 function reportCaidoReady(
   context: ToolContext,
   startedAt: number,
@@ -65,8 +85,7 @@ function reportCaidoReady(
     info.health_poll_ms = tracker.health_poll_ms;
   if (tracker.reauth_script_ms !== undefined)
     info.reauth_script_ms = tracker.reauth_script_ms;
-  if (error)
-    info.error = error instanceof Error ? error.message : String(error);
+  if (error) info.error_kind = classifyCaidoError(error);
   context.onCaidoReady(info);
 }
 

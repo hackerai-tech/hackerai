@@ -129,7 +129,14 @@ export interface ChatWideEvent {
     background_start_ms?: number;
     health_poll_ms?: number;
     reauth_script_ms?: number;
-    error?: string;
+    /** Bounded error kind — raw messages stay in debug-only console.warn. */
+    error_kind?:
+      | "install_failed"
+      | "start_timeout"
+      | "auth_failed"
+      | "external_unreachable"
+      | "setup_failed"
+      | "unknown";
   };
 
   // Tool execution

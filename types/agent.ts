@@ -49,6 +49,14 @@ export interface SandboxBootInfo {
   create_attempts: number;
 }
 
+export type CaidoErrorKind =
+  | "install_failed"
+  | "start_timeout"
+  | "auth_failed"
+  | "external_unreachable"
+  | "setup_failed"
+  | "unknown";
+
 export interface CaidoReadyInfo {
   path:
     | "fast"
@@ -64,7 +72,13 @@ export interface CaidoReadyInfo {
   background_start_ms?: number;
   health_poll_ms?: number;
   reauth_script_ms?: number;
-  error?: string;
+  /**
+   * Bounded error classification for telemetry. Raw error messages are never
+   * written to the wide event — they may contain local hostnames, ports, or
+   * stderr content from caido-cli. Full messages are available in console.warn
+   * for debugging only.
+   */
+  error_kind?: CaidoErrorKind;
 }
 
 export interface SandboxContext {
