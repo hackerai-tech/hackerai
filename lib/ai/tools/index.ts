@@ -31,6 +31,8 @@ import type {
   AnySandbox,
   AppendMetadataStreamFn,
   SubscriptionTier,
+  SandboxBootInfo,
+  CaidoReadyInfo,
 } from "@/types";
 import { isAgentMode } from "@/lib/utils/mode-helpers";
 import type { Geo } from "@vercel/functions";
@@ -64,6 +66,8 @@ export const createTools = (
   appendMetadataStream?: AppendMetadataStreamFn,
   onToolCost?: (costDollars: number) => void,
   subscription?: SubscriptionTier,
+  onSandboxBoot?: (info: SandboxBootInfo) => void,
+  onCaidoReady?: (info: CaidoReadyInfo) => void,
 ) => {
   let sandbox: AnySandbox | null = null;
   let sandboxFirstUsedAt: number | null = null;
@@ -97,11 +101,13 @@ export const createTools = (
           serviceKey,
           isE2BSandbox(sandbox) ? sandbox : null,
           subscription,
+          onSandboxBoot,
         )
       : new DefaultSandboxManager(
           userID,
           trackSandboxUsage,
           isE2BSandbox(sandbox) ? sandbox : null,
+          onSandboxBoot,
         );
 
   const todoManager = new TodoManager(initialTodos);
@@ -125,6 +131,7 @@ export const createTools = (
     caidoPort,
     appendMetadataStream,
     onToolCost,
+    onCaidoReady,
   };
 
   // Create all available tools

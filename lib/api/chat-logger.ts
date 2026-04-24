@@ -11,7 +11,12 @@ import {
   type ChatWideEvent,
   type WideEventBuilder,
 } from "@/lib/logger";
-import type { ChatMode, ExtraUsageConfig } from "@/types";
+import type {
+  CaidoReadyInfo,
+  ChatMode,
+  ExtraUsageConfig,
+  SandboxBootInfo,
+} from "@/types";
 import type { ChatSDKError } from "@/lib/errors";
 import type { PostHog } from "posthog-node";
 import { after } from "next/server";
@@ -128,6 +133,20 @@ export function createChatLogger(config: ChatLoggerConfig) {
       if (info) {
         builder.setSandbox(info);
       }
+    },
+
+    /**
+     * Record sandbox boot timing (first call wins within a request).
+     */
+    setSandboxBoot(info: SandboxBootInfo) {
+      builder.setSandboxBoot(info);
+    },
+
+    /**
+     * Record Caido proxy setup timing (first call wins within a request).
+     */
+    setCaidoReady(info: CaidoReadyInfo) {
+      builder.setCaidoReady(info);
     },
 
     /**

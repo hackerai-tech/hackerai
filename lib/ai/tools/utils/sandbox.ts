@@ -1,32 +1,8 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxContext } from "@/types";
+import type { SandboxBootInfo, SandboxContext } from "@/types";
 import { NotFoundError, getUserFacingE2BErrorMessage } from "./e2b-errors";
 
-type SandboxReadyPath =
-  | "reuse_existing"
-  | "create_fresh"
-  | "create_after_version_mismatch"
-  | "create_after_expired"
-  | "create_after_broken";
-
-function logSandboxReady(
-  path: SandboxReadyPath,
-  userID: string,
-  startedAt: number,
-  attempts: number,
-  sandboxId: string | undefined,
-): void {
-  console.log(
-    JSON.stringify({
-      event: "sandbox_ready",
-      path,
-      user_id: userID,
-      sandbox_id: sandboxId,
-      duration_ms: Math.round(performance.now() - startedAt),
-      create_attempts: attempts,
-    }),
-  );
-}
+type SandboxReadyPath = SandboxBootInfo["path"];
 
 const SANDBOX_TEMPLATE = process.env.E2B_TEMPLATE || "terminal-agent-sandbox";
 const BASH_SANDBOX_RESUME_TIMEOUT = 5 * 60 * 1000; // 5 minutes for resuming paused sandbox
@@ -69,7 +45,7 @@ export const ensureSandboxConnection = async (
     initialSandbox?: Sandbox | null;
   } = {},
 ): Promise<{ sandbox: Sandbox }> => {
-  const { userID, setSandbox } = context;
+  const { userID, setSandbox, onBoot } = context;
   const { initialSandbox } = options;
 
   // Return existing sandbox if already connected
@@ -78,6 +54,13 @@ export const ensureSandboxConnection = async (
   }
   const startedAt = performance.now();
   let createPath: SandboxReadyPath = "create_fresh";
+  const reportBoot = (path: SandboxReadyPath, attempts: number): void => {
+    onBoot?.({
+      path,
+      duration_ms: Math.round(performance.now() - startedAt),
+      create_attempts: attempts,
+    });
+  };
   try {
     // Step 1: Look for existing sandbox for this user
     const paginator = Sandbox.list({
@@ -114,13 +97,7 @@ export const ensureSandboxConnection = async (
           timeoutMs: BASH_SANDBOX_RESUME_TIMEOUT,
         });
         setSandbox(sandbox);
-        logSandboxReady(
-          "reuse_existing",
-          userID,
-          startedAt,
-          0,
-          existingSandbox.sandboxId,
-        );
+        reportBoot("reuse_existing", 0);
         return { sandbox };
       } catch (e) {
         // Handle specific error cases
@@ -184,13 +161,7 @@ export const ensureSandboxConnection = async (
         });
 
         setSandbox(sandbox);
-        logSandboxReady(
-          createPath,
-          userID,
-          startedAt,
-          attempt + 1,
-          sandbox.sandboxId,
-        );
+        reportBoot(createPath, attempt + 1);
         return { sandbox };
       } catch (createError) {
         lastError = createError;

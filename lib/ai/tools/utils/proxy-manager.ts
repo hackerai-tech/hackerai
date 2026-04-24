@@ -6,7 +6,7 @@
  * This works identically for desktop and remote-connection sandboxes.
  */
 
-import type { ToolContext } from "@/types";
+import type { CaidoReadyInfo, ToolContext } from "@/types";
 import { CAIDO_DEFAULTS, getCaidoConfig } from "./caido-proxy";
 import { buildSandboxCommandOptions } from "./sandbox-command-options";
 import { isCentrifugoSandbox } from "./sandbox-types";
@@ -28,42 +28,38 @@ const caidoLock = new WeakMap<object, Promise<void>>();
 /** Tracks sandboxes we've already warned about Windows incompatibility. */
 const windowsWarned = new WeakSet<object>();
 
+/** Mutable tracker — `doEnsureCaido` reports its path + sub-timings through this
+ *  so the wrapper in `ensureCaido` can emit a single `CaidoReadyInfo` at the end. */
 interface CaidoSetupTimings {
-  path?:
-    | "external"
-    | "fast"
-    | "needs_start"
-    | "windows_unsupported"
-    | "locked_wait"
-    | "locked_wait_error"
-    | "setup_error";
+  path?: CaidoReadyInfo["path"];
   initial_script_ms?: number;
   background_start_ms?: number;
   health_poll_ms?: number;
   reauth_script_ms?: number;
 }
 
-function logCaidoReady(
+function reportCaidoReady(
+  context: ToolContext,
   startedAt: number,
   tracker: CaidoSetupTimings,
   error?: unknown,
 ): void {
-  const payload: Record<string, unknown> = {
-    event: "caido_ready",
-    path: tracker.path ?? "unknown",
+  if (!context.onCaidoReady) return;
+  const info: CaidoReadyInfo = {
+    path: tracker.path ?? "setup_error",
     duration_ms: Math.round(performance.now() - startedAt),
   };
   if (tracker.initial_script_ms !== undefined)
-    payload.initial_script_ms = tracker.initial_script_ms;
+    info.initial_script_ms = tracker.initial_script_ms;
   if (tracker.background_start_ms !== undefined)
-    payload.background_start_ms = tracker.background_start_ms;
+    info.background_start_ms = tracker.background_start_ms;
   if (tracker.health_poll_ms !== undefined)
-    payload.health_poll_ms = tracker.health_poll_ms;
+    info.health_poll_ms = tracker.health_poll_ms;
   if (tracker.reauth_script_ms !== undefined)
-    payload.reauth_script_ms = tracker.reauth_script_ms;
+    info.reauth_script_ms = tracker.reauth_script_ms;
   if (error)
-    payload.error = error instanceof Error ? error.message : String(error);
-  console.log(JSON.stringify(payload));
+    info.error = error instanceof Error ? error.message : String(error);
+  context.onCaidoReady(info);
 }
 
 /** Detects Caido's broken-database error in response content. */
@@ -150,7 +146,7 @@ export async function ensureCaido(context: ToolContext): Promise<void> {
       );
     }
     tracker.path = "windows_unsupported";
-    logCaidoReady(startedAt, tracker);
+    reportCaidoReady(context, startedAt, tracker);
     return rejection;
   }
 
@@ -159,10 +155,10 @@ export async function ensureCaido(context: ToolContext): Promise<void> {
     try {
       await existing;
       tracker.path = "locked_wait";
-      logCaidoReady(startedAt, tracker);
+      reportCaidoReady(context, startedAt, tracker);
     } catch (e) {
       tracker.path = "locked_wait_error";
-      logCaidoReady(startedAt, tracker, e);
+      reportCaidoReady(context, startedAt, tracker, e);
       throw e;
     }
     return;
@@ -173,12 +169,12 @@ export async function ensureCaido(context: ToolContext): Promise<void> {
 
   try {
     await setup;
-    logCaidoReady(startedAt, tracker);
+    reportCaidoReady(context, startedAt, tracker);
   } catch (e) {
     console.warn("[Caido] Setup failed:", e);
     caidoLock.delete(context.sandboxManager);
     if (!tracker.path) tracker.path = "setup_error";
-    logCaidoReady(startedAt, tracker, e);
+    reportCaidoReady(context, startedAt, tracker, e);
     throw e;
   }
 }

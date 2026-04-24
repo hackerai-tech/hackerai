@@ -38,9 +38,39 @@ export interface SandboxManager {
   isSandboxUnavailable(): boolean;
 }
 
+export interface SandboxBootInfo {
+  path:
+    | "reuse_existing"
+    | "create_fresh"
+    | "create_after_version_mismatch"
+    | "create_after_expired"
+    | "create_after_broken";
+  duration_ms: number;
+  create_attempts: number;
+}
+
+export interface CaidoReadyInfo {
+  path:
+    | "fast"
+    | "needs_start"
+    | "external"
+    | "locked_wait"
+    | "locked_wait_error"
+    | "windows_unsupported"
+    | "setup_error";
+  duration_ms: number;
+  initial_script_ms?: number;
+  background_start_ms?: number;
+  health_poll_ms?: number;
+  reauth_script_ms?: number;
+  error?: string;
+}
+
 export interface SandboxContext {
   userID: string;
   setSandbox: (sandbox: Sandbox) => void;
+  /** Called once when ensureSandboxConnection actually does work (creates or reconnects). */
+  onBoot?: (info: SandboxBootInfo) => void;
 }
 
 /** Optional: when set, terminal chunks are awaited so the run yields and stream delivery can happen in real time. */
@@ -70,4 +100,6 @@ export interface ToolContext {
   appendMetadataStream?: AppendMetadataStreamFn;
   /** Callback to report additional tool costs (in dollars) that should be added to the request's total cost. */
   onToolCost?: (costDollars: number) => void;
+  /** Called when Caido proxy setup completes (or fails). First call in a request captures the real cost; later calls measure lock-wait time. */
+  onCaidoReady?: (info: CaidoReadyInfo) => void;
 }

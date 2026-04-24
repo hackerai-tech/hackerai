@@ -1,5 +1,10 @@
 import type { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxInfo, SandboxManager, SandboxType } from "@/types";
+import type {
+  SandboxBootInfo,
+  SandboxInfo,
+  SandboxManager,
+  SandboxType,
+} from "@/types";
 import { ensureSandboxConnection } from "./sandbox";
 import { SANDBOX_ENVIRONMENT_TOOLS } from "./sandbox-tools";
 
@@ -14,6 +19,7 @@ export class DefaultSandboxManager implements SandboxManager {
     private userID: string,
     private setSandboxCallback: (sandbox: Sandbox) => void,
     initialSandbox?: Sandbox | null,
+    private onBoot?: (info: SandboxBootInfo) => void,
   ) {
     this.sandbox = initialSandbox || null;
   }
@@ -58,6 +64,7 @@ export class DefaultSandboxManager implements SandboxManager {
         {
           userID: this.userID,
           setSandbox: this.setSandboxCallback,
+          onBoot: this.onBoot,
         },
         {
           initialSandbox: this.sandbox,
