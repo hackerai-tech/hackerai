@@ -352,7 +352,7 @@ export const createPurchaseSession = action({
           userId: identity.subject,
           amountDollars: String(args.amountDollars),
         },
-        success_url: `${args.baseUrl}?extra-usage-purchased=true&amount=${args.amountDollars}`,
+        success_url: `${args.baseUrl}/api/extra-usage/confirm?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: args.baseUrl,
       });
 

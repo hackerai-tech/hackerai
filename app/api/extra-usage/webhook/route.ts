@@ -75,13 +75,16 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      // Add credits to user's balance (idempotent - uses Stripe event ID for deduplication)
+      // Add credits to user's balance. Idempotency key is scoped to the Checkout
+      // Session so this path and the post-checkout confirm redirect (which uses
+      // the same key) can race without double-crediting.
       try {
         const result = await convex.mutation(api.extraUsage.addCredits, {
           serviceKey: process.env.CONVEX_SERVICE_ROLE_KEY!,
           userId,
           amountDollars,
-          idempotencyKey: event.id, // Stripe event ID is stable across retries
+          idempotencyKey: `cs_${session.id}`,
+          legacyIdempotencyKey: event.id, // Guards retries of pre-deploy webhooks that stored `evt_<id>`
         });
 
         if (result.alreadyProcessed) {

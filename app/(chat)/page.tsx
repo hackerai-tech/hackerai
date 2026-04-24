@@ -10,6 +10,7 @@ import PricingDialog from "../components/PricingDialog";
 import TeamPricingDialog from "../components/TeamPricingDialog";
 import { TeamWelcomeDialog } from "../components/TeamDialogs";
 import MigratePentestgptDialog from "../components/MigratePentestgptDialog";
+import { ExtraUsagePurchaseToast } from "../components/extra-usage";
 import { usePricingDialog } from "../hooks/usePricingDialog";
 import { useGlobalState } from "../contexts/GlobalState";
 import { usePentestgptMigration } from "../hooks/usePentestgptMigration";
@@ -149,6 +150,7 @@ export default function Page() {
     <>
       <Authenticated>
         <AuthenticatedContent />
+        <ExtraUsagePurchaseToast />
         <PricingDialog isOpen={showPricing} onClose={handleClosePricing} />
         <TeamPricingDialog
           isOpen={teamPricingDialogOpen}
