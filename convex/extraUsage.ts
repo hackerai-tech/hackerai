@@ -172,7 +172,8 @@ export const addCredits = mutation({
     serviceKey: v.string(),
     userId: v.string(),
     amountDollars: v.number(),
-    idempotencyKey: v.optional(v.string()), // Stripe event ID for webhook deduplication
+    idempotencyKey: v.optional(v.string()), // Primary dedup key (session-scoped: `cs_<id>`)
+    legacyIdempotencyKey: v.optional(v.string()), // Stripe event ID — checked only to guard pre-deploy webhook retries
   },
   returns: v.object({
     newBalance: v.number(), // Returns dollars
@@ -181,11 +182,15 @@ export const addCredits = mutation({
   handler: async (ctx, args) => {
     validateServiceKey(args.serviceKey);
 
-    // Idempotency: skip if already processed (prevents double-credit on webhook retries)
-    if (args.idempotencyKey) {
+    // Idempotency: skip if already processed (prevents double-credit on webhook retries
+    // and across both the post-checkout confirm path and the async webhook path)
+    const dedupKeys = [args.idempotencyKey, args.legacyIdempotencyKey].filter(
+      (k): k is string => typeof k === "string" && k.length > 0,
+    );
+    for (const key of dedupKeys) {
       const existing = await ctx.db
         .query("processed_webhooks")
-        .withIndex("by_event_id", (q) => q.eq("event_id", args.idempotencyKey!))
+        .withIndex("by_event_id", (q) => q.eq("event_id", key))
         .first();
 
       if (existing) {
