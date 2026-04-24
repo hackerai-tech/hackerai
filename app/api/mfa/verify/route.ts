@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Verify challenge with WorkOS
-    const verification = await workos.mfa.verifyChallenge({
+    const verification = await workos.multiFactorAuth.verifyChallenge({
       authenticationChallengeId: challengeId,
       code: code,
     });

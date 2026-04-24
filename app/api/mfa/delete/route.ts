@@ -50,18 +50,20 @@ export async function POST(req: NextRequest) {
     }
 
     // Ensure factor belongs to the authenticated user
-    const factors = await workos.userManagement.listAuthFactors({ userId });
+    const factors = await workos.multiFactorAuth.listUserAuthFactors({
+      userId,
+    });
     const ownsFactor = factors.data.some((f) => f.id === factorId);
     if (!ownsFactor) {
       return NextResponse.json({ error: "Factor not found" }, { status: 404 });
     }
 
     // Create challenge and verify code
-    const challenge = await workos.mfa.challengeFactor({
+    const challenge = await workos.multiFactorAuth.challengeFactor({
       authenticationFactorId: factorId,
     });
 
-    const verification = await workos.mfa.verifyChallenge({
+    const verification = await workos.multiFactorAuth.verifyChallenge({
       authenticationChallengeId: challenge.id,
       code,
     });
@@ -74,7 +76,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Delete factor
-    await workos.mfa.deleteFactor(factorId);
+    await workos.multiFactorAuth.deleteFactor(factorId);
 
     return NextResponse.json({ success: true });
   } catch (error) {
