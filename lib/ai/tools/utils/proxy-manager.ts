@@ -671,23 +671,53 @@ async function runGqlLocal(
     headers["Authorization"] = `Bearer ${cachedCaidoToken}`;
   }
 
-  let resp: Response;
-  try {
-    resp = await fetch(`${baseUrl}/graphql`, {
+  const body = JSON.stringify({ query, variables: variables ?? {} });
+  const doFetch = () =>
+    fetch(`${baseUrl}/graphql`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ query, variables: variables ?? {} }),
+      body,
       signal: AbortSignal.timeout(GRAPHQL_TIMEOUT),
+      keepalive: false,
     });
+
+  let resp: Response;
+  try {
+    resp = await doFetch();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("ECONNREFUSED")) {
+    const cause = (err as { cause?: { code?: string; message?: string } })
+      ?.cause;
+    const causeCode = cause?.code ?? "";
+    const causeMsg = cause?.message ?? "";
+    if (msg.includes("ECONNREFUSED") || causeCode === "ECONNREFUSED") {
       caidoLock.delete(context.sandboxManager);
       throw new Error(
         `Caido is not reachable at ${baseUrl}. Check ${CAIDO_LOG} for errors.`,
       );
     }
-    throw new Error(`Caido GraphQL request failed: ${msg}`);
+    const isTransport =
+      msg === "fetch failed" ||
+      causeCode === "ECONNRESET" ||
+      causeCode === "UND_ERR_SOCKET" ||
+      /socket hang up|other side closed/i.test(causeMsg);
+    if (isTransport) {
+      try {
+        resp = await doFetch();
+      } catch (retryErr) {
+        const retryMsg =
+          retryErr instanceof Error ? retryErr.message : String(retryErr);
+        const retryCause = (
+          retryErr as { cause?: { code?: string; message?: string } }
+        )?.cause;
+        const detail =
+          retryCause?.code || retryCause?.message || retryMsg || "unknown";
+        throw new Error(`Caido GraphQL request failed: ${detail}`);
+      }
+    } else {
+      const detail = causeCode || causeMsg || msg;
+      throw new Error(`Caido GraphQL request failed: ${detail}`);
+    }
   }
   const text = await resp.text();
   if (!text) {
