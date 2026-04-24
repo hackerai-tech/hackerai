@@ -47,7 +47,13 @@ export function ExtraUsagePurchaseToast() {
     url.searchParams.delete("extra-usage-purchased");
     url.searchParams.delete("extra-usage-pending");
     url.searchParams.delete("amount");
-    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    // Preserve Next.js App Router's internal history state (routing tree,
+    // scroll restoration) — passing {} would clobber it.
+    window.history.replaceState(
+      window.history.state,
+      "",
+      url.pathname + url.search + url.hash,
+    );
   }, []);
 
   return null;
