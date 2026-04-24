@@ -1,5 +1,4 @@
 import { handleAuth } from "@workos-inc/authkit-nextjs";
-import { unsealData } from "iron-session";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -33,28 +32,15 @@ const classifyCallbackError = (error: unknown): RecoveryBucket => {
   return "unknown";
 };
 
-// AuthKit v4 scopes the PKCE cookie per-flow: `wos-auth-verifier-<hash(state)>`.
-// v3 used a single shared `wos-auth-verifier`. We treat either as "has verifier".
-const PKCE_COOKIE_PREFIX = "wos-auth-verifier";
-
-const findPkceCookie = (
-  request: NextRequest,
-): { name: string; value: string } | null => {
-  for (const cookie of request.cookies.getAll()) {
-    if (cookie.name.startsWith(PKCE_COOKIE_PREFIX)) {
-      return { name: cookie.name, value: cookie.value };
-    }
-  }
-  return null;
-};
-
 const buildRecoveryResponse = async (
   request: NextRequest,
   error: unknown,
 ): Promise<Response> => {
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
-  const hasVerifierCookie = findPkceCookie(request) !== null;
+  const hasVerifierCookie = request.cookies
+    .getAll()
+    .some((c) => c.name.startsWith("wos-auth-verifier"));
   if (redirectPath) {
     cookieStore.delete({ name: "post_login_redirect", path: "/" });
   }
@@ -110,77 +96,15 @@ const buildRecoveryResponse = async (
   return loginResponse;
 };
 
-// Authkit catches all callback errors and, by default, logs them via
-// console.error and returns a generic 500. Override that path via onError so
-// we can classify and redirect users to a recoverable flow instead.
 const authHandler = handleAuth({
   onError: async ({ error, request }) => {
     return buildRecoveryResponse(request as NextRequest, error);
   },
 });
 
-/**
- * Pre-flight check that mirrors authkit's own PKCE/state validation.
- * Running it before authHandler lets us short-circuit into recovery
- * *without* triggering authkit's unconditional console.error.
- *
- * AuthKit v4+ scopes the PKCE cookie name per flow (hash of state). We accept
- * any `wos-auth-verifier*` cookie — the sealed value itself is the CSRF token
- * and must equal `state`, which is the only integrity check that matters.
- */
-async function preflightCallbackError(
-  request: NextRequest,
-): Promise<Error | null> {
-  const url = request.nextUrl;
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  if (!code || !state) {
-    return new Error("Missing required auth parameter");
-  }
-  const pkceCookie = findPkceCookie(request);
-  if (!pkceCookie) {
-    return new Error(
-      "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
-    );
-  }
-  if (state !== pkceCookie.value) {
-    return new Error("OAuth state mismatch");
-  }
-
-  // Verify the sealed cookie can be decrypted and contains the required PKCE
-  // fields. If WORKOS_COOKIE_PASSWORD rotated between the login initiation and
-  // the callback (e.g. due to a redeployment), unseal will produce an empty
-  // object and AuthKit would throw a ValiError internally.
-  try {
-    const unsealed = await unsealData<Record<string, unknown>>(
-      pkceCookie.value,
-      {
-        password: process.env.WORKOS_COOKIE_PASSWORD ?? "",
-      },
-    );
-    if (!unsealed.nonce || !unsealed.codeVerifier) {
-      return new Error(
-        "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
-      );
-    }
-  } catch {
-    return new Error(
-      "Auth cookie missing — cannot verify OAuth state. Ensure Set-Cookie headers are propagated on redirects.",
-    );
-  }
-
-  return null;
-}
-
 export async function GET(request: NextRequest) {
   const cookieStore = await cookies();
   const redirectPath = cookieStore.get("post_login_redirect")?.value;
-
-  // Catch known failures before authkit so its internal console.error is avoided.
-  const preflightError = await preflightCallbackError(request);
-  if (preflightError) {
-    return buildRecoveryResponse(request, preflightError);
-  }
 
   let response: Response;
   try {
