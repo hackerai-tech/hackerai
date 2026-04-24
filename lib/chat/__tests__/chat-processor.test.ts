@@ -192,10 +192,6 @@ describe("selectModel", () => {
       );
     });
 
-    it("should allow Opus 4.6 in agent mode for paid users", () => {
-      expect(selectModel("agent", "pro", "opus-4.6")).toBe("model-opus-4.6");
-    });
-
     it("should default to agent-model when no model selected", () => {
       expect(selectModel("agent", "pro")).toBe("agent-model");
       expect(selectModel("agent", "pro", "auto")).toBe("agent-model");

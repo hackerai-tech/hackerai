@@ -16,9 +16,9 @@ export type SelectedModel =
   | "sonnet-4.6"
   | "grok-4.1"
   | "gemini-3-flash"
-  | "opus-4.6"
   | "opus-4.7"
   | "gpt-5.4"
+  | "gpt-5.5"
   | "kimi-k2.6";
 // | "codex-local"
 // | `codex-local:${string}`;
@@ -28,9 +28,9 @@ export const SELECTABLE_MODELS: readonly SelectedModel[] = [
   "sonnet-4.6",
   "grok-4.1",
   "gemini-3-flash",
-  "opus-4.6",
   "opus-4.7",
   "gpt-5.4",
+  "gpt-5.5",
   "kimi-k2.6",
   // "codex-local",
 ];
