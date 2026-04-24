@@ -98,6 +98,47 @@ export interface ChatWideEvent {
     name?: string;
   };
 
+  // Sandbox boot timing — fires once per request, only when actual work is done
+  // (not set when the sandbox was already cached/passed via initialSandbox)
+  sandbox_boot?: {
+    path:
+      | "reuse_existing"
+      | "create_fresh"
+      | "create_after_version_mismatch"
+      | "create_after_expired"
+      | "create_after_broken";
+    duration_ms: number;
+    create_attempts: number;
+  };
+
+  // Caido proxy setup timing — captures the first non-locked_wait ensureCaido call
+  // within a request. Subsequent calls in the same request await the same lock and
+  // are not recorded (they measure wait time, not setup cost).
+  caido?: {
+    path:
+      | "fast"
+      | "needs_start"
+      | "external"
+      | "locked_wait"
+      | "locked_wait_error"
+      | "cached_ready"
+      | "windows_unsupported"
+      | "setup_error";
+    duration_ms: number;
+    initial_script_ms?: number;
+    background_start_ms?: number;
+    health_poll_ms?: number;
+    reauth_script_ms?: number;
+    /** Bounded error kind — raw messages stay in debug-only console.warn. */
+    error_kind?:
+      | "install_failed"
+      | "start_timeout"
+      | "auth_failed"
+      | "external_unreachable"
+      | "setup_failed"
+      | "unknown";
+  };
+
   // Tool execution
   tool_call_count?: number;
 
@@ -264,6 +305,28 @@ export class WideEventBuilder {
    */
   setSandbox(info: ChatWideEvent["sandbox"]): this {
     this.event.sandbox = info;
+    return this;
+  }
+
+  /**
+   * Record sandbox boot timing. First call wins — the first `ensureSandboxConnection`
+   * that actually does work in a request is the meaningful measurement.
+   */
+  setSandboxBoot(boot: NonNullable<ChatWideEvent["sandbox_boot"]>): this {
+    if (!this.event.sandbox_boot) {
+      this.event.sandbox_boot = boot;
+    }
+    return this;
+  }
+
+  /**
+   * Record Caido proxy setup timing. First call wins — subsequent `ensureCaido`
+   * calls in the same request hit the lock and measure wait time, not setup cost.
+   */
+  setCaidoReady(caido: NonNullable<ChatWideEvent["caido"]>): this {
+    if (!this.event.caido) {
+      this.event.caido = caido;
+    }
     return this;
   }
 

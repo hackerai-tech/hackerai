@@ -1,5 +1,10 @@
 import { Sandbox } from "@e2b/code-interpreter";
-import type { SandboxManager, SandboxType, SubscriptionTier } from "@/types";
+import type {
+  SandboxBootInfo,
+  SandboxManager,
+  SandboxType,
+  SubscriptionTier,
+} from "@/types";
 import { CentrifugoSandbox, type CentrifugoConfig } from "./centrifugo-sandbox";
 import { isCentrifugoSandbox, type ConnectionInfo } from "./sandbox-types";
 import { ensureSandboxConnection } from "./sandbox";
@@ -52,6 +57,7 @@ export class HybridSandboxManager implements SandboxManager {
     private serviceKey: string,
     initialSandbox?: Sandbox | null,
     private subscription?: SubscriptionTier,
+    private onBoot?: (info: SandboxBootInfo) => void,
   ) {
     this.sandbox = initialSandbox || null;
     const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL;
@@ -301,6 +307,7 @@ export class HybridSandboxManager implements SandboxManager {
           this.sandbox = sandbox;
           this.setSandboxCallback(sandbox);
         },
+        onBoot: this.onBoot,
       },
       {
         initialSandbox: this.isLocal ? null : (this.sandbox as Sandbox | null),

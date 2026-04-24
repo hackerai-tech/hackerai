@@ -498,7 +498,7 @@ export const createChatHandler = (
             sandboxPreference,
             process.env.CONVEX_SERVICE_ROLE_KEY,
             userCustomization?.guardrails_config,
-            userCustomization?.caido_enabled ?? false,
+            userCustomization?.caido_enabled ?? true,
             userCustomization?.caido_port,
             undefined, // appendMetadataStream
             (costDollars: number) => {
@@ -507,6 +507,8 @@ export const createChatHandler = (
               chatLogger?.getBuilder().addToolCost(costDollars);
             },
             subscription,
+            (info) => chatLogger?.setSandboxBoot(info),
+            (info) => chatLogger?.setCaidoReady(info),
           );
 
           // Helper to send file metadata via stream for resumable stream clients
