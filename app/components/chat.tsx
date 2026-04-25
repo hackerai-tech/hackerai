@@ -969,17 +969,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   // knocks use-stick-to-bottom out of "at bottom" state, so we force-scroll on
   // the new user message to resume following the next generation. Keyed on
   // tail-id (not length) so pagination prepends don't trigger a scroll jump.
-  const prevLastIdRef = useRef<string | undefined>(
-    messages[messages.length - 1]?.id,
-  );
+  const lastMessage = messages[messages.length - 1];
+  const lastId = lastMessage?.id;
+  const lastRole = lastMessage?.role;
+  const prevLastIdRef = useRef<string | undefined>(lastId);
   useEffect(() => {
-    const last = messages[messages.length - 1];
     const prevLastId = prevLastIdRef.current;
-    prevLastIdRef.current = last?.id;
-    if (last && last.id !== prevLastId && last.role === "user") {
+    prevLastIdRef.current = lastId;
+    if (lastId && lastId !== prevLastId && lastRole === "user") {
       scrollToBottom({ force: true });
     }
-  }, [messages, scrollToBottom]);
+  }, [lastId, lastRole, scrollToBottom]);
 
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useLatestRef(messageQueue);
