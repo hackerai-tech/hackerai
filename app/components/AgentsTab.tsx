@@ -161,7 +161,7 @@ const AgentsTab = () => {
           </div>
           <Switch
             id="caido-proxy"
-            checked={userCustomization?.caido_enabled ?? true}
+            checked={userCustomization?.caido_enabled ?? false}
             onCheckedChange={async (checked) => {
               try {
                 await saveCustomization({ caido_enabled: checked });
@@ -175,7 +175,7 @@ const AgentsTab = () => {
             aria-label="Toggle Caido proxy"
           />
         </div>
-        {(userCustomization?.caido_enabled ?? true) && (
+        {(userCustomization?.caido_enabled ?? false) && (
           <div className="flex items-center justify-between py-3 border-b pl-4">
             <div className="flex-1 pr-4">
               <Label
