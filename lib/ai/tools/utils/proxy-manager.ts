@@ -731,7 +731,9 @@ async function runGqlLocal(
   // Stale-token recovery: caido-cli may have been restarted between requests,
   // invalidating our in-memory bearer. The setup script writes a fresh token to
   // disk before this call returns — pick it up and retry once.
-  if (cachedCaidoToken && /INVALID_TOKEN|"code":"AUTHORIZATION"/.test(text)) {
+  const isAuthError = (s: string) =>
+    /INVALID_TOKEN|"code":"AUTHORIZATION"/.test(s);
+  if (cachedCaidoToken && isAuthError(text)) {
     const stale = cachedCaidoToken;
     cachedCaidoToken = null;
     const fresh = await readCaidoTokenFromDisk(context);
@@ -750,9 +752,13 @@ async function runGqlLocal(
           retryErr instanceof Error ? retryErr.message : String(retryErr);
         throw new Error(`Caido GraphQL retry failed: ${detail}`);
       }
-    } else {
-      // Disk token matches the stale one (or is gone) — force a full re-setup
-      // on the next call so ensureCaido re-auths against the fresh caido-cli.
+    }
+    // Either we couldn't refresh (disk token absent / unchanged) or the retry
+    // came back with another auth error (caido-cli restarted again). Drop the
+    // setup lock and cached token so the next call re-runs ensureCaido against
+    // a fresh caido-cli instead of looping on a dead bearer.
+    if (cachedCaidoToken === null || isAuthError(text)) {
+      cachedCaidoToken = null;
       caidoLock.delete(context.sandboxManager);
     }
   }
