@@ -982,18 +982,17 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
   }, [messages, scrollToBottom]);
 
   // Keep a ref to the latest messageQueue to avoid stale closures
-  const messageQueueRef = useRef(messageQueue);
-  useEffect(() => {
-    messageQueueRef.current = messageQueue;
-  }, [messageQueue]);
+  const messageQueueRef = useLatestRef(messageQueue);
 
-  // Clear queue when navigating to a different chat
+  // Clear queue when navigating to a different chat.
+  // Intentionally reads messageQueueRef at cleanup time (latest value).
   useEffect(() => {
     return () => {
       if (messageQueueRef.current.length > 0) {
         clearQueue();
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatId, clearQueue]);
 
   // Document-level drag and drop listeners encapsulated in a hook
@@ -1033,7 +1032,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           },
           {
             body: {
-              mode: chatMode,
+              mode: chatModeRef.current,
               todos: todosRef.current,
               temporary: temporaryChatsEnabledRef.current,
               sandboxPreference: sandboxPreferenceRef.current,
