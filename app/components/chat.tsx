@@ -964,21 +964,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
-  // Re-arm sticky scroll whenever a new user message is appended. Stop+send
-  // flows (Send Now, stop-and-send) mutate the DOM mid-stream which knocks
-  // use-stick-to-bottom out of "at bottom" state, so we force-scroll on the
-  // new user message to resume following the next generation.
-  const prevMessagesLenRef = useRef(messages.length);
+  // Re-arm sticky scroll whenever a new user message is appended at the tail.
+  // Stop+send flows (Send Now, stop-and-send) mutate the DOM mid-stream which
+  // knocks use-stick-to-bottom out of "at bottom" state, so we force-scroll on
+  // the new user message to resume following the next generation. Keyed on
+  // tail-id (not length) so pagination prepends don't trigger a scroll jump.
+  const prevLastIdRef = useRef<string | undefined>(
+    messages[messages.length - 1]?.id,
+  );
   useEffect(() => {
-    const prev = prevMessagesLenRef.current;
-    prevMessagesLenRef.current = messages.length;
-    if (
-      messages.length > prev &&
-      messages[messages.length - 1]?.role === "user"
-    ) {
+    const last = messages[messages.length - 1];
+    const prevLastId = prevLastIdRef.current;
+    prevLastIdRef.current = last?.id;
+    if (last && last.id !== prevLastId && last.role === "user") {
       scrollToBottom({ force: true });
     }
-  }, [messages.length, messages, scrollToBottom]);
+  }, [messages, scrollToBottom]);
 
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useRef(messageQueue);
