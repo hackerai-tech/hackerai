@@ -9,6 +9,7 @@ export default defineSchema({
     finish_reason: v.optional(v.string()),
     active_stream_id: v.optional(v.string()),
     active_trigger_run_id: v.optional(v.string()),
+    active_workflow_run_id: v.optional(v.string()),
     canceled_at: v.optional(v.number()),
     default_model_slug: v.optional(
       v.union(v.literal("ask"), v.literal("agent"), v.literal("agent-long")),

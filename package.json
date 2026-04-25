@@ -8,6 +8,8 @@
     "dev:local": "concurrently \"next dev --turbopack\" \"npx convex dev --local\"",
     "dev:next": "next dev --turbopack",
     "dev:convex": "npx convex dev",
+    "workflow:inspect": "npx workflow inspect runs --web",
+    "workflow:reset": "rm -rf .next/workflow-data && echo 'Workflow data wiped; restart dev server to start fresh.'",
     "build": "next build",
     "start": "next start",
     "lint": "eslint app lib types __mocks__ --ext .ts,.tsx,.js,.jsx",
@@ -82,6 +84,8 @@
     "@upstash/ratelimit": "^2.0.8",
     "@upstash/redis": "^1.37.0",
     "@vercel/functions": "^3.4.4",
+    "@workflow/ai": "^4.1.2",
+    "@workflow/serde": "^4.1.1",
     "@workos-inc/authkit-nextjs": "^4.0.1",
     "@workos-inc/node": "^9.1.0",
     "ai": "^6.0.168",
@@ -126,6 +130,7 @@
     "use-stick-to-bottom": "^1.1.3",
     "uuid": "^14.0.0",
     "word-extractor": "^1.0.4",
+    "workflow": "^4.2.4",
     "zod": "^4.3.6"
   },
   "devDependencies": {

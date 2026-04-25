@@ -17,6 +17,7 @@ import {
 } from "@/lib/token-utils";
 import { fixIncompleteMessageParts } from "@/lib/chat/chat-processor";
 import type { SubscriptionTier, NoteCategory } from "@/types";
+import type { ChatMode } from "@/types/chat";
 import type { Id } from "@/convex/_generated/dataModel";
 import { v4 as uuidv4 } from "uuid";
 import { AGENT_RESUME_PREAMBLE } from "@/lib/chat/summarization/prompts";
@@ -202,7 +203,7 @@ export async function updateChat({
     status: "pending" | "in_progress" | "completed" | "cancelled";
     sourceMessageId?: string;
   }>;
-  defaultModelSlug?: "ask" | "agent";
+  defaultModelSlug?: ChatMode;
   sandboxType?: string;
   selectedModel?: string;
 }) {
@@ -242,7 +243,7 @@ export async function getMessagesByChatId({
   newMessages: UIMessage[];
   regenerate?: boolean;
   isTemporary?: boolean;
-  mode?: "ask" | "agent";
+  mode?: ChatMode;
   maxMode?: boolean;
   modelName?: string;
 }) {
@@ -578,6 +579,25 @@ export async function startStream({
     return;
   } catch (error) {
     throw new ChatSDKError("bad_request:database", "Failed to start stream");
+  }
+}
+
+export async function setActiveWorkflowRun({
+  chatId,
+  runId,
+}: {
+  chatId: string;
+  runId: string | null;
+}) {
+  try {
+    await convex.mutation(api.chats.setActiveWorkflowRun, {
+      serviceKey,
+      chatId,
+      runId,
+    });
+  } catch (error) {
+    // Best-effort: don't block the workflow on persistence of the runId.
+    console.error("[db] setActiveWorkflowRun failed", error);
   }
 }
 

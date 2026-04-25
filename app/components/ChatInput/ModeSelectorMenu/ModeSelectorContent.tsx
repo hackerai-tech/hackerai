@@ -1,19 +1,21 @@
 "use client";
 
 import { DropdownMenuContent } from "@/components/ui/dropdown-menu";
-import { MessageSquare, Infinity } from "lucide-react";
+import { MessageSquare, Infinity, Hourglass } from "lucide-react";
 import type { ChatMode } from "@/types/chat";
 import { ModeOptionItem } from "./ModeOptionItem";
 
 export interface ModeSelectorContentProps {
   setChatMode: (mode: ChatMode) => void;
   onAgentModeClick: () => void;
+  onAgentLongModeClick: () => void;
   temporaryChatsEnabled: boolean;
 }
 
 export function ModeSelectorContent({
   setChatMode,
   onAgentModeClick,
+  onAgentLongModeClick,
   temporaryChatsEnabled,
 }: ModeSelectorContentProps) {
   return (
@@ -31,6 +33,14 @@ export function ModeSelectorContent({
         description="Hack, test, secure anything"
         onClick={onAgentModeClick}
         data-testid="mode-agent"
+        showLock={temporaryChatsEnabled}
+      />
+      <ModeOptionItem
+        icon={Hourglass}
+        title="Agent Long"
+        description="Hours-long pentests, resumable"
+        onClick={onAgentLongModeClick}
+        data-testid="mode-agent-long"
         showLock={temporaryChatsEnabled}
       />
     </DropdownMenuContent>

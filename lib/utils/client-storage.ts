@@ -71,7 +71,7 @@ export const writeChatMode = (mode: ChatMode): void => {
 
 /** Read the saved model preference for a specific mode (ask vs agent) */
 export const readSelectedModelForMode = (
-  mode: "ask" | "agent",
+  mode: ChatMode,
 ): SelectedModel | null => {
   if (!isBrowser()) return null;
   try {
@@ -86,7 +86,7 @@ export const readSelectedModelForMode = (
 
 /** Save the model preference for a specific mode (ask vs agent) */
 export const writeSelectedModelForMode = (
-  mode: "ask" | "agent",
+  mode: ChatMode,
   model: SelectedModel,
 ): void => {
   if (!isBrowser()) return;
