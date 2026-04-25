@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useState, useMemo } from "react";
+import { memo, useState, useMemo } from "react";
 import ShikiHighlighter, { isInlineCode, type Element } from "react-shiki";
 import { CodeActionButtons } from "@/components/ui/code-action-buttons";
 import { isLanguageSupported, ShikiErrorBoundary } from "@/lib/utils/shiki";
@@ -10,7 +10,7 @@ interface CodeHighlightProps {
   node?: Element | undefined;
 }
 
-export const CodeHighlight = ({
+const CodeHighlightImpl = ({
   className,
   children,
   node,
@@ -110,3 +110,9 @@ export const CodeHighlight = ({
     </code>
   );
 };
+
+// Memoize so finished code blocks don't re-highlight when sibling markdown
+// re-renders during streaming. Streaming code blocks still update because
+// `children` (the text) changes each token; Shiki's `delay={150}` throttles
+// the actual tokenization on top of that.
+export const CodeHighlight = memo(CodeHighlightImpl);

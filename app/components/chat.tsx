@@ -651,11 +651,16 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       if (toolCall.toolName === "todo_write" && toolCall.input) {
         const todoInput = toolCall.input as { merge?: boolean; todos: Todo[] };
         if (!todoInput.todos) return;
-        // Determine last assistant message id to stamp/replace
-        const lastAssistant = [...messages]
-          .reverse()
-          .find((m) => m.role === "assistant");
-        const lastAssistantId = lastAssistant?.id;
+        // Determine last assistant message id to stamp/replace.
+        // Read via ref to avoid closing over the streaming messages array.
+        const currentMessages = messagesRef.current;
+        let lastAssistantId: string | undefined;
+        for (let i = currentMessages.length - 1; i >= 0; i--) {
+          if (currentMessages[i].role === "assistant") {
+            lastAssistantId = currentMessages[i].id;
+            break;
+          }
+        }
 
         const treatAsMerge = shouldTreatAsMerge(
           todoInput.merge,
@@ -681,7 +686,7 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
       // in-memory messages with fresh objects (causes flicker/scroll jump).
       if (isCodexLocal(selectedModelRef.current)) {
         codexSyncSuppressedUntilRef.current = Date.now() + 2000;
-        persistCodexMessages(messages);
+        persistCodexMessages(messagesRef.current);
         return;
       }
 
