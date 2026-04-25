@@ -318,13 +318,13 @@ async function doEnsureCaido(
   ).toString("base64");
 
   const healthCheck =
-    `curl -s --noproxy '*' -o /dev/null -w "%{http_code}" -X POST "${baseUrl}/graphql"` +
+    `curl -s --noproxy '*' --connect-timeout 3 --max-time 5 -o /dev/null -w "%{http_code}" -X POST "${baseUrl}/graphql"` +
     ` -H "Content-Type: application/json" -d '{"query":"{ __typename }"}' 2>/dev/null`;
 
   // Query that requires a valid token AND a selected project — if this returns
   // 200 with valid JSON, Caido is fully operational and we can skip setup.
   const projectCheck = [
-    `curl -s --noproxy '*' -X POST "$CAIDO_API/graphql"`,
+    `curl -s --noproxy '*' --connect-timeout 3 --max-time 10 -X POST "$CAIDO_API/graphql"`,
     `-H "Content-Type: application/json"`,
     `-H "Authorization: Bearer $(cat "$TOKEN_FILE" 2>/dev/null)"`,
     `-d '{"query":"{ requestsByOffset(limit:1) { count { value } } }"}'`,
@@ -388,24 +388,24 @@ async function doEnsureCaido(
     `fi`,
     ``,
     `# Authenticate as guest`,
-    `AUTH=$(echo '${authB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `AUTH=$(echo '${authB64}' | base64 -d | curl -sL --noproxy '*' --connect-timeout 5 --max-time 10 -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" --data @-)`,
     `TOKEN=$(echo "$AUTH" | grep -Eo '"accessToken":"[^"]*"' | cut -d'"' -f4 || echo "")`,
     `if [ -z "$TOKEN" ]; then echo "needs_start" && exit 0; fi`,
     `printf '%s' "$TOKEN" > "$TOKEN_FILE"`,
     ``,
     `# Find or create the "hackerai" project`,
-    `PROJECTS=$(echo '${listProjectsB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `PROJECTS=$(echo '${listProjectsB64}' | base64 -d | curl -sL --noproxy '*' --connect-timeout 5 --max-time 10 -X POST "$CAIDO_API/graphql" \\`,
     `  -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
     `PROJECT_ID=$(echo "$PROJECTS" | grep -o '"id":"[^"]*","name":"hackerai"' | grep -Eo '"id":"[^"]*"' | cut -d'"' -f4 || echo "")`,
     `if [ -z "$PROJECT_ID" ]; then`,
-    `  CREATE=$(echo '${createB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `  CREATE=$(echo '${createB64}' | base64 -d | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" --connect-timeout 5 --max-time 20 \\`,
     `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" --data @-)`,
     `  PROJECT_ID=$(echo "$CREATE" | grep -Eo '"id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "")`,
     `fi`,
     `if [ -n "$PROJECT_ID" ]; then`,
     `  SELECT_BODY='{"query":"mutation { selectProject(id: \\"'"$PROJECT_ID"'\\"){ currentProject { project { id } } } }"}'`,
-    `  echo "$SELECT_BODY" | curl -sL --noproxy '*' -X POST "$CAIDO_API/graphql" \\`,
+    `  echo "$SELECT_BODY" | curl -sL --noproxy '*' --connect-timeout 5 --max-time 10 -X POST "$CAIDO_API/graphql" \\`,
     `    -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \\`,
     `    --data @- >/dev/null 2>&1 || true`,
     `fi`,
@@ -646,6 +646,18 @@ async function runGql(
  * Avoids the curl-through-CentrifugoSandbox path that Caido's proxy dispatcher
  * misroutes on macOS (exit 56).
  */
+async function readCaidoTokenFromDisk(
+  context: ToolContext,
+): Promise<string | null> {
+  const { sandbox } = await context.sandboxManager.getSandbox();
+  const options = buildSandboxCommandOptions(sandbox);
+  const tokenResult = await sandbox.commands.run(
+    `cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo ""`,
+    options,
+  );
+  return tokenResult.stdout.trim() || null;
+}
+
 async function runGqlLocal(
   context: ToolContext,
   query: string,
@@ -655,35 +667,27 @@ async function runGqlLocal(
 
   // Read the token from disk if not cached (setup script writes it to /tmp/caido-token)
   if (!cachedCaidoToken) {
-    const { sandbox } = await context.sandboxManager.getSandbox();
-    const options = buildSandboxCommandOptions(sandbox);
-    const tokenResult = await sandbox.commands.run(
-      `cat ${CAIDO_TOKEN_FILE} 2>/dev/null || echo ""`,
-      options,
-    );
-    cachedCaidoToken = tokenResult.stdout.trim() || null;
-  }
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  if (cachedCaidoToken) {
-    headers["Authorization"] = `Bearer ${cachedCaidoToken}`;
+    cachedCaidoToken = await readCaidoTokenFromDisk(context);
   }
 
   const body = JSON.stringify({ query, variables: variables ?? {} });
-  const doFetch = () =>
-    fetch(`${baseUrl}/graphql`, {
+  const doFetch = (token: string | null) => {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+    return fetch(`${baseUrl}/graphql`, {
       method: "POST",
       headers,
       body,
       signal: AbortSignal.timeout(GRAPHQL_TIMEOUT),
       keepalive: false,
     });
+  };
 
   let resp: Response;
   try {
-    resp = await doFetch();
+    resp = await doFetch(cachedCaidoToken);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const cause = (err as { cause?: { code?: string; message?: string } })
@@ -703,7 +707,7 @@ async function runGqlLocal(
       /socket hang up|other side closed/i.test(causeMsg);
     if (isTransport) {
       try {
-        resp = await doFetch();
+        resp = await doFetch(cachedCaidoToken);
       } catch (retryErr) {
         const retryMsg =
           retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -719,9 +723,44 @@ async function runGqlLocal(
       throw new Error(`Caido GraphQL request failed: ${detail}`);
     }
   }
-  const text = await resp.text();
+  let text = await resp.text();
   if (!text) {
     throw new Error(`No response from Caido (HTTP ${resp.status}): empty body`);
+  }
+
+  // Stale-token recovery: caido-cli may have been restarted between requests,
+  // invalidating our in-memory bearer. The setup script writes a fresh token to
+  // disk before this call returns — pick it up and retry once.
+  const isAuthError = (s: string) =>
+    /INVALID_TOKEN|"code":"AUTHORIZATION"/.test(s);
+  if (cachedCaidoToken && isAuthError(text)) {
+    const stale = cachedCaidoToken;
+    cachedCaidoToken = null;
+    const fresh = await readCaidoTokenFromDisk(context);
+    if (fresh && fresh !== stale) {
+      cachedCaidoToken = fresh;
+      try {
+        resp = await doFetch(fresh);
+        text = await resp.text();
+        if (!text) {
+          throw new Error(
+            `No response from Caido (HTTP ${resp.status}): empty body`,
+          );
+        }
+      } catch (retryErr) {
+        const detail =
+          retryErr instanceof Error ? retryErr.message : String(retryErr);
+        throw new Error(`Caido GraphQL retry failed: ${detail}`);
+      }
+    }
+    // Either we couldn't refresh (disk token absent / unchanged) or the retry
+    // came back with another auth error (caido-cli restarted again). Drop the
+    // setup lock and cached token so the next call re-runs ensureCaido against
+    // a fresh caido-cli instead of looping on a dead bearer.
+    if (cachedCaidoToken === null || isAuthError(text)) {
+      cachedCaidoToken = null;
+      caidoLock.delete(context.sandboxManager);
+    }
   }
 
   return parseGqlResponse(context, text);
