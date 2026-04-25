@@ -1,8 +1,10 @@
 import { UIMessage, UIMessagePart } from "ai";
 import { countTokens, encode, decode } from "gpt-tokenizer";
 import type { SubscriptionTier } from "@/types";
+import type { ChatMode } from "@/types/chat";
 import type { Id } from "@/convex/_generated/dataModel";
 import { getModelContextWindow } from "@/lib/ai/providers";
+import { isAgentMode } from "@/lib/utils/mode-helpers";
 
 export const MAX_TOKENS_FREE = 32000;
 export const MAX_TOKENS_PAID = 200000;
@@ -23,10 +25,12 @@ export const FILE_TOKEN_PERCENT = 0.5;
  */
 export const getMaxTokensForSubscription = (
   subscription: SubscriptionTier,
-  opts?: { maxMode?: boolean; modelName?: string; mode?: "ask" | "agent" },
+  opts?: { maxMode?: boolean; modelName?: string; mode?: ChatMode },
 ): number => {
   if (subscription === "free") {
-    return opts?.mode === "agent" ? MAX_TOKENS_PAID : MAX_TOKENS_FREE;
+    return opts?.mode && isAgentMode(opts.mode)
+      ? MAX_TOKENS_PAID
+      : MAX_TOKENS_FREE;
   }
   if (opts?.maxMode && opts.modelName) {
     return Math.max(MAX_TOKENS_PAID, getModelContextWindow(opts.modelName));
@@ -40,7 +44,7 @@ export const getMaxTokensForSubscription = (
  */
 export const getMaxFileTokens = (
   subscription: SubscriptionTier,
-  opts?: { maxMode?: boolean; modelName?: string; mode?: "ask" | "agent" },
+  opts?: { maxMode?: boolean; modelName?: string; mode?: ChatMode },
 ): number => {
   return Math.floor(
     getMaxTokensForSubscription(subscription, opts) * FILE_TOKEN_PERCENT,

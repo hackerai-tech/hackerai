@@ -95,8 +95,30 @@ export function extractSidebarContentFromMessage(
   });
 
   message.parts.forEach((part) => {
-    // Terminal (including Codex local commands)
-    if (part.type === "tool-run_terminal_cmd" && part.input?.command) {
+    // Long-run workflow `wait_command` — the input has no `command`, only a
+    // handle. Display the handle as the pseudo-command and surface the
+    // tailed stdout from output.tail (or output.result.tail) as the
+    // terminal output.
+    if (part.type === "tool-wait_command" && part.input?.handle) {
+      const tail = part.output?.tail ?? part.output?.result?.tail ?? "";
+      contentList.push({
+        command: `# wait_command handle=${part.input.handle}`,
+        output: tail,
+        isExecuting:
+          part.state === "input-available" || part.state === "running",
+        isBackground: false,
+        toolCallId: part.toolCallId || "",
+      });
+      return;
+    }
+
+    // Terminal (including Codex local commands and long-run workflow agent tools)
+    if (
+      (part.type === "tool-run_terminal_cmd" ||
+        part.type === "tool-run_command" ||
+        part.type === "tool-start_command_async") &&
+      part.input?.command
+    ) {
       const command = part.input.command;
 
       // Get streaming output from data-terminal parts
@@ -121,9 +143,16 @@ export function extractSidebarContentFromMessage(
         }
       }
 
-      // Fallback to streaming output or direct output property
+      // Fallback to streaming output, direct output property, or the
+      // tool-error text (state === "output-error"). Surfacing errorText
+      // ensures failed shell commands still show their stderr in the
+      // sidebar instead of an empty terminal.
       const finalOutput =
-        output || streamingOutput || part.output?.output || "";
+        output ||
+        streamingOutput ||
+        part.output?.output ||
+        part.errorText ||
+        "";
 
       contentList.push({
         command,

@@ -155,9 +155,10 @@ function buildResponseHeaders(authkitHeaders: Headers): Headers {
 
 export const config = {
   matcher: [
-    // Skip Next.js internals and all static files, unless found in search params
-    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
-    // Always run for API routes
+    // Skip Next.js internals, Workflow SDK internal routes (.well-known/workflow/*),
+    // and all static files, unless found in search params.
+    "/((?!_next|\\.well-known/workflow/|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    // Always run for API routes (but not Workflow SDK internal endpoints, which sit under /.well-known/workflow/, not /api).
     "/(api|trpc)(.*)",
   ],
 };

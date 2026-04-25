@@ -29,7 +29,35 @@ const kimiReasoningPatchFetch: typeof fetch = async (url, init) => {
       // If parsing fails, send the request as-is
     }
   }
-  return globalThis.fetch(url, init);
+  let res: Response;
+  try {
+    res = await globalThis.fetch(url, init);
+  } catch (err) {
+    try {
+      const fs = await import("node:fs");
+      fs.appendFileSync(
+        "/tmp/hackerai-workflow.log",
+        `[${new Date().toISOString()}] openrouter.fetch.threw url=${typeof url === "string" ? url : (url as URL).toString?.()} err=${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    } catch {}
+    throw err;
+  }
+  if (!res.ok) {
+    let snippet = "";
+    try {
+      snippet = (await res.clone().text()).slice(0, 600);
+    } catch {
+      // ignore
+    }
+    try {
+      const fs = await import("node:fs");
+      fs.appendFileSync(
+        "/tmp/hackerai-workflow.log",
+        `[${new Date().toISOString()}] openrouter.http.error status=${res.status} statusText=${res.statusText} url=${typeof url === "string" ? url : (url as URL).toString?.()} body=${snippet}\n`,
+      );
+    } catch {}
+  }
+  return res;
 };
 
 const openrouter = createOpenRouter({ fetch: kimiReasoningPatchFetch });
