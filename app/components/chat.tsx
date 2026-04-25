@@ -964,6 +964,22 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
     }
   }, [messages.length, scrollToBottom, isExistingChat]);
 
+  // Re-arm sticky scroll whenever a new user message is appended. Stop+send
+  // flows (Send Now, stop-and-send) mutate the DOM mid-stream which knocks
+  // use-stick-to-bottom out of "at bottom" state, so we force-scroll on the
+  // new user message to resume following the next generation.
+  const prevMessagesLenRef = useRef(messages.length);
+  useEffect(() => {
+    const prev = prevMessagesLenRef.current;
+    prevMessagesLenRef.current = messages.length;
+    if (
+      messages.length > prev &&
+      messages[messages.length - 1]?.role === "user"
+    ) {
+      scrollToBottom({ force: true });
+    }
+  }, [messages.length, messages, scrollToBottom]);
+
   // Keep a ref to the latest messageQueue to avoid stale closures
   const messageQueueRef = useRef(messageQueue);
   useEffect(() => {
