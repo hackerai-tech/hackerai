@@ -49,11 +49,7 @@ interface MessagesProps {
   isTemporaryChat?: boolean;
   tempChatFileDetails?: Map<string, FileDetails[]>;
   finishReason?: string;
-  uploadStatus?: {
-    message: string;
-    isUploading: boolean;
-    failed?: boolean;
-  } | null;
+  uploadStatus?: { message: string; isUploading: boolean } | null;
   summarizationStatus?: {
     status: "started" | "completed";
     message: string;
@@ -350,7 +346,6 @@ export const Messages = ({
           {/* Processing status - upload/loading dots always separate, summarization only when no content */}
           {(showSummarizationSeparately ||
             uploadStatus?.isUploading ||
-            uploadStatus?.failed ||
             shouldShowLoadingDots) && (
             <div className="flex flex-col items-start">
               {showSummarizationSeparately && (
@@ -363,11 +358,6 @@ export const Messages = ({
               )}
               {uploadStatus?.isUploading && (
                 <Shimmer className="text-sm">{`${uploadStatus.message}...`}</Shimmer>
-              )}
-              {uploadStatus?.failed && !uploadStatus.isUploading && (
-                <div className="text-sm text-destructive">
-                  {uploadStatus.message}
-                </div>
               )}
               {shouldShowLoadingDots && (
                 <div className="bg-muted text-muted-foreground rounded-lg px-3 py-2 inline-flex items-center">

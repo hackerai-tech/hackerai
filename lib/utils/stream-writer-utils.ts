@@ -28,22 +28,6 @@ export const writeUploadCompleteStatus = (
   });
 };
 
-export const writeUploadFailedStatus = (
-  writer: UIMessageStreamWriter,
-  failedCount: number,
-): void => {
-  const noun = failedCount === 1 ? "attachment" : "attachments";
-  writer.write({
-    type: "data-upload-status",
-    id: "upload-status",
-    data: {
-      message: `Failed to upload ${failedCount} ${noun} to the computer. The reply may not reflect the file — try sending again.`,
-      isUploading: false,
-      failed: true,
-    },
-  });
-};
-
 // Summarization notifications
 export const writeSummarizationStarted = (
   writer: UIMessageStreamWriter,

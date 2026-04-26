@@ -105,7 +105,6 @@ import { createResumableStreamContext } from "resumable-stream";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
-  writeUploadFailedStatus,
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
@@ -474,6 +473,16 @@ export const createChatHandler = (
       chatLogger.startStream();
 
       const stream = createUIMessageStream({
+        onError: (error) => {
+          // Surface ChatSDKError causes (e.g., upload failures) to the client
+          // so MessageErrorState renders the user-actionable message.
+          if (error instanceof ChatSDKError) {
+            return typeof error.cause === "string"
+              ? error.cause
+              : error.message;
+          }
+          return getUserFriendlyProviderError(error);
+        },
         execute: async ({ writer }) => {
           // Send rate limit warnings based on subscription type
           sendRateLimitWarnings(writer, { subscription, mode, rateLimitInfo });
@@ -563,7 +572,12 @@ export const createChatHandler = (
               writeUploadCompleteStatus(writer);
             }
             if (uploadResult.failedCount > 0) {
-              writeUploadFailedStatus(writer, uploadResult.failedCount);
+              const noun =
+                uploadResult.failedCount === 1 ? "attachment" : "attachments";
+              throw new ChatSDKError(
+                "bad_request:stream",
+                `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+              );
             }
           }
 
