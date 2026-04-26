@@ -13,6 +13,11 @@ export interface UseAutoResumeParams {
   initialMessages: ChatMessage[];
   resumeStream: UseChatHelpers<ChatMessage>["resumeStream"];
   setMessages: UseChatHelpers<ChatMessage>["setMessages"];
+  // Tri-state: undefined = chat data still loading (wait), true = server is
+  // actively producing (resume), false = no active stream (don't resume —
+  // the user message went unanswered, but resuming would just GET an empty
+  // SSE and waste a round-trip).
+  hasActiveStream: boolean | undefined;
 }
 
 export function useAutoResume({
@@ -20,6 +25,7 @@ export function useAutoResume({
   initialMessages,
   resumeStream,
   setMessages,
+  hasActiveStream,
 }: UseAutoResumeParams) {
   const { dataStream } = useDataStreamState();
   const { setIsAutoResuming } = useDataStreamDispatch();
@@ -28,6 +34,10 @@ export function useAutoResume({
   useEffect(() => {
     if (!autoResume || hasAutoResumedRef.current) return;
     if (initialMessages.length === 0) return;
+    // Wait for chat data to load, then only resume when the server says
+    // it's actively producing a response.
+    if (hasActiveStream === undefined) return;
+    if (!hasActiveStream) return;
 
     const mostRecentMessage = initialMessages.at(-1);
 
@@ -37,7 +47,7 @@ export function useAutoResume({
       resumeStream();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoResume, initialMessages.length > 0]);
+  }, [autoResume, initialMessages.length > 0, hasActiveStream]);
 
   useEffect(() => {
     if (!dataStream) return;
