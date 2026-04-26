@@ -115,11 +115,12 @@ const downloadFileToSandbox = async (
   // Transient curl exit codes worth retrying at the JS layer as a safety net
   // on top of curl's own --retry. Covers post-resume filesystem hiccups and
   // flaky network recv:
+  //   6  = could not resolve host (DNS lag after sandbox resume)
   //   7  = couldn't connect
   //   18 = partial transfer
   //   23 = write error (CURLE_WRITE_ERROR) — the prod incident
   //   56 = failure receiving network data
-  const TRANSIENT_CURL_EXIT_CODES = new Set([7, 18, 23, 56]);
+  const TRANSIENT_CURL_EXIT_CODES = new Set([6, 7, 18, 23, 56]);
   const MAX_ATTEMPTS = 3;
 
   const curlCmd =
@@ -180,8 +181,8 @@ const downloadFileToSandbox = async (
 export const uploadSandboxFiles = async (
   sandboxFiles: SandboxFile[],
   ensureSandbox: () => Promise<any>,
-) => {
-  if (sandboxFiles.length === 0) return;
+): Promise<{ failedCount: number }> => {
+  if (sandboxFiles.length === 0) return { failedCount: 0 };
 
   try {
     const sandbox = await ensureSandbox();
@@ -192,6 +193,7 @@ export const uploadSandboxFiles = async (
         downloadFileToSandbox(sandbox, file.url, file.localPath),
       ),
     );
+    return { failedCount: 0 };
   } catch (e) {
     console.error("Failed uploading files to sandbox:", e);
     console.error(
@@ -212,5 +214,6 @@ export const uploadSandboxFiles = async (
         };
       }),
     );
+    return { failedCount: sandboxFiles.length };
   }
 };

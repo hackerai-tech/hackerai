@@ -105,6 +105,7 @@ import { createResumableStreamContext } from "resumable-stream";
 import {
   writeUploadStartStatus,
   writeUploadCompleteStatus,
+  writeUploadFailedStatus,
   writeAutoContinue,
 } from "@/lib/utils/stream-writer-utils";
 import { Id } from "@/convex/_generated/dataModel";
@@ -552,10 +553,17 @@ export const createChatHandler = (
 
           if (isAgentMode(mode) && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
+            let uploadResult: { failedCount: number } = { failedCount: 0 };
             try {
-              await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+              uploadResult = await uploadSandboxFiles(
+                sandboxFiles,
+                ensureSandbox,
+              );
             } finally {
               writeUploadCompleteStatus(writer);
+            }
+            if (uploadResult.failedCount > 0) {
+              writeUploadFailedStatus(writer, uploadResult.failedCount);
             }
           }
 

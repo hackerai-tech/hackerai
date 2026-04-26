@@ -67,7 +67,11 @@ import { HackingSuggestions } from "./HackingSuggestions";
 // Consolidates high-frequency streaming state updates into a single dispatch
 // to avoid cascading re-renders from multiple independent useState calls.
 interface StreamingEphemeralState {
-  uploadStatus: { message: string; isUploading: boolean } | null;
+  uploadStatus: {
+    message: string;
+    isUploading: boolean;
+    failed?: boolean;
+  } | null;
   summarizationStatus: {
     status: "started" | "completed";
     message: string;
@@ -560,10 +564,12 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
           const uploadData = dataPart.data as {
             message: string;
             isUploading: boolean;
+            failed?: boolean;
           };
           dispatchStreaming({
             type: "SET_UPLOAD_STATUS",
-            payload: uploadData.isUploading ? uploadData : null,
+            payload:
+              uploadData.isUploading || uploadData.failed ? uploadData : null,
           });
           break;
         }
