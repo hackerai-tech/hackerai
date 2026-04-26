@@ -574,10 +574,17 @@ export const createChatHandler = (
             if (uploadResult.failedCount > 0) {
               const noun =
                 uploadResult.failedCount === 1 ? "attachment" : "attachments";
-              throw new ChatSDKError(
+              const uploadError = new ChatSDKError(
                 "bad_request:stream",
                 `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
               );
+              // Errors thrown from execute are caught by createUIMessageStream's
+              // onError and never reach the outer catch, so refund / timeout
+              // clear / error logging must happen here. refund() is idempotent.
+              preemptiveTimeout?.clear();
+              await usageRefundTracker.refund();
+              chatLogger?.emitChatError(uploadError);
+              throw uploadError;
             }
           }
 
