@@ -473,6 +473,16 @@ export const createChatHandler = (
       chatLogger.startStream();
 
       const stream = createUIMessageStream({
+        onError: (error) => {
+          // Surface ChatSDKError causes (e.g., upload failures) to the client
+          // so MessageErrorState renders the user-actionable message.
+          if (error instanceof ChatSDKError) {
+            return typeof error.cause === "string"
+              ? error.cause
+              : error.message;
+          }
+          return getUserFriendlyProviderError(error);
+        },
         execute: async ({ writer }) => {
           // Send rate limit warnings based on subscription type
           sendRateLimitWarnings(writer, { subscription, mode, rateLimitInfo });
@@ -552,10 +562,29 @@ export const createChatHandler = (
 
           if (isAgentMode(mode) && sandboxFiles && sandboxFiles.length > 0) {
             writeUploadStartStatus(writer);
+            let uploadResult: { failedCount: number } = { failedCount: 0 };
             try {
-              await uploadSandboxFiles(sandboxFiles, ensureSandbox);
+              uploadResult = await uploadSandboxFiles(
+                sandboxFiles,
+                ensureSandbox,
+              );
             } finally {
               writeUploadCompleteStatus(writer);
+            }
+            if (uploadResult.failedCount > 0) {
+              const noun =
+                uploadResult.failedCount === 1 ? "attachment" : "attachments";
+              const uploadError = new ChatSDKError(
+                "bad_request:stream",
+                `Failed to upload ${uploadResult.failedCount} ${noun} to the computer. Please try again.`,
+              );
+              // Errors thrown from execute are caught by createUIMessageStream's
+              // onError and never reach the outer catch, so refund / timeout
+              // clear / error logging must happen here. refund() is idempotent.
+              preemptiveTimeout?.clear();
+              await usageRefundTracker.refund();
+              chatLogger?.emitChatError(uploadError);
+              throw uploadError;
             }
           }
 
