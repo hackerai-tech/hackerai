@@ -145,6 +145,7 @@ function StreamEffects({
   sandboxPreference,
   selectedModel,
   resetRef,
+  hasActiveStream,
 }: {
   autoResume: boolean;
   serverMessages: ChatMessage[];
@@ -162,12 +163,14 @@ function StreamEffects({
   sandboxPreference: string;
   selectedModel: string;
   resetRef: RefObject<(() => void) | null>;
+  hasActiveStream: boolean | undefined;
 }) {
   useAutoResume({
     autoResume,
     initialMessages: serverMessages,
     resumeStream,
     setMessages,
+    hasActiveStream,
   });
 
   const { resetAutoContinueCount } = useAutoContinue({
@@ -1159,6 +1162,9 @@ export const Chat = ({ autoResume }: { autoResume: boolean }) => {
         sandboxPreference={sandboxPreference}
         selectedModel={selectedModel}
         resetRef={resetAutoContinueRef}
+        hasActiveStream={
+          chatData === undefined ? undefined : !!chatData?.active_stream_id
+        }
       />
       <div className="flex min-h-0 flex-1 w-full flex-col bg-background overflow-hidden">
         <div className="flex min-h-0 flex-1 min-w-0 relative">
