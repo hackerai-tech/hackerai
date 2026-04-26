@@ -39,9 +39,9 @@ type OpenRouterInstance = typeof openrouter;
 const buildProviderMap = (or: OpenRouterInstance) =>
   ({
     "ask-model": or("google/gemini-3-flash-preview"),
-    "ask-model-free": or("x-ai/grok-4.1-fast"),
+    "ask-model-free": or("deepseek/deepseek-v4-flash"),
     "agent-model": or("moonshotai/kimi-k2.6:exacto"),
-    "agent-model-free": or("moonshotai/kimi-k2.6:exacto"),
+    "agent-model-free": or("deepseek/deepseek-v4-flash"),
     "model-sonnet-4.6": or("anthropic/claude-sonnet-4-6"),
     "model-grok-4.1": or("x-ai/grok-4.1-fast"),
     "model-gemini-3-flash": or("google/gemini-3-flash-preview"),
@@ -60,9 +60,9 @@ export type ModelName = keyof typeof baseProviders;
 export const modelCutoffDates: Record<ModelName, string> &
   Record<string, string> = {
   "ask-model": "January 2025",
-  "ask-model-free": "November 2024",
+  "ask-model-free": "May 2025",
   "agent-model": "April 2024",
-  "agent-model-free": "April 2024",
+  "agent-model-free": "May 2025",
   "model-sonnet-4.6": "May 2025",
   "model-grok-4.1": "November 2024",
   "model-gemini-3-flash": "January 2025",

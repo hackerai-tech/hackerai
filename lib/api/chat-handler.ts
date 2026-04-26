@@ -830,8 +830,8 @@ export const createChatHandler = (
                       tools,
                       providerOptions: buildProviderOptions(
                         isReasoningModel,
-                        subscription,
                         userId,
+                        configuredModelId,
                       ),
                     });
 
@@ -926,8 +926,8 @@ export const createChatHandler = (
               abortSignal: userStopSignal.signal,
               providerOptions: buildProviderOptions(
                 isReasoningModel,
-                subscription,
                 userId,
+                configuredModelId,
               ),
               stopWhen: isAgentMode(mode)
                 ? [

@@ -366,18 +366,21 @@ export class SummarizationTracker {
  */
 export function buildProviderOptions(
   isReasoningModel: boolean,
-  subscription: SubscriptionTier,
   userId?: string,
+  modelId?: string,
 ) {
+  const isDeepSeekV4 = modelId?.startsWith("deepseek/deepseek-v4") ?? false;
   return {
     openrouter: {
       ...(isReasoningModel
-        ? { reasoning: { enabled: true } }
+        ? {
+            reasoning: {
+              enabled: true,
+              ...(isDeepSeekV4 && { effort: "high" }),
+            },
+          }
         : { reasoning: { enabled: false } }),
       ...(userId && { user: userId }),
-      // provider: {
-      //   ...(subscription === "free" ? { sort: "price" } : { sort: "latency" }),
-      // },
     },
   } as const;
 }
