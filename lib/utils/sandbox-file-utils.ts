@@ -172,11 +172,21 @@ const downloadFileToSandbox = async (
   );
 };
 
+const safeUrlForLog = (url: string): string => {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url.split("?")[0];
+  }
+};
+
 /**
  * Uploads files to the sandbox environment in parallel
  * - Downloads files directly from S3 URLs using curl in the sandbox
  * - Avoids Convex size limits by not piping data through mutations
- * - Handles errors gracefully without throwing
+ * - Returns the exact count of failed uploads; sandbox-acquisition failures
+ *   count as all-files-failed since nothing can be downloaded
  */
 export const uploadSandboxFiles = async (
   sandboxFiles: SandboxFile[],
@@ -184,36 +194,43 @@ export const uploadSandboxFiles = async (
 ): Promise<{ failedCount: number }> => {
   if (sandboxFiles.length === 0) return { failedCount: 0 };
 
+  let sandbox: any;
   try {
-    const sandbox = await ensureSandbox();
-
-    // Download files directly from URLs in the sandbox
-    await Promise.all(
-      sandboxFiles.map((file) =>
-        downloadFileToSandbox(sandbox, file.url, file.localPath),
-      ),
-    );
-    return { failedCount: 0 };
+    sandbox = await ensureSandbox();
   } catch (e) {
-    console.error("Failed uploading files to sandbox:", e);
-    console.error(
-      "Sandbox file details:",
-      sandboxFiles.map((f) => {
-        let safeUrl: string;
-        try {
-          const parsed = new URL(f.url);
-          safeUrl = `${parsed.origin}${parsed.pathname}`;
-        } catch {
-          safeUrl = f.url.split("?")[0];
-        }
-        return {
-          url: safeUrl,
-          urlLength: f.url.length,
-          localPath: f.localPath,
-          protocol: f.url.split("://")[0],
-        };
-      }),
-    );
+    console.error("Failed to acquire sandbox for upload:", e);
     return { failedCount: sandboxFiles.length };
   }
+
+  const results = await Promise.allSettled(
+    sandboxFiles.map((file) =>
+      downloadFileToSandbox(sandbox, file.url, file.localPath),
+    ),
+  );
+
+  const failedIndices = results
+    .map((r, i) => (r.status === "rejected" ? i : -1))
+    .filter((i) => i !== -1);
+
+  if (failedIndices.length > 0) {
+    console.error(
+      `Failed uploading ${failedIndices.length}/${sandboxFiles.length} files to sandbox:`,
+    );
+    failedIndices.forEach((i) => {
+      const file = sandboxFiles[i];
+      const result = results[i] as PromiseRejectedResult;
+      console.error("  -", {
+        url: safeUrlForLog(file.url),
+        urlLength: file.url.length,
+        localPath: file.localPath,
+        protocol: file.url.split("://")[0],
+        error:
+          result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
+      });
+    });
+  }
+
+  return { failedCount: failedIndices.length };
 };
